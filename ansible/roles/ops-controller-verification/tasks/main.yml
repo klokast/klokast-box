@@ -86,6 +86,8 @@
 - name: Read ops controller repository state
   ansible.builtin.command:
     argv:
+      - /bin/su
+      - -s
       - /bin/sh
       - -c
       - |
@@ -99,12 +101,12 @@
         remote_head=$(git -C "$repo" ls-remote origin refs/heads/main | cut -f1)
         test -n "$remote_head"
         test "$local_head" = "$remote_head"
+      - "{{ ops_infra_user | default('smith') }}"
       - repo-state-check
       - "{{ ops_controller_check_repo_path }}"
       - https://github.com/klokast/klokast-box.git
   register: ops_controller_check_repo_state
   changed_when: false
-  become: false
   when: ops_controller_check_repo_git_stat.stat.isdir | default(false)
 
 - name: Inspect obsolete controller GitHub deploy-key material
