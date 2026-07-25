@@ -104,6 +104,7 @@
       - https://github.com/klokast/klokast-box.git
   register: ops_controller_check_repo_state
   changed_when: false
+  become: false
   when: ops_controller_check_repo_git_stat.stat.isdir | default(false)
 
 - name: Inspect obsolete controller GitHub deploy-key material
