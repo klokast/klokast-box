@@ -151,6 +151,7 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertNotIn("Generate the infra GitHub deploy key", OPS_CONTROLLER_TASKS)
         self.assertIn("Inspect obsolete controller GitHub deploy-key material", OPS_CONTROLLER_VERIFY)
         self.assertIn("Rehome existing controller checkouts onto public history", OPS_CONTROLLER_TASKS)
+        self.assertIn("dest: /usr/local/sbin/rehome-public-checkout", OPS_CONTROLLER_TASKS)
         self.assertIn("merge-base --is-ancestor", REHOME)
         self.assertIn(".private-history-", REHOME)
         self.assertNotIn("rm -", REHOME)

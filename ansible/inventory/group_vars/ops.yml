@@ -127,6 +127,7 @@ ops_secret_authority_audit_log: /var/log/klokast/secret-authority.jsonl
 ops_controller_legacy_git_ssh_key_path: "/home/{{ ops_infra_user }}/.ssh/github-klokast-box"
 ops_controller_legacy_repo_url: git@github.com:klokast/klokast-box.git
 ops_controller_archive_repo_url: git@github.com:klokast/klokast-box-private-archive.git
+ops_controller_rehome_source: "{{ playbook_dir }}/../bin/rehome-public-checkout"
 # Legacy filename used by VM bootstrap inventory; this is the controller-held
 # VM admin key, not the GitHub deploy key.
 ops_vm_admin_ssh_key_path: "/home/{{ ops_infra_user }}/.ssh/github-klokast-codex"

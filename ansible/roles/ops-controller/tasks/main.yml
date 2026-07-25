@@ -18,6 +18,7 @@
       - ops_controller_legacy_git_ssh_key_path | default('') is match('^/home/')
       - ops_controller_legacy_repo_url | default('') == 'git@github.com:klokast/klokast-box.git'
       - ops_controller_archive_repo_url | default('') == 'git@github.com:klokast/klokast-box-private-archive.git'
+      - ops_controller_rehome_source | default('') | length > 0
       - ops_vm_admin_ssh_key_path | default('') is match('^/home/')
       - ops_github_ssh_host | default('') | length > 0
       - ops_github_ssh_hostname | default('') | length > 0
@@ -286,6 +287,14 @@
     group: root
     mode: "0755"
 
+- name: Install the public checkout rehome helper
+  ansible.builtin.copy:
+    src: "{{ ops_controller_rehome_source }}"
+    dest: /usr/local/sbin/rehome-public-checkout
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install root-owned Tailscale wrapper executables
   ansible.builtin.copy:
     src: "{{ ops_controller_tailscale_wrapper_source_root }}/{{ item }}"
@@ -411,7 +420,7 @@
       - "exec \"$1\" --repo-dir \"$2\" --public-url \"$3\" --archive-url \"$4\""
       - "{{ ops_infra_user }}"
       - rehome-public-checkout
-      - "{{ item.item.item.dest }}/ansible/bin/rehome-public-checkout"
+      - /usr/local/sbin/rehome-public-checkout
       - "{{ item.item.item.dest }}"
       - "{{ item.item.item.repo }}"
       - "{{ ops_controller_archive_repo_url }}"
