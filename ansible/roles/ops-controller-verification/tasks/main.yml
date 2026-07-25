@@ -98,7 +98,13 @@
         test "$actual_origin" = "$expected_origin"
         test -z "$(git -C "$repo" status --porcelain)"
         local_head=$(git -C "$repo" rev-parse HEAD)
-        remote_head=$(git -C "$repo" ls-remote origin refs/heads/main | cut -f1)
+        remote_head=
+        attempt=1
+        while [ "$attempt" -le 3 ]; do
+          remote_head=$(timeout 20 git -C "$repo" ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || :)
+          [ -z "$remote_head" ] || break
+          attempt=$((attempt + 1))
+        done
         test -n "$remote_head"
         test "$local_head" = "$remote_head"
       - "{{ ops_infra_user | default('smith') }}"
