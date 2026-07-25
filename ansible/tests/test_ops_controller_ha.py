@@ -133,7 +133,7 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn('subparsers.add_parser("switchover")', HA_SOURCE)
         self.assertIn("both controllers must be reachable", HA_SOURCE)
         self.assertIn("repository must match its live upstream", HA_SOURCE)
-        self.assertIn("timeout 15 git ls-remote", HA_SOURCE)
+        self.assertIn("timeout 12 git ls-remote", HA_SOURCE)
         switchover_source = HA_SOURCE.split("def switchover", 1)[1].split(
             "def sanitize_standby", 1
         )[0]

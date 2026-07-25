@@ -205,7 +205,13 @@ origin=$(git remote get-url origin 2>/dev/null || :)
 head=$(git rev-parse HEAD 2>/dev/null || :)
 branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || :)
 if [ -z "$(git status --porcelain 2>/dev/null)" ]; then clean=true; else clean=false; fi
-remote_head=$(timeout 15 git ls-remote origin refs/heads/main 2>/dev/null | cut -f1)
+remote_head=
+attempt=1
+while [ "$attempt" -le 3 ]; do
+  remote_head=$(timeout 12 git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || :)
+  [ -z "$remote_head" ] || break
+  attempt=$((attempt + 1))
+done
 if [ -n "$remote_head" ]; then reachable=true; else reachable=false; fi
 python3 - "$origin" "$head" "$branch" "$clean" "$reachable" "$remote_head" <<'PY'
 import json
