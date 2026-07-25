@@ -17,6 +17,7 @@
       - ops_approved_state_root | default('') is match('^/')
       - ops_controller_legacy_git_ssh_key_path | default('') is match('^/home/')
       - ops_controller_legacy_repo_url | default('') == 'git@github.com:klokast/klokast-box.git'
+      - ops_controller_archive_repo_url | default('') == 'git@github.com:klokast/klokast-box-private-archive.git'
       - ops_vm_admin_ssh_key_path | default('') is match('^/home/')
       - ops_github_ssh_host | default('') | length > 0
       - ops_github_ssh_hostname | default('') | length > 0
@@ -400,23 +401,24 @@
   loop: "{{ ops_controller_repo_origins.results }}"
   when: not (item.skipped | default(false))
 
-- name: Migrate legacy controller repository origins to public HTTPS
+- name: Rehome existing controller checkouts onto public history
   ansible.builtin.command:
     argv:
       - /bin/su
       - -s
       - /bin/sh
       - -c
-      - "git -C \"$1\" remote set-url origin \"$2\""
+      - "exec \"$1\" --repo-dir \"$2\" --public-url \"$3\" --archive-url \"$4\""
       - "{{ ops_infra_user }}"
-      - sh
+      - rehome-public-checkout
+      - "{{ item.item.item.dest }}/ansible/bin/rehome-public-checkout"
       - "{{ item.item.item.dest }}"
       - "{{ item.item.item.repo }}"
+      - "{{ ops_controller_archive_repo_url }}"
   loop: "{{ ops_controller_repo_origins.results }}"
-  when:
-    - not (item.skipped | default(false))
-    - item.stdout == ops_controller_legacy_repo_url
-  changed_when: true
+  when: not (item.skipped | default(false))
+  register: ops_controller_repo_rehome
+  changed_when: "'already belongs to public history' not in ops_controller_repo_rehome.stdout"
 
 - name: Clone missing public infra repositories
   ansible.builtin.command:
@@ -432,21 +434,6 @@
       - "{{ ops_infra_user }}"
     creates: "{{ item.dest }}/.git"
   loop: "{{ ops_repositories }}"
-
-- name: Fast-forward public infra repositories
-  ansible.builtin.command:
-    argv:
-      - /bin/su
-      - -s
-      - /bin/sh
-      - -c
-      - >-
-        cd {{ ('/home/' ~ ops_infra_user) | quote }} &&
-        git -C {{ item.dest | quote }} pull --ff-only origin {{ item.version | quote }}
-      - "{{ ops_infra_user }}"
-  loop: "{{ ops_repositories }}"
-  register: ops_controller_repo_pull
-  changed_when: "'Already up to date.' not in ops_controller_repo_pull.stdout"
 
 - name: Permit the infra account to call the narrow Tailscale wrappers through sudo
   ansible.builtin.copy:

@@ -24,6 +24,9 @@ PRIVATE_STATE_TRANSFER = (
 OPS_VARS = (
     REPO_ROOT / "ansible" / "inventory" / "group_vars" / "ops.yml"
 ).read_text(encoding="utf-8")
+REHOME = (REPO_ROOT / "ansible" / "bin" / "rehome-public-checkout").read_text(
+    encoding="utf-8"
+)
 
 
 class OpsControllerHaTest(unittest.TestCase):
@@ -145,9 +148,12 @@ class OpsControllerHaTest(unittest.TestCase):
 
     def test_controller_checkout_uses_public_https_without_deploy_key(self):
         self.assertIn("repo: https://github.com/klokast/klokast-box.git", OPS_VARS)
-        self.assertIn("Migrate legacy controller repository origins to public HTTPS", OPS_CONTROLLER_TASKS)
         self.assertNotIn("Generate the infra GitHub deploy key", OPS_CONTROLLER_TASKS)
         self.assertIn("Inspect obsolete controller GitHub deploy-key material", OPS_CONTROLLER_VERIFY)
+        self.assertIn("Rehome existing controller checkouts onto public history", OPS_CONTROLLER_TASKS)
+        self.assertIn("merge-base --is-ancestor", REHOME)
+        self.assertIn(".private-history-", REHOME)
+        self.assertNotIn("rm -", REHOME)
 
     def test_standby_private_state_excludes_provider_credentials(self):
         self.assertIn("Remove root-only provider credentials from a standby controller", PRIVATE_STATE_TRANSFER)

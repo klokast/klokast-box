@@ -45,6 +45,11 @@ tailscale ssh smith@k001-ops \
   'cd ~/src/klokast/klokast-box && git pull --ff-only'
 ```
 
+The one-time private-to-public cutover uses
+`ansible/bin/rehome-public-checkout`. It verifies the new public `main`,
+preserves an unrelated private-history checkout beside the canonical path, and
+installs a clean public clone. It never resets or deletes the old checkout.
+
 ## Active/Standby Controller HA
 
 The Platform uses one active controller at a time. Runtime markers, not a

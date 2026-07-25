@@ -1,0 +1,81 @@
+#!/bin/sh
+set -eu
+
+die() {
+  echo "rehome-public-checkout: $*" >&2
+  exit 2
+}
+
+repo_dir=
+public_url=
+archive_url=
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo-dir)
+      [ "$#" -ge 2 ] || die "--repo-dir requires a value"
+      repo_dir=$2
+      shift 2
+      ;;
+    --public-url)
+      [ "$#" -ge 2 ] || die "--public-url requires a value"
+      public_url=$2
+      shift 2
+      ;;
+    --archive-url)
+      [ "$#" -ge 2 ] || die "--archive-url requires a value"
+      archive_url=$2
+      shift 2
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+case "$repo_dir" in
+  /*) ;;
+  *) die "--repo-dir must be absolute" ;;
+esac
+[ -n "$public_url" ] || die "--public-url is required"
+[ -n "$archive_url" ] || die "--archive-url is required"
+[ -d "$repo_dir/.git" ] || die "repository is missing: $repo_dir"
+[ -z "$(git -C "$repo_dir" status --porcelain)" ] || die "repository is not clean: $repo_dir"
+[ "$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD)" = main ] ||
+  die "repository must be on main: $repo_dir"
+
+old_origin=$(git -C "$repo_dir" remote get-url origin)
+case "$old_origin" in
+  "$public_url"|"$archive_url"|git@github.com:klokast/klokast-box.git) ;;
+  *) die "unexpected existing origin: $old_origin" ;;
+esac
+
+old_head=$(git -C "$repo_dir" rev-parse HEAD)
+git -C "$repo_dir" fetch --no-tags "$public_url" refs/heads/main
+public_head=$(git -C "$repo_dir" rev-parse FETCH_HEAD)
+
+if git -C "$repo_dir" merge-base --is-ancestor "$old_head" "$public_head"; then
+  git -C "$repo_dir" remote set-url origin "$public_url"
+  git -C "$repo_dir" merge --ff-only "$public_head"
+  echo "rehome-public-checkout: checkout already belongs to public history"
+  exit 0
+fi
+
+short_head=$(git -C "$repo_dir" rev-parse --short=12 HEAD)
+archive_dir="${repo_dir}.private-history-${short_head}"
+candidate_dir="${repo_dir}.public-candidate"
+[ ! -e "$archive_dir" ] || die "archive destination already exists: $archive_dir"
+[ ! -e "$candidate_dir" ] || die "candidate destination already exists: $candidate_dir"
+
+git clone --branch main --single-branch "$public_url" "$candidate_dir"
+[ "$(git -C "$candidate_dir" rev-parse HEAD)" = "$public_head" ] ||
+  die "candidate checkout does not match the public remote"
+[ -z "$(git -C "$candidate_dir" status --porcelain)" ] ||
+  die "candidate checkout is unexpectedly dirty"
+
+git -C "$repo_dir" remote set-url origin "$archive_url"
+mv "$repo_dir" "$archive_dir"
+mv "$candidate_dir" "$repo_dir"
+
+echo "rehome-public-checkout: installed public checkout at $repo_dir"
+echo "rehome-public-checkout: preserved private history at $archive_dir"
