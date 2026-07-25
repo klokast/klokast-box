@@ -1,0 +1,78 @@
+---
+- name: Set the system hostname
+  ansible.builtin.hostname:
+    name: "{{ ops_hostname }}"
+
+- name: Ensure the Ubuntu MOTD is configured
+  ansible.builtin.copy:
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ ops_motd }}"
+  when: ops_motd is defined
+
+- name: Ensure the base Ubuntu packages are present
+  ansible.builtin.apt:
+    name: "{{ ops_base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure unwanted Ubuntu packages are absent
+  ansible.builtin.apt:
+    name: "{{ ops_removed_packages }}"
+    state: absent
+
+- name: Collect the available locales
+  ansible.builtin.command:
+    argv:
+      - locale
+      - -a
+  register: ubuntu_base_available_locales
+  changed_when: false
+
+- name: Ensure the default UTF-8 locale is enabled in locale.gen
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: "^#?{{ ops_default_locale | regex_escape }} UTF-8$"
+    line: "{{ ops_default_locale }} UTF-8"
+    state: present
+
+- name: Generate the default UTF-8 locale
+  ansible.builtin.command:
+    argv:
+      - locale-gen
+      - "{{ ops_default_locale }}"
+  when:
+    - ops_default_locale | lower | replace('-', '') not in (
+        ubuntu_base_available_locales.stdout_lines
+        | map('lower')
+        | map('replace', '-', '')
+        | list
+      )
+
+- name: Set the system default locale
+  ansible.builtin.copy:
+    dest: /etc/default/locale
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      LANG={{ ops_default_locale }}
+      LC_ALL={{ ops_default_locale }}
+
+- name: Keep password-based SSH disabled on the public interface
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/50-klokast-ops.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      PermitRootLogin prohibit-password
+      PubkeyAuthentication yes
+      UsePAM yes
+  notify: Restart ssh

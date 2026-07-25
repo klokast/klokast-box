@@ -1,0 +1,13 @@
+ARG ALPINE_IMAGE
+FROM ${ALPINE_IMAGE}
+
+RUN set -eu; \
+    apk add --no-cache \
+      ca-certificates \
+      openssh-client \
+      postgresql17-client \
+      restic \
+      tzdata
+
+USER 65532:65532
+ENTRYPOINT ["/bin/sh"]

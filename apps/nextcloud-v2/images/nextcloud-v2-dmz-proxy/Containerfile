@@ -1,0 +1,15 @@
+ARG ALPINE_IMAGE
+FROM ${ALPINE_IMAGE}
+
+RUN set -eu; \
+    apk add --no-cache \
+      ca-certificates \
+      jq \
+      nginx \
+      openssl \
+      tailscale \
+      tzdata
+
+COPY nginx.conf /etc/nginx/nginx.conf
+EXPOSE 8443
+CMD ["nginx", "-g", "daemon off;"]

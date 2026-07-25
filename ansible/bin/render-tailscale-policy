@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_TEMPLATE = REPO_ROOT / "klokast-ops" / "tailscale" / "policy.hujson.j2"
+LOGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+SUFFIX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
+
+
+def die(message):
+    raise SystemExit(f"render-tailscale-policy: {message}")
+
+
+def load_deployment(path):
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as error:
+        die(f"cannot read deployment config: {error}")
+    if data.get("schema_version") != 1:
+        die("deployment config must use schema_version: 1")
+    unknown = sorted(set(data) - {"schema_version", "tailnet", "boxes"})
+    if unknown:
+        die(f"unsupported top-level field(s): {', '.join(unknown)}")
+    tailnet = data.get("tailnet")
+    if not isinstance(tailnet, dict):
+        die("tailnet must be a mapping")
+    suffix = tailnet.get("magicdns_suffix")
+    if not isinstance(suffix, str) or not SUFFIX_RE.fullmatch(suffix):
+        die("tailnet.magicdns_suffix must be a MagicDNS *.ts.net suffix")
+    groups = tailnet.get("groups")
+    if not isinstance(groups, dict):
+        die("tailnet.groups must be a mapping")
+    unknown_groups = sorted(set(groups) - {"operators", "family"})
+    if unknown_groups:
+        die(f"unsupported tailnet group(s): {', '.join(unknown_groups)}")
+    normalized = {}
+    for name in ("operators", "family"):
+        members = groups.get(name)
+        if not isinstance(members, list) or not members:
+            die(f"tailnet.groups.{name} must be a non-empty list")
+        if any(not isinstance(item, str) or not LOGIN_RE.fullmatch(item) for item in members):
+            die(f"tailnet.groups.{name} contains an invalid login")
+        normalized[name] = list(dict.fromkeys(members))
+    boxes = data.get("boxes", {})
+    if not isinstance(boxes, dict):
+        die("boxes must be a mapping")
+    return {"magicdns_suffix": suffix, "groups": normalized, "boxes": boxes}
+
+
+def render(template_path, deployment):
+    try:
+        content = template_path.read_text(encoding="utf-8")
+    except OSError as error:
+        die(f"cannot read policy template: {error}")
+    replacements = {
+        "{{ operators_json }}": json.dumps(deployment["groups"]["operators"]),
+        "{{ family_json }}": json.dumps(deployment["groups"]["family"]),
+    }
+    for marker, value in replacements.items():
+        if content.count(marker) != 1:
+            die(f"policy template must contain exactly one {marker} marker")
+        content = content.replace(marker, value)
+    if "{{" in content or "}}" in content:
+        die("policy template contains an unresolved marker")
+    return content
+
+
+def atomic_write(path, content):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Render a family-specific Tailscale policy")
+    parser.add_argument("--deployment-config", type=Path, required=True)
+    parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    deployment = load_deployment(args.deployment_config)
+    atomic_write(args.output, render(args.template, deployment))
+    print(args.output)
+
+
+if __name__ == "__main__":
+    main()

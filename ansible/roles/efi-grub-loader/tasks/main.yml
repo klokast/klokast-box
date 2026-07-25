@@ -1,0 +1,20 @@
+#
+# Summary:
+# - Renders EFI-side GRUB loader configs that hand off to the canonical menu.
+#
+---
+- name: Ensure managed EFI GRUB loader config directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ efi_bootloader_grub_config_path | dirname }}"
+    - "{{ efi_fallback_grub_config_path | dirname }}"
+
+- name: Render managed EFI GRUB loader configurations
+  ansible.builtin.template:
+    src: grub-loader.cfg.j2
+    dest: "{{ item }}"
+    mode: "0644"
+  loop: "{{ efi_grub_loader_config_paths }}"

@@ -1,0 +1,54 @@
+---
+- name: Verify Xen dom0 after reboot
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Confirm the expected hostname after reboot
+      ansible.builtin.command: hostname
+      register: xen_reboot_hostname
+      changed_when: false
+
+    - name: Assert the hostname stayed stable after the Xen reboot
+      ansible.builtin.assert:
+        that:
+          - xen_reboot_hostname.stdout == node_hostname
+        fail_msg: >-
+          The host came back after reboot, but the runtime hostname is not {{ node_hostname }}.
+
+    - name: Confirm the host is running under Xen
+      ansible.builtin.command: xl info
+      register: xen_reboot_xl_info
+      changed_when: false
+
+    - name: Confirm xl can enumerate domains
+      ansible.builtin.command: xl list
+      register: xen_reboot_xl_list
+      changed_when: false
+
+    - name: Confirm the persistent dom0 data volume came back after the Xen reboot
+      ansible.builtin.shell: >-
+        awk '$2 == "{{ dom0_data_mount_path }}" {print $1, $2, $3}' /proc/mounts
+      register: xen_reboot_dom0_data_mount
+      changed_when: false
+
+    - name: Confirm Tailscale came back after the Xen reboot
+      ansible.builtin.command: tailscale status --json
+      register: xen_reboot_tailscale_status
+      changed_when: false
+
+    - name: Parse Tailscale runtime status after the Xen reboot
+      ansible.builtin.set_fact:
+        xen_reboot_tailscale_parsed: "{{ xen_reboot_tailscale_status.stdout | from_json }}"
+
+    - name: Assert the Xen reboot left remote access healthy
+      ansible.builtin.assert:
+        that:
+          - xen_reboot_xl_info.stdout is search('xen_major')
+          - xen_reboot_xl_list.stdout is search('Domain-0')
+          - xen_reboot_dom0_data_mount.stdout is search(dom0_data_mount_path)
+          - xen_reboot_dom0_data_mount.stdout is search('ext4')
+          - xen_reboot_tailscale_parsed.BackendState | default('') == 'Running'
+          - xen_reboot_tailscale_parsed.Self.HostName | default('') == node_hostname
+          - tailscale_handoff_expected_tag in (xen_reboot_tailscale_parsed.Self.Tags | default([]))
+        fail_msg: >-
+          The Xen reboot completed, but dom0 or Tailscale runtime checks failed.

@@ -1,0 +1,199 @@
+#
+# Summary:
+# - Wipes the target SSD, recreates the managed GPT and LVM layout, and verifies the expected bootstrap disk state.
+#
+---
+- name: Ensure disk layout prerequisite packages are installed
+  ansible.builtin.package:
+    name:
+      - dosfstools
+      - lvm2
+      - parted
+      - util-linux
+    state: present
+
+- name: Assert the target disk exists
+  ansible.builtin.stat:
+    path: "{{ target_disk_device }}"
+  register: target_disk_stat
+
+- name: Fail when the target disk is missing
+  ansible.builtin.assert:
+    that:
+      - target_disk_stat.stat.exists
+    fail_msg: "Target disk {{ target_disk_device }} does not exist."
+
+- name: Gather current partition layout
+  ansible.builtin.command: "fdisk -l {{ target_disk_device }}"
+  register: target_disk_fdisk
+  changed_when: false
+
+- name: Check for an existing volume group
+  ansible.builtin.command: "vgs --noheadings -o vg_name"
+  register: existing_volume_groups
+  changed_when: false
+  failed_when: false
+
+- name: Assert the target disk looks like the expected NVMe install target
+  ansible.builtin.assert:
+    that:
+      - target_disk_device is match('^/dev/nvme[0-9]+n[0-9]+$')
+      - target_disk_model_hint | length == 0 or 'Disk model:' not in target_disk_fdisk.stdout or target_disk_model_hint in target_disk_fdisk.stdout
+    fail_msg: >-
+      Target disk {{ target_disk_device }} does not match the expected model hint
+      {{ target_disk_model_hint }}. Refusing to continue.
+
+- name: Unmount any partition from the target disk before wiping
+  ansible.posix.mount:
+    path: "{{ efi_mount_path }}"
+    state: unmounted
+  when: force_blank_slate_install | default(false) | bool
+  failed_when: false
+
+- name: Unmount any partition from the target disk before wiping
+  # Reruns can arrive here after phase 12 mounted the EFI partition. Unmount by
+  # actual device mountpoints, not only by the preferred mount path, so a stale
+  # live-environment mount cannot survive into the destructive wipe.
+  ansible.builtin.shell: |
+    awk -v dev="{{ target_disk_device }}" '
+      $1 == dev || $1 ~ ("^" dev "p[0-9]+$") { print $2 }
+    ' /proc/mounts | while read -r target; do
+      umount "$target" || umount -l "$target"
+    done
+  when: force_blank_slate_install | default(false) | bool
+  changed_when: false
+  failed_when: false
+
+- name: Verify the EFI mount path is no longer mounted before wiping
+  ansible.builtin.command: "findmnt --noheadings {{ efi_mount_path }}"
+  register: efi_mount_still_present
+  when: force_blank_slate_install | default(false) | bool
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the EFI partition is still mounted before wiping
+  ansible.builtin.assert:
+    that:
+      - efi_mount_still_present.rc != 0
+    fail_msg: >-
+      EFI mount path {{ efi_mount_path }} is still mounted before disk wipe.
+      Refusing to continue until the live environment releases the SSD.
+  when: force_blank_slate_install | default(false) | bool
+
+- name: Deactivate the existing volume group before wiping
+  community.general.lvg:
+    vg: "{{ volume_group_name }}"
+    state: inactive
+  when:
+    - force_blank_slate_install | default(false) | bool
+    - volume_group_name in existing_volume_groups.stdout
+  failed_when: false
+
+- name: Remove the existing volume group before wiping
+  community.general.lvg:
+    vg: "{{ volume_group_name }}"
+    state: absent
+    force: true
+  when:
+    - force_blank_slate_install | default(false) | bool
+    - volume_group_name in existing_volume_groups.stdout
+  failed_when: false
+
+- name: Remove the existing physical volume before wiping
+  ansible.builtin.command: "pvremove -ff -y {{ lvm_partition_device }}"
+  when: force_blank_slate_install | default(false) | bool
+  failed_when: false
+
+- name: Remove any filesystem and partition signatures from the target disk
+  ansible.builtin.shell: |
+    for device in "{{ efi_partition_device }}" "{{ lvm_partition_device }}" "{{ target_disk_device }}"; do
+      if [ -b "$device" ]; then
+        wipefs -a "$device" || true
+      fi
+    done
+  when: force_blank_slate_install | default(false) | bool
+  changed_when: true
+  failed_when: false
+
+- name: Force the kernel to re-read the partition table
+  ansible.builtin.command: "partprobe {{ target_disk_device }}"
+  when: force_blank_slate_install | default(false) | bool
+  changed_when: true
+  failed_when: false
+
+- name: Create GPT partition table
+  # The current Alpine/controller combination behaved more reliably when the
+  # disk label was created explicitly before the `parted` module managed
+  # individual partitions.
+  ansible.builtin.command: "parted -s {{ target_disk_device }} mklabel gpt"
+  changed_when: true
+
+- name: Create EFI partition
+  # Keep `label: gpt` here. Without it, the module can mis-handle a just-wiped
+  # disk and fall back into DOS-label assumptions during partition creation.
+  community.general.parted:
+    device: "{{ target_disk_device }}"
+    label: gpt
+    number: 1
+    fs_type: fat32
+    part_start: 1MiB
+    part_end: 1GiB
+    flags:
+      - esp
+    state: present
+
+- name: Create LVM partition
+  # Keep `label: gpt` here for the same reason as partition 1: phase 11 should
+  # recreate the same GPT layout every run, not infer the old label type.
+  community.general.parted:
+    device: "{{ target_disk_device }}"
+    label: gpt
+    number: 2
+    part_start: 1GiB
+    part_end: 100%
+    flags:
+      - lvm
+    state: present
+
+- name: Re-read the partition table after recreating partitions
+  ansible.builtin.command: "partprobe {{ target_disk_device }}"
+  changed_when: false
+
+- name: Wait for the recreated partitions to settle
+  ansible.builtin.command: udevadm settle
+  changed_when: false
+
+- name: Create EFI filesystem
+  community.general.filesystem:
+    dev: "{{ efi_partition_device }}"
+    fstype: "{{ efi_partition_fs }}"
+    force: true
+    opts: "-n {{ efi_partition_label }}"
+
+- name: Remove any stale LVM signatures from the recreated LVM partition
+  # A blank-slate rerun can recreate nvme0n1p2 at the same offset as an older
+  # PV even when the old partition table is gone. Scrub the new partition
+  # itself before pvcreate so stale vg0 metadata cannot resurrect here.
+  ansible.builtin.shell: |
+    pvremove -ff -y "{{ lvm_partition_device }}" || true
+    wipefs -a -f "{{ lvm_partition_device }}" || true
+  changed_when: true
+
+- name: Create LVM physical volume
+  ansible.builtin.command: "pvcreate -ff -y {{ lvm_partition_device }}"
+  changed_when: true
+
+- name: Create LVM volume group
+  # Avoid newer collection-only parameters here. This repo should stay
+  # compatible with the Ansible collection version available on the controller.
+  community.general.lvg:
+    vg: "{{ volume_group_name }}"
+    pvs:
+      - "{{ lvm_partition_device }}"
+    state: present
+
+- name: Show disk layout status
+  ansible.builtin.debug:
+    msg:
+      - "target_disk_device={{ target_disk_device }}"
+      - "volume_group_name={{ volume_group_name }}"

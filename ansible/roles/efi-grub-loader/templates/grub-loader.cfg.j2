@@ -1,0 +1,3 @@
+search --no-floppy --label {{ efi_partition_label }} --set=root
+set prefix=($root)/boot/grub
+configfile ($root)/boot/grub/grub.cfg

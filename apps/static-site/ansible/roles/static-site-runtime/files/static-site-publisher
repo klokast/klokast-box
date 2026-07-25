@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+DEFAULT_CONFIG = Path("/etc/klokast/static-site/config/publisher.env")
+SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+HTML_MARKER = re.compile(rb"(?is)<!doctype\s+html|<html(?:\s|>)")
+GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+class PublishError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Config:
+    incoming_root: Path
+    public_root: Path
+    repo_cache_root: Path
+    git_repo: str
+    git_branch: str
+    git_source_dir: str
+    git_ssh_config: Path
+    interval_seconds: int
+    max_bytes: int
+
+
+def log(message):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"{now} {message}", flush=True)
+
+
+def read_config(path):
+    values = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise PublishError(f"invalid config line in {path}: {raw_line}")
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+
+    required = [
+        "STATIC_SITE_INCOMING_ROOT",
+        "STATIC_SITE_PUBLIC_ROOT",
+        "STATIC_SITE_GIT_REPO_CACHE_ROOT",
+        "STATIC_SITE_GIT_REPO",
+        "STATIC_SITE_GIT_BRANCH",
+        "STATIC_SITE_GIT_SOURCE_DIR",
+        "STATIC_SITE_GIT_SSH_CONFIG",
+        "STATIC_SITE_PUBLISHER_INTERVAL_SECONDS",
+        "STATIC_SITE_PUBLISHER_MAX_BYTES",
+    ]
+    missing = [key for key in required if not values.get(key)]
+    if missing:
+        raise PublishError("missing publisher config keys: " + ", ".join(missing))
+
+    source_dir = validate_source_dir(values["STATIC_SITE_GIT_SOURCE_DIR"])
+    return Config(
+        incoming_root=Path(values["STATIC_SITE_INCOMING_ROOT"]),
+        public_root=Path(values["STATIC_SITE_PUBLIC_ROOT"]),
+        repo_cache_root=Path(values["STATIC_SITE_GIT_REPO_CACHE_ROOT"]),
+        git_repo=values["STATIC_SITE_GIT_REPO"],
+        git_branch=validate_git_ref(values["STATIC_SITE_GIT_BRANCH"], "branch"),
+        git_source_dir=source_dir,
+        git_ssh_config=Path(values["STATIC_SITE_GIT_SSH_CONFIG"]),
+        interval_seconds=parse_positive_int(
+            values["STATIC_SITE_PUBLISHER_INTERVAL_SECONDS"],
+            "STATIC_SITE_PUBLISHER_INTERVAL_SECONDS",
+        ),
+        max_bytes=parse_positive_int(
+            values["STATIC_SITE_PUBLISHER_MAX_BYTES"],
+            "STATIC_SITE_PUBLISHER_MAX_BYTES",
+        ),
+    )
+
+
+def parse_positive_int(value, name):
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise PublishError(f"{name} must be an integer") from error
+    if parsed <= 0:
+        raise PublishError(f"{name} must be positive")
+    return parsed
+
+
+def validate_git_ref(value, name):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", value):
+        raise PublishError(f"unsafe Git {name}: {value}")
+    if (
+        value.endswith(".")
+        or value.endswith("/")
+        or ".." in value
+        or "@{" in value
+        or "\\" in value
+        or "//" in value
+    ):
+        raise PublishError(f"unsafe Git {name}: {value}")
+    return value
+
+
+def validate_source_dir(value):
+    normalized = value.strip("/")
+    if not normalized:
+        raise PublishError("Git source dir must not be empty")
+    validate_rel_path(normalized)
+    return normalized
+
+
+def validate_rel_path(rel_path):
+    normalized = rel_path.strip("/")
+    if not normalized:
+        return ""
+    if "\\" in normalized:
+        raise PublishError(f"unsafe static-site path: {rel_path}")
+    segments = normalized.split("/")
+    for index, segment in enumerate(segments):
+        if segment in ("", ".", ".."):
+            raise PublishError(f"unsafe static-site path: {rel_path}")
+        if segment.startswith("."):
+            if not (index == 0 and segment == ".well-known"):
+                raise PublishError(f"unsafe dotfile path segment: {segment}")
+            continue
+        if not SAFE_SEGMENT.fullmatch(segment):
+            raise PublishError(f"unsafe static-site path segment: {segment}")
+    return "/".join(segments)
+
+
+def run_git(config, args, *, cwd=None, capture=True):
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_SSH_COMMAND": f"ssh -F {config.git_ssh_config}",
+        }
+    )
+    command = ["git", *args]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.STDOUT if capture else None,
+            check=True,
+        )
+    except FileNotFoundError as error:
+        raise PublishError("git is not installed") from error
+    except subprocess.CalledProcessError as error:
+        output = (error.stdout or "").strip()
+        suffix = f": {output}" if output else ""
+        raise PublishError(f"git {' '.join(args)} failed{suffix}") from error
+    return (result.stdout or "").strip()
+
+
+class Publisher:
+    def __init__(self, config):
+        self.config = config
+        self.published_commit_file = config.repo_cache_root / ".published-commit"
+
+    def ensure_config_files(self):
+        if not self.config.git_ssh_config.is_file():
+            raise PublishError(f"missing Git SSH config: {self.config.git_ssh_config}")
+
+    def ensure_repo(self):
+        self.config.repo_cache_root.parent.mkdir(parents=True, exist_ok=True)
+        if (self.config.repo_cache_root / ".git").is_dir():
+            run_git(
+                self.config,
+                ["remote", "set-url", "origin", self.config.git_repo],
+                cwd=self.config.repo_cache_root,
+            )
+            return
+        if self.config.repo_cache_root.exists() and any(self.config.repo_cache_root.iterdir()):
+            raise PublishError(f"repo cache is not a Git checkout: {self.config.repo_cache_root}")
+        run_git(
+            self.config,
+            [
+                "clone",
+                "--no-checkout",
+                "--single-branch",
+                "--branch",
+                self.config.git_branch,
+                self.config.git_repo,
+                str(self.config.repo_cache_root),
+            ],
+            cwd=self.config.repo_cache_root.parent,
+        )
+
+    def fetch_commit(self):
+        run_git(
+            self.config,
+            ["fetch", "--prune", "origin", self.config.git_branch],
+            cwd=self.config.repo_cache_root,
+        )
+        commit = run_git(
+            self.config,
+            ["rev-parse", f"origin/{self.config.git_branch}^{{commit}}"],
+            cwd=self.config.repo_cache_root,
+        )
+        if not GIT_SHA.fullmatch(commit):
+            raise PublishError(f"Git returned an invalid commit SHA: {commit}")
+        return commit
+
+    def already_published(self, commit):
+        try:
+            current = self.published_commit_file.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return False
+        return (
+            current == commit
+            and self.config.public_root.exists()
+            and any(self.config.public_root.iterdir())
+        )
+
+    def extract_source(self, commit, staging_root):
+        archive_cmd = [
+            "git",
+            "archive",
+            "--format=tar",
+            commit,
+            "--",
+            self.config.git_source_dir,
+        ]
+        tar_cmd = ["tar", "-xf", "-", "-C", str(staging_root)]
+        try:
+            archive = subprocess.Popen(
+                archive_cmd,
+                cwd=self.config.repo_cache_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+            )
+        except FileNotFoundError as error:
+            raise PublishError("git is not installed") from error
+        try:
+            tar = subprocess.run(
+                tar_cmd,
+                stdin=archive.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError as error:
+            archive.kill()
+            raise PublishError("tar is not installed") from error
+        finally:
+            if archive.stdout is not None:
+                archive.stdout.close()
+        _, archive_stderr = archive.communicate()
+        if archive.returncode != 0:
+            message = archive_stderr.decode("utf-8", errors="replace").strip()
+            raise PublishError(f"git archive failed: {message}")
+        if tar.returncode != 0:
+            message = tar.stderr.decode("utf-8", errors="replace").strip()
+            raise PublishError(f"tar extraction failed: {message}")
+
+        source_root = staging_root / self.config.git_source_dir
+        if not source_root.is_dir():
+            raise PublishError(f"Git source dir is missing: {self.config.git_source_dir}")
+        return source_root
+
+    def publish_once(self):
+        self.ensure_config_files()
+        self.ensure_repo()
+        commit = self.fetch_commit()
+        if self.already_published(commit):
+            log(f"already published {commit[:12]} from {self.config.git_repo}")
+            return
+
+        self.config.incoming_root.mkdir(parents=True, exist_ok=True)
+        staging_root = Path(tempfile.mkdtemp(prefix="git.", dir=self.config.incoming_root))
+        try:
+            source_root = self.extract_source(commit, staging_root)
+            validate_tree(source_root, self.config.max_bytes)
+            replace_public_root(source_root, self.config.public_root)
+            self.published_commit_file.write_text(commit + "\n", encoding="utf-8")
+            self.published_commit_file.chmod(0o600)
+            log(
+                f"published {count_files(self.config.public_root)} file(s) "
+                f"from {self.config.git_repo}@{commit[:12]}:{self.config.git_source_dir}/"
+            )
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def validate_tree(root, max_bytes):
+    file_count = 0
+    for entry in sorted(root.rglob("*")):
+        rel_path = validate_rel_path(str(entry.relative_to(root)))
+        try:
+            mode = entry.lstat().st_mode
+        except FileNotFoundError as error:
+            raise PublishError(f"static-site path disappeared during validation: {rel_path}") from error
+        if stat.S_ISLNK(mode):
+            raise PublishError(f"refusing symlink: {rel_path}")
+        if entry.is_dir():
+            entry.chmod(0o755)
+            continue
+        if not entry.is_file():
+            raise PublishError(f"refusing non-regular file: {rel_path}")
+        size = entry.stat().st_size
+        if size <= 0:
+            raise PublishError(f"refusing empty file: {rel_path}")
+        if size > max_bytes:
+            raise PublishError(f"refusing {rel_path}: larger than max file size")
+        if rel_path.lower().endswith((".html", ".htm")):
+            validate_html(rel_path, entry.read_bytes()[:16384])
+        entry.chmod(0o644)
+        file_count += 1
+    if file_count == 0:
+        raise PublishError("refusing to publish an empty static-site tree")
+
+
+def validate_html(rel_path, body):
+    if not HTML_MARKER.search(body):
+        raise PublishError(f"refusing HTML file that does not look like HTML: {rel_path}")
+
+
+def replace_public_root(staging_root, public_root):
+    public_root.mkdir(parents=True, exist_ok=True)
+    for entry in public_root.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    for entry in staging_root.iterdir():
+        shutil.move(str(entry), public_root / entry.name)
+
+
+def count_files(root):
+    return sum(1 for entry in root.rglob("*") if entry.is_file())
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="Publish static-site files from Git.")
+    parser.add_argument("mode", nargs="?", choices=("once", "loop"), default="loop")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG))
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv or sys.argv[1:])
+    config_path = Path(args.config)
+    if args.mode == "once":
+        Publisher(read_config(config_path)).publish_once()
+        return 0
+
+    while True:
+        try:
+            Publisher(read_config(config_path)).publish_once()
+        except PublishError as error:
+            log(str(error))
+        time.sleep(read_config(config_path).interval_seconds)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except PublishError as error:
+        log(str(error))
+        raise SystemExit(1)

@@ -1,0 +1,97 @@
+#!/bin/sh
+set -eu
+
+pod_name={{ print_pod_name | quote }}
+image_name={{ print_image_name | quote }}
+config_root={{ print_config_root | quote }}
+secret_root={{ print_secret_root | quote }}
+queue_name={{ print_queue_name | quote }}
+printer_uri={{ print_printer_uri | quote }}
+print_hostname={{ print_tailscale_hostname | quote }}
+print_tag={{ print_tailscale_tag | quote }}
+
+volume_cups_etc={{ print_cups_etc_volume | quote }}
+volume_cups_spool={{ print_cups_spool_volume | quote }}
+volume_cups_cache={{ print_cups_cache_volume | quote }}
+volume_ts={{ print_tailscale_state_volume | quote }}
+
+podman_cmd() {
+    if [ "$(id -un)" = {{ vm_admin_user_name | quote }} ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name | quote }} /usr/bin/podman "$@"
+    fi
+}
+
+ensure_volume() {
+    volume="$1"
+    if ! podman_cmd volume exists "$volume"; then
+        podman_cmd volume create "$volume" >/dev/null
+    fi
+}
+
+if ! podman_cmd image exists "$image_name"; then
+    echo "missing prebuilt image: $image_name; run ansible/bin/platform-image-build --app print-server --box {{ print_box | quote }} build/load first" >&2
+    exit 1
+fi
+
+wait_for_cups() {
+    for _ in $(seq 1 60); do
+        if podman_cmd exec {{ print_container_cups_name | quote }} lpstat -r >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "timeout waiting for CUPS" >&2
+    return 1
+}
+
+for volume in "$volume_cups_etc" "$volume_cups_spool" "$volume_cups_cache" "$volume_ts"; do
+    ensure_volume "$volume"
+done
+
+if podman_cmd pod exists "$pod_name"; then
+    podman_cmd pod rm -f "$pod_name" >/dev/null
+fi
+
+podman_cmd pod create --name "$pod_name" >/dev/null
+
+podman_cmd run -d \
+    --name {{ print_container_cups_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -v "$config_root:/etc/klokast/print-server:ro" \
+    -v "$volume_cups_etc:/etc/cups" \
+    -v "$volume_cups_spool:/var/spool/cups" \
+    -v "$volume_cups_cache:/var/cache/cups" \
+    --pull=never \
+    "$image_name" cups >/dev/null
+
+wait_for_cups
+
+podman_cmd exec {{ print_container_cups_name | quote }} sh -c '
+    set -eu
+    queue="$1"
+    uri="$2"
+    export CUPS_SERVER=/run/cups/cups.sock
+    lpadmin -p "$queue" -E -v "$uri" -m everywhere
+    cupsaccept "$queue"
+    cupsenable "$queue"
+    lpoptions -d "$queue"
+' sh "$queue_name" "$printer_uri" >/dev/null
+
+podman_cmd run -d \
+    --name {{ print_container_ingress_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -e "PRINT_TAILSCALE_HOSTNAME=$print_hostname" \
+    -e "PRINT_TAILSCALE_TAG=$print_tag" \
+    -e PRINT_TAILSCALE_AUTHKEY_FILE=/run/klokast-secrets/tailscale-authkey \
+    -v "$secret_root/tailscale-authkey:/run/klokast-secrets/tailscale-authkey:ro" \
+    -v "$volume_ts:/var/lib/tailscale" \
+    --pull=never \
+    "$image_name" ingress >/dev/null

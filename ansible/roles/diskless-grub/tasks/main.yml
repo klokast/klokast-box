@@ -1,0 +1,23 @@
+#
+# Summary:
+# - Renders the initial diskless GRUB entry and reports the resulting boot path state.
+#
+---
+- name: Render initial GRUB configuration
+  ansible.builtin.template:
+    src: grub-diskless.cfg.j2
+    dest: "{{ efi_grub_directory }}/grub.cfg"
+    mode: "0644"
+
+- name: Show diskless install status
+  ansible.builtin.debug:
+    msg:
+      - "efi_mount_path={{ efi_mount_path }}"
+      - "efi_bootloader_id={{ efi_bootloader_id }}"
+      - "efi_grub_directory={{ efi_grub_directory }}"
+      - "diskless_seed_source_mode={{ diskless_seed_source_mode }}"
+      - "diskless_seed_root_path={{ diskless_seed_root_path }}"
+      - "apkovl_archive_path={{ apkovl_archive_path }}"
+      - "apk_boot_repository_root={{ apk_boot_repository_root }}"
+      - "apk_boot_repository_path={{ apk_boot_repository_path }}"
+      - "lbu_media_name={{ lbu_media_name }}"

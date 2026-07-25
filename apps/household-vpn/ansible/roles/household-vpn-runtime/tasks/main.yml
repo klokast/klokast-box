@@ -1,0 +1,276 @@
+---
+- name: Assert household VPN config is enabled
+  ansible.builtin.assert:
+    that:
+      - household_vpn_config.enabled | default(false) | bool
+      - household_vpn_config.schema_version | default(0) | int == 1
+      - household_vpn_config.subscription_url | default('') is match('^https?://')
+      - (household_vpn_config.mihomo | default({})).download_url | default('') is match('^https?://')
+      - (household_vpn_config.mihomo | default({})).sha256 | default('') is match('^[0-9a-fA-F]{64}$')
+      - (household_vpn_config.controller | default({})).secret | default('') | length >= 24
+      - household_vpn_mihomo_archive_format in ['gzip', 'raw']
+      - household_vpn_mihomo_subscription_controller_artifact_path | length == 0 or household_vpn_mihomo_subscription_sha256 is match('^[0-9a-fA-F]{64}$')
+      - household_vpn_local_domain | length > 0
+    fail_msg: "Household VPN private config or local domain is incomplete or invalid."
+  no_log: true
+
+- name: Ensure household VPN packages are installed
+  community.general.apk:
+    name:
+      - ca-certificates
+      - curl
+      - gzip
+      - iproute2
+      - jq
+      - nftables
+      - py3-yaml
+      - python3
+      - shadow
+    state: present
+    update_cache: true
+
+- name: Ensure household VPN directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ household_vpn_mihomo_private_root }}"
+      mode: "0700"
+    - path: "{{ household_vpn_mihomo_config_dir }}"
+      mode: "0750"
+    - path: "{{ household_vpn_mihomo_state_dir }}"
+      mode: "0750"
+    - path: "{{ household_vpn_mihomo_cache_dir }}"
+      mode: "0755"
+    - path: "{{ household_vpn_mihomo_renderer_path | dirname }}"
+      mode: "0755"
+
+- name: Write household VPN private config
+  ansible.builtin.copy:
+    dest: "{{ household_vpn_mihomo_private_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: "{{ household_vpn_config | to_nice_yaml }}"
+  no_log: true
+
+- name: Install household VPN renderer
+  ansible.builtin.copy:
+    src: household-vpn-render
+    dest: "{{ household_vpn_mihomo_renderer_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install household VPN refresh helper
+  ansible.builtin.copy:
+    src: household-vpn-refresh
+    dest: "{{ household_vpn_mihomo_refresh_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check controller-cached pinned Mihomo artifact
+  ansible.builtin.stat:
+    path: "{{ household_vpn_mihomo_controller_artifact_path }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: household_vpn_mihomo_controller_artifact
+  when: household_vpn_mihomo_controller_artifact_path | length > 0
+
+- name: Assert controller-cached pinned Mihomo artifact checksum
+  ansible.builtin.assert:
+    that:
+      - household_vpn_mihomo_controller_artifact.stat.checksum == household_vpn_config.mihomo.sha256
+    fail_msg: "Controller-cached Mihomo artifact checksum does not match pinned SHA256."
+  when:
+    - household_vpn_mihomo_controller_artifact.stat.exists | default(false)
+
+- name: Copy controller-cached pinned Mihomo artifact
+  ansible.builtin.copy:
+    src: "{{ household_vpn_mihomo_controller_artifact_path }}"
+    dest: "{{ household_vpn_mihomo_download_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: household_vpn_mihomo_copy_from_controller
+  when:
+    - household_vpn_mihomo_controller_artifact.stat.exists | default(false)
+
+- name: Download the pinned Mihomo artifact directly on the household VPN VM
+  ansible.builtin.get_url:
+    url: "{{ household_vpn_config.mihomo.download_url }}"
+    dest: "{{ household_vpn_mihomo_download_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ household_vpn_config.mihomo.sha256 }}"
+    timeout: "{{ household_vpn_mihomo_download_timeout }}"
+  register: household_vpn_mihomo_download_from_url
+  when:
+    - not (household_vpn_mihomo_controller_artifact.stat.exists | default(false))
+
+- name: Record Mihomo artifact fetch result
+  ansible.builtin.set_fact:
+    household_vpn_mihomo_download: >-
+      {{
+        household_vpn_mihomo_copy_from_controller
+        if (household_vpn_mihomo_controller_artifact.stat.exists | default(false))
+        else household_vpn_mihomo_download_from_url
+      }}
+
+- name: Check installed Mihomo binary
+  ansible.builtin.stat:
+    path: "{{ household_vpn_mihomo_binary }}"
+  register: household_vpn_mihomo_binary_stat
+
+- name: Install Mihomo from gzip artifact
+  ansible.builtin.shell: |
+    set -eu
+    tmp="$(mktemp)"
+    gzip -dc {{ household_vpn_mihomo_download_path | quote }} > "$tmp"
+    install -m 0755 -o root -g root "$tmp" {{ household_vpn_mihomo_binary | quote }}
+    rm -f "$tmp"
+  args:
+    executable: /bin/sh
+  register: household_vpn_mihomo_gzip_install
+  changed_when: true
+  when:
+    - household_vpn_mihomo_archive_format == 'gzip'
+    - household_vpn_mihomo_download.changed or not (household_vpn_mihomo_binary_stat.stat.exists | default(false))
+
+- name: Install Mihomo from raw artifact
+  ansible.builtin.copy:
+    src: "{{ household_vpn_mihomo_download_path }}"
+    dest: "{{ household_vpn_mihomo_binary }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  register: household_vpn_mihomo_raw_install
+  when:
+    - household_vpn_mihomo_archive_format == 'raw'
+    - household_vpn_mihomo_download.changed or not (household_vpn_mihomo_binary_stat.stat.exists | default(false))
+
+- name: Verify Mihomo binary is executable
+  ansible.builtin.command:
+    argv:
+      - "{{ household_vpn_mihomo_binary }}"
+      - -v
+  changed_when: false
+
+- name: Check controller-cached VPN subscription payload
+  ansible.builtin.stat:
+    path: "{{ household_vpn_mihomo_subscription_controller_artifact_path }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: household_vpn_subscription_controller_artifact
+  no_log: true
+  when: household_vpn_mihomo_subscription_controller_artifact_path | length > 0
+
+- name: Assert controller-cached VPN subscription payload checksum
+  ansible.builtin.assert:
+    that:
+      - household_vpn_subscription_controller_artifact.stat.checksum == household_vpn_mihomo_subscription_sha256
+    fail_msg: "Controller-cached VPN subscription payload checksum does not match private config."
+  no_log: true
+  when:
+    - household_vpn_subscription_controller_artifact.stat.exists | default(false)
+
+- name: Copy controller-cached VPN subscription payload
+  ansible.builtin.copy:
+    src: "{{ household_vpn_mihomo_subscription_controller_artifact_path }}"
+    dest: "{{ household_vpn_mihomo_subscription_path }}"
+    owner: root
+    group: root
+    mode: "0640"
+  register: household_vpn_subscription_copy_from_controller
+  no_log: true
+  when:
+    - household_vpn_subscription_controller_artifact.stat.exists | default(false)
+
+- name: Render initial Mihomo config
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          household_vpn_mihomo_refresh_path,
+          '--no-restart',
+          '--tun-device',
+          household_vpn_mihomo_device,
+          '--dns-listen',
+          household_vpn_mihomo_dns_listen,
+          '--local-domain',
+          household_vpn_local_domain,
+          '--local-ingress-ip',
+          household_vpn_local_ingress_ipv4_address
+        ]
+        + (
+          ['--use-existing-subscription']
+          if (household_vpn_subscription_controller_artifact.stat.exists | default(false))
+          else []
+        )
+      }}
+  register: household_vpn_mihomo_initial_refresh
+  changed_when: "'changed=yes' in household_vpn_mihomo_initial_refresh.stdout"
+
+- name: Install Mihomo OpenRC service
+  ansible.builtin.template:
+    src: mihomo.openrc.j2
+    dest: "/etc/init.d/{{ household_vpn_mihomo_service_name }}"
+    owner: root
+    group: root
+    mode: "0755"
+  register: household_vpn_mihomo_service
+
+- name: Render household VPN nftables policy
+  ansible.builtin.template:
+    src: nftables.nft.j2
+    dest: "{{ household_vpn_nftables_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: household_vpn_nftables_config
+
+- name: Check household VPN nftables policy syntax
+  ansible.builtin.command: "/usr/sbin/nft -c -f {{ household_vpn_nftables_path }}"
+  changed_when: false
+
+- name: Apply household VPN nftables policy
+  ansible.builtin.command: "/usr/sbin/nft -f {{ household_vpn_nftables_path }}"
+  changed_when: household_vpn_nftables_config.changed
+
+- name: Enable IPv4 forwarding for household VPN gateway
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_file: /etc/sysctl.conf
+    state: present
+    reload: true
+
+- name: Enable nftables at boot
+  ansible.builtin.service:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Enable and start Mihomo
+  ansible.builtin.service:
+    name: "{{ household_vpn_mihomo_service_name }}"
+    enabled: true
+    state: >-
+      {{
+        'restarted'
+        if (
+          (household_vpn_mihomo_gzip_install.changed | default(false))
+          or (household_vpn_mihomo_raw_install.changed | default(false))
+          or household_vpn_mihomo_initial_refresh.changed
+          or household_vpn_mihomo_service.changed
+        )
+        else 'started'
+      }}

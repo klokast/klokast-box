@@ -1,0 +1,431 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
+export ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH"
+
+COMMAND=""
+INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+BUILDER_HOST="yii-bak"
+BUILDER_USER="neo"
+OOB_HOST="oob"
+OOB_USER="root"
+OOB_DEST="/data"
+BUILDER_CONNECT_HOST=""
+OOB_CONNECT_HOST=""
+TAILSCALE_MAGICDNS_SUFFIX=""
+RESOURCES_REGISTRY="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+RUN_DIR="$REPO_DIR/.run/bootstrap-live-iso"
+LOG_DIR="$RUN_DIR/logs"
+EXTRA_BUILD_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/bootstrap-live-iso COMMAND [options] [-- builder args]
+
+Commands:
+  build-builder   Converge the bootstrap-live-builder Podman workload on yii-bak.
+  build-iso       Build the generic Debian Live ISO inside the yii-bak container.
+  transfer-iso    Copy the latest ISO and SHA512 checksum from yii-bak to the NanoKVM.
+  stop-builder    Stop the yii-bak builder service/container.
+  remove-builder  Remove the yii-bak builder service/container/workspace.
+  all             Run build-builder, build-iso, transfer-iso, stop-builder, remove-builder.
+
+Options:
+  --inventory PATH      Ansible inventory. Default: ansible/inventory/hosts.yml
+  --builder-host HOST   Builder SSH host. Default: yii-bak, resolved to full MagicDNS
+  --builder-user USER   Builder SSH user. Default: neo
+  --oob-host HOST       NanoKVM SSH host. Default: oob
+  --oob-user USER       NanoKVM SSH user. Default: root
+  --oob-dest PATH       NanoKVM data directory. Default: /data
+  --resources-registry PATH
+                       Platform resource registry. Required for build-builder/all.
+  -h, --help            Show this help
+
+Builder args after -- are passed to /usr/local/sbin/bootstrap-live-builder-build.
+The default build command adds --skip-upload --no-alpine-seed.
+KLOKAST_PLATFORM_RESOURCES_REGISTRY is accepted as the default registry path.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+info() {
+  printf '%s\n' "$*"
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+load_tailscale_magicdns_suffix() {
+  python3 <<'PY'
+import json
+import subprocess
+
+data = json.loads(subprocess.check_output(["tailscale", "status", "--json"], text=True))
+suffix = data.get("MagicDNSSuffix") or ""
+if suffix:
+    print(suffix.rstrip("."))
+PY
+}
+
+resolve_tailscale_connect_host() {
+  local host="$1"
+
+  case "$host" in
+    *.*)
+      printf '%s\n' "$host"
+      return 0
+      ;;
+  esac
+
+  [ -n "$TAILSCALE_MAGICDNS_SUFFIX" ] || die "could not read MagicDNS suffix from tailscale status"
+  printf '%s.%s\n' "$host" "$TAILSCALE_MAGICDNS_SUFFIX"
+}
+
+run_logged() {
+  local name="$1"
+  shift
+  local log_file="$LOG_DIR/${name}.log"
+  mkdir -p "$LOG_DIR"
+
+  info ""
+  info "==> $name"
+  printf 'Command: '
+  quote_command "$@"
+  info "Log: $log_file"
+
+  set +e
+  "$@" 2>&1 | tee "$log_file"
+  local status="${PIPESTATUS[0]}"
+  set -e
+
+  if [ "$status" -ne 0 ]; then
+    die "$name failed with exit code $status; log: $log_file"
+  fi
+}
+
+ssh_builder() {
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "${BUILDER_USER}@${BUILDER_CONNECT_HOST}" "$@"
+}
+
+build_builder() {
+  verify_bootstrap_platform_resources
+  run_logged build-builder \
+    ansible-playbook -i "$INVENTORY" "$ANSIBLE_DIR/playbooks/82-bootstrap-iso-debian-builder.yml" -vv \
+      -e "bootstrap_live_builder_oob_host=$OOB_CONNECT_HOST" \
+      -e "bootstrap_live_builder_oob_admin_host=$OOB_CONNECT_HOST"
+}
+
+verify_bootstrap_platform_resources() {
+  [ -n "$RESOURCES_REGISTRY" ] || die "build-builder requires --resources-registry or KLOKAST_PLATFORM_RESOURCES_REGISTRY"
+  [ -f "$RESOURCES_REGISTRY" ] || die "platform resources registry not found: $RESOURCES_REGISTRY"
+  local expected_box=""
+  case "$BUILDER_HOST" in
+    *-bak)
+      expected_box="${BUILDER_HOST%-bak}"
+      ;;
+  esac
+  local resource_json
+  resource_json="$("$REPO_DIR/ansible/bin/platform-resources" \
+    --registry "$RESOURCES_REGISTRY" \
+    --app bootstrap-iso-debian \
+    show)"
+  RESOURCE_JSON="$resource_json" EXPECTED_BOX="$expected_box" python3 <<'PY'
+import json
+import os
+import sys
+
+data = json.loads(os.environ["RESOURCE_JSON"])
+app = (data.get("apps") or {}).get("bootstrap-iso-debian") or {}
+if not app.get("enabled"):
+    raise SystemExit("bootstrap-iso-debian must be enabled in the platform resources registry")
+controls = app.get("controls") or {}
+if not controls.get("privileged_approval"):
+    raise SystemExit("bootstrap-iso-debian privileged builder needs privileged_approval")
+if not controls.get("cleanup_required"):
+    raise SystemExit("bootstrap-iso-debian privileged builder must set cleanup_required")
+expected = os.environ.get("EXPECTED_BOX") or ""
+boxes = app.get("boxes") or []
+if expected and boxes != [expected]:
+    raise SystemExit(f"registry builder box must be {expected}, got {boxes}")
+PY
+  "$REPO_DIR/ansible/bin/platform-resources" \
+    --registry "$RESOURCES_REGISTRY" \
+    --app bootstrap-iso-debian \
+    lint >/dev/null
+}
+
+build_iso() {
+  local remote_cmd=(
+    doas -n /usr/local/sbin/bootstrap-live-builder-build
+    --skip-upload
+    --no-alpine-seed
+  )
+  if [ "${#EXTRA_BUILD_ARGS[@]}" -gt 0 ]; then
+    remote_cmd+=("${EXTRA_BUILD_ARGS[@]}")
+  fi
+
+  run_logged build-iso \
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "${BUILDER_USER}@${BUILDER_CONNECT_HOST}" "${remote_cmd[@]}"
+}
+
+transfer_iso() {
+  run_logged transfer-iso \
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "${BUILDER_USER}@${BUILDER_CONNECT_HOST}" \
+      sh -s -- "$OOB_USER" "$OOB_CONNECT_HOST" "$OOB_DEST" <<'REMOTE'
+set -eu
+
+oob_user="$1"
+oob_host="$2"
+oob_dest="$3"
+container_name="bootstrap-live-builder"
+
+doas -n /usr/bin/podman exec -i "$container_name" sh -s -- "$oob_user" "$oob_host" "$oob_dest" <<'CONTAINER'
+set -eu
+
+oob_user="$1"
+oob_host="$2"
+oob_dest="$3"
+output_dir="/output"
+ssh_key="/root/.ssh/oob_upload_ed25519"
+known_hosts="/root/.ssh/known_hosts"
+
+[ -r "$ssh_key" ] || {
+  printf 'missing builder upload key: %s\n' "$ssh_key" >&2
+  exit 1
+}
+
+resolve_tailscale_host() {
+  target="$1"
+  resolved="$(tailscale ip -4 "$target" 2>/dev/null | awk 'NR==1 { print; exit }')"
+  if [ -z "$resolved" ]; then
+    resolved="$(
+      tailscale status --json 2>/dev/null |
+        python3 -c 'import json, sys
+target = sys.argv[1].rstrip(".").lower()
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+machines = []
+self_machine = data.get("Self") or {}
+if self_machine:
+    machines.append(self_machine)
+machines.extend((data.get("Peer") or {}).values())
+for machine in machines:
+    names = {str(machine.get("HostName") or "").rstrip(".").lower(), str(machine.get("DNSName") or "").rstrip(".").lower()}
+    if target in names:
+        for ip in machine.get("TailscaleIPs") or []:
+            if "." in ip:
+                print(ip)
+                sys.exit(0)' "$target" 2>/dev/null || true
+    )"
+  fi
+  if [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+  else
+    printf '%s\n' "$target"
+  fi
+}
+
+oob_connect_host="$(resolve_tailscale_host "$oob_host")"
+
+iso="$(ls -t "$output_dir"/klokast-bootstrap-debian-*.iso 2>/dev/null | head -n 1 || true)"
+[ -n "$iso" ] || {
+  printf 'no bootstrap ISO found under %s\n' "$output_dir" >&2
+  exit 1
+}
+
+ssh -i "$ssh_key" \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile="$known_hosts" \
+  "${oob_user}@${oob_connect_host}" \
+  "mkdir -p '$oob_dest'"
+
+rm -f "$iso.sha256"
+
+for artifact in "$iso" "$iso.sha512"; do
+  [ -f "$artifact" ] || {
+    printf 'missing artifact: %s\n' "$artifact" >&2
+    exit 1
+  }
+  scp -O -i "$ssh_key" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$known_hosts" \
+    "$artifact" "${oob_user}@${oob_connect_host}:${oob_dest}/"
+done
+
+cd "$output_dir"
+ssh -i "$ssh_key" \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile="$known_hosts" \
+  "${oob_user}@${oob_connect_host}" \
+  sh -s -- "$oob_dest" "$(basename "$iso")" <<'VERIFY'
+set -eu
+
+oob_dest="$1"
+iso_name="$2"
+check_file="${iso_name}.sha512"
+normalized_check_file="${check_file}.normalized"
+
+cd "$oob_dest"
+rm -f "${iso_name}.sha256"
+awk -v iso_name="$iso_name" '{ print $1 "  " iso_name }' "$check_file" >"$normalized_check_file"
+sha512sum -c "$normalized_check_file"
+rm -f "$normalized_check_file"
+VERIFY
+
+printf 'Transferred %s to %s@%s:%s/\n' "$(basename "$iso")" "$oob_user" "$oob_host" "$oob_dest"
+CONTAINER
+REMOTE
+}
+
+stop_builder() {
+  run_logged stop-builder \
+    ssh_builder "doas -n /sbin/rc-service bootstrap-live-builder stop || true; doas -n podman stop bootstrap-live-builder >/dev/null 2>&1 || true"
+}
+
+remove_builder() {
+  run_logged remove-builder \
+    ssh_builder "set -eu
+doas -n /sbin/rc-service bootstrap-live-builder stop >/dev/null 2>&1 || true
+doas -n /sbin/rc-update del bootstrap-live-builder default >/dev/null 2>&1 || true
+doas -n podman rm -f bootstrap-live-builder >/dev/null 2>&1 || true
+doas -n podman rmi localhost/bootstrap-live-builder:trixie >/dev/null 2>&1 || true
+doas -n rm -f /usr/local/sbin/bootstrap-live-builder-build /usr/local/sbin/bootstrap-live-builder-deploy /etc/init.d/bootstrap-live-builder
+doas -n rm -rf /etc/klokast/bootstrap-live-builder /srv/bootstrap-live-builder
+"
+}
+
+preflight() {
+  command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook not found in PATH"
+  command -v ssh >/dev/null 2>&1 || die "ssh not found in PATH"
+  command -v tailscale >/dev/null 2>&1 || die "tailscale CLI not found in PATH"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+  [ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
+  [ -f "$ANSIBLE_CONFIG_PATH" ] || die "ansible config not found: $ANSIBLE_CONFIG_PATH"
+  [ -f "$ANSIBLE_DIR/playbooks/82-bootstrap-iso-debian-builder.yml" ] || die "builder playbook not found"
+  TAILSCALE_MAGICDNS_SUFFIX="$(load_tailscale_magicdns_suffix)"
+  [ -n "$TAILSCALE_MAGICDNS_SUFFIX" ] || die "could not read MagicDNS suffix from tailscale status"
+  BUILDER_CONNECT_HOST="$(resolve_tailscale_connect_host "$BUILDER_HOST")"
+  OOB_CONNECT_HOST="$(resolve_tailscale_connect_host "$OOB_HOST")"
+  info "Builder target: ${BUILDER_USER}@${BUILDER_CONNECT_HOST}"
+  info "NanoKVM transfer target: ${OOB_USER}@${OOB_CONNECT_HOST}:${OOB_DEST}/"
+}
+
+if [ "$#" -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+COMMAND="$1"
+shift
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --inventory)
+      [ "$#" -ge 2 ] || die "--inventory requires a value"
+      INVENTORY="$2"
+      shift 2
+      ;;
+    --builder-host)
+      [ "$#" -ge 2 ] || die "--builder-host requires a value"
+      BUILDER_HOST="$2"
+      shift 2
+      ;;
+    --builder-user)
+      [ "$#" -ge 2 ] || die "--builder-user requires a value"
+      BUILDER_USER="$2"
+      shift 2
+      ;;
+    --oob-host)
+      [ "$#" -ge 2 ] || die "--oob-host requires a value"
+      OOB_HOST="$2"
+      shift 2
+      ;;
+    --oob-user)
+      [ "$#" -ge 2 ] || die "--oob-user requires a value"
+      OOB_USER="$2"
+      shift 2
+      ;;
+    --oob-dest)
+      [ "$#" -ge 2 ] || die "--oob-dest requires a value"
+      OOB_DEST="$2"
+      shift 2
+      ;;
+    --resources-registry)
+      [ "$#" -ge 2 ] || die "--resources-registry requires a value"
+      RESOURCES_REGISTRY="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      EXTRA_BUILD_ARGS=("$@")
+      break
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+case "$INVENTORY" in
+  /*) ;;
+  *) INVENTORY="$PWD/$INVENTORY" ;;
+esac
+
+preflight
+
+case "$COMMAND" in
+  build-builder)
+    build_builder
+    ;;
+  build-iso)
+    build_iso
+    ;;
+  transfer-iso)
+    transfer_iso
+    ;;
+  stop-builder)
+    stop_builder
+    ;;
+  remove-builder)
+    remove_builder
+    ;;
+  all)
+    build_builder
+    build_iso
+    transfer_iso
+    stop_builder
+    remove_builder
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    die "unknown command: $COMMAND"
+    ;;
+esac

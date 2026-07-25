@@ -1,0 +1,12 @@
+---
+- name: Wipe and recreate bootstrap disk layout
+  hosts: bootstrap
+  gather_facts: true
+  tasks:
+    - name: Partition and initialize storage
+      ansible.builtin.import_role:
+        name: disk-layout
+
+    - name: Verify the recreated storage layout
+      ansible.builtin.import_role:
+        name: disk-layout-verification

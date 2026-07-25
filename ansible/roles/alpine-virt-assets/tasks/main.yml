@@ -1,0 +1,212 @@
+#
+# Summary:
+# - Downloads the Alpine VIRT ISO and extracts the shared PVH installer kernel
+#   and initramfs used by managed Xen guests.
+#
+---
+- name: Ensure Alpine VIRT asset tooling is installed
+  community.general.apk:
+    name:
+      - curl
+      - xorriso
+    state: present
+
+- name: Ensure the dom0 Xen image directory exists
+  ansible.builtin.file:
+    path: "{{ dom0_xen_images_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Check whether the Alpine VIRT checksum file is already present
+  ansible.builtin.stat:
+    path: "{{ alpine_virt_checksum_path }}"
+  register: alpine_virt_checksum_stat
+
+- name: Check whether the cached Alpine VIRT ISO already matches its local checksum
+  ansible.builtin.command: "sha256sum -c {{ alpine_virt_checksum_path | basename }}"
+  args:
+    chdir: "{{ dom0_xen_images_path }}"
+  register: alpine_virt_cached_iso_checksum
+  failed_when: false
+  changed_when: false
+  when: alpine_virt_checksum_stat.stat.exists | default(false)
+
+- name: Download Alpine VIRT ISO checksum
+  ansible.builtin.shell: |
+    set -eu
+    checksum_path="{{ alpine_virt_checksum_path }}"
+    tmp_path="${checksum_path}.tmp"
+    curl_common_args='{{ (alpine_virt_curl_extra_args | default([])) | join(' ') }}'
+    # shellcheck disable=SC2086
+    curl $curl_common_args \
+      --fail \
+      --location \
+      --show-error \
+      --retry {{ alpine_virt_retry_count }} \
+      --retry-delay {{ alpine_virt_retry_delay_seconds }} \
+      --connect-timeout {{ alpine_virt_connect_timeout_seconds }} \
+      --max-time 120 \
+      --output "$tmp_path" \
+      "{{ alpine_virt_iso_url }}.sha256"
+    if [ -f "$checksum_path" ] && cmp -s "$tmp_path" "$checksum_path"; then
+      rm -f "$tmp_path"
+    else
+      mv "$tmp_path" "$checksum_path"
+      chmod 0644 "$checksum_path"
+      printf 'updated\n'
+    fi
+  args:
+    executable: /bin/sh
+  register: alpine_virt_checksum_download
+  changed_when: "'updated' in alpine_virt_checksum_download.stdout"
+  when: >-
+    (not (alpine_virt_checksum_stat.stat.exists | default(false)))
+    or ((alpine_virt_cached_iso_checksum.rc | default(1)) != 0)
+
+- name: Check whether the existing Alpine VIRT ISO already matches its checksum
+  ansible.builtin.command: "sha256sum -c {{ alpine_virt_checksum_path | basename }}"
+  args:
+    chdir: "{{ dom0_xen_images_path }}"
+  register: alpine_virt_existing_iso_checksum
+  failed_when: false
+  changed_when: false
+
+- name: Download or resume the Alpine VIRT ISO
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['curl']
+        + (alpine_virt_curl_extra_args | default([]))
+        + [
+          '--fail',
+          '--location',
+          '--show-error',
+          '--retry', alpine_virt_retry_count | string,
+          '--retry-delay', alpine_virt_retry_delay_seconds | string,
+          '--connect-timeout', alpine_virt_connect_timeout_seconds | string,
+          '--max-time', alpine_virt_download_timeout_seconds | string,
+          '--speed-time', alpine_virt_speed_time_seconds | string,
+          '--speed-limit', alpine_virt_speed_limit_bytes | string,
+          '--continue-at', '-',
+          '--output', alpine_virt_iso_download_path,
+          alpine_virt_iso_url
+        ]
+      }}
+  register: alpine_virt_iso_download
+  when: alpine_virt_existing_iso_checksum.rc != 0
+
+- name: Verify the Alpine VIRT ISO checksum
+  ansible.builtin.command: "sha256sum -c {{ alpine_virt_checksum_path | basename }}"
+  args:
+    chdir: "{{ dom0_xen_images_path }}"
+  changed_when: false
+
+- name: Link the shared Alpine VIRT ISO path
+  ansible.builtin.file:
+    src: "{{ alpine_virt_iso_download_path }}"
+    dest: "{{ xen_shared_installer_iso_path }}"
+    state: link
+
+- name: Check current shared Alpine VIRT boot artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ xen_shared_installer_kernel_path }}"
+    - "{{ xen_shared_installer_initramfs_path }}"
+  register: alpine_virt_shared_artifacts
+
+- name: Check current extracted Alpine VIRT package repository
+  ansible.builtin.stat:
+    path: "{{ alpine_virt_package_repo_path }}/{{ alpine_virt_arch }}/APKINDEX.tar.gz"
+  register: alpine_virt_package_repo_index
+
+- name: Check current extracted Alpine VIRT modloop
+  ansible.builtin.stat:
+    path: "{{ alpine_virt_modloop_path }}"
+  register: alpine_virt_modloop
+
+- name: Extract the shared Alpine VIRT kernel
+  ansible.builtin.command:
+    argv:
+      - xorriso
+      - -osirrox
+      - "on"
+      - -overwrite
+      - "on"
+      - -indev
+      - "{{ alpine_virt_iso_download_path }}"
+      - -extract
+      - /boot/vmlinuz-virt
+      - "{{ xen_shared_installer_kernel_path }}"
+  when: >-
+    (not (alpine_virt_shared_artifacts.results[0].stat.exists | default(false)))
+    or alpine_virt_iso_download.changed
+
+- name: Extract the shared Alpine VIRT initramfs
+  ansible.builtin.command:
+    argv:
+      - xorriso
+      - -osirrox
+      - "on"
+      - -overwrite
+      - "on"
+      - -indev
+      - "{{ alpine_virt_iso_download_path }}"
+      - -extract
+      - /boot/initramfs-virt
+      - "{{ xen_shared_installer_initramfs_path }}"
+  when: >-
+    (not (alpine_virt_shared_artifacts.results[1].stat.exists | default(false)))
+    or alpine_virt_iso_download.changed
+
+- name: Extract the shared Alpine VIRT modloop
+  ansible.builtin.command:
+    argv:
+      - xorriso
+      - -osirrox
+      - "on"
+      - -overwrite
+      - "on"
+      - -indev
+      - "{{ alpine_virt_iso_download_path }}"
+      - -extract
+      - /boot/modloop-virt
+      - "{{ alpine_virt_modloop_path }}"
+  when: >-
+    (not (alpine_virt_modloop.stat.exists | default(false)))
+    or alpine_virt_iso_download.changed
+
+- name: Extract the Alpine VIRT package repository
+  ansible.builtin.command:
+    argv:
+      - xorriso
+      - -osirrox
+      - "on"
+      - -overwrite
+      - "on"
+      - -indev
+      - "{{ alpine_virt_iso_download_path }}"
+      - -extract
+      - /apks
+      - "{{ alpine_virt_package_repo_path }}"
+  when: >-
+    (not (alpine_virt_package_repo_index.stat.exists | default(false)))
+    or alpine_virt_iso_download.changed
+
+- name: Verify shared Alpine VIRT assets exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ xen_shared_installer_iso_path }}"
+    - "{{ xen_shared_installer_kernel_path }}"
+    - "{{ xen_shared_installer_initramfs_path }}"
+    - "{{ alpine_virt_modloop_path }}"
+    - "{{ alpine_virt_package_repo_path }}/{{ alpine_virt_arch }}/APKINDEX.tar.gz"
+  register: alpine_virt_assets_verify
+
+- name: Assert shared Alpine VIRT assets are ready
+  ansible.builtin.assert:
+    that:
+      - (alpine_virt_assets_verify.results | map(attribute='stat.exists') | list | min)
+    fail_msg: >-
+      Alpine VIRT assets were not prepared under {{ dom0_xen_images_path }}.

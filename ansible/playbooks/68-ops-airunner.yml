@@ -1,0 +1,124 @@
+---
+- name: Converge AI runner on an ops controller VM
+  hosts: ops
+  gather_facts: false
+  tasks:
+    - name: Ensure Python is available on the ops controller
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+
+    - name: Gather ops controller facts
+      ansible.builtin.setup:
+
+    - name: Validate the selected airunner instance
+      ansible.builtin.assert:
+        that:
+          - ops_airunner_instance in ops_airunner_instances
+        fail_msg: "ops_airunner_instance must be canonical or candidate."
+      when: ops_airunner_enabled | default(false) | bool
+
+    - name: Select the requested airunner instance
+      ansible.builtin.set_fact:
+        ops_airunner_selected: "{{ ops_airunner_instances[ops_airunner_instance] }}"
+      when: ops_airunner_enabled | default(false) | bool
+
+    - name: Inspect the canonical airunner before candidate convergence
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - inspect
+          - "{{ ops_airunner_instances.canonical.name }}"
+      register: ops_airunner_canonical_before_command
+      changed_when: false
+      when:
+        - ops_airunner_enabled | default(false) | bool
+        - ops_airunner_instance == 'candidate'
+
+    - name: Record the canonical airunner before candidate convergence
+      ansible.builtin.set_fact:
+        ops_airunner_canonical_before: >-
+          {{ (ops_airunner_canonical_before_command.stdout | from_json) | first }}
+      when:
+        - ops_airunner_enabled | default(false) | bool
+        - ops_airunner_instance == 'candidate'
+
+    - name: Verify the candidate before replacing the canonical airunner
+      ansible.builtin.include_role:
+        name: ops-airunner-verification
+      vars:
+        ops_airunner_verify_name: "{{ ops_airunner_instances.candidate.name }}"
+        ops_airunner_verify_network_name: "{{ ops_airunner_network_name }}"
+        ops_airunner_verify_home: "{{ ops_airunner_home }}"
+        ops_airunner_verify_tailscale_state_dir: "{{ ops_airunner_instances.candidate.state_root }}/tailscale"
+        ops_airunner_verify_expected_tag: "{{ ops_airunner_tailscale_expected_tag }}"
+        ops_airunner_verify_workspace_features: false
+      when:
+        - ops_airunner_enabled | default(false) | bool
+        - ops_airunner_instance == 'canonical'
+        - ops_airunner_require_candidate_ready | default(false) | bool
+
+    - name: Converge the ops VM firewall for isolated airunner networking
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+      when: ops_airunner_enabled | default(false) | bool
+
+    - name: Converge the AI runner container
+      ansible.builtin.import_role:
+        name: ops-airunner
+      vars:
+        ops_airunner_name: "{{ ops_airunner_selected.name }}"
+        ops_airunner_service_name: "{{ ops_airunner_selected.service_name }}"
+        ops_airunner_service_path: "{{ ops_airunner_selected.service_path }}"
+        ops_airunner_state_root: "{{ ops_airunner_selected.state_root }}"
+        ops_airunner_image: "{{ ops_airunner_selected.image }}"
+        ops_airunner_containerfile: "{{ ops_airunner_selected.state_root }}/Containerfile"
+        ops_airunner_entrypoint: "{{ ops_airunner_selected.state_root }}/airunner-entrypoint"
+        ops_airunner_shell_wrapper: "{{ ops_airunner_selected.shell_wrapper }}"
+        ops_airunner_sudoers_path: "{{ ops_airunner_selected.sudoers_path }}"
+        ops_airunner_tailscale_state_dir: "{{ ops_airunner_selected.state_root }}/tailscale"
+        ops_airunner_manage_legacy_service: "{{ ops_airunner_selected.manage_legacy_service }}"
+      when: ops_airunner_enabled | default(false) | bool
+
+    - name: Verify the selected airunner
+      ansible.builtin.include_role:
+        name: ops-airunner-verification
+      vars:
+        ops_airunner_verify_name: "{{ ops_airunner_selected.name }}"
+        ops_airunner_verify_network_name: "{{ ops_airunner_network_name }}"
+        ops_airunner_verify_home: "{{ ops_airunner_home }}"
+        ops_airunner_verify_tailscale_state_dir: "{{ ops_airunner_selected.state_root }}/tailscale"
+        ops_airunner_verify_expected_tag: "{{ ops_airunner_tailscale_expected_tag }}"
+      when: ops_airunner_enabled | default(false) | bool
+
+    - name: Inspect the canonical airunner after candidate convergence
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - inspect
+          - "{{ ops_airunner_instances.canonical.name }}"
+      register: ops_airunner_canonical_after_command
+      changed_when: false
+      when:
+        - ops_airunner_enabled | default(false) | bool
+        - ops_airunner_instance == 'candidate'
+
+    - name: Assert candidate convergence did not replace the canonical airunner
+      ansible.builtin.assert:
+        that:
+          - ops_airunner_canonical_before.State.Running | bool
+          - ((ops_airunner_canonical_after_command.stdout | from_json) | first).State.Running | bool
+          - ((ops_airunner_canonical_after_command.stdout | from_json) | first).Id == ops_airunner_canonical_before.Id
+        fail_msg: Candidate convergence changed the canonical airunner container.
+      when:
+        - ops_airunner_enabled | default(false) | bool
+        - ops_airunner_instance == 'candidate'
+
+    - name: Remove the superseded legacy service after full canonical verification
+      ansible.builtin.file:
+        path: "{{ ops_airunner_legacy_service_path }}"
+        state: absent
+      when:
+        - ops_airunner_enabled | default(false) | bool
+        - ops_airunner_instance == 'canonical'
+        - ops_airunner_selected.manage_legacy_service | bool
+        - ops_airunner_legacy_service.stat.exists | default(false)

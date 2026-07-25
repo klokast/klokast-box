@@ -1,0 +1,201 @@
+---
+- name: Assert the private ingress role targets a DMZ VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - node_name in [immich_active_master, immich_passive_backup]
+      - immich_private_tailscale_hostname is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - immich_private_tailscale_tag is match('^tag:[A-Za-z0-9][A-Za-z0-9_-]*$')
+      - immich_private_domain | length > 0
+    fail_msg: >-
+      immich-private-ingress must target one selected DMZ VM and use a safe
+      Tailscale hostname/tag.
+
+- name: Select private ingress site mode
+  ansible.builtin.set_fact:
+    immich_site_mode: "{{ 'active' if node_name == immich_active_master else 'passive' }}"
+
+- name: Ensure the selected ingress image source map exists
+  ansible.builtin.stat:
+    path: "{{ immich_private_ingress_source_map }}"
+  become: true
+  register: immich_private_ingress_source_map_stat
+
+- name: Assert ingress image preflight ran on the DMZ VM
+  ansible.builtin.assert:
+    that:
+      - immich_private_ingress_source_map_stat.stat.exists
+    fail_msg: >-
+      Run immich-image-preflight on the DMZ VM before installing private
+      ingress.
+
+- name: Stop legacy host ingress services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  become: true
+  failed_when: false
+  loop:
+    - immich-private-ingress-proxy
+    - immich-private-ingress
+
+- name: Ensure private ingress directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vm_admin_user_name) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ immich_private_ingress_root }}"
+      mode: "0750"
+    - path: "{{ immich_private_ingress_secret_root }}"
+      mode: "0700"
+
+- name: Read the private Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    immich_private_tailscale_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (immich_private_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (immich_private_tailscale_hostname | quote)
+            ~ ' --tags ' ~ (immich_private_tailscale_tag | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+
+- name: Assert the private Tailscale auth key is available
+  ansible.builtin.assert:
+    that:
+      - immich_private_tailscale_authkey.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      The private Immich Tailscale auth-key wrapper
+      {{ immich_private_tailscale_authkey_wrapper }} did not return a usable
+      auth key.
+  no_log: true
+
+- name: Store the private Tailscale auth key
+  ansible.builtin.copy:
+    dest: "{{ immich_private_ingress_secret_root }}/tailscale-authkey"
+    content: "{{ immich_private_tailscale_authkey.stdout | trim }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Render the private ingress pod converge helper
+  ansible.builtin.template:
+    src: immich-private-ingress-converge.sh.j2
+    dest: /usr/local/sbin/immich-private-ingress-converge
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+
+- name: Render the private ingress local proxy config
+  ansible.builtin.template:
+    src: immich-private-ingress-nginx.conf.j2
+    dest: "{{ immich_private_ingress_proxy_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Render the private ingress OpenRC pod wrapper
+  ansible.builtin.template:
+    src: immich-private-ingress.init.j2
+    dest: "/etc/init.d/{{ immich_private_ingress_service_name }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Remove obsolete private ingress proxy OpenRC service
+  ansible.builtin.file:
+    path: /etc/init.d/immich-private-ingress-proxy
+    state: absent
+  become: true
+
+- name: Deploy or refresh the private ingress pod
+  ansible.builtin.command: /usr/local/sbin/immich-private-ingress-converge
+  become: true
+  register: immich_private_ingress_converge
+  changed_when: true
+
+- name: Keep private ingress pod running only on the active DMZ
+  ansible.builtin.service:
+    name: "{{ immich_private_ingress_service_name }}"
+    enabled: "{{ immich_site_mode == 'active' }}"
+    state: "{{ 'started' if immich_site_mode == 'active' else 'stopped' }}"
+  become: true
+
+- name: Collect active private ingress pod state
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - pod
+      - inspect
+      - "--format={{ '{{' }}.State{{ '}}' }}"
+      - "{{ immich_private_ingress_pod_name }}"
+  become: true
+  register: immich_private_ingress_pod_state
+  changed_when: false
+  when: immich_site_mode == 'active'
+
+- name: Assert active private ingress pod is running
+  ansible.builtin.assert:
+    that:
+      - immich_private_ingress_pod_state.stdout == 'Running'
+    fail_msg: >-
+      Immich private ingress Podman pod must run on the active DMZ.
+  when: immich_site_mode == 'active'
+
+- name: Collect active private ingress Tailscale status
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ immich_private_ingress_tailscale_container_name }}"
+      - tailscale
+      - --socket
+      - /tmp/tailscale/tailscaled.sock
+      - status
+      - --json
+      - --peers=false
+  become: true
+  register: immich_private_ingress_status_json
+  changed_when: false
+  retries: 120
+  delay: 5
+  until: immich_private_ingress_status_json.rc == 0
+  when: immich_site_mode == 'active'
+
+- name: Parse active private ingress Tailscale status
+  ansible.builtin.set_fact:
+    immich_private_ingress_status: "{{ immich_private_ingress_status_json.stdout | from_json }}"
+  when: immich_site_mode == 'active'
+
+- name: Assert active private ingress identity
+  ansible.builtin.assert:
+    that:
+      - immich_private_ingress_status.BackendState | default('') == 'Running'
+      - immich_private_ingress_status.Self.HostName | default('') == immich_private_tailscale_hostname
+      - ((immich_private_ingress_status.Self.DNSName | default('') | lower | trim('.')).split('.')[0]) == immich_private_tailscale_hostname
+      - immich_private_tailscale_tag in (immich_private_ingress_status.Self.Tags | default([]))
+    fail_msg: >-
+      Immich private ingress did not enroll as the stable
+      {{ immich_private_tailscale_hostname }} MagicDNS identity with
+      {{ immich_private_tailscale_tag }}.
+  when: immich_site_mode == 'active'

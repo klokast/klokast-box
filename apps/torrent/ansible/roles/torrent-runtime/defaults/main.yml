@@ -1,0 +1,46 @@
+---
+torrent_vpn_config:
+  enabled: false
+
+torrent_runtime_user: qbittorrent
+torrent_runtime_group: qbittorrent
+torrent_share_group: torrent-share
+torrent_export_user: torrent-export
+
+torrent_root: /srv/torrent
+torrent_complete_dir: "{{ torrent_root }}/complete"
+torrent_incomplete_dir: "{{ torrent_root }}/incomplete"
+torrent_watch_dir: "{{ torrent_root }}/watch"
+torrent_qbittorrent_home: /var/lib/qbittorrent
+torrent_qbittorrent_profile: "{{ torrent_qbittorrent_home }}"
+torrent_qbittorrent_config_dir: "{{ torrent_qbittorrent_profile }}/qBittorrent/config"
+torrent_qbittorrent_config_path: "{{ torrent_qbittorrent_config_dir }}/qBittorrent.conf"
+torrent_qbittorrent_webui_port: 8080
+torrent_qbittorrent_listen_port: 49160
+
+torrent_mihomo_config_dir: /etc/mihomo
+torrent_mihomo_config_path: "{{ torrent_mihomo_config_dir }}/config.yaml"
+torrent_mihomo_subscription_path: "{{ torrent_mihomo_config_dir }}/subscription.yml"
+torrent_mihomo_state_dir: /var/lib/mihomo
+torrent_mihomo_cache_dir: /var/cache/klokast/torrent-vpn
+torrent_mihomo_download_path: "{{ torrent_mihomo_cache_dir }}/mihomo.download"
+torrent_mihomo_binary: /usr/local/bin/mihomo
+torrent_mihomo_archive_format: "{{ (torrent_vpn_config.mihomo | default({})).archive_format | default('gzip') }}"
+torrent_mihomo_controller_artifact_path: "{{ (torrent_vpn_config.mihomo | default({})).controller_artifact_path | default('') }}"
+torrent_mihomo_download_timeout: 300
+torrent_mihomo_device: klokastvpn
+torrent_mihomo_service_name: mihomo
+torrent_mihomo_private_root: /etc/klokast/torrent-vpn
+torrent_mihomo_private_config_path: "{{ torrent_mihomo_private_root }}/private.yml"
+torrent_mihomo_renderer_path: /usr/local/libexec/torrent-vpn-render
+torrent_mihomo_refresh_path: /usr/local/sbin/torrent-vpn-refresh
+torrent_mihomo_subscription_controller_artifact_path: "{{ (torrent_vpn_config.subscription | default({})).controller_artifact_path | default('') }}"
+torrent_mihomo_subscription_sha256: "{{ (torrent_vpn_config.subscription | default({})).sha256 | default('') }}"
+torrent_mihomo_selector_name: "{{ (torrent_vpn_config.selector | default({})).name | default('KLOKAST-TORRENT-VPN') }}"
+
+torrent_nftables_path: /etc/nftables.nft
+torrent_local_cli_path: /usr/local/bin/torrent-local
+torrent_tailscale_underlay_interface: "{{ platform_app_vm_interface | default('eth0') }}"
+torrent_tailscale_underlay_source: "{{ platform_control_zones.ops.vm_ipv4_address | default('') }}"
+torrent_tailscale_underlay_destination: "{{ vm_bootstrap_host | default('') }}"
+torrent_tailscale_underlay_port: 41641

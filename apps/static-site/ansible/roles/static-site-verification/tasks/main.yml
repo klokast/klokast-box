@@ -1,0 +1,162 @@
+---
+- name: Assert the static-site verification targets the selected DMZ VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - node_name == static_site_box
+      - static_site_domain | length > 0
+    fail_msg: >-
+      static-site-verification must target the selected DMZ VM.
+
+- name: Collect static-site OpenRC service states
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ item }}"
+      - status
+  become: true
+  register: static_site_verify_services
+  changed_when: false
+  failed_when: false
+  loop:
+    - "{{ static_site_web_service_name }}"
+    - "{{ static_site_publisher_service_name }}"
+    - "{{ static_site_cloudflared_service_name }}"
+
+- name: Assert static-site services are running
+  ansible.builtin.assert:
+    that:
+      - static_site_verify_services.results | selectattr('rc', 'eq', 0) | list | length == 3
+    fail_msg: >-
+      static-site web, publisher, and Cloudflare connector services must all
+      be running on the DMZ VM.
+
+- name: Check the static-site Git publisher state
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  become: true
+  register: static_site_verify_git_state
+  loop:
+    - "{{ static_site_git_repo_cache_root }}/.git"
+    - "{{ static_site_git_repo_cache_root }}/.published-commit"
+
+- name: Assert the static-site Git publisher has completed at least one publish
+  ansible.builtin.assert:
+    that:
+      - static_site_verify_git_state.results | selectattr('stat.exists') | list | length == 2
+    fail_msg: >-
+      static-site publisher must have a Git checkout and a recorded published
+      commit.
+
+- name: Read the static-site published commit
+  ansible.builtin.command:
+    argv:
+      - cat
+      - "{{ static_site_git_repo_cache_root }}/.published-commit"
+  become: true
+  register: static_site_verify_published_commit
+  changed_when: false
+
+- name: Assert the static-site published commit is a Git SHA
+  ansible.builtin.assert:
+    that:
+      - static_site_verify_published_commit.stdout is match('^[0-9a-f]{40}$')
+    fail_msg: >-
+      static-site published commit marker must contain a full Git SHA.
+
+- name: Collect static-site web container state
+  ansible.builtin.command:
+    argv:
+      - podman
+      - container
+      - inspect
+      - --format
+      - "{% raw %}{{.State.Status}}{% endraw %}"
+      - "{{ static_site_web_container_name }}"
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: static_site_verify_container_state
+  changed_when: false
+
+- name: Assert static-site web container is running
+  ansible.builtin.assert:
+    that:
+      - static_site_verify_container_state.stdout == 'running'
+    fail_msg: >-
+      static-site web container must be running.
+
+- name: Collect static-site web port binding
+  ansible.builtin.command:
+    argv:
+      - podman
+      - port
+      - "{{ static_site_web_container_name }}"
+      - "{{ static_site_web_container_port }}/tcp"
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: static_site_verify_port
+  changed_when: false
+
+- name: Assert static-site web binds only to loopback
+  ansible.builtin.assert:
+    that:
+      - static_site_verify_port.stdout == static_site_web_host ~ ':' ~ (static_site_web_host_port | string)
+    fail_msg: >-
+      static-site web container must bind only to
+      {{ static_site_web_host }}:{{ static_site_web_host_port }}.
+
+- name: Collect published static-site index files
+  ansible.builtin.command:
+    argv:
+      - find
+      - .
+      - -name
+      - index.html
+      - -type
+      - f
+  args:
+    chdir: "{{ static_site_public_root }}"
+  register: static_site_verify_index_files
+  changed_when: false
+
+- name: Verify published static-site index pages
+  ansible.builtin.uri:
+    url: >-
+      http://{{ static_site_web_host }}:{{ static_site_web_host_port }}{{
+      '/' ~ (item | regex_replace('^\\./', '') | regex_replace('index\\.html$', '')) }}
+    status_code: 200
+    return_content: true
+  register: static_site_verify_pages
+  changed_when: false
+  loop: "{{ static_site_verify_index_files.stdout_lines | sort }}"
+
+- name: Verify static-site root is 404 when no homepage is published
+  ansible.builtin.uri:
+    url: "http://{{ static_site_web_host }}:{{ static_site_web_host_port }}/"
+    status_code: 404
+  register: static_site_verify_root_missing
+  changed_when: false
+  when: "'./index.html' not in static_site_verify_index_files.stdout_lines"
+
+- name: Assert published static-site index pages look like HTML
+  ansible.builtin.assert:
+    that:
+      - (item.content | regex_search('(?i)<!doctype\\s+html|<html(\\s|>)')) is not none
+    fail_msg: >-
+      Published static-site index pages must look like HTML.
+  loop: "{{ static_site_verify_pages.results | default([]) }}"
+
+- name: Verify page directory slashless redirects
+  ansible.builtin.uri:
+    url: >-
+      http://{{ static_site_web_host }}:{{ static_site_web_host_port }}{{
+      ('/' ~ (item | regex_replace('^\\./', '') | regex_replace('index\\.html$', ''))) | regex_replace('/$', '') }}
+    status_code:
+      - 301
+      - 302
+      - 307
+      - 308
+    follow_redirects: none
+  changed_when: false
+  loop: "{{ static_site_verify_index_files.stdout_lines | sort }}"
+  when: item != './index.html'

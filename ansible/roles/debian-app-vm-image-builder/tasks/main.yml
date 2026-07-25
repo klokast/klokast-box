@@ -1,0 +1,258 @@
+#
+# Summary:
+# - Builds Debian app-VM ext4 root images on the backend VM and exposes them
+#   briefly to dom0 over the backend bridge.
+#
+---
+- name: Normalize Debian app VM image builder specs
+  ansible.builtin.set_fact:
+    debian_app_vm_image_builder_specs: "{{ platform_app_vm_builder_specs | default([]) }}"
+    debian_app_vm_image_builder_node_name: "{{ inventory_hostname | regex_replace('-bak$', '') }}"
+
+- name: Derive Debian app VM image builder artifact port
+  ansible.builtin.set_fact:
+    debian_app_vm_image_builder_artifact_ports: >-
+      {{
+        debian_app_vm_image_builder_specs
+        | map(attribute='guest_spec.debian_image.artifact_port')
+        | list
+        | unique
+        | list
+      }}
+    debian_app_vm_image_builder_artifact_port: >-
+      {{
+        (
+          debian_app_vm_image_builder_specs
+          | map(attribute='guest_spec.debian_image.artifact_port')
+          | list
+          | first
+        )
+        | default(debian_app_vm_image_builder_artifact_port_default, true)
+      }}
+
+- name: Stop Debian app VM artifact server when requested
+  block:
+    - name: Stop the Debian app VM image artifact service
+      ansible.builtin.service:
+        name: "{{ debian_app_vm_image_builder_service_name }}"
+        enabled: false
+        state: stopped
+      register: debian_app_vm_image_builder_service_stop
+      failed_when: false
+
+    - name: Remove the temporary Debian app VM image artifact firewall rule
+      ansible.builtin.shell: |
+        set -eu
+        comment={{ debian_app_vm_image_builder_temp_firewall_comment | quote }}
+        if ! command -v nft >/dev/null 2>&1; then
+            exit 0
+        fi
+        handles="$(
+            nft -a list chain inet klokast_vm_filter input 2>/dev/null |
+            awk -v comment="$comment" '$0 ~ "comment \"" comment "\"" { print $NF }'
+        )"
+        if [ -z "$handles" ]; then
+            echo unchanged
+            exit 0
+        fi
+        for handle in $handles; do
+            nft delete rule inet klokast_vm_filter input handle "$handle"
+        done
+        echo changed
+      args:
+        executable: /bin/sh
+      register: debian_app_vm_image_builder_firewall_remove
+      changed_when: "'changed' in debian_app_vm_image_builder_firewall_remove.stdout"
+  when: debian_app_vm_image_builder_state == 'stopped'
+
+- name: End Debian app VM image builder cleanup early
+  ansible.builtin.meta: end_host
+  when: debian_app_vm_image_builder_state == 'stopped'
+
+- name: Assert the Debian app VM image builder targets a backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'backend'
+      - debian_app_vm_image_builder_specs | length > 0
+      - debian_app_vm_image_builder_artifact_ports | length == 1
+    fail_msg: >-
+      The Debian app VM image builder must run on the target backend VM and
+      all app VM specs for a box must use one artifact port.
+
+- name: Assert Debian app VM image builder specs are valid for this node
+  ansible.builtin.assert:
+    that:
+      - item.node == debian_app_vm_image_builder_node_name
+      - item.guest_spec.guest_os == 'debian'
+      - item.guest_spec.debian_image.build_id | length == 64
+      - item.guest_spec.debian_image.builder_host == inventory_hostname
+    fail_msg: "Invalid Debian app VM image builder spec for {{ item.inventory_hostname | default('undefined') }}."
+  loop: "{{ debian_app_vm_image_builder_specs }}"
+  loop_control:
+    label: "{{ item.inventory_hostname }}"
+
+- name: Ensure Debian app VM image builder host packages are installed
+  community.general.apk:
+    name: "{{ debian_app_vm_image_builder_host_packages }}"
+    state: present
+
+- name: Ensure Debian app VM image builder directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(debian_app_vm_image_builder_service_user) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ debian_app_vm_image_builder_service_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ debian_app_vm_image_builder_workspace_root }}"
+      mode: "0755"
+    - path: "{{ debian_app_vm_image_builder_input_root }}"
+      mode: "0750"
+    - path: "{{ debian_app_vm_image_builder_output_root }}"
+      mode: "0755"
+    - path: "{{ debian_app_vm_image_builder_work_root }}"
+      mode: "0750"
+
+- name: Render the Debian app VM image builder script
+  ansible.builtin.template:
+    src: build-inside.sh.j2
+    dest: /usr/local/sbin/debian-app-vm-image-builder-build-inside
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the Debian app VM image builder host helper
+  ansible.builtin.template:
+    src: debian-app-vm-image-builder-build.sh.j2
+    dest: /usr/local/sbin/debian-app-vm-image-builder-build
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Ensure Debian app VM image builder per-guest input directories exist
+  ansible.builtin.file:
+    path: "{{ debian_app_vm_image_builder_input_root }}/{{ item.guest_spec.guest_name }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ debian_app_vm_image_builder_specs }}"
+  loop_control:
+    label: "{{ item.guest_spec.guest_name }}"
+
+- name: Ensure Debian app VM image builder per-guest output and work directories exist
+  ansible.builtin.file:
+    path: "{{ item.0 }}/{{ item.1.guest_spec.guest_name }}"
+    state: directory
+    owner: "{{ debian_app_vm_image_builder_service_user }}"
+    group: wheel
+    mode: "0755"
+  loop: >-
+    {{
+      [
+        debian_app_vm_image_builder_output_root,
+        debian_app_vm_image_builder_work_root
+      ]
+      | product(debian_app_vm_image_builder_specs)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.1.guest_spec.guest_name }}"
+
+- name: Seed Debian app VM image builder specs
+  ansible.builtin.copy:
+    dest: "{{ debian_app_vm_image_builder_input_root }}/{{ item.guest_spec.guest_name }}/spec.json"
+    owner: root
+    group: root
+    mode: "0640"
+    content: "{{ item.guest_spec.debian_image | to_nice_json }}\n"
+  loop: "{{ debian_app_vm_image_builder_specs }}"
+  loop_control:
+    label: "{{ item.guest_spec.guest_name }}"
+
+- name: Verify app VM bootstrap SSH key files exist on the controller
+  ansible.builtin.stat:
+    path: "{{ hostvars[item.inventory_hostname].vm_admin_authorized_key_file }}"
+  delegate_to: localhost
+  become: false
+  register: debian_app_vm_image_builder_bootstrap_key_files
+  loop: "{{ debian_app_vm_image_builder_specs }}"
+  loop_control:
+    label: "{{ item.inventory_hostname }}"
+
+- name: Assert app VM bootstrap SSH key files exist on the controller
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+    fail_msg: "Missing bootstrap SSH public key for {{ item.item.inventory_hostname }}."
+  loop: "{{ debian_app_vm_image_builder_bootstrap_key_files.results }}"
+  loop_control:
+    label: "{{ item.item.inventory_hostname }}"
+
+- name: Seed Debian app VM image builder authorized keys
+  ansible.builtin.copy:
+    dest: "{{ debian_app_vm_image_builder_input_root }}/{{ item.guest_spec.guest_name }}/authorized_keys"
+    owner: root
+    group: root
+    mode: "0640"
+    content: "{{ lookup('file', hostvars[item.inventory_hostname].vm_admin_authorized_key_file) | trim }}\n"
+  loop: "{{ debian_app_vm_image_builder_specs }}"
+  loop_control:
+    label: "{{ item.guest_spec.guest_name }}"
+
+- name: Build Debian app VM image artifacts on the backend host
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/debian-app-vm-image-builder-build
+      - "{{ item.guest_spec.guest_name }}"
+  register: debian_app_vm_image_builder_builds
+  changed_when: "'rebuilt=yes' in debian_app_vm_image_builder_builds.stdout"
+  loop: "{{ debian_app_vm_image_builder_specs }}"
+  loop_control:
+    label: "{{ item.guest_spec.guest_name }}"
+
+- name: Render the Debian app VM image artifact OpenRC service
+  ansible.builtin.template:
+    src: debian-app-vm-image-artifacts.openrc.j2
+    dest: "/etc/init.d/{{ debian_app_vm_image_builder_service_name }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Add the temporary Debian app VM image artifact firewall rule
+  ansible.builtin.shell: |
+    set -eu
+    comment={{ debian_app_vm_image_builder_temp_firewall_comment | quote }}
+    iface={{ debian_app_vm_image_builder_temp_firewall_interface | quote }}
+    source={{ debian_app_vm_image_builder_temp_firewall_source | quote }}
+    destination={{ debian_app_vm_image_builder_temp_firewall_destination | quote }}
+    port={{ debian_app_vm_image_builder_artifact_port | quote }}
+    if nft -a list chain inet klokast_vm_filter input 2>/dev/null | grep -F "comment \"$comment\"" >/dev/null; then
+        echo unchanged
+        exit 0
+    fi
+    nft add rule inet klokast_vm_filter input \
+        iifname "$iface" ip saddr "$source" ip daddr "$destination" \
+        tcp dport "$port" accept comment "$comment"
+    echo changed
+  args:
+    executable: /bin/sh
+  register: debian_app_vm_image_builder_firewall_add
+  changed_when: "'changed' in debian_app_vm_image_builder_firewall_add.stdout"
+
+- name: Ensure the Debian app VM image artifact service is running
+  ansible.builtin.service:
+    name: "{{ debian_app_vm_image_builder_service_name }}"
+    enabled: false
+    state: started
+
+- name: Show Debian app VM image builder state
+  ansible.builtin.debug:
+    msg:
+      - "Builder host: {{ inventory_hostname }}"
+      - "Artifact URL root: http://{{ debian_app_vm_image_builder_artifact_bind_address }}:{{ debian_app_vm_image_builder_artifact_port }}/"
+      - "Output path: {{ debian_app_vm_image_builder_output_root }}"

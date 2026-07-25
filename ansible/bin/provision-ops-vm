@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
+RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
+
+BOX=""
+INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+TARGET_DISK_DEVICE="/dev/nvme0n1"
+MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+DRY_RUN=0
+STANDBY=0
+EXTRA_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/provision-ops-vm --box BOX [options] [-- extra ansible-playbook args]
+
+Refresh the router VM for the `ops` control network, then clone, enroll, and
+converge one in-Platform `<box>-ops` controller VM. This is an explicit
+migration step; normal box provisioning does not create an ops VM on every box.
+
+Options:
+  --box BOX               Box short name, for example k001
+  --inventory PATH         Base Ansible inventory. Default: ansible/inventory/hosts.yml
+  --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
+  --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered
+  --dry-run-plan           Print the selected command and inventory graph, then exit
+  --standby                Provision as a standby controller without copying
+                           root provider/OAuth authority from the active
+                           controller. Private Platform state is still copied.
+  -h, --help               Show this help
+
+The current controller must already have root-only Tailscale OAuth material in
+`/etc/klokast/tailscale-policy.env`; `65-vm-ops.yml` installs the checked-in
+wrapper code locally before it mints a one-use `tag:ops` enrollment key.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+validate_box_name() {
+  python3 - "$BOX" <<'PY'
+import re
+import sys
+
+box = sys.argv[1]
+suffixes = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt")
+if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", box):
+    print(
+        "error: --box must be a lowercase DNS label: letters, digits, "
+        "hyphens, and no leading/trailing hyphen",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+for suffix in suffixes:
+    if box == suffix or box.endswith(f"-{suffix}"):
+        print(
+            f"error: --box must be the box name only, not a role hostname ending in -{suffix}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+PY
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --box)
+      [ "$#" -ge 2 ] || die "--box requires a value"
+      BOX="$2"
+      shift 2
+      ;;
+    --inventory)
+      [ "$#" -ge 2 ] || die "--inventory requires a value"
+      INVENTORY="$2"
+      shift 2
+      ;;
+    --target-disk-device)
+      [ "$#" -ge 2 ] || die "--target-disk-device requires a value"
+      TARGET_DISK_DEVICE="$2"
+      shift 2
+      ;;
+    --magicdns-suffix)
+      [ "$#" -ge 2 ] || die "--magicdns-suffix requires a value"
+      MAGICDNS_SUFFIX="$2"
+      shift 2
+      ;;
+    --dry-run-plan)
+      DRY_RUN=1
+      shift
+      ;;
+    --standby)
+      STANDBY=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      EXTRA_ARGS=("$@")
+      break
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$BOX" ] || die "--box is required"
+validate_box_name
+
+case "$INVENTORY" in
+  /*) ;;
+  *) INVENTORY="$PWD/$INVENTORY" ;;
+esac
+
+RUN_DIR="$REPO_DIR/.run/provision-ops-vm-${BOX}"
+LOG_DIR="$RUN_DIR/logs"
+GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
+ROUTER_LOG_FILE="$LOG_DIR/31-vm-router-for-ops.log"
+OPS_LOG_FILE="$LOG_DIR/65-vm-ops.log"
+
+command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook not found in PATH"
+command -v ansible-inventory >/dev/null 2>&1 || die "ansible-inventory not found in PATH"
+command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+[ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
+[ -f "$ANSIBLE_CONFIG_PATH" ] || die "ansible config not found: $ANSIBLE_CONFIG_PATH"
+[ -x "$RENDER_NODE_INVENTORY" ] || die "inventory renderer not executable: $RENDER_NODE_INVENTORY"
+
+mkdir -p "$LOG_DIR"
+"$RENDER_NODE_INVENTORY" \
+  --node "$BOX" \
+  --output "$GENERATED_INVENTORY" \
+  --target-disk-device "$TARGET_DISK_DEVICE" \
+  --magicdns-suffix "$MAGICDNS_SUFFIX"
+
+build_playbook_command() {
+  local playbook="$1"
+  local extra_vars
+  extra_vars="$(
+    python3 -c 'import json, sys; standby = sys.argv[1] == "1"; print(json.dumps({"ops_private_state_transfer_enabled": True, "ops_private_state_transfer_root_secrets": not standby}))' "$STANDBY"
+  )"
+  PLAYBOOK_CMD=(
+    env
+    "ANSIBLE_CONFIG=$ANSIBLE_CONFIG_PATH"
+    ansible-playbook
+    -i "$INVENTORY"
+    -i "$GENERATED_INVENTORY"
+    "$ANSIBLE_DIR/$playbook"
+    -vv
+    --limit "$BOX"
+    -e "$extra_vars"
+    "${EXTRA_ARGS[@]}"
+  )
+}
+
+run_playbook() {
+  local playbook="$1"
+  local log_file="$2"
+  local status
+
+  build_playbook_command "$playbook"
+  printf '\n==> %s\n' "$playbook"
+  printf 'Command: '
+  quote_command "${PLAYBOOK_CMD[@]}"
+  printf 'Log: %s\n' "$log_file"
+
+  set +e
+  "${PLAYBOOK_CMD[@]}" 2>&1 | tee "$log_file"
+  status="${PIPESTATUS[0]}"
+  set -e
+
+  if [ "$status" -ne 0 ]; then
+    printf '\nprovision-ops-vm failed in %s with exit code %s.\n' "$playbook" "$status" >&2
+    printf 'Log: %s\n' "$log_file" >&2
+    exit "$status"
+  fi
+}
+
+printf 'Box: %s\n' "$BOX"
+printf 'Base inventory: %s\n' "$INVENTORY"
+printf 'Generated inventory: %s\n' "$GENERATED_INVENTORY"
+printf 'Run directory: %s\n' "$RUN_DIR"
+build_playbook_command "playbooks/31-vm-router.yml"
+printf 'Command: '
+quote_command "${PLAYBOOK_CMD[@]}"
+build_playbook_command "playbooks/65-vm-ops.yml"
+printf 'Command: '
+quote_command "${PLAYBOOK_CMD[@]}"
+
+env ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" ansible-inventory \
+  -i "$INVENTORY" \
+  -i "$GENERATED_INVENTORY" \
+  --graph --limit "$BOX" >/dev/null
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  exit 0
+fi
+
+run_playbook "playbooks/31-vm-router.yml" "$ROUTER_LOG_FILE"
+run_playbook "playbooks/65-vm-ops.yml" "$OPS_LOG_FILE"
+
+printf '\nprovision-ops-vm completed.\n'
+printf 'Router log: %s\n' "$ROUTER_LOG_FILE"
+printf 'Ops log: %s\n' "$OPS_LOG_FILE"

@@ -1,0 +1,8 @@
+---
+- name: Capture bootstrap access preflight
+  hosts: bootstrap
+  gather_facts: true
+  tasks:
+    - name: Capture Tailscale bootstrap state
+      ansible.builtin.import_role:
+        name: bootstrap-tailscale

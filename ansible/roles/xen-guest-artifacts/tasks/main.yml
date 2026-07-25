@@ -1,0 +1,120 @@
+#
+# Summary:
+# - Extracts the installed guest kernel and initramfs artifacts from a guest LV onto dom0 for the installed Xen boot stage.
+#
+---
+- name: Assert the Xen guest LV path is defined
+  ansible.builtin.assert:
+    that:
+      - xen_guest_lv_path is match('^/dev/[^/]+/[^/]+$')
+    fail_msg: >-
+      Xen guest LV path {{ xen_guest_lv_path | default('undefined') }} is not
+      a supported /dev/<vg>/<lv> device path.
+
+- name: Derive mapper and mount paths for the Xen guest disk
+  ansible.builtin.set_fact:
+    xen_guest_mapper_name: >-
+      {{ xen_guest_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\1-\2') }}
+    xen_guest_boot_mapper_path: >-
+      /dev/mapper/{{ xen_guest_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\1-\2') }}1
+    xen_guest_mount_path: "/tmp/{{ xen_guest_name }}-boot"
+
+- name: Ensure the Xen guest boot artifact destination directory exists
+  ansible.builtin.file:
+    path: "{{ xen_guest_kernel_dest_path | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure the Xen guest temporary mount directory exists
+  ansible.builtin.file:
+    path: "{{ xen_guest_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Extract Xen guest boot artifacts from the installed disk
+  block:
+    # Current bridge step: copy per-guest installed kernel/initramfs out of the
+    # freshly installed disk so pure PVH guests can boot without the ISO.
+    # Long term, the template pipeline should publish ready-to-boot artifacts
+    # and make this extraction path unnecessary for most guests.
+    - name: Remove any stale kpartx mappings for the guest LV
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ xen_guest_lv_path }}"
+      register: xen_guest_kpartx_cleanup
+      failed_when: false
+      changed_when: xen_guest_kpartx_cleanup.rc == 0
+
+    - name: Create partition mappings for the guest LV
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ xen_guest_lv_path }}"
+      register: xen_guest_kpartx_add
+      changed_when: true
+
+    - name: Mount the guest boot partition
+      ansible.builtin.command:
+        cmd: "/bin/mount {{ xen_guest_boot_mapper_path }} {{ xen_guest_mount_path }}"
+
+    - name: Check the installed guest kernel and initramfs files
+      ansible.builtin.stat:
+        path: "{{ xen_guest_mount_path }}/{{ item }}"
+      loop:
+        - "{{ xen_guest_kernel_source_name }}"
+        - "{{ xen_guest_initramfs_source_name }}"
+      register: xen_guest_boot_files
+
+    - name: Assert the installed guest boot files exist
+      ansible.builtin.assert:
+        that:
+          - (xen_guest_boot_files.results | map(attribute='stat.exists') | list | min)
+        fail_msg: >-
+          Guest {{ xen_guest_name }} does not expose the expected installed
+          boot files on {{ xen_guest_boot_mapper_path }}.
+
+    - name: Copy the installed guest kernel to dom0 shared storage
+      ansible.builtin.copy:
+        remote_src: true
+        src: "{{ xen_guest_mount_path }}/{{ xen_guest_kernel_source_name }}"
+        dest: "{{ xen_guest_kernel_dest_path }}"
+        mode: "0644"
+
+    - name: Copy the installed guest initramfs to dom0 shared storage
+      ansible.builtin.copy:
+        remote_src: true
+        src: "{{ xen_guest_mount_path }}/{{ xen_guest_initramfs_source_name }}"
+        dest: "{{ xen_guest_initramfs_dest_path }}"
+        mode: "0644"
+
+  always:
+    - name: Unmount the guest boot partition if it is mounted
+      ansible.builtin.command: "/bin/umount {{ xen_guest_mount_path }}"
+      register: xen_guest_unmount
+      failed_when: false
+      changed_when: xen_guest_unmount.rc == 0
+
+    # Alpine maps LVM-backed guest partitions as ...1, ...2, ...3, not ...p1.
+    - name: Remove the guest partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ xen_guest_lv_path }}"
+      register: xen_guest_kpartx_remove
+      failed_when: false
+      changed_when: xen_guest_kpartx_remove.rc == 0
+
+- name: Verify the copied Xen guest boot artifacts on dom0
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ xen_guest_kernel_dest_path }}"
+    - "{{ xen_guest_initramfs_dest_path }}"
+  register: xen_guest_copied_boot_files
+
+- name: Assert the copied Xen guest boot artifacts exist
+  ansible.builtin.assert:
+    that:
+      - (xen_guest_copied_boot_files.results | map(attribute='stat.exists') | list | min)
+    fail_msg: >-
+      Guest {{ xen_guest_name }} boot artifacts were not copied into
+      {{ xen_guest_kernel_dest_path | dirname }}.
+
+- name: Show the copied Xen guest boot artifact paths
+  ansible.builtin.debug:
+    msg:
+      - "{{ xen_guest_name }}"
+      - "{{ xen_guest_kernel_dest_path }}"
+      - "{{ xen_guest_initramfs_dest_path }}"

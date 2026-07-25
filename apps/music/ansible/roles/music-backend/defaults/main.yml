@@ -1,0 +1,63 @@
+---
+music_box: ""
+music_endpoint_hostname: ""
+music_endpoint_ipv4_address: ""
+music_endpoint_tailnet_tag: tag:streamer
+
+music_service_root: /etc/klokast/music
+music_config_root: "{{ music_service_root }}/config"
+music_secret_root: "{{ music_service_root }}/secrets"
+music_legacy_library_root: /srv/music/library
+music_legacy_playlist_root: /srv/music/playlists
+music_legacy_private_ingress_state_root: /var/lib/klokast/music-private-ingress
+
+music_pod_name: klokast-music
+music_image_name: localhost/klokast/music-backend:latest
+music_service_name: klokast-music
+music_container_snapserver_name: music-snapserver
+music_container_mpd_name: music-mpd
+music_container_mympd_name: music-mympd
+music_container_ui_ingress_name: music-ui-ingress
+music_container_upload_ingress_name: music-upload-ingress
+music_enable_private_tailscale_ui: false
+
+music_library_volume: klokast-music-library
+music_playlist_volume: klokast-music-playlists
+music_mpd_state_volume: klokast-music-mpd-state
+music_mympd_state_volume: klokast-music-mympd-state
+music_runtime_volume: klokast-music-runtime
+music_ui_tailscale_state_volume: klokast-music-ui-ts-state
+music_upload_tailscale_state_volume: klokast-music-upload-ts-state
+
+music_snap_fifo: /music/run/snapfifo
+music_pcm_format: "48000:24:2"
+music_mpd_software_volume: 50
+music_mpd_port: 6600
+music_snapserver_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+music_snapserver_port: 1704
+music_snapserver_rpc_port: 1705
+music_mympd_host: 127.0.0.1
+music_mympd_port: 18082
+music_mympd_bind_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+music_mympd_http_host: 0.0.0.0
+
+music_legacy_service_names:
+  - klokast-music-private-ingress
+  - klokast-music-mympd
+  - klokast-music-mpd
+  - klokast-music-snapserver
+  - mympd
+  - mpd
+  - snapcast-server
+
+music_private_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-music
+music_private_tailscale_hostname: "{{ music_box }}-music"
+music_private_tailscale_tag: tag:music
+music_upload_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-music-upload
+music_upload_tailscale_hostname: "{{ music_box }}-music-upload"
+music_upload_tailscale_tag: tag:music-upload
+
+music_host_packages_absent:
+  - mpd
+  - snapcast-server
+  - mympd

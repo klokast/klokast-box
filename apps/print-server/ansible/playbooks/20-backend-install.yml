@@ -1,0 +1,9 @@
+---
+- name: Install the print server stack
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install print server services
+      ansible.builtin.import_role:
+        name: print-server
+      when: node_domain_role == platform_zones.bak.role

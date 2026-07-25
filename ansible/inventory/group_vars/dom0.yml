@@ -1,0 +1,168 @@
+---
+ansible_user: neo
+ansible_become: true
+ansible_become_method: doas
+ansible_become_flags: -n
+ansible_become_timeout: 30
+ansible_remote_tmp: /tmp
+ansible_python_interpreter: /usr/bin/python3
+
+dom0_bootstrap_ansible_user: root
+dom0_bootstrap_ansible_become: false
+tailscale_handoff_authkey_wrapper: /usr/local/sbin/ts-authkey-dom0
+tailscale_handoff_expected_tag: tag:dom0
+tailscale_enable_ssh: true
+
+target_disk_device: /dev/nvme0n1
+target_disk_model_hint: NVMe
+efi_partition_device: /dev/nvme0n1p1
+lvm_partition_device: /dev/nvme0n1p2
+volume_group_name: vg0
+
+efi_partition_label: ALPINE_EFI
+efi_partition_fs: vfat
+# Phase 12 mounts the EFI partition here on the live bootstrap host. Post-boot
+# roles still detect the live runtime mountpoint on the managed host instead of
+# assuming it matches the bootstrap-time path.
+efi_mount_path: /media/nvme
+apk_repository_arch: "{{ ansible_architecture | default('x86_64') }}"
+efi_boot_directory: /media/nvme/boot
+efi_grub_directory: /media/nvme/boot/grub
+efi_bootloader_id: "{{ node_hostname }}"
+efi_bootloader_legacy_ids:
+  - alpine
+efi_fallback_directory: /media/nvme/EFI/BOOT
+efi_fallback_bootloader_path: /media/nvme/EFI/BOOT/BOOTX64.EFI
+efi_bootloader_grub_config_path: "{{ efi_mount_path }}/EFI/{{ efi_bootloader_id }}/grub.cfg"
+efi_fallback_grub_config_path: "{{ efi_fallback_directory }}/grub.cfg"
+efi_grub_loader_config_paths:
+  - "{{ efi_bootloader_grub_config_path }}"
+  - "{{ efi_fallback_grub_config_path }}"
+# Follow the working `yii-dom0` layout from the runbook: keep the early-boot
+# repository under `apks/`, keep `/etc/apk/cache` as a normal runtime cache,
+# and keep the apkovl at the EFI root.
+apk_boot_repository_root: "{{ efi_mount_path }}/apks"
+apk_boot_repository_path: "{{ apk_boot_repository_root }}/{{ apk_repository_arch }}"
+apk_cache_path: "{{ efi_mount_path }}/cache"
+apk_boot_repository_marker: "{{ apk_boot_repository_root }}/.boot_repository"
+apk_boot_repository_index: "{{ apk_boot_repository_path }}/APKINDEX.tar.gz"
+# The first SSD boot mounts the EFI media under the block-device basename.
+# Later dom0 phases still redetect the live mountpoint before touching
+# persistent paths on the running host.
+diskless_first_boot_media_mount_path: "/media/{{ efi_partition_device | basename }}"
+diskless_first_boot_repository_root: "{{ diskless_first_boot_media_mount_path }}/apks"
+diskless_first_boot_repositories:
+  - "{{ diskless_first_boot_repository_root }}"
+diskless_first_boot_cache_path: "{{ diskless_first_boot_media_mount_path }}/cache"
+diskless_first_boot_authkey_relative_path: bootstrap/tailscale-bootstrap.authkey
+diskless_first_boot_authkey_runtime_path: "{{ diskless_first_boot_media_mount_path }}/{{ diskless_first_boot_authkey_relative_path }}"
+legacy_apk_root_boot_repository_marker: "{{ efi_mount_path }}/.boot_repository"
+legacy_apk_cache_boot_repository_marker: "{{ apk_cache_path }}/.boot_repository"
+lbu_media_name: nvme
+lbu_protected_paths_file: /etc/apk/protected_paths.d/lbu.list
+# Do not include the mounted EFI media root in `lbu`. That would recurse the
+# whole persistent partition into the apkovl archive and eventually exhaust the
+# EFI filesystem during `lbu commit`.
+diskless_lbu_include_paths: []
+diskless_required_paths:
+  - "{{ efi_boot_directory }}/vmlinuz-lts"
+  - "{{ efi_boot_directory }}/initramfs-lts"
+  - "{{ efi_boot_directory }}/modloop-lts"
+  - "{{ efi_grub_directory }}/grub.cfg"
+  - "{{ efi_mount_path }}/EFI/{{ efi_bootloader_id }}/grubx64.efi"
+  - "{{ efi_fallback_bootloader_path }}"
+  - "{{ efi_bootloader_grub_config_path }}"
+  - "{{ efi_fallback_grub_config_path }}"
+  - "{{ apk_boot_repository_marker }}"
+  - "{{ apk_boot_repository_index }}"
+
+dom0_data_lv_name: lv_dom0_data
+dom0_data_lv_size: 20G
+dom0_data_mount_path: /mnt/dom0_data
+dom0_logs_path: "{{ dom0_data_mount_path }}/logs"
+dom0_xen_images_path: "{{ dom0_data_mount_path }}/xen_images"
+apkovl_archive_name: "{{ node_hostname }}.apkovl.tar.gz"
+apkovl_archive_path: "{{ efi_mount_path }}/{{ apkovl_archive_name }}"
+# Keep the steady-state diskless GRUB entry aligned with the same boot contract
+# that already works on `yii-dom0`: Alpine mounts `alpine_dev=LABEL=...`,
+# resolves `/boot/modloop-lts` from that media, and autodetects the single
+# managed root-level apkovl archive. Phase 20 already quarantines stale
+# root-level overlays under `_disabled/`, so explicit block-device remounts or
+# bare `apkovl=<filename>` kernel arguments are not required and have proven
+# less reliable on `duh`.
+diskless_modloop_kernel_param: >-
+  modloop=/boot/modloop-lts
+diskless_alpine_repo_kernel_param: ""
+diskless_apkovl_kernel_param: ""
+xen_binary_source_path: /boot/xen.gz
+xen_binary_target_path: "{{ efi_boot_directory }}/xen.gz"
+xen_required_paths:
+  - "{{ xen_binary_target_path }}"
+  - "{{ efi_grub_directory }}/grub.cfg"
+  - "{{ efi_bootloader_grub_config_path }}"
+  - "{{ efi_fallback_grub_config_path }}"
+xen_grub_required_patterns:
+  - 'set default=0'
+  - 'menuentry "Alpine Linux (Xen, from RAM)"'
+  - 'multiboot2 /boot/xen.gz'
+  - 'modloop=/boot/modloop-lts'
+  - 'menuentry "Alpine Linux (Rescue, from RAM)"'
+
+dom0_admin_user_name: neo
+# Per-box console password hashes are deployment-private state loaded from the
+# active controller, normally ~/private/klokast/dom0-console.yml:
+#   dom0_console_password_hashes:
+#     k001: "$6$..."
+#     k002: "$6$..."
+dom0_console_password_hashes: {}
+dom0_admin_password_hash: "{{ dom0_console_password_hashes[node_name] | default('') }}"
+dom0_lock_root_password: true
+dom0_local_users:
+  - name: "{{ dom0_admin_user_name }}"
+    shell: /bin/ash
+    groups:
+      - wheel
+    password_hash: "{{ dom0_admin_password_hash }}"
+dom0_home_lbu_include_paths:
+  - "/home/{{ dom0_admin_user_name }}"
+dom0_lbu_include_paths:
+  - "/home/{{ dom0_admin_user_name }}"
+
+dom0_wan_bridge_name: "{{ platform_network_realms.wan.bridge }}"
+dom0_wan_uplink_interface: auto
+dom0_bridge_physical_ports: {}
+dom0_bridges:
+  - name: "{{ platform_network_realms.wan.bridge }}"
+    method: dhcp
+    ports: []
+  - name: "{{ platform_network_realms.lan.bridge }}"
+    method: manual
+    ports: "{{ dom0_bridge_physical_ports.lan | default([]) }}"
+  - name: "{{ platform_zones.dmz.bridge }}"
+    method: manual
+    ports: "{{ dom0_bridge_physical_ports.dmz | default([]) }}"
+  - name: "{{ platform_zones.bak.bridge }}"
+    method: static
+    address: "{{ platform_zones.bak.dom0_ipv4_address }}"
+    prefix: "{{ platform_zones.bak.router_ipv4_prefix }}"
+    netmask: "{{ platform_zones.bak.router_ipv4_netmask }}"
+    ports: "{{ dom0_bridge_physical_ports.bak | default([]) }}"
+    routes:
+      - destination: "{{ platform_zones.dmz.cidr }}"
+        via: "{{ platform_zones.bak.router_ipv4_address }}"
+      - destination: "{{ platform_zones.usr.cidr }}"
+        via: "{{ platform_zones.bak.router_ipv4_address }}"
+      - destination: "{{ platform_zones.iot.cidr }}"
+        via: "{{ platform_zones.bak.router_ipv4_address }}"
+  - name: "{{ platform_zones.iot.bridge }}"
+    method: manual
+    ports: "{{ dom0_bridge_physical_ports.iot | default([]) }}"
+  - name: "{{ platform_zones.usr.bridge }}"
+    method: manual
+    ports: "{{ dom0_bridge_physical_ports.usr | default([]) }}"
+  - name: "{{ platform_control_zones.ops.bridge }}"
+    method: static
+    address: "{{ platform_control_zones.ops.dom0_ipv4_address }}"
+    prefix: "{{ platform_control_zones.ops.router_ipv4_prefix }}"
+    netmask: "{{ platform_control_zones.ops.router_ipv4_netmask }}"
+    ports: "{{ dom0_bridge_physical_ports.ops | default([]) }}"

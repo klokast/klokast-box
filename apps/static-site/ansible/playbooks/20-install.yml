@@ -1,0 +1,11 @@
+---
+- name: Install the static-site stack
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Install static-site runtime
+      ansible.builtin.import_role:
+        name: static-site-runtime
+      when: node_domain_role == 'dmz'

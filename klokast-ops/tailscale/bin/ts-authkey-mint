@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SECRET_FILE="${TS_AUTHKEY_SECRET_FILE:-/etc/klokast/tailscale-policy.env}"
+API_BASE="${TS_AUTHKEY_API_BASE:-https://api.tailscale.com/api/v2}"
+EXPIRY_SECONDS="${TS_AUTHKEY_EXPIRY_SECONDS:-600}"
+
+purpose=""
+hostname=""
+tags_raw=""
+check_config=0
+dry_run=0
+ephemeral=false
+
+usage() {
+  cat >&2 <<'EOF'
+usage: ts-authkey-mint --purpose PURPOSE --hostname HOSTNAME --tags TAGS [--check-config|--dry-run]
+
+PURPOSE is one of: bootstrap, dom0, vm, ops, infra, infra-agent, airunner, back, dmz, iot, usr, streamer, nextcloud, immich, music, music-upload, print.
+TAGS is a comma-separated list such as tag:vm,tag:myapp-alice.
+EOF
+}
+
+die() {
+  printf 'ts-authkey-mint: %s\n' "$*" >&2
+  exit 2
+}
+
+require_active_controller() {
+  guard="${KLOKAST_CONTROLLER_GUARD:-/usr/local/sbin/klokast-controller-guard}"
+  if [ -x "$guard" ]; then
+    "$guard" --require-active
+  fi
+}
+
+need_value() {
+  [ "$#" -ge 2 ] || die "$1 requires a value"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --purpose)
+      need_value "$@"
+      purpose="$2"
+      shift 2
+      ;;
+    --hostname)
+      need_value "$@"
+      hostname="$2"
+      shift 2
+      ;;
+    --tags|--advertise-tags)
+      need_value "$@"
+      tags_raw="$2"
+      shift 2
+      ;;
+    --check-config)
+      check_config=1
+      shift
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$purpose" ] || die "--purpose is required"
+[ -n "$hostname" ] || die "--hostname is required"
+[ -n "$tags_raw" ] || die "--tags is required"
+
+[[ "$hostname" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || die "unsafe hostname: $hostname"
+[[ "$EXPIRY_SECONDS" =~ ^[0-9]+$ ]] || die "TS_AUTHKEY_EXPIRY_SECONDS must be seconds"
+
+IFS=',' read -r -a tags <<<"$tags_raw"
+normalized_tags=()
+for raw_tag in "${tags[@]}"; do
+  tag="${raw_tag//[[:space:]]/}"
+  [ -n "$tag" ] || continue
+  [[ "$tag" =~ ^tag:[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "unsafe Tailscale tag: $tag"
+  for existing in "${normalized_tags[@]}"; do
+    [ "$existing" != "$tag" ] || die "duplicate Tailscale tag: $tag"
+  done
+  normalized_tags+=("$tag")
+done
+[ "${#normalized_tags[@]}" -gt 0 ] || die "empty tag list"
+
+has_tag() {
+  local wanted="$1"
+  local tag
+  for tag in "${normalized_tags[@]}"; do
+    [ "$tag" != "$wanted" ] || return 0
+  done
+  return 1
+}
+
+require_exact_tags() {
+  local expected_count="$#"
+  local expected
+  [ "${#normalized_tags[@]}" -eq "$expected_count" ] || die "unexpected tags for $purpose: ${normalized_tags[*]}"
+  for expected in "$@"; do
+    has_tag "$expected" || die "missing required tag for $purpose: $expected"
+  done
+}
+
+is_reserved_app_vm_tag() {
+  case "$1" in
+    tag:vm|tag:ops|tag:dom0|tag:bootstrap|tag:oob|tag:infra|tag:infra-agent|tag:airunner|tag:back|tag:dmz|tag:iot|tag:usr)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+case "$purpose" in
+  bootstrap)
+    [[ "$hostname" == *-bootstrap ]] || die "bootstrap hostname must end in -bootstrap"
+    require_exact_tags tag:bootstrap
+    ephemeral=true
+    ;;
+  dom0)
+    [[ "$hostname" == *-dom0 ]] || die "dom0 hostname must end in -dom0"
+    require_exact_tags tag:dom0
+    ;;
+  vm)
+    has_tag tag:vm || die "vm enrollment requires tag:vm"
+    if [[ "$hostname" =~ -usr-[a-z0-9-]+$ ]]; then
+      for tag in "${normalized_tags[@]}"; do
+        if [ "$tag" = "tag:vm" ]; then
+          continue
+        fi
+        ! is_reserved_app_vm_tag "$tag" \
+          || die "app VM may only add app-specific tags beside tag:vm"
+      done
+    elif [[ "$hostname" =~ -torrent$ ]]; then
+      require_exact_tags tag:vm tag:torrent
+    elif [[ "$hostname" =~ -household-vpn$ ]]; then
+      require_exact_tags tag:vm tag:household-vpn
+    else
+      [[ "$hostname" =~ -(router|bak|dmz|iot|usr)$ ]] \
+        || die "standard VM hostname must end in -router, -bak, -dmz, -iot, or -usr"
+      require_exact_tags tag:vm
+    fi
+    ;;
+  ops)
+    [[ "$hostname" == *-ops ]] || die "ops hostname must end in -ops"
+    has_tag tag:ops || die "ops enrollment requires tag:ops"
+    for tag in "${normalized_tags[@]}"; do
+      [[ "$tag" == "tag:ops" || "$tag" == "tag:infra" || "$tag" == "tag:infra-agent" ]] \
+        || die "ops enrollment may only use tag:ops, tag:infra, and tag:infra-agent"
+    done
+    ;;
+  infra)
+    require_exact_tags tag:infra
+    ;;
+  infra-agent)
+    require_exact_tags tag:infra-agent
+    ;;
+  airunner)
+    [[ "$hostname" == *-ops-airunner || "$hostname" == *-ops-airunner-candidate ]] \
+      || die "airunner hostname must end in -ops-airunner or -ops-airunner-candidate"
+    require_exact_tags tag:airunner
+    ;;
+  back)
+    require_exact_tags tag:back
+    ;;
+  dmz)
+    require_exact_tags tag:dmz
+    ;;
+  iot)
+    require_exact_tags tag:iot
+    ;;
+  usr)
+    require_exact_tags tag:usr
+    ;;
+  streamer)
+    [[ "$hostname" == *-streamer ]] || die "streamer hostname must end in -streamer"
+    require_exact_tags tag:streamer
+    ;;
+  nextcloud)
+    require_exact_tags tag:nextcloud
+    ;;
+  immich)
+    require_exact_tags tag:immich
+    ;;
+  music)
+    require_exact_tags tag:music
+    ;;
+  music-upload)
+    [[ "$hostname" == *-music-upload ]] || die "music-upload hostname must end in -music-upload"
+    require_exact_tags tag:music-upload
+    ;;
+  print)
+    [[ "$hostname" == *-print ]] || die "print hostname must end in -print"
+    require_exact_tags tag:print
+    ;;
+  *)
+    die "unknown purpose: $purpose"
+    ;;
+esac
+
+tags_json="$(printf '%s\n' "${normalized_tags[@]}" | jq -R . | jq -s .)"
+oauth_tags="$(IFS=' '; printf '%s' "${normalized_tags[*]}")"
+body="$(
+  jq -n \
+    --argjson tags "$tags_json" \
+    --argjson ephemeral "$ephemeral" \
+    --argjson expirySeconds "$EXPIRY_SECONDS" \
+    '{
+      expirySeconds: $expirySeconds,
+      capabilities: {
+        devices: {
+          create: {
+            reusable: false,
+            ephemeral: $ephemeral,
+            preauthorized: true,
+            tags: $tags
+          }
+        }
+      }
+    }'
+)"
+
+if [ "$dry_run" -eq 1 ]; then
+  printf '%s\n' "$body"
+  exit 0
+fi
+
+if [ "$check_config" -eq 0 ]; then
+  require_active_controller
+fi
+
+if [ ! -r "$SECRET_FILE" ]; then
+  die "secret file not readable: $SECRET_FILE"
+fi
+
+# shellcheck source=/dev/null
+source "$SECRET_FILE"
+
+tailnet_id="${TAILNET_ID:-${TS_TAILNET_ID:-}}"
+client_id="${TS_AUTHKEY_OAUTH_CLIENT_ID:-${TS_OAUTH_CLIENT_ID:-}}"
+client_secret="${TS_AUTHKEY_OAUTH_CLIENT_SECRET:-${TS_OAUTH_CLIENT_SECRET:-}}"
+
+[ -n "$tailnet_id" ] || die "TAILNET_ID is missing from $SECRET_FILE"
+[ -n "$client_id" ] || die "TS_OAUTH_CLIENT_ID is missing from $SECRET_FILE"
+[ -n "$client_secret" ] || die "TS_OAUTH_CLIENT_SECRET is missing from $SECRET_FILE"
+
+token_response="$(mktemp)"
+key_response="$(mktemp)"
+cleanup() {
+  rm -f "$token_response" "$key_response"
+}
+trap cleanup EXIT
+
+response_message() {
+  local response_file="$1"
+  jq -r '.message // .error_description // .error // empty' <"$response_file" 2>/dev/null \
+    | tr '\n' ' ' \
+    | cut -c 1-300
+}
+
+token_curl_rc=0
+token_http_code="$(
+  curl -sS \
+    -o "$token_response" \
+    -w "%{http_code}" \
+    -u "$client_id:$client_secret" \
+    -d grant_type=client_credentials \
+    -d scope=auth_keys \
+    -d tags="$oauth_tags" \
+    "$API_BASE/oauth/token"
+)" || token_curl_rc=$?
+
+if [ "$token_curl_rc" -ne 0 ]; then
+  printf 'ts-authkey-mint: OAuth token request failed for scope auth_keys (curl rc %s)\n' "$token_curl_rc" >&2
+  exit 4
+fi
+
+if [ "$token_http_code" != "200" ]; then
+  token_error="$(response_message "$token_response")"
+  if [ -n "$token_error" ]; then
+    printf 'ts-authkey-mint: OAuth token request for scope auth_keys and tags %s failed (HTTP %s): %s\n' "$oauth_tags" "$token_http_code" "$token_error" >&2
+  else
+    printf 'ts-authkey-mint: OAuth token request for scope auth_keys and tags %s failed (HTTP %s); verify that the OAuth client in %s has the auth_keys scope and the required tag selection\n' "$oauth_tags" "$token_http_code" "$SECRET_FILE" >&2
+  fi
+  exit 4
+fi
+
+token="$(jq -er '.access_token' <"$token_response")" \
+  || die "OAuth token response did not contain access_token"
+
+if [ "$check_config" -eq 1 ]; then
+  printf 'ok\n'
+  exit 0
+fi
+
+key_curl_rc=0
+key_http_code="$(
+  curl -sS \
+    -o "$key_response" \
+    -w "%{http_code}" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    --data-binary "$body" \
+    "$API_BASE/tailnet/$tailnet_id/keys"
+)" || key_curl_rc=$?
+
+if [ "$key_curl_rc" -ne 0 ]; then
+  printf 'ts-authkey-mint: auth-key creation request failed for %s with tags %s (curl rc %s)\n' "$hostname" "${normalized_tags[*]}" "$key_curl_rc" >&2
+  exit 4
+fi
+
+if [ "$key_http_code" != "200" ] && [ "$key_http_code" != "201" ]; then
+  key_error="$(response_message "$key_response")"
+  if [ -n "$key_error" ]; then
+    printf 'ts-authkey-mint: auth-key creation failed for %s with tags %s (HTTP %s): %s\n' "$hostname" "${normalized_tags[*]}" "$key_http_code" "$key_error" >&2
+  else
+    printf 'ts-authkey-mint: auth-key creation failed for %s with tags %s (HTTP %s); verify OAuth tag selection and tagOwners\n' "$hostname" "${normalized_tags[*]}" "$key_http_code" >&2
+  fi
+  exit 4
+fi
+
+jq -er '.key' <"$key_response"

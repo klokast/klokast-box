@@ -1,0 +1,45 @@
+#
+# Summary:
+# - Restarts router services and waits for reconnection when network-facing router configuration changes.
+#
+- name: Queue router dhcpcd restart
+  # Restart dhcpcd out-of-band because bouncing the WAN lease can briefly drop
+  # the Tailscale SSH transport that Ansible is currently using.
+  ansible.builtin.shell: |
+    nohup sh -c 'sleep 2; rc-service dhcpcd restart' >/tmp/router-dhcpcd-restart.log 2>&1 </dev/null &
+  args:
+    executable: /bin/sh
+  listen: Restart router dhcpcd
+  changed_when: true
+
+- name: Wait for router reconnection after dhcpcd restart
+  ansible.builtin.wait_for_connection:
+    delay: 3
+    sleep: 2
+    timeout: 120
+  listen: Restart router dhcpcd
+
+- name: Remove stale IPv6 PD reject routes after dhcpcd restart
+  ansible.builtin.shell: |
+    set -eu
+    prefixes="$(ip -6 route | awk '/^unreachable [0-9a-f:]+\/[0-9]+ dev lo/ {print $2}')"
+    if [ -n "$prefixes" ]; then
+      for prefix in $prefixes; do
+        ip -6 route del unreachable "$prefix" dev lo
+      done
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  listen: Restart router dhcpcd
+  changed_when: false
+
+- name: Restart router dnsmasq
+  ansible.builtin.service:
+    name: dnsmasq
+    state: restarted
+
+- name: Restart router nftables
+  ansible.builtin.service:
+    name: nftables
+    state: restarted

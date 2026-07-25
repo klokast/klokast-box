@@ -1,0 +1,293 @@
+#
+# Summary:
+# - Converges the rootless Podman host baseline, registry policy, cgroup/runtime state, and host/container egress checks.
+#
+---
+- name: Select the Podman runtime owner
+  ansible.builtin.set_fact:
+    podman_host_runner_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+    podman_host_subid_start: "{{ podman_host_subid_start | default(100000) }}"
+    podman_host_subid_count: "{{ podman_host_subid_count | default(65536) }}"
+
+- name: Select the effective Podman host package set
+  ansible.builtin.set_fact:
+    podman_host_effective_packages: >-
+      {{
+        [
+          'iproute2',
+          'iptables',
+          'jq',
+          'nftables',
+          'podman',
+          'shadow-subids',
+        ] + (podman_host_extra_packages | default([]))
+      }}
+
+- name: Ensure Podman host packages are installed
+  community.general.apk:
+    name: "{{ podman_host_effective_packages }}"
+    state: present
+
+- name: Ensure the Podman config root exists
+  ansible.builtin.file:
+    path: /etc/containers
+    state: directory
+    mode: "0755"
+
+- name: Render the Podman registries policy
+  ansible.builtin.template:
+    src: registries.conf.j2
+    dest: /etc/containers/registries.conf
+    mode: "0644"
+
+- name: Ensure the Podman config drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/containers/containers.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Prefer the nftables firewall backend when Podman needs host firewall integration
+  ansible.builtin.copy:
+    dest: /etc/containers/containers.conf.d/10-klokast-network.conf
+    mode: "0644"
+    content: |
+      [network]
+      firewall_driver = "nftables"
+
+- name: Check whether the cgroups init script exists
+  ansible.builtin.stat:
+    path: /etc/init.d/cgroups
+  register: podman_host_cgroups_init_script
+
+- name: Ensure the cgroups service is enabled and running
+  ansible.builtin.service:
+    name: cgroups
+    enabled: true
+    state: started
+  when: podman_host_cgroups_init_script.stat.exists | default(false)
+
+- name: Check whether the optional podman init script exists
+  ansible.builtin.stat:
+    path: /etc/init.d/podman
+  register: podman_host_init_script
+
+- name: Ensure the optional rootful podman service is disabled when available
+  ansible.builtin.service:
+    name: podman
+    enabled: false
+    state: stopped
+  when: podman_host_init_script.stat.exists | default(false)
+
+- name: Ensure the TUN kernel module is available for rootless Podman networking
+  community.general.modprobe:
+    name: tun
+    state: present
+
+- name: Persist world-writable permissions for the TUN device
+  ansible.builtin.lineinfile:
+    path: /etc/mdev.conf
+    regexp: "^net/tun\\s+"
+    line: "net/tun root:netdev 0666"
+    insertbefore: "^net/tun\\[0-9\\]\\*\\s+"
+    mode: "0644"
+
+- name: Ensure the live TUN device is usable by rootless Podman networking
+  ansible.builtin.file:
+    path: /dev/net/tun
+    group: netdev
+    mode: "0666"
+
+- name: Ensure the Podman runner owns a subordinate UID range
+  ansible.builtin.lineinfile:
+    path: /etc/subuid
+    regexp: "^{{ podman_host_runner_user }}:"
+    line: "{{ podman_host_runner_user }}:{{ podman_host_subid_start }}:{{ podman_host_subid_count }}"
+    create: true
+    mode: "0644"
+  register: podman_host_subuid
+
+- name: Ensure the Podman runner owns a subordinate GID range
+  ansible.builtin.lineinfile:
+    path: /etc/subgid
+    regexp: "^{{ podman_host_runner_user }}:"
+    line: "{{ podman_host_runner_user }}:{{ podman_host_subid_start }}:{{ podman_host_subid_count }}"
+    create: true
+    mode: "0644"
+  register: podman_host_subgid
+
+- name: Collect the Podman runner UID
+  ansible.builtin.command: "id -u {{ podman_host_runner_user }}"
+  register: podman_host_runner_uid
+  changed_when: false
+
+- name: Install the rootless Podman runroot cleanup OpenRC service
+  ansible.builtin.template:
+    src: klokast-podman-runroot-cleanup.init.j2
+    dest: /etc/init.d/klokast-podman-runroot-cleanup
+    mode: "0755"
+
+- name: Check whether the rootless Podman runroot cleanup service is in boot runlevel
+  ansible.builtin.shell: |
+    set -eu
+    /sbin/rc-update show boot | awk '$1 == "klokast-podman-runroot-cleanup" { found=1 } END { exit found ? 0 : 1 }'
+  args:
+    executable: /bin/sh
+  register: podman_host_runroot_cleanup_boot_runlevel
+  changed_when: false
+  failed_when: false
+
+- name: Enable the rootless Podman runroot cleanup service at boot
+  ansible.builtin.command:
+    argv:
+      - /sbin/rc-update
+      - add
+      - klokast-podman-runroot-cleanup
+      - boot
+  when: podman_host_runroot_cleanup_boot_runlevel.rc != 0
+
+- name: Probe the rootless Podman runtime for stale boot state before migrations
+  ansible.builtin.command: /usr/bin/podman info --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  register: podman_host_runtime_probe
+  changed_when: false
+  failed_when: false
+
+- name: Clear stale rootless Podman runtime state after reboot
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/storage-run-{{ podman_host_runner_uid.stdout }}/containers"
+    - "/tmp/storage-run-{{ podman_host_runner_uid.stdout }}/libpod/tmp"
+  when: podman_host_runtime_probe.stderr is search('current system boot ID differs from cached boot ID')
+
+- name: Refresh the rootless Podman storage after subuid or subgid changes
+  ansible.builtin.command: /usr/bin/podman system migrate
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  changed_when: false
+  when:
+    - podman_host_subuid.changed or podman_host_subgid.changed
+
+- name: Collect the current Podman runtime information before any migration
+  ansible.builtin.command: /usr/bin/podman info --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  register: podman_host_pre_migrate_info
+  changed_when: false
+  failed_when: false
+
+- name: Parse the current Podman runtime information before any migration
+  ansible.builtin.set_fact:
+    podman_host_pre_migrate_info_json: "{{ podman_host_pre_migrate_info.stdout | from_json }}"
+  when:
+    - podman_host_pre_migrate_info.rc == 0
+    - podman_host_pre_migrate_info.stdout | length > 0
+
+- name: Refresh the rootless Podman runtime state when it is not yet on cgroup v2
+  ansible.builtin.command: /usr/bin/podman system migrate
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  changed_when: false
+  when:
+    - podman_host_pre_migrate_info.rc == 0
+    - (podman_host_pre_migrate_info_json.host.cgroupVersion | default('')) != 'v2'
+
+- name: Collect Podman runtime information
+  ansible.builtin.command: /usr/bin/podman info --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  register: podman_host_info
+  changed_when: false
+
+- name: Parse Podman runtime information
+  ansible.builtin.set_fact:
+    podman_host_info_json: "{{ podman_host_info.stdout | from_json }}"
+
+- name: Check whether the Alpine test image is already present
+  ansible.builtin.command: "/usr/bin/podman image exists {{ podman_test_image }}"
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  register: podman_host_alpine_image
+  failed_when: false
+  changed_when: false
+
+- name: Pull the Alpine test image when missing
+  ansible.builtin.command: "/usr/bin/podman pull {{ podman_test_image }}"
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  when: podman_host_alpine_image.rc != 0
+  register: podman_host_pull
+  changed_when: true
+
+- name: Create a temporary bind-mount probe directory as the Podman runner
+  ansible.builtin.command: /bin/mktemp -d /tmp/podman-host-probe.XXXXXX
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  register: podman_host_probe_dir
+  changed_when: false
+
+- name: Run the Podman bind-mount and in-container apk probe
+  ansible.builtin.command:
+    argv:
+      - podman
+      - run
+      - --rm
+      - --pull=never
+      - -v
+      - "{{ podman_host_probe_dir.stdout }}:/work"
+      - "{{ podman_test_image }}"
+      - sh
+      - -lc
+      - >-
+        test -d /work &&
+        printf '%s\n' 'bind-mount-ok' >/work/probe.txt &&
+        apk add --no-cache {{ podman_test_package | default('git') }} >/dev/null &&
+        test -s /work/probe.txt
+  become: true
+  become_user: "{{ podman_host_runner_user }}"
+  register: podman_host_probe
+  changed_when: false
+  failed_when: false
+
+- name: Check whether the Podman probe wrote its host-side marker file
+  ansible.builtin.stat:
+    path: "{{ podman_host_probe_dir.stdout }}/probe.txt"
+  register: podman_host_probe_file_stat
+
+- name: Read back the Podman bind-mount probe file
+  ansible.builtin.slurp:
+    src: "{{ podman_host_probe_dir.stdout }}/probe.txt"
+  register: podman_host_probe_file
+  when: podman_host_probe_file_stat.stat.exists
+  failed_when: false
+
+- name: Remove the temporary Podman probe directory
+  ansible.builtin.file:
+    path: "{{ podman_host_probe_dir.stdout }}"
+    state: absent
+  changed_when: false
+
+- name: Assert the Podman host acceptance checks passed
+  ansible.builtin.assert:
+    that:
+      - podman_host_info.rc == 0
+      - podman_host_info_json.host.security.rootless | default(false)
+      - (podman_host_info_json.host.cgroupVersion | default('')) == 'v2'
+      - (podman_host_info_json.host.networkBackend | default('')) | length > 0
+      - podman_host_probe.rc == 0
+      - podman_host_probe_file_stat.stat.exists
+      - (podman_host_probe_file.content | default('') | b64decode | trim) == 'bind-mount-ok'
+    fail_msg: >-
+      Podman host verification failed on {{ inventory_hostname }}.
+
+- name: Show the verified Podman host state
+  ansible.builtin.debug:
+    msg:
+      - "{{ inventory_hostname }}"
+      - "{{ podman_test_image }}"
+      - "runner_user={{ podman_host_runner_user }}"
+      - "rootless={{ podman_host_info_json.host.security.rootless | default(false) | ternary('yes', 'no') }}"
+      - "network_backend={{ podman_host_info_json.host.networkBackend | default('unknown') }}"
+      - "container_apk_probe={{ podman_test_package | default('git') }}"

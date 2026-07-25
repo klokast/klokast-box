@@ -1,0 +1,16 @@
+---
+- name: Verify platform resources on router VMs
+  hosts: router
+  gather_facts: false
+  tasks:
+    - name: Verify router platform-resource policy
+      ansible.builtin.import_role:
+        name: app-resources-verification
+
+- name: Verify platform resources on Podman VMs
+  hosts: podman_vms
+  gather_facts: false
+  tasks:
+    - name: Verify Podman VM platform-resource policy
+      ansible.builtin.import_role:
+        name: app-resources-verification

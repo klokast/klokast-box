@@ -1,0 +1,38 @@
+---
+- name: Converge the dmz VM as a Podman host
+  hosts: dmz
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    vm_removed_packages:
+      - openssh
+  pre_tasks:
+    - name: Gather dmz steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Keep the dmz Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the dmz SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the dmz VM base system converged
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Converge the dmz Podman host
+      ansible.builtin.import_role:
+        name: podman-host
+
+    - name: Verify dmz host and container internet egress
+      ansible.builtin.import_role:
+        name: vm-egress-verification
+
+    - name: Show the dmz Podman host state
+      ansible.builtin.debug:
+        msg:
+          - "DMZ VM {{ inventory_hostname }} is ready for rootless Podman workloads."
+          - "It remains dual-homed by design: dmz front-side plus backend-side reachability."
+          - "Direct operator access should now use: tailscale ssh neo@{{ node_hostname }}"

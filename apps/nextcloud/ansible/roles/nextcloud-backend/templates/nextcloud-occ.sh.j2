@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -un)" = "{{ vm_admin_user_name }}" ]; then
+    exec /usr/bin/podman exec --user www-data {{ nextcloud_fpm_container_name | quote }} php occ "$@"
+fi
+
+exec /usr/bin/doas -u {{ vm_admin_user_name }} /usr/bin/podman exec --user www-data {{ nextcloud_fpm_container_name | quote }} php occ "$@"

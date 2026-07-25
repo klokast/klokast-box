@@ -1,0 +1,56 @@
+---
+- name: Normalize platform app VM inputs for this dom0
+  ansible.builtin.set_fact:
+    platform_app_vm_host_specs: "{{ platform_app_vm_host_specs | default([]) }}"
+
+- name: Persist the dom0 bridge configuration for platform app VMs
+  ansible.builtin.import_role:
+    name: network-bridges
+  when:
+    - platform_app_vm_host_specs | length > 0
+
+- name: Ensure the dom0 runtime bridges exist for platform app VMs
+  ansible.builtin.import_role:
+    name: dom0-bridge-runtime
+  when:
+    - platform_app_vm_host_specs | length > 0
+
+- name: Ensure platform app VM marker directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-vms
+    state: directory
+    mode: "0755"
+  when: platform_app_vm_host_specs | length > 0
+
+- name: Converge platform app VMs on this dom0
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/platform-app-vm-one.yml"
+  loop: "{{ platform_app_vm_host_specs }}"
+  loop_control:
+    loop_var: app_vm
+    label: "{{ app_vm.inventory_hostname }}"
+
+- name: Flush dom0 handlers after platform app VM changes
+  ansible.builtin.meta: flush_handlers
+  when:
+    - platform_app_vm_host_specs | length > 0
+
+- name: Persist platform app VM state on the diskless dom0 host
+  ansible.builtin.shell: |
+    set -eu
+    apk cache sync >/dev/null
+    backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+    if [ -n "$backupdir" ]; then
+      mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+      if [ -n "$mount_info" ]; then
+        set -- $mount_info
+        case ",$2," in
+          *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+        esac
+      fi
+    fi
+    lbu commit -d
+  args:
+    executable: /bin/sh
+  changed_when: false
+  when:
+    - platform_app_vm_host_specs | length > 0

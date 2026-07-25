@@ -1,0 +1,63 @@
+---
+- name: Build the NanoKVM virtual media command
+  ansible.builtin.set_fact:
+    nanokvm_virtual_media_argv:
+      - "{{ nanokvm_virtual_media_bin }}"
+      - "{{ nanokvm_virtual_media_action }}"
+      - --host
+      - "{{ nanokvm_virtual_media_host }}"
+      - --user
+      - "{{ nanokvm_virtual_media_user }}"
+      - --data-dir
+      - "{{ nanokvm_virtual_media_dest }}"
+      - --magicdns-suffix
+      - "{{ nanokvm_virtual_media_magicdns_suffix }}"
+  when:
+    - nanokvm_virtual_media_enabled | bool
+    - nanokvm_virtual_media_action != '--load'
+
+- name: Build the NanoKVM virtual media load command
+  ansible.builtin.set_fact:
+    nanokvm_virtual_media_argv:
+      - "{{ nanokvm_virtual_media_bin }}"
+      - --load
+      - "{{ nanokvm_virtual_media_image }}"
+      - --host
+      - "{{ nanokvm_virtual_media_host }}"
+      - --user
+      - "{{ nanokvm_virtual_media_user }}"
+      - --data-dir
+      - "{{ nanokvm_virtual_media_dest }}"
+      - --magicdns-suffix
+      - "{{ nanokvm_virtual_media_magicdns_suffix }}"
+  when:
+    - nanokvm_virtual_media_enabled | bool
+    - nanokvm_virtual_media_action == '--load'
+
+- name: Add NanoKVM SHA512 sidecar verification
+  ansible.builtin.set_fact:
+    nanokvm_virtual_media_argv: "{{ nanokvm_virtual_media_argv + ['--verify-sha512-sidecar'] }}"
+  when:
+    - nanokvm_virtual_media_enabled | bool
+    - nanokvm_virtual_media_action == '--load'
+    - nanokvm_virtual_media_verify_sha512_sidecar | bool
+
+- name: Manage NanoKVM virtual media
+  ansible.builtin.command:
+    argv: "{{ nanokvm_virtual_media_argv }}"
+  delegate_to: localhost
+  become: false
+  register: nanokvm_virtual_media_result
+  failed_when: nanokvm_virtual_media_result.rc != 0
+  changed_when:
+    - nanokvm_virtual_media_result.rc == 0
+    - (nanokvm_virtual_media_result.stdout | from_json).changed | bool
+  when: nanokvm_virtual_media_enabled | bool
+
+- name: Show NanoKVM virtual media result
+  ansible.builtin.debug:
+    msg: "{{ nanokvm_virtual_media_result.stdout | from_json }}"
+  when:
+    - nanokvm_virtual_media_enabled | bool
+    - nanokvm_virtual_media_result is defined
+    - nanokvm_virtual_media_result.rc == 0

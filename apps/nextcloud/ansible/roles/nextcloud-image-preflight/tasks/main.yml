@@ -1,0 +1,67 @@
+---
+- name: Assert the pinned image lock is available
+  ansible.builtin.assert:
+    that:
+      - nextcloud_images is mapping
+      - nextcloud_images | length > 0
+    fail_msg: >-
+      apps/nextcloud/images.lock.yml must be loaded before running image
+      preflight.
+
+- name: Ensure the Nextcloud config root exists
+  ansible.builtin.file:
+    path: /etc/klokast/nextcloud
+    state: directory
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0750"
+  become: true
+
+- name: Ensure /usr/local/sbin exists for app helpers
+  ansible.builtin.file:
+    path: /usr/local/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Render the image source preflight helper
+  ansible.builtin.template:
+    src: nextcloud-image-source-preflight.py.j2
+    dest: /usr/local/sbin/nextcloud-image-source-preflight
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Resolve the best image source profile for this VM
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/nextcloud-image-source-preflight
+      - --profile
+      - "{{ nextcloud_image_source_profile | default('auto') }}"
+      - --verify-pull
+      - --pull-user
+      - "{{ vm_admin_user_name }}"
+      - --write
+      - /etc/klokast/nextcloud/image-sources.json
+  become: true
+  register: nextcloud_image_preflight
+  changed_when: "'selected_profile' in nextcloud_image_preflight.stdout"
+
+- name: Read the selected image source map
+  ansible.builtin.slurp:
+    src: /etc/klokast/nextcloud/image-sources.json
+  become: true
+  register: nextcloud_image_sources_slurp
+
+- name: Publish the selected image source map
+  ansible.builtin.set_fact:
+    nextcloud_image_sources: "{{ nextcloud_image_sources_slurp.content | b64decode | from_json }}"
+
+- name: Show the selected image source profile
+  ansible.builtin.debug:
+    msg:
+      - "Nextcloud image source profile on {{ inventory_hostname }}: {{ nextcloud_image_sources.profile }}"
+      - "Verified images: {{ nextcloud_image_sources.images.keys() | list | sort }}"

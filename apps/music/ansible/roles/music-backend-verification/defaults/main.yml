@@ -1,0 +1,25 @@
+---
+music_box: ""
+music_service_name: klokast-music
+music_pod_name: klokast-music
+music_container_snapserver_name: music-snapserver
+music_container_mpd_name: music-mpd
+music_container_mympd_name: music-mympd
+music_container_ui_ingress_name: music-ui-ingress
+music_container_upload_ingress_name: music-upload-ingress
+music_enable_private_tailscale_ui: false
+music_mympd_port: 18082
+music_mympd_bind_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+music_snapserver_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+music_snapserver_port: 1704
+music_library_volume: klokast-music-library
+music_playlist_volume: klokast-music-playlists
+music_mpd_state_volume: klokast-music-mpd-state
+music_mympd_state_volume: klokast-music-mympd-state
+music_runtime_volume: klokast-music-runtime
+music_ui_tailscale_state_volume: klokast-music-ui-ts-state
+music_upload_tailscale_state_volume: klokast-music-upload-ts-state
+music_private_tailscale_hostname: "{{ music_box }}-music"
+music_private_tailscale_tag: tag:music
+music_upload_tailscale_hostname: "{{ music_box }}-music-upload"
+music_upload_tailscale_tag: tag:music-upload

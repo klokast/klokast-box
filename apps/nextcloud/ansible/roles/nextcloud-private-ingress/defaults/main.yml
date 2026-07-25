@@ -1,0 +1,30 @@
+---
+nextcloud_private_ingress_service_name: nextcloud-private-ingress
+nextcloud_private_ingress_package: tailscale
+nextcloud_private_ingress_proxy_service_name: nextcloud-private-ingress-proxy
+nextcloud_private_ingress_proxy_package: nginx
+nextcloud_private_ingress_packages:
+  - "{{ nextcloud_private_ingress_package }}"
+  - "{{ nextcloud_private_ingress_proxy_package }}"
+nextcloud_private_ingress_root: /etc/klokast/nextcloud-private-ingress
+nextcloud_private_ingress_secret_root: "{{ nextcloud_private_ingress_root }}/secrets"
+nextcloud_private_ingress_state_root: /var/lib/klokast/nextcloud-private-ingress
+nextcloud_private_ingress_run_root: /run/nextcloud-private-ingress
+nextcloud_private_ingress_log_root: /var/log/klokast/nextcloud-private-ingress
+nextcloud_private_ingress_socket: "{{ nextcloud_private_ingress_run_root }}/tailscaled.sock"
+nextcloud_private_ingress_pidfile: "{{ nextcloud_private_ingress_run_root }}/tailscaled.pid"
+nextcloud_private_ingress_state_file: "{{ nextcloud_private_ingress_state_root }}/tailscaled.state"
+nextcloud_private_ingress_proxy_config: "{{ nextcloud_private_ingress_root }}/nginx.conf"
+nextcloud_private_ingress_proxy_root: "{{ nextcloud_private_ingress_state_root }}/nginx"
+nextcloud_private_ingress_proxy_pidfile: "{{ nextcloud_private_ingress_run_root }}/nginx.pid"
+nextcloud_private_ingress_proxy_supervisor_pidfile: "{{ nextcloud_private_ingress_run_root }}/nginx-supervise.pid"
+
+nextcloud_private_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-nextcloud
+nextcloud_private_tailscale_hostname: next
+nextcloud_private_tailscale_tag: tag:nextcloud
+nextcloud_private_tailscale_accept_dns: false
+nextcloud_magicdns_suffix: example.ts.net
+nextcloud_private_domain: "{{ nextcloud_private_tailscale_hostname }}.{{ nextcloud_magicdns_suffix }}"
+nextcloud_private_backend_upstream: "http://{{ platform_zones.bak.vm_ipv4_address }}:8080"
+nextcloud_private_ingress_proxy_port: 18080
+nextcloud_private_ingress_local_upstream: "http://127.0.0.1:{{ nextcloud_private_ingress_proxy_port }}"

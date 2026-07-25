@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TAILNET_SUFFIX="${KLOKAST_TAILNET_SUFFIX:-example.ts.net}"
+NEXTCLOUD_HOST="${KLOKAST_NEXTCLOUD_HOST:-next.${TAILNET_SUFFIX}}"
+TAILNET_IPV4_CIDR="${KLOKAST_TAILNET_IPV4_CIDR:-100.64.0.0/10}"
+TAILNET_IPV6_CIDR="${KLOKAST_TAILNET_IPV6_CIDR:-fd7a:115c:a1e0::/48}"
+NEXTCLOUD_STATUS_URL="${KLOKAST_NEXTCLOUD_STATUS_URL:-https://${NEXTCLOUD_HOST}/status.php}"
+
+DEFAULT_SERVICES=("Wi-Fi" "iPhone USB")
+REQUIRED_BYPASS=(
+  "$TAILNET_IPV4_CIDR"
+  "*.${TAILNET_SUFFIX}"
+  "$NEXTCLOUD_HOST"
+)
+
+usage() {
+  cat <<EOF
+Usage: $0 COMMAND [OPTIONS]
+
+Commands:
+  check                 Show missing macOS proxy bypass entries.
+  apply                 Add required macOS proxy bypass entries.
+  test                  Test the private Nextcloud URL with curl.
+  clash-rules           Print Clash Verge DIRECT rules to prepend.
+
+Options:
+  --service NAME        Limit check/apply to a macOS network service.
+                        May be repeated. Default: Wi-Fi and iPhone USB if present.
+  --all-services        Apply/check every macOS network service.
+
+Environment overrides:
+  KLOKAST_TAILNET_SUFFIX       default: $TAILNET_SUFFIX
+  KLOKAST_NEXTCLOUD_HOST       default: $NEXTCLOUD_HOST
+  KLOKAST_TAILNET_IPV4_CIDR    default: $TAILNET_IPV4_CIDR
+  KLOKAST_TAILNET_IPV6_CIDR    default: $TAILNET_IPV6_CIDR
+  KLOKAST_NEXTCLOUD_STATUS_URL default: $NEXTCLOUD_STATUS_URL
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+need_macos_networksetup() {
+  [ "$(uname -s)" = "Darwin" ] || die "macOS is required for networksetup operations"
+  command -v networksetup >/dev/null 2>&1 || die "networksetup not found"
+}
+
+network_services() {
+  need_macos_networksetup
+  networksetup -listallnetworkservices | sed '1d; s/^\*//'
+}
+
+service_exists() {
+  local service="$1"
+  local candidate
+  while IFS= read -r candidate; do
+    [ "$candidate" = "$service" ] && return 0
+  done < <(network_services)
+  return 1
+}
+
+selected_services=()
+all_services=false
+
+emit_selected_services() {
+  local service
+
+  if [ "${#selected_services[@]}" -gt 0 ]; then
+    for service in "${selected_services[@]}"; do
+      service_exists "$service" || die "network service not found: $service"
+      printf '%s\n' "$service"
+    done
+    return
+  fi
+
+  if [ "$all_services" = true ]; then
+    network_services
+    return
+  fi
+
+  for service in "${DEFAULT_SERVICES[@]}"; do
+    service_exists "$service" && printf '%s\n' "$service"
+  done
+}
+
+current_bypass_domains() {
+  local service="$1"
+  local output
+
+  output="$(networksetup -getproxybypassdomains "$service" 2>/dev/null || true)"
+  case "$output" in
+    "There aren't any bypass domains set on "*"."|"")
+      return 0
+      ;;
+  esac
+  printf '%s\n' "$output" | sed '/^[[:space:]]*$/d'
+}
+
+contains_item() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+check_service() {
+  local service="$1"
+  local current=()
+  local item
+  local missing=0
+
+  while IFS= read -r item; do
+    current+=("$item")
+  done < <(current_bypass_domains "$service")
+
+  printf '%s\n' "[$service]"
+  for item in "${REQUIRED_BYPASS[@]}"; do
+    if contains_item "$item" "${current[@]}"; then
+      printf '  ok      %s\n' "$item"
+    else
+      printf '  missing %s\n' "$item"
+      missing=1
+    fi
+  done
+
+  return "$missing"
+}
+
+apply_service() {
+  local service="$1"
+  local current=()
+  local merged=()
+  local item
+  local changed=false
+
+  while IFS= read -r item; do
+    current+=("$item")
+  done < <(current_bypass_domains "$service")
+
+  merged=("${current[@]}")
+  for item in "${REQUIRED_BYPASS[@]}"; do
+    if ! contains_item "$item" "${merged[@]}"; then
+      merged+=("$item")
+      changed=true
+    fi
+  done
+
+  if [ "$changed" = false ]; then
+    printf '%s\n' "[$service] already has required bypass entries"
+    return 0
+  fi
+
+  printf '%s\n' "[$service] updating macOS proxy bypass entries"
+  if [ "$(id -u)" -eq 0 ]; then
+    networksetup -setproxybypassdomains "$service" "${merged[@]}"
+  else
+    sudo networksetup -setproxybypassdomains "$service" "${merged[@]}"
+  fi
+}
+
+cmd_check() {
+  local service
+  local failed=0
+  while IFS= read -r service; do
+    [ -n "$service" ] || continue
+    check_service "$service" || failed=1
+  done < <(emit_selected_services)
+  return "$failed"
+}
+
+cmd_apply() {
+  local service
+  while IFS= read -r service; do
+    [ -n "$service" ] || continue
+    apply_service "$service"
+  done < <(emit_selected_services)
+}
+
+cmd_test() {
+  command -v curl >/dev/null 2>&1 || die "curl not found"
+  local failed=0
+
+  printf '%s\n' "Testing via normal environment:"
+  curl -I --connect-timeout 5 --max-time 20 "$NEXTCLOUD_STATUS_URL" || failed=1
+  printf '\n%s\n' "Testing with proxies bypassed:"
+  curl --noproxy '*' -I --connect-timeout 5 --max-time 20 "$NEXTCLOUD_STATUS_URL" || failed=1
+
+  return "$failed"
+}
+
+cmd_clash_rules() {
+  cat <<EOF
+DOMAIN,${NEXTCLOUD_HOST},DIRECT
+DOMAIN-SUFFIX,${TAILNET_SUFFIX},DIRECT
+IP-CIDR,${TAILNET_IPV4_CIDR},DIRECT,no-resolve
+IP-CIDR6,${TAILNET_IPV6_CIDR},DIRECT,no-resolve
+EOF
+}
+
+command_name="${1:-}"
+[ -n "$command_name" ] || {
+  usage
+  exit 2
+}
+shift
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --service)
+      [ "$#" -ge 2 ] || die "--service needs a value"
+      selected_services+=("$2")
+      shift 2
+      ;;
+    --all-services)
+      all_services=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+case "$command_name" in
+  check) cmd_check ;;
+  apply) cmd_apply ;;
+  test) cmd_test ;;
+  clash-rules) cmd_clash_rules ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

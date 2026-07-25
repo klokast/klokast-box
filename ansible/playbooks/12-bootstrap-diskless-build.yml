@@ -1,0 +1,32 @@
+---
+- name: Build diskless Alpine install artifacts
+  hosts: bootstrap
+  gather_facts: true
+  tasks:
+    - name: Prepare diskless-install prerequisites
+      ansible.builtin.import_role:
+        name: diskless-prereqs
+
+    - name: Prepare the Alpine diskless seed source
+      ansible.builtin.import_role:
+        name: diskless-seed-source
+
+    - name: Install the EFI bootloader and boot artifacts
+      ansible.builtin.import_role:
+        name: diskless-bootloader
+
+    - name: Seed the Alpine boot repository
+      ansible.builtin.import_role:
+        name: diskless-boot-repository
+
+    - name: Build the first diskless apkovl archive
+      ansible.builtin.import_role:
+        name: diskless-apkovl
+
+    - name: Render the initial diskless GRUB configuration
+      ansible.builtin.import_role:
+        name: diskless-grub
+
+    - name: Render managed EFI GRUB loader configurations
+      ansible.builtin.import_role:
+        name: efi-grub-loader

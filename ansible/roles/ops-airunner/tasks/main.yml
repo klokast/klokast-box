@@ -1,0 +1,731 @@
+#
+# Summary:
+# - Converges a Codex/AI runner container on an ops controller without
+#   mounting controller private state or root-only secrets into the container.
+#
+---
+- name: Assert ops airunner inputs are defined
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_name | default('') is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - ops_airunner_user | default('') is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - ops_airunner_home | default('') is match('^/home/')
+      - ops_airunner_repo_parent | default('') is match('^' ~ ops_airunner_home ~ '/')
+      - ops_airunner_repo_dest | default('') is match('^' ~ ops_airunner_repo_parent ~ '/')
+      - ops_airunner_repo_url | default('') == 'git@github.com:klokast/klokast-box.git'
+      - ops_airunner_repo_version | default('') == 'main'
+      - ops_airunner_git_ssh_key_path | default('') is match('^' ~ ops_airunner_home ~ '/.ssh/')
+      - ops_airunner_state_root | default('') is match('^/')
+      - ops_airunner_image | default('') | length > 0
+      - ops_airunner_service_name | default('') is match('^airunner(-candidate)?$')
+      - ops_airunner_service_path | default('') == '/etc/init.d/' ~ ops_airunner_service_name
+      - ops_airunner_shell_wrapper | default('') is match('^/usr/local/bin/airunner(-candidate)?-shell$')
+      - ops_airunner_sudoers_path | default('') is match('^/etc/sudoers.d/')
+      - ops_airunner_network_name | default('') == 'airunner'
+      - ops_airunner_network_interface | default('') == 'airunner0'
+      - ops_airunner_network_subnet | default('') is match('^[0-9./]+$')
+      - ops_airunner_network_gateway | default('') is match('^[0-9.]+$')
+      - ops_airunner_netavark_firewall_driver | default('') == 'nftables'
+      - ops_airunner_dns_servers | default([]) | length > 0
+      - ops_airunner_tailscale_authkey_wrapper | default('') is match('^/')
+      - ops_airunner_tailscale_advertise_tags | default('') == 'tag:airunner'
+      - ops_airunner_tailscale_expected_tag | default('') == 'tag:airunner'
+    fail_msg: Ops airunner variables are incomplete.
+
+- name: Ensure airunner container runtime packages are installed
+  community.general.apk:
+    name: "{{ ops_airunner_packages | default(['podman']) }}"
+    state: present
+
+- name: Ensure the system Podman configuration directory exists
+  ansible.builtin.file:
+    path: /etc/containers/containers.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Use Netavark's native firewall driver on the nftables-managed ops VM
+  ansible.builtin.copy:
+    dest: /etc/containers/containers.conf.d/30-airunner-network.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [network]
+      firewall_driver = "{{ ops_airunner_netavark_firewall_driver }}"
+
+- name: Check the TUN device required by kernel Tailscale
+  ansible.builtin.stat:
+    path: /dev/net/tun
+  register: ops_airunner_tun_device
+
+- name: Assert the TUN device is available
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_tun_device.stat.exists | default(false)
+      - ops_airunner_tun_device.stat.ischr | default(false)
+    fail_msg: /dev/net/tun is required for the isolated airunner.
+
+- name: Check the dedicated airunner Podman network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - network
+      - exists
+      - "{{ ops_airunner_network_name }}"
+  register: ops_airunner_network_exists
+  changed_when: false
+  failed_when: ops_airunner_network_exists.rc not in [0, 1]
+
+- name: Create the dedicated airunner Podman network
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          '/usr/bin/podman',
+          'network',
+          'create',
+          '--driver', 'bridge',
+          '--interface-name', ops_airunner_network_interface,
+          '--subnet', ops_airunner_network_subnet
+        ]
+        + (ops_airunner_dns_servers | map('regex_replace', '^', '--dns=') | list)
+        + [ops_airunner_network_name]
+      }}
+  when: ops_airunner_network_exists.rc == 1
+  changed_when: true
+
+- name: Inspect the dedicated airunner Podman network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - network
+      - inspect
+      - "{{ ops_airunner_network_name }}"
+  register: ops_airunner_network_inspect
+  changed_when: false
+
+- name: Record the airunner Podman network
+  ansible.builtin.set_fact:
+    ops_airunner_network: "{{ (ops_airunner_network_inspect.stdout | from_json) | first }}"
+
+- name: Assert the airunner Podman network is isolated and stable
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_network.driver == 'bridge'
+      - ops_airunner_network.network_interface == ops_airunner_network_interface
+      - (ops_airunner_network.subnets | first).subnet == ops_airunner_network_subnet
+      - (ops_airunner_network.subnets | first).gateway == ops_airunner_network_gateway
+    fail_msg: The existing airunner Podman network does not match the managed definition.
+
+- name: Check whether the cgroups init script exists for Podman
+  ansible.builtin.stat:
+    path: /etc/init.d/cgroups
+  register: ops_airunner_cgroups_init_script
+
+- name: Ensure cgroups are mounted for Podman builds
+  ansible.builtin.service:
+    name: cgroups
+    enabled: true
+    state: started
+  when: ops_airunner_cgroups_init_script.stat.exists | default(false)
+
+- name: Ensure the airunner user exists
+  ansible.builtin.user:
+    name: "{{ ops_airunner_user }}"
+    shell: /bin/ash
+    create_home: true
+    password: "*"
+
+- name: Ensure airunner host directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ ops_airunner_home }}"
+      owner: "{{ ops_airunner_user }}"
+      group: "{{ ops_airunner_user }}"
+      mode: "0700"
+    - path: "{{ ops_airunner_home }}/.codex"
+      owner: "{{ ops_airunner_user }}"
+      group: "{{ ops_airunner_user }}"
+      mode: "0700"
+    - path: "{{ ops_airunner_home }}/.ssh"
+      owner: "{{ ops_airunner_user }}"
+      group: "{{ ops_airunner_user }}"
+      mode: "0700"
+    - path: "{{ ops_airunner_home }}/.cache"
+      owner: "{{ ops_airunner_user }}"
+      group: "{{ ops_airunner_user }}"
+      mode: "0700"
+    - path: "{{ ops_airunner_home }}/src"
+      owner: "{{ ops_airunner_user }}"
+      group: "{{ ops_airunner_user }}"
+      mode: "0750"
+    - path: "{{ ops_airunner_repo_parent }}"
+      owner: "{{ ops_airunner_user }}"
+      group: "{{ ops_airunner_user }}"
+      mode: "0750"
+    - path: "{{ ops_airunner_state_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ ops_airunner_tailscale_state_dir }}"
+      owner: root
+      group: root
+      mode: "0700"
+
+- name: Install pinned GitHub host keys for the airunner
+  ansible.builtin.known_hosts:
+    path: "{{ ops_airunner_home }}/.ssh/known_hosts"
+    name: "{{ ops_github_ssh_host_key_alias }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ ops_github_known_hosts }}"
+
+- name: Set strict permissions on the airunner GitHub known-hosts file
+  ansible.builtin.file:
+    path: "{{ ops_airunner_home }}/.ssh/known_hosts"
+    owner: "{{ ops_airunner_user }}"
+    group: "{{ ops_airunner_user }}"
+    mode: "0600"
+
+- name: Configure GitHub SSH-over-HTTPS for the airunner
+  ansible.builtin.blockinfile:
+    path: "{{ ops_airunner_home }}/.ssh/config"
+    create: true
+    owner: "{{ ops_airunner_user }}"
+    group: "{{ ops_airunner_user }}"
+    mode: "0600"
+    marker: "# {mark} klokast airunner GitHub"
+    insertbefore: BOF
+    block: |
+      Host {{ ops_github_ssh_host }}
+          HostName {{ ops_github_ssh_hostname }}
+          Port {{ ops_github_ssh_port }}
+          User git
+          HostKeyAlias {{ ops_github_ssh_host_key_alias }}
+          IdentityFile {{ ops_airunner_git_ssh_key_path }}
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+          UserKnownHostsFile {{ ops_airunner_home }}/.ssh/known_hosts
+
+- name: Generate the airunner GitHub deploy key when missing
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ ops_airunner_user }}"
+      - env
+      - "HOME={{ ops_airunner_home }}"
+      - ssh-keygen
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "{{ ops_airunner_user }}@{{ node_name }}-ops-airunner klokast-box deploy key"
+      - -f
+      - "{{ ops_airunner_git_ssh_key_path }}"
+    creates: "{{ ops_airunner_git_ssh_key_path }}"
+
+- name: Enforce strict airunner GitHub deploy-key permissions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ ops_airunner_user }}"
+    group: "{{ ops_airunner_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ ops_airunner_git_ssh_key_path }}"
+      mode: "0600"
+    - path: "{{ ops_airunner_git_ssh_key_path }}.pub"
+      mode: "0644"
+
+- name: Read the airunner GitHub deploy public key
+  ansible.builtin.slurp:
+    path: "{{ ops_airunner_git_ssh_key_path }}.pub"
+  register: ops_airunner_github_public_key
+
+- name: Check whether GitHub accepts the airunner deploy key
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ ops_airunner_user }}"
+      - env
+      - "HOME={{ ops_airunner_home }}"
+      - git
+      - ls-remote
+      - "{{ ops_airunner_repo_url }}"
+      - HEAD
+  register: ops_airunner_github_access
+  changed_when: false
+  failed_when: false
+
+- name: Require the airunner deploy key to be registered in GitHub
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_github_access.rc == 0
+    fail_msg: |
+      Register this public key as a write-enabled deploy key on klokast/klokast-box, then rerun convergence:
+      {{ ops_airunner_github_public_key.content | b64decode | trim }}
+
+- name: Configure airunner Git defaults
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ ops_airunner_user }}"
+      - env
+      - "HOME={{ ops_airunner_home }}"
+      - git
+      - config
+      - --global
+      - "{{ item.name }}"
+      - "{{ item.value }}"
+  loop:
+    - name: user.name
+      value: "{{ ops_airunner_git_user_name }}"
+    - name: user.email
+      value: "{{ ops_airunner_git_user_email }}"
+    - name: init.defaultBranch
+      value: main
+    - name: core.editor
+      value: vim
+  changed_when: false
+
+- name: Inspect the airunner repository destination
+  ansible.builtin.stat:
+    path: "{{ ops_airunner_repo_dest }}"
+  register: ops_airunner_repo_path
+
+- name: Inspect an existing airunner Git checkout
+  ansible.builtin.stat:
+    path: "{{ ops_airunner_repo_dest }}/.git"
+  register: ops_airunner_repo_git_path
+  when: ops_airunner_repo_path.stat.exists | default(false)
+
+- name: Reject an unmanaged airunner repository destination
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_repo_git_path.stat.isdir | default(false)
+    fail_msg: "{{ ops_airunner_repo_dest }} exists but is not a Git checkout; refusing to replace it."
+  when: ops_airunner_repo_path.stat.exists | default(false)
+
+- name: Clone the airunner repository when absent
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ ops_airunner_user }}"
+      - env
+      - "HOME={{ ops_airunner_home }}"
+      - git
+      - clone
+      - --branch
+      - "{{ ops_airunner_repo_version }}"
+      - --single-branch
+      - "{{ ops_airunner_repo_url }}"
+      - "{{ ops_airunner_repo_dest }}"
+  when: not (ops_airunner_repo_path.stat.exists | default(false))
+
+- name: Read the airunner repository origin
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ ops_airunner_user }}"
+      - env
+      - "HOME={{ ops_airunner_home }}"
+      - git
+      - -C
+      - "{{ ops_airunner_repo_dest }}"
+      - remote
+      - get-url
+      - origin
+  register: ops_airunner_repo_origin
+  changed_when: false
+
+- name: Assert the airunner repository origin is exact
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_repo_origin.stdout == ops_airunner_repo_url
+    fail_msg: "Unexpected origin for {{ ops_airunner_repo_dest }}; refusing to rewrite it."
+
+- name: Install airunner interactive shell defaults
+  ansible.builtin.blockinfile:
+    path: "{{ ops_airunner_home }}/.bashrc"
+    create: true
+    owner: "{{ ops_airunner_user }}"
+    group: "{{ ops_airunner_user }}"
+    mode: "0644"
+    marker: "# {mark} klokast airunner interactive shell"
+    block: |
+      export EDITOR=vim
+      export VISUAL=vim
+      export GIT_EDITOR=vim
+      export IGNOREEOF=999
+
+      if command -v tmux >/dev/null 2>&1 &&
+         [ -z "${TMUX:-}" ] &&
+         [ -n "${PS1:-}" ] &&
+         [ -t 0 ] &&
+         [ -t 1 ]; then
+          exec tmux new-session -A -s main -c "{{ ops_airunner_repo_dest }}"
+      fi
+
+- name: Ensure airunner login shells load interactive defaults
+  ansible.builtin.blockinfile:
+    path: "{{ ops_airunner_home }}/.profile"
+    create: true
+    owner: "{{ ops_airunner_user }}"
+    group: "{{ ops_airunner_user }}"
+    mode: "0644"
+    marker: "# {mark} klokast airunner login shell"
+    block: |
+      if [ -f "$HOME/.bashrc" ]; then
+          . "$HOME/.bashrc"
+      fi
+
+- name: Install airunner tmux defaults
+  ansible.builtin.copy:
+    dest: "{{ ops_airunner_home }}/.tmux.conf"
+    owner: "{{ ops_airunner_user }}"
+    group: "{{ ops_airunner_user }}"
+    mode: "0644"
+    content: |
+      set -g mouse on
+      set -g history-limit 100000
+      set -gw mode-keys vi
+      set -s set-clipboard on
+
+- name: Collect the airunner user UID
+  ansible.builtin.command:
+    argv:
+      - id
+      - -u
+      - "{{ ops_airunner_user }}"
+  register: ops_airunner_uid
+  changed_when: false
+
+- name: Collect the airunner user GID
+  ansible.builtin.command:
+    argv:
+      - id
+      - -g
+      - "{{ ops_airunner_user }}"
+  register: ops_airunner_gid
+  changed_when: false
+
+- name: Install the airunner Containerfile
+  ansible.builtin.copy:
+    src: Containerfile
+    dest: "{{ ops_airunner_containerfile }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: ops_airunner_containerfile_install
+
+- name: Install the airunner container entrypoint
+  ansible.builtin.copy:
+    src: airunner-entrypoint
+    dest: "{{ ops_airunner_entrypoint }}"
+    owner: root
+    group: root
+    mode: "0755"
+  register: ops_airunner_entrypoint_install
+
+- name: Inspect the airunner image before build
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - image
+      - inspect
+      - --format
+      - "{{ '{{' }}.Id{{ '}}' }}"
+      - "{{ ops_airunner_image }}"
+  register: ops_airunner_image_before
+  changed_when: false
+  failed_when: ops_airunner_image_before.rc not in [0, 125]
+
+- name: Build the airunner image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - build
+      - --pull=missing
+      - --network
+      - "{{ ops_airunner_build_network | default('host') }}"
+      - --tag
+      - "{{ ops_airunner_image }}"
+      - --file
+      - "{{ ops_airunner_containerfile }}"
+      - "{{ ops_airunner_state_root }}"
+  register: ops_airunner_build
+  changed_when: false
+
+- name: Inspect the desired airunner image after build
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - image
+      - inspect
+      - --format
+      - "{{ '{{' }}.Id{{ '}}' }}"
+      - "{{ ops_airunner_image }}"
+  register: ops_airunner_image_after
+  changed_when: false
+
+- name: Record whether the airunner image changed
+  ansible.builtin.set_fact:
+    ops_airunner_image_changed: >-
+      {{
+        ops_airunner_image_before.rc != 0
+        or ops_airunner_image_before.stdout != ops_airunner_image_after.stdout
+      }}
+  changed_when: ops_airunner_image_changed | bool
+
+- name: Check whether the selected airunner service already exists
+  ansible.builtin.stat:
+    path: "{{ ops_airunner_service_path }}"
+  register: ops_airunner_service_preexisting
+
+- name: Install the airunner OpenRC service
+  ansible.builtin.template:
+    src: airunner.init.j2
+    dest: "{{ ops_airunner_service_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  register: ops_airunner_service_install
+
+- name: Install the narrow airunner shell wrapper
+  ansible.builtin.template:
+    src: airunner-shell.j2
+    dest: "{{ ops_airunner_shell_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Permit the airunner user to enter only the airunner shell wrapper
+  ansible.builtin.copy:
+    dest: "{{ ops_airunner_sudoers_path }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      Defaults:{{ ops_airunner_user }} !requiretty
+      {{ ops_airunner_user }} ALL=(root) NOPASSWD: {{ ops_airunner_shell_wrapper }}
+
+- name: Check whether the legacy airunner service exists
+  ansible.builtin.stat:
+    path: "{{ ops_airunner_legacy_service_path }}"
+  register: ops_airunner_legacy_service
+  when: ops_airunner_manage_legacy_service | bool
+
+- name: Stop and disable the legacy airunner service before canonical replacement
+  ansible.builtin.service:
+    name: "{{ ops_airunner_legacy_service_name }}"
+    enabled: false
+    state: stopped
+  when:
+    - ops_airunner_manage_legacy_service | bool
+    - ops_airunner_legacy_service.stat.exists | default(false)
+
+- name: Inspect the image used by the selected airunner container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - inspect
+      - --format
+      - "{{ '{{' }}.Image{{ '}}' }}"
+      - "{{ ops_airunner_name }}"
+  register: ops_airunner_running_image
+  changed_when: false
+  failed_when: ops_airunner_running_image.rc not in [0, 125]
+
+- name: Enable and start the airunner service
+  ansible.builtin.service:
+    name: "{{ ops_airunner_service_name }}"
+    enabled: true
+    state: started
+
+- name: Restart the airunner service when image or service changed
+  ansible.builtin.service:
+    name: "{{ ops_airunner_service_name }}"
+    state: restarted
+  when:
+    - ops_airunner_service_preexisting.stat.exists | default(false)
+    - >-
+      ops_airunner_service_install.changed
+      or (
+        ops_airunner_running_image.rc == 0
+        and ops_airunner_running_image.stdout != ops_airunner_image_after.stdout
+      )
+
+- name: Verify the airunner container is running
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - inspect
+      - --format
+      - "{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ ops_airunner_name }}"
+  register: ops_airunner_running
+  changed_when: false
+  retries: "{{ ops_airunner_verify_retries | default(10) }}"
+  delay: "{{ ops_airunner_verify_delay | default(1) }}"
+  until: ops_airunner_running.stdout == "true"
+
+- name: Assert the airunner container is running
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_running.stdout == "true"
+    fail_msg: "The AI runner container is not running."
+
+- name: Check current airunner Tailscale identity
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import subprocess
+        import sys
+
+        container, expected_hostname, expected_tag = sys.argv[1:]
+        cmd = [
+            "/usr/bin/podman",
+            "exec",
+            container,
+            "tailscale",
+            "--socket=/run/tailscale/tailscaled.sock",
+            "status",
+            "--json",
+        ]
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        summary = {
+            "ok": False,
+            "backend_state": "",
+            "hostname": "",
+            "tags": [],
+            "tun": False,
+            "error": result.stderr.strip(),
+        }
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                status = json.loads(result.stdout)
+            except json.JSONDecodeError as exc:
+                summary["error"] = str(exc)
+            else:
+                self_status = status.get("Self") or {}
+                summary["backend_state"] = status.get("BackendState") or ""
+                summary["hostname"] = self_status.get("HostName") or ""
+                summary["tags"] = self_status.get("Tags") or []
+                summary["tun"] = bool(status.get("TUN"))
+                summary["ok"] = (
+                    summary["backend_state"] == "Running"
+                    and summary["hostname"] == expected_hostname
+                    and summary["tags"] == [expected_tag]
+                    and summary["tun"]
+                )
+        print(json.dumps(summary, sort_keys=True))
+      - "{{ ops_airunner_name }}"
+      - "{{ ops_airunner_name }}"
+      - "{{ ops_airunner_tailscale_expected_tag }}"
+  register: ops_airunner_tailscale_identity_check
+  changed_when: false
+
+- name: Record current airunner Tailscale identity
+  ansible.builtin.set_fact:
+    ops_airunner_tailscale_identity: "{{ ops_airunner_tailscale_identity_check.stdout | from_json }}"
+
+- name: Mint one-use airunner Tailscale auth key
+  ansible.builtin.command:
+    argv:
+      - doas
+      - "{{ ops_airunner_tailscale_authkey_wrapper }}"
+      - --hostname
+      - "{{ ops_airunner_name }}"
+      - --tags
+      - "{{ ops_airunner_tailscale_advertise_tags }}"
+  register: ops_airunner_tailscale_authkey
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not (ops_airunner_tailscale_identity.ok | bool)
+
+- name: Re-enroll the airunner Tailnet identity when needed
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      auth_key="$(cat)"
+      /usr/bin/podman exec {{ ops_airunner_name | quote }} \
+        tailscale --socket=/run/tailscale/tailscaled.sock logout >/dev/null 2>&1 || true
+      /usr/bin/podman exec {{ ops_airunner_name | quote }} \
+        tailscale --socket=/run/tailscale/tailscaled.sock up \
+          --auth-key="$auth_key" \
+          --hostname={{ ops_airunner_name | quote }} \
+          --advertise-tags={{ ops_airunner_tailscale_advertise_tags | quote }} \
+          --ssh
+    executable: /bin/sh
+    stdin: "{{ ops_airunner_tailscale_authkey.stdout }}"
+  register: ops_airunner_tailscale_enrollment
+  changed_when: true
+  no_log: true
+  when: not (ops_airunner_tailscale_identity.ok | bool)
+
+- name: Verify the airunner Tailnet identity
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import subprocess
+        import sys
+
+        container, expected_hostname, expected_tag = sys.argv[1:]
+        cmd = [
+            "/usr/bin/podman",
+            "exec",
+            container,
+            "tailscale",
+            "--socket=/run/tailscale/tailscaled.sock",
+            "status",
+            "--json",
+        ]
+        status = json.loads(subprocess.check_output(cmd, text=True))
+        self_status = status.get("Self") or {}
+        backend_state = status.get("BackendState") or ""
+        hostname = self_status.get("HostName") or ""
+        tags = self_status.get("Tags") or []
+        tun = bool(status.get("TUN"))
+        ok = backend_state == "Running" and hostname == expected_hostname and tags == [expected_tag] and tun
+        print(json.dumps({
+            "ok": ok,
+            "backend_state": backend_state,
+            "hostname": hostname,
+            "tags": tags,
+            "tun": tun,
+        }, sort_keys=True))
+        sys.exit(0 if ok else 1)
+      - "{{ ops_airunner_name }}"
+      - "{{ ops_airunner_name }}"
+      - "{{ ops_airunner_tailscale_expected_tag }}"
+  register: ops_airunner_tailscale_verify
+  changed_when: false
+  retries: "{{ ops_airunner_verify_retries | default(10) }}"
+  delay: "{{ ops_airunner_verify_delay | default(1) }}"
+  until: ops_airunner_tailscale_verify.rc == 0
+
+- name: Assert the airunner Tailnet identity is correct
+  ansible.builtin.assert:
+    that:
+      - (ops_airunner_tailscale_verify.stdout | from_json).ok | bool
+    fail_msg: "The airunner container is not enrolled as {{ ops_airunner_name }} with tag:airunner."

@@ -1,0 +1,18 @@
+---
+alpine_virt_version: "3.23.3"
+alpine_virt_arch: "{{ apk_repository_arch | default('x86_64') }}"
+alpine_virt_major_minor: "{{ alpine_virt_version | regex_replace('^([0-9]+\\.[0-9]+).*', '\\1') }}"
+alpine_virt_mirror: http://dl-cdn.alpinelinux.org/alpine
+alpine_virt_iso_filename: "alpine-virt-{{ alpine_virt_version }}-{{ alpine_virt_arch }}.iso"
+alpine_virt_iso_url: "{{ alpine_virt_mirror }}/v{{ alpine_virt_major_minor }}/releases/{{ alpine_virt_arch }}/{{ alpine_virt_iso_filename }}"
+alpine_virt_iso_download_path: "{{ dom0_xen_images_path }}/{{ alpine_virt_iso_filename }}"
+alpine_virt_checksum_path: "{{ alpine_virt_iso_download_path }}.sha256"
+alpine_virt_package_repo_path: "{{ dom0_xen_images_path }}/alpine-virt-apks"
+alpine_virt_modloop_path: "{{ dom0_xen_images_path }}/modloop-virt"
+alpine_virt_connect_timeout_seconds: 30
+alpine_virt_download_timeout_seconds: 3600
+alpine_virt_retry_count: 5
+alpine_virt_retry_delay_seconds: 5
+alpine_virt_speed_time_seconds: 60
+alpine_virt_speed_limit_bytes: 1024
+alpine_virt_curl_extra_args: []

@@ -1,0 +1,195 @@
+---
+- name: Stop managed Immich services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  become: true
+  failed_when: false
+  loop:
+    - immich-private-ingress
+    - immich-private-ingress-proxy
+    - immich
+
+- name: Remove managed Immich containers and pod on backend
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pod
+      - rm
+      - -f
+      - immich
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: immich_remove_backend_pod
+  changed_when: immich_remove_backend_pod.rc == 0
+  failed_when: false
+  when: node_domain_role == 'backend'
+
+- name: Remove managed Immich private ingress pod on DMZ
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pod
+      - rm
+      - -f
+      - immich-private-ingress
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: immich_remove_ingress_pod
+  changed_when: immich_remove_ingress_pod.rc == 0
+  failed_when: false
+  when: node_domain_role == 'dmz'
+
+- name: Check active Restic SFTP public key before configuration removal
+  ansible.builtin.stat:
+    path: "{{ immich_restic_ssh_key_path }}.pub"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  register: immich_remove_restic_public_key_stat
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_active_master | default('') | length > 0
+    - immich_passive_backup | default('') | length > 0
+
+- name: Read active Restic SFTP public key before configuration removal
+  ansible.builtin.slurp:
+    src: "{{ immich_restic_ssh_key_path }}.pub"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  register: immich_remove_restic_public_key
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_remove_restic_public_key_stat.stat.exists | default(false)
+
+- name: Remove active Restic SFTP key from passive backend authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ vm_admin_user_name }}"
+    key: "{{ immich_remove_restic_public_key.content | b64decode | trim }}"
+    state: absent
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  failed_when: false
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_remove_restic_public_key.content | default('') | length > 0
+
+- name: Remove passive Restic SFTP repository when wiping Immich data
+  ansible.builtin.file:
+    path: "{{ immich_restic_sftp_repository_path }}"
+    state: absent
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_active_master | default('') | length > 0
+    - immich_passive_backup | default('') | length > 0
+
+- name: Remove passive Restic SFTP sshd policy when wiping Immich data
+  ansible.builtin.file:
+    path: "{{ immich_restic_sshd_config_path }}"
+    state: absent
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  register: immich_remove_restic_sshd_policy
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_active_master | default('') | length > 0
+    - immich_passive_backup | default('') | length > 0
+
+- name: Restart passive sshd after removing Immich Restic policy
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  failed_when: false
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_remove_restic_sshd_policy.changed | default(false)
+
+- name: Remove active backend Restic host alias when wiping Immich data
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^.*[[:space:]]{{ immich_passive_backend_host | regex_escape }}\\.{{ immich_magicdns_suffix | regex_escape }}([[:space:]]|$).*"
+    state: absent
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  when:
+    - immich_wipe_data | default(false) | bool
+    - immich_active_master | default('') | length > 0
+    - immich_passive_backup | default('') | length > 0
+
+- name: Remove managed service files and helper scripts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /etc/init.d/immich
+    - /etc/init.d/immich-private-ingress
+    - /etc/init.d/immich-private-ingress-proxy
+    - /usr/local/sbin/immich-backend-deploy
+    - /usr/local/sbin/immich-private-ingress-converge
+    - /usr/local/sbin/immich-backup-run
+    - /usr/local/sbin/immich-image-source-preflight
+    - /etc/periodic/hourly/immich-backup
+
+- name: Remove managed configuration roots
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /etc/klokast/immich
+    - /etc/klokast/immich-private-ingress
+
+- name: Wipe managed persistent data only when explicitly requested
+  ansible.builtin.command:
+    argv:
+      - podman
+      - volume
+      - rm
+      - -f
+      - "{{ item }}"
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  loop:
+    - klokast-immich-library
+    - klokast-immich-postgres
+    - klokast-immich-valkey
+    - klokast-immich-model-cache
+    - klokast-immich-ml-dotcache
+    - klokast-immich-ml-config
+    - klokast-immich-backup
+    - klokast-immich-restore
+  register: immich_remove_backend_volumes
+  changed_when: false
+  failed_when: false
+  when:
+    - immich_wipe_data | default(false) | bool
+    - node_domain_role == 'backend'
+
+- name: Wipe managed ingress persistent data only when explicitly requested
+  ansible.builtin.command:
+    argv:
+      - podman
+      - volume
+      - rm
+      - -f
+      - klokast-immich-ingress-ts-state
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: immich_remove_ingress_volume
+  changed_when: false
+  failed_when: false
+  when:
+    - immich_wipe_data | default(false) | bool
+    - node_domain_role == 'dmz'

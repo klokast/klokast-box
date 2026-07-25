@@ -1,0 +1,69 @@
+#
+# Summary:
+# - Copies Alpine boot artifacts onto EFI storage and installs the managed UEFI bootloader paths and entries.
+#
+---
+- name: Copy Alpine boot files from the selected diskless source to EFI storage
+  # Always refresh the three boot artifacts. Keeping stale EFI
+  # kernel/initramfs/modloop files across reruns can leave the host booting an
+  # older kernel than the diskless package set expects.
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    remote_src: true
+    mode: "0644"
+  loop:
+    - src: "{{ diskless_seed_root_path }}/boot/vmlinuz-lts"
+      dest: "{{ efi_boot_directory }}/vmlinuz-lts"
+    - src: "{{ diskless_seed_root_path }}/boot/initramfs-lts"
+      dest: "{{ efi_boot_directory }}/initramfs-lts"
+    - src: "{{ diskless_seed_root_path }}/boot/modloop-lts"
+      dest: "{{ efi_boot_directory }}/modloop-lts"
+
+- name: List current UEFI boot entries
+  ansible.builtin.command: efibootmgr
+  register: efi_boot_entries
+  changed_when: false
+
+- name: Collect stale named UEFI boot entries from older installs
+  # `efibootmgr` output is spacing-sensitive and can vary between firmware
+  # implementations. Match the human-readable label field with `awk` instead of
+  # trying to keep a single Jinja regex in sync with every whitespace variant.
+  ansible.builtin.shell: >-
+    legacy_regex='^({{ efi_bootloader_legacy_ids | join("|") }})$';
+    efibootmgr | awk -v legacy_regex="$legacy_regex" '$2 ~ legacy_regex {print substr($1, 5, 4)}'
+  register: efi_legacy_boot_numbers
+  changed_when: false
+  when: efi_bootloader_legacy_ids | length > 0
+
+- name: Remove stale named UEFI boot entries from older installs
+  # Keep the generic fallback entry. Only remove stale explicit NVRAM entries so
+  # the firmware menu converges toward the current node-specific bootloader id.
+  ansible.builtin.command: "efibootmgr -b {{ item }} -B"
+  loop: "{{ efi_legacy_boot_numbers.stdout_lines }}"
+  when: efi_bootloader_legacy_ids | length > 0
+  changed_when: true
+
+- name: Remove stale legacy EFI bootloader directories
+  # Clean the old on-disk EFI paths as well, otherwise firmware menus and
+  # manual inspections can still suggest the previous bootloader id is current.
+  ansible.builtin.file:
+    path: "{{ efi_mount_path }}/EFI/{{ item }}"
+    state: absent
+  loop: "{{ efi_bootloader_legacy_ids }}"
+
+- name: Install GRUB into the EFI partition
+  ansible.builtin.command: >-
+    grub-install --target=x86_64-efi
+    --efi-directory={{ efi_mount_path }}
+    --boot-directory={{ efi_boot_directory }}
+    --bootloader-id={{ efi_bootloader_id }}
+    --recheck
+  changed_when: true
+
+- name: Install UEFI fallback bootloader path
+  ansible.builtin.copy:
+    src: "{{ efi_mount_path }}/EFI/{{ efi_bootloader_id }}/grubx64.efi"
+    dest: "{{ efi_fallback_bootloader_path }}"
+    remote_src: true
+    mode: "0644"

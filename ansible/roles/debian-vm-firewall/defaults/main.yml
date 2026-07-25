@@ -1,0 +1,7 @@
+---
+debian_vm_firewall_tailnet_interface: tailscale0
+debian_vm_firewall_tailnet_tcp_ports:
+  - 22
+  - 443
+debian_vm_firewall_tailnet_udp_ports: []
+debian_vm_firewall_input_udp_rules: []

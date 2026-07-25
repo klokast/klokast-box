@@ -1,0 +1,207 @@
+#!/bin/sh
+set -eu
+
+pod_name={{ immich_pod_name | quote }}
+source_map={{ (immich_service_root ~ '/image-sources.json') | quote }}
+env_root={{ immich_env_root | quote }}
+config_file={{ (immich_service_root ~ '/immich-config.json') | quote }}
+legacy_library={{ immich_legacy_library_root | quote }}
+legacy_postgres={{ immich_legacy_postgres_root | quote }}
+legacy_valkey={{ immich_legacy_valkey_root | quote }}
+legacy_model_cache={{ immich_legacy_model_cache_root | quote }}
+legacy_ml_dotcache={{ immich_legacy_ml_dotcache_root | quote }}
+legacy_ml_config={{ immich_legacy_ml_config_root | quote }}
+legacy_backup={{ immich_legacy_backup_root | quote }}
+legacy_restore={{ immich_legacy_restore_root | quote }}
+volume_library={{ immich_library_volume | quote }}
+volume_postgres={{ immich_postgres_volume | quote }}
+volume_valkey={{ immich_valkey_volume | quote }}
+volume_model_cache={{ immich_model_cache_volume | quote }}
+volume_ml_dotcache={{ immich_ml_dotcache_volume | quote }}
+volume_ml_config={{ immich_ml_config_volume | quote }}
+volume_backup={{ immich_backup_volume | quote }}
+volume_restore={{ immich_restore_volume | quote }}
+http_bind_host={{ immich_http_bind_host | quote }}
+http_host_port={{ (immich_http_host_port | string) | quote }}
+http_container_port={{ (immich_http_container_port | string) | quote }}
+site_mode={{ immich_site_mode | quote }}
+
+podman_cmd() {
+    if [ "$(id -un)" = "{{ vm_admin_user_name }}" ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name }} /usr/bin/podman "$@"
+    fi
+}
+
+image_ref() {
+    /usr/bin/jq -r --arg key "$1" '.images[$key].pull_ref' "$source_map"
+}
+
+ensure_image() {
+    image=$1
+    if podman_cmd image exists "$image"; then
+        return
+    fi
+    podman_cmd pull --policy=missing --retry=0 "$image"
+}
+
+ensure_volume() {
+    volume="$1"
+    if ! podman_cmd volume exists "$volume"; then
+        podman_cmd volume create "$volume" >/dev/null
+    fi
+}
+
+migrate_volume_once() {
+    source_path="$1"
+    volume="$2"
+    marker_name="$3"
+    [ -d "$source_path" ] || return 0
+    if ! find "$source_path" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+        return 0
+    fi
+    # shellcheck disable=SC2016
+    podman_cmd run --rm --pull=never \
+        --security-opt no-new-privileges \
+        --cap-drop=NET_RAW \
+        --entrypoint /bin/sh \
+        -v "$source_path:/source:ro" \
+        -v "$volume:/dest" \
+        "$alpine_ref" \
+        -c '
+            set -eu
+            marker="/dest/'"$marker_name"'"
+            if [ -e "$marker" ]; then
+                exit 0
+            fi
+            if find /dest -mindepth 1 ! -name "'"$marker_name"'" -print -quit | grep -q .; then
+                echo "volume $1 already has data; not importing $2" >&2
+                exit 0
+            fi
+            tar -C /source -cf - . | tar -C /dest -xf -
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$marker"
+        ' sh "$volume" "$source_path"
+}
+
+image_user_id() {
+    image=$1
+    user=$2
+    flag=$3
+    podman_cmd run --rm --pull=never --entrypoint /bin/sh "$image" -c "id -${flag} ${user}"
+}
+
+ensure_volume_owner() {
+    volume="$1"
+    uid="$2"
+    gid="$3"
+    podman_cmd run --rm --pull=never \
+        --security-opt no-new-privileges \
+        --cap-drop=NET_RAW \
+        --entrypoint /bin/sh \
+        -v "$volume:/target" \
+        "$alpine_ref" \
+        -c "chown -R $uid:$gid /target"
+}
+
+immich_server_ref=$(image_ref immich_server)
+immich_machine_learning_ref=$(image_ref immich_machine_learning)
+immich_postgres_ref=$(image_ref immich_postgres)
+valkey_ref=$(image_ref valkey)
+alpine_ref=$(image_ref alpine)
+
+ensure_image "$immich_server_ref"
+ensure_image "$immich_machine_learning_ref"
+ensure_image "$immich_postgres_ref"
+ensure_image "$valkey_ref"
+ensure_image "$alpine_ref"
+
+for volume in \
+    "$volume_library" \
+    "$volume_postgres" \
+    "$volume_valkey" \
+    "$volume_model_cache" \
+    "$volume_ml_dotcache" \
+    "$volume_ml_config" \
+    "$volume_backup" \
+    "$volume_restore"
+do
+    ensure_volume "$volume"
+done
+
+migrate_volume_once "$legacy_library" "$volume_library" .klokast-migrated-from-srv-immich-library
+migrate_volume_once "$legacy_postgres" "$volume_postgres" .klokast-migrated-from-srv-immich-postgres
+migrate_volume_once "$legacy_valkey" "$volume_valkey" .klokast-migrated-from-srv-immich-valkey
+migrate_volume_once "$legacy_model_cache" "$volume_model_cache" .klokast-migrated-from-srv-immich-model-cache
+migrate_volume_once "$legacy_ml_dotcache" "$volume_ml_dotcache" .klokast-migrated-from-srv-immich-ml-dotcache
+migrate_volume_once "$legacy_ml_config" "$volume_ml_config" .klokast-migrated-from-srv-immich-ml-config
+migrate_volume_once "$legacy_backup" "$volume_backup" .klokast-migrated-from-srv-immich-backup
+migrate_volume_once "$legacy_restore" "$volume_restore" .klokast-migrated-from-srv-immich-restore
+
+postgres_runtime_uid=$(image_user_id "$immich_postgres_ref" postgres u)
+postgres_runtime_gid=$(image_user_id "$immich_postgres_ref" postgres g)
+valkey_runtime_uid=$(image_user_id "$valkey_ref" valkey u)
+valkey_runtime_gid=$(image_user_id "$valkey_ref" valkey g)
+
+if podman_cmd pod exists "$pod_name"; then
+    podman_cmd pod rm -f "$pod_name"
+fi
+
+ensure_volume_owner "$volume_postgres" "$postgres_runtime_uid" "$postgres_runtime_gid"
+ensure_volume_owner "$volume_valkey" "$valkey_runtime_uid" "$valkey_runtime_gid"
+
+podman_cmd pod create --name "$pod_name" -p "${http_bind_host}:${http_host_port}:${http_container_port}"
+
+podman_cmd run -d \
+    --name {{ immich_postgres_container_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    --env-file "$env_root/postgres.env" \
+    --shm-size 128m \
+    -v "$volume_postgres:/var/lib/postgresql/data" \
+    --pull=never \
+    "$immich_postgres_ref"
+
+podman_cmd run -d \
+    --name {{ immich_valkey_container_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -v "$volume_valkey:/data" \
+    --pull=never \
+    "$valkey_ref" \
+    valkey-server --save '' --appendonly yes
+
+sleep 5
+
+podman_cmd run -d \
+    --name {{ immich_machine_learning_container_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    --env-file "$env_root/app.env" \
+    -v "$volume_model_cache:/cache" \
+    -v "$volume_ml_dotcache:/.cache" \
+    -v "$volume_ml_config:/.config" \
+    --pull=never \
+    "$immich_machine_learning_ref"
+
+podman_cmd run -d \
+    --name {{ immich_server_container_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    --env-file "$env_root/app.env" \
+    -v "$volume_library:/data" \
+    -v "$config_file:/config/immich.json:ro" \
+    --pull=never \
+    "$immich_server_ref"
+
+if [ "$site_mode" != "active" ]; then
+    podman_cmd pod stop -t 60 "$pod_name" >/dev/null
+fi

@@ -1,0 +1,11 @@
+---
+- name: Check Immich backup freshness
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check active backend backup marker
+      ansible.builtin.import_role:
+        name: immich-backup-check
+      when:
+        - node_domain_role == 'backend'
+        - node_name == immich_active_master

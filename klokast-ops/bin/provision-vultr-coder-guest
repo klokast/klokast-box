@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OPS_DIR="$REPO_DIR/klokast-ops"
+ANSIBLE_REL_PATHS="
+ansible/ansible.cfg
+ansible/inventory/group_vars/all.yml
+ansible/playbooks/02-vultr-coder-guest.yml
+ansible/roles/vultr-coder-guest
+"
+
+DEFAULT_HOST="vultr-ops"
+DEFAULT_ADMIN_USER="neo"
+DEFAULT_GUEST_USER="ml-agent"
+DEFAULT_REPO_OWNER="klokast"
+DEFAULT_REPO_NAME="mulan-projects"
+DEFAULT_REPO_OWNER_KIND="org"
+GITHUB_API_VERSION="2022-11-28"
+
+usage() {
+  cat <<'EOF'
+usage: klokast-ops/bin/provision-vultr-coder-guest [options]
+
+Creates or updates a locked coder guest account on the Vultr infra-agent host,
+creates a private GitHub repository, registers the guest's generated deploy
+public key, and clones that repository for the guest.
+
+Defaults:
+  --host vultr-ops
+  --admin-user neo
+  --user ml-agent
+  --repo-owner klokast
+  --repo-name mulan-projects
+  --repo-owner-kind org
+
+Required environment:
+  GITHUB_TOKEN
+
+Options:
+  --host HOST                 Tailscale host to configure.
+  --admin-user USER           Existing admin user for Tailscale SSH.
+  --user USER                 Guest Unix account to create.
+  --repo-owner OWNER          GitHub repository owner.
+  --repo-name NAME            GitHub repository name.
+  --repo-owner-kind org|user  Create missing repos through org or user API.
+  -h, --help                  Show this help.
+EOF
+}
+
+die() {
+  printf 'provision-vultr-coder-guest: %s\n' "$*" >&2
+  exit 2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 is required"
+}
+
+safe_host() {
+  case "$1" in
+    *[!A-Za-z0-9._-]*|'') return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+safe_user() {
+  case "$1" in
+    ''|[!a-z_]*|*[!a-z0-9_-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+safe_github_name() {
+  case "$1" in
+    *[!A-Za-z0-9._-]*|'') return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+github_request() {
+  local method="$1"
+  local url="$2"
+  local body_file="${3:-}"
+  local output_file="$4"
+  local status
+
+  if [ -n "$body_file" ]; then
+    status="$(
+      curl -sS -o "$output_file" -w '%{http_code}' \
+        -X "$method" \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        -H "X-GitHub-Api-Version: ${GITHUB_API_VERSION}" \
+        --data @"$body_file" \
+        "$url"
+    )" || die "GitHub API request failed: $method $url"
+  else
+    status="$(
+      curl -sS -o "$output_file" -w '%{http_code}' \
+        -X "$method" \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        -H "X-GitHub-Api-Version: ${GITHUB_API_VERSION}" \
+        "$url"
+    )" || die "GitHub API request failed: $method $url"
+  fi
+
+  printf '%s\n' "$status"
+}
+
+ensure_private_repo() {
+  local owner="$1"
+  local repo="$2"
+  local owner_kind="$3"
+  local response_file="$4"
+  local body_file="$5"
+  local status
+  local create_url
+
+  status="$(github_request GET "https://api.github.com/repos/${owner}/${repo}" "" "$response_file")"
+  case "$status" in
+    200)
+      if ! jq -e '.private == true' "$response_file" >/dev/null; then
+        die "GitHub repository ${owner}/${repo} already exists but is not private"
+      fi
+      return
+      ;;
+    404)
+      ;;
+    *)
+      die "GitHub repository lookup failed for ${owner}/${repo}: HTTP ${status}: $(sed -n '1p' "$response_file")"
+      ;;
+  esac
+
+  jq -n \
+    --arg name "$repo" \
+    '{
+      name: $name,
+      private: true,
+      auto_init: true
+    }' >"$body_file"
+
+  case "$owner_kind" in
+    org) create_url="https://api.github.com/orgs/${owner}/repos" ;;
+    user) create_url="https://api.github.com/user/repos" ;;
+    *) die "--repo-owner-kind must be org or user" ;;
+  esac
+
+  status="$(github_request POST "$create_url" "$body_file" "$response_file")"
+  [ "$status" = "201" ] || die "GitHub repository creation failed for ${owner}/${repo}: HTTP ${status}: $(sed -n '1p' "$response_file")"
+}
+
+ensure_deploy_key() {
+  local owner="$1"
+  local repo="$2"
+  local title="$3"
+  local public_key="$4"
+  local response_file="$5"
+  local body_file="$6"
+  local status
+  local matching_key
+  local conflicting_title_key
+
+  status="$(github_request GET "https://api.github.com/repos/${owner}/${repo}/keys?per_page=100" "" "$response_file")"
+  [ "$status" = "200" ] || die "GitHub deploy-key list failed for ${owner}/${repo}: HTTP ${status}: $(sed -n '1p' "$response_file")"
+
+  matching_key="$(jq -er --arg key "$public_key" '.[] | select(.key == $key) | .id' "$response_file" 2>/dev/null || true)"
+  [ -z "$matching_key" ] || return
+
+  conflicting_title_key="$(jq -er --arg title "$title" '.[] | select(.title == $title) | .key' "$response_file" 2>/dev/null || true)"
+  if [ -n "$conflicting_title_key" ]; then
+    die "deploy key title already exists on ${owner}/${repo} with different key material: ${title}"
+  fi
+
+  jq -n \
+    --arg title "$title" \
+    --arg key "$public_key" \
+    '{
+      title: $title,
+      key: $key,
+      read_only: false
+    }' >"$body_file"
+
+  status="$(github_request POST "https://api.github.com/repos/${owner}/${repo}/keys" "$body_file" "$response_file")"
+  [ "$status" = "201" ] || die "GitHub deploy-key registration failed for ${owner}/${repo}: HTTP ${status}: $(sed -n '1p' "$response_file")"
+}
+
+stage_and_run_ansible() {
+  local host="$1"
+  local admin_user="$2"
+  local guest_user="$3"
+  local repo_owner="$4"
+  local repo_name="$5"
+  local clone_repo="$6"
+  local remote_stage="/tmp/klokast-coder-guest-${guest_user}-$$"
+
+  # shellcheck disable=SC2086
+  tar -C "$OPS_DIR" -czf - $ANSIBLE_REL_PATHS |
+    tailscale ssh "${admin_user}@${host}" "rm -rf ${remote_stage} && mkdir -p ${remote_stage} && tar -xzf - -C ${remote_stage}"
+
+  tailscale ssh "${admin_user}@${host}" sh -s -- \
+    "$remote_stage" "$guest_user" "$repo_owner" "$repo_name" "$clone_repo" <<'SH'
+set -eu
+remote_stage="$1"
+guest_user="$2"
+repo_owner="$3"
+repo_name="$4"
+clone_repo="$5"
+trap 'rm -rf "$remote_stage"' EXIT
+
+cd "$remote_stage/ansible"
+cat >inventory/coder-guest.yml <<'EOF'
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+EOF
+
+ansible-playbook \
+  -i inventory/coder-guest.yml \
+  playbooks/02-vultr-coder-guest.yml \
+  -e "guest_user=${guest_user}" \
+  -e "guest_repo_owner=${repo_owner}" \
+  -e "guest_repo_name=${repo_name}" \
+  -e "guest_clone_repo=${clone_repo}"
+SH
+}
+
+host="$DEFAULT_HOST"
+admin_user="$DEFAULT_ADMIN_USER"
+guest_user="$DEFAULT_GUEST_USER"
+repo_owner="$DEFAULT_REPO_OWNER"
+repo_name="$DEFAULT_REPO_NAME"
+repo_owner_kind="$DEFAULT_REPO_OWNER_KIND"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --host)
+      [ "$#" -ge 2 ] || die "--host requires a value"
+      host="$2"
+      shift 2
+      ;;
+    --admin-user)
+      [ "$#" -ge 2 ] || die "--admin-user requires a value"
+      admin_user="$2"
+      shift 2
+      ;;
+    --user)
+      [ "$#" -ge 2 ] || die "--user requires a value"
+      guest_user="$2"
+      shift 2
+      ;;
+    --repo-owner)
+      [ "$#" -ge 2 ] || die "--repo-owner requires a value"
+      repo_owner="$2"
+      shift 2
+      ;;
+    --repo-name)
+      [ "$#" -ge 2 ] || die "--repo-name requires a value"
+      repo_name="$2"
+      shift 2
+      ;;
+    --repo-owner-kind)
+      [ "$#" -ge 2 ] || die "--repo-owner-kind requires a value"
+      repo_owner_kind="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+need_cmd curl
+need_cmd jq
+need_cmd tar
+need_cmd tailscale
+
+[ -n "${GITHUB_TOKEN:-}" ] || die "GITHUB_TOKEN is required"
+safe_host "$host" || die "--host contains unsafe characters"
+safe_user "$admin_user" || die "--admin-user must be a safe Unix account name"
+safe_user "$guest_user" || die "--user must be a safe Unix account name"
+safe_github_name "$repo_owner" || die "--repo-owner contains unsafe characters"
+safe_github_name "$repo_name" || die "--repo-name contains unsafe characters"
+case "$repo_owner_kind" in
+  org|user) ;;
+  *) die "--repo-owner-kind must be org or user" ;;
+esac
+
+tmp_response="$(mktemp)"
+tmp_body="$(mktemp)"
+cleanup() {
+  rm -f "$tmp_response" "$tmp_body"
+}
+trap cleanup EXIT
+
+ensure_private_repo "$repo_owner" "$repo_name" "$repo_owner_kind" "$tmp_response" "$tmp_body"
+stage_and_run_ansible "$host" "$admin_user" "$guest_user" "$repo_owner" "$repo_name" "false"
+
+public_key="$(
+  tailscale ssh "${admin_user}@${host}" \
+    "sudo -u ${guest_user} cat /home/${guest_user}/.ssh/github-${repo_owner}-${repo_name}.pub"
+)"
+[ -n "$public_key" ] || die "remote deploy public key is empty"
+
+deploy_key_title="${guest_user}@${host} ${repo_owner}/${repo_name} deploy key"
+ensure_deploy_key "$repo_owner" "$repo_name" "$deploy_key_title" "$public_key" "$tmp_response" "$tmp_body"
+stage_and_run_ansible "$host" "$admin_user" "$guest_user" "$repo_owner" "$repo_name" "true"
+
+cat <<EOF
+Provisioned ${guest_user}@${host} for ${repo_owner}/${repo_name}.
+
+Verify from the MacBook:
+  tailscale ssh ${guest_user}@${host} 'id && codex --version'
+  tailscale ssh ${guest_user}@${host} 'git -C ~/src/${repo_owner}/${repo_name} status --short --branch'
+
+Then authenticate Codex as ${guest_user}:
+  tailscale ssh ${guest_user}@${host}
+  codex login --device-auth
+EOF

@@ -1,0 +1,45 @@
+#
+# Summary:
+# - Installs diskless-install prerequisites and mounts the EFI partition at the managed path before files are written.
+#
+---
+- name: Ensure diskless install prerequisite packages are installed
+  ansible.builtin.package:
+    name: >-
+      {{
+        diskless_bootstrap_host_packages[ansible_distribution]
+        | default(diskless_bootstrap_host_packages[ansible_os_family], true)
+      }}
+    state: present
+
+- name: Ensure EFI mount path exists
+  ansible.builtin.file:
+    path: "{{ efi_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Unmount any existing EFI mount before the managed mount step
+  ansible.builtin.shell: |
+    target="$(awk '$1 == "{{ efi_partition_device }}" { print $2 }' /proc/mounts)"
+    if [ -n "$target" ]; then
+      umount "$target" || umount -l "$target"
+    fi
+  changed_when: false
+  failed_when: false
+
+- name: Mount EFI partition
+  ansible.posix.mount:
+    path: "{{ efi_mount_path }}"
+    src: "{{ efi_partition_device }}"
+    fstype: "{{ efi_partition_fs }}"
+    state: mounted
+
+- name: Ensure EFI boot directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ efi_boot_directory }}"
+    - "{{ efi_grub_directory }}"
+    - "{{ efi_fallback_directory }}"

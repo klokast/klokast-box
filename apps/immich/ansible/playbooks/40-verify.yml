@@ -1,0 +1,10 @@
+---
+- name: Verify the multisite Immich stack
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Verify Immich runtime state
+      ansible.builtin.import_role:
+        name: immich-verification

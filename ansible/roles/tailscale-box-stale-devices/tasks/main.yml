@@ -1,0 +1,324 @@
+---
+- name: Assert the requested Tailscale box selector is usable
+  ansible.builtin.assert:
+    that:
+      - tailscale_box_device_prefix is match('^[a-z0-9][a-z0-9-]{0,62}-$')
+      - tailscale_box_device_managed_tags | length > 0
+    fail_msg: tailscale-box-stale-devices requires a safe box hostname prefix and managed tag list.
+
+- name: Wait for matching Tailscale devices to be offline
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import subprocess
+        import sys
+
+        prefix = json.loads(sys.argv[1]).rstrip(".").lower()
+        excluded = {str(value).rstrip(".").lower() for value in json.loads(sys.argv[2])}
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"], text=True))
+        peers = list((status.get("Peer") or {}).values())
+        if status.get("Self"):
+            peers.append(status["Self"])
+
+        online = []
+        for peer in peers:
+            names = set()
+            for key in ("HostName", "DNSName"):
+                value = peer.get(key)
+                if not value:
+                    continue
+                name = str(value).rstrip(".").lower()
+                names.add(name.split(".", 1)[0])
+            matches = sorted(name for name in names if name.startswith(prefix) and name not in excluded)
+            if matches and peer.get("Online"):
+                online.extend(matches)
+
+        if online:
+            print("Online matching Tailscale devices: " + ", ".join(sorted(set(online))), file=sys.stderr)
+            sys.exit(1)
+      - "{{ tailscale_box_device_prefix | to_json }}"
+      - "{{ tailscale_box_device_excluded_hostnames | to_json }}"
+  register: tailscale_box_device_offline_probe
+  changed_when: false
+  retries: "{{ tailscale_box_device_offline_retries }}"
+  delay: "{{ tailscale_box_device_offline_delay }}"
+  until: tailscale_box_device_offline_probe.rc == 0
+  when: tailscale_box_device_wait_for_offline | bool
+
+- name: List Tailscale devices through the ops wrapper
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - "{{ tailscale_devices_list_wrapper }}"
+  delegate_to: localhost
+  become: false
+  register: tailscale_box_device_devices_json
+  changed_when: false
+  no_log: true
+
+- name: Collect local Tailscale status for online-state proof
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - status
+      - --json
+  delegate_to: localhost
+  become: false
+  register: tailscale_box_device_status_json
+  changed_when: false
+  no_log: true
+
+- name: Classify Tailscale devices for the box prefix
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import sys
+
+        input_data = json.load(sys.stdin)
+        prefix = input_data["prefix"].rstrip(".").lower()
+        excluded = {str(value).rstrip(".").lower() for value in input_data["excluded"]}
+        managed_tags = input_data["managed_tags"]
+        devices_data = input_data["devices"]
+        status_data = input_data["status"]
+        devices = devices_data.get("devices") or devices_data.get("Devices") or []
+
+        def normalize_name(value):
+            return str(value).rstrip(".").lower()
+
+        def names_for_device(device):
+            names = set()
+            for key in ("hostname", "HostName", "name", "Name", "dnsName", "DNSName"):
+                value = device.get(key)
+                if not value:
+                    continue
+                name = normalize_name(value)
+                names.add(name)
+                names.add(name.split(".", 1)[0])
+            return names
+
+        def short_hostname(device):
+            for key in ("hostname", "HostName", "name", "Name", "dnsName", "DNSName"):
+                value = device.get(key)
+                if value:
+                    return normalize_name(value).split(".", 1)[0]
+            return ""
+
+        def full_names_for_device(device):
+            names = set()
+            for key in ("name", "Name", "dnsName", "DNSName"):
+                value = device.get(key)
+                if value:
+                    names.add(normalize_name(value))
+            return names
+
+        def addresses_for_device(device):
+            addresses = set()
+            for key in ("addresses", "Addresses", "tailscaleIPs", "TailscaleIPs"):
+                for value in device.get(key) or []:
+                    addresses.add(str(value).split("/", 1)[0])
+            return addresses
+
+        def display_name(device):
+            return (
+                device.get("name")
+                or device.get("Name")
+                or device.get("dnsName")
+                or device.get("DNSName")
+                or device.get("hostname")
+                or device.get("HostName")
+                or ""
+            )
+
+        status_peers = list((status_data.get("Peer") or {}).values())
+        if status_data.get("Self"):
+            status_peers.append(status_data["Self"])
+
+        def names_for_peer(peer):
+            names = set()
+            for key in ("HostName", "DNSName"):
+                value = peer.get(key)
+                if not value:
+                    continue
+                name = normalize_name(value)
+                names.add(name)
+                names.add(name.split(".", 1)[0])
+            return names
+
+        def full_names_for_peer(peer):
+            names = set()
+            value = peer.get("DNSName")
+            if value:
+                names.add(normalize_name(value))
+            return names
+
+        def matching_status_peer(device):
+            device_names = names_for_device(device)
+            device_full_names = full_names_for_device(device)
+            device_addresses = addresses_for_device(device)
+            device_node_ids = {
+                str(device.get("nodeId") or ""),
+                str(device.get("nodeID") or ""),
+                str(device.get("NodeID") or ""),
+            }
+            device_node_ids.discard("")
+
+            for peer in status_peers:
+                peer_full_names = full_names_for_peer(peer)
+                peer_addresses = {str(value) for value in (peer.get("TailscaleIPs") or [])}
+                peer_ids = {str(peer.get("ID") or "")}
+                peer_ids.discard("")
+                if device_full_names and (device_full_names & peer_full_names):
+                    return peer
+                if device_addresses and (device_addresses & peer_addresses):
+                    return peer
+                if device_node_ids and (device_node_ids & peer_ids):
+                    return peer
+
+            short_matches = [
+                peer
+                for peer in status_peers
+                if device_names & names_for_peer(peer)
+            ]
+            if len(short_matches) == 1:
+                return short_matches[0]
+            return None
+
+        stale = []
+        online = []
+        unknown = []
+        unmanaged = []
+
+        for device in devices:
+            hostname = short_hostname(device)
+            if not hostname.startswith(prefix) or hostname in excluded:
+                continue
+
+            device_id = str(device.get("id") or device.get("ID") or "")
+            if not device_id:
+                continue
+
+            tags = device.get("tags") or device.get("Tags") or []
+            selected_tag = next((tag for tag in managed_tags if tag in tags), "")
+            status_peer = matching_status_peer(device)
+            online_state = status_peer.get("Online") if status_peer is not None else None
+            summary = {
+                "id": device_id,
+                "hostname": hostname,
+                "name": display_name(device),
+                "online": online_state,
+                "lastSeen": device.get("lastSeen") or device.get("LastSeen") or "",
+                "tags": tags,
+            }
+
+            if not selected_tag:
+                unmanaged.append(summary)
+            elif online_state is True:
+                online.append(summary)
+            elif online_state is False:
+                summary["tag"] = selected_tag
+                stale.append(summary)
+            else:
+                summary["tag"] = selected_tag
+                unknown.append(summary)
+
+        print(json.dumps({
+            "prefix": prefix,
+            "excluded": sorted(excluded),
+            "stale": stale,
+            "online": online,
+            "unknown": unknown,
+            "unmanaged": unmanaged,
+        }, sort_keys=True))
+    stdin: >-
+      {{
+        {
+          'prefix': tailscale_box_device_prefix,
+          'excluded': tailscale_box_device_excluded_hostnames,
+          'managed_tags': tailscale_box_device_managed_tags,
+          'devices': tailscale_box_device_devices_json.stdout | from_json,
+          'status': tailscale_box_device_status_json.stdout | from_json
+        } | to_json
+      }}
+  delegate_to: localhost
+  become: false
+  register: tailscale_box_device_candidates_json
+  changed_when: false
+  no_log: true
+
+- name: Record Tailscale box-device candidates
+  ansible.builtin.set_fact:
+    tailscale_box_device_candidates: "{{ tailscale_box_device_candidates_json.stdout | from_json }}"
+
+- name: Show the Tailscale box-device plan
+  ansible.builtin.debug:
+    msg:
+      - "Expected Tailscale prefix: {{ tailscale_box_device_candidates.prefix }}"
+      - "Excluded hostnames: {{ tailscale_box_device_candidates.excluded }}"
+      - "Offline managed devices selected for deletion: {{ tailscale_box_device_candidates.stale }}"
+      - "Online devices kept: {{ tailscale_box_device_candidates.online }}"
+      - "Devices kept because online state was not proven: {{ tailscale_box_device_candidates.unknown }}"
+      - "Devices kept because no managed lifecycle tag matched: {{ tailscale_box_device_candidates.unmanaged }}"
+
+- name: Refuse to continue when matching devices are still online
+  ansible.builtin.assert:
+    that:
+      - tailscale_box_device_candidates.online | length == 0
+    fail_msg: "Refusing to delete online Tailscale devices: {{ tailscale_box_device_candidates.online }}"
+  when: tailscale_box_device_fail_on_online | bool
+
+- name: Refuse to continue when matching device online state is unknown
+  ansible.builtin.assert:
+    that:
+      - tailscale_box_device_candidates.unknown | length == 0
+    fail_msg: >-
+      Refusing to delete Tailscale devices whose offline state was not proven:
+      {{ tailscale_box_device_candidates.unknown }}
+  when: tailscale_box_device_fail_on_unknown | bool
+
+- name: Refuse to continue when matching devices have unmanaged tags
+  ansible.builtin.assert:
+    that:
+      - tailscale_box_device_candidates.unmanaged | length == 0
+    fail_msg: >-
+      Refusing to delete Tailscale devices without a managed lifecycle tag:
+      {{ tailscale_box_device_candidates.unmanaged }}
+  when: tailscale_box_device_fail_on_unmanaged | bool
+
+- name: Require an expected confirmation string before deleting stale devices
+  ansible.builtin.assert:
+    that:
+      - tailscale_box_device_expected_confirm | length > 0
+      - tailscale_box_device_confirm == tailscale_box_device_expected_confirm
+    fail_msg: >-
+      Refusing to delete stale Tailscale devices. Re-run with
+      -e tailscale_box_device_apply=true
+      -e 'tailscale_box_device_confirm={{ tailscale_box_device_expected_confirm }}'
+  when:
+    - tailscale_box_device_apply | bool
+    - tailscale_box_device_candidates.stale | length > 0
+
+- name: Delete stale matching Tailscale devices through the ops wrapper
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - "{{ tailscale_device_delete_stale_wrapper }}"
+      - --id
+      - "{{ item.id }}"
+      - --hostname
+      - "{{ item.hostname }}"
+      - --tag
+      - "{{ item.tag }}"
+  loop: "{{ tailscale_box_device_candidates.stale }}"
+  delegate_to: localhost
+  become: false
+  register: tailscale_box_device_delete_results
+  changed_when: true
+  when: tailscale_box_device_apply | bool

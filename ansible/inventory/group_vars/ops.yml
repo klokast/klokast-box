@@ -1,0 +1,243 @@
+---
+ansible_user: "{{ ops_connection_user | default(ops_infra_user | default('smith')) }}"
+ansible_become: true
+ansible_become_method: doas
+ansible_become_flags: -n
+ansible_python_interpreter: /usr/bin/python3
+
+node_domain_role: ops
+node_hostname: "{{ node_name }}-ops"
+ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
+
+ops_bootstrap_host: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+ops_bootstrap_proxyjump: "neo@{{ hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0') }}"
+ops_bootstrap_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
+ops_bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap"
+
+vm_bootstrap_host: "{{ ops_bootstrap_host }}"
+vm_bootstrap_proxyjump: "{{ ops_bootstrap_proxyjump }}"
+vm_bootstrap_private_key_file: "{{ ops_bootstrap_private_key_file }}"
+vm_bootstrap_known_hosts_file: "{{ ops_bootstrap_known_hosts_file }}"
+vm_bootstrap_network_interfaces: |
+  auto lo
+  iface lo inet loopback
+
+  auto {{ platform_control_zones.ops.vm_interface }}
+  iface {{ platform_control_zones.ops.vm_interface }} inet static
+      address {{ platform_control_zones.ops.vm_ipv4_address }}/{{ platform_control_zones.ops.router_ipv4_prefix }}
+      gateway {{ platform_control_zones.ops.router_ipv4_address }}
+
+vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-ops
+vm_tailscale_authkey_advertise_tags: tag:ops
+vm_tailscale_authkey_expected_tag: tag:ops
+vm_tailscale_authkey_expected_tags:
+  - tag:ops
+
+podman_vm_firewall_input_tcp_rules:
+  - interface: airunner0
+    source: 10.89.0.0/29
+    destination: 10.89.0.1
+    port: 53
+    comment: airunner-podman-dns-tcp
+
+podman_vm_firewall_input_udp_rules:
+  - interface: airunner0
+    source: 10.89.0.0/29
+    destination: 10.89.0.1
+    port: 53
+    comment: airunner-podman-dns-udp
+  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+    source: "{{ platform_zones.bak.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: backend-ops-tailscale-underlay-input
+  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+    source: "{{ platform_zones.dmz.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: dmz-ops-tailscale-underlay-input
+  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+    source: "{{ platform_zones.iot.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: iot-ops-tailscale-underlay-input
+  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+    source: "{{ platform_zones.usr.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: usr-ops-tailscale-underlay-input
+  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+    source: "{{ platform_control_zones.ops.dom0_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: dom0-ops-tailscale-underlay-input
+  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+    source: "{{ platform_control_zones.ops.router_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: router-ops-tailscale-underlay-input
+
+podman_vm_firewall_forward_egress_interfaces:
+  - airunner0
+
+vm_admin_user_name: smith
+vm_local_users:
+  - name: smith
+    shell: /bin/ash
+    groups:
+      - wheel
+  - name: minion
+    shell: /bin/ash
+    groups: []
+  - name: agent
+    shell: /bin/ash
+    groups: []
+
+vm_base_packages:
+  - python3
+  - doas
+  - openssh
+
+vm_admin_authorized_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+tailscale_enable_ssh: true
+
+alpine_repositories:
+  - http://dl-cdn.alpinelinux.org/alpine/v3.23/main
+  - http://dl-cdn.alpinelinux.org/alpine/v3.23/community
+
+ops_infra_user: smith
+ops_app_user: minion
+ops_legacy_infra_user: klokast-infra
+ops_legacy_app_user: klokast-app
+ops_account_migration_enabled: true
+ops_account_cleanup_enabled: false
+ops_infra_private_root: /home/smith/private/klokast
+ops_infra_repo_parent: /home/smith/src/klokast
+ops_infra_repo_dest: "{{ ops_infra_repo_parent }}/klokast-box"
+ops_app_workspace_root: /home/minion/src
+ops_approved_state_root: /var/lib/klokast/approved-state
+ops_controller_source_private_root: "{{ lookup('env', 'HOME') }}/private/klokast"
+ops_controller_root_secret_files:
+  - /etc/klokast/tailscale-policy.env
+  - /etc/klokast/tailscale-devices.env
+ops_secret_authority_root: /etc/klokast/secret-authority
+ops_secret_authority_state_root: /var/lib/klokast/secret-authority
+ops_secret_authority_audit_log: /var/log/klokast/secret-authority.jsonl
+
+ops_controller_legacy_git_ssh_key_path: "/home/{{ ops_infra_user }}/.ssh/github-klokast-box"
+ops_controller_legacy_repo_url: git@github.com:klokast/klokast-box.git
+# Legacy filename used by VM bootstrap inventory; this is the controller-held
+# VM admin key, not the GitHub deploy key.
+ops_vm_admin_ssh_key_path: "/home/{{ ops_infra_user }}/.ssh/github-klokast-codex"
+ops_git_user_name: Klokast Infra
+ops_git_user_email: "{{ ops_infra_user }}@{{ node_hostname }}"
+ops_github_ssh_host: github.com
+ops_github_ssh_hostname: ssh.github.com
+ops_github_ssh_port: 443
+ops_github_ssh_host_key_alias: github.com
+ops_github_known_hosts:
+  - github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+  - github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+  - github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+ops_repositories:
+  - name: klokast-box
+    repo: https://github.com/klokast/klokast-box.git
+    dest: "{{ ops_infra_repo_dest }}"
+    version: main
+
+ops_controller_packages:
+  - ansible
+  - bash
+  - buildah
+  - ca-certificates
+  - curl
+  - git
+  - go
+  - jq
+  - openssh-client-default
+  - podman
+  - py3-cryptography
+  - py3-pygithub
+  - py3-jinja2
+  - py3-yaml
+  - rsync
+  - skopeo
+  - sudo
+  - tmux
+
+ops_controller_tailscale_wrapper_source_root: "{{ playbook_dir }}/../../klokast-ops/tailscale/bin"
+ops_controller_tailscale_wrappers:
+  - ts-authkey-mint
+  - ts-authkey-bootstrap
+  - ts-authkey-dom0
+  - ts-authkey-vm
+  - ts-authkey-ops
+  - ts-authkey-infra
+  - ts-authkey-infra-agent
+  - ts-authkey-airunner
+  - ts-authkey-back
+  - ts-authkey-dmz
+  - ts-authkey-iot
+  - ts-authkey-usr
+  - ts-authkey-streamer
+  - ts-authkey-nextcloud
+  - ts-authkey-immich
+  - ts-authkey-music
+  - ts-authkey-music-upload
+  - ts-authkey-print
+  - ts-policy-apply
+  - ts-policy-pull
+  - ts-policy-validate
+  - ts-devices-list
+  - ts-device-delete-stale
+
+ops_controller_secret_authority_wrapper_source_root: "{{ playbook_dir }}/../../klokast-ops/secret-authority/bin"
+ops_controller_secret_authority_wrappers:
+  - ksa-static-site
+  - ksa-cloudflare
+
+ops_airunner_enabled: false
+ops_airunner_user: agent
+ops_airunner_home: "/home/{{ ops_airunner_user }}"
+ops_airunner_repo_parent: "{{ ops_airunner_home }}/src/klokast"
+ops_airunner_repo_dest: "{{ ops_airunner_repo_parent }}/klokast-box"
+ops_airunner_repo_url: git@github.com:klokast/klokast-box.git
+ops_airunner_repo_version: main
+ops_airunner_git_ssh_key_path: "{{ ops_airunner_home }}/.ssh/github-klokast-box"
+ops_airunner_git_user_name: Klokast Agent
+ops_airunner_git_user_email: "agent@{{ node_name }}-ops-airunner"
+ops_airunner_instance: canonical
+ops_airunner_instances:
+  canonical:
+    name: "{{ node_name }}-ops-airunner"
+    service_name: airunner
+    service_path: /etc/init.d/airunner
+    state_root: /var/lib/klokast/airunner
+    image: localhost/klokast/airunner:current
+    shell_wrapper: /usr/local/bin/airunner-shell
+    sudoers_path: "/etc/sudoers.d/30-{{ ops_airunner_user }}-airunner"
+    manage_legacy_service: true
+  candidate:
+    name: "{{ node_name }}-ops-airunner-candidate"
+    service_name: airunner-candidate
+    service_path: /etc/init.d/airunner-candidate
+    state_root: /var/lib/klokast/airunner-candidate
+    image: localhost/klokast/airunner:candidate
+    shell_wrapper: /usr/local/bin/airunner-candidate-shell
+    sudoers_path: "/etc/sudoers.d/30-{{ ops_airunner_user }}-airunner-candidate"
+    manage_legacy_service: false
+ops_airunner_network_name: airunner
+ops_airunner_network_interface: airunner0
+ops_airunner_network_subnet: 10.89.0.0/29
+ops_airunner_network_gateway: 10.89.0.1
+ops_airunner_netavark_firewall_driver: nftables
+ops_airunner_dns_servers:
+  - 1.1.1.1
+  - 1.0.0.1
+ops_airunner_legacy_service_name: klokast-airunner
+ops_airunner_legacy_service_path: /etc/init.d/klokast-airunner
+ops_airunner_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-airunner
+ops_airunner_tailscale_advertise_tags: tag:airunner
+ops_airunner_tailscale_expected_tag: tag:airunner
+ops_airunner_neo_uid: 1001
+ops_airunner_neo_gid: 1001

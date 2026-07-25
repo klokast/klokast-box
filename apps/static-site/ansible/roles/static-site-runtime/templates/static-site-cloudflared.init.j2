@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+description="Klokast static-site Cloudflare Tunnel connector"
+
+token_file={{ (static_site_secret_root ~ '/cloudflared-token') | quote }}
+
+command="/usr/bin/cloudflared"
+command_args="tunnel --no-autoupdate --loglevel info run --token-file $token_file"
+command_user="{{ vm_admin_user_name }}:wheel"
+command_background=yes
+pidfile={{ static_site_cloudflared_pidfile | quote }}
+supervisor="supervise-daemon"
+
+output_log={{ (static_site_log_root ~ '/cloudflared.stdout.log') | quote }}
+error_log={{ (static_site_log_root ~ '/cloudflared.stderr.log') | quote }}
+
+depend() {
+    need net
+    after firewall {{ static_site_web_service_name }}
+    use logger
+}
+
+start_pre() {
+    /usr/local/sbin/static-site-cloudflared-check >/dev/null || return 1
+    checkpath -d -m 0750 -o {{ vm_admin_user_name }}:wheel {{ static_site_log_root | quote }} || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel "$output_log" || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel "$error_log" || return 1
+}

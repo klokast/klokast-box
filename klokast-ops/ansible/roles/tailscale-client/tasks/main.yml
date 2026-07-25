@@ -1,0 +1,103 @@
+---
+- name: Ensure the Tailscale keyring directory exists
+  ansible.builtin.file:
+    path: /usr/share/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the Tailscale package signing key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release | lower }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the Tailscale apt source
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release | lower }}.tailscale-keyring.list"
+    dest: /etc/apt/sources.list.d/tailscale.list
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Refresh the apt cache after adding the Tailscale repository
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: Ensure Tailscale is installed
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure tailscaled is enabled and running
+  ansible.builtin.service:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Collect the current Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status_json
+  changed_when: false
+  failed_when: false
+
+- name: Parse the current Tailscale status
+  ansible.builtin.set_fact:
+    tailscale_status: "{{ tailscale_status_json.stdout | from_json }}"
+  when:
+    - tailscale_status_json.rc == 0
+    - tailscale_status_json.stdout | length > 0
+
+- name: Require an auth key when the host is not yet enrolled
+  ansible.builtin.assert:
+    that:
+      - tailscale_auth_key | length > 0
+    fail_msg: >
+      The host is not yet enrolled in Tailscale. Re-run the playbook with the
+      reusable pre-approved tag:ops auth key.
+  when: (tailscale_status | default({})).BackendState | default("") != "Running"
+
+- name: Enroll the host into Tailscale
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - up
+      - "--auth-key={{ tailscale_auth_key }}"
+      - "--hostname={{ ops_hostname }}"
+      - "--advertise-tags={{ ops_tailscale_tags | join(',') }}"
+      - --ssh
+  no_log: true
+  when: (tailscale_status | default({})).BackendState | default("") != "Running"
+
+- name: Re-read the Tailscale status after enrollment
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status_after_json
+  changed_when: false
+
+- name: Parse the post-enrollment Tailscale status
+  ansible.builtin.set_fact:
+    tailscale_status_after: "{{ tailscale_status_after_json.stdout | from_json }}"
+
+- name: Assert the host is enrolled in Tailscale
+  ansible.builtin.assert:
+    that:
+      - tailscale_status_after.BackendState | default("") == "Running"
+      - ops_tailscale_tags | difference(tailscale_status_after.Self.Tags | default([])) | length == 0
+      - >
+        not (ops_tailscale_require_exact_hostname | default(false) | bool)
+        or (
+          (
+            tailscale_status_after.Self.DNSName
+            | default(tailscale_status_after.Self.HostName | default(""))
+            | regex_replace("\\.$", "")
+            | split(".")
+            | first
+          ) == ops_hostname
+        )
+    fail_msg: Tailscale did not reach the Running backend state with the expected tags and hostname.

@@ -1,0 +1,282 @@
+---
+- name: Assert the backend role targets a backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'backend'
+      - node_name in [nextcloud_active_master, nextcloud_passive_backup]
+      - nextcloud_domain | length > 0
+    fail_msg: >-
+      nextcloud-backend must target one selected backend VM.
+
+- name: Select the backend site mode
+  ansible.builtin.set_fact:
+    nextcloud_site_mode: "{{ 'active' if node_name == nextcloud_active_master else 'passive' }}"
+    nextcloud_admin_password: "{{ lookup('env', 'NEXTCLOUD_ADMIN_PASSWORD') }}"
+    nextcloud_postgres_password: "{{ lookup('env', 'NEXTCLOUD_POSTGRES_PASSWORD') }}"
+    nextcloud_restic_password: "{{ lookup('env', 'NEXTCLOUD_RESTIC_PASSWORD') }}"
+    nextcloud_restic_repository: "{{ lookup('env', 'NEXTCLOUD_RESTIC_REPOSITORY') }}"
+  no_log: true
+
+- name: Assert required backend secrets are available
+  ansible.builtin.assert:
+    that:
+      - nextcloud_admin_password | length > 0
+      - nextcloud_postgres_password | length > 0
+      - nextcloud_restic_password | length > 0
+      - nextcloud_restic_repository | length > 0
+    fail_msg: >-
+      Export NEXTCLOUD_ADMIN_PASSWORD, NEXTCLOUD_POSTGRES_PASSWORD,
+      NEXTCLOUD_RESTIC_PASSWORD, and NEXTCLOUD_RESTIC_REPOSITORY before install.
+  no_log: true
+
+- name: Read the selected image source map
+  ansible.builtin.slurp:
+    src: "{{ nextcloud_service_root }}/image-sources.json"
+  become: true
+  register: nextcloud_backend_image_sources_slurp
+
+- name: Publish backend image source facts
+  ansible.builtin.set_fact:
+    nextcloud_image_sources: "{{ nextcloud_backend_image_sources_slurp.content | b64decode | from_json }}"
+
+- name: Ensure backend directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vm_admin_user_name) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ nextcloud_service_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_env_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_secret_root }}"
+      mode: "0700"
+    - path: "{{ nextcloud_image_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_image_root }}/nextcloud-app"
+      mode: "0750"
+    - path: "{{ nextcloud_image_root }}/nextcloud-backup"
+      mode: "0750"
+    - path: "{{ nextcloud_script_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_nginx_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_stack_root }}"
+      mode: "0755"
+    - path: "{{ nextcloud_html_root }}"
+      mode: "0755"
+    - path: "{{ nextcloud_data_root }}"
+      mode: "0770"
+    - path: "{{ nextcloud_postgres_root }}"
+      mode: "0700"
+    - path: "{{ nextcloud_redis_root }}"
+      mode: "0700"
+    - path: "{{ nextcloud_backup_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_restore_root }}"
+      mode: "0750"
+
+- name: Ensure /usr/local/sbin exists
+  ansible.builtin.file:
+    path: /usr/local/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Stop and disable the legacy app-owned backend firewall helper
+  ansible.builtin.service:
+    name: nextcloud-firewall
+    enabled: false
+    state: stopped
+  become: true
+  failed_when: false
+
+- name: Remove the legacy app-owned backend firewall helper
+  ansible.builtin.file:
+    path: /etc/init.d/nextcloud-firewall
+    state: absent
+  become: true
+
+- name: Render backend environment files
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0640"
+  become: true
+  loop:
+    - src: nextcloud-app.env.j2
+      dest: "{{ nextcloud_env_root }}/app.env"
+    - src: nextcloud-postgres.env.j2
+      dest: "{{ nextcloud_env_root }}/postgres.env"
+    - src: nextcloud-restic.env.j2
+      dest: "{{ nextcloud_env_root }}/restic.env"
+
+- name: Store backend secret files
+  ansible.builtin.copy:
+    dest: "{{ item.path }}"
+    content: "{{ item.value }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+  loop:
+    - path: "{{ nextcloud_secret_root }}/nextcloud-admin-user"
+      value: "{{ nextcloud_admin_user }}"
+    - path: "{{ nextcloud_secret_root }}/nextcloud-admin-password"
+      value: "{{ nextcloud_admin_password }}"
+    - path: "{{ nextcloud_secret_root }}/postgres-db"
+      value: "{{ nextcloud_postgres_db }}"
+    - path: "{{ nextcloud_secret_root }}/postgres-user"
+      value: "{{ nextcloud_postgres_user }}"
+    - path: "{{ nextcloud_secret_root }}/postgres-password"
+      value: "{{ nextcloud_postgres_password }}"
+    - path: "{{ nextcloud_secret_root }}/restic-password"
+      value: "{{ nextcloud_restic_password }}"
+
+- name: Copy backend image build contexts
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0644"
+  become: true
+  loop:
+    - src: "{{ playbook_dir }}/../../images/nextcloud-app/Containerfile"
+      dest: "{{ nextcloud_image_root }}/nextcloud-app/Containerfile"
+    - src: "{{ playbook_dir }}/../../images/nextcloud-backup/Containerfile"
+      dest: "{{ nextcloud_image_root }}/nextcloud-backup/Containerfile"
+
+- name: Render backend service files and helpers
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - src: nextcloud-nginx.conf.j2
+      dest: "{{ nextcloud_nginx_root }}/nginx.conf"
+      mode: "0644"
+    - src: nextcloud-backend-deploy.sh.j2
+      dest: /usr/local/sbin/nextcloud-backend-deploy
+      mode: "0750"
+    - src: nextcloud-occ.sh.j2
+      dest: /usr/local/sbin/nextcloud-occ
+      mode: "0750"
+    - src: nextcloud-backup-run.sh.j2
+      dest: /usr/local/sbin/nextcloud-backup-run
+      mode: "0750"
+    - src: nextcloud-openrc.init.j2
+      dest: /etc/init.d/nextcloud
+      mode: "0755"
+
+- name: Deploy or refresh backend containers
+  ansible.builtin.command: /usr/local/sbin/nextcloud-backend-deploy
+  become: true
+  register: nextcloud_backend_deploy
+  changed_when: true
+
+- name: Keep active backend service running and passive backend stopped
+  ansible.builtin.service:
+    name: "{{ nextcloud_service_name }}"
+    enabled: "{{ nextcloud_site_mode == 'active' }}"
+    state: "{{ 'started' if nextcloud_site_mode == 'active' else 'stopped' }}"
+  become: true
+
+- name: Clear active Nextcloud trusted domains before alignment
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/nextcloud-occ
+      - config:system:delete
+      - trusted_domains
+  become: true
+  register: nextcloud_backend_delete_trusted_domains
+  changed_when: nextcloud_backend_delete_trusted_domains.rc == 0
+  failed_when: false
+  when: nextcloud_site_mode == 'active'
+
+- name: Align active Nextcloud trusted domains
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/nextcloud-occ
+      - config:system:set
+      - trusted_domains
+      - "{{ nextcloud_trusted_domain_index }}"
+      - "--value={{ item }}"
+  become: true
+  loop: "{{ nextcloud_trusted_domains | unique | list }}"
+  loop_control:
+    index_var: nextcloud_trusted_domain_index
+    label: "{{ item }}"
+  register: nextcloud_backend_trusted_domain_command
+  retries: 30
+  delay: 5
+  until: nextcloud_backend_trusted_domain_command.rc == 0
+  changed_when: true
+  when: nextcloud_site_mode == 'active'
+
+- name: Align active Nextcloud proxy and overwrite configuration
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  become: true
+  loop:
+    - - /usr/local/sbin/nextcloud-occ
+      - config:system:set
+      - trusted_proxies
+      - "0"
+      - "--value={{ nextcloud_trusted_proxies[0] }}"
+    - - /usr/local/sbin/nextcloud-occ
+      - config:system:set
+      - overwriteprotocol
+      - "--value=https"
+    - - /usr/local/sbin/nextcloud-occ
+      - config:system:set
+      - overwrite.cli.url
+      - "--value={{ nextcloud_public_url }}"
+  loop_control:
+    label: "{{ item | join(' ') }}"
+  register: nextcloud_backend_config_command
+  retries: 30
+  delay: 5
+  until: nextcloud_backend_config_command.rc == 0
+  changed_when: true
+  when: nextcloud_site_mode == 'active'
+
+- name: Remove active Nextcloud forced overwrite host
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/nextcloud-occ
+      - config:system:delete
+      - overwritehost
+  become: true
+  register: nextcloud_backend_delete_overwritehost
+  changed_when: nextcloud_backend_delete_overwritehost.rc == 0
+  failed_when: false
+  when: nextcloud_site_mode == 'active'
+
+- name: Install hourly active backup hook
+  ansible.builtin.template:
+    src: nextcloud-periodic-backup.j2
+    dest: /etc/periodic/hourly/nextcloud-backup
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+  when: nextcloud_site_mode == 'active'
+
+- name: Remove passive hourly backup hook
+  ansible.builtin.file:
+    path: /etc/periodic/hourly/nextcloud-backup
+    state: absent
+  become: true
+  when: nextcloud_site_mode == 'passive'

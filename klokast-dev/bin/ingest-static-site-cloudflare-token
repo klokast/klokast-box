@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KSA_TOOL_NAME="ingest-static-site-cloudflare-token"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
+DEFAULT_BOX="${KLOKAST_STATIC_SITE_BOX:-k001}"
+DEFAULT_DOMAIN="${KLOKAST_STATIC_SITE_DOMAIN:-www.klokast.ai}"
+DEFAULT_SIGNER_ID="${KLOKAST_APPROVAL_SIGNER_ID:-xiaoju-og}"
+DEFAULT_KEY="$HOME/.ssh/minionroval-sk"
+DEFAULT_SSH_KEYGEN="${KLOKAST_SSH_KEYGEN:-}"
+DEFAULT_SK_PROVIDER="${KLOKAST_SK_PROVIDER:-}"
+DEFAULT_REPO_OWNER="${KLOKAST_STATIC_SITE_REPO_OWNER:-klokast}"
+DEFAULT_REPO_NAME="${KLOKAST_STATIC_SITE_REPO_NAME:-klokast-site}"
+DEFAULT_BRANCH="${KLOKAST_STATIC_SITE_BRANCH:-main}"
+DEFAULT_SOURCE_DIR="${KLOKAST_STATIC_SITE_SOURCE_DIR:-www}"
+DEFAULT_TTL_SECONDS="${KLOKAST_APPROVAL_TTL_SECONDS:-600}"
+DEFAULT_YUBIKEY_WAIT_SECONDS="${KLOKAST_YUBIKEY_WAIT_SECONDS:-60}"
+DEFAULT_SIGNATURE_ATTEMPTS="${KLOKAST_APPROVAL_SIGNATURE_ATTEMPTS:-3}"
+SIGNATURE_NAMESPACE="klokast-secret-authority"
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 [--controller HOST] [--box BOX] [--domain HOST] [--signer-id ID]
+     [--key PATH] [--ssh-keygen PATH] [--sk-provider PATH]
+
+Generates and signs a static-site Cloudflare token-ingestion intent, prompts for
+the Cloudflare Tunnel token, ingests it into the root-only Secret Authority on
+the ops controller, verifies redacted status, and prints a JSON result.
+
+Options:
+  --controller HOST   Controller host. Default: ${DEFAULT_CONTROLLER}
+  --box BOX           Static-site placement box. Default: ${DEFAULT_BOX}
+  --domain HOST       Static-site public hostname. Default: ${DEFAULT_DOMAIN}
+  --signer-id ID      Allowed-signers identity. Default: ${DEFAULT_SIGNER_ID}
+  --key PATH          Local approval signing key. Default: ${DEFAULT_KEY}
+  --ssh-keygen PATH   ssh-keygen binary. Default: Homebrew OpenSSH on macOS if
+                      present, otherwise ssh-keygen from PATH.
+  --sk-provider PATH  Optional external OpenSSH FIDO provider library.
+  --repo-owner NAME   GitHub repo owner. Default: ${DEFAULT_REPO_OWNER}
+  --repo-name NAME    GitHub repo name. Default: ${DEFAULT_REPO_NAME}
+  --branch REF        Static-site Git branch. Default: ${DEFAULT_BRANCH}
+  --source-dir DIR    Static-site source dir in repo. Default: ${DEFAULT_SOURCE_DIR}
+  --ttl-seconds N     Intent TTL in seconds. Default: ${DEFAULT_TTL_SECONDS}
+  --yubikey-wait-seconds N
+                      Seconds to wait for USB YubiKey detection. Default:
+                      ${DEFAULT_YUBIKEY_WAIT_SECONDS}
+  --signature-attempts N
+                      Local approval signature attempts. Default:
+                      ${DEFAULT_SIGNATURE_ATTEMPTS}
+  --skip-yubikey-gate Do not prompt/wait before local YubiKey signing.
+
+Stdout contains only the final redacted JSON result. Prompts and progress go to
+stderr. Never paste the Cloudflare token into chat.
+EOF
+}
+
+json_get_review_and_sha() {
+  python3 - "$intent" "$controller" "$box" "$domain" "$repo_owner" "$repo_name" "$branch" "$source_dir" <<'PY'
+import datetime as dt
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+path, controller, box, domain, repo_owner, repo_name, branch, source_dir = sys.argv[1:]
+raw = Path(path).read_bytes()
+try:
+    intent = json.loads(raw.decode("utf-8"))
+except Exception as error:
+    raise SystemExit(f"intent is not valid JSON: {error}")
+
+canonical = json.dumps(intent, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+if raw.decode("utf-8") != canonical:
+    raise SystemExit("intent JSON is not canonical")
+
+expected = {
+    "schema_version",
+    "authority",
+    "app",
+    "action",
+    "box",
+    "domain",
+    "repo_owner",
+    "repo_name",
+    "branch",
+    "source_dir",
+    "repo_head",
+    "expires_at",
+    "nonce",
+}
+if set(intent) != expected:
+    missing = sorted(expected - set(intent))
+    extra = sorted(set(intent) - expected)
+    raise SystemExit(f"intent fields mismatch; missing={missing} extra={extra}")
+
+checks = {
+    "schema_version": 1,
+    "authority": "klokast-secret-authority",
+    "app": "static-site",
+    "action": "ingest-cloudflare-token",
+    "box": box,
+    "domain": domain,
+    "repo_owner": repo_owner,
+    "repo_name": repo_name,
+    "branch": branch,
+    "source_dir": source_dir,
+}
+for key, expected_value in checks.items():
+    if intent.get(key) != expected_value:
+        raise SystemExit(
+            f"intent {key} mismatch: expected {expected_value!r}, got {intent.get(key)!r}"
+        )
+
+expires_raw = intent["expires_at"]
+expires = dt.datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+if expires <= dt.datetime.now(dt.timezone.utc):
+    raise SystemExit("intent is already expired")
+
+intent_sha256 = hashlib.sha256(raw).hexdigest()
+
+print("", file=sys.stderr)
+print("Approval required: Store Cloudflare Tunnel token for static-site", file=sys.stderr)
+print("", file=sys.stderr)
+print("You are about to sign a canonical Secret Authority intent generated on the ops controller.", file=sys.stderr)
+print("The Cloudflare token is not part of this signed intent. It will be pasted after approval", file=sys.stderr)
+print("and sent only through stdin to the root Secret Authority wrapper on the controller.", file=sys.stderr)
+print("", file=sys.stderr)
+print("Signed inputs:", file=sys.stderr)
+for key in (
+    "authority",
+    "app",
+    "action",
+    "box",
+    "domain",
+    "repo_owner",
+    "repo_name",
+    "branch",
+    "source_dir",
+    "repo_head",
+    "expires_at",
+    "nonce",
+):
+    print(f"  {key}: {intent[key]}", file=sys.stderr)
+print(f"  controller: {controller}", file=sys.stderr)
+print(f"  intent_sha256: {intent_sha256}", file=sys.stderr)
+print("", file=sys.stderr)
+print("Allowed effects:", file=sys.stderr)
+print("  - accept one Cloudflare Tunnel token from stdin;", file=sys.stderr)
+print("  - validate it as a raw base64 JSON Cloudflare tunnel token;", file=sys.stderr)
+print("  - store it root-only under the static-site Secret Authority state;", file=sys.stderr)
+print("  - append Secret Authority audit/nonce state;", file=sys.stderr)
+print("  - report only redacted status.", file=sys.stderr)
+print("", file=sys.stderr)
+print("This approval does not mint GitHub tokens, change GitHub repos, install the", file=sys.stderr)
+print("static-site app, change Cloudflare routes, or expose the token in output.", file=sys.stderr)
+print("", file=sys.stderr)
+print("Security boundary:", file=sys.stderr)
+print("  The YubiKey signs this intent JSON through OpenSSH. It does not independently", file=sys.stderr)
+print("  verify what the MacBook displays. This protects against confusion and", file=sys.stderr)
+print("  accidental approval, but not against a compromised MacBook lying about the", file=sys.stderr)
+print("  intent it asks you to sign.", file=sys.stderr)
+print("", file=sys.stderr)
+print(intent_sha256)
+PY
+}
+
+validate_cloudflare_token_stdin() {
+  python3 -c '
+import base64
+import json
+import re
+import sys
+
+token = sys.stdin.read().strip()
+if not token:
+    raise SystemExit("Cloudflare tunnel token is empty")
+if any(ch.isspace() for ch in token):
+    raise SystemExit("Cloudflare tunnel token must not contain whitespace")
+if not re.match(r"^[A-Za-z0-9_=-]+$", token):
+    raise SystemExit("Cloudflare tunnel token has unexpected characters")
+try:
+    payload = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    decoded = json.loads(payload.decode("utf-8"))
+except Exception as error:
+    raise SystemExit(f"Cloudflare tunnel token is not raw base64 JSON: {error}")
+if not isinstance(decoded, dict):
+    raise SystemExit("Cloudflare tunnel token payload is not a JSON object")
+'
+}
+
+write_result_json() {
+  python3 - "$status_file" "$controller" "$box" "$domain" "$signer_id" "$intent_sha256" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+status_path, controller, box, domain, signer_id, intent_sha256 = sys.argv[1:]
+status = json.loads(Path(status_path).read_text(encoding="utf-8"))
+if status.get("cloudflare_token_configured") is not True:
+    raise SystemExit("Secret Authority status did not report cloudflare_token_configured=true")
+
+result = {
+    "status": "ok",
+    "action": "ingest-cloudflare-token",
+    "controller": controller,
+    "box": box,
+    "domain": domain,
+    "signer_id": signer_id,
+    "intent_sha256": intent_sha256,
+    "github_app_configured": bool(status.get("github_app_configured")),
+    "allowed_signers_configured": bool(status.get("allowed_signers_configured")),
+    "cloudflare_token_configured": True,
+}
+print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+controller="$DEFAULT_CONTROLLER"
+box="$DEFAULT_BOX"
+domain="$DEFAULT_DOMAIN"
+signer_id="$DEFAULT_SIGNER_ID"
+key_path="$DEFAULT_KEY"
+ssh_keygen="$DEFAULT_SSH_KEYGEN"
+sk_provider="$DEFAULT_SK_PROVIDER"
+repo_owner="$DEFAULT_REPO_OWNER"
+repo_name="$DEFAULT_REPO_NAME"
+branch="$DEFAULT_BRANCH"
+source_dir="$DEFAULT_SOURCE_DIR"
+ttl_seconds="$DEFAULT_TTL_SECONDS"
+yubikey_wait_seconds="$DEFAULT_YUBIKEY_WAIT_SECONDS"
+signature_attempts="$DEFAULT_SIGNATURE_ATTEMPTS"
+skip_yubikey_gate=false
+yubikey_gate_done=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --controller)
+      [ "$#" -ge 2 ] || ksa_die "--controller needs a host"
+      controller="$2"
+      shift 2
+      ;;
+    --box)
+      [ "$#" -ge 2 ] || ksa_die "--box needs a box name"
+      box="$2"
+      shift 2
+      ;;
+    --domain)
+      [ "$#" -ge 2 ] || ksa_die "--domain needs a hostname"
+      domain="$2"
+      shift 2
+      ;;
+    --signer-id)
+      [ "$#" -ge 2 ] || ksa_die "--signer-id needs an identity"
+      signer_id="$2"
+      shift 2
+      ;;
+    --key)
+      [ "$#" -ge 2 ] || ksa_die "--key needs a path"
+      key_path="$2"
+      shift 2
+      ;;
+    --ssh-keygen)
+      [ "$#" -ge 2 ] || ksa_die "--ssh-keygen needs a path"
+      ssh_keygen="$2"
+      shift 2
+      ;;
+    --sk-provider)
+      [ "$#" -ge 2 ] || ksa_die "--sk-provider needs a path"
+      sk_provider="$2"
+      shift 2
+      ;;
+    --repo-owner)
+      [ "$#" -ge 2 ] || ksa_die "--repo-owner needs a name"
+      repo_owner="$2"
+      shift 2
+      ;;
+    --repo-name)
+      [ "$#" -ge 2 ] || ksa_die "--repo-name needs a name"
+      repo_name="$2"
+      shift 2
+      ;;
+    --branch)
+      [ "$#" -ge 2 ] || ksa_die "--branch needs a ref"
+      branch="$2"
+      shift 2
+      ;;
+    --source-dir)
+      [ "$#" -ge 2 ] || ksa_die "--source-dir needs a relative path"
+      source_dir="$2"
+      shift 2
+      ;;
+    --ttl-seconds)
+      [ "$#" -ge 2 ] || ksa_die "--ttl-seconds needs a positive integer"
+      ttl_seconds="$2"
+      shift 2
+      ;;
+    --yubikey-wait-seconds)
+      [ "$#" -ge 2 ] || ksa_die "--yubikey-wait-seconds needs a number"
+      yubikey_wait_seconds="$2"
+      shift 2
+      ;;
+    --signature-attempts)
+      [ "$#" -ge 2 ] || ksa_die "--signature-attempts needs a positive integer"
+      signature_attempts="$2"
+      shift 2
+      ;;
+    --skip-yubikey-gate)
+      skip_yubikey_gate=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      ksa_die "unknown argument: $1"
+      ;;
+  esac
+done
+
+ksa_valid_controller "$controller" || ksa_die "--controller contains unsafe characters"
+controller="$(ksa_resolve_controller "$controller")"
+ksa_valid_controller "$controller" || ksa_die "resolved controller contains unsafe characters"
+ksa_valid_box "$box" || ksa_die "--box must be a box name like k001, not a VM hostname"
+ksa_valid_domain "$domain" || ksa_die "--domain must be a hostname"
+ksa_valid_signer_id "$signer_id" || ksa_die "--signer-id may contain only letters, digits, dot, underscore, at, plus, and hyphen"
+ksa_valid_github_owner "$repo_owner" || ksa_die "--repo-owner must be a GitHub organization/user name"
+ksa_valid_github_repo "$repo_name" || ksa_die "--repo-name must be a GitHub repository name"
+ksa_valid_git_ref "$branch" || ksa_die "--branch must be a simple Git ref"
+ksa_valid_git_ref "$source_dir" || ksa_die "--source-dir must be a simple relative path"
+ksa_valid_positive_integer "$ttl_seconds" || ksa_die "--ttl-seconds must be a positive integer"
+ksa_valid_wait_seconds "$yubikey_wait_seconds" || ksa_die "--yubikey-wait-seconds must be a non-negative integer"
+ksa_valid_positive_integer "$signature_attempts" || ksa_die "--signature-attempts must be a positive integer"
+
+ksa_need_command tailscale
+ksa_need_command mktemp
+ksa_need_command python3
+
+key_path="$(ksa_expand_path "$key_path")"
+[ -r "$key_path" ] || ksa_die "approval signing key is not readable: $key_path"
+ssh_keygen="$(ksa_choose_ssh_keygen "$ssh_keygen")"
+ssh_target="smith@${controller}"
+
+if [ -n "$sk_provider" ]; then
+  sk_provider="$(ksa_expand_path "$sk_provider")"
+  [ -f "$sk_provider" ] || ksa_die "--sk-provider does not exist: $sk_provider"
+  export SSH_SK_PROVIDER="$sk_provider"
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/ksa-static-site.XXXXXX")"
+remote_dir=""
+cloudflare_token=""
+old_tty=""
+
+restore_tty() {
+  if [ -n "$old_tty" ]; then
+    stty "$old_tty" 2>/dev/null || true
+    old_tty=""
+  fi
+}
+
+cleanup() {
+  restore_tty
+  unset cloudflare_token
+  if [ -n "$remote_dir" ]; then
+    tailscale ssh "$ssh_target" "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT HUP INT TERM
+
+intent="$tmpdir/ingest-cloudflare-token.intent.json"
+status_file="$tmpdir/status.json"
+
+ksa_log "Generating Cloudflare token-ingestion intent on ${controller}..."
+tailscale ssh "$ssh_target" sh -s -- "$box" "$domain" "$repo_owner" "$repo_name" "$branch" "$source_dir" "$ttl_seconds" <<'SH' > "$intent"
+set -eu
+box=$1
+domain=$2
+repo_owner=$3
+repo_name=$4
+branch=$5
+source_dir=$6
+ttl_seconds=$7
+
+cd ~/src/klokast/klokast-box
+git pull --ff-only >/dev/null
+ansible/bin/secret-authority intent static-site ingest-cloudflare-token \
+  --box "$box" \
+  --domain "$domain" \
+  --repo-owner "$repo_owner" \
+  --repo-name "$repo_name" \
+  --branch "$branch" \
+  --source-dir "$source_dir" \
+  --ttl-seconds "$ttl_seconds"
+SH
+
+intent_sha256="$(json_get_review_and_sha)"
+approval_phrase="approve static-site ${domain}"
+printf 'Type exactly "%s" to sign this intent: ' "$approval_phrase" >&2
+IFS= read -r typed_approval
+if [ "$typed_approval" != "$approval_phrase" ]; then
+  ksa_die "approval phrase mismatch; refusing to sign"
+fi
+
+ksa_wait_for_yubikey "Cloudflare token-ingestion approval"
+if ! ksa_sign_message_with_retries "$intent"; then
+  ksa_die "ssh-keygen failed to sign the approval intent after ${signature_attempts} attempts"
+fi
+signature="${intent}.sig"
+
+remote_dir="$(
+  tailscale ssh "$ssh_target" 'mktemp -d /tmp/ksa-static-site.XXXXXX'
+)"
+case "$remote_dir" in
+  /tmp/ksa-static-site.*) ;;
+  *) ksa_die "controller returned unsafe temporary directory: $remote_dir" ;;
+esac
+remote_intent="${remote_dir}/intent.json"
+remote_signature="${remote_dir}/intent.json.sig"
+
+cat "$intent" | tailscale ssh "$ssh_target" "cat > '$remote_intent'"
+cat "$signature" | tailscale ssh "$ssh_target" "cat > '$remote_signature'"
+
+printf 'Cloudflare tunnel token (eyJ... only): ' >&2
+if [ -t 0 ]; then
+  old_tty="$(stty -g)"
+  stty -echo
+  IFS= read -r cloudflare_token
+  restore_tty
+else
+  IFS= read -r cloudflare_token
+fi
+printf '\n' >&2
+
+printf '%s' "$cloudflare_token" | validate_cloudflare_token_stdin
+
+ksa_log "Ingesting Cloudflare token through Secret Authority on ${controller}..."
+ingest_cmd="cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site ingest-cloudflare-token --box '$box' --domain '$domain' --repo-owner '$repo_owner' --repo-name '$repo_name' --branch '$branch' --source-dir '$source_dir' --approval-intent '$remote_intent' --approval-signature '$remote_signature' --signer-id '$signer_id'"
+printf '%s' "$cloudflare_token" | tailscale ssh "$ssh_target" "$ingest_cmd" >/dev/null
+unset cloudflare_token
+
+tailscale ssh "$ssh_target" \
+  'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted' \
+  > "$status_file"
+
+write_result_json

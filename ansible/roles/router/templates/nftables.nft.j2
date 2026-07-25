@@ -1,0 +1,67 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        ct state { established, related } accept
+        iifname "lo" accept
+        iifname "tailscale0" accept comment "tailscale-management-input"
+        iifname "{{ router_wan_interface }}" udp dport 41641 accept comment "tailscale-wan-udp41641"
+        iifname { {% for interface in router_internal_interfaces %}"{{ interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } udp dport 53 accept comment "internal-dns-udp"
+        iifname { {% for interface in router_internal_interfaces %}"{{ interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport 53 accept comment "internal-dns-tcp"
+        iifname { {% for range in router_dhcp_ranges %}"{{ range.interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } udp dport 67 accept comment "internal-dhcp"
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        ct state { established, related } accept
+        tcp flags syn tcp option maxseg size set rt mtu
+        include "/etc/klokast/app-resources/router-forward.nft"
+        include "/etc/klokast/app-resources/router-forward.d/*.nft"
+        {% for rule in router_interzone_tcp_rules | default([]) %}
+        iifname "{{ rule.in_interface }}" oifname "{{ rule.out_interface }}" ip saddr {{ rule.source }} ip daddr {{ rule.destination }} tcp dport {{ rule.port }} accept comment "{{ rule.comment }}"
+        {% endfor %}
+        {% for rule in router_tailscale_interzone_udp_rules | default([]) %}
+        iifname "{{ rule.in_interface }}" oifname "{{ rule.out_interface }}" ip saddr {{ rule.source }} ip daddr {{ rule.destination }} udp dport {{ rule.port }} accept comment "{{ rule.comment }}"
+        {% endfor %}
+        {% if router_local_presence_vpn_gateway_enabled | default(false) | bool %}
+        {% for rule in router_local_presence_sources | default([]) %}
+        iifname "{{ rule.interface }}" oifname "{{ router_local_presence_vpn_gateway_interface }}" ip saddr {{ rule.source }} ip daddr {{ router_local_presence_vpn_gateway_ipv4_address }} udp dport 53 accept comment "{{ rule.name }}-vpn-gateway-dns-udp"
+        iifname "{{ rule.interface }}" oifname "{{ router_local_presence_vpn_gateway_interface }}" ip saddr {{ rule.source }} ip daddr {{ router_local_presence_vpn_gateway_ipv4_address }} tcp dport 53 accept comment "{{ rule.name }}-vpn-gateway-dns-tcp"
+        iifname "{{ rule.interface }}" oifname "{{ router_local_presence_vpn_gateway_interface }}" ip saddr {{ rule.source }} ip daddr != { {% for cidr in router_local_presence_bypass_cidrs | default([]) %}{{ cidr }}{% if not loop.last %}, {% endif %}{% endfor %} } accept comment "{{ rule.name }}-vpn-gateway-egress"
+        {% endfor %}
+        {% endif %}
+        {% for rule in router_zone_wan_tcp_egress_exceptions | default([]) %}
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" ip daddr {{ rule.destination }} tcp dport {{ rule.port }} accept comment "{{ rule.comment }}"
+        {% endfor %}
+        {% for rule in router_wan_web_egress_rules | default([]) %}
+        {% if rule.comment is defined %}
+        {% set rule_comment = rule.comment %}
+        {% else %}
+        {% set rule_comment = rule.name ~ (rule.comment_suffix | default('-wan-web-egress')) %}
+        {% endif %}
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" tcp dport { {% for port in rule.tcp_ports %}{{ port }}{% if not loop.last %}, {% endif %}{% endfor %} } accept comment "{{ rule_comment }}-tcp"
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" udp dport { {% for port in rule.udp_ports %}{{ port }}{% if not loop.last %}, {% endif %}{% endfor %} } accept comment "{{ rule_comment }}-udp"
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" ip protocol icmp accept comment "{{ rule_comment }}-icmp"
+        {% endfor %}
+        {% for rule in router_tailscale_udp_egress_rules | default([]) %}
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" udp dport {{ rule.port }} accept comment "managed-vm-tailscale-udp{{ rule.port }}-egress"
+        {% endfor %}
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        oifname "{{ router_wan_interface }}" masquerade
+    }
+}

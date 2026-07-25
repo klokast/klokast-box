@@ -1,0 +1,28 @@
+---
+- name: Install the multisite Immich stack
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Resolve and verify image sources
+      ansible.builtin.import_role:
+        name: immich-image-preflight
+      when: node_domain_role == 'backend'
+
+    - name: Resolve and verify DMZ ingress image source
+      ansible.builtin.import_role:
+        name: immich-image-preflight
+      vars:
+        immich_image_preflight_keys: alpine
+      when: node_domain_role == 'dmz'
+
+    - name: Install the backend Immich stack
+      ansible.builtin.import_role:
+        name: immich-backend
+      when: node_domain_role == 'backend'
+
+    - name: Install the DMZ private Tailscale ingress
+      ansible.builtin.import_role:
+        name: immich-private-ingress
+      when: node_domain_role == 'dmz'

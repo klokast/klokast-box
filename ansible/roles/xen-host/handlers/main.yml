@@ -1,0 +1,36 @@
+#
+# Summary:
+# - Syncs the EFI-backed APK cache and persists lbu changes after Xen host package or bootloader updates.
+#
+---
+- name: Sync APK cache
+  # Keep the runtime cache populated, but do not rewrite the dedicated boot
+  # repository after phase 12.
+  ansible.builtin.shell: |
+    set -eu
+    apk cache sync >/dev/null
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+- name: Commit lbu changes
+  # `community.general.lbu` refuses to replace an existing apkovl on a
+  # steady-state diskless host. Use `lbu commit -d` so post-boot convergence
+  # can overwrite the previous archive in place. Alpine can mount the LBU
+  # media read-only after boot, so remount the configured backup directory
+  # before replacing the apkovl archive.
+  ansible.builtin.shell: |
+    set -eu
+    backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+    if [ -n "$backupdir" ]; then
+      mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+      if [ -n "$mount_info" ]; then
+        set -- $mount_info
+        case ",$2," in
+          *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+        esac
+      fi
+    fi
+    lbu commit -d
+  args:
+    executable: /bin/sh

@@ -1,0 +1,37 @@
+---
+- name: Enroll the iot VM into Tailscale over the dom0 bootstrap SSH path
+  hosts: iot
+  gather_facts: false
+  vars:
+    ansible_user: neo
+    ansible_become: true
+    ansible_become_method: doas
+    ansible_host: "{{ iot_bootstrap_host }}"
+    ansible_ssh_private_key_file: "{{ iot_bootstrap_private_key_file }}"
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ iot_bootstrap_known_hosts_file }}
+      -J {{ iot_bootstrap_proxyjump }}
+  pre_tasks:
+    - name: Ensure Python 3 is present on the iot VM
+      ansible.builtin.raw: "test -x /usr/bin/python3 || doas apk add --no-cache python3"
+      register: iot_python_bootstrap
+      changed_when: iot_python_bootstrap.stdout | default('') | length > 0
+
+    - name: Gather iot bootstrap facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Ensure the iot Tailscale client is installed and running
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Enroll the iot VM into Tailscale through the auth-key wrapper
+      ansible.builtin.import_role:
+        name: vm-tailscale-enrollment
+
+    - name: Show the converged iot Tailscale state
+      ansible.builtin.debug:
+        msg:
+          - "The iot VM now answers as {{ node_hostname }}.{{ platform_magicdns_suffix }} with {{ vm_tailscale_authkey_expected_tag }}."
+          - "The next steady-state iot phases should connect directly over Tailscale SSH."

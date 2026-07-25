@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+import argparse
+import getpass
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+
+SCRIPT = Path(__file__).resolve()
+REPO_ROOT = SCRIPT.parents[2]
+APPS_ROOT = REPO_ROOT / "apps"
+DEFAULT_BUILDER_ROOT = Path("/var/lib/klokast/oci-builder")
+DEFAULT_MAGICDNS_SUFFIX = os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net")
+IMAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+APP_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def die(message):
+    print(f"platform-image-build: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def run(argv, *, cwd=None, stdin=None, text=False):
+    return subprocess.run(argv, cwd=cwd or REPO_ROOT, input=stdin, text=text, check=True)
+
+
+def output(argv, *, cwd=None):
+    return subprocess.check_output(argv, cwd=cwd or REPO_ROOT, text=True).strip()
+
+
+def validate_app(value):
+    if not APP_RE.fullmatch(value or ""):
+        die("--app must be an app directory name")
+    app_dir = APPS_ROOT / value
+    if not app_dir.is_dir():
+        die(f"unknown app: {value}")
+    return app_dir
+
+
+def validate_box(value):
+    if not APP_RE.fullmatch(value or ""):
+        die("--box must be a box name like k002")
+    for suffix in ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt"):
+        if value == suffix or value.endswith(f"-{suffix}"):
+            die("--box must be a box name, not a VM hostname")
+    return value
+
+
+def safe_relative_path(app_dir, value, field):
+    if not isinstance(value, str) or not value:
+        die(f"{field} is required")
+    path = (app_dir / value).resolve()
+    try:
+        path.relative_to(app_dir.resolve())
+    except ValueError:
+        die(f"{field} must stay under the app directory")
+    return path
+
+
+def safe_builder_path(root, *parts):
+    path = root.joinpath(*parts).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        die("resolved builder path escaped the builder root")
+    return path
+
+
+def load_manifest(app_dir):
+    path = app_dir / "images.lock.yml"
+    if not path.is_file():
+        die(f"missing image lock manifest: {path}")
+    with path.open(encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if data.get("schema_version") != 1:
+        die(f"{path} must use schema_version: 1")
+    built = data.get("built_images") or {}
+    if not isinstance(built, dict) or not built:
+        die(f"{path} built_images must be a non-empty mapping")
+    upstream = data.get("upstream_images") or {}
+    if not isinstance(upstream, dict):
+        die(f"{path} upstream_images must be a mapping")
+    return path, data, upstream, built
+
+
+def validate_image_ref(value, field):
+    if not isinstance(value, str) or not value:
+        die(f"{field} is required")
+    if any(char.isspace() for char in value) or value.startswith("-"):
+        die(f"{field} is not a safe image reference")
+    if "@" in value:
+        die(f"{field} must be a taggable local image reference, not a digest ref")
+    return value
+
+
+def validate_archive_name(value, field):
+    if not isinstance(value, str) or not value or "/" in value or value.startswith("."):
+        die(f"{field} must be a simple archive filename")
+    if not value.endswith((".tar", ".oci.tar")):
+        die(f"{field} must end in .tar or .oci.tar")
+    return value
+
+
+def resolve_build_args(upstream, spec, image_id):
+    build_args = spec.get("build_args") or {}
+    if not isinstance(build_args, dict):
+        die(f"{image_id}.build_args must be a mapping")
+    resolved = {}
+    for arg_name, source_name in sorted(build_args.items()):
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(arg_name)):
+            die(f"{image_id}.build_args contains an unsafe build-arg name")
+        source = upstream.get(source_name)
+        if not isinstance(source, dict):
+            die(f"{image_id}.build_args.{arg_name} references unknown upstream image {source_name}")
+        canonical = source.get("canonical")
+        digest = source.get("digest")
+        if not isinstance(canonical, str) or not canonical or "@" in canonical:
+            die(f"upstream_images.{source_name}.canonical must be a registry image name")
+        if not DIGEST_RE.fullmatch(str(digest or "")):
+            die(f"upstream_images.{source_name}.digest must be pinned as sha256:<64 hex>")
+        refs = [f"{canonical}@{digest}"]
+        mirrors = source.get("mirrors") or []
+        if not isinstance(mirrors, list):
+            die(f"upstream_images.{source_name}.mirrors must be a list")
+        for mirror in mirrors:
+            if not isinstance(mirror, str) or not mirror or "@" in mirror:
+                die(f"upstream_images.{source_name}.mirrors contains an invalid image name")
+            refs.append(f"{mirror}@{digest}")
+        resolved[arg_name] = refs
+    return resolved
+
+
+def select_build_args(build_arg_sources):
+    selected = {}
+    for name, refs in build_arg_sources.items():
+        failures = []
+        for ref in refs:
+            try:
+                run(["podman", "pull", "--policy=missing", ref])
+                selected[name] = ref
+                break
+            except subprocess.CalledProcessError as error:
+                failures.append(f"{ref} rc={error.returncode}")
+        if name not in selected:
+            die(f"unable to pull any source for build arg {name}: " + "; ".join(failures))
+    return selected
+
+
+def selected_specs(app_dir, manifest, upstream, selected):
+    result = []
+    for image_id, spec in sorted((manifest.get("built_images") or {}).items()):
+        if selected and image_id not in selected:
+            continue
+        if not IMAGE_ID_RE.fullmatch(image_id):
+            die(f"invalid image id: {image_id}")
+        if not isinstance(spec, dict):
+            die(f"built_images.{image_id} must be a mapping")
+        context = safe_relative_path(app_dir, spec.get("context"), f"{image_id}.context")
+        containerfile = spec.get("containerfile", "Containerfile")
+        if "/" in containerfile or containerfile.startswith("."):
+            die(f"{image_id}.containerfile must be a filename inside the context")
+        containerfile_path = context / containerfile
+        if not context.is_dir():
+            die(f"{image_id}.context does not exist: {context}")
+        if not containerfile_path.is_file():
+            die(f"{image_id}.containerfile does not exist: {containerfile_path}")
+        result.append(
+            {
+                "id": image_id,
+                "context": context,
+                "containerfile": containerfile,
+                "image": validate_image_ref(spec.get("image"), f"{image_id}.image"),
+                "archive": validate_archive_name(spec.get("archive"), f"{image_id}.archive"),
+                "build_args": resolve_build_args(upstream, spec, image_id),
+            }
+        )
+    if selected and len(result) != len(selected):
+        found = {item["id"] for item in result}
+        die("unknown image id(s): " + ", ".join(sorted(set(selected) - found)))
+    if not result:
+        die("no images selected")
+    return result
+
+
+def ensure_controller():
+    if os.environ.get("KLOKAST_IMAGE_BUILD_SKIP_CONTROLLER_GUARD") == "1":
+        return
+    guard = Path("/usr/local/sbin/klokast-controller-guard")
+    if guard.exists():
+        run([str(guard), "--require-active"])
+    if getpass.getuser() != "smith":
+        die("platform image builds must run from a controller automation account")
+
+
+def ensure_tools():
+    missing = [tool for tool in ("podman", "sha256sum", "tailscale") if shutil.which(tool) is None]
+    if missing:
+        die("missing required tool(s): " + ", ".join(missing))
+
+
+def prepare_build_dirs(root, app_name, image_id):
+    app_root = safe_builder_path(root, app_name)
+    staging = safe_builder_path(root, app_name, "staging", image_id)
+    artifacts = safe_builder_path(root, "artifacts", app_name)
+    for path in (app_root, staging.parent, artifacts):
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o750)
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, mode=0o750)
+    return staging, artifacts
+
+
+def ensure_builder_root(root):
+    if root.exists() and os.access(root, os.W_OK):
+        return
+    doas = shutil.which("doas")
+    if not doas:
+        die(f"builder root is not writable and doas is unavailable: {root}")
+    user = getpass.getuser()
+    group = output(["id", "-gn"])
+    run([doas, "install", "-d", "-o", user, "-g", group, "-m", "0750", str(root)])
+
+
+def copy_context(source, dest):
+    ignore = shutil.ignore_patterns("__pycache__", ".pytest_cache", ".mypy_cache", "*.pyc")
+    shutil.copytree(source, dest, dirs_exist_ok=True, symlinks=False, ignore=ignore)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def update_lock(manifest_path, manifest, updates):
+    for image_id, values in updates.items():
+        target = manifest["built_images"][image_id]
+        target["digest"] = values["image_id"]
+        target["archive_sha256"] = values["archive_sha256"]
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+
+def build_images(args, manifest_path, manifest, specs):
+    ensure_controller()
+    ensure_tools()
+    root = Path(args.builder_root)
+    ensure_builder_root(root)
+    updates = {}
+    for spec in specs:
+        staging, artifacts = prepare_build_dirs(root, args.app, spec["id"])
+        staged_context = staging / "context"
+        copy_context(spec["context"], staged_context)
+        selected_build_args = select_build_args(spec["build_args"])
+        build_args = []
+        for name, value in selected_build_args.items():
+            build_args.extend(["--build-arg", f"{name}={value}"])
+        run(
+            [
+                "podman",
+                "build",
+                "--pull=never",
+                "--isolation=chroot",
+                "-t",
+                spec["image"],
+                "-f",
+                str(staged_context / spec["containerfile"]),
+                *build_args,
+                str(staged_context),
+            ]
+        )
+        archive = artifacts / spec["archive"]
+        tmp_archive = archive.with_suffix(archive.suffix + ".tmp")
+        if tmp_archive.exists():
+            tmp_archive.unlink()
+        run(["podman", "save", "--format", "oci-archive", "-o", str(tmp_archive), spec["image"]])
+        tmp_archive.replace(archive)
+        archive_sha = sha256_file(archive)
+        image_id = output(["podman", "image", "inspect", "--format", "{{.Id}}", spec["image"]])
+        updates[spec["id"]] = {"image_id": image_id, "archive_sha256": archive_sha}
+        print(f"{args.app}:{spec['id']} built {spec['image']} archive={archive} sha256={archive_sha}")
+    update_lock(manifest_path, manifest, updates)
+
+
+def target_host(box, role, suffix):
+    return f"{box}-{role}.{suffix}" if suffix else f"{box}-{role}"
+
+
+def remote_script(host, script, script_args):
+    argv = ["tailscale", "ssh", f"neo@{host}", "sh", "-s", "--", *script_args]
+    run(argv, stdin=script.encode("utf-8"))
+
+
+def upload_archive(host, app_name, archive_name, archive_path):
+    dest_rel = f".cache/klokast-oci/{app_name}"
+    dest_dir = f"/home/neo/{dest_rel}"
+    tmp_path = f"{dest_dir}/{archive_name}.tmp"
+    final_path = f"{dest_dir}/{archive_name}"
+    remote_script(host, 'set -eu\nmkdir -p "$1"\n', [dest_dir])
+    with archive_path.open("rb") as handle:
+        run(["tailscale", "ssh", f"neo@{host}", "dd", f"of={tmp_path}", "bs=1048576"], stdin=handle.read())
+    remote_script(host, 'set -eu\nmv "$1" "$2"\n', [tmp_path, final_path])
+
+
+def artifact_path(args, spec):
+    return Path(args.builder_root) / "artifacts" / args.app / spec["archive"]
+
+
+def load_images(args, manifest, specs):
+    ensure_controller()
+    ensure_tools()
+    host = target_host(args.box, args.target_role, args.magicdns_suffix)
+    for spec in specs:
+        archive = artifact_path(args, spec)
+        if not archive.is_file():
+            die(f"missing OCI archive for {args.app}:{spec['id']}: {archive}; run build first")
+        expected = ((manifest.get("built_images") or {}).get(spec["id"]) or {}).get("archive_sha256")
+        actual = sha256_file(archive)
+        if expected and expected != actual:
+            die(f"archive sha mismatch for {args.app}:{spec['id']}: lock={expected} actual={actual}")
+        sha = expected or actual
+        upload_archive(host, args.app, spec["archive"], archive)
+        install_script = """
+set -eu
+app="$1"
+archive="$2"
+sha="$3"
+image="$4"
+dest="$HOME/.cache/klokast-oci/$app"
+mkdir -p "$dest"
+cd "$dest"
+printf '%s  %s\n' "$sha" "$archive" | sha256sum -c -
+podman load -i "$archive"
+podman image exists "$image"
+"""
+        remote_script(host, install_script, [args.app, spec["archive"], sha, spec["image"]])
+        print(f"{args.app}:{spec['id']} loaded {spec['image']} on {host}")
+
+
+def verify_images(args, manifest, specs):
+    ensure_controller()
+    ensure_tools()
+    host = target_host(args.box, args.target_role, args.magicdns_suffix)
+    for spec in specs:
+        archive = artifact_path(args, spec)
+        expected = ((manifest.get("built_images") or {}).get(spec["id"]) or {}).get("archive_sha256")
+        if not archive.is_file():
+            die(f"missing OCI archive for {args.app}:{spec['id']}: {archive}")
+        actual = sha256_file(archive)
+        if not expected:
+            die(f"missing archive_sha256 in lock for {args.app}:{spec['id']}")
+        if expected != actual:
+            die(f"archive sha mismatch for {args.app}:{spec['id']}: lock={expected} actual={actual}")
+        script = """
+set -eu
+image="$1"
+podman image exists "$image"
+"""
+        remote_script(host, script, [spec["image"]])
+        print(f"{args.app}:{spec['id']} verified {spec['image']} on {host}")
+
+
+def clean_images(args, specs):
+    ensure_controller()
+    root = Path(args.builder_root)
+    for spec in specs:
+        staging = safe_builder_path(root, args.app, "staging", spec["id"])
+        if staging.exists():
+            shutil.rmtree(staging)
+            print(f"removed {staging}")
+
+
+def parser():
+    parser = argparse.ArgumentParser(description="Build and load Klokast app OCI images from the active ops controller.")
+    parser.add_argument("--app", required=True)
+    parser.add_argument("--box", required=True)
+    parser.add_argument("--image", action="append", default=[], help="Image id to select; repeatable.")
+    parser.add_argument("--target-role", default="bak")
+    parser.add_argument("--magicdns-suffix", default=DEFAULT_MAGICDNS_SUFFIX)
+    parser.add_argument("--builder-root", default=os.environ.get("KLOKAST_OCI_BUILDER_ROOT", str(DEFAULT_BUILDER_ROOT)))
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("build")
+    sub.add_parser("load")
+    sub.add_parser("verify")
+    sub.add_parser("clean")
+    return parser
+
+
+def main():
+    args = parser().parse_args()
+    validate_box(args.box)
+    app_dir = validate_app(args.app)
+    manifest_path, manifest, upstream, built = load_manifest(app_dir)
+    specs = selected_specs(app_dir, manifest, upstream, set(args.image))
+    if args.command == "build":
+        build_images(args, manifest_path, manifest, specs)
+    elif args.command == "load":
+        load_images(args, manifest, specs)
+    elif args.command == "verify":
+        verify_images(args, manifest, specs)
+    elif args.command == "clean":
+        clean_images(args, specs)
+    else:
+        die(f"unknown command: {args.command}")
+
+
+if __name__ == "__main__":
+    main()

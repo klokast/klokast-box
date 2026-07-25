@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+
+name="{{ debian_app_vm_image_builder_service_name }}"
+description="Klokast Debian app-VM image artifact server"
+command="/usr/bin/python3"
+command_args="-m http.server {{ debian_app_vm_image_builder_artifact_port }} --bind {{ debian_app_vm_image_builder_artifact_bind_address }} --directory {{ debian_app_vm_image_builder_output_root }}"
+command_user="{{ debian_app_vm_image_builder_service_user }}:wheel"
+command_background="true"
+pidfile="/run/${RC_SVCNAME}.pid"
+
+depend() {
+    need net
+}

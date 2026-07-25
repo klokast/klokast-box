@@ -1,0 +1,137 @@
+---
+- name: Derive desired platform app VM planning state
+  ansible.builtin.set_fact:
+    platform_app_vm_plan_guest_spec: "{{ app_vm.guest_spec }}"
+    platform_app_vm_plan_offline_guest_spec: >-
+      {{
+        app_vm.guest_spec
+        | dict2items
+        | rejectattr('key', 'in', ['autostart', 'runtime_state'])
+        | items2dict
+      }}
+    platform_app_vm_plan_marker_path: "/etc/klokast/app-vms/{{ app_vm.guest_spec.guest_name }}.json"
+
+- name: Derive platform app VM offline convergence hashes
+  ansible.builtin.set_fact:
+    platform_app_vm_plan_desired_hash: >-
+      {{
+        {
+          'inventory_hostname': app_vm.inventory_hostname,
+          'node_hostname': app_vm.node_hostname,
+          'site_role': app_vm.site_role,
+          'vm_ipv4_address': app_vm.vm_ipv4_address,
+          'advertised_tags': app_vm.advertised_tags,
+          'convergence_schema_version': 5,
+          'guest_spec': platform_app_vm_plan_offline_guest_spec
+        } | to_json | hash('sha256')
+      }}
+    platform_app_vm_plan_accepted_legacy_hashes:
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': true, 'runtime_state': 'running'})
+          } | to_json | hash('sha256')
+        }}
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': false, 'runtime_state': 'stopped'})
+          } | to_json | hash('sha256')
+        }}
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'runtime_state': 'running',
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': true, 'runtime_state': 'running'})
+          } | to_json | hash('sha256')
+        }}
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'runtime_state': 'stopped',
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': false, 'runtime_state': 'stopped'})
+          } | to_json | hash('sha256')
+        }}
+
+- name: Check planned platform app VM LV
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_plan_guest_spec.installed.required_lvs | first }}"
+  register: platform_app_vm_plan_lv_stat
+
+- name: Check planned platform app VM kernel artifact
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_plan_guest_spec.installed.kernel_path }}"
+  register: platform_app_vm_plan_kernel_stat
+
+- name: Check planned platform app VM initramfs artifact
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_plan_guest_spec.installed.initramfs_path }}"
+  register: platform_app_vm_plan_initramfs_stat
+
+- name: Check planned platform app VM Xen config
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_plan_guest_spec.config_path }}"
+  register: platform_app_vm_plan_config_stat
+
+- name: Read the planned platform app VM marker hash
+  ansible.builtin.shell: |
+    set -eu
+    marker={{ platform_app_vm_plan_marker_path | quote }}
+    if [ -f "$marker" ]; then
+      awk -F'"' '$2 == "desired_hash" { print $4; exit }' "$marker"
+    fi
+  args:
+    executable: /bin/sh
+  register: platform_app_vm_plan_marker_hash
+  changed_when: false
+
+- name: Decide whether planned platform app VM offline convergence is needed
+  ansible.builtin.set_fact:
+    platform_app_vm_plan_needs_offline_converge: >-
+      {{
+        (not (platform_app_vm_plan_lv_stat.stat.exists | default(false)))
+        or (not (platform_app_vm_plan_kernel_stat.stat.exists | default(false)))
+        or (not (platform_app_vm_plan_initramfs_stat.stat.exists | default(false)))
+        or (not (platform_app_vm_plan_config_stat.stat.exists | default(false)))
+        or (
+          (platform_app_vm_plan_marker_hash.stdout | default('') | trim) != platform_app_vm_plan_desired_hash
+          and (platform_app_vm_plan_marker_hash.stdout | default('') | trim) not in platform_app_vm_plan_accepted_legacy_hashes
+        )
+      }}
+
+- name: Record planned platform app VM offline convergence need
+  ansible.builtin.set_fact:
+    platform_app_vm_offline_converge_inventory_hosts: >-
+      {{
+        (platform_app_vm_offline_converge_inventory_hosts | default([]))
+        + ([app_vm.inventory_hostname] if (platform_app_vm_plan_needs_offline_converge | bool) else [])
+      }}
+    platform_app_vm_offline_converge_specs: >-
+      {{
+        (platform_app_vm_offline_converge_specs | default([]))
+        + ([app_vm] if (platform_app_vm_plan_needs_offline_converge | bool) else [])
+      }}

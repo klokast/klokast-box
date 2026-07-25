@@ -1,0 +1,86 @@
+---
+- name: Stop managed Nextcloud services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  become: true
+  failed_when: false
+  loop:
+    - nextcloud-private-ingress
+    - nextcloud-cloudflared
+    - nextcloud
+    - nextcloud-firewall
+
+- name: Remove managed Nextcloud containers and pod on backend
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pod
+      - rm
+      - -f
+      - nextcloud
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: nextcloud_remove_backend_pod
+  changed_when: nextcloud_remove_backend_pod.rc == 0
+  failed_when: false
+  when: node_domain_role == 'backend'
+
+- name: Remove stale Cloudflare connector container on DMZ
+  ansible.builtin.command:
+    argv:
+      - podman
+      - rm
+      - -f
+      - nextcloud-cloudflared
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: nextcloud_remove_dmz_container
+  changed_when: nextcloud_remove_dmz_container.rc == 0
+  failed_when: false
+  when: node_domain_role == 'dmz'
+
+- name: Remove managed service files and helper scripts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /etc/init.d/nextcloud
+    - /etc/init.d/nextcloud-firewall
+    - /etc/init.d/nextcloud-cloudflared
+    - /etc/init.d/nextcloud-private-ingress
+    - /usr/local/sbin/nextcloud-backend-deploy
+    - /usr/local/sbin/nextcloud-cloudflared-deploy
+    - /usr/local/sbin/nextcloud-private-ingress-converge
+    - /usr/local/sbin/nextcloud-occ
+    - /usr/local/sbin/nextcloud-backup-run
+    - /usr/local/sbin/nextcloud-image-source-preflight
+    - /etc/periodic/hourly/nextcloud-backup
+
+- name: Remove managed configuration roots
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /etc/klokast/nextcloud
+    - /etc/klokast/nextcloud-cloudflared
+    - /etc/klokast/nextcloud-private-ingress
+
+- name: Wipe managed persistent data only when explicitly requested
+  ansible.builtin.file:
+    path: /srv/nextcloud
+    state: absent
+  become: true
+  when:
+    - nextcloud_wipe_data | default(false) | bool
+    - node_domain_role == 'backend'
+
+- name: Remove private ingress Tailscale state
+  ansible.builtin.file:
+    path: /var/lib/klokast/nextcloud-private-ingress
+    state: absent
+  become: true
+  when: node_domain_role == 'dmz'

@@ -1,0 +1,285 @@
+---
+- name: Collect Platform map facts from dom0 hosts
+  hosts: "{{ platform_map_dom0_targets | default('dom0') }}"
+  gather_facts: false
+  ignore_unreachable: true
+  roles:
+    - role: storage-inspection
+      storage_inspection_show_summary: false
+  tasks:
+    - name: Collect dom0 hostname
+      ansible.builtin.command:
+        argv:
+          - hostname
+      register: platform_map_dom0_hostname
+      changed_when: false
+      failed_when: false
+
+    - name: Collect dom0 OS release
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /etc/os-release
+      register: platform_map_dom0_os_release
+      changed_when: false
+      failed_when: false
+
+    - name: Collect Xen host information
+      ansible.builtin.command:
+        argv:
+          - xl
+          - info
+      register: platform_map_xl_info
+      changed_when: false
+      failed_when: false
+
+    - name: Collect Xen live domains
+      ansible.builtin.command:
+        argv:
+          - xl
+          - list
+      register: platform_map_xl_list
+      changed_when: false
+      failed_when: false
+
+    - name: Collect dom0 memory summary
+      ansible.builtin.command:
+        argv:
+          - free
+          - -b
+      register: platform_map_dom0_free
+      changed_when: false
+      failed_when: false
+
+    - name: Collect dom0 kernel memory details
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /proc/meminfo
+      register: platform_map_dom0_meminfo
+      changed_when: false
+      failed_when: false
+
+    - name: Collect Xen configuration file names
+      ansible.builtin.shell: |
+        set -eu
+        for dir in /etc/xen /etc/xen/auto; do
+          [ -d "$dir" ] || continue
+          find "$dir" -maxdepth 1 -type f -name '*.cfg' -print
+        done | sort -u
+      args:
+        executable: /bin/sh
+      register: platform_map_xen_config_files
+      changed_when: false
+      failed_when: false
+
+    - name: Collect applied platform-resource desired state from dom0
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /etc/klokast/platform-resources/desired.json
+      register: platform_map_platform_resources_desired
+      changed_when: false
+      failed_when: false
+
+    - name: Build dom0 Platform map fact
+      ansible.builtin.set_fact:
+        platform_map_fact:
+          kind: dom0
+          inventory_hostname: "{{ inventory_hostname }}"
+          node_name: "{{ node_name | default('') }}"
+          node_domain_role: "{{ node_domain_role | default('dom0') }}"
+          node_hostname: "{{ node_hostname | default(inventory_hostname) }}"
+          ansible_host: "{{ ansible_host | default(inventory_hostname) }}"
+          hostname: "{{ platform_map_dom0_hostname.stdout | default('') | trim }}"
+          os_release_stdout: "{{ platform_map_dom0_os_release.stdout | default('') }}"
+          storage:
+            disks: "{{ storage_inspection_disks | default([]) }}"
+            partitions: "{{ storage_inspection_partitions | default([]) }}"
+            physical_volumes: "{{ storage_inspection_physical_volumes | default([]) }}"
+            volume_groups: "{{ storage_inspection_volume_groups | default([]) }}"
+            logical_volumes: "{{ storage_inspection_logical_volumes | default([]) }}"
+            mounts: "{{ storage_inspection_mounts | default([]) }}"
+            managed_layout: "{{ storage_inspection_managed_layout | default({}) }}"
+          memory:
+            free_stdout: "{{ platform_map_dom0_free.stdout | default('') }}"
+            meminfo_stdout: "{{ platform_map_dom0_meminfo.stdout | default('') }}"
+          xen:
+            expected_guests: "{{ node_xen_guest_specs | default({}) }}"
+            xl_info_rc: "{{ platform_map_xl_info.rc | default(999) }}"
+            xl_info_stdout: "{{ platform_map_xl_info.stdout | default('') }}"
+            xl_info_stderr: "{{ platform_map_xl_info.stderr | default('') }}"
+            xl_list_rc: "{{ platform_map_xl_list.rc | default(999) }}"
+            xl_list_stdout: "{{ platform_map_xl_list.stdout | default('') }}"
+            xl_list_stderr: "{{ platform_map_xl_list.stderr | default('') }}"
+            config_files_stdout: "{{ platform_map_xen_config_files.stdout | default('') }}"
+          platform_resources:
+            desired_json_rc: "{{ platform_map_platform_resources_desired.rc | default(999) }}"
+            desired_json_stdout: "{{ platform_map_platform_resources_desired.stdout | default('') }}"
+            desired_json_stderr: "{{ platform_map_platform_resources_desired.stderr | default('') }}"
+
+    - name: Write dom0 Platform map fact artifact
+      ansible.builtin.copy:
+        dest: "{{ platform_map_artifact_dir }}/hosts/{{ inventory_hostname }}.json"
+        content: "{{ platform_map_fact | to_nice_json }}\n"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+- name: Collect Platform map facts from Podman VM hosts
+  hosts: "{{ platform_map_podman_targets | default('podman_vms') }}"
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Collect Podman VM Platform map fact
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import os
+        import subprocess
+
+
+        def capture(argv):
+            try:
+                result = subprocess.run(
+                    argv,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                return {
+                    "rc": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            except OSError as exc:
+                return {
+                    "rc": 127,
+                    "stdout": "",
+                    "stderr": str(exc),
+                }
+
+
+        def capture_shell(command):
+            return capture(["/bin/sh", "-c", command])
+
+
+        def capture_as_user(user, command):
+            return capture(["su", "-s", "/bin/sh", "-c", command, user])
+
+
+        runner_user = os.environ.get("PLATFORM_MAP_RUNNER_USER", "neo")
+
+        hostname = capture(["hostname"])
+        os_release = capture(["cat", "/etc/os-release"])
+        memory = capture(["free", "-b"])
+        filesystems = capture_shell(
+            'tmp="/tmp/platform-map-df.$$"; '
+            'if df -B1 --output=source,target,fstype,size,used,avail,pcent >"$tmp" 2>/dev/null; then '
+            'cat "$tmp"; rm -f "$tmp"; exit 0; '
+            'fi; '
+            'rm -f "$tmp"; '
+            'df -P -T -B1'
+        )
+        podman_info = capture_as_user(runner_user, "podman info --format=json")
+        podman_ps = capture_as_user(runner_user, "podman ps --all --format=json")
+        podman_pods = capture_as_user(runner_user, "podman pod ps --format=json")
+        podman_volumes = capture_as_user(runner_user, "podman volume ls --format=json")
+        desired = capture(["cat", "/etc/klokast/platform-resources/desired.json"])
+
+        fact = {
+            "kind": "podman_vm",
+            "inventory_hostname": os.environ.get("PLATFORM_MAP_INVENTORY_HOSTNAME", ""),
+            "node_name": os.environ.get("PLATFORM_MAP_NODE_NAME", ""),
+            "node_domain_role": os.environ.get("PLATFORM_MAP_NODE_DOMAIN_ROLE", ""),
+            "node_hostname": os.environ.get("PLATFORM_MAP_NODE_HOSTNAME", ""),
+            "ansible_host": os.environ.get("PLATFORM_MAP_ANSIBLE_HOST", ""),
+            "hostname": hostname["stdout"].strip(),
+            "os_release_stdout": os_release["stdout"],
+            "memory": {
+                "free_stdout": memory["stdout"],
+            },
+            "filesystems": {
+                "df_stdout": filesystems["stdout"],
+            },
+            "podman": {
+                "runner_user": runner_user,
+                "info_rc": podman_info["rc"],
+                "info_stdout": podman_info["stdout"],
+                "info_stderr": podman_info["stderr"],
+                "ps_rc": podman_ps["rc"],
+                "ps_stdout": podman_ps["stdout"],
+                "ps_stderr": podman_ps["stderr"],
+                "pods_rc": podman_pods["rc"],
+                "pods_stdout": podman_pods["stdout"],
+                "volumes_rc": podman_volumes["rc"],
+                "volumes_stdout": podman_volumes["stdout"],
+            },
+            "platform_resources": {
+                "desired_json_rc": desired["rc"],
+                "desired_json_stdout": desired["stdout"],
+                "desired_json_stderr": desired["stderr"],
+            },
+        }
+        print(json.dumps(fact))
+        PY
+      args:
+        executable: /bin/sh
+      become: true
+      environment:
+        PLATFORM_MAP_INVENTORY_HOSTNAME: "{{ inventory_hostname }}"
+        PLATFORM_MAP_NODE_NAME: "{{ node_name | default('') }}"
+        PLATFORM_MAP_NODE_DOMAIN_ROLE: "{{ node_domain_role | default('') }}"
+        PLATFORM_MAP_NODE_HOSTNAME: "{{ node_hostname | default(inventory_hostname) }}"
+        PLATFORM_MAP_ANSIBLE_HOST: "{{ ansible_host | default(inventory_hostname) }}"
+        PLATFORM_MAP_RUNNER_USER: "{{ vm_admin_user_name | default('neo') }}"
+      register: platform_map_podman_fact_json
+      changed_when: false
+      failed_when: false
+
+    - name: Parse Podman VM Platform map fact
+      ansible.builtin.set_fact:
+        platform_map_fact: "{{ platform_map_podman_fact_json.stdout | from_json }}"
+      when: platform_map_podman_fact_json.stdout | default('') | length > 0
+
+    - name: Build unavailable Podman VM Platform map fact
+      ansible.builtin.set_fact:
+        platform_map_fact:
+          kind: podman_vm
+          inventory_hostname: "{{ inventory_hostname }}"
+          node_name: "{{ node_name | default('') }}"
+          node_domain_role: "{{ node_domain_role | default('') }}"
+          node_hostname: "{{ node_hostname | default(inventory_hostname) }}"
+          ansible_host: "{{ ansible_host | default(inventory_hostname) }}"
+          hostname: ""
+          os_release_stdout: ""
+          memory:
+            free_stdout: ""
+          filesystems:
+            df_stdout: ""
+          podman:
+            runner_user: "{{ vm_admin_user_name | default('neo') }}"
+            info_rc: 999
+            info_stdout: ""
+            info_stderr: "{{ platform_map_podman_fact_json.msg | default(platform_map_podman_fact_json.stderr | default('')) }}"
+            ps_rc: 999
+            ps_stdout: ""
+            ps_stderr: ""
+            pods_rc: 999
+            pods_stdout: ""
+            volumes_rc: 999
+            volumes_stdout: ""
+          platform_resources:
+            desired_json_rc: 999
+            desired_json_stdout: ""
+            desired_json_stderr: ""
+      when: platform_map_fact is not defined
+
+    - name: Write Podman VM Platform map fact artifact
+      ansible.builtin.copy:
+        dest: "{{ platform_map_artifact_dir }}/hosts/{{ inventory_hostname }}.json"
+        content: "{{ platform_map_fact | to_nice_json }}\n"
+        mode: "0600"
+      delegate_to: localhost
+      become: false

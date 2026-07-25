@@ -1,0 +1,30 @@
+---
+- name: Provision a coder guest account on the Vultr infra-agent host
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  pre_tasks:
+    - name: Assert the target is an Ubuntu host
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+          - ansible_distribution == "Ubuntu"
+        fail_msg: This playbook supports only Ubuntu hosts.
+
+    - name: Assert required guest inputs are present
+      ansible.builtin.assert:
+        that:
+          - guest_user | default("") | length > 0
+          - guest_repo_owner | default("") | length > 0
+          - guest_repo_name | default("") | length > 0
+        fail_msg: guest_user, guest_repo_owner, and guest_repo_name are required.
+
+    - name: Assert the guest username is safe
+      ansible.builtin.assert:
+        that:
+          - guest_user is match('^[a-z_][a-z0-9_-]*$')
+        fail_msg: guest_user must be a safe Unix account name.
+
+  roles:
+    - role: vultr-coder-guest

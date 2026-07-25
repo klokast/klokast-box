@@ -1,0 +1,47 @@
+---
+- name: Check Mihomo service
+  ansible.builtin.command: rc-service mihomo status
+  changed_when: false
+
+- name: Check household VPN nftables policy is loaded
+  ansible.builtin.command: nft list ruleset
+  register: household_vpn_verify_nft
+  changed_when: false
+
+- name: Check household VPN TUN device
+  ansible.builtin.command: "ip link show {{ household_vpn_mihomo_device | default('householdvpn') }}"
+  changed_when: false
+
+- name: Check IPv4 forwarding
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: household_vpn_verify_forwarding
+  changed_when: false
+
+- name: Check local split DNS answer
+  ansible.builtin.command:
+    argv:
+      - "{{ household_vpn_mihomo_binary | default('/usr/local/bin/mihomo') }}"
+      - -t
+      - -f
+      - "{{ household_vpn_mihomo_config_path | default('/etc/mihomo/config.yaml') }}"
+      - -d
+      - "{{ household_vpn_mihomo_state_dir | default('/var/lib/mihomo') }}"
+  changed_when: false
+
+- name: Check household VPN Tailscale identity tags
+  ansible.builtin.command: tailscale status --json
+  register: household_vpn_verify_tailscale_status
+  changed_when: false
+
+- name: Assert household VPN runtime state
+  ansible.builtin.assert:
+    that:
+      - "'table inet klokast_household_vpn_filter' in household_vpn_verify_nft.stdout"
+      - "'householdvpn' in household_vpn_verify_nft.stdout"
+      - "'household-vpn-client-egress' in household_vpn_verify_nft.stdout"
+      - "'household-vpn-client-masquerade' in household_vpn_verify_nft.stdout"
+      - household_vpn_verify_forwarding.stdout | trim == '1'
+      - (household_vpn_verify_tailscale_status.stdout | from_json).Self.HostName == node_hostname
+      - "'tag:household-vpn' in ((household_vpn_verify_tailscale_status.stdout | from_json).Self.Tags | default([]))"
+      - "'tag:vm' in ((household_vpn_verify_tailscale_status.stdout | from_json).Self.Tags | default([]))"
+    fail_msg: "Household VPN runtime policy, forwarding, or identity is not correct."

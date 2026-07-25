@@ -1,0 +1,82 @@
+#
+# Summary:
+# - Converges a Debian VM-local nftables input baseline for per-user app VMs.
+#
+---
+- name: Collect Debian VM firewall package status
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - -W
+      - "-f=${Status}"
+      - "{{ item }}"
+  register: debian_vm_firewall_package_status
+  changed_when: false
+  failed_when: false
+  loop:
+    - nftables
+
+- name: Derive installed Debian VM firewall packages
+  ansible.builtin.set_fact:
+    debian_vm_firewall_installed_packages: >-
+      {{
+        debian_vm_firewall_package_status.results
+        | selectattr('rc', 'equalto', 0)
+        | selectattr('stdout', 'equalto', 'install ok installed')
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Derive missing Debian VM firewall packages
+  ansible.builtin.set_fact:
+    debian_vm_firewall_missing_packages: >-
+      {{ ['nftables'] | difference(debian_vm_firewall_installed_packages) }}
+
+- name: Ensure Debian VM firewall packages are installed
+  ansible.builtin.apt:
+    name: "{{ debian_vm_firewall_missing_packages }}"
+    state: present
+    update_cache: true
+  become: true
+  when: debian_vm_firewall_missing_packages | length > 0
+
+- name: Render Debian VM nftables input policy
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "/usr/sbin/nft -c -f %s"
+  become: true
+  register: debian_vm_firewall_render
+
+- name: Ensure Debian nftables is enabled and started
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+  become: true
+
+- name: Apply Debian VM nftables policy
+  ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.conf
+  become: true
+  changed_when: debian_vm_firewall_render.changed
+
+- name: Collect Debian VM nftables ruleset
+  ansible.builtin.command: /usr/sbin/nft list ruleset
+  become: true
+  register: debian_vm_firewall_ruleset
+  changed_when: false
+
+- name: Assert Debian VM firewall baseline is active
+  ansible.builtin.assert:
+    that:
+      - '"table inet klokast_vm_filter" in debian_vm_firewall_ruleset.stdout'
+      - '"policy drop" in debian_vm_firewall_ruleset.stdout'
+      - '"tailscale-management-input" in debian_vm_firewall_ruleset.stdout'
+      - >-
+        (debian_vm_firewall_input_udp_rules | default([]) | length == 0)
+        or ((debian_vm_firewall_input_udp_rules | map(attribute='comment') | list | first)
+        in debian_vm_firewall_ruleset.stdout)
+    fail_msg: "Debian VM firewall verification failed on {{ inventory_hostname }}."

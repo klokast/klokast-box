@@ -1,0 +1,30 @@
+---
+- name: Reboot into diskless Alpine
+  hosts: bootstrap
+  gather_facts: false
+  tasks:
+    - name: Eject the NanoKVM Debian bootstrap ISO before SSD reboot
+      ansible.builtin.import_role:
+        name: nanokvm-virtual-media
+      vars:
+        nanokvm_virtual_media_action: --unload
+
+    - name: Ensure the bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove the Debian bootstrap Tailscale SSH host key before the SSD reboot
+      ansible.builtin.shell: >-
+        ssh-keygen -R {{ ansible_host | quote }} -f {{ bootstrap_known_hosts_file | quote }}
+        >/dev/null 2>&1 || true
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Reboot into diskless Alpine
+      ansible.builtin.reboot:
+        reboot_timeout: 900

@@ -1,0 +1,64 @@
+---
+- name: Assert local ingress inputs
+  ansible.builtin.assert:
+    that:
+      - local_ingress_domain | length > 0
+      - local_ingress_tls_cert_source | length > 0
+      - local_ingress_tls_key_source | length > 0
+    fail_msg: "Local ingress requires --local-domain, --tls-cert, and --tls-key."
+
+- name: Ensure local ingress package is installed
+  community.general.apk:
+    name:
+      - nginx
+      - curl
+    state: present
+    update_cache: true
+
+- name: Ensure local ingress TLS directory exists
+  ansible.builtin.file:
+    path: "{{ local_ingress_tls_dir }}"
+    state: directory
+    owner: root
+    group: nginx
+    mode: "0750"
+
+- name: Install local ingress TLS certificate
+  ansible.builtin.copy:
+    src: "{{ local_ingress_tls_cert_source }}"
+    dest: "{{ local_ingress_tls_cert_path }}"
+    owner: root
+    group: nginx
+    mode: "0640"
+  register: local_ingress_cert
+
+- name: Install local ingress TLS key
+  ansible.builtin.copy:
+    src: "{{ local_ingress_tls_key_source }}"
+    dest: "{{ local_ingress_tls_key_path }}"
+    owner: root
+    group: nginx
+    mode: "0640"
+  no_log: true
+  register: local_ingress_key
+
+- name: Render local ingress nginx configuration
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ local_ingress_nginx_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "nginx -t -c %s"
+  register: local_ingress_nginx_conf
+
+- name: Enable and start local ingress nginx
+  ansible.builtin.service:
+    name: nginx
+    enabled: true
+    state: >-
+      {{
+        'restarted'
+        if (local_ingress_cert.changed or local_ingress_key.changed or local_ingress_nginx_conf.changed)
+        else 'started'
+      }}

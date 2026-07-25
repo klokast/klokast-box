@@ -1,0 +1,32 @@
+---
+- name: Re-enroll dom0 with the steady-state Tailscale identity
+  hosts: dom0
+  gather_facts: false
+  vars:
+    ansible_host: "{{ bootstrap_tailscale_hostname }}.{{ platform_magicdns_suffix }}"
+    ansible_user: root
+    ansible_become: false
+    ansible_remote_tmp: /tmp/ansible-remote-root
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ bootstrap_known_hosts_file }}
+  tasks:
+    - name: Ensure the bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove any stale bootstrap Tailscale SSH host key before reconnecting for phase 21
+      ansible.builtin.shell: >-
+        ssh-keygen -R {{ ansible_host | quote }} -f {{ bootstrap_known_hosts_file | quote }}
+        >/dev/null 2>&1 || true
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Re-enroll dom0 with the steady-state Tailscale identity
+      ansible.builtin.import_role:
+        name: tailscale-handoff

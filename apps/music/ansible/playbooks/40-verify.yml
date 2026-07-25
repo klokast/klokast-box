@@ -1,0 +1,18 @@
+---
+- name: Verify the music backend stack
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Verify music backend services
+      ansible.builtin.import_role:
+        name: music-backend-verification
+      when: node_domain_role == platform_zones.bak.role
+
+- name: Verify the Raspberry Pi audio endpoint
+  hosts: music_audio_endpoints
+  gather_facts: true
+  tasks:
+    - name: Verify music audio endpoint services
+      ansible.builtin.import_role:
+        name: music-audio-endpoint-verification
+      when: node_domain_role == 'audio_endpoint'

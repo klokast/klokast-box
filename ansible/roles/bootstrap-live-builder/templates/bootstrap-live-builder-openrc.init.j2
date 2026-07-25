@@ -1,0 +1,10 @@
+#!/sbin/openrc-run
+
+name="{{ bootstrap_live_builder_service_name }}"
+description="Klokast Debian-live bootstrap builder workload"
+command="/usr/local/sbin/bootstrap-live-builder-deploy"
+command_background="false"
+pidfile=""
+depend() {
+    need net
+}

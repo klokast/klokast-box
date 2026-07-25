@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+import argparse
+import copy
+import os
+import pathlib
+import sys
+import tempfile
+
+import yaml
+
+
+DIRECT_RULES = [
+    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+    "IP-CIDR6,::1/128,DIRECT,no-resolve",
+    "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+    "IP-CIDR6,fd7a:115c:a1e0::/48,DIRECT,no-resolve",
+    "DOMAIN-SUFFIX,local,DIRECT",
+    "DOMAIN-SUFFIX,lan,DIRECT",
+    "DOMAIN-SUFFIX,ts.net,DIRECT",
+    "DOMAIN-SUFFIX,tailscale.com,DIRECT",
+]
+AUTO_TEST_URL = "https://www.gstatic.com/generate_204"
+
+
+def die(message):
+    print(f"torrent-vpn-render: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def load_yaml(path):
+    try:
+        with pathlib.Path(path).open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except FileNotFoundError:
+        die(f"missing file: {path}")
+    if not isinstance(data, dict):
+        die(f"{path} must be a YAML mapping")
+    return data
+
+
+def proxy_names(proxies):
+    names = []
+    for index, proxy in enumerate(proxies):
+        if not isinstance(proxy, dict):
+            die(f"proxies[{index}] must be a mapping")
+        name = proxy.get("name")
+        if not isinstance(name, str) or not name:
+            die(f"proxies[{index}].name must be a non-empty string")
+        names.append(name)
+    return names
+
+
+def selector_name(private):
+    name = (private.get("selector") or {}).get("name") or "KLOKAST-TORRENT-VPN"
+    if not isinstance(name, str) or not name:
+        die("selector.name must be a non-empty string")
+    return name
+
+
+def controller_secret(private):
+    secret = (private.get("controller") or {}).get("secret") or ""
+    if not isinstance(secret, str) or len(secret) < 24:
+        die("controller.secret must be at least 24 characters")
+    return secret
+
+
+def route_excludes(private):
+    configured = (private.get("tun") or {}).get("route_exclude_address") or []
+    if not isinstance(configured, list):
+        die("tun.route_exclude_address must be a list when present")
+    defaults = [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "fc00::/7",
+        "fd7a:115c:a1e0::/48",
+    ]
+    return list(dict.fromkeys([*defaults, *configured]))
+
+
+def rule_target_index(parts):
+    index = len(parts) - 1
+    if index <= 0:
+        return None
+    if parts[index].lower() == "no-resolve":
+        index -= 1
+    return index if index > 0 else None
+
+
+def normalize_rule(rule, selector):
+    if not isinstance(rule, str):
+        return None
+    stripped = rule.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    parts = [part.strip() for part in stripped.split(",")]
+    index = rule_target_index(parts)
+    if index is None:
+        return stripped
+    target = parts[index].upper()
+    if target not in {"DIRECT", "PASS"} and not target.startswith("REJECT"):
+        parts[index] = selector
+    return ",".join(parts)
+
+
+def dedupe(items):
+    seen = set()
+    result = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def build_config(private, subscription, qbit_uid, tun_device):
+    if not bool(private.get("enabled")):
+        die("private config has enabled=false")
+    selector = selector_name(private)
+    secret = controller_secret(private)
+    proxies = copy.deepcopy(subscription.get("proxies") or [])
+    providers = copy.deepcopy(subscription.get("proxy-providers") or {})
+    if not isinstance(proxies, list) or not isinstance(providers, dict):
+        die("subscription proxies/proxy-providers have invalid shape")
+    names = proxy_names(proxies) if proxies else []
+    if not names and not providers:
+        die("subscription must contain proxies or proxy-providers")
+    auto_selector = f"{selector}-AUTO"
+    auto_group = {
+        "name": auto_selector,
+        "type": "url-test",
+        "url": AUTO_TEST_URL,
+        "interval": 300,
+        "tolerance": 150,
+        "lazy": False,
+    }
+    if names:
+        auto_group["proxies"] = names
+    if providers:
+        auto_group["use"] = sorted(providers)
+    select_group = {
+        "name": selector,
+        "type": "select",
+        "proxies": [auto_selector, *names],
+    }
+    if providers:
+        select_group["use"] = sorted(providers)
+    rules = list(DIRECT_RULES)
+    magicdns_suffix = private.get("magicdns_suffix")
+    if isinstance(magicdns_suffix, str) and magicdns_suffix:
+        rules.append(f"DOMAIN-SUFFIX,{magicdns_suffix},DIRECT")
+    rules.extend(normalize_rule(rule, selector) for rule in subscription.get("rules") or [])
+    rules.append(f"MATCH,{selector}")
+    config = {
+        "mixed-port": 7890,
+        "allow-lan": False,
+        "mode": "rule",
+        "log-level": "info",
+        "ipv6": True,
+        "external-controller": private.get("external_controller") or "127.0.0.1:19090",
+        "secret": secret,
+        "tun": {
+            "enable": True,
+            "stack": "system",
+            "device": tun_device,
+            "auto-route": True,
+            "auto-redirect": True,
+            "auto-detect-interface": True,
+            "strict-route": True,
+            "dns-hijack": ["any:53", "tcp://any:53"],
+            "exclude-interface": ["tailscale0"],
+            "include-uid": [int(qbit_uid)],
+            "route-exclude-address": route_excludes(private),
+        },
+        "dns": {
+            "enable": True,
+            "listen": "127.0.0.1:1053",
+            "enhanced-mode": "fake-ip",
+            "fake-ip-range": "198.18.0.1/16",
+            "fake-ip-filter": ["*.lan", "*.local", "*.ts.net"],
+            "nameserver": [
+                "https://dns.alidns.com/dns-query",
+                "https://doh.pub/dns-query",
+                "8.8.8.8",
+                "1.1.1.1",
+            ],
+        },
+        "proxies": proxies,
+        "proxy-groups": [select_group, auto_group],
+        "rules": dedupe(rules),
+    }
+    if providers:
+        config["proxy-providers"] = providers
+    for key in ("rule-providers", "geox-url"):
+        if isinstance(subscription.get(key), dict) and subscription[key]:
+            config[key] = copy.deepcopy(subscription[key])
+    return config
+
+
+def write_yaml(path, data):
+    output = pathlib.Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=str(output.parent))
+    tmp = pathlib.Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle, sort_keys=False, allow_unicode=False)
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, output)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Render Klokast torrent Mihomo config.")
+    parser.add_argument("--private", required=True)
+    parser.add_argument("--subscription", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--qbittorrent-uid", type=int, required=True)
+    parser.add_argument("--tun-device", required=True)
+    args = parser.parse_args()
+    write_yaml(
+        args.output,
+        build_config(
+            load_yaml(args.private),
+            load_yaml(args.subscription),
+            args.qbittorrent_uid,
+            args.tun_device,
+        ),
+    )
+
+
+if __name__ == "__main__":
+    main()

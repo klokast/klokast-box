@@ -1,0 +1,60 @@
+---
+- name: Stop every Xen guest on the selected dom0 host
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    decommission_app_vm_guest_specs: >-
+      {{
+        platform_app_vm_specs
+        | default([])
+        | selectattr('node', 'equalto', node_name)
+        | map(attribute='guest_spec')
+        | list
+      }}
+    decommission_xen_guest_stop_order:
+      - "{{ decommission_app_vm_guest_specs }}"
+      - "{{ node_xen_guest_specs.iot }}"
+      - "{{ node_xen_guest_specs.dmz }}"
+      - "{{ node_xen_guest_specs.backend }}"
+      - "{{ node_xen_guest_specs.router }}"
+    decommission_xen_guest_specs: "{{ decommission_xen_guest_stop_order | flatten }}"
+    decommission_xen_guest_names: "{{ decommission_xen_guest_specs | map(attribute='guest_name') | list }}"
+  tasks:
+    - name: Stop Xen guests in dependency order
+      ansible.builtin.include_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ item.guest_name }}"
+        xen_guest_config_path: "{{ item.config_path }}"
+        xen_guest_runtime_state: stopped
+      loop: "{{ decommission_xen_guest_specs }}"
+      loop_control:
+        label: "{{ item.guest_name }}"
+
+    - name: Collect the remaining Xen domains after decommission stop
+      ansible.builtin.command: /usr/sbin/xl list
+      register: decommission_xl_list
+      changed_when: false
+
+    - name: Assert that no selected guest domains remain
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            import sys
+
+            expected = set(json.loads(sys.argv[1]))
+            running = []
+            for line in sys.stdin.read().splitlines()[1:]:
+                fields = line.split()
+                if fields and fields[0] in expected:
+                    running.append(fields[0])
+            if running:
+                print("Running selected Xen guests: " + ", ".join(running), file=sys.stderr)
+                sys.exit(1)
+          - "{{ decommission_xen_guest_names | to_json }}"
+      args:
+        stdin: "{{ decommission_xl_list.stdout }}"
+      changed_when: false

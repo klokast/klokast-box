@@ -1,0 +1,195 @@
+#
+# Summary:
+# - Converges the common Debian VM baseline: hostname, packages, admin user,
+#   SSH policy, sudo, and root password lock.
+#
+---
+- name: Assert Debian VM base inputs are valid
+  ansible.builtin.assert:
+    that:
+      - node_hostname | length > 0
+      - debian_vm_admin_user_name is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - (not (debian_vm_manage_sshd | bool)) or (debian_vm_admin_authorized_key_file | length > 0)
+    fail_msg: "Debian VM base inputs are incomplete."
+
+- name: Collect current Debian VM hostname
+  ansible.builtin.command: hostname
+  register: debian_vm_base_current_hostname
+  changed_when: false
+
+- name: Persist Debian VM hostname
+  ansible.builtin.copy:
+    dest: /etc/hostname
+    content: "{{ node_hostname }}\n"
+    mode: "0644"
+  become: true
+
+- name: Update Debian VM runtime hostname immediately
+  ansible.builtin.command: "hostname {{ node_hostname }}"
+  become: true
+  when: debian_vm_base_current_hostname.stdout != node_hostname
+  changed_when: debian_vm_base_current_hostname.stdout != node_hostname
+
+- name: Ensure Debian VM hosts file is aligned
+  ansible.builtin.copy:
+    dest: /etc/hosts
+    mode: "0644"
+    content: |
+      127.0.0.1 localhost localhost.localdomain
+      ::1 localhost localhost.localdomain
+      127.0.1.1 {{ node_hostname }}
+  become: true
+
+- name: Collect Debian base VM package status
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - -W
+      - "-f=${Status}"
+      - "{{ item }}"
+  register: debian_vm_base_package_status
+  changed_when: false
+  failed_when: false
+  loop: "{{ debian_vm_base_packages }}"
+
+- name: Derive installed Debian base VM packages
+  ansible.builtin.set_fact:
+    debian_vm_base_installed_packages: >-
+      {{
+        debian_vm_base_package_status.results
+        | selectattr('rc', 'equalto', 0)
+        | selectattr('stdout', 'equalto', 'install ok installed')
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Derive missing Debian base VM packages
+  ansible.builtin.set_fact:
+    debian_vm_base_missing_packages: >-
+      {{ debian_vm_base_packages | difference(debian_vm_base_installed_packages) }}
+
+- name: Ensure Debian base VM packages are installed
+  ansible.builtin.apt:
+    name: "{{ debian_vm_base_missing_packages }}"
+    state: present
+    update_cache: true
+  become: true
+  when: debian_vm_base_missing_packages | length > 0
+
+- name: Ensure managed Debian VM users are present
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: "{{ item.shell }}"
+    groups: "{{ item.groups }}"
+    append: true
+    create_home: true
+    password: "{{ vm_admin_password_hash }}"
+    update_password: on_create
+  become: true
+  loop: "{{ debian_vm_local_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Decide whether the Debian VM can drop OpenSSH yet
+  ansible.builtin.set_fact:
+    debian_vm_base_can_disable_sshd: >-
+      {{
+        (not (debian_vm_manage_sshd | bool))
+        and (tailscale_client_status.BackendState | default('') == 'Running')
+      }}
+
+- name: Check whether the Debian VM admin authorized key file exists on the controller
+  ansible.builtin.stat:
+    path: "{{ debian_vm_admin_authorized_key_file }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_remote_tmp: "{{ controller_remote_tmp | default(lookup('env', 'HOME') ~ '/.ansible/tmp') }}"
+  register: debian_vm_base_admin_key_file
+
+- name: Require the Debian VM admin authorized key when OpenSSH is managed
+  ansible.builtin.assert:
+    that:
+      - debian_vm_base_admin_key_file.stat.exists | default(false)
+    fail_msg: "Missing VM admin authorized key file: {{ debian_vm_admin_authorized_key_file }}"
+  when: debian_vm_manage_sshd | bool
+
+- name: Ensure the Debian VM admin authorized key is present
+  ansible.posix.authorized_key:
+    user: "{{ debian_vm_admin_user_name }}"
+    key: "{{ lookup('file', debian_vm_admin_authorized_key_file) }}"
+    state: present
+  become: true
+  when: debian_vm_base_admin_key_file.stat.exists | default(false)
+
+- name: Configure sudo for the sudo group
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-klokast-sudo
+    owner: root
+    group: root
+    mode: "0440"
+    content: |
+      %sudo ALL=(ALL:ALL) NOPASSWD:ALL
+    validate: /usr/sbin/visudo -cf %s
+  become: true
+
+- name: Read Debian VM root shadow entry
+  ansible.builtin.command: getent shadow root
+  register: debian_vm_base_root_shadow
+  changed_when: false
+  become: true
+
+- name: Lock the Debian VM root password
+  ansible.builtin.command: /usr/bin/passwd -l root
+  become: true
+  when:
+    - debian_vm_lock_root_password | bool
+    - debian_vm_base_root_shadow.stdout is not search('^root:[!*]')
+  changed_when: true
+
+- name: Ensure Debian OpenSSH policy directory exists
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Enforce key-only SSH for Debian managed VM accounts
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-klokast-key-only.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin prohibit-password
+  become: true
+  register: debian_vm_base_sshd_policy
+  when: debian_vm_manage_sshd | bool
+
+- name: Ensure Debian OpenSSH is enabled and running
+  ansible.builtin.systemd:
+    name: ssh
+    enabled: true
+    state: "{{ 'restarted' if debian_vm_base_sshd_policy.changed | default(false) else 'started' }}"
+  become: true
+  when: debian_vm_manage_sshd | bool
+
+- name: Stop and disable Debian OpenSSH when the VM should rely on Tailscale SSH only
+  ansible.builtin.systemd:
+    name: ssh
+    enabled: false
+    state: stopped
+  become: true
+  when: debian_vm_base_can_disable_sshd | bool
+
+- name: Remove the managed Debian OpenSSH policy drop-in when OpenSSH is disabled
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/10-klokast-key-only.conf
+    state: absent
+  become: true
+  when: debian_vm_base_can_disable_sshd | bool

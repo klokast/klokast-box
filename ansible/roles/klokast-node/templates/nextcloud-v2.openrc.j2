@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+
+name="nextcloud-v2"
+description="Klokast Nextcloud v2 Podman pod"
+
+podman_user="${podman_user:-neo}"
+
+pod_name() {
+    /usr/bin/jq -r '.runtime.pod_name // "nextcloud-v2"' /var/lib/klokast/desired/nextcloud-v2.json
+}
+
+podman_cmd() {
+    /usr/bin/doas -u "$podman_user" /usr/bin/podman "$@"
+}
+
+start() {
+    ebegin "Starting ${name}"
+    podman_cmd pod start "$(pod_name)" >/dev/null
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping ${name}"
+    podman_cmd pod stop -t 60 "$(pod_name)" >/dev/null
+    eend $?
+}
+
+status() {
+    podman_cmd pod ps --filter "name=$(pod_name)"
+}

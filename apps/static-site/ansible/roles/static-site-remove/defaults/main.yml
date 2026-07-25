@@ -1,0 +1,11 @@
+---
+static_site_wipe_data: false
+static_site_web_service_name: static-site-web
+static_site_web_container_name: static-site-web
+static_site_publisher_service_name: static-site-publisher
+static_site_cloudflared_service_name: static-site-cloudflared
+static_site_service_root: /etc/klokast/static-site
+static_site_public_root: /srv/static-site/public
+static_site_incoming_root: /srv/static-site/incoming
+static_site_git_repo_cache_root: /srv/static-site/repo
+static_site_log_root: /var/log/klokast/static-site

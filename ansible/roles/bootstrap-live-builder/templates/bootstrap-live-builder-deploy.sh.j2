@@ -1,0 +1,38 @@
+#!/bin/sh
+# shellcheck shell=sh disable=SC1083,SC2154
+set -eu
+
+image_root={{ bootstrap_live_builder_image_root | quote }}
+home_root={{ bootstrap_live_builder_home_root | quote }}
+repo_root={{ bootstrap_live_builder_repo_checkout_path | quote }}
+output_root={{ bootstrap_live_builder_output_root | quote }}
+work_root={{ bootstrap_live_builder_work_root | quote }}
+tailscale_state_root={{ bootstrap_live_builder_tailscale_state_root | quote }}
+container_name={{ bootstrap_live_builder_container_name | quote }}
+image_name={{ bootstrap_live_builder_image | quote }}
+service_user={{ bootstrap_live_builder_service_user | quote }}
+
+# Remove the earlier rootless runtime during the stage-1 migration.
+if /usr/bin/doas -u "$service_user" /usr/bin/podman container exists "$container_name" >/dev/null 2>&1; then
+    /usr/bin/doas -u "$service_user" /usr/bin/podman rm -f "$container_name" >/dev/null
+fi
+
+/usr/bin/podman build -t "$image_name" "$image_root"
+
+if /usr/bin/podman container exists "$container_name"; then
+    /usr/bin/podman rm -f "$container_name" >/dev/null
+fi
+
+/usr/bin/podman run -d \
+    --name "$container_name" \
+    --restart=unless-stopped \
+    --privileged \
+{% for dns_server in bootstrap_live_builder_container_dns_servers %}
+    --dns {{ dns_server | quote }} \
+{% endfor %}
+    -v "$home_root:/root" \
+    -v "$repo_root:/src/klokast:ro" \
+    -v "$output_root:/output" \
+    -v "$work_root:/workspace" \
+    -v "$tailscale_state_root:/var/lib/tailscale" \
+    "$image_name"

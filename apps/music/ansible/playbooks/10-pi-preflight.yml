@@ -1,0 +1,22 @@
+---
+- name: Preflight the Raspberry Pi audio endpoint
+  hosts: music_audio_endpoints
+  gather_facts: true
+  tasks:
+    - name: Assert the selected audio endpoint is targeted
+      ansible.builtin.assert:
+        that:
+          - node_name == music_box
+          - node_domain_role == 'audio_endpoint'
+          - music_endpoint_hostname | length > 0
+          - music_endpoint_ipv4_address is match('^[0-9.]+$')
+        fail_msg: >-
+          Music Pi playbooks only target the selected managed audio endpoint.
+
+    - name: Assert the endpoint OS family is Debian
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == 'Debian'
+        fail_msg: >-
+          The Raspberry Pi endpoint must run Raspberry Pi OS or another
+          Debian-family OS.

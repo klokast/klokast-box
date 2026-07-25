@@ -1,0 +1,64 @@
+#
+# Summary:
+# - Converges Tailscale client state on managed guests, including service enablement, hostname alignment, and optional Tailscale SSH.
+#
+---
+# Keep this role narrowly focused on the current development transport.
+# Generic guest base roles should not assume Tailscale is the permanent
+# management plane, because later phases may switch to Nebula or jump-host SSH.
+- name: Ensure Tailscale packages are installed
+  community.general.apk:
+    name:
+      - tailscale
+      - tailscale-openrc
+    state: present
+
+- name: Ensure the Tailscale service is enabled and running
+  ansible.builtin.service:
+    name: tailscale
+    enabled: true
+    state: started
+
+- name: Collect Tailscale runtime status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_client_status_json
+  changed_when: false
+  failed_when: false
+
+- name: Parse Tailscale runtime status JSON when available
+  ansible.builtin.set_fact:
+    tailscale_client_status: "{{ tailscale_client_status_json.stdout | from_json }}"
+  when:
+    - tailscale_client_status_json.rc == 0
+    - tailscale_client_status_json.stdout | length > 0
+
+- name: Collect Tailscale preference state when SSH management is enabled
+  ansible.builtin.command: tailscale debug prefs
+  register: tailscale_client_prefs_json
+  changed_when: false
+  when:
+    - tailscale_enable_ssh | default(false)
+    - tailscale_client_status.BackendState | default('') == 'Running'
+
+- name: Parse Tailscale preference state when available
+  ansible.builtin.set_fact:
+    tailscale_client_prefs: "{{ tailscale_client_prefs_json.stdout | from_json }}"
+  when:
+    - tailscale_client_prefs_json is defined
+    - tailscale_client_prefs_json is mapping
+    - "'rc' in tailscale_client_prefs_json"
+    - tailscale_client_prefs_json.rc == 0
+    - tailscale_client_prefs_json.stdout | length > 0
+
+- name: Keep the Tailscale hostname aligned with the VM hostname
+  ansible.builtin.command: "tailscale set --hostname={{ node_hostname }}"
+  when:
+    - tailscale_client_status_json.rc == 0
+    - tailscale_client_status.Self.HostName | default('') != node_hostname
+
+- name: Enable Tailscale SSH on managed guests when requested
+  ansible.builtin.command: tailscale set --ssh
+  when:
+    - tailscale_enable_ssh | default(false)
+    - tailscale_client_status.BackendState | default('') == 'Running'
+    - not (tailscale_client_prefs.RunSSH | default(false))

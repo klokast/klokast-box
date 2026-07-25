@@ -1,0 +1,16 @@
+[Unit]
+Description=Klokast Snapcast audio endpoint
+Wants=network-online.target sound.target
+After=network-online.target sound.target tailscaled.service nftables.service
+
+[Service]
+Type=simple
+User=snapclient
+Group=audio
+SupplementaryGroups=audio
+ExecStart=/usr/bin/snapclient --host {{ music_endpoint_backend_host }} --port {{ music_endpoint_snapserver_port }} --player alsa --soundcard {{ music_endpoint_soundcard | quote }} --hostID {{ music_endpoint_hostname | quote }}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

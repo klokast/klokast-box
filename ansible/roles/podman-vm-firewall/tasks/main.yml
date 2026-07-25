@@ -1,0 +1,93 @@
+#
+# Summary:
+# - Converges a VM-local nftables input baseline for rootless Podman hosts.
+#   Published service ports must be declared explicitly.
+#
+---
+- name: Ensure Podman VM firewall packages are installed
+  community.general.apk:
+    name:
+      - nftables
+    state: present
+
+- name: Ensure Podman VM app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure Podman VM keyed app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources/vm-input.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure Podman VM keyed app-resource include sentinel exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/app-resources/vm-input.d/000-empty.nft
+    content: "# Empty placeholder so nft include globs always match.\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure Podman VM app-resource include file exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/app-resources/vm-input.nft
+    content: |
+      # Managed by Klokast platform-resources. Empty until deployment policy is applied.
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Render the Podman VM nftables policy
+  ansible.builtin.template:
+    src: nftables.nft.j2
+    dest: /etc/nftables.nft
+    mode: "0644"
+    validate: "/usr/sbin/nft -c -f %s"
+  register: podman_vm_firewall_render
+
+- name: Ensure Podman VM nftables service is enabled and started
+  ansible.builtin.service:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Apply the Podman VM nftables policy to the live kernel state
+  ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.nft
+  changed_when: podman_vm_firewall_render.changed
+
+- name: Collect the Podman VM nftables ruleset
+  ansible.builtin.command: /usr/sbin/nft list ruleset
+  register: podman_vm_firewall_ruleset
+  changed_when: false
+
+- name: Assert the Podman VM firewall baseline is active
+  ansible.builtin.assert:
+    that:
+      - '"table inet klokast_vm_filter" in podman_vm_firewall_ruleset.stdout'
+      - '"policy drop" in podman_vm_firewall_ruleset.stdout'
+      - '"tailscale-management-input" in podman_vm_firewall_ruleset.stdout'
+      - >-
+        (podman_vm_firewall_input_tcp_rules | default([]) | length == 0)
+        or ((podman_vm_firewall_input_tcp_rules | map(attribute='comment') | list | first)
+        in podman_vm_firewall_ruleset.stdout)
+      - >-
+        (podman_vm_firewall_input_udp_rules | default([]) | length == 0)
+        or ((podman_vm_firewall_input_udp_rules | map(attribute='comment') | list | first)
+        in podman_vm_firewall_ruleset.stdout)
+      - >-
+        (podman_vm_firewall_forward_egress_interfaces | default([]) | length == 0)
+        or (((podman_vm_firewall_forward_egress_interfaces | first) ~ '-container-egress')
+        in podman_vm_firewall_ruleset.stdout)
+      - >-
+        (podman_vm_firewall_forward_egress_interfaces | default([]) | length == 0)
+        or (((podman_vm_firewall_forward_egress_interfaces | first) ~ '-container-return')
+        in podman_vm_firewall_ruleset.stdout)
+    fail_msg: >-
+      Podman VM firewall verification failed on {{ inventory_hostname }}.

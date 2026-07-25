@@ -1,0 +1,29 @@
+---
+- name: Preflight the static-site target
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Assert the app wrapper passed the selected box
+      ansible.builtin.assert:
+        that:
+          - static_site_box is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - static_site_domain | length > 0
+          - node_name == static_site_box
+          - node_domain_role == 'dmz'
+        fail_msg: >-
+          Static-site playbooks only target the selected DMZ VM.
+
+    - name: Assert Podman is installed on the selected DMZ VM
+      ansible.builtin.stat:
+        path: /usr/bin/podman
+      register: static_site_preflight_podman
+
+    - name: Fail when Podman is missing
+      ansible.builtin.assert:
+        that:
+          - static_site_preflight_podman.stat.exists
+        fail_msg: >-
+          Podman is required on {{ inventory_hostname }} before static-site can
+          be installed. Run the Platform Podman VM phases first.

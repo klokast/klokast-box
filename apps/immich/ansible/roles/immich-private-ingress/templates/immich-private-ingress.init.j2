@@ -1,0 +1,40 @@
+#!/sbin/openrc-run
+description="Klokast Immich private ingress Podman pod"
+
+depend() {
+    need net
+    after firewall
+    use logger
+}
+
+podman_cmd() {
+    /usr/bin/doas -u {{ vm_admin_user_name | quote }} /usr/bin/podman "$@"
+}
+
+start() {
+    ebegin "Starting {{ immich_private_ingress_service_name }}"
+    if podman_cmd pod exists {{ immich_private_ingress_pod_name | quote }}; then
+        pod_state="$(podman_cmd pod inspect --format '{% raw %}{{.State}}{% endraw %}' {{ immich_private_ingress_pod_name | quote }})"
+        if [ "$pod_state" != "Running" ]; then
+            podman_cmd pod start {{ immich_private_ingress_pod_name | quote }} >/dev/null
+        fi
+    else
+        /usr/local/sbin/immich-private-ingress-converge >/dev/null
+    fi
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping {{ immich_private_ingress_service_name }}"
+    if podman_cmd pod exists {{ immich_private_ingress_pod_name | quote }}; then
+        pod_state="$(podman_cmd pod inspect --format '{% raw %}{{.State}}{% endraw %}' {{ immich_private_ingress_pod_name | quote }})"
+        if [ "$pod_state" = "Running" ]; then
+            podman_cmd pod stop -t 60 {{ immich_private_ingress_pod_name | quote }} >/dev/null
+        fi
+    fi
+    eend $?
+}
+
+status() {
+    podman_cmd pod ps --filter name={{ immich_private_ingress_pod_name | quote }}
+}

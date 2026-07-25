@@ -1,0 +1,153 @@
+---
+ansible_connection: ssh
+ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+node_name: duh
+node_domain_role: dom0
+node_hostname: "{{ node_name }}-{{ node_domain_role }}"
+
+# Infra-owned topology used by Ansible and the platform-resource compiler.
+# App manifests may reference these symbolic zones, but must not duplicate the
+# router interface names or IPv4 addresses below.
+platform_zones:
+  bak:
+    role: backend
+    hostname_suffix: bak
+    bridge: br-bak
+    router_interface: eth3
+    router_ipv4_address: 192.168.100.254
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    vm_interface: eth0
+    vm_ipv4_address: 192.168.100.10
+    cidr: 192.168.100.0/24
+    dom0_ipv4_address: 192.168.100.1
+  dmz:
+    role: dmz
+    hostname_suffix: dmz
+    bridge: br-dmz
+    router_interface: eth2
+    router_ipv4_address: 192.168.200.1
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    vm_interface: eth0
+    vm_ipv4_address: 192.168.200.10
+    cidr: 192.168.200.0/24
+  iot:
+    role: iot
+    hostname_suffix: iot
+    bridge: br-iot
+    router_interface: eth4
+    router_ipv4_address: 192.168.150.254
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    vm_interface: eth0
+    vm_ipv4_address: 192.168.150.10
+    cidr: 192.168.150.0/24
+  usr:
+    role: usr
+    hostname_suffix: usr
+    bridge: br-usr
+    router_interface: eth5
+    router_ipv4_address: 192.168.175.254
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    vm_interface: eth0
+    vm_ipv4_address: 192.168.175.10
+    cidr: 192.168.175.0/24
+
+platform_zone_aliases:
+  backend: bak
+
+platform_control_zones:
+  ops:
+    role: ops
+    hostname_suffix: ops
+    bridge: br-ops
+    router_interface: eth6
+    router_ipv4_address: 192.168.125.254
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    vm_interface: eth0
+    vm_ipv4_address: 192.168.125.10
+    cidr: 192.168.125.0/24
+    dom0_ipv4_address: 192.168.125.1
+
+platform_network_realms:
+  wan:
+    router_interface: eth0
+    bridge: br-wan
+  household:
+    router_interface: eth1.10
+    parent_interface: eth1
+    vlan_id: 10
+    bridge: br-lan
+    router_ipv4_address: 10.10.10.1
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    cidr: 10.10.10.0/24
+    dhcp_start: 10.10.10.50
+    dhcp_end: 10.10.10.180
+  admin:
+    router_interface: eth1.20
+    parent_interface: eth1
+    vlan_id: 20
+    bridge: br-lan
+    router_ipv4_address: 10.10.20.1
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    cidr: 10.10.20.0/24
+    dhcp_start: 10.10.20.50
+    dhcp_end: 10.10.20.100
+    ap_management_ipv4_address: 10.10.20.2
+  ap-uplink:
+    router_interface: eth1
+    bridge: br-lan
+    router_ipv4_address: 10.10.30.1
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    cidr: 10.10.30.0/24
+    dhcp_start: 10.10.30.20
+    dhcp_end: 10.10.30.80
+  # Transitional alias for older code paths. New local-presence policy should
+  # use household/admin explicitly.
+  lan:
+    router_interface: eth1.10
+    parent_interface: eth1
+    vlan_id: 10
+    bridge: br-lan
+    router_ipv4_address: 10.10.10.1
+    router_ipv4_prefix: 24
+    router_ipv4_netmask: 255.255.255.0
+    cidr: 10.10.10.0/24
+    dhcp_start: 10.10.10.50
+    dhcp_end: 10.10.10.150
+
+# High-entropy placeholder hash so VM admin accounts are valid Unix logins for
+# public-key SSH without depending on a human-set password.
+vm_admin_password_hash: "$6$p/2yCFKImcdddTiG$A3hPDhNVKH5UwxY5yVVSHMlOEDmwX.PdoM0Mzp/SFBQ3ydgOCo6iJW2yKxH32qLdvUG.ge4ewCx6NRrzH5ea.1"
+
+# The Debian live carrier and the first SSD Alpine boot use the temporary
+# bootstrap MagicDNS name. Phase 21 hands off to the steady-state dom0 name.
+bootstrap_tailscale_hostname: "{{ node_name }}-bootstrap"
+bootstrap_known_hosts_file: /tmp/klokast-bootstrap-known_hosts
+dom0_known_hosts_file: /tmp/klokast-dom0-known_hosts
+bootstrap_tailscale_tag: tag:bootstrap
+bootstrap_tailscale_tags:
+  - "{{ bootstrap_tailscale_tag }}"
+bootstrap_tailscale_state_dir: /var/lib/tailscale
+bootstrap_tailscale_state_file: /var/lib/tailscale/tailscaled.state
+bootstrap_tailscale_user: root
+tailscale_persist_paths:
+  - /var/lib/tailscale
+
+alpine_repositories:
+  - http://dl-cdn.alpinelinux.org/alpine/latest-stable/main
+  - http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
+
+# Managed Podman hosts on restricted networks should prefer a reachable Docker Hub mirror
+# instead of direct `docker.io` pulls.
+podman_host_registries:
+  - location: docker.io
+    mirrors:
+      - location: docker.m.daocloud.io

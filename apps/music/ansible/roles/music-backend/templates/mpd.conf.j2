@@ -1,0 +1,27 @@
+music_directory "/music/library"
+playlist_directory "/music/playlists"
+db_file "/music/mpd/database"
+log_file "/music/mpd/mpd.log"
+pid_file "/music/run/mpd.pid"
+state_file "/music/mpd/state"
+sticker_file "/music/mpd/sticker.sql"
+
+bind_to_address "127.0.0.1"
+port "{{ music_mpd_port }}"
+restore_paused "yes"
+auto_update "yes"
+
+# External CUE sheets make MPD expose album.cue/trackNNNN virtual songs and can
+# hide the actual track files. Keep uploaded FLAC albums indexed as files.
+playlist_plugin {
+    name "cue"
+    enabled "no"
+}
+
+audio_output {
+    type "fifo"
+    name "Local Snapcast"
+    path "{{ music_snap_fifo }}"
+    mixer_type "software"
+    format "{{ music_pcm_format }}"
+}

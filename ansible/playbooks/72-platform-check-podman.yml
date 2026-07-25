@@ -1,0 +1,8 @@
+---
+- name: Check Podman VM steady-state Platform health
+  hosts: podman_vms
+  gather_facts: false
+  tasks:
+    - name: Verify Podman VM steady-state health
+      ansible.builtin.import_role:
+        name: podman-vm-health-verification

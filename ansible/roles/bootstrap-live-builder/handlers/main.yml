@@ -1,0 +1,9 @@
+#
+# Summary:
+# - Rebuilds and redeploys the managed Debian live bootstrap builder container workload when its image or service files change.
+#
+---
+- name: Deploy bootstrap live builder workload
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/bootstrap-live-builder-deploy

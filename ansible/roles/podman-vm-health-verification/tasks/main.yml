@@ -1,0 +1,182 @@
+#
+# Summary:
+# - Verifies steady-state Podman VM health without starting containers or
+#   changing host firewall/runtime state.
+#
+---
+- name: Collect Podman VM runtime hostname
+  ansible.builtin.command: hostname
+  register: podman_vm_health_hostname
+  changed_when: false
+
+- name: Collect Podman VM OS release
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /etc/os-release
+  register: podman_vm_health_os_release
+  changed_when: false
+
+- name: Collect Podman VM Tailscale runtime status
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - status
+      - --json
+  register: podman_vm_health_tailscale_status
+  changed_when: false
+
+- name: Parse Podman VM Tailscale runtime status
+  ansible.builtin.set_fact:
+    podman_vm_health_tailscale_json: "{{ podman_vm_health_tailscale_status.stdout | from_json }}"
+
+- name: Collect rootless Podman runtime information
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - info
+      - --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+  register: podman_vm_health_podman_info
+  changed_when: false
+
+- name: Parse rootless Podman runtime information
+  ansible.builtin.set_fact:
+    podman_vm_health_podman_info_json: "{{ podman_vm_health_podman_info.stdout | from_json }}"
+
+- name: Collect rootless Podman containers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - ps
+      - --all
+      - --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+  register: podman_vm_health_podman_ps
+  changed_when: false
+
+- name: Collect rootless Podman pods
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - pod
+      - ps
+      - --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+  register: podman_vm_health_podman_pods
+  changed_when: false
+
+- name: Collect rootless Podman volumes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - volume
+      - ls
+      - --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+  register: podman_vm_health_podman_volumes
+  changed_when: false
+
+- name: Collect Podman VM IPv4 routes
+  ansible.builtin.command:
+    argv:
+      - /sbin/ip
+      - route
+  register: podman_vm_health_ip_route
+  changed_when: false
+
+- name: Collect Podman VM memory summary
+  ansible.builtin.command:
+    argv:
+      - free
+      - -b
+  register: podman_vm_health_memory
+  changed_when: false
+
+- name: Collect Podman VM filesystem summary
+  ansible.builtin.shell: |
+    tmp="/tmp/platform-check-df.$$"
+    if df -B1 --output=source,target,fstype,size,used,avail,pcent >"$tmp" 2>/dev/null; then
+      cat "$tmp"
+      rm -f "$tmp"
+      exit 0
+    fi
+    rm -f "$tmp"
+    df -P -T -B1
+  args:
+    executable: /bin/sh
+  register: podman_vm_health_df
+  changed_when: false
+
+- name: Validate Podman VM nftables configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/nft
+      - -c
+      - -f
+      - /etc/nftables.nft
+  register: podman_vm_health_nft_check
+  changed_when: false
+
+- name: Collect Podman VM nftables ruleset
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/nft
+      - list
+      - ruleset
+  register: podman_vm_health_nft_ruleset
+  changed_when: false
+
+- name: Collect managed Podman VM service states
+  ansible.builtin.command: "rc-service {{ item }} status"
+  loop:
+    - nftables
+    - tailscale
+  register: podman_vm_health_service_status
+  changed_when: false
+
+- name: Assert Podman VM steady-state health
+  ansible.builtin.assert:
+    that:
+      - podman_vm_health_hostname.stdout == node_hostname
+      - podman_vm_health_os_release.stdout is search('(?m)^ID=alpine$')
+      - podman_vm_health_tailscale_json.BackendState | default('') == 'Running'
+      - podman_vm_health_tailscale_json.Self.HostName | default('') == node_hostname
+      - vm_tailscale_authkey_expected_tag in (podman_vm_health_tailscale_json.Self.Tags | default([]))
+      - podman_vm_health_podman_info_json.host.security.rootless | default(false)
+      - (podman_vm_health_podman_info_json.host.cgroupVersion | default('')) == 'v2'
+      - (podman_vm_health_podman_info_json.host.networkBackend | default('')) | length > 0
+      - podman_vm_health_ip_route.stdout is search('default via .* dev eth0')
+      - podman_vm_health_nft_check.rc == 0
+      - '"table inet klokast_vm_filter" in podman_vm_health_nft_ruleset.stdout'
+      - '"policy drop" in podman_vm_health_nft_ruleset.stdout'
+      - '"tailscale-management-input" in podman_vm_health_nft_ruleset.stdout'
+      - (podman_vm_health_service_status.results | map(attribute='rc') | list | max) == 0
+      - >-
+        ((podman_vm_health_service_status.results
+        | map(attribute='stdout')
+        | reject('search', 'status: started')
+        | list
+        | length) == 0)
+    fail_msg: >-
+      Podman VM health verification failed on {{ inventory_hostname }}.
+
+- name: Show Podman VM steady-state health summary
+  ansible.builtin.debug:
+    msg:
+      - "{{ podman_vm_health_hostname.stdout }}"
+      - "{{ podman_vm_health_tailscale_json.Self.DNSName | default('') | regex_replace('\\.$', '') }}"
+      - "runner_user={{ podman_host_runner_user | default(vm_admin_user_name) }}"
+      - "rootless={{ podman_vm_health_podman_info_json.host.security.rootless | default(false) | ternary('yes', 'no') }}"
+      - "cgroup={{ podman_vm_health_podman_info_json.host.cgroupVersion | default('unknown') }}"
+      - "network_backend={{ podman_vm_health_podman_info_json.host.networkBackend | default('unknown') }}"
+      - "{{ podman_vm_health_ip_route.stdout_lines }}"
+      - "{{ podman_vm_health_memory.stdout_lines }}"
+      - "{{ podman_vm_health_df.stdout_lines }}"
+      - "containers_lines={{ podman_vm_health_podman_ps.stdout_lines | length }}"
+      - "pods_lines={{ podman_vm_health_podman_pods.stdout_lines | length }}"
+      - "volumes_lines={{ podman_vm_health_podman_volumes.stdout_lines | length }}"

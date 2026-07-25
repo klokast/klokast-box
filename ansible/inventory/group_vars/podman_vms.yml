@@ -1,0 +1,7 @@
+---
+# Managed Alpine VMs use passwordless `doas`; keep privilege escalation
+# non-interactive and allow for slow first privileged module startup.
+ansible_become_flags: -n
+ansible_become_timeout: 30
+ansible_timeout: 30
+ansible_remote_tmp: /tmp

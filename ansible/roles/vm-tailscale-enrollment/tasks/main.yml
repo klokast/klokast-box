@@ -1,0 +1,130 @@
+#
+# Summary:
+# - Enrolls or re-enrolls a managed VM into Tailscale through a controller-side
+#   auth-key wrapper, then asserts the expected hostname, tag, and Tailscale
+#   SSH state.
+#
+---
+- name: Collect current VM Tailscale runtime status
+  ansible.builtin.command: tailscale status --json
+  register: vm_tailscale_enrollment_status_json
+  changed_when: false
+  failed_when: false
+
+- name: Parse current VM Tailscale runtime status when available
+  ansible.builtin.set_fact:
+    vm_tailscale_enrollment_status: "{{ vm_tailscale_enrollment_status_json.stdout | from_json }}"
+  changed_when: false
+  when:
+    - vm_tailscale_enrollment_status_json.rc == 0
+    - vm_tailscale_enrollment_status_json.stdout | length > 0
+
+- name: Collect current VM Tailscale preference state when available
+  ansible.builtin.command: tailscale debug prefs
+  register: vm_tailscale_enrollment_prefs_json
+  changed_when: false
+  failed_when: false
+  when:
+    - vm_tailscale_enrollment_status.BackendState | default('') == 'Running'
+
+- name: Parse current VM Tailscale preference state when available
+  ansible.builtin.set_fact:
+    vm_tailscale_enrollment_prefs: "{{ vm_tailscale_enrollment_prefs_json.stdout | from_json }}"
+  changed_when: false
+  when:
+    - vm_tailscale_enrollment_prefs_json.rc | default(1) == 0
+    - vm_tailscale_enrollment_prefs_json.stdout | default('') | length > 0
+
+- name: Decide whether VM Tailscale enrollment is needed
+  ansible.builtin.set_fact:
+    vm_tailscale_enrollment_needed: >-
+      {{
+        (vm_tailscale_enrollment_status.BackendState | default('')) != 'Running'
+        or (vm_tailscale_enrollment_status.Self.HostName | default('') != node_hostname)
+        or (
+          (
+            vm_tailscale_authkey_expected_tags
+            | default([vm_tailscale_authkey_expected_tag])
+            | difference(vm_tailscale_enrollment_status.Self.Tags | default([]))
+          )
+          | length > 0
+        )
+        or (not (vm_tailscale_enrollment_prefs.RunSSH | default(false)))
+      }}
+  changed_when: false
+
+- name: Read the VM Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    vm_tailscale_enrollment_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (vm_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (node_hostname | quote)
+            ~ ' --tags ' ~ (vm_tailscale_authkey_advertise_tags | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+  when: vm_tailscale_enrollment_needed | bool
+
+- name: Assert the VM Tailscale auth key is available
+  ansible.builtin.assert:
+    that:
+      - vm_tailscale_enrollment_authkey.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      The VM Tailscale auth key wrapper {{ vm_tailscale_authkey_wrapper }} did
+      not return a usable auth key.
+  when: vm_tailscale_enrollment_needed | bool
+
+- name: Enroll or re-enroll the VM into Tailscale through the auth-key wrapper
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - up
+      - "--auth-key={{ vm_tailscale_enrollment_authkey.stdout | trim }}"
+      - "--hostname={{ node_hostname }}"
+      - "--advertise-tags={{ vm_tailscale_authkey_advertise_tags }}"
+      - --ssh
+      - --accept-risk=lose-ssh
+      - --force-reauth
+      - --timeout=30s
+  no_log: true
+  when: vm_tailscale_enrollment_needed | bool
+
+- name: Collect VM Tailscale runtime status after enrollment
+  ansible.builtin.command: tailscale status --json
+  register: vm_tailscale_enrollment_status_verify_json
+  changed_when: false
+
+- name: Parse VM Tailscale runtime status after enrollment
+  ansible.builtin.set_fact:
+    vm_tailscale_enrollment_status_verify: "{{ vm_tailscale_enrollment_status_verify_json.stdout | from_json }}"
+  changed_when: false
+
+- name: Collect VM Tailscale preference state after enrollment
+  ansible.builtin.command: tailscale debug prefs
+  register: vm_tailscale_enrollment_prefs_verify_json
+  changed_when: false
+
+- name: Parse VM Tailscale preference state after enrollment
+  ansible.builtin.set_fact:
+    vm_tailscale_enrollment_prefs_verify: "{{ vm_tailscale_enrollment_prefs_verify_json.stdout | from_json }}"
+  changed_when: false
+
+- name: Assert the VM Tailscale enrollment converged
+  ansible.builtin.assert:
+    that:
+      - vm_tailscale_enrollment_status_verify.BackendState | default('') == 'Running'
+      - vm_tailscale_enrollment_status_verify.Self.HostName | default('') == node_hostname
+      - >-
+        (
+          vm_tailscale_authkey_expected_tags
+          | default([vm_tailscale_authkey_expected_tag])
+          | difference(vm_tailscale_enrollment_status_verify.Self.Tags | default([]))
+        )
+        | length == 0
+      - vm_tailscale_enrollment_prefs_verify.RunSSH | default(false)
+    fail_msg: >-
+      VM Tailscale enrollment did not converge for {{ inventory_hostname }}.

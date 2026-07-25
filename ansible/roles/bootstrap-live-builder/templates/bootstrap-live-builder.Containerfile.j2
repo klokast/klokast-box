@@ -1,0 +1,14 @@
+FROM {{ bootstrap_live_builder_base_image }}
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    mkdir -p /usr/share/keyrings && \
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/{{ bootstrap_live_builder_tailscale_debian_release }}.noarmor.gpg >/usr/share/keyrings/tailscale-archive-keyring.gpg && \
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/{{ bootstrap_live_builder_tailscale_debian_release }}.tailscale-keyring.list >/etc/apt/sources.list.d/tailscale.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends {{ bootstrap_live_builder_packages | join(' ') }} && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY entrypoint.sh /usr/local/sbin/bootstrap-live-builder-entrypoint
+
+ENTRYPOINT ["/usr/local/sbin/bootstrap-live-builder-entrypoint"]

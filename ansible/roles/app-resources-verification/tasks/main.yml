@@ -1,0 +1,53 @@
+---
+- name: Ensure app-resource reconcile helper directory exists
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install app-resource reconcile helper
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../roles/app-resources/files/reconcile-app-resources.py"
+    dest: /usr/local/libexec/klokast-app-resources-reconcile
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Stage desired platform-resource ledger for verification
+  ansible.builtin.copy:
+    dest: /tmp/klokast-platform-resources-desired.json
+    content: "{{ platform_resources_desired_json }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+
+- name: Verify keyed app-resource snippets and live nftables state
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          '/usr/bin/python3',
+          '/usr/local/libexec/klokast-app-resources-reconcile',
+          'verify',
+          '--desired',
+          '/tmp/klokast-platform-resources-desired.json',
+          '--node-name',
+          node_name,
+          '--node-role',
+          node_domain_role
+        ]
+        + (
+          platform_resources_apply_scope_apps
+          | default([])
+          | map('regex_replace', '^', '--scope-app=')
+          | list
+        )
+      }}
+  become: true
+  changed_when: false
+  when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']

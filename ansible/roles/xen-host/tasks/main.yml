@@ -1,0 +1,137 @@
+#
+# Summary:
+# - Installs Xen on the diskless dom0 host, copies the required boot artifacts to EFI storage, and enables Xen services.
+#
+---
+- name: Detect the current EFI mountpoint on the running diskless host
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $2}' /proc/mounts | tail -n 1
+  register: xen_host_runtime_efi_mount
+  changed_when: false
+
+- name: Assert the EFI partition is mounted on the running diskless host
+  ansible.builtin.assert:
+    that:
+      - xen_host_runtime_efi_mount.stdout != ''
+    fail_msg: >-
+      Could not determine the runtime EFI mountpoint for {{ efi_partition_device }}.
+      Review `/proc/mounts` on the running diskless host before updating Xen boot files.
+
+- name: Override Xen boot paths to the mounted EFI partition
+  ansible.builtin.set_fact:
+    efi_mount_path: "{{ xen_host_runtime_efi_mount.stdout }}"
+    efi_boot_directory: "{{ xen_host_runtime_efi_mount.stdout }}/boot"
+    efi_grub_directory: "{{ xen_host_runtime_efi_mount.stdout }}/boot/grub"
+    efi_fallback_directory: "{{ xen_host_runtime_efi_mount.stdout }}/EFI/BOOT"
+    efi_fallback_bootloader_path: "{{ xen_host_runtime_efi_mount.stdout }}/EFI/BOOT/BOOTX64.EFI"
+    apk_boot_repository_root: "{{ xen_host_runtime_efi_mount.stdout }}/apks"
+    apk_boot_repository_path: "{{ xen_host_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}"
+    apk_cache_path: "{{ xen_host_runtime_efi_mount.stdout }}/cache"
+    apk_boot_repository_marker: "{{ xen_host_runtime_efi_mount.stdout }}/apks/.boot_repository"
+    apk_boot_repository_index: "{{ xen_host_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}/APKINDEX.tar.gz"
+
+- name: Initialize Xen package change tracking
+  ansible.builtin.set_fact:
+    xen_packages_install_changed: false
+
+- name: Ensure Xen packages are installed
+  block:
+    - name: Install Xen packages
+      community.general.apk:
+        name:
+          - xen
+          - xen-hypervisor
+        state: present
+      register: xen_packages_apk
+  rescue:
+    - name: Check whether Xen packages are present after apk failure
+      # Alpine's grub trigger can fail on a diskless tmpfs root even though the
+      # Xen packages themselves were installed successfully.
+      ansible.builtin.command: apk info -e xen xen-hypervisor xen-libs
+      register: xen_packages_after_failed_apk
+      changed_when: false
+
+    - name: Assert the apk failure did not prevent Xen package installation
+      ansible.builtin.assert:
+        that:
+          - xen_packages_after_failed_apk.rc == 0
+        fail_msg: >-
+          Xen package installation failed before the packages were actually present.
+          Review the apk/grub trigger error on the diskless host before continuing.
+
+    - name: Mark Xen package installation as changed after trigger failure
+      ansible.builtin.set_fact:
+        xen_packages_install_changed: true
+
+- name: Record Xen package change state after a clean install
+  ansible.builtin.set_fact:
+    xen_packages_install_changed: "{{ xen_packages_apk.changed }}"
+  when: xen_packages_apk is defined
+
+- name: Queue Xen package persistence handlers when needed
+  ansible.builtin.command: /bin/true
+  changed_when: xen_packages_install_changed
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Capture the current EFI mount options
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $4}' /proc/mounts | tail -n 1
+  register: xen_host_runtime_efi_mount_options
+  changed_when: false
+
+- name: Remount the runtime EFI partition read-write when needed
+  ansible.builtin.command:
+    argv:
+      - mount
+      - -o
+      - remount,rw
+      - "{{ efi_partition_device }}"
+      - "{{ efi_mount_path }}"
+  when: xen_host_runtime_efi_mount_options.stdout is search('(^|,)ro(,|$)')
+
+- name: Remove any obsolete EFI fstab entry for the runtime mountpoint
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^{{ efi_partition_device | regex_escape }}\s+{{ efi_mount_path | regex_escape }}\s+'
+    state: absent
+  notify: Commit lbu changes
+
+- name: Check whether Xen hypervisor binary exists in the running system
+  ansible.builtin.stat:
+    path: "{{ xen_binary_source_path }}"
+  register: xen_binary_source_stat
+
+- name: Assert the Xen hypervisor binary is available for EFI copy
+  ansible.builtin.assert:
+    that:
+      - xen_binary_source_stat.stat.exists | default(false)
+    fail_msg: >-
+      Expected Xen hypervisor binary {{ xen_binary_source_path }} is missing after package
+      installation. Review the package contents before updating the EFI boot path.
+
+- name: Copy Xen hypervisor binary to the EFI partition
+  ansible.builtin.copy:
+    src: "{{ xen_binary_source_path }}"
+    dest: "{{ xen_binary_target_path }}"
+    remote_src: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Render Xen GRUB entry
+  ansible.builtin.template:
+    src: grub-xen.cfg.j2
+    dest: "{{ efi_mount_path }}/boot/grub/grub.cfg"
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Ensure Xen services are enabled
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - xenstored
+    - xenconsoled
+    - xendomains
+  notify: Commit lbu changes

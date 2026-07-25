@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+APP_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = APP_DIR.parents[1]
+PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
+ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
+BASE_INVENTORY = REPO_ROOT / "ansible" / "inventory" / "hosts.yml"
+ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
+MAGICDNS_SUFFIX = os.environ.get(
+    "MUSIC_MAGICDNS_SUFFIX",
+    os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net"),
+)
+RESOURCES_REGISTRY_DEFAULT = os.environ.get(
+    "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
+    os.environ.get("KLOKAST_APP_RESOURCES_REGISTRY", ""),
+)
+
+BOX_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+ROLE_SUFFIXES = {
+    "bootstrap",
+    "dom0",
+    "router",
+    "bak",
+    "dmz",
+    "iot",
+    "usr",
+    "ops",
+    "agent",
+    "agt",
+}
+
+
+def die(message):
+    print(f"musicctl: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def valid_box(value):
+    if not isinstance(value, str) or not BOX_RE.fullmatch(value):
+        return False
+    return not any(value == suffix or value.endswith(f"-{suffix}") for suffix in ROLE_SUFFIXES)
+
+
+def require_box(value, field):
+    if not valid_box(value):
+        die(f"{field} must be a box name like k001, not a VM hostname")
+
+
+def run(argv, *, env=None):
+    subprocess.run(argv, cwd=REPO_ROOT, env=env, check=True)
+
+
+def output(argv):
+    return subprocess.check_output(argv, cwd=REPO_ROOT, text=True)
+
+
+def music_tailnet_resource(data, box, resource_id):
+    matches = [
+        item
+        for item in data.get("tailnet_resources", [])
+        if item.get("app") == "music"
+        and item.get("id") == resource_id
+        and item.get("node") == box
+    ]
+    if len(matches) > 1:
+        die(f"music registry compiled multiple {resource_id} tailnet resources for --box")
+    return matches[0] if matches else None
+
+
+def load_resources(registry, box):
+    if not registry:
+        die("--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY")
+    registry_path = Path(registry).expanduser()
+    if not registry_path.is_file():
+        die(f"platform resources registry does not exist: {registry_path}")
+    data = json.loads(
+        output(
+            [
+                str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
+                "--registry",
+                str(registry_path),
+                "--app",
+                "music",
+                "show",
+            ]
+        )
+    )
+    app = (data.get("apps") or {}).get("music") or {}
+    if not app.get("enabled"):
+        die("music must be enabled in the platform resources registry")
+    if box not in (app.get("boxes") or []):
+        die("music registry placement.boxes must include --box")
+    resources = set(app.get("resources") or [])
+    required = {"snapcast-stream", "audio-endpoint-updates"}
+    missing = sorted(required - resources)
+    if missing:
+        die("music registry is missing resources: " + ", ".join(missing))
+    devices = [
+        item
+        for item in data.get("managed_iot_devices", [])
+        if item.get("app") == "music"
+        and item.get("resource") == "local-audio-endpoint"
+        and item.get("node") == box
+    ]
+    if len(devices) != 1:
+        die("music registry must define exactly one local-audio-endpoint for --box")
+    upload_ingress = music_tailnet_resource(data, box, "upload-ingress")
+    if not upload_ingress or upload_ingress.get("tag") != "tag:music-upload":
+        die("music registry is missing the upload-ingress tailnet resource")
+    return data, devices[0]
+
+
+def render_box_inventory(box, output_path):
+    run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "render-node-inventory"),
+            "--node",
+            box,
+            "--magicdns-suffix",
+            MAGICDNS_SUFFIX,
+            "--output",
+            str(output_path),
+        ]
+    )
+
+
+def write_proxy_command(tmp, box):
+    proxy = tmp / "pi-proxy.sh"
+    proxy.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f"exec tailscale ssh neo@{box}-router nc \"$1\" \"$2\"\n",
+        encoding="utf-8",
+    )
+    proxy.chmod(proxy.stat().st_mode | stat.S_IXUSR)
+    return proxy
+
+
+def write_pi_inventory(tmp, box, device, mode, bootstrap_user):
+    host = device["hostname"]
+    if mode == "bootstrap":
+        ansible_host = device["ipv4_address"]
+        ansible_user = bootstrap_user
+        proxy = write_proxy_command(tmp, box)
+        ssh_common_args = (
+            "-o StrictHostKeyChecking=accept-new "
+            f"-o UserKnownHostsFile={tmp / 'known_hosts'} "
+            f"-o ProxyCommand='{proxy} %h %p'"
+        )
+    else:
+        ansible_host = f"{host}.{MAGICDNS_SUFFIX}"
+        ansible_user = "neo"
+        ssh_common_args = (
+            "-o StrictHostKeyChecking=accept-new "
+            f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
+        )
+    inventory = {
+        "all": {
+            "children": {
+                "music_audio_endpoints": {
+                    "hosts": {
+                        host: {
+                            "node_name": box,
+                            "node_domain_role": "audio_endpoint",
+                            "node_hostname": host,
+                            "ansible_host": ansible_host,
+                            "ansible_user": ansible_user,
+                            "ansible_become": True,
+                            "ansible_become_method": "sudo",
+                            "ansible_become_flags": "-n",
+                            "ansible_become_timeout": 30,
+                            "ansible_python_interpreter": "/usr/bin/python3",
+                            "ansible_ssh_common_args": ssh_common_args,
+                            "ansible_ssh_timeout": 60,
+                        }
+                    }
+                }
+            }
+        }
+    }
+    path = tmp / "music-pi.yml"
+    path.write_text(yaml.safe_dump(inventory, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def write_vars(tmp, box, compiled, device, soundcard):
+    private_ui = music_tailnet_resource(compiled, box, "private-ui")
+    upload_ingress = music_tailnet_resource(compiled, box, "upload-ingress")
+    payload = {
+        "music_box": box,
+        "music_endpoint_hostname": device["hostname"],
+        "music_endpoint_ipv4_address": device["ipv4_address"],
+        "music_endpoint_mac": device["mac"],
+        "music_endpoint_tailnet_tag": device["tailnet_tag"],
+        "music_endpoint_soundcard": soundcard,
+        "music_enable_private_tailscale_ui": bool(private_ui),
+    }
+    if private_ui:
+        payload["music_private_tailscale_hostname"] = private_ui["hostname"]
+        payload["music_private_tailscale_tag"] = private_ui["tag"]
+    if upload_ingress:
+        payload["music_upload_tailscale_hostname"] = upload_ingress["hostname"]
+        payload["music_upload_tailscale_tag"] = upload_ingress["tag"]
+    path = tmp / "music-vars.yml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def ansible_env():
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
+    env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
+    return env
+
+
+def run_playbook(tmp, playbook, limit, vars_path, inventories):
+    argv = ["ansible-playbook", "-vv"]
+    for inventory in inventories:
+        argv.extend(["-i", str(inventory)])
+    argv.extend([str(playbook), "--limit", limit, "-e", f"@{vars_path}"])
+    run(argv, env=ansible_env())
+
+
+def verify_platform_resources(registry):
+    run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
+            "--registry",
+            str(Path(registry).expanduser()),
+            "--app",
+            "music",
+            "--magicdns-suffix",
+            MAGICDNS_SUFFIX,
+            "verify",
+        ]
+    )
+
+
+def build_and_load_images(box):
+    for command in ("build", "load"):
+        run(
+            [
+                str(REPO_ROOT / "ansible" / "bin" / "platform-image-build"),
+                "--app",
+                "music",
+                "--box",
+                box,
+                "--magicdns-suffix",
+                MAGICDNS_SUFFIX,
+                command,
+            ]
+        )
+
+
+def command_context(args, pi_mode):
+    require_box(args.box, "--box")
+    compiled, device = load_resources(args.resources_registry, args.box)
+    tmpdir = tempfile.TemporaryDirectory()
+    tmp = Path(tmpdir.name)
+    box_inventory = tmp / f"{args.box}.yml"
+    render_box_inventory(args.box, box_inventory)
+    pi_inventory = write_pi_inventory(
+        tmp,
+        args.box,
+        device,
+        pi_mode,
+        getattr(args, "bootstrap_user", "pi"),
+    )
+    vars_path = write_vars(
+        tmp,
+        args.box,
+        compiled,
+        device,
+        getattr(args, "soundcard", "default"),
+    )
+    return tmpdir, tmp, box_inventory, pi_inventory, vars_path
+
+
+def cmd_preflight(args):
+    tmpdir, _tmp, box_inventory, pi_inventory, vars_path = command_context(args, "bootstrap")
+    with tmpdir:
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "00-preflight.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "10-pi-preflight.yml",
+            "music_audio_endpoints",
+            vars_path,
+            [BASE_INVENTORY, pi_inventory],
+        )
+
+
+def cmd_install(args):
+    verify_platform_resources(args.resources_registry)
+    tmpdir, _tmp, box_inventory, pi_inventory, vars_path = command_context(args, "bootstrap")
+    with tmpdir:
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "00-preflight.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+        build_and_load_images(args.box)
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "20-backend-install.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "10-pi-preflight.yml",
+            "music_audio_endpoints",
+            vars_path,
+            [BASE_INVENTORY, pi_inventory],
+        )
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "25-pi-install.yml",
+            "music_audio_endpoints",
+            vars_path,
+            [BASE_INVENTORY, pi_inventory],
+        )
+
+
+def cmd_backend_install(args):
+    verify_platform_resources(args.resources_registry)
+    tmpdir, _tmp, box_inventory, _pi_inventory, vars_path = command_context(args, "steady")
+    with tmpdir:
+        build_and_load_images(args.box)
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "20-backend-install.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+
+
+def cmd_pi_install(args):
+    verify_platform_resources(args.resources_registry)
+    tmpdir, _tmp, _box_inventory, pi_inventory, vars_path = command_context(args, "bootstrap")
+    with tmpdir:
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "10-pi-preflight.yml",
+            "music_audio_endpoints",
+            vars_path,
+            [BASE_INVENTORY, pi_inventory],
+        )
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "25-pi-install.yml",
+            "music_audio_endpoints",
+            vars_path,
+            [BASE_INVENTORY, pi_inventory],
+        )
+
+
+def cmd_verify(args):
+    verify_platform_resources(args.resources_registry)
+    tmpdir, _tmp, box_inventory, pi_inventory, vars_path = command_context(args, "steady")
+    with tmpdir:
+        run_playbook(
+            Path(tmpdir.name),
+            PLAYBOOK_DIR / "40-verify.yml",
+            f"{args.box}-bak,music_audio_endpoints",
+            vars_path,
+            [BASE_INVENTORY, box_inventory, pi_inventory],
+        )
+
+
+def parser():
+    parser = argparse.ArgumentParser(description="Manage the Klokast music app.")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--box", required=True)
+    common.add_argument(
+        "--resources-registry",
+        default=RESOURCES_REGISTRY_DEFAULT,
+        help="Platform resources registry path.",
+    )
+    common.add_argument(
+        "--soundcard",
+        default=os.environ.get("MUSIC_ENDPOINT_SOUNDCARD", "hw:CARD=AUDIO,DEV=0"),
+        help="ALSA soundcard passed to snapclient.",
+    )
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument(
+        "--bootstrap-user",
+        default=os.environ.get("MUSIC_ENDPOINT_BOOTSTRAP_USER", "pi"),
+        help="Initial Raspberry Pi SSH user before neo/Tailscale management exists.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("preflight", parents=[common, bootstrap]).set_defaults(func=cmd_preflight)
+    sub.add_parser("install", parents=[common, bootstrap]).set_defaults(func=cmd_install)
+    sub.add_parser("backend-install", parents=[common]).set_defaults(func=cmd_backend_install)
+    sub.add_parser("pi-install", parents=[common, bootstrap]).set_defaults(func=cmd_pi_install)
+    sub.add_parser("verify", parents=[common]).set_defaults(func=cmd_verify)
+    return parser
+
+
+def main():
+    args = parser().parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

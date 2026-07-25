@@ -1,0 +1,11 @@
+ARG NEXTCLOUD_FPM_IMAGE
+FROM ${NEXTCLOUD_FPM_IMAGE}
+
+USER root
+RUN set -eu; \
+    apk add --no-cache \
+      ffmpeg \
+      imagemagick \
+      imagemagick-pdf \
+      postgresql17-client \
+      redis

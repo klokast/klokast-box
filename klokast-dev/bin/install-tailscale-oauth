@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-auto}"
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 --policy-env PATH --devices-env PATH [--controller HOST]
+
+Installs root-only Tailscale OAuth env files onto the active Klokast ops
+controller. The files are sent over Tailscale SSH stdin/base64 and installed as
+0600 root-owned files under /etc/klokast/.
+
+Options:
+  --policy-env PATH   Local tailscale-policy.env file.
+  --devices-env PATH  Local tailscale-devices.env file.
+  --controller HOST   Controller host or "auto". Default: ${DEFAULT_CONTROLLER}
+EOF
+}
+
+die() {
+  printf 'install-tailscale-oauth: %s\n' "$*" >&2
+  exit 2
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found"
+}
+
+expand_path() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+valid_controller() {
+  case "$1" in
+    ""|*[!A-Za-z0-9.-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+resolve_controller() {
+  if [ "$1" = auto ]; then
+    repo_root="${KLOKAST_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd -P)}"
+    "$repo_root/ansible/bin/ops-controller-ha" resolve-active
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+validate_env_file() {
+  file="$1"
+  label="$2"
+  [ -r "$file" ] || die "$label is not readable: $file"
+  grep -Eq '^TAILNET_ID=' "$file" || die "$label is missing TAILNET_ID"
+  grep -Eq '^TS_OAUTH_CLIENT_ID=' "$file" || die "$label is missing TS_OAUTH_CLIENT_ID"
+  grep -Eq '^TS_OAUTH_CLIENT_SECRET=' "$file" || die "$label is missing TS_OAUTH_CLIENT_SECRET"
+}
+
+policy_env=""
+devices_env=""
+controller="$DEFAULT_CONTROLLER"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --policy-env)
+      [ "$#" -ge 2 ] || die "--policy-env needs a path"
+      policy_env="$2"
+      shift 2
+      ;;
+    --devices-env)
+      [ "$#" -ge 2 ] || die "--devices-env needs a path"
+      devices_env="$2"
+      shift 2
+      ;;
+    --controller)
+      [ "$#" -ge 2 ] || die "--controller needs a host"
+      controller="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$policy_env" ] || die "--policy-env is required"
+[ -n "$devices_env" ] || die "--devices-env is required"
+valid_controller "$controller" || die "--controller contains unsafe characters"
+controller="$(resolve_controller "$controller")"
+valid_controller "$controller" || die "resolved controller contains unsafe characters"
+
+policy_env="$(expand_path "$policy_env")"
+devices_env="$(expand_path "$devices_env")"
+validate_env_file "$policy_env" "policy env"
+validate_env_file "$devices_env" "devices env"
+
+need_command tailscale
+need_command base64
+need_command grep
+
+ssh_target="smith@${controller}"
+remote_dir="$(
+  tailscale ssh "$ssh_target" 'mktemp -d /tmp/klokast-tailscale-oauth.XXXXXX'
+)"
+case "$remote_dir" in
+  /tmp/klokast-tailscale-oauth.*) ;;
+  *) die "controller returned unsafe temporary directory: $remote_dir" ;;
+esac
+
+cleanup() {
+  tailscale ssh "$ssh_target" "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT HUP INT TERM
+
+base64 < "$policy_env" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/tailscale-policy.env'"
+base64 < "$devices_env" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/tailscale-devices.env'"
+
+tailscale ssh "$ssh_target" sh -s -- "$remote_dir" <<'SH'
+set -eu
+remote_dir=$1
+doas install -d -m 0755 -o root -g root /etc/klokast
+doas install -m 0600 -o root -g root "$remote_dir/tailscale-policy.env" /etc/klokast/tailscale-policy.env
+doas install -m 0600 -o root -g root "$remote_dir/tailscale-devices.env" /etc/klokast/tailscale-devices.env
+doas /usr/local/sbin/ts-authkey-ops --check-config --hostname "$(hostname)" --tags tag:ops >/dev/null
+doas /usr/local/sbin/ts-authkey-airunner --check-config --hostname "$(hostname)-airunner" --tags tag:airunner >/dev/null
+doas /usr/local/sbin/ts-devices-list >/dev/null
+SH
+
+printf 'Tailscale OAuth files installed on %s.\n' "$controller"

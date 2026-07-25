@@ -1,0 +1,33 @@
+---
+- name: Preflight the print server backend target
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Assert the selected backend VM is targeted
+      ansible.builtin.assert:
+        that:
+          - print_box is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - node_name == print_box
+          - node_domain_role == platform_zones.bak.role
+        fail_msg: >-
+          Print server playbooks only target the selected backend VM.
+
+    - name: Assert Podman exists on the backend VM
+      ansible.builtin.stat:
+        path: /usr/bin/podman
+      register: print_preflight_podman
+
+    - name: Fail when Podman is missing
+      ansible.builtin.assert:
+        that:
+          - print_preflight_podman.stat.exists
+        fail_msg: >-
+          Podman is required on {{ inventory_hostname }} before print-server
+          can be installed. Run the Platform Podman VM phases first.
+
+    - name: Assert the printer IPP port is reachable from the backend VM
+      ansible.builtin.wait_for:
+        host: "{{ print_printer_ipv4_address }}"
+        port: 631
+        timeout: 10
+      changed_when: false

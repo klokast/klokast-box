@@ -1,0 +1,201 @@
+#
+# Summary:
+# - Verifies the staged diskless EFI boot artifacts, apkovl contents, boot repository, and initial GRUB configuration before reboot.
+#
+---
+- name: Collect EFI mount state
+  # Read `/proc/mounts` directly so the verification works on both the Debian
+  # stage-1 carrier and the first Alpine SSD boot without depending on extra
+  # mount helper tooling.
+  ansible.builtin.shell: >-
+    awk '$2 == "{{ efi_mount_path }}" {print $1, $2, $3}' /proc/mounts
+  register: verify_diskless_findmnt
+  changed_when: false
+
+- name: Collect EFI artifact listing
+  ansible.builtin.shell: >-
+    find {{ efi_mount_path }}/EFI -maxdepth 3 -type f | sort
+  register: verify_diskless_efi_listing
+  changed_when: false
+
+- name: Collect boot repository artifacts
+  # Keep this verification cheap and aligned with the working `yii-dom0`
+  # layout: `/etc/apk/cache` is a runtime cache, while `apks/<arch>` is the
+  # early-boot repository.
+  ansible.builtin.shell: >-
+    printf 'boot_repo_marker=%s\n' "$(find {{ apk_boot_repository_root | quote }} -maxdepth 1 -name .boot_repository | wc -l)";
+    printf 'apkindex=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name 'APKINDEX.tar.gz' | wc -l)";
+    printf 'repo_apk=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name '*.apk' | wc -l)";
+    printf 'alpine_base=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name 'alpine-base-*.apk' | wc -l)"
+  register: verify_diskless_apk_cache_artifacts
+  changed_when: false
+
+- name: Collect package names indexed in the staged boot repository
+  ansible.builtin.shell: >-
+    tar -xOzf {{ apk_boot_repository_index | quote }} APKINDEX
+    | awk -F: '/^P:/{print $2}'
+    | sort -u
+  register: verify_diskless_repo_index_packages
+  changed_when: false
+
+- name: Collect the staged diskless hostname from apkovl
+  ansible.builtin.command: >-
+    tar -xOzf {{ apkovl_archive_path }} ./etc/hostname
+  register: verify_diskless_apkovl_hostname
+  changed_when: false
+
+- name: Collect the staged diskless network configuration from apkovl
+  ansible.builtin.command: >-
+    tar -xOzf {{ apkovl_archive_path }} ./etc/network/interfaces
+  register: verify_diskless_apkovl_interfaces
+  changed_when: false
+
+- name: Collect the staged diskless repositories file from apkovl
+  ansible.builtin.command: >-
+    tar -xOzf {{ apkovl_archive_path }} ./etc/apk/repositories
+  register: verify_diskless_apkovl_repositories
+  changed_when: false
+
+- name: Collect the staged diskless package world from apkovl
+  ansible.builtin.command: >-
+    tar -xOzf {{ apkovl_archive_path }} ./etc/apk/world
+  register: verify_diskless_apkovl_world
+  changed_when: false
+
+- name: Collect the staged diskless lbu configuration from apkovl
+  ansible.builtin.command: >-
+    tar -xOzf {{ apkovl_archive_path }} ./etc/lbu/lbu.conf
+  register: verify_diskless_apkovl_lbu_conf
+  changed_when: false
+
+- name: Collect the staged diskless protected-path entries from apkovl
+  ansible.builtin.command: >-
+    tar -xOzf {{ apkovl_archive_path }} ./{{ lbu_protected_paths_file | regex_replace('^/', '') }}
+  register: verify_diskless_apkovl_lbu_paths
+  changed_when: false
+
+- name: Collect the staged diskless apkovl listing
+  ansible.builtin.command: >-
+    tar -tvzf {{ apkovl_archive_path }}
+  register: verify_diskless_apkovl_listing
+  changed_when: false
+
+- name: Collect the staged apkovl root-directory mode
+  ansible.builtin.shell: >-
+    tar -tvzf {{ apkovl_archive_path | quote }} | awk '$NF == "./" {print $1; exit}'
+  register: verify_diskless_apkovl_root_mode
+  changed_when: false
+
+- name: Collect diskless GRUB configuration
+  ansible.builtin.command: "cat {{ efi_grub_directory }}/grub.cfg"
+  register: verify_diskless_grub_cfg
+  changed_when: false
+
+- name: Collect managed EFI GRUB loader configurations
+  ansible.builtin.command: "cat {{ item }}"
+  loop: "{{ efi_grub_loader_config_paths }}"
+  register: verify_diskless_efi_grub_loader_cfg
+  changed_when: false
+  failed_when: false
+
+- name: Check required diskless boot artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ diskless_required_paths }}"
+  register: verify_diskless_required_paths
+
+- name: Assert required diskless boot artifacts and persistence settings exist
+  # Alpine stores protected paths without a leading slash and prefixes them
+  # with `+` or `!`. Normalize both sides before comparison so the
+  # assertion checks the protected set, not the on-disk text format.
+  ansible.builtin.assert:
+    that:
+      - "verify_diskless_findmnt.stdout is search(efi_partition_device)"
+      - "verify_diskless_findmnt.stdout is search(efi_mount_path)"
+      - "verify_diskless_findmnt.stdout is search(efi_partition_fs)"
+      - "verify_diskless_apk_cache_artifacts.stdout is search('boot_repo_marker=[1-9]')"
+      - "verify_diskless_apk_cache_artifacts.stdout is search('apkindex=[1-9]')"
+      - "verify_diskless_apk_cache_artifacts.stdout is search('repo_apk=[1-9]')"
+      - "verify_diskless_apk_cache_artifacts.stdout is search('alpine_base=[1-9]')"
+      - "verify_diskless_apkovl_hostname.stdout == node_hostname"
+      - "'iface lo inet loopback' in verify_diskless_apkovl_interfaces.stdout"
+      - >-
+        ((diskless_first_boot_repositories | list)
+        | difference(verify_diskless_apkovl_repositories.stdout_lines | list)
+        | length) == 0
+      - >-
+        ((diskless_first_boot_world_packages | list)
+        | difference(verify_diskless_apkovl_world.stdout_lines | list)
+        | length) == 0
+      - >-
+        ((diskless_first_boot_world_packages | list)
+        | difference(verify_diskless_repo_index_packages.stdout_lines | list)
+        | length) == 0
+      - "verify_diskless_apkovl_lbu_conf.stdout is search('^LBU_MEDIA=' ~ lbu_media_name, multiline=True)"
+      - >-
+        ((tailscale_persist_paths + diskless_lbu_include_paths)
+        | map('regex_replace', '^/', '')
+        | list
+        | difference(verify_diskless_apkovl_lbu_paths.stdout_lines
+        | map('regex_replace', '^[+!]', '')
+        | list)
+        | length) == 0
+      - "verify_diskless_apkovl_listing.stdout is search('etc/\\.default_boot_services')"
+      - "verify_diskless_apkovl_listing.stdout is search('etc/apk/cache -> ' ~ (diskless_first_boot_cache_path | regex_escape))"
+      - "verify_diskless_apkovl_listing.stdout is search('etc/init.d/klokast-diskless-bootstrap')"
+      - "verify_diskless_apkovl_listing.stdout is search('etc/runlevels/default/klokast-diskless-bootstrap -> /etc/init.d/klokast-diskless-bootstrap')"
+      - "verify_diskless_apkovl_listing.stdout is search('var/lib/tailscale')"
+      - verify_diskless_apkovl_root_mode.stdout == 'drwxr-xr-x'
+      - >-
+        (diskless_alpine_repo_kernel_param is not defined)
+        or
+        (diskless_alpine_repo_kernel_param | trim in verify_diskless_grub_cfg.stdout)
+      - >-
+        (not (diskless_grub_include_debug_entry | default(false) | bool))
+        or
+        ((diskless_grub_debug_entry_title | default('Alpine Linux (RAM Mode, Debug)')) in verify_diskless_grub_cfg.stdout)
+      - >-
+        (not (diskless_grub_include_debug_entry | default(false) | bool))
+        or
+        ('debug_init' in verify_diskless_grub_cfg.stdout)
+      - "'apkvol=' not in verify_diskless_grub_cfg.stdout"
+      - (verify_diskless_required_paths.results | map(attribute='stat.exists') | list | min)
+    fail_msg: >-
+      Diskless install verification failed. Boot artifacts, the `apks/`
+      repository, the staged apkovl content, or the diskless GRUB entry are
+      not fully in place yet.
+
+- name: Assert managed EFI GRUB loader configurations hand off to the canonical menu
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - >-
+        item.stdout_lines == [
+        'search --no-floppy --label ' ~ efi_partition_label ~ ' --set=root',
+        'set prefix=($root)/boot/grub',
+        'configfile ($root)/boot/grub/grub.cfg'
+        ]
+    fail_msg: >-
+      Managed EFI GRUB loader {{ item.item }} is missing or does not hand off to
+      {{ efi_grub_directory }}/grub.cfg through the {{ efi_partition_label }}
+      filesystem label.
+  loop: "{{ verify_diskless_efi_grub_loader_cfg.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Show verified diskless install state
+  ansible.builtin.debug:
+    msg:
+      - "{{ verify_diskless_findmnt.stdout }}"
+      - "{{ verify_diskless_efi_listing.stdout_lines }}"
+      - "{{ verify_diskless_apk_cache_artifacts.stdout_lines }}"
+      - "{{ verify_diskless_repo_index_packages.stdout_lines }}"
+      - "{{ verify_diskless_apkovl_hostname.stdout }}"
+      - "{{ verify_diskless_apkovl_interfaces.stdout_lines }}"
+      - "{{ verify_diskless_apkovl_repositories.stdout_lines }}"
+      - "{{ verify_diskless_apkovl_world.stdout_lines }}"
+      - "{{ verify_diskless_apkovl_lbu_conf.stdout_lines }}"
+      - "{{ verify_diskless_apkovl_lbu_paths.stdout_lines }}"
+      - "{{ verify_diskless_apkovl_listing.stdout_lines }}"
+      - "{{ verify_diskless_grub_cfg.stdout_lines }}"
+      - "{{ verify_diskless_efi_grub_loader_cfg.results | map(attribute='stdout_lines') | list }}"

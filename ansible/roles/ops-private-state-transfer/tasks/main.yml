@@ -1,0 +1,92 @@
+#
+# Summary:
+# - Copies controller private state and root-only Tailscale OAuth files from the
+#   current controller to the in-Platform ops controller, without copying
+#   transitional reusable auth-key files.
+#
+---
+- name: Assert private-state migration inputs are defined
+  ansible.builtin.assert:
+    that:
+      - ops_controller_source_private_root | default('') is match('^/')
+      - ops_infra_private_root | default('') is match('^/')
+    fail_msg: Ops private-state migration variables are incomplete.
+
+- name: Check current-controller private state exists
+  ansible.builtin.stat:
+    path: "{{ ops_controller_source_private_root }}"
+  delegate_to: localhost
+  become: false
+  register: ops_private_state_source
+
+- name: Require current-controller private state before migration
+  ansible.builtin.assert:
+    that:
+      - ops_private_state_source.stat.isdir | default(false)
+    fail_msg: >-
+      Missing current-controller private state directory:
+      {{ ops_controller_source_private_root }}
+
+- name: Synchronize private Klokast state into the infra account
+  ansible.posix.synchronize:
+    src: "{{ ops_controller_source_private_root }}/"
+    dest: "{{ ops_infra_private_root }}/"
+    archive: true
+    delete: true
+    rsync_opts:
+      - "--chmod=Du=rwx,Dgo=,Fu=rw,Fgo="
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Transfer root-only Tailscale OAuth material
+  ansible.builtin.import_tasks: root-secret-files.yml
+  when: ops_private_state_transfer_root_secrets | default(true) | bool
+
+- name: Remove root-only provider credentials from a standby controller
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ ops_controller_root_secret_files | default([]) }}"
+  no_log: true
+  when: not (ops_private_state_transfer_root_secrets | default(true) | bool)
+
+- name: Find transitional reusable Tailscale auth-key files on the ops controller
+  ansible.builtin.find:
+    paths: /etc/tailscale-auth
+    patterns: "*.authkey"
+    file_type: file
+  register: ops_transitional_authkey_files
+
+- name: Remove transitional reusable Tailscale auth-key files from the ops controller
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ops_transitional_authkey_files.files }}"
+  no_log: true
+
+- name: Check target Tailscale auth-key minting configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/ts-authkey-ops
+      - --check-config
+      - --hostname
+      - "{{ node_hostname }}"
+      - --tags
+      - "{{ vm_tailscale_authkey_advertise_tags }}"
+  register: ops_target_authkey_wrapper_check
+  changed_when: false
+  when: ops_private_state_transfer_root_secrets | default(true) | bool
+
+- name: Verify the migrated platform resource registry is present
+  ansible.builtin.stat:
+    path: "{{ ops_infra_private_root }}/platform-resources.yml"
+  register: ops_migrated_platform_resources
+
+- name: Assert migrated private platform resource registry exists
+  ansible.builtin.assert:
+    that:
+      - ops_migrated_platform_resources.stat.exists | default(false)
+    fail_msg: >-
+      The migrated private state is missing
+      {{ ops_infra_private_root }}/platform-resources.yml.

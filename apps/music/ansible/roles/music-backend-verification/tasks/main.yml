@@ -1,0 +1,184 @@
+---
+- name: Assert music backend verification targets the selected backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == platform_zones.bak.role
+      - node_name == music_box
+    fail_msg: >-
+      music-backend-verification must target the selected backend VM.
+
+- name: Collect music backend OpenRC service state
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ music_service_name }}"
+      - status
+  become: true
+  register: music_verify_service
+  changed_when: false
+
+- name: Collect music backend pod state
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - pod
+      - inspect
+      - "--format={{ '{{' }}.State{{ '}}' }}"
+      - "{{ music_pod_name }}"
+  become: true
+  register: music_verify_pod_state
+  changed_when: false
+
+- name: Assert music backend pod is running
+  ansible.builtin.assert:
+    that:
+      - music_verify_pod_state.stdout == "Running"
+    fail_msg: >-
+      Music backend Podman pod must be running.
+
+- name: Collect music backend containers
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - ps
+      - "--format={{ '{{' }}.Names{{ '}}' }}"
+      - --filter
+      - "pod={{ music_pod_name }}"
+  become: true
+  register: music_verify_containers
+  changed_when: false
+
+- name: Assert expected music backend containers are running
+  ansible.builtin.assert:
+    that:
+      - music_container_snapserver_name in music_verify_containers.stdout_lines
+      - music_container_mpd_name in music_verify_containers.stdout_lines
+      - music_container_mympd_name in music_verify_containers.stdout_lines
+      - (not (music_enable_private_tailscale_ui | bool)) or music_container_ui_ingress_name in music_verify_containers.stdout_lines
+      - music_container_upload_ingress_name in music_verify_containers.stdout_lines
+    fail_msg: >-
+      Music backend containers are incomplete.
+
+- name: Define expected music ingress Tailscale identities
+  ansible.builtin.set_fact:
+    music_verify_ingress_targets: >-
+      {{
+        (
+          [
+            {
+              'container': music_container_ui_ingress_name,
+              'hostname': music_private_tailscale_hostname,
+              'tag': music_private_tailscale_tag
+            }
+          ]
+          if (music_enable_private_tailscale_ui | bool)
+          else []
+        )
+        + [
+          {
+            'container': music_container_upload_ingress_name,
+            'hostname': music_upload_tailscale_hostname,
+            'tag': music_upload_tailscale_tag
+          }
+        ]
+      }}
+
+- name: Collect music ingress Tailscale status
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ item.container }}"
+      - tailscale
+      - --socket
+      - /tmp/tailscale/tailscaled.sock
+      - status
+      - --json
+      - --peers=false
+  become: true
+  loop: "{{ music_verify_ingress_targets }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  register: music_verify_ingress_tailscale
+  changed_when: false
+
+- name: Assert music ingress Tailscale identities are online
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json).BackendState | default('') == 'Running'
+      - (item.stdout | from_json).Self.HostName | default('') == item.item.hostname
+      - (item.stdout | from_json).Self.Online | default(false) | bool
+      - item.item.tag in ((item.stdout | from_json).Self.Tags | default([]))
+    fail_msg: >-
+      Music Tailscale ingress {{ item.item.hostname }} is not online with the
+      expected tag.
+  loop: "{{ music_verify_ingress_tailscale.results }}"
+  loop_control:
+    label: "{{ item.item.hostname }}"
+
+- name: Verify myMPD HTTP responds inside the pod
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ music_container_mympd_name }}"
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - "http://127.0.0.1:{{ music_mympd_port }}/"
+  become: true
+  changed_when: false
+
+- name: Verify myMPD HTTP is published on the backend address
+  ansible.builtin.wait_for:
+    host: "{{ music_mympd_bind_host }}"
+    port: "{{ music_mympd_port }}"
+    timeout: 10
+  changed_when: false
+
+- name: Verify Snapserver stream port is reachable locally
+  ansible.builtin.wait_for:
+    host: "{{ music_snapserver_host }}"
+    port: "{{ music_snapserver_port }}"
+    timeout: 10
+  changed_when: false
+
+- name: Collect music Podman volumes
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - volume
+      - ls
+      - "--format={{ '{{' }}.Name{{ '}}' }}"
+  become: true
+  register: music_verify_volumes
+  changed_when: false
+
+- name: Assert expected music Podman volumes exist
+  ansible.builtin.assert:
+    that:
+      - music_library_volume in music_verify_volumes.stdout_lines
+      - music_playlist_volume in music_verify_volumes.stdout_lines
+      - music_mpd_state_volume in music_verify_volumes.stdout_lines
+      - music_mympd_state_volume in music_verify_volumes.stdout_lines
+      - music_runtime_volume in music_verify_volumes.stdout_lines
+      - music_ui_tailscale_state_volume in music_verify_volumes.stdout_lines
+      - music_upload_tailscale_state_volume in music_verify_volumes.stdout_lines
+    fail_msg: >-
+      Music backend Podman volumes are incomplete.

@@ -1,0 +1,8 @@
+---
+- name: Check dom0 steady-state Platform health
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Verify dom0 steady-state health
+      ansible.builtin.import_role:
+        name: dom0-health-verification

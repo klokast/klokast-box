@@ -1,0 +1,54 @@
+---
+- name: Stop legacy private-only Nextcloud service if present
+  ansible.builtin.service:
+    name: nextcloud
+    state: stopped
+    enabled: false
+  become: true
+  failed_when: false
+
+- name: Remove legacy root-level Nextcloud OpenRC service
+  ansible.builtin.file:
+    path: /etc/init.d/nextcloud
+    state: absent
+  become: true
+
+- name: Remove legacy root-level helper scripts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /usr/local/sbin/nextcloud-stack-deploy
+    - /usr/local/sbin/nextcloud-occ
+
+- name: Remove legacy private-only Nextcloud pod if present
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pod
+      - rm
+      - -f
+      - nextcloud
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: nextcloud_legacy_pod_rm
+  changed_when: nextcloud_legacy_pod_rm.rc == 0
+  failed_when: false
+  when: node_domain_role == 'backend'
+
+- name: Remove legacy service definition root
+  ansible.builtin.file:
+    path: /etc/klokast/nextcloud
+    state: absent
+  become: true
+  when: nextcloud_wipe_legacy_config | default(true) | bool
+
+- name: Wipe legacy persistent data only when explicitly requested
+  ansible.builtin.file:
+    path: /srv/nextcloud
+    state: absent
+  become: true
+  when:
+    - nextcloud_wipe_legacy_data | default(false) | bool
+    - node_domain_role == 'backend'

@@ -1,0 +1,255 @@
+#
+# Summary:
+# - Verifies the in-Platform ops controller without reading secret contents or
+#   changing controller state.
+#
+---
+- name: Select ops controller verification paths
+  ansible.builtin.set_fact:
+    ops_controller_check_repo_path: >-
+      {{
+        ops_infra_repo_dest
+        | default('/home/' ~ (ops_infra_user | default('smith')) ~ '/src/klokast/klokast-box')
+      }}
+    ops_controller_check_required_users:
+      - "{{ ops_infra_user | default('smith') }}"
+      - "{{ ops_app_user | default('minion') }}"
+    ops_controller_check_required_commands:
+      - ansible-inventory
+      - ansible-playbook
+      - doas
+      - git
+      - jq
+      - python3
+      - tailscale
+
+- name: Collect ops controller runtime hostname
+  ansible.builtin.command: hostname
+  register: ops_controller_check_hostname
+  changed_when: false
+
+- name: Collect ops controller OS release
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /etc/os-release
+  register: ops_controller_check_os_release
+  changed_when: false
+
+- name: Collect ops controller Tailscale runtime status
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - status
+      - --json
+  register: ops_controller_check_tailscale_status
+  changed_when: false
+
+- name: Parse ops controller Tailscale runtime status
+  ansible.builtin.set_fact:
+    ops_controller_check_tailscale_json: "{{ ops_controller_check_tailscale_status.stdout | from_json }}"
+
+- name: Check required ops controller users
+  ansible.builtin.command:
+    argv:
+      - id
+      - -u
+      - "{{ item }}"
+  loop: "{{ ops_controller_check_required_users }}"
+  register: ops_controller_check_users
+  changed_when: false
+  failed_when: false
+
+- name: Check required ops controller commands
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - command -v "$1" >/dev/null 2>&1
+      - sh
+      - "{{ item }}"
+  loop: "{{ ops_controller_check_required_commands }}"
+  register: ops_controller_check_commands
+  changed_when: false
+  failed_when: false
+
+- name: Inspect ops controller repo directory
+  ansible.builtin.stat:
+    path: "{{ ops_controller_check_repo_path }}"
+  register: ops_controller_check_repo_stat
+
+- name: Inspect ops controller repo metadata
+  ansible.builtin.stat:
+    path: "{{ ops_controller_check_repo_path }}/.git"
+  register: ops_controller_check_repo_git_stat
+
+- name: Read ops controller repository state
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        repo=$1
+        expected_origin=$2
+        actual_origin=$(git -C "$repo" remote get-url origin)
+        test "$actual_origin" = "$expected_origin"
+        test -z "$(git -C "$repo" status --porcelain)"
+        local_head=$(git -C "$repo" rev-parse HEAD)
+        remote_head=$(git -C "$repo" ls-remote origin refs/heads/main | cut -f1)
+        test -n "$remote_head"
+        test "$local_head" = "$remote_head"
+      - repo-state-check
+      - "{{ ops_controller_check_repo_path }}"
+      - https://github.com/klokast/klokast-box.git
+  register: ops_controller_check_repo_state
+  changed_when: false
+  when: ops_controller_check_repo_git_stat.stat.isdir | default(false)
+
+- name: Inspect obsolete controller GitHub deploy-key material
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/home/{{ ops_infra_user | default('smith') }}/.ssh/github-klokast-box"
+    - "/home/{{ ops_infra_user | default('smith') }}/.ssh/github-klokast-box.pub"
+  register: ops_controller_check_obsolete_git_keys
+
+- name: Inspect ops controller platform-check wrapper
+  ansible.builtin.stat:
+    path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-check"
+  register: ops_controller_check_platform_check_stat
+
+- name: Inspect ops controller HA guard
+  ansible.builtin.stat:
+    path: /usr/local/sbin/klokast-controller-guard
+  register: ops_controller_check_ha_guard_stat
+
+- name: Read ops controller HA authority state
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/klokast-controller-guard
+      - --status
+      - --json
+  register: ops_controller_check_ha_guard
+  changed_when: false
+  when: ops_controller_check_ha_guard_stat.stat.executable | default(false)
+
+- name: Parse ops controller HA authority state
+  ansible.builtin.set_fact:
+    ops_controller_check_ha: >-
+      {{
+        (ops_controller_check_ha_guard.stdout | from_json)
+        if not (ops_controller_check_ha_guard.skipped | default(false))
+        else {'active': false, 'role': 'invalid'}
+      }}
+
+- name: Inspect ops controller Tailscale wrappers
+  ansible.builtin.stat:
+    path: "/usr/local/sbin/{{ item }}"
+  loop: "{{ ops_controller_tailscale_wrappers | default([]) }}"
+  register: ops_controller_check_wrapper_stats
+
+- name: Inspect ops controller Secret Authority wrappers
+  ansible.builtin.stat:
+    path: "/usr/local/sbin/{{ item }}"
+  loop: "{{ ops_controller_secret_authority_wrappers | default([]) }}"
+  register: ops_controller_check_secret_authority_wrapper_stats
+
+- name: Inspect ops controller root-only secret files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ ops_controller_root_secret_files | default([]) }}"
+  register: ops_controller_check_secret_stats
+  no_log: true
+
+- name: Assert ops controller base health
+  ansible.builtin.assert:
+    that:
+      - ops_controller_check_hostname.stdout == node_hostname
+      - ops_controller_check_os_release.stdout is search('(?m)^ID=alpine$')
+      - ops_controller_check_tailscale_json.BackendState | default('') == 'Running'
+      - ops_controller_check_tailscale_json.Self.HostName | default('') == node_hostname
+      - vm_tailscale_authkey_expected_tag in (ops_controller_check_tailscale_json.Self.Tags | default([]))
+      - (ops_controller_check_users.results | map(attribute='rc') | list | max) == 0
+      - (ops_controller_check_commands.results | map(attribute='rc') | list | max) == 0
+      - ops_controller_check_repo_stat.stat.isdir | default(false)
+      - ops_controller_check_repo_git_stat.stat.isdir | default(false)
+      - ops_controller_check_repo_state.rc | default(1) == 0
+      - >-
+        (ops_controller_check_obsolete_git_keys.results
+        | selectattr('stat.exists', 'defined')
+        | selectattr('stat.exists')
+        | list
+        | length) == 0
+      - ops_controller_check_platform_check_stat.stat.exists | default(false)
+      - ops_controller_check_platform_check_stat.stat.executable | default(false)
+      - ops_controller_check_ha_guard_stat.stat.exists | default(false)
+      - ops_controller_check_ha_guard_stat.stat.executable | default(false)
+      - ops_controller_check_ha_guard_stat.stat.pw_name == 'root'
+      - ops_controller_check_ha_guard_stat.stat.gr_name == 'root'
+    fail_msg: >-
+      Ops controller base verification failed on {{ inventory_hostname }}.
+
+- name: Assert ops controller Tailscale wrappers are installed
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+      - item.stat.isreg | default(false)
+      - item.stat.executable | default(false)
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+    fail_msg: "Ops controller wrapper is missing or unsafe: {{ item.item }}"
+  loop: "{{ ops_controller_check_wrapper_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Assert ops controller Secret Authority wrappers are installed
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+      - item.stat.isreg | default(false)
+      - item.stat.executable | default(false)
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+    fail_msg: "Ops controller Secret Authority wrapper is missing or unsafe: {{ item.item }}"
+  loop: "{{ ops_controller_check_secret_authority_wrapper_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Assert active controller root-only secret files are locked down
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+      - item.stat.isreg | default(false)
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == '0600'
+    fail_msg: "Ops controller secret file is missing or has unsafe metadata."
+  loop: "{{ ops_controller_check_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+  when: ops_controller_check_ha.active | default(false) | bool
+
+- name: Assert standby controller has no root-only provider credentials
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.exists | default(false))
+    fail_msg: "A standby controller still holds root-only provider credentials."
+  loop: "{{ ops_controller_check_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+  when: not (ops_controller_check_ha.active | default(false) | bool)
+
+- name: Show ops controller steady-state health summary
+  ansible.builtin.debug:
+    msg:
+      - "{{ ops_controller_check_hostname.stdout }}"
+      - "{{ ops_controller_check_tailscale_json.Self.DNSName | default('') | regex_replace('\\.$', '') }}"
+      - "repo={{ ops_controller_check_repo_path }}"
+      - "users={{ ops_controller_check_required_users }}"
+      - "wrappers={{ ops_controller_tailscale_wrappers | default([]) | length }}"
+      - "secret_authority_wrappers={{ ops_controller_secret_authority_wrappers | default([]) | length }}"
+      - "secret_files={{ ops_controller_root_secret_files | default([]) | length }}"
+      - "controller_role={{ ops_controller_check_ha.role | default('invalid') }}"

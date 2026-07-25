@@ -1,0 +1,7 @@
+#
+# Summary:
+# - Defines registry policy inputs and probe images for managed Podman hosts.
+#
+---
+podman_host_registries: []
+podman_host_registry_probe_images: []

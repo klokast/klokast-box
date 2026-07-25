@@ -1,0 +1,28 @@
+name = "{{ xen_guest_spec.guest_name }}"
+type = "pvh"
+memory = {{ xen_guest_spec.memory_mb }}
+vcpus = {{ xen_guest_spec.vcpus }}
+{% if xen_guest_spec.cpus is defined %}
+cpus = "{{ xen_guest_spec.cpus }}"
+{% endif %}
+
+# Installer-stage PVH guests boot from the shared Alpine VIRT assets. Once the
+# guest is installed, switch to its own extracted kernel/initramfs artifacts.
+kernel = "{{ xen_guest_active_stage.kernel_path }}"
+ramdisk = "{{ xen_guest_active_stage.initramfs_path }}"
+extra = "{{ xen_guest_active_stage.extra }}"
+
+disk = [
+{% for disk in xen_guest_active_stage.disks %}
+    '{{ disk }}'{{ ',' if not loop.last else '' }}
+{% endfor %}
+]
+
+vif = [
+{% for vif in xen_guest_spec.vifs %}
+    'bridge={{ vif.bridge }},mac={{ vif.mac }}'{{ ',' if not loop.last else '' }}
+{% endfor %}
+]
+
+on_crash = 'destroy'
+on_reboot = 'restart'

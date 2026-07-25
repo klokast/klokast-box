@@ -1,0 +1,57 @@
+---
+- name: Converge platform resources on router VMs
+  hosts: router
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for router management connectivity
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 120
+
+  tasks:
+    - name: Keep the router baseline converged before platform resources
+      ansible.builtin.import_role:
+        name: router
+
+    - name: Flush router handlers before platform-resource rendering
+      ansible.builtin.meta: flush_handlers
+
+    - name: Render router platform-resource policy
+      ansible.builtin.import_role:
+        name: app-resources
+
+    - name: Record platform-resource apply metadata on router
+      ansible.builtin.import_role:
+        name: platform-resources-metadata
+
+    - name: Verify router platform-resource policy
+      ansible.builtin.import_role:
+        name: app-resources-verification
+
+- name: Converge platform resources on Podman VMs
+  hosts: podman_vms
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for Podman VM management connectivity
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+
+  tasks:
+    - name: Keep the Podman VM firewall baseline converged before platform resources
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+
+    - name: Render Podman VM platform-resource policy
+      ansible.builtin.import_role:
+        name: app-resources
+
+    - name: Record platform-resource apply metadata on Podman VM
+      ansible.builtin.import_role:
+        name: platform-resources-metadata
+
+    - name: Verify Podman VM platform-resource policy
+      ansible.builtin.import_role:
+        name: app-resources-verification

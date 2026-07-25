@@ -1,0 +1,48 @@
+---
+nextcloud_service_name: nextcloud
+nextcloud_pod_name: nextcloud
+nextcloud_http_bind_host: "{{ backend_bootstrap_host }}"
+nextcloud_http_host_port: 8080
+nextcloud_http_container_port: 8080
+
+nextcloud_service_root: /etc/klokast/nextcloud
+nextcloud_env_root: "{{ nextcloud_service_root }}/env"
+nextcloud_secret_root: "{{ nextcloud_service_root }}/secrets"
+nextcloud_image_root: "{{ nextcloud_service_root }}/images"
+nextcloud_script_root: "{{ nextcloud_service_root }}/bin"
+nextcloud_nginx_root: "{{ nextcloud_service_root }}/nginx"
+nextcloud_stack_root: /srv/nextcloud
+nextcloud_html_root: "{{ nextcloud_stack_root }}/html"
+nextcloud_data_root: "{{ nextcloud_stack_root }}/data"
+nextcloud_postgres_root: "{{ nextcloud_stack_root }}/postgres"
+nextcloud_redis_root: "{{ nextcloud_stack_root }}/redis"
+nextcloud_backup_root: "{{ nextcloud_stack_root }}/backup"
+nextcloud_restore_root: "{{ nextcloud_stack_root }}/restore"
+
+nextcloud_app_image: localhost/klokast-nextcloud-app:33.0.3
+nextcloud_backup_image: localhost/klokast-nextcloud-backup:1
+nextcloud_postgres_container_name: nextcloud-postgres
+nextcloud_redis_container_name: nextcloud-redis
+nextcloud_fpm_container_name: nextcloud-fpm
+nextcloud_web_container_name: nextcloud-web
+nextcloud_cron_container_name: nextcloud-cron
+nextcloud_backup_container_name: nextcloud-backup
+
+nextcloud_admin_user: ncadmin
+nextcloud_postgres_db: nextcloud
+nextcloud_postgres_user: nextcloud
+nextcloud_public_url: "https://{{ nextcloud_domain }}"
+nextcloud_magicdns_suffix: example.ts.net
+nextcloud_private_tailscale_hostname: next
+nextcloud_private_domain: "{{ nextcloud_private_tailscale_hostname }}.{{ nextcloud_magicdns_suffix }}"
+nextcloud_local_domain: ""
+nextcloud_local_hostname: "{{ ('nextcloud.' ~ nextcloud_local_domain) if (nextcloud_local_domain | length > 0) else '' }}"
+nextcloud_trusted_domains: "{{ [nextcloud_domain, nextcloud_private_domain] + ([nextcloud_local_hostname] if (nextcloud_local_hostname | length > 0) else []) }}"
+nextcloud_trusted_proxies:
+  - "{{ platform_zones.dmz.vm_ipv4_address }}"
+
+nextcloud_backend_required_secret_env:
+  - NEXTCLOUD_ADMIN_PASSWORD
+  - NEXTCLOUD_POSTGRES_PASSWORD
+  - NEXTCLOUD_RESTIC_PASSWORD
+  - NEXTCLOUD_RESTIC_REPOSITORY

@@ -1,0 +1,19 @@
+---
+- name: Check local ingress nginx service
+  ansible.builtin.command: rc-service nginx status
+  changed_when: false
+
+- name: Validate local ingress nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Check local ingress health endpoints
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -kfsS
+      - --resolve
+      - "{{ item.hostname }}:443:127.0.0.1"
+      - "https://{{ item.hostname }}/.well-known/klokast-local-ingress"
+  loop: "{{ local_ingress_services }}"
+  changed_when: false

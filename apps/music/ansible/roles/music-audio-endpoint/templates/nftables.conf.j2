@@ -1,0 +1,20 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet klokast_audio_endpoint_filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state invalid drop
+        ct state { established, related } accept
+        iifname "lo" accept
+        udp sport 67 udp dport 68 accept comment "dhcp-client"
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+        iifname "tailscale0" tcp dport 22 accept comment "tailscale-management-ssh"
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

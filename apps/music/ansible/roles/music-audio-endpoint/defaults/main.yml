@@ -1,0 +1,23 @@
+---
+music_box: ""
+music_endpoint_hostname: ""
+music_endpoint_ipv4_address: ""
+music_endpoint_tailnet_tag: tag:streamer
+music_endpoint_soundcard: "hw:CARD=AUDIO,DEV=0"
+music_endpoint_snapclient_service_name: klokast-snapclient
+music_endpoint_backend_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+music_endpoint_snapserver_port: 1704
+music_endpoint_manage_admin_user: true
+music_endpoint_admin_user: neo
+music_endpoint_power_user: streamer-power
+music_endpoint_poweroff_path: /sbin/poweroff
+music_endpoint_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-streamer
+music_endpoint_tailscale_accept_dns: false
+music_endpoint_packages:
+  - alsa-utils
+  - ca-certificates
+  - curl
+  - nftables
+  - snapclient
+  - sudo
+  - python3

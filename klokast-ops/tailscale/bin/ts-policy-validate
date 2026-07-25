@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+POLICY_FILE="${1:?usage: ts-policy-validate /path/to/tailscale-policy.hujson}"
+
+if [ "$POLICY_FILE" != /home/smith/private/klokast/tailscale-policy.hujson ]; then
+  echo "Refusing: policy file must be the controller-private policy path" >&2
+  exit 2
+fi
+
+if [ ! -f "$POLICY_FILE" ]; then
+  echo "Policy file not found: $POLICY_FILE" >&2
+  exit 2
+fi
+
+source /etc/klokast/tailscale-policy.env
+
+TOKEN="$(
+  curl -fsS \
+    -u "$TS_OAUTH_CLIENT_ID:$TS_OAUTH_CLIENT_SECRET" \
+    -d grant_type=client_credentials \
+    -d scope=policy_file:read \
+    "https://api.tailscale.com/api/v2/oauth/token" \
+  | jq -er '.access_token'
+)"
+
+curl -fsS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/hujson" \
+  --data-binary @"$POLICY_FILE" \
+  "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/acl/validate"

@@ -1,0 +1,367 @@
+#
+# Summary:
+# - Verifies router hostname, configs, routes, live nftables state, services, and Tailscale runtime health.
+#
+---
+- name: Collect router runtime hostname
+  ansible.builtin.command: hostname
+  register: verify_router_hostname
+  changed_when: false
+
+- name: Validate dnsmasq configuration
+  ansible.builtin.command: dnsmasq --test
+  register: verify_router_dnsmasq_test
+  changed_when: false
+
+- name: Validate nftables configuration
+  ansible.builtin.command: /usr/sbin/nft -c -f /etc/nftables.nft
+  register: verify_router_nft_test
+  changed_when: false
+
+- name: Collect managed router service states
+  ansible.builtin.command: "rc-service {{ item }} status"
+  loop:
+    - dhcpcd
+    - dnsmasq
+    - nftables
+    - tailscale
+  register: verify_router_service_status
+  changed_when: false
+
+- name: Collect router IPv4 routes
+  ansible.builtin.command: ip route
+  register: verify_router_ip_route
+  changed_when: false
+
+- name: Collect local-presence VPN route table
+  ansible.builtin.command: "ip -4 route show table {{ router_local_presence_vpn_table }}"
+  register: verify_router_local_presence_route_table
+  changed_when: false
+  when: router_local_presence_vpn_gateway_enabled | default(false) | bool
+
+- name: Collect router IPv4 policy rules
+  ansible.builtin.command: ip -4 rule show
+  register: verify_router_ip_rule
+  changed_when: false
+  when: router_local_presence_vpn_gateway_enabled | default(false) | bool
+
+- name: Collect router IPv6 routes
+  ansible.builtin.command: ip -6 route
+  register: verify_router_ip6_route
+  changed_when: false
+
+- name: Collect router dhcpcd configuration
+  ansible.builtin.command: cat /etc/dhcpcd.conf
+  register: verify_router_dhcpcd_conf
+  changed_when: false
+
+- name: Collect router dnsmasq configuration
+  ansible.builtin.command: cat /etc/dnsmasq.conf
+  register: verify_router_dnsmasq_conf
+  changed_when: false
+
+- name: Collect router nftables configuration
+  ansible.builtin.command: cat /etc/nftables.nft
+  register: verify_router_nft_conf
+  changed_when: false
+
+- name: Collect live router nftables ruleset
+  ansible.builtin.command: /usr/sbin/nft list ruleset
+  register: verify_router_nft_ruleset
+  changed_when: false
+
+- name: Collect router Tailscale runtime status
+  ansible.builtin.command: tailscale status --json
+  register: verify_router_tailscale_status
+  changed_when: false
+
+- name: Parse router Tailscale runtime status
+  ansible.builtin.set_fact:
+    verify_router_tailscale_parsed: "{{ verify_router_tailscale_status.stdout | from_json }}"
+
+- name: Assert router service and network readiness
+  # `dhcpcd` can keep a WAN-side unreachable IPv6 prefix route even in the
+  # intentionally IPv4-only downstream model. Treat that as informational;
+  # the actual acceptance criteria are direct Tailscale reachability and a
+  # live firewall ruleset without stale jump-era exceptions.
+  ansible.builtin.assert:
+    that:
+      - verify_router_hostname.stdout == node_hostname
+      - (verify_router_dnsmasq_test.stdout ~ verify_router_dnsmasq_test.stderr) is search('syntax check OK')
+      - verify_router_nft_test.rc == 0
+      - (verify_router_service_status.results | map(attribute='rc') | list | max) == 0
+      - >-
+        ((verify_router_service_status.results
+        | map(attribute='stdout')
+        | reject('search', 'status: started')
+        | list
+        | length) == 0)
+      - verify_router_ip_route.stdout is search('default via .* dev ' ~ router_wan_interface)
+      - >-
+        (not (router_local_lan_enabled | default(false) | bool))
+        or (verify_router_ip_route.stdout is search((router_lan_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_lan_interface))
+      - >-
+        (not (router_local_lan_enabled | default(false) | bool))
+        or (verify_router_ip_route.stdout is search((router_admin_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_admin_interface))
+      - >-
+        (not (router_ap_uplink_enabled | default(false) | bool))
+        or (verify_router_ip_route.stdout is search((platform_network_realms['ap-uplink'].router_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ platform_network_realms['ap-uplink'].router_interface))
+      - >-
+        verify_router_ip_route.stdout is not search((platform_network_realms.household.cidr | regex_escape) ~ ' dev ' ~ platform_network_realms.household.parent_interface)
+      - >-
+        verify_router_ip_route.stdout is not search((platform_network_realms.admin.cidr | regex_escape) ~ ' dev ' ~ platform_network_realms.admin.parent_interface)
+      - verify_router_ip_route.stdout is search((router_dmz_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_dmz_interface)
+      - verify_router_ip_route.stdout is search((router_backend_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_backend_interface)
+      - verify_router_ip_route.stdout is search((router_iot_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_iot_interface)
+      - verify_router_ip_route.stdout is search((router_usr_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_usr_interface)
+      - verify_router_ip_route.stdout is search((router_ops_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_ops_interface)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_local_presence_route_table.stdout is search('default via ' ~ router_local_presence_vpn_gateway_ipv4_address ~ ' dev ' ~ router_local_presence_vpn_gateway_interface))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.household.cidr ~ ' to 10.0.0.0/8 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.household.cidr ~ ' to 172.16.0.0/12 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.household.cidr ~ ' to 192.168.0.0/16 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.household.cidr ~ ' lookup ' ~ router_local_presence_vpn_table))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.admin.cidr ~ ' to 10.0.0.0/8 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.admin.cidr ~ ' to 172.16.0.0/12 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.admin.cidr ~ ' to 192.168.0.0/16 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms.admin.cidr ~ ' lookup ' ~ router_local_presence_vpn_table))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms['ap-uplink'].cidr ~ ' to 10.0.0.0/8 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms['ap-uplink'].cidr ~ ' to 172.16.0.0/12 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms['ap-uplink'].cidr ~ ' to 192.168.0.0/16 lookup main'))
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms['ap-uplink'].cidr ~ ' lookup ' ~ router_local_presence_vpn_table))
+      - "'169.254.' not in verify_router_ip_route.stdout"
+      - verify_router_tailscale_parsed.BackendState | default('') == 'Running'
+      - verify_router_tailscale_parsed.Self.HostName | default('') == node_hostname
+      - >-
+        (router_tailscale_expected_tag | default('') | length == 0)
+        or (router_tailscale_expected_tag in (verify_router_tailscale_parsed.Self.Tags | default([])))
+      - "'ia_pd' not in verify_router_dhcpcd_conf.stdout"
+      - "'noipv4ll' in verify_router_dhcpcd_conf.stdout"
+      - "'enable-ra' not in verify_router_dnsmasq_conf.stdout"
+      - "'yii-jump' not in verify_router_dnsmasq_conf.stdout"
+      - >-
+        ((router_local_lan_enabled | default(false) | bool)
+        and (("interface=" ~ router_lan_interface) in verify_router_dnsmasq_conf.stdout))
+        or ((not (router_local_lan_enabled | default(false) | bool))
+        and (("interface=" ~ router_lan_interface) not in verify_router_dnsmasq_conf.stdout))
+      - >-
+        ((router_local_lan_enabled | default(false) | bool)
+        and (("interface=" ~ router_admin_interface) in verify_router_dnsmasq_conf.stdout))
+        or ((not (router_local_lan_enabled | default(false) | bool))
+        and (("interface=" ~ router_admin_interface) not in verify_router_dnsmasq_conf.stdout))
+      - >-
+        ((router_ap_uplink_enabled | default(false) | bool)
+        and (("interface=" ~ platform_network_realms['ap-uplink'].router_interface) in verify_router_dnsmasq_conf.stdout))
+        or ((not (router_ap_uplink_enabled | default(false) | bool))
+        and (("interface=" ~ platform_network_realms['ap-uplink'].router_interface) not in verify_router_dnsmasq_conf.stdout))
+      - ("interface=" ~ router_iot_interface) in verify_router_dnsmasq_conf.stdout
+      - ("interface=" ~ router_usr_interface) in verify_router_dnsmasq_conf.stdout
+      - ("interface=" ~ router_ops_interface) in verify_router_dnsmasq_conf.stdout
+      - >-
+        (not (router_local_lan_enabled | default(false) | bool))
+        or (("dhcp-range=set:household," ~ platform_network_realms.household.dhcp_start ~ "," ~ platform_network_realms.household.dhcp_end ~ ",24h") in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (not (router_local_lan_enabled | default(false) | bool))
+        or (("dhcp-range=set:admin," ~ platform_network_realms.admin.dhcp_start ~ "," ~ platform_network_realms.admin.dhcp_end ~ ",24h") in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (not (router_ap_uplink_enabled | default(false) | bool))
+        or (("dhcp-range=set:ap-uplink," ~ platform_network_realms['ap-uplink'].dhcp_start ~ "," ~ platform_network_realms['ap-uplink'].dhcp_end ~ ",24h") in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (("dhcp-option=tag:household,option:dns-server," ~ router_local_presence_vpn_gateway_ipv4_address) in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (("dhcp-option=tag:admin,option:dns-server," ~ router_local_presence_vpn_gateway_ipv4_address) in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or (("dhcp-option=tag:ap-uplink,option:dns-server," ~ router_local_presence_vpn_gateway_ipv4_address) in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or (("dhcp-option=tag:household,option:dns-server," ~ router_local_presence_vpn_gateway_ipv4_address) not in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or (("dhcp-option=tag:admin,option:dns-server," ~ router_local_presence_vpn_gateway_ipv4_address) not in verify_router_dnsmasq_conf.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or (("dhcp-option=tag:ap-uplink,option:dns-server," ~ router_local_presence_vpn_gateway_ipv4_address) not in verify_router_dnsmasq_conf.stdout)
+      - "'dhcp-range=set:iot,192.168.150.50,192.168.150.150,24h' in verify_router_dnsmasq_conf.stdout"
+      - "'dhcp-range=set:usr' not in verify_router_dnsmasq_conf.stdout"
+      - "'dhcp-range=set:ops' not in verify_router_dnsmasq_conf.stdout"
+      - '"tailscale-management-input" in verify_router_nft_conf.stdout'
+      - '"internal-dns-udp" in verify_router_nft_conf.stdout'
+      - '"internal-dns-tcp" in verify_router_nft_conf.stdout'
+      - '"internal-dhcp" in verify_router_nft_conf.stdout'
+      - '"/etc/klokast/app-resources/router-forward.nft" in verify_router_nft_conf.stdout'
+      - '"/etc/klokast/app-resources/router-forward.d/*.nft" in verify_router_nft_conf.stdout'
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("household-vpn-gateway-egress" in verify_router_nft_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("admin-vpn-gateway-egress" in verify_router_nft_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or ("ap-uplink-vpn-gateway-egress" in verify_router_nft_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("household-vpn-gateway-dns-udp" in verify_router_nft_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("admin-vpn-gateway-dns-udp" in verify_router_nft_conf.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or ("ap-uplink-vpn-gateway-dns-udp" in verify_router_nft_conf.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or ("household-vpn-gateway-egress" not in verify_router_nft_conf.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or ("admin-vpn-gateway-egress" not in verify_router_nft_conf.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or ("ap-uplink-vpn-gateway-egress" not in verify_router_nft_conf.stdout)
+      - >-
+        (not (router_household_direct_egress_enabled | default(false) | bool))
+        or ("direct-wan-web-egress-tcp" in verify_router_nft_conf.stdout)
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or ("direct-wan-web-egress-tcp" not in verify_router_nft_conf.stdout)
+      - '"lan-wan-web-egress-tcp" not in verify_router_nft_conf.stdout'
+      - '"backend-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
+      - '"dmz-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
+      - '"iot-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
+      - '"usr-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
+      - '"ops-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
+      - '"dom0-iot-bootstrap-ssh" in verify_router_nft_conf.stdout'
+      - '"ops-backend-tailscale-underlay" in verify_router_nft_conf.stdout'
+      - '"managed-vm-tailscale-udp41641-egress" in verify_router_nft_conf.stdout'
+      - >-
+        (router_zone_wan_tcp_egress_exceptions | default([]) | length == 0)
+        or ((router_zone_wan_tcp_egress_exceptions | default([]) | map(attribute='comment') | list | first) in verify_router_nft_conf.stdout)
+      - not (verify_router_nft_conf.stdout is search('iifname \\{[^\\n]+\\} oifname \"' ~ router_wan_interface ~ '\" accept'))
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or not (verify_router_nft_conf.stdout is search('iifname \"' ~ router_lan_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or not (verify_router_nft_conf.stdout is search('iifname \"' ~ router_admin_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or not (verify_router_nft_conf.stdout is search('iifname \"' ~ platform_network_realms['ap-uplink'].router_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
+      - not (verify_router_nft_conf.stdout is search('iifname \"' ~ router_iot_interface ~ '\" oifname \"' ~ router_wan_interface ~ '\" tcp dport'))
+      - not (verify_router_nft_conf.stdout is search('iifname \"' ~ router_usr_interface ~ '\" oifname \"' ~ router_backend_interface ~ '\"'))
+      - "'10.10.10.10' not in verify_router_nft_conf.stdout"
+      - "'dnat to' not in verify_router_nft_conf.stdout"
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("household-vpn-gateway-egress" in verify_router_nft_ruleset.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("admin-vpn-gateway-egress" in verify_router_nft_ruleset.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or ("ap-uplink-vpn-gateway-egress" in verify_router_nft_ruleset.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("household-vpn-gateway-dns-udp" in verify_router_nft_ruleset.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or ("admin-vpn-gateway-dns-udp" in verify_router_nft_ruleset.stdout)
+      - >-
+        (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
+        or (not (router_ap_uplink_enabled | default(false) | bool))
+        or ("ap-uplink-vpn-gateway-dns-udp" in verify_router_nft_ruleset.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or ("household-vpn-gateway-egress" not in verify_router_nft_ruleset.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or ("admin-vpn-gateway-egress" not in verify_router_nft_ruleset.stdout)
+      - >-
+        (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+        or ("ap-uplink-vpn-gateway-egress" not in verify_router_nft_ruleset.stdout)
+      - >-
+        (not (router_household_direct_egress_enabled | default(false) | bool))
+        or ("direct-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout)
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or ("direct-wan-web-egress-tcp" not in verify_router_nft_ruleset.stdout)
+      - '"lan-wan-web-egress-tcp" not in verify_router_nft_ruleset.stdout'
+      - '"backend-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
+      - '"dmz-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
+      - '"iot-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
+      - '"usr-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
+      - '"ops-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
+      - '"dom0-iot-bootstrap-ssh" in verify_router_nft_ruleset.stdout'
+      - '"ops-backend-tailscale-underlay" in verify_router_nft_ruleset.stdout'
+      - '"managed-vm-tailscale-udp41641-egress" in verify_router_nft_ruleset.stdout'
+      - >-
+        (router_zone_wan_tcp_egress_exceptions | default([]) | length == 0)
+        or ((router_zone_wan_tcp_egress_exceptions | default([]) | map(attribute='comment') | list | first) in verify_router_nft_ruleset.stdout)
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or not (verify_router_nft_ruleset.stdout is search('iifname \"' ~ router_lan_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or not (verify_router_nft_ruleset.stdout is search('iifname \"' ~ router_admin_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
+      - >-
+        (router_household_direct_egress_enabled | default(false) | bool)
+        or not (verify_router_nft_ruleset.stdout is search('iifname \"' ~ platform_network_realms['ap-uplink'].router_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
+      - not (verify_router_nft_ruleset.stdout is search('iifname \"' ~ router_usr_interface ~ '\" oifname \"' ~ router_backend_interface ~ '\"'))
+      - "'10.10.10.10' not in verify_router_nft_ruleset.stdout"
+      - "'dnat to' not in verify_router_nft_ruleset.stdout"
+    fail_msg: >-
+      Router verification failed. Review dhcpcd, dnsmasq, nftables, routes,
+      and Tailscale state before moving on to new VM provisioning.
+
+- name: Show verified router state
+  ansible.builtin.debug:
+    msg:
+      - "{{ verify_router_hostname.stdout }}"
+      - "{{ verify_router_dnsmasq_test.stdout | default('') }}"
+      - "{{ verify_router_dnsmasq_test.stderr | default('') }}"
+      - "{{ verify_router_nft_test.stdout_lines }}"
+      - "{{ verify_router_service_status.results | map(attribute='stdout') | list }}"
+      - "{{ verify_router_ip_route.stdout_lines }}"
+      - "{{ verify_router_local_presence_route_table.stdout_lines | default([]) }}"
+      - "{{ verify_router_ip_rule.stdout_lines | default([]) }}"
+      - "{{ verify_router_ip6_route.stdout_lines }}"
+      - "{{ verify_router_dhcpcd_conf.stdout_lines }}"
+      - "{{ verify_router_dnsmasq_conf.stdout_lines }}"
+      - "{{ verify_router_nft_conf.stdout_lines }}"
+      - "{{ verify_router_nft_ruleset.stdout_lines }}"
+      - "{{ verify_router_tailscale_parsed.Self.HostName | default('') }}"
+      - "{{ verify_router_tailscale_parsed.Self.DNSName | default('') }}"

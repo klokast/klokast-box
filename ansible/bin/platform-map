@@ -1,0 +1,1656 @@
+#!/usr/bin/env python3
+"""Read-only Platform discovery and concise state summary."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import getpass
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - deployment server has PyYAML through Ansible.
+    yaml = None
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ANSIBLE_DIR = SCRIPT_DIR.parent
+REPO_DIR = ANSIBLE_DIR.parent
+RUN_DIR = REPO_DIR / ".run" / "platform-map"
+DEFAULT_STATE_FILE = RUN_DIR / "current.json"
+DEFAULT_OVERRIDES_FILE = RUN_DIR / "overrides.yml"
+DEFAULT_BASE_INVENTORY = ANSIBLE_DIR / "inventory" / "hosts.yml"
+PLATFORM_MAP_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "70-platform-map.yml"
+RENDER_NODE_INVENTORY = SCRIPT_DIR / "render-node-inventory"
+PLATFORM_RESOURCES = SCRIPT_DIR / "platform-resources"
+PLATFORM_MAP_EMPTY_TARGET = "all:!all"
+
+ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops")
+RESERVED_BOX_SUFFIXES = (*ROLE_SUFFIXES, "agent", "agt")
+MANAGED_SUFFIXES = ("dom0", "router", "bak", "dmz", "iot")
+OPTIONAL_MANAGED_SUFFIXES = ("usr", "ops")
+AIRUNNER_SUFFIXES = ("ops-airunner", "ops-airunner-candidate")
+PODMAN_SUFFIXES = ("bak", "dmz", "iot", "usr")
+EXPECTED_GUEST_BY_SUFFIX = {
+    "router": "router",
+    "bak": "bak",
+    "dmz": "dmz",
+    "iot": "iot",
+    "usr": "usr",
+}
+OPTIONAL_GUEST_BY_SUFFIX = {
+    "ops": "ops",
+}
+KNOWN_MANAGED_CONTAINER_NAMES = {
+    "bootstrap-live-builder",
+    "nextcloud",
+    "nextcloud-postgres",
+    "nextcloud-redis",
+    "nextcloud-fpm",
+    "nextcloud-web",
+    "nextcloud-cron",
+    "nextcloud-backup",
+    "nextcloud-backup-run",
+    "nextcloud-cloudflared",
+    "immich",
+    "immich-server",
+    "immich-machine-learning",
+    "immich-postgres",
+    "immich-valkey",
+    "immich-backup-run",
+}
+HETZNER_LOCATION_HINTS = {
+    "fsn": ("Falkenstein", "Germany", "DE"),
+    "nbg": ("Nuremberg", "Germany", "DE"),
+    "hel": ("Helsinki", "Finland", "FI"),
+    "ash": ("Ashburn", "United States", "US"),
+    "hil": ("Hillsboro", "United States", "US"),
+    "sin": ("Singapore", "Singapore", "SG"),
+}
+
+
+def die(message: str) -> None:
+    print(f"platform-map: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    os.chmod(path, 0o600)
+
+
+def run_command(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+    check: bool = False,
+    stream: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    if stream:
+        result = subprocess.run(argv, cwd=cwd, env=env, text=True, timeout=timeout)
+    else:
+        result = subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            text=True,
+            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    if check and result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        detail = f": {stderr}" if stderr else ""
+        die(f"command failed ({result.returncode}): {' '.join(argv)}{detail}")
+    return result
+
+
+def valid_box_name(value: str) -> bool:
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+        return False
+    return not any(value == suffix or value.endswith(f"-{suffix}") for suffix in RESERVED_BOX_SUFFIXES)
+
+
+def parse_box_list(values: list[str] | None) -> list[str]:
+    boxes: list[str] = []
+    for raw in values or []:
+        for item in raw.split(","):
+            box = item.strip()
+            if not box:
+                continue
+            if not valid_box_name(box):
+                die(f"invalid box name: {box}")
+            if box not in boxes:
+                boxes.append(box)
+    return boxes
+
+
+def parse_os_release(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+        result[key] = value
+    return result
+
+
+def parse_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    match = re.search(r"-?\d+", str(value).replace(",", ""))
+    if not match:
+        return None
+    return int(match.group(0))
+
+
+def parse_json_text(text: str, default: Any) -> Any:
+    if isinstance(text, (dict, list)):
+        return text
+    if text is None:
+        return default
+    if not isinstance(text, str):
+        text = str(text)
+    stripped = (text or "").strip()
+    if not stripped:
+        return default
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        values = []
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                values.append(json.loads(line))
+            except json.JSONDecodeError:
+                return default
+        return values
+
+
+def parse_xl_info(text: str) -> dict[str, Any]:
+    info: dict[str, Any] = {}
+    for raw_line in text.splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        key = key.strip().replace(" ", "_")
+        value = value.strip()
+        number = parse_int(value)
+        info[key] = number if number is not None and re.fullmatch(r"-?\d+", value) else value
+    return info
+
+
+def parse_xl_list(text: str) -> list[dict[str, Any]]:
+    domains: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.lower().startswith("name "):
+            continue
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        domains.append(
+            {
+                "name": parts[0],
+                "id": parse_int(parts[1]),
+                "memory_mib": parse_int(parts[2]),
+                "vcpus": parse_int(parts[3]),
+                "state": parts[4],
+                "time_s": parts[5],
+            }
+        )
+    return domains
+
+
+def parse_free_bytes(text: str) -> dict[str, dict[str, int]]:
+    rows: dict[str, dict[str, int]] = {}
+    headers: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("total"):
+            headers = line.lower().split()
+            continue
+        if ":" not in line or not headers:
+            continue
+        name, rest = line.split(":", 1)
+        numbers = [parse_int(value) or 0 for value in rest.split()]
+        rows[name.lower()] = {header: numbers[index] for index, header in enumerate(headers[: len(numbers)])}
+    return rows
+
+
+def parse_df(text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return rows
+    header = lines[0]
+    gnu_order = "Mounted on" in header and "Type" in header and header.index("Mounted on") < header.index("Type")
+    for raw_line in lines[1:]:
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split()
+        if len(parts) < 7:
+            continue
+        if gnu_order:
+            source, target, fstype, size, used, avail, percent = parts[:7]
+        else:
+            source, fstype, size, used, avail, percent = parts[:6]
+            target = parts[6]
+        rows.append(
+            {
+                "source": source,
+                "target": target,
+                "fstype": fstype,
+                "size_bytes": parse_int(size),
+                "used_bytes": parse_int(used),
+                "avail_bytes": parse_int(avail),
+                "used_percent": percent,
+            }
+        )
+    return rows
+
+
+def parse_hetzner_metadata(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower().replace("_", "-")
+        value = value.strip().strip('"')
+        if key == "ipv4" and not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value):
+            continue
+        if key in {"instance-id", "hostname", "region", "availability-zone", "ipv4"} and value:
+            result[key] = value
+    return result
+
+
+def collect_provider_metadata(warnings: list[str]) -> dict[str, Any]:
+    provider: dict[str, Any] = {
+        "provider": "",
+        "region": "",
+        "availability_zone": "",
+        "location": {},
+        "confidence": "none",
+    }
+    dmi = {
+        "sys_vendor": read_text(Path("/sys/class/dmi/id/sys_vendor")).strip(),
+        "product_name": read_text(Path("/sys/class/dmi/id/product_name")).strip(),
+    }
+    if any(dmi.values()):
+        provider["dmi"] = dmi
+
+    request = urllib.request.Request("http://169.254.169.254/hetzner/v1/metadata")
+    try:
+        with urllib.request.urlopen(request, timeout=0.8) as response:
+            body = response.read(65536).decode("utf-8", errors="replace")
+        metadata = parse_hetzner_metadata(body)
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        if "Hetzner" in dmi.get("sys_vendor", ""):
+            warnings.append(f"Hetzner DMI detected but metadata endpoint was not readable: {exc}")
+        return provider
+
+    availability_zone = metadata.get("availability-zone", "")
+    location_label = ""
+    city = ""
+    country = ""
+    country_code = ""
+    match = re.match(r"([a-z]+)([0-9]+)", availability_zone)
+    if match:
+        prefix = match.group(1)
+        location_label = f"{prefix}{match.group(2)}"
+        city, country, country_code = HETZNER_LOCATION_HINTS.get(prefix, ("", "", ""))
+
+    provider.update(
+        {
+            "provider": "hetzner",
+            "instance_id": metadata.get("instance-id", ""),
+            "metadata_hostname": metadata.get("hostname", ""),
+            "region": metadata.get("region", ""),
+            "availability_zone": availability_zone,
+            "public_ipv4": metadata.get("ipv4", ""),
+            "location": {
+                "label": location_label,
+                "city": city,
+                "country": country,
+                "country_code": country_code,
+            },
+            "confidence": "provider_metadata",
+        }
+    )
+    return provider
+
+
+def collect_local_facts(tailnet: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    os_release = parse_os_release(read_text(Path("/etc/os-release")))
+    tailscale_self = tailnet.get("self") or {}
+    return {
+        "hostname": socket.gethostname(),
+        "user": getpass.getuser(),
+        "uid": os.getuid(),
+        "os": {
+            "id": os_release.get("ID", ""),
+            "name": os_release.get("PRETTY_NAME", ""),
+            "version_id": os_release.get("VERSION_ID", ""),
+        },
+        "tailscale": tailscale_self,
+        "provider": collect_provider_metadata(warnings),
+    }
+
+
+def names_for_raw_peer(peer: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("HostName", "DNSName", "Name"):
+        value = peer.get(key)
+        if not value:
+            continue
+        normalized = str(value).rstrip(".").lower()
+        names.add(normalized)
+        names.add(normalized.split(".", 1)[0])
+    return names
+
+
+def normalize_peer(peer: dict[str, Any], *, is_self: bool = False) -> dict[str, Any]:
+    names = names_for_raw_peer(peer)
+    dns_name = str(peer.get("DNSName") or "").rstrip(".")
+    dns_short = dns_name.split(".", 1)[0].lower() if dns_name else ""
+    host_name = str(peer.get("HostName") or "").lower()
+    preferred_name = dns_short or host_name or sorted(names)[0] if names else ""
+    tags = sorted(str(tag) for tag in (peer.get("Tags") or []))
+    return {
+        "name": preferred_name,
+        "hostname": host_name,
+        "dns_name": dns_name,
+        "names": sorted(names),
+        "online": bool(peer.get("Online")),
+        "tags": tags,
+        "tailscale_ips": [str(value) for value in (peer.get("TailscaleIPs") or [])],
+        "relay": peer.get("Relay") or "",
+        "last_seen": peer.get("LastSeen") or "",
+        "is_self": is_self,
+    }
+
+
+def collect_tailscale(warnings: list[str]) -> dict[str, Any]:
+    if not shutil_which("tailscale"):
+        warnings.append("tailscale command is not available on the deployment server")
+        return {"available": False, "self": {}, "peers": [], "magicdns_suffix": ""}
+    result = run_command(["tailscale", "status", "--json"], cwd=REPO_DIR)
+    if result.returncode != 0:
+        warnings.append(f"tailscale status --json failed: {(result.stderr or '').strip()}")
+        return {"available": False, "self": {}, "peers": [], "magicdns_suffix": ""}
+    try:
+        raw = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        warnings.append(f"tailscale status --json returned invalid JSON: {exc}")
+        return {"available": False, "self": {}, "peers": [], "magicdns_suffix": ""}
+
+    peers = []
+    if raw.get("Self"):
+        peers.append(normalize_peer(raw["Self"], is_self=True))
+    peers.extend(normalize_peer(peer) for peer in (raw.get("Peer") or {}).values())
+    peers.sort(key=lambda item: item.get("name") or "")
+
+    self_peer = normalize_peer(raw.get("Self") or {}, is_self=True) if raw.get("Self") else {}
+    dns_name = self_peer.get("dns_name", "")
+    suffix = dns_name.split(".", 1)[1] if "." in dns_name else ""
+    return {
+        "available": True,
+        "magicdns_suffix": suffix,
+        "self": self_peer,
+        "peer_count": len(peers),
+        "online_count": sum(1 for peer in peers if peer.get("online")),
+        "peers": peers,
+    }
+
+
+def shutil_which(command: str) -> str | None:
+    for path in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(path) / command
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def peer_index(tailnet: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for peer in tailnet.get("peers") or []:
+        for name in peer.get("names") or []:
+            index[str(name).lower()] = peer
+    return index
+
+
+def peer_for_hostname(index: dict[str, dict[str, Any]], hostname: str) -> dict[str, Any] | None:
+    key = hostname.rstrip(".").lower()
+    return index.get(key) or index.get(key.split(".", 1)[0])
+
+
+def discover_boxes_from_tailnet(tailnet: dict[str, Any]) -> list[str]:
+    boxes: set[str] = set()
+    pattern = re.compile(r"^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)-(bootstrap|dom0|router|bak|dmz|iot|usr|ops)$")
+    for peer in tailnet.get("peers") or []:
+        for name in peer.get("names") or []:
+            short = str(name).split(".", 1)[0].lower()
+            match = pattern.match(short)
+            if match and valid_box_name(match.group(1)):
+                boxes.add(match.group(1))
+    return sorted(boxes)
+
+
+def load_overrides(path: Path, warnings: list[str]) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    if yaml is None:
+        warnings.append(f"override file exists but PyYAML is not available: {path}")
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001 - report invalid local operator input.
+        warnings.append(f"could not read overrides from {path}: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        warnings.append(f"override file must contain a mapping: {path}")
+        return {}
+    return data
+
+
+def render_inventory(box: str, destination: Path, magicdns_suffix: str) -> None:
+    destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    run_command(
+        [
+            str(RENDER_NODE_INVENTORY),
+            "--node",
+            box,
+            "--output",
+            str(destination),
+            "--magicdns-suffix",
+            magicdns_suffix,
+        ],
+        cwd=REPO_DIR,
+        check=True,
+    )
+
+
+def ansible_ssh_control_path_dir() -> Path:
+    root = Path(os.environ.get("KLOKAST_ANSIBLE_CONTROL_PATH_DIR", "/tmp"))
+    return root / f"klokast-platform-map-ssh-{os.getuid()}"
+
+
+def run_ansible_collection(
+    boxes: list[str],
+    *,
+    base_inventory: Path,
+    magicdns_suffix: str,
+    artifact_dir: Path,
+    remote_scope: str,
+    verbose: bool,
+    warnings: list[str],
+) -> None:
+    if not boxes:
+        warnings.append("no boxes selected; skipping Ansible remote collection")
+        return
+    if not shutil_which("ansible-playbook"):
+        warnings.append("ansible-playbook is not available; skipping remote collection")
+        return
+
+    inventory_dir = artifact_dir / "inventory"
+    host_artifact_dir = artifact_dir / "hosts"
+    control_path_dir = ansible_ssh_control_path_dir()
+    known_hosts = artifact_dir / "known_hosts"
+    host_artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    control_path_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+
+    inventory_args: list[str] = ["-i", str(base_inventory)]
+    for box in boxes:
+        generated = inventory_dir / f"{box}.yml"
+        render_inventory(box, generated, magicdns_suffix)
+        inventory_args.extend(["-i", str(generated)])
+
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(ANSIBLE_DIR / "ansible.cfg")
+    env["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(control_path_dir)
+    env["ANSIBLE_SSH_COMMON_ARGS"] = (
+        "-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile={known_hosts} "
+        "-o BatchMode=yes"
+    )
+
+    extra_vars: dict[str, str] = {"platform_map_artifact_dir": str(artifact_dir)}
+    if remote_scope == "dom0":
+        extra_vars["platform_map_podman_targets"] = PLATFORM_MAP_EMPTY_TARGET
+    elif remote_scope == "podman":
+        extra_vars["platform_map_dom0_targets"] = PLATFORM_MAP_EMPTY_TARGET
+
+    command = [
+        "ansible-playbook",
+        *(["-vv"] if verbose else []),
+        *inventory_args,
+        str(PLATFORM_MAP_PLAYBOOK),
+        "--limit",
+        ",".join(boxes),
+        "-e",
+        json.dumps(extra_vars, separators=(",", ":")),
+    ]
+    result = run_command(command, cwd=ANSIBLE_DIR, env=env, stream=True)
+    if result.returncode != 0:
+        warnings.append(f"Ansible remote collection failed with rc={result.returncode}")
+
+
+def load_remote_facts(artifact_dir: Path, warnings: list[str]) -> dict[str, dict[str, Any]]:
+    facts: dict[str, dict[str, Any]] = {}
+    for path in sorted((artifact_dir / "hosts").glob("*.json")):
+        try:
+            fact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(f"could not parse remote fact artifact {path}: {exc}")
+            continue
+        hostname = str(fact.get("inventory_hostname") or path.stem)
+        facts[hostname] = fact
+    return facts
+
+
+def managed_labels(labels: dict[str, Any]) -> dict[str, str]:
+    return {str(key): str(value) for key, value in labels.items() if str(key).startswith("io.klokast.")}
+
+
+def container_name(container: dict[str, Any]) -> str:
+    for key in ("Names", "names"):
+        value = container.get(key)
+        if isinstance(value, list) and value:
+            return str(value[0])
+        if isinstance(value, str) and value:
+            return value.split(",", 1)[0]
+    for key in ("Name", "name"):
+        value = container.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def pod_name(pod: dict[str, Any]) -> str:
+    for key in ("Name", "name"):
+        value = pod.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def pod_identifiers(pod: dict[str, Any]) -> set[str]:
+    values = set()
+    for key in ("Id", "ID", "id"):
+        value = pod.get(key)
+        if value:
+            values.add(str(value))
+    name = pod_name(pod)
+    if name:
+        values.add(name)
+    return values
+
+
+def name_matches_managed_app(name: str, app_names: set[str]) -> bool:
+    if not name:
+        return False
+    for app_name in app_names:
+        if name == app_name or name.startswith(f"{app_name}-"):
+            return True
+        prefixed = f"klokast-{app_name}"
+        if name == prefixed or name.startswith(f"{prefixed}-"):
+            return True
+    return False
+
+
+def managed_app_names_from_fact(fact: dict[str, Any]) -> set[str]:
+    desired = desired_platform_resources_from_fact(fact)
+    apps = desired.get("apps") if isinstance(desired.get("apps"), dict) else {}
+    names = set()
+    for app_name, app in apps.items():
+        if isinstance(app, dict) and app.get("enabled"):
+            names.add(str(app_name))
+    return names
+
+
+def managed_pod_identifiers(pods: list[Any], app_names: set[str]) -> set[str]:
+    managed = set()
+    for pod in pods:
+        if not isinstance(pod, dict):
+            continue
+        if name_matches_managed_app(pod_name(pod), app_names):
+            managed.update(pod_identifiers(pod))
+    return managed
+
+
+def summarize_container(
+    container: dict[str, Any],
+    *,
+    managed_app_names: set[str] | None = None,
+    managed_pods: set[str] | None = None,
+) -> dict[str, Any]:
+    labels = container.get("Labels") or container.get("labels") or {}
+    if not isinstance(labels, dict):
+        labels = {}
+    name = container_name(container)
+    app_names = managed_app_names or set()
+    pod_ref = str(container.get("Pod") or container.get("PodName") or "")
+    managed = (
+        bool(managed_labels(labels))
+        or name in KNOWN_MANAGED_CONTAINER_NAMES
+        or name_matches_managed_app(name, app_names)
+        or (bool(pod_ref) and pod_ref in (managed_pods or set()))
+    )
+    return {
+        "name": name,
+        "image": container.get("Image") or container.get("ImageName") or "",
+        "state": container.get("State") or container.get("Status") or "",
+        "pod": pod_ref,
+        "ports": container.get("Ports") or [],
+        "managed": managed,
+        "managed_labels": managed_labels(labels),
+    }
+
+
+def summarize_podman_fact(fact: dict[str, Any]) -> dict[str, Any]:
+    podman = fact.get("podman") or {}
+    info = parse_json_text(podman.get("info_stdout", ""), {})
+    containers_raw = parse_json_text(podman.get("ps_stdout", ""), [])
+    pods = parse_json_text(podman.get("pods_stdout", ""), [])
+    volumes = parse_json_text(podman.get("volumes_stdout", ""), [])
+    if isinstance(containers_raw, dict):
+        containers_raw = [containers_raw]
+    pods_list = pods if isinstance(pods, list) else []
+    managed_app_names = managed_app_names_from_fact(fact)
+    managed_pods = managed_pod_identifiers(pods_list, managed_app_names)
+    containers = [
+        summarize_container(item, managed_app_names=managed_app_names, managed_pods=managed_pods)
+        for item in containers_raw
+        if isinstance(item, dict)
+    ]
+    return {
+        "host": fact.get("inventory_hostname", ""),
+        "reachable": True,
+        "runner_user": podman.get("runner_user", "neo"),
+        "os": parse_os_release(fact.get("os_release_stdout", "")),
+        "memory": parse_free_bytes((fact.get("memory") or {}).get("free_stdout", "")),
+        "filesystems": parse_df((fact.get("filesystems") or {}).get("df_stdout", "")),
+        "runtime": {
+            "available": podman.get("info_rc") == "0" or podman.get("info_rc") == 0,
+            "rootless": bool((((info.get("host") or {}).get("security") or {}).get("rootless"))),
+            "cgroup_version": (info.get("host") or {}).get("cgroupVersion", ""),
+            "network_backend": (info.get("host") or {}).get("networkBackend", ""),
+        },
+        "containers": containers,
+        "pods": pods_list,
+        "volumes": volumes if isinstance(volumes, list) else [],
+    }
+
+
+def expected_guests_from_fact(fact: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    expected: dict[str, dict[str, Any]] = {}
+    specs = ((fact.get("xen") or {}).get("expected_guests") or {})
+    if not isinstance(specs, dict):
+        return expected
+    for role, spec in specs.items():
+        if not isinstance(spec, dict):
+            continue
+        guest_name = str(spec.get("guest_name") or "")
+        if not guest_name:
+            continue
+        expected[guest_name] = {
+            "role": role,
+            "guest_name": guest_name,
+            "memory_mb": parse_int(spec.get("memory_mb")) or 0,
+            "vcpus": parse_int(spec.get("vcpus")) or 0,
+            "autostart": bool(spec.get("autostart")),
+        }
+    return expected
+
+
+def platform_map_app_vms_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(plan, dict):
+        return []
+
+    app_vms = ((plan.get("platform_map") or {}).get("app_vms") or [])
+    if isinstance(app_vms, list) and app_vms:
+        normalized = []
+        for item in app_vms:
+            if not isinstance(item, dict):
+                continue
+            node = str(item.get("node") or "")
+            hostname = str(item.get("hostname") or item.get("tailnet_hostname") or "")
+            guest_name = str(item.get("guest_name") or "")
+            if not node or not hostname or not guest_name:
+                continue
+            normalized.append(
+                {
+                    "node": node,
+                    "app": str(item.get("app") or ""),
+                    "resource": str(item.get("resource") or ""),
+                    "hostname": hostname,
+                    "tailnet_hostname": str(item.get("tailnet_hostname") or hostname),
+                    "inventory_hostname": str(item.get("inventory_hostname") or hostname),
+                    "guest_name": guest_name,
+                    "user_slug": str(item.get("user_slug") or ""),
+                    "tailscale_login": str(item.get("tailscale_login") or ""),
+                    "site_role": str(item.get("site_role") or ""),
+                    "zone": str(item.get("zone") or ""),
+                    "vm_ipv4_address": str(item.get("vm_ipv4_address") or ""),
+                    "expected_tags": sorted(str(tag) for tag in (item.get("expected_tags") or [])),
+                    "tailnet_tag": str(item.get("tailnet_tag") or ""),
+                    "runtime_state": str(item.get("runtime_state") or "running"),
+                    "memory_mb": parse_int(item.get("memory_mb")) or 0,
+                    "vcpus": parse_int(item.get("vcpus")) or 0,
+                    "autostart": bool(item.get("autostart")),
+                }
+            )
+        return normalized
+
+    normalized = []
+    for spec in plan.get("app_vm_specs") or []:
+        if not isinstance(spec, dict):
+            continue
+        guest_spec = spec.get("guest_spec") or {}
+        node = str(spec.get("node") or "")
+        hostname = str(spec.get("node_hostname") or spec.get("tailnet_hostname") or "")
+        guest_name = str(guest_spec.get("guest_name") or "")
+        if not node or not hostname or not guest_name:
+            continue
+        normalized.append(
+            {
+                "node": node,
+                "app": str(spec.get("app") or ""),
+                "resource": str(spec.get("resource") or ""),
+                "hostname": hostname,
+                "tailnet_hostname": str(spec.get("tailnet_hostname") or hostname),
+                "inventory_hostname": str(spec.get("inventory_hostname") or hostname),
+                "guest_name": guest_name,
+                "user_slug": str(spec.get("user_slug") or ""),
+                "tailscale_login": str(spec.get("tailscale_login") or ""),
+                "site_role": str(spec.get("site_role") or ""),
+                "zone": str(spec.get("zone") or ""),
+                "vm_ipv4_address": str(spec.get("vm_ipv4_address") or ""),
+                "expected_tags": sorted(str(tag) for tag in (spec.get("advertised_tags") or [])),
+                "tailnet_tag": str(spec.get("tailnet_tag") or ""),
+                "runtime_state": str(spec.get("runtime_state") or "running"),
+                "memory_mb": parse_int(guest_spec.get("memory_mb")) or 0,
+                "vcpus": parse_int(guest_spec.get("vcpus")) or 0,
+                "autostart": bool(guest_spec.get("autostart")),
+            }
+        )
+    return normalized
+
+
+def desired_platform_resources_from_fact(fact: dict[str, Any]) -> dict[str, Any]:
+    platform_resources = fact.get("platform_resources") or {}
+    desired = parse_json_text(platform_resources.get("desired_json_stdout", ""), {})
+    return desired if isinstance(desired, dict) else {}
+
+
+def compile_platform_resources_registry(registry: Path, warnings: list[str]) -> dict[str, Any]:
+    if not registry:
+        return {}
+    result = run_command(
+        [str(PLATFORM_RESOURCES), "--registry", str(registry), "show"],
+        cwd=REPO_DIR,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        warnings.append(
+            "platform-resources registry compile failed: "
+            f"{(result.stderr or result.stdout or '').strip()[:240]}"
+        )
+        return {}
+    compiled = parse_json_text(result.stdout, {})
+    if not isinstance(compiled, dict):
+        warnings.append(f"platform-resources registry did not compile to JSON: {registry}")
+        return {}
+    return compiled
+
+
+def expected_app_vms_by_box_from_plans(plans: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    by_box: dict[str, dict[str, dict[str, Any]]] = {}
+    for plan in plans:
+        for app_vm in platform_map_app_vms_from_plan(plan):
+            box = app_vm["node"]
+            hostname = app_vm["hostname"]
+            by_box.setdefault(box, {})[hostname] = app_vm
+    return by_box
+
+
+def expected_tailnet_hostnames_by_box_from_plans(plans: list[dict[str, Any]]) -> dict[str, set[str]]:
+    by_box: dict[str, set[str]] = {}
+    for plan in plans:
+        platform_map = plan.get("platform_map") if isinstance(plan.get("platform_map"), dict) else {}
+        managed_devices = platform_map.get("managed_iot_devices") or plan.get("managed_iot_devices") or []
+        for device in managed_devices:
+            if not isinstance(device, dict):
+                continue
+            box = str(device.get("node") or "")
+            hostname = str(device.get("hostname") or "")
+            if box and hostname:
+                by_box.setdefault(box, set()).add(hostname)
+        for resource in plan.get("tailnet_resources") or []:
+            if not isinstance(resource, dict):
+                continue
+            box = str(resource.get("node") or "")
+            hostname = str(resource.get("hostname") or "")
+            if box and hostname and "{" not in hostname and "}" not in hostname:
+                by_box.setdefault(box, set()).add(hostname)
+    return by_box
+
+
+def summarize_storage(storage: dict[str, Any], findings: list[dict[str, Any]], scope: str) -> dict[str, Any]:
+    managed_layout = storage.get("managed_layout") or {}
+    vg_size = parse_int(managed_layout.get("volume_group_size_bytes"))
+    vg_free = parse_int(managed_layout.get("volume_group_free_bytes"))
+    if vg_size and vg_free is not None:
+        free_ratio = vg_free / vg_size
+        if free_ratio < 0.05:
+            findings.append(finding("critical", "low_vg_free_space", scope, "managed volume group free space is below 5%"))
+        elif free_ratio < 0.10:
+            findings.append(finding("warning", "low_vg_free_space", scope, "managed volume group free space is below 10%"))
+    return {
+        "managed_layout": managed_layout,
+        "disks": storage.get("disks") or [],
+        "partitions": storage.get("partitions") or [],
+        "volume_groups": storage.get("volume_groups") or [],
+        "logical_volumes": storage.get("logical_volumes") or [],
+    }
+
+
+def finding(severity: str, code: str, scope: str, message: str, **details: Any) -> dict[str, Any]:
+    item = {"severity": severity, "code": code, "scope": scope, "message": message}
+    item.update(details)
+    return item
+
+
+def summarize_memory(
+    *,
+    xl_info: dict[str, Any],
+    domains: list[dict[str, Any]],
+    expected_guests: dict[str, dict[str, Any]],
+    findings: list[dict[str, Any]],
+    scope: str,
+) -> dict[str, Any]:
+    total_mib = parse_int(xl_info.get("total_memory"))
+    free_mib = parse_int(xl_info.get("free_memory"))
+    live_domain_memory_mib = sum(domain.get("memory_mib") or 0 for domain in domains)
+    live_guest_memory_mib = sum(
+        domain.get("memory_mib") or 0 for domain in domains if domain.get("name") != "Domain-0"
+    )
+    dom0_memory_mib = next((domain.get("memory_mib") or 0 for domain in domains if domain.get("name") == "Domain-0"), 0)
+    expected_guest_memory_mib = sum(spec.get("memory_mb") or 0 for spec in expected_guests.values())
+    pressure = "unknown"
+    if total_mib:
+        pressure = "ok"
+        if free_mib is not None:
+            free_ratio = free_mib / total_mib
+            if free_mib < 256 or free_ratio < 0.03:
+                pressure = "critical"
+                findings.append(finding("critical", "xen_memory_pressure", scope, "Xen free memory is critically low"))
+            elif free_mib < 1024 or free_ratio < 0.08:
+                pressure = "warning"
+                findings.append(finding("warning", "xen_memory_pressure", scope, "Xen free memory is low"))
+        if expected_guest_memory_mib + dom0_memory_mib > total_mib:
+            pressure = "critical"
+            findings.append(
+                finding(
+                    "critical",
+                    "xen_expected_memory_overcommit",
+                    scope,
+                    "expected VM memory plus dom0 memory exceeds host memory",
+                )
+            )
+    return {
+        "host_total_mib": total_mib,
+        "xen_free_mib": free_mib,
+        "dom0_live_memory_mib": dom0_memory_mib,
+        "live_domain_memory_mib": live_domain_memory_mib,
+        "live_guest_memory_mib": live_guest_memory_mib,
+        "expected_guest_memory_mib": expected_guest_memory_mib,
+        "pressure": pressure,
+    }
+
+
+def preferred_oob_key(peer: dict[str, Any]) -> str:
+    names = set(peer.get("names") or [])
+    if "oob" in names:
+        return "oob"
+    return str(peer.get("name") or peer.get("hostname") or "oob")
+
+
+def override_for_oob(overrides: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+    names = [preferred_oob_key(peer), *(peer.get("names") or [])]
+    oob_devices = overrides.get("oob_devices") if isinstance(overrides.get("oob_devices"), dict) else {}
+    for name in names:
+        value = oob_devices.get(name)
+        if isinstance(value, dict):
+            return value
+    for key in ("oob", "nano_kvm", "nanokvm"):
+        value = overrides.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def run_oob_ssh_probe(peer: dict[str, Any], artifact_dir: Path, warnings: list[str]) -> dict[str, Any]:
+    host = peer.get("dns_name") or peer.get("name")
+    if not host:
+        return {"attempted": False, "reachable": False}
+    known_hosts = artifact_dir / "oob_known_hosts"
+    probe = (
+        "printf 'hostname='; hostname 2>/dev/null || true; "
+        "if pgrep -f NanoKVM-Server >/dev/null 2>&1; then echo service=running; else echo service=unknown; fi; "
+        "for f in /kvmapp/kvm/state /kvmapp/kvm/width /kvmapp/kvm/height /kvmapp/kvm/res /kvmapp/kvm/fps /kvmapp/kvm/now_fps /kvmapp/kvm/type; do "
+        "[ -r \"$f\" ] && printf '%s=%s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\" 2>/dev/null | head -n 1)\"; "
+        "done"
+    )
+    result = run_command(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=4",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"UserKnownHostsFile={known_hosts}",
+            f"root@{host}",
+            "sh",
+            "-lc",
+            probe,
+        ],
+        cwd=REPO_DIR,
+        timeout=8,
+    )
+    if result.returncode != 0:
+        return {
+            "attempted": True,
+            "reachable": False,
+            "error": (result.stderr or "").strip()[:240],
+        }
+    data: dict[str, str] = {}
+    for raw_line in result.stdout.splitlines():
+        if "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        data[key.strip()] = value.strip()
+    return {"attempted": True, "reachable": True, "facts": data}
+
+
+def summarize_oob_devices(
+    tailnet: dict[str, Any],
+    overrides: dict[str, Any],
+    artifact_dir: Path,
+    probe_ssh: bool,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    devices = []
+    for peer in tailnet.get("peers") or []:
+        names = set(peer.get("names") or [])
+        tags = set(peer.get("tags") or [])
+        if "tag:oob" not in tags and "oob" not in names and not str(peer.get("hostname", "")).startswith("kvm-"):
+            continue
+        override = override_for_oob(overrides, peer)
+        connected_box = str(override.get("connected_box") or "")
+        connection_confidence = "manual_override" if connected_box else "unknown"
+        device = {
+            "name": preferred_oob_key(peer),
+            "hostname": peer.get("hostname", ""),
+            "dns_name": peer.get("dns_name", ""),
+            "online": bool(peer.get("online")),
+            "tags": peer.get("tags", []),
+            "connected_box": connected_box,
+            "connection_confidence": connection_confidence,
+            "connection_source": "overrides" if connected_box else "",
+            "ssh_probe": {"attempted": False, "reachable": False},
+        }
+        if probe_ssh and peer.get("online"):
+            device["ssh_probe"] = run_oob_ssh_probe(peer, artifact_dir, warnings)
+        devices.append(device)
+    return devices
+
+
+def box_override(overrides: dict[str, Any], box: str) -> dict[str, Any]:
+    boxes = overrides.get("boxes") if isinstance(overrides.get("boxes"), dict) else {}
+    value = boxes.get(box)
+    return value if isinstance(value, dict) else {}
+
+
+def summarize_box(
+    box: str,
+    *,
+    tailnet_index: dict[str, dict[str, Any]],
+    remote_facts: dict[str, dict[str, Any]],
+    overrides: dict[str, Any],
+    expected_app_vms: dict[str, dict[str, Any]] | None = None,
+    expected_tailnet_hostnames: set[str] | None = None,
+) -> dict[str, Any]:
+    findings: list[dict[str, Any]] = []
+    expected_app_vms = expected_app_vms or {}
+    expected_app_hostnames = set(expected_app_vms)
+    expected_tailnet_hostnames = expected_tailnet_hostnames or set()
+    dom0_fact = remote_facts.get(f"{box}-dom0") or {}
+    expected_guests = expected_guests_from_fact(dom0_fact)
+    if not expected_guests:
+        expected_guests = {
+            guest: {"role": suffix, "guest_name": guest, "memory_mb": 0, "vcpus": 0, "autostart": True}
+            for suffix, guest in EXPECTED_GUEST_BY_SUFFIX.items()
+        }
+    xen_info = parse_xl_info(((dom0_fact.get("xen") or {}).get("xl_info_stdout") or ""))
+    xen_domains = parse_xl_list(((dom0_fact.get("xen") or {}).get("xl_list_stdout") or ""))
+    live_guest_names = {domain["name"] for domain in xen_domains if domain.get("name") != "Domain-0"}
+
+    override = box_override(overrides, box)
+    optional_suffixes: list[str] = []
+    for suffix in OPTIONAL_MANAGED_SUFFIXES:
+        hostname = f"{box}-{suffix}"
+        guest_name = OPTIONAL_GUEST_BY_SUFFIX.get(suffix, suffix)
+        if (
+            peer_for_hostname(tailnet_index, hostname) is not None
+            or guest_name in live_guest_names
+            or bool(override.get(f"expect_{suffix}"))
+        ):
+            optional_suffixes.append(suffix)
+        else:
+            expected_guests.pop(guest_name, None)
+
+    for suffix in optional_suffixes:
+        guest_name = OPTIONAL_GUEST_BY_SUFFIX.get(suffix, suffix)
+        expected_guests.setdefault(
+            guest_name,
+            {"role": suffix, "guest_name": guest_name, "memory_mb": 0, "vcpus": 0, "autostart": True},
+        )
+
+    machine_suffixes = [*MANAGED_SUFFIXES, *optional_suffixes]
+    expected_hosts = [f"{box}-{suffix}" for suffix in machine_suffixes]
+    expected_hosts.extend(sorted(expected_app_hostnames))
+    expected_hosts.extend(sorted(expected_tailnet_hostnames - expected_app_hostnames))
+    machines: dict[str, Any] = {}
+    for suffix in machine_suffixes:
+        hostname = f"{box}-{suffix}"
+        peer = peer_for_hostname(tailnet_index, hostname)
+        machines[suffix] = {
+            "hostname": hostname,
+            "tailscale": {
+                "present": peer is not None,
+                "online": bool(peer.get("online")) if peer else False,
+                "dns_name": peer.get("dns_name", "") if peer else "",
+                "tags": peer.get("tags", []) if peer else [],
+            },
+        }
+        if peer is None:
+            findings.append(finding("warning", "missing_tailscale_machine", hostname, "expected machine is absent from Tailscale"))
+        elif not peer.get("online"):
+            findings.append(finding("warning", "offline_tailscale_machine", hostname, "expected machine is offline in Tailscale"))
+
+    seen_peers: set[str] = set()
+    for peer_name, peer in sorted(tailnet_index.items()):
+        identity = peer.get("dns_name") or peer.get("name") or peer_name
+        if identity in seen_peers:
+            continue
+        seen_peers.add(identity)
+        if not peer_name.startswith(f"{box}-"):
+            continue
+        short = peer_name.split(".", 1)[0]
+        suffix = short.removeprefix(f"{box}-")
+        if suffix == "bootstrap" and peer.get("online"):
+            findings.append(finding("warning", "bootstrap_identity_online", short, "bootstrap Tailscale identity is still online"))
+        elif short in expected_app_hostnames:
+            continue
+        elif short in expected_tailnet_hostnames:
+            continue
+        elif suffix in AIRUNNER_SUFFIXES and peer.get("tags") == ["tag:airunner"]:
+            continue
+        elif suffix not in ROLE_SUFFIXES:
+            findings.append(finding("warning", "unexpected_tailscale_machine", short, "Tailscale machine uses the box prefix but is not an expected role"))
+
+    for app_vm in expected_app_vms.values():
+        expected_guests[app_vm["guest_name"]] = {
+            "role": "app_vm",
+            "app": app_vm.get("app", ""),
+            "user_slug": app_vm.get("user_slug", ""),
+            "hostname": app_vm["hostname"],
+            "guest_name": app_vm["guest_name"],
+            "memory_mb": (parse_int(app_vm.get("memory_mb")) or 0) if app_vm.get("runtime_state", "running") == "running" else 0,
+            "vcpus": parse_int(app_vm.get("vcpus")) or 0,
+            "autostart": bool(app_vm.get("autostart")),
+            "runtime_state": app_vm.get("runtime_state", "running"),
+        }
+    expected_guest_names = set(expected_guests)
+    domain_by_name = {domain["name"]: domain for domain in xen_domains if domain.get("name")}
+
+    app_vms: dict[str, Any] = {}
+    for hostname, app_vm in sorted(expected_app_vms.items()):
+        peer = peer_for_hostname(tailnet_index, app_vm.get("tailnet_hostname") or hostname)
+        expected_tags = sorted(str(tag) for tag in (app_vm.get("expected_tags") or []))
+        actual_tags = sorted(peer.get("tags", []) if peer else [])
+        missing_tags = sorted(set(expected_tags) - set(actual_tags))
+        guest_name = app_vm["guest_name"]
+        live_domain = domain_by_name.get(guest_name)
+        app_vms[hostname] = {
+            "hostname": hostname,
+            "app": app_vm.get("app", ""),
+            "resource": app_vm.get("resource", ""),
+            "user_slug": app_vm.get("user_slug", ""),
+            "tailscale_login": app_vm.get("tailscale_login", ""),
+            "site_role": app_vm.get("site_role", ""),
+            "runtime_state": app_vm.get("runtime_state", "running"),
+            "zone": app_vm.get("zone", ""),
+            "vm_ipv4_address": app_vm.get("vm_ipv4_address", ""),
+            "guest_name": guest_name,
+            "expected_tags": expected_tags,
+            "tailscale": {
+                "present": peer is not None,
+                "online": bool(peer.get("online")) if peer else False,
+                "dns_name": peer.get("dns_name", "") if peer else "",
+                "tags": actual_tags,
+                "missing_tags": missing_tags,
+                "tags_ok": not missing_tags,
+            },
+            "xen": {
+                "running": live_domain is not None,
+                "memory_mib": live_domain.get("memory_mib") if live_domain else None,
+                "vcpus": live_domain.get("vcpus") if live_domain else None,
+                "state": live_domain.get("state") if live_domain else "",
+            },
+        }
+        runtime_state = app_vm.get("runtime_state", "running")
+        if runtime_state == "stopped" and live_domain is not None:
+            findings.append(finding("warning", "app_vm_running_while_stopped", hostname, "app VM is running but desired runtime_state is stopped"))
+        if runtime_state == "running" and peer is None:
+            findings.append(finding("warning", "missing_tailscale_machine", hostname, "expected app VM machine is absent from Tailscale"))
+        elif runtime_state == "running" and not peer.get("online"):
+            findings.append(finding("warning", "offline_tailscale_machine", hostname, "expected app VM machine is offline in Tailscale"))
+        if runtime_state == "running" and missing_tags:
+            findings.append(
+                finding(
+                    "critical",
+                    "app_vm_tailnet_tags_mismatch",
+                    hostname,
+                    "app VM Tailscale tags do not match compiled expectations",
+                    expected_tags=expected_tags,
+                    actual_tags=actual_tags,
+                    missing_tags=missing_tags,
+                )
+            )
+
+    if dom0_fact:
+        for live_name in sorted(live_guest_names - expected_guest_names):
+            findings.append(finding("critical", "unmanaged_xen_domain", f"{box}-dom0", f"unexpected Xen domain is running: {live_name}"))
+        for missing_name in sorted(expected_guest_names - live_guest_names):
+            if (expected_guests.get(missing_name) or {}).get("runtime_state", "running") == "stopped":
+                continue
+            findings.append(finding("warning", "missing_xen_domain", f"{box}-dom0", f"expected Xen domain is not running: {missing_name}"))
+        guest_by_machine_suffix = {**EXPECTED_GUEST_BY_SUFFIX, **OPTIONAL_GUEST_BY_SUFFIX}
+        for suffix in machine_suffixes:
+            guest_name = guest_by_machine_suffix.get(suffix, suffix)
+            hostname = f"{box}-{suffix}"
+            if guest_name in live_guest_names and not machines[suffix]["tailscale"]["present"]:
+                findings.append(
+                    finding(
+                        "critical",
+                        "vm_not_enrolled_to_tailscale",
+                        hostname,
+                        "Xen VM is running but no matching Tailscale machine was found",
+                    )
+                )
+        for hostname, app_vm in app_vms.items():
+            if app_vm["guest_name"] in live_guest_names and not app_vm["tailscale"]["present"]:
+                findings.append(
+                    finding(
+                        "critical",
+                        "vm_not_enrolled_to_tailscale",
+                        hostname,
+                        "Xen app VM is running but no matching Tailscale machine was found",
+                    )
+                )
+    else:
+        findings.append(finding("warning", "missing_dom0_remote_facts", f"{box}-dom0", "dom0 remote facts were not collected"))
+
+    storage = summarize_storage(dom0_fact.get("storage") or {}, findings, f"{box}-dom0") if dom0_fact else {}
+    memory = summarize_memory(
+        xl_info=xen_info,
+        domains=xen_domains,
+        expected_guests=expected_guests,
+        findings=findings,
+        scope=f"{box}-dom0",
+    )
+
+    podman: dict[str, Any] = {}
+    for suffix in PODMAN_SUFFIXES:
+        hostname = f"{box}-{suffix}"
+        fact = remote_facts.get(hostname)
+        if not fact:
+            podman[suffix] = {"host": hostname, "reachable": False, "containers": []}
+            continue
+        summary = summarize_podman_fact(fact)
+        for container in summary.get("containers") or []:
+            if not container.get("managed"):
+                findings.append(
+                    finding(
+                        "warning",
+                        "unmanaged_podman_container",
+                        hostname,
+                        f"container is not recognized as Klokast-managed: {container.get('name')}",
+                    )
+                )
+        podman[suffix] = summary
+
+    return {
+        "name": box,
+        "overrides": box_override(overrides, box),
+        "expected_hosts": expected_hosts,
+        "machines": machines,
+        "app_vms": app_vms,
+        "dom0": {
+            "reachable": bool(dom0_fact),
+            "os": parse_os_release(dom0_fact.get("os_release_stdout", "")) if dom0_fact else {},
+            "storage": storage,
+            "xen": {
+                "available": bool(dom0_fact and (dom0_fact.get("xen") or {}).get("xl_info_rc") in ("0", 0)),
+                "info": xen_info,
+                "domains": xen_domains,
+                "expected_guests": expected_guests,
+                "config_files": ((dom0_fact.get("xen") or {}).get("config_files_stdout") or "").splitlines(),
+            },
+        },
+        "capacity": {
+            "memory": memory,
+        },
+        "podman": podman,
+        "findings": findings,
+    }
+
+
+def build_summary(
+    *,
+    boxes: list[str],
+    tailnet: dict[str, Any],
+    remote_facts: dict[str, dict[str, Any]],
+    overrides: dict[str, Any],
+    platform_resources_plan: dict[str, Any] | None = None,
+    artifact_dir: Path,
+    probe_oob_ssh: bool,
+    warnings: list[str],
+) -> dict[str, Any]:
+    index = peer_index(tailnet)
+    oob_devices = summarize_oob_devices(tailnet, overrides, artifact_dir, probe_oob_ssh, warnings)
+    local = collect_local_facts(tailnet, warnings)
+    resource_plans = []
+    for fact in remote_facts.values():
+        desired = desired_platform_resources_from_fact(fact)
+        if desired:
+            resource_plans.append(desired)
+    if platform_resources_plan:
+        resource_plans.append(platform_resources_plan)
+    expected_app_vms_by_box = expected_app_vms_by_box_from_plans(resource_plans)
+    expected_tailnet_hostnames_by_box = expected_tailnet_hostnames_by_box_from_plans(resource_plans)
+    box_summaries = {
+        box: summarize_box(
+            box,
+            tailnet_index=index,
+            remote_facts=remote_facts,
+            overrides=overrides,
+            expected_app_vms=expected_app_vms_by_box.get(box, {}),
+            expected_tailnet_hostnames=expected_tailnet_hostnames_by_box.get(box, set()),
+        )
+        for box in boxes
+    }
+    findings: list[dict[str, Any]] = []
+    if not oob_devices:
+        findings.append(finding("warning", "no_oob_device", "oob", "no NanoKVM/OOB device was found in Tailscale status"))
+    for device in oob_devices:
+        if not device.get("online"):
+            findings.append(
+                finding(
+                    "warning",
+                    "oob_offline",
+                    device.get("name", "oob"),
+                    "NanoKVM/OOB device is offline; power or plug it in before relying on remote recovery",
+                )
+            )
+
+    return {
+        "schema_version": 1,
+        "generated_at": utc_now(),
+        "source_host": local.get("hostname", ""),
+        "deployment_server": local,
+        "tailnet": tailnet,
+        "selected_boxes": boxes,
+        "boxes": box_summaries,
+        "oob_devices": oob_devices,
+        "platform_resources": {
+            "available": bool(resource_plans),
+            "source": "registry" if platform_resources_plan else ("remote_desired_json" if resource_plans else ""),
+            "app_vm_count": sum(len(app_vms) for app_vms in expected_app_vms_by_box.values()),
+        },
+        "findings": findings,
+        "warnings": warnings,
+        "artifact_dir": str(artifact_dir),
+    }
+
+
+def format_bytes(value: int | None) -> str:
+    if value is None:
+        return "unknown"
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    number = float(value)
+    for unit in units:
+        if abs(number) < 1024 or unit == units[-1]:
+            return f"{number:.1f} {unit}" if unit != "B" else f"{int(number)} B"
+        number /= 1024
+    return f"{value} B"
+
+
+def format_mib(value: Any) -> str:
+    number = parse_int(value)
+    if number is None:
+        return "unknown"
+    return f"{number} MiB"
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        die(f"state file not found: {path}. Run `ansible/bin/platform-map refresh` first.")
+    except json.JSONDecodeError as exc:
+        die(f"state file is not valid JSON: {path}: {exc}")
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    warnings: list[str] = []
+    artifact_dir = args.artifact_dir
+    artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    (artifact_dir / "hosts").mkdir(parents=True, mode=0o700, exist_ok=True)
+    for stale in (artifact_dir / "hosts").glob("*.json"):
+        stale.unlink()
+
+    tailnet = collect_tailscale(warnings)
+    boxes = parse_box_list(args.boxes)
+    if not boxes:
+        boxes = discover_boxes_from_tailnet(tailnet)
+    if not boxes:
+        warnings.append("no boxes were discovered from Tailscale; pass --boxes k001,k002")
+
+    magicdns_suffix = args.magicdns_suffix or tailnet.get("magicdns_suffix") or "example.ts.net"
+    remote_scope = "none" if args.skip_ansible else args.remote_scope
+    if remote_scope != "none":
+        run_ansible_collection(
+            boxes,
+            base_inventory=args.inventory,
+            magicdns_suffix=magicdns_suffix,
+            artifact_dir=artifact_dir,
+            remote_scope=remote_scope,
+            verbose=not args.quiet_ansible,
+            warnings=warnings,
+        )
+    remote_facts = load_remote_facts(artifact_dir, warnings)
+    overrides = load_overrides(args.overrides, warnings)
+    platform_resources_plan = (
+        compile_platform_resources_registry(args.resources_registry, warnings)
+        if args.resources_registry
+        else {}
+    )
+    summary = build_summary(
+        boxes=boxes,
+        tailnet=tailnet,
+        remote_facts=remote_facts,
+        overrides=overrides,
+        platform_resources_plan=platform_resources_plan,
+        artifact_dir=artifact_dir,
+        probe_oob_ssh=args.probe_oob_ssh,
+        warnings=warnings,
+    )
+    write_json_atomic(args.output, summary)
+    print(f"Wrote {args.output}")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    summary = load_state(args.file)
+    deployment = summary.get("deployment_server") or {}
+    provider = deployment.get("provider") or {}
+    location = provider.get("location") or {}
+    provider_label = provider.get("provider") or "unknown provider"
+    az = provider.get("availability_zone") or "unknown zone"
+    location_label = location.get("label") or "unknown location"
+    country = location.get("country") or ""
+    print(f"Generated: {summary.get('generated_at', 'unknown')}")
+    print(
+        "Deployment server: "
+        f"{deployment.get('hostname', 'unknown')} "
+        f"user={deployment.get('user', 'unknown')} "
+        f"provider={provider_label} az={az} location={location_label}{(' ' + country) if country else ''}"
+    )
+    tailnet = summary.get("tailnet") or {}
+    print(
+        "Tailnet: "
+        f"suffix={tailnet.get('magicdns_suffix', 'unknown')} "
+        f"online={tailnet.get('online_count', 0)}/{tailnet.get('peer_count', 0)}"
+    )
+    for device in summary.get("oob_devices") or []:
+        connected = device.get("connected_box") or "unknown"
+        print(
+            "NanoKVM: "
+            f"{device.get('name', 'oob')} online={yes_no(device.get('online'))} "
+            f"connected_box={connected} confidence={device.get('connection_confidence', 'unknown')}"
+        )
+    for box, data in (summary.get("boxes") or {}).items():
+        machines = data.get("machines") or {}
+        online = sum(1 for item in machines.values() if ((item.get("tailscale") or {}).get("online")))
+        present = sum(1 for item in machines.values() if ((item.get("tailscale") or {}).get("present")))
+        domains = ((data.get("dom0") or {}).get("xen") or {}).get("domains") or []
+        expected_guests = ((data.get("dom0") or {}).get("xen") or {}).get("expected_guests") or {}
+        live_guests = sum(1 for domain in domains if domain.get("name") != "Domain-0")
+        expected_guest_count = len(expected_guests) or len(EXPECTED_GUEST_BY_SUFFIX)
+        app_vm_count = len(data.get("app_vms") or {})
+        memory = ((data.get("capacity") or {}).get("memory") or {})
+        storage = (((data.get("dom0") or {}).get("storage") or {}).get("managed_layout") or {})
+        print(
+            f"Box {box}: tailscale={online}/{len(machines)} online ({present} present) "
+            f"xen_guests={live_guests}/{expected_guest_count} app_vms={app_vm_count} "
+            f"ram={memory.get('pressure', 'unknown')} free={format_mib(memory.get('xen_free_mib'))} "
+            f"vg_free={format_bytes(parse_int(storage.get('volume_group_free_bytes')))}"
+        )
+        findings = data.get("findings") or []
+        if findings:
+            print(f"  findings={len(findings)} critical={sum(1 for item in findings if item.get('severity') == 'critical')}")
+    global_findings = summary.get("findings") or []
+    warnings = summary.get("warnings") or []
+    print(f"Findings: global={len(global_findings)} warnings={len(warnings)}")
+    return 0
+
+
+def yes_no(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def all_findings(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = list(summary.get("findings") or [])
+    for box in (summary.get("boxes") or {}).values():
+        findings.extend(box.get("findings") or [])
+    return findings
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    summary = load_state(args.file)
+    findings = all_findings(summary)
+    if not findings:
+        print("No findings.")
+        return 0
+    for item in sorted(findings, key=lambda entry: (entry.get("severity") != "critical", entry.get("scope", ""))):
+        print(f"{item.get('severity', 'unknown')}: {item.get('code', 'unknown')} [{item.get('scope', '')}] {item.get('message', '')}")
+    if any(item.get("severity") == "critical" for item in findings):
+        return 2
+    return 1 if args.strict else 0
+
+
+def hostvars_for_machine(hostname: str, machine: dict[str, Any], suffix: str) -> dict[str, Any]:
+    tail = machine.get("tailscale") or {}
+    return {
+        "ansible_host": tail.get("dns_name") or hostname,
+        "node_name": hostname.rsplit("-", 1)[0],
+        "node_domain_role": "backend" if suffix == "bak" else suffix,
+        "tailscale_present": bool(tail.get("present")),
+        "tailscale_online": bool(tail.get("online")),
+        "tailscale_tags": tail.get("tags") or [],
+    }
+
+
+def dynamic_inventory(summary: dict[str, Any], host: str | None = None) -> dict[str, Any]:
+    hostvars: dict[str, Any] = {}
+    groups: dict[str, Any] = {
+        "_meta": {"hostvars": hostvars},
+        "all": {"children": ["dom0", "router", "backend", "dmz", "iot", "usr", "ops", "control_vms", "podman_vms", "app_vms", "oob_devices"]},
+        "dom0": {"hosts": []},
+        "router": {"hosts": []},
+        "backend": {"hosts": []},
+        "dmz": {"hosts": []},
+        "iot": {"hosts": []},
+        "usr": {"hosts": []},
+        "ops": {"hosts": []},
+        "control_vms": {"children": ["ops"]},
+        "app_vms": {"hosts": []},
+        "podman_vms": {"children": ["backend", "dmz", "iot", "usr"]},
+        "oob_devices": {"hosts": []},
+    }
+    role_group = {"dom0": "dom0", "router": "router", "bak": "backend", "dmz": "dmz", "iot": "iot", "usr": "usr", "ops": "ops"}
+    for box, data in (summary.get("boxes") or {}).items():
+        groups[box] = {"hosts": []}
+        for suffix, machine in (data.get("machines") or {}).items():
+            hostname = machine.get("hostname") or f"{box}-{suffix}"
+            group_name = role_group.get(suffix)
+            if group_name:
+                groups[group_name]["hosts"].append(hostname)
+            groups[box]["hosts"].append(hostname)
+            hostvars[hostname] = hostvars_for_machine(hostname, machine, suffix)
+        app_group = f"{re.sub(r'[^A-Za-z0-9_]', '_', box)}_app_vms"
+        groups.setdefault(app_group, {"hosts": []})
+        groups[box].setdefault("children", []).append(app_group)
+        for hostname, app_vm in (data.get("app_vms") or {}).items():
+            groups["app_vms"]["hosts"].append(hostname)
+            groups[app_group]["hosts"].append(hostname)
+            groups[box]["hosts"].append(hostname)
+            tail = app_vm.get("tailscale") or {}
+            hostvars[hostname] = {
+                "ansible_host": tail.get("dns_name") or hostname,
+                "node_name": box,
+                "node_domain_role": "usr",
+                "platform_app_vm": True,
+                "platform_app": app_vm.get("app", ""),
+                "platform_app_vm_guest_name": app_vm.get("guest_name", ""),
+                "platform_app_vm_user_slug": app_vm.get("user_slug", ""),
+                "tailscale_present": bool(tail.get("present")),
+                "tailscale_online": bool(tail.get("online")),
+                "tailscale_tags": tail.get("tags") or [],
+                "tailscale_expected_tags": app_vm.get("expected_tags") or [],
+            }
+    for device in summary.get("oob_devices") or []:
+        hostname = device.get("name") or device.get("hostname") or "oob"
+        groups["oob_devices"]["hosts"].append(hostname)
+        hostvars[hostname] = {
+            "ansible_host": device.get("dns_name") or hostname,
+            "ansible_user": "root",
+            "tailscale_online": bool(device.get("online")),
+            "connected_box": device.get("connected_box") or "",
+        }
+    if host is not None:
+        return hostvars.get(host, {})
+    return groups
+
+
+def cmd_inventory(args: argparse.Namespace) -> int:
+    summary = load_state(args.file)
+    payload = dynamic_inventory(summary, host=args.host)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Discover and summarize the Klokast Platform state.")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+
+    refresh = subcommands.add_parser("refresh", help="gather facts and write the ignored summary JSON")
+    refresh.add_argument("--boxes", action="append", help="box names, comma-separated or repeated, for example k001,k002")
+    refresh.add_argument("--inventory", type=Path, default=DEFAULT_BASE_INVENTORY, help="base Ansible inventory")
+    refresh.add_argument("--magicdns-suffix", default="", help="override Tailscale MagicDNS suffix for generated inventory")
+    refresh.add_argument("--artifact-dir", type=Path, default=RUN_DIR, help="runtime artifact directory")
+    refresh.add_argument("--output", type=Path, default=DEFAULT_STATE_FILE, help="summary JSON output path")
+    refresh.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES_FILE, help="local uncommitted override YAML")
+    refresh.add_argument("--resources-registry", type=Path, default=None, help="private platform-resource registry used to expect dynamic app VMs")
+    refresh.add_argument("--skip-ansible", action="store_true", help="only collect local/Tailscale/provider facts")
+    refresh.add_argument(
+        "--remote-scope",
+        choices=("full", "dom0", "podman", "none"),
+        default="full",
+        help="remote facts to collect: full, dom0, podman, or none. Use dom0 for fast Xen/app-VM readiness checks.",
+    )
+    refresh.add_argument("--quiet-ansible", action="store_true", help="do not pass -vv to ansible-playbook")
+    refresh.add_argument("--probe-oob-ssh", action="store_true", help="try a noninteractive SSH probe against online OOB devices")
+    refresh.set_defaults(func=cmd_refresh)
+
+    show = subcommands.add_parser("show", help="print a concise human summary")
+    show.add_argument("--file", type=Path, default=DEFAULT_STATE_FILE, help="summary JSON file")
+    show.set_defaults(func=cmd_show)
+
+    validate = subcommands.add_parser("validate", help="print findings from the current summary")
+    validate.add_argument("--file", type=Path, default=DEFAULT_STATE_FILE, help="summary JSON file")
+    validate.add_argument("--strict", action="store_true", help="exit nonzero for warning-only findings")
+    validate.set_defaults(func=cmd_validate)
+
+    inventory = subcommands.add_parser("inventory", help="emit Ansible dynamic inventory JSON")
+    inventory.add_argument("--file", type=Path, default=DEFAULT_STATE_FILE, help="summary JSON file")
+    inventory.add_argument("--list", action="store_true", help="Ansible dynamic inventory compatibility")
+    inventory.add_argument("--host", default=None, help="Ansible dynamic inventory host query")
+    inventory.set_defaults(func=cmd_inventory)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"--list", "--host"}:
+        argv.insert(0, "inventory")
+    args = build_parser().parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

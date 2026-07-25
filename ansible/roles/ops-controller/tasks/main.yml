@@ -1,0 +1,544 @@
+#
+# Summary:
+# - Converges the in-Platform ops controller baseline: controller packages,
+#   Unix account workspaces, approved state paths, root-owned Tailscale wrapper
+#   executables, app grant publication access, and the infra-owned Git checkout.
+#   Private state is migrated by the ops-private-state-transfer role after this
+#   baseline exists.
+#
+---
+- name: Assert ops controller inputs are defined
+  ansible.builtin.assert:
+    that:
+      - ops_infra_user | default('') | length > 0
+      - ops_app_user | default('') | length > 0
+      - ops_infra_user != ops_app_user
+      - ops_infra_private_root | default('') is match('^/')
+      - ops_approved_state_root | default('') is match('^/')
+      - ops_controller_legacy_git_ssh_key_path | default('') is match('^/home/')
+      - ops_controller_legacy_repo_url | default('') == 'git@github.com:klokast/klokast-box.git'
+      - ops_vm_admin_ssh_key_path | default('') is match('^/home/')
+      - ops_github_ssh_host | default('') | length > 0
+      - ops_github_ssh_hostname | default('') | length > 0
+      - ops_github_ssh_port | int > 0
+      - ops_github_ssh_host_key_alias | default('') | length > 0
+      - ops_repositories | default([]) | length > 0
+      - ops_controller_tailscale_wrapper_source_root | default('') | length > 0
+      - ops_controller_tailscale_wrappers | default([]) | length > 0
+      - ops_controller_secret_authority_wrapper_source_root | default('') | length > 0
+      - ops_controller_secret_authority_wrappers | default([]) | length > 0
+      - ops_secret_authority_root | default('') is match('^/')
+      - ops_secret_authority_state_root | default('') is match('^/')
+      - ops_secret_authority_audit_log | default('') is match('^/')
+      - ops_account_migration_enabled | default(true) | type_debug == 'bool'
+      - ops_account_cleanup_enabled | default(false) | type_debug == 'bool'
+    fail_msg: Ops controller variables are incomplete.
+
+- name: Ensure ops controller packages are installed
+  community.general.apk:
+    name: "{{ ops_controller_packages }}"
+    state: present
+
+- name: Ensure Secret Authority Python dependencies are installed
+  community.general.apk:
+    name:
+      - py3-pygithub
+    state: present
+
+- name: Verify Secret Authority GitHub dependency is importable
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - from github import Auth, GithubIntegration; import cryptography
+  changed_when: false
+
+- name: Ensure ops controller private directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "/home/{{ ops_infra_user }}/private"
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0700"
+    - path: "{{ ops_infra_private_root }}"
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0700"
+    - path: "/home/{{ ops_infra_user }}/src"
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0750"
+    - path: "{{ ops_infra_repo_parent }}"
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0750"
+    - path: "/home/{{ ops_infra_user }}/.ssh"
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0700"
+    - path: "{{ ops_app_workspace_root }}"
+      owner: "{{ ops_app_user }}"
+      group: "{{ ops_app_user }}"
+      mode: "0750"
+    - path: /var/lib/klokast
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ ops_approved_state_root }}"
+      owner: root
+      group: "{{ ops_app_user }}"
+      mode: "0750"
+    - path: "{{ ops_approved_state_root }}/apps"
+      owner: root
+      group: "{{ ops_app_user }}"
+      mode: "2770"
+    - path: /usr/local/sbin
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /etc/sudoers.d
+      owner: root
+      group: root
+      mode: "0750"
+    - path: /etc/klokast
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ ops_secret_authority_root }}"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: "{{ ops_secret_authority_root }}/apps"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: "{{ ops_secret_authority_root }}/apps/static-site"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: /etc/tailscale-auth
+      owner: root
+      group: root
+      mode: "0700"
+    - path: "{{ ops_secret_authority_state_root }}"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: "{{ ops_secret_authority_audit_log | dirname }}"
+      owner: root
+      group: root
+      mode: "0750"
+
+- name: Check legacy infra private state before account rename
+  ansible.builtin.stat:
+    path: "/home/{{ ops_legacy_infra_user }}/private/klokast"
+  register: ops_controller_legacy_private_root
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_infra_user | default('') | length > 0
+    - ops_legacy_infra_user != ops_infra_user
+
+- name: Check renamed infra private state marker
+  ansible.builtin.stat:
+    path: "{{ ops_infra_private_root }}/platform-resources.yml"
+  register: ops_controller_renamed_private_marker
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_infra_user | default('') | length > 0
+    - ops_legacy_infra_user != ops_infra_user
+
+- name: Copy legacy infra private state into the renamed account
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - cp -a "$1/." "$2/"
+      - sh
+      - "/home/{{ ops_legacy_infra_user }}/private/klokast"
+      - "{{ ops_infra_private_root }}"
+  no_log: true
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_controller_legacy_private_root.stat.isdir | default(false)
+    - not (ops_controller_renamed_private_marker.stat.exists | default(false))
+
+- name: Check legacy infra SSH deploy key before account rename
+  ansible.builtin.stat:
+    path: "/home/{{ ops_legacy_infra_user }}/.ssh/github-klokast-box"
+  register: ops_controller_legacy_git_key
+  no_log: true
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_infra_user | default('') | length > 0
+    - ops_legacy_infra_user != ops_infra_user
+
+- name: Check renamed infra SSH deploy key
+  ansible.builtin.stat:
+    path: "{{ ops_controller_legacy_git_ssh_key_path }}"
+  register: ops_controller_renamed_git_key
+  no_log: true
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_infra_user | default('') | length > 0
+    - ops_legacy_infra_user != ops_infra_user
+
+- name: Copy legacy infra SSH material into the renamed account
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - cp -a "$1/." "$2/"
+      - sh
+      - "/home/{{ ops_legacy_infra_user }}/.ssh"
+      - "/home/{{ ops_infra_user }}/.ssh"
+  no_log: true
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_controller_legacy_git_key.stat.exists | default(false)
+    - not (ops_controller_renamed_git_key.stat.exists | default(false))
+
+- name: Check legacy app workspace before account rename
+  ansible.builtin.stat:
+    path: "/home/{{ ops_legacy_app_user }}/src"
+  register: ops_controller_legacy_app_workspace
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_app_user | default('') | length > 0
+    - ops_legacy_app_user != ops_app_user
+
+- name: Check renamed app workspace marker
+  ansible.builtin.stat:
+    path: "{{ ops_app_workspace_root }}/klokast-box"
+  register: ops_controller_renamed_app_workspace
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_app_user | default('') | length > 0
+    - ops_legacy_app_user != ops_app_user
+
+- name: Copy legacy app workspace into the renamed account
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - cp -a "$1/." "$2/"
+      - sh
+      - "/home/{{ ops_legacy_app_user }}/src"
+      - "{{ ops_app_workspace_root }}"
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_controller_legacy_app_workspace.stat.isdir | default(false)
+    - not (ops_controller_renamed_app_workspace.stat.exists | default(false))
+
+- name: Keep renamed infra account ownership aligned
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ops_infra_user }}"
+    group: "{{ ops_infra_user }}"
+    recurse: true
+  loop:
+    - "/home/{{ ops_infra_user }}/private"
+    - "/home/{{ ops_infra_user }}/.ssh"
+  no_log: true
+
+- name: Keep renamed app account ownership aligned
+  ansible.builtin.file:
+    path: "{{ ops_app_workspace_root }}"
+    state: directory
+    owner: "{{ ops_app_user }}"
+    group: "{{ ops_app_user }}"
+    recurse: true
+
+- name: Allow the infra account to publish approved app grants
+  ansible.builtin.user:
+    name: "{{ ops_infra_user }}"
+    groups:
+      - "{{ ops_app_user }}"
+    append: true
+
+- name: Discover existing approved app grant directories
+  ansible.builtin.find:
+    paths: "{{ ops_approved_state_root }}/apps"
+    file_type: directory
+    recurse: false
+  register: ops_controller_approved_app_grant_dirs
+
+- name: Keep existing approved app grant directories writable by the grant group
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ ops_app_user }}"
+    mode: "2770"
+  loop: "{{ ops_controller_approved_app_grant_dirs.files }}"
+
+- name: Install the controller HA guard
+  ansible.builtin.copy:
+    src: klokast-controller-guard
+    dest: /usr/local/sbin/klokast-controller-guard
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install root-owned Tailscale wrapper executables
+  ansible.builtin.copy:
+    src: "{{ ops_controller_tailscale_wrapper_source_root }}/{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ ops_controller_tailscale_wrappers }}"
+  tags:
+    - ops-controller-tailscale-wrappers
+
+- name: Install root-owned Secret Authority wrapper executables
+  ansible.builtin.copy:
+    src: "{{ ops_controller_secret_authority_wrapper_source_root }}/{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ ops_controller_secret_authority_wrappers }}"
+
+- name: Remove obsolete controller GitHub deploy-key material
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ ops_controller_legacy_git_ssh_key_path }}"
+    - "{{ ops_controller_legacy_git_ssh_key_path }}.pub"
+    - "/home/{{ ops_infra_user }}/.ssh/config"
+
+- name: Generate the infra VM admin SSH key on the ops controller when missing
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - >-
+        cd {{ ('/home/' ~ ops_infra_user) | quote }} &&
+        ssh-keygen -t ed25519 -N '' -C
+        {{ (ops_infra_user ~ '@' ~ node_hostname ~ ' klokast VM admin key') | quote }}
+        -f {{ ops_vm_admin_ssh_key_path | quote }}
+      - "{{ ops_infra_user }}"
+    creates: "{{ ops_vm_admin_ssh_key_path }}"
+
+- name: Ensure the infra VM admin SSH key permissions are strict
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ ops_infra_user }}"
+    group: "{{ ops_infra_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ ops_vm_admin_ssh_key_path }}"
+      mode: "0600"
+    - path: "{{ ops_vm_admin_ssh_key_path }}.pub"
+      mode: "0644"
+
+- name: Configure the infra Git defaults
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - >-
+        cd {{ ('/home/' ~ ops_infra_user) | quote }} &&
+        git config --global {{ item.name | quote }} {{ item.value | quote }}
+      - "{{ ops_infra_user }}"
+  loop:
+    - name: user.name
+      value: "{{ ops_git_user_name }}"
+    - name: user.email
+      value: "{{ ops_git_user_email }}"
+    - name: init.defaultBranch
+      value: main
+    - name: pull.ff
+      value: only
+  changed_when: false
+
+- name: Remove legacy root Git defaults from early ops controller runs
+  ansible.builtin.file:
+    path: /root/.gitconfig
+    state: absent
+
+- name: Inspect existing infra repository checkouts
+  ansible.builtin.stat:
+    path: "{{ item.dest }}/.git"
+  loop: "{{ ops_repositories }}"
+  register: ops_controller_repo_git
+
+- name: Read existing infra repository origins
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - "git -C \"$1\" remote get-url origin"
+      - "{{ ops_infra_user }}"
+      - sh
+      - "{{ item.item.dest }}"
+  loop: "{{ ops_controller_repo_git.results }}"
+  register: ops_controller_repo_origins
+  changed_when: false
+  when: item.stat.isdir | default(false)
+
+- name: Require a known infra repository origin before migration
+  ansible.builtin.assert:
+    that:
+      - item.stdout in [item.item.item.repo, ops_controller_legacy_repo_url]
+    fail_msg: >-
+      Unexpected origin for {{ item.item.item.dest }}; refusing to rewrite it:
+      {{ item.stdout }}
+  loop: "{{ ops_controller_repo_origins.results }}"
+  when: not (item.skipped | default(false))
+
+- name: Migrate legacy controller repository origins to public HTTPS
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - "git -C \"$1\" remote set-url origin \"$2\""
+      - "{{ ops_infra_user }}"
+      - sh
+      - "{{ item.item.item.dest }}"
+      - "{{ item.item.item.repo }}"
+  loop: "{{ ops_controller_repo_origins.results }}"
+  when:
+    - not (item.skipped | default(false))
+    - item.stdout == ops_controller_legacy_repo_url
+  changed_when: true
+
+- name: Clone missing public infra repositories
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - >-
+        cd {{ ('/home/' ~ ops_infra_user) | quote }} &&
+        git clone --branch {{ item.version | quote }} --single-branch
+        {{ item.repo | quote }} {{ item.dest | quote }}
+      - "{{ ops_infra_user }}"
+    creates: "{{ item.dest }}/.git"
+  loop: "{{ ops_repositories }}"
+
+- name: Fast-forward public infra repositories
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - >-
+        cd {{ ('/home/' ~ ops_infra_user) | quote }} &&
+        git -C {{ item.dest | quote }} pull --ff-only origin {{ item.version | quote }}
+      - "{{ ops_infra_user }}"
+  loop: "{{ ops_repositories }}"
+  register: ops_controller_repo_pull
+  changed_when: "'Already up to date.' not in ops_controller_repo_pull.stdout"
+
+- name: Permit the infra account to call the narrow Tailscale wrappers through sudo
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/10-{{ ops_infra_user }}-tailscale"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      Defaults:{{ ops_infra_user }} !requiretty
+      Cmnd_Alias KLOKAST_TAILSCALE_WRAPPERS = {{ ops_controller_tailscale_wrappers | map('regex_replace', '^(.*)$', '/usr/local/sbin/\1') | join(', ') }}
+      {{ ops_infra_user }} ALL=(root) NOPASSWD: KLOKAST_TAILSCALE_WRAPPERS
+
+- name: Permit the infra account to call the narrow Secret Authority wrappers through sudo
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/10-{{ ops_infra_user }}-secret-authority"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      Defaults:{{ ops_infra_user }} !requiretty
+      Cmnd_Alias KLOKAST_SECRET_AUTHORITY_WRAPPERS = {{ ops_controller_secret_authority_wrappers | map('regex_replace', '^(.*)$', '/usr/local/sbin/\1 *') | join(', ') }}
+      {{ ops_infra_user }} ALL=(root) NOPASSWD: KLOKAST_SECRET_AUTHORITY_WRAPPERS
+
+- name: Permit the app account to mint only the Immich private ingress key
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/20-{{ ops_app_user }}-immich"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      Defaults:{{ ops_app_user }} !requiretty
+      {{ ops_app_user }} ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-immich --hostname photos --tags tag\:immich
+
+- name: Permit the app account to mint only the Nextcloud private ingress key
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/20-{{ ops_app_user }}-nextcloud"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      Defaults:{{ ops_app_user }} !requiretty
+      {{ ops_app_user }} ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-nextcloud --hostname next --tags tag\:nextcloud
+
+- name: Document the approved-state boundary on the controller
+  ansible.builtin.copy:
+    dest: "{{ ops_approved_state_root }}/README"
+    owner: root
+    group: "{{ ops_app_user }}"
+    mode: "0640"
+    content: |
+      This directory is the infra-approved state export readable by {{ ops_app_user }}.
+      Do not store private SSH keys, Tailscale OAuth material, reusable auth keys,
+      or mutable infrastructure state here.
+
+- name: Remove legacy controller sudoers after account cleanup is enabled
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/sudoers.d/10-{{ ops_legacy_infra_user }}-tailscale"
+    - "/etc/sudoers.d/10-{{ ops_legacy_infra_user }}-secret-authority"
+    - "/etc/sudoers.d/20-{{ ops_legacy_app_user }}-immich"
+    - "/etc/sudoers.d/20-{{ ops_legacy_app_user }}-nextcloud"
+  when:
+    - ops_account_cleanup_enabled | default(false) | bool
+    - ops_legacy_infra_user | default('') | length > 0
+    - ops_legacy_app_user | default('') | length > 0
+
+- name: Remove legacy controller accounts after account cleanup is enabled
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: false
+  loop:
+    - "{{ ops_legacy_app_user }}"
+    - "{{ ops_legacy_infra_user }}"
+  when:
+    - ops_account_cleanup_enabled | default(false) | bool
+    - item | default('') | length > 0
+    - item not in [ops_infra_user, ops_app_user]
+
+- name: Verify the infra repository checkout is available locally
+  ansible.builtin.stat:
+    path: "{{ ops_infra_repo_dest }}/ansible/playbooks/65-vm-ops.yml"
+  register: ops_controller_repo_checkout
+
+- name: Assert the infra repository checkout exists
+  ansible.builtin.assert:
+    that:
+      - ops_controller_repo_checkout.stat.exists | default(false)
+    fail_msg: "The klokast-box checkout is missing under {{ ops_infra_repo_dest }}."

@@ -1,0 +1,100 @@
+#
+# Summary:
+# - Ensures the expected dom0 Xen bridge interfaces exist and are up in the live runtime before steady-state bridge config lands.
+#
+---
+- name: Collect current dom0 bridge names
+  ansible.builtin.command: /usr/sbin/brctl show
+  register: dom0_bridge_runtime_show
+  changed_when: false
+
+- name: Ensure unmanaged empty dom0 bridges exist at runtime
+  ansible.builtin.command: "/usr/sbin/brctl addbr {{ item.name }}"
+  loop: "{{ dom0_bridges }}"
+  when:
+    - (item.ports | length) == 0
+    - item.name not in (dom0_bridge_runtime_show.stdout_lines[1:] | map('regex_replace', '^([^\\t ]+).*', '\\1') | list)
+
+- name: Ensure dom0 bridges are administratively up
+  ansible.builtin.command: "/sbin/ip link set dev {{ item.name }} up"
+  loop: "{{ dom0_bridges }}"
+  changed_when: false
+
+- name: Ensure configured dom0 bridge ports are attached at runtime
+  ansible.builtin.shell: |
+    set -eu
+    bridge={{ item.0.name | quote }}
+    port={{ item.1 | quote }}
+
+    if [ ! -e "/sys/class/net/$port" ]; then
+      echo "missing port=$port"
+      exit 1
+    fi
+
+    current="$(basename "$(readlink "/sys/class/net/$port/master" 2>/dev/null || true)")"
+    changed=0
+    if [ "$current" != "$bridge" ]; then
+      /sbin/ip link set dev "$port" master "$bridge"
+      changed=1
+    fi
+
+    flags="$(/sbin/ip -o link show dev "$port" | sed -n 's/^[^<]*<\([^>]*\)>.*/\1/p')"
+    case ",$flags," in
+      *,UP,*) ;;
+      *)
+        /sbin/ip link set dev "$port" up
+        changed=1
+        ;;
+    esac
+
+    echo "changed=$changed bridge=$bridge port=$port"
+  args:
+    executable: /bin/sh
+  loop: "{{ dom0_bridges | subelements('ports', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.1 }} -> {{ item.0.name }}"
+  register: dom0_bridge_runtime_ports
+  changed_when: "'changed=1' in dom0_bridge_runtime_ports.stdout"
+
+- name: Verify configured dom0 bridge ports are attached
+  ansible.builtin.shell: |
+    set -eu
+    bridge={{ item.0.name | quote }}
+    port={{ item.1 | quote }}
+    current="$(basename "$(readlink "/sys/class/net/$port/master" 2>/dev/null || true)")"
+    test "$current" = "$bridge"
+  args:
+    executable: /bin/sh
+  loop: "{{ dom0_bridges | subelements('ports', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.1 }} -> {{ item.0.name }}"
+  changed_when: false
+
+- name: Ensure dom0 bridge IPv4 addresses are present when configured
+  ansible.builtin.command: "/sbin/ip address replace {{ item.address }}/{{ item.prefix }} dev {{ item.name }}"
+  loop: "{{ dom0_bridges }}"
+  when:
+    - item.method == 'static'
+    - item.address is defined
+    - item.prefix is defined
+  changed_when: false
+
+- name: Ensure dom0 bridge IPv4 routes are present when configured
+  ansible.builtin.command: >-
+    /sbin/ip route replace {{ item.1.destination }} via {{ item.1.via }}
+    dev {{ item.0.name }}
+  loop: "{{ dom0_bridges | subelements('routes', skip_missing=True) }}"
+  changed_when: false
+
+- name: Verify the managed dom0 bridge names now exist
+  ansible.builtin.command: /usr/sbin/brctl show
+  register: dom0_bridge_runtime_verify
+  changed_when: false
+
+- name: Assert the managed dom0 bridges exist
+  ansible.builtin.assert:
+    that:
+      - item.name in (dom0_bridge_runtime_verify.stdout_lines[1:] | map('regex_replace', '^([^\\t ]+).*', '\\1') | list)
+    fail_msg: >-
+      Managed dom0 bridge {{ item.name }} is missing at runtime.
+  loop: "{{ dom0_bridges }}"

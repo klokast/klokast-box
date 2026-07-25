@@ -1,0 +1,230 @@
+---
+- name: Assert the music backend targets the selected backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == platform_zones.bak.role
+      - node_name == music_box
+      - music_upload_tailscale_hostname is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - music_upload_tailscale_tag is match('^tag:[A-Za-z0-9][A-Za-z0-9_-]*$')
+      - (not (music_enable_private_tailscale_ui | bool)) or music_private_tailscale_hostname is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - (not (music_enable_private_tailscale_ui | bool)) or music_private_tailscale_tag is match('^tag:[A-Za-z0-9][A-Za-z0-9_-]*$')
+      - (not (music_enable_private_tailscale_ui | bool)) or music_private_tailscale_tag != music_upload_tailscale_tag
+      - music_pcm_format is match('^[1-9][0-9]*:(16|24|32):[12]$')
+      - music_mpd_software_volume | int >= 0
+      - music_mpd_software_volume | int <= 100
+    fail_msg: >-
+      music-backend must target the selected backend VM and use safe,
+      distinct Tailscale identities.
+
+- name: Verify Podman is available on the backend VM
+  ansible.builtin.stat:
+    path: /usr/bin/podman
+  register: music_backend_podman
+
+- name: Fail when Podman is missing
+  ansible.builtin.assert:
+    that:
+      - music_backend_podman.stat.exists
+    fail_msg: >-
+      Podman is required on {{ inventory_hostname }} before music can be
+      installed. Run the Platform Podman VM phases first.
+
+- name: Stop and disable legacy host music services
+  ansible.builtin.raw: |
+    /sbin/rc-service {{ item | quote }} stop >/dev/null 2>&1 || true
+    /sbin/rc-update del {{ item | quote }} default >/dev/null 2>&1 || true
+  become: true
+  changed_when: false
+  loop: "{{ music_legacy_service_names }}"
+
+- name: Remove legacy host music packages
+  community.general.apk:
+    name: "{{ music_host_packages_absent }}"
+    state: absent
+  become: true
+
+- name: Ensure music backend directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ music_service_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ music_config_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ music_secret_root }}"
+      owner: "{{ vm_admin_user_name }}"
+      group: wheel
+      mode: "0700"
+
+- name: Read music UI Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    music_private_tailscale_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (music_private_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (music_private_tailscale_hostname | quote)
+            ~ ' --tags ' ~ (music_private_tailscale_tag | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+  when: music_enable_private_tailscale_ui | bool
+
+- name: Read music upload Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    music_upload_tailscale_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (music_upload_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (music_upload_tailscale_hostname | quote)
+            ~ ' --tags ' ~ (music_upload_tailscale_tag | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+
+- name: Assert music Tailscale auth keys are available
+  ansible.builtin.assert:
+    that:
+      - (not (music_enable_private_tailscale_ui | bool)) or music_private_tailscale_authkey.stdout | default('') | trim | length > 0
+      - music_upload_tailscale_authkey.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      Music Tailscale auth-key wrappers did not return usable auth keys.
+  no_log: true
+
+- name: Store music UI Tailscale auth key
+  ansible.builtin.copy:
+    dest: "{{ music_secret_root }}/ui-tailscale-authkey"
+    content: "{{ music_private_tailscale_authkey.stdout | trim }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+  when: music_enable_private_tailscale_ui | bool
+
+- name: Store music upload Tailscale auth key
+  ansible.builtin.copy:
+    dest: "{{ music_secret_root }}/upload-tailscale-authkey"
+    content: "{{ music_upload_tailscale_authkey.stdout | trim }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Render music backend configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  loop:
+    - src: mpd.conf.j2
+      dest: "{{ music_config_root }}/mpd.conf"
+    - src: snapserver.conf.j2
+      dest: "{{ music_config_root }}/snapserver.conf"
+
+- name: Render music backend service files and helpers
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - src: music-backend-deploy.sh.j2
+      dest: /usr/local/sbin/music-backend-deploy
+      mode: "0750"
+    - src: klokast-music.init.j2
+      dest: "/etc/init.d/{{ music_service_name }}"
+      mode: "0755"
+
+- name: Deploy or refresh music backend containers
+  ansible.builtin.command: /usr/local/sbin/music-backend-deploy
+  become: true
+  register: music_backend_deploy
+  changed_when: true
+
+- name: Keep music backend pod service running
+  ansible.builtin.service:
+    name: "{{ music_service_name }}"
+    enabled: true
+    state: started
+  become: true
+
+- name: Wait for music backend containers to settle
+  ansible.builtin.pause:
+    seconds: 10
+
+- name: Force MPD to rescan the music library
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ music_container_mpd_name }}"
+      - sh
+      - -c
+      - 'printf "rescan\nclose\n" | nc 127.0.0.1 {{ music_mpd_port | quote }} >/dev/null'
+  become: true
+  register: music_mpd_rescan
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: music_mpd_rescan.rc == 0
+
+- name: Set MPD software volume
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ music_container_mpd_name }}"
+      - sh
+      - -c
+      - 'printf "setvol {{ music_mpd_software_volume | int }}\nclose\n" | nc 127.0.0.1 {{ music_mpd_port | quote }} >/dev/null'
+  become: true
+  register: music_mpd_set_volume
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: music_mpd_set_volume.rc == 0
+
+- name: Verify music backend pod is running
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - pod
+      - inspect
+      - "--format={{ '{{' }}.State{{ '}}' }}"
+      - "{{ music_pod_name }}"
+  become: true
+  register: music_backend_pod_state
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: music_backend_pod_state.stdout == "Running"

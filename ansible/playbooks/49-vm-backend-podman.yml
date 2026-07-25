@@ -1,0 +1,38 @@
+---
+- name: Converge the backend VM as a Podman host
+  hosts: backend
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    vm_removed_packages:
+      - openssh
+  pre_tasks:
+    - name: Gather backend steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Keep the backend Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the backend SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the backend VM base system converged
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Converge the backend Podman host
+      ansible.builtin.import_role:
+        name: podman-host
+
+    - name: Verify backend host and container internet egress
+      ansible.builtin.import_role:
+        name: vm-egress-verification
+
+    - name: Show the backend Podman host state
+      ansible.builtin.debug:
+        msg:
+          - "Backend VM {{ inventory_hostname }} is ready for rootless Podman workloads."
+          - "Use the steady-state Tailscale identity {{ node_hostname }}.{{ platform_magicdns_suffix }} for the next workload slice."
+          - "Direct operator access should now use: tailscale ssh neo@{{ node_hostname }}"

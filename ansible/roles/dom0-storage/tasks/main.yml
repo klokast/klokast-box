@@ -1,0 +1,142 @@
+#
+# Summary:
+# - Converges persistent dom0 storage on LVM, mounts the dom0 data volume, and keeps the required persistence paths tracked.
+#
+---
+- name: Ensure dom0 storage prerequisite packages are installed
+  community.general.apk:
+    name:
+      - e2fsprogs
+      - lvm2
+    state: present
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Collect the current LVM OpenRC runlevels
+  # `lvm` must be available in the `boot` runlevel so `/etc/fstab` mounts can
+  # see `/dev/vg0/*` before the later runlevels start. Leaving it only in
+  # `default` is too late for the dom0 data mount after a reboot.
+  ansible.builtin.shell: |
+    set -eu
+    /sbin/rc-update show -v | awk '$1 == "lvm" { for (i = 3; i <= NF; i++) print $i }'
+  args:
+    executable: /bin/sh
+  register: dom0_storage_lvm_runlevels
+  changed_when: false
+
+- name: Ensure the LVM service is enabled in the boot runlevel
+  ansible.builtin.command:
+    argv:
+      - /sbin/rc-update
+      - add
+      - lvm
+      - boot
+  when: "'boot' not in dom0_storage_lvm_runlevels.stdout_lines"
+  notify: Commit lbu changes
+
+- name: Ensure the LVM service is not enabled in the default runlevel
+  ansible.builtin.command:
+    argv:
+      - /sbin/rc-update
+      - del
+      - lvm
+      - default
+  when: "'default' in dom0_storage_lvm_runlevels.stdout_lines"
+  notify: Commit lbu changes
+
+- name: Ensure the LVM service is started
+  ansible.builtin.service:
+    name: lvm
+    state: started
+  notify: Commit lbu changes
+
+- name: Check whether the dom0 data logical volume exists
+  # Alpine no longer guarantees the legacy `/sbin/*` paths are present on a
+  # converged diskless host. Use the normal command lookup after installing
+  # `lvm2` above.
+  ansible.builtin.command: "lvs --noheadings -o lv_name {{ volume_group_name }}"
+  register: lv_list
+  changed_when: false
+
+- name: Normalize the dom0 logical volume list
+  ansible.builtin.set_fact:
+    dom0_existing_lvs: "{{ lv_list.stdout_lines | map('trim') | reject('equalto', '') | list }}"
+
+- name: Create dom0 data logical volume
+  # Reused bootstrap disks can leave stale filesystem signatures in the future
+  # LV region even after the LV itself is gone. Wipe them non-interactively so
+  # phase 23 remains deterministic on reruns.
+  ansible.builtin.command: >-
+    lvcreate --yes --wipesignatures y
+    -L {{ dom0_data_lv_size }}
+    -n {{ dom0_data_lv_name }}
+    {{ volume_group_name }}
+  when: dom0_data_lv_name not in dom0_existing_lvs
+  changed_when: dom0_data_lv_name not in dom0_existing_lvs
+
+- name: Check the current dom0 data filesystem type
+  ansible.builtin.command: >-
+    blkid -o value -s TYPE /dev/{{ volume_group_name }}/{{ dom0_data_lv_name }}
+  register: dom0_data_filesystem_type
+  changed_when: false
+  failed_when: false
+
+- name: Create filesystem for dom0 data volume
+  community.general.filesystem:
+    dev: "/dev/{{ volume_group_name }}/{{ dom0_data_lv_name }}"
+    fstype: ext4
+    force: true
+  when:
+    - dom0_data_filesystem_type.stdout | trim != 'ext4'
+    - "'TYPE=\"ext4\"' not in dom0_data_filesystem_type.stdout"
+
+- name: Ensure dom0 data mount path exists
+  ansible.builtin.file:
+    path: "{{ dom0_data_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Mount dom0 data volume
+  ansible.posix.mount:
+    path: "{{ dom0_data_mount_path }}"
+    src: "/dev/{{ volume_group_name }}/{{ dom0_data_lv_name }}"
+    fstype: ext4
+    opts: rw,relatime
+    state: mounted
+  notify: Commit lbu changes
+
+- name: Remove the legacy dom0 data lbu include
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    regexp: "^\\+{{ dom0_data_mount_path | regex_replace('^/', '') | regex_escape }}$"
+    state: absent
+  notify: Commit lbu changes
+
+- name: Ensure dom0 data stays outside lbu payloads
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "-{{ dom0_data_mount_path | regex_replace('^/', '') }}"
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Ensure persistent dom0 directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ dom0_logs_path }}"
+    - "{{ dom0_xen_images_path }}"
+
+- name: Remove the obsolete /var/log lbu include from earlier Xen attempts
+  # Persisting `/var/log` through apkovl breaks recovery boots because tar
+  # cannot replace the live directory with a symlink cleanly. Keep logs
+  # transient for now; a later phase can revisit persistent logs with a mount-
+  # based design instead of an overlay tar entry.
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    regexp: '^\\+var/log$'
+    state: absent
+  notify: Commit lbu changes

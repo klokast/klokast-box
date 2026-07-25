@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+base="http://127.0.0.1:{{ torrent_qbittorrent_webui_port }}"
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: torrent-local status|pause-all|resume-all|paths
+USAGE
+    exit 2
+}
+
+api_post() {
+    curl -fsS -X POST "$base$1" >/dev/null
+}
+
+case "${1:-}" in
+    status)
+        curl -fsS "$base/api/v2/app/version"
+        printf '\n'
+        ;;
+    pause-all)
+        api_post "/api/v2/torrents/pause?hashes=all"
+        ;;
+    resume-all)
+        api_post "/api/v2/torrents/resume?hashes=all"
+        ;;
+    paths)
+        printf 'complete=%s\n' "{{ torrent_complete_dir }}"
+        printf 'incomplete=%s\n' "{{ torrent_incomplete_dir }}"
+        printf 'watch=%s\n' "{{ torrent_watch_dir }}"
+        ;;
+    *)
+        usage
+        ;;
+esac

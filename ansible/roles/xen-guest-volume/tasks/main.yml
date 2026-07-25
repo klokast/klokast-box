@@ -1,0 +1,24 @@
+#
+# Summary:
+# - Creates the logical volume backing a managed Xen guest and asserts the device path exists afterward.
+#
+---
+- name: Ensure the Xen guest logical volume exists
+  community.general.lvol:
+    vg: "{{ xen_guest_volume_group }}"
+    lv: "{{ xen_guest_volume_name }}"
+    size: "{{ xen_guest_volume_size }}"
+    state: present
+
+- name: Verify the Xen guest logical volume path exists
+  ansible.builtin.stat:
+    path: "/dev/{{ xen_guest_volume_group }}/{{ xen_guest_volume_name }}"
+  register: xen_guest_volume_stat
+
+- name: Assert the Xen guest logical volume path exists
+  ansible.builtin.assert:
+    that:
+      - xen_guest_volume_stat.stat.exists | default(false)
+    fail_msg: >-
+      Xen guest logical volume /dev/{{ xen_guest_volume_group }}/{{ xen_guest_volume_name }}
+      was not created successfully.

@@ -1,0 +1,18 @@
+#
+# Summary:
+# - Backward-compatible shim around the generic tailscale-stale-device role.
+#
+---
+- name: Reuse the generic Tailscale stale-device role
+  ansible.builtin.import_role:
+    name: tailscale-stale-device
+  vars:
+    tailscale_device_expected_hostname: "{{ node_hostname }}"
+    tailscale_device_expected_tag: "{{ vm_tailscale_authkey_expected_tag }}"
+    tailscale_device_apply: "{{ tailscale_stale_machine_apply }}"
+    tailscale_device_confirm: "{{ tailscale_stale_machine_confirm }}"
+    tailscale_device_expected_confirm: "{{ tailscale_stale_machine_expected_confirm }}"
+
+- name: Preserve the legacy stale-machine fact name
+  ansible.builtin.set_fact:
+    tailscale_stale_machine_candidates: "{{ tailscale_device_candidates }}"

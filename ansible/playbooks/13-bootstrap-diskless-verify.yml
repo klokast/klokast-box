@@ -1,0 +1,8 @@
+---
+- name: Verify diskless Alpine install artifacts
+  hosts: bootstrap
+  gather_facts: true
+  tasks:
+    - name: Verify the diskless boot artifacts and persistence state
+      ansible.builtin.import_role:
+        name: diskless-install-verification

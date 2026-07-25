@@ -1,0 +1,450 @@
+---
+ansible_user: neo
+ansible_become: true
+ansible_become_method: doas
+ansible_become_flags: -n
+ansible_become_timeout: 30
+ansible_timeout: 30
+ansible_python_interpreter: /usr/bin/python3
+ansible_remote_tmp: /tmp
+
+node_domain_role: router
+ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
+
+vm_admin_user_name: neo
+vm_local_users:
+  - name: "{{ vm_admin_user_name }}"
+    shell: /bin/ash
+    groups:
+      - wheel
+
+vm_base_packages:
+  - python3
+  - doas
+
+vm_admin_authorized_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+vm_manage_sshd: false
+vm_removed_packages:
+  - openssh
+tailscale_enable_ssh: true
+router_tailscale_expected_tag: tag:vm
+router_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-vm
+vm_tailscale_authkey_wrapper: "{{ router_tailscale_authkey_wrapper }}"
+vm_tailscale_authkey_advertise_tags: "{{ router_tailscale_expected_tag }}"
+vm_tailscale_authkey_expected_tag: "{{ router_tailscale_expected_tag }}"
+
+router_bootstrap_host: "{{ router_backend_ipv4_address }}"
+router_bootstrap_proxyjump: "neo@{{ hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0') }}"
+router_bootstrap_proxycommand: >-
+  ssh -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile={{ router_bootstrap_known_hosts_file }}
+  -W %h:%p {{ router_bootstrap_proxyjump }}
+router_bootstrap_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
+router_bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap"
+router_bootstrap_seed_access: true
+
+alpine_repositories:
+  - http://dl-cdn.alpinelinux.org/alpine/v3.23/main
+  - http://dl-cdn.alpinelinux.org/alpine/v3.23/community
+
+router_wan_interface: "{{ platform_network_realms.wan.router_interface }}"
+router_lan_interface: "{{ platform_network_realms.household.router_interface }}"
+router_admin_interface: "{{ platform_network_realms.admin.router_interface }}"
+router_dmz_interface: "{{ platform_zones.dmz.router_interface }}"
+router_backend_interface: "{{ platform_zones.bak.router_interface }}"
+router_iot_interface: "{{ platform_zones.iot.router_interface }}"
+router_usr_interface: "{{ platform_zones.usr.router_interface }}"
+router_ops_interface: "{{ platform_control_zones.ops.router_interface }}"
+
+router_lan_ipv4_address: "{{ platform_network_realms.household.router_ipv4_address }}"
+router_lan_ipv4_prefix: "{{ platform_network_realms.household.router_ipv4_prefix }}"
+router_lan_ipv4_netmask: "{{ platform_network_realms.household.router_ipv4_netmask }}"
+router_admin_ipv4_address: "{{ platform_network_realms.admin.router_ipv4_address }}"
+router_admin_ipv4_prefix: "{{ platform_network_realms.admin.router_ipv4_prefix }}"
+router_admin_ipv4_netmask: "{{ platform_network_realms.admin.router_ipv4_netmask }}"
+router_dmz_ipv4_address: "{{ platform_zones.dmz.router_ipv4_address }}"
+router_dmz_ipv4_prefix: "{{ platform_zones.dmz.router_ipv4_prefix }}"
+router_dmz_ipv4_netmask: "{{ platform_zones.dmz.router_ipv4_netmask }}"
+router_backend_ipv4_address: "{{ platform_zones.bak.router_ipv4_address }}"
+router_backend_ipv4_prefix: "{{ platform_zones.bak.router_ipv4_prefix }}"
+router_backend_ipv4_netmask: "{{ platform_zones.bak.router_ipv4_netmask }}"
+router_iot_ipv4_address: "{{ platform_zones.iot.router_ipv4_address }}"
+router_iot_ipv4_prefix: "{{ platform_zones.iot.router_ipv4_prefix }}"
+router_iot_ipv4_netmask: "{{ platform_zones.iot.router_ipv4_netmask }}"
+router_usr_ipv4_address: "{{ platform_zones.usr.router_ipv4_address }}"
+router_usr_ipv4_prefix: "{{ platform_zones.usr.router_ipv4_prefix }}"
+router_usr_ipv4_netmask: "{{ platform_zones.usr.router_ipv4_netmask }}"
+router_ops_ipv4_address: "{{ platform_control_zones.ops.router_ipv4_address }}"
+router_ops_ipv4_prefix: "{{ platform_control_zones.ops.router_ipv4_prefix }}"
+router_ops_ipv4_netmask: "{{ platform_control_zones.ops.router_ipv4_netmask }}"
+
+router_box_access: "{{ (platform_resources_box_access | default({})).get(node_name, {}) }}"
+router_box_enabled_capabilities: "{{ router_box_access.enabled_capabilities | default([]) }}"
+router_box_access_policy: "{{ router_box_access.policy | default({}) }}"
+router_local_lan_enabled: "{{ 'local-lan' in router_box_enabled_capabilities }}"
+router_ap_uplink_enabled: "{{ 'ap-uplink' in router_box_enabled_capabilities }}"
+router_household_vpn_egress_enabled: >-
+  {{
+    ('vpn-egress' in router_box_enabled_capabilities)
+    and ((router_box_access_policy | default({})).get('household-wan-egress', 'none') == 'vpn-egress')
+  }}
+router_household_direct_egress_enabled: >-
+  {{
+    ('direct-egress' in router_box_enabled_capabilities)
+    and ((router_box_access_policy | default({})).get('household-wan-egress', 'none') == 'direct-egress')
+  }}
+
+router_dns_upstreams:
+  - 1.1.1.1
+  - 1.0.0.1
+
+# Keep zone-to-WAN egress explicit and source scoped. Rootless Podman
+# containers inherit the VM source address, while IoT DHCP clients do not.
+router_web_tcp_egress_ports: &router_web_tcp_egress_ports
+  - 53
+  - 80
+  - 443
+router_web_udp_egress_ports: &router_web_udp_egress_ports
+  - 53
+  - 123
+
+router_base_wan_web_egress_rules:
+  - interface: "{{ platform_zones.bak.router_interface }}"
+    source: "{{ platform_zones.bak.vm_ipv4_address }}"
+    tcp_ports: *router_web_tcp_egress_ports
+    udp_ports: *router_web_udp_egress_ports
+    comment: backend-vm-wan-web-egress
+  - interface: "{{ platform_zones.dmz.router_interface }}"
+    source: "{{ platform_zones.dmz.vm_ipv4_address }}"
+    tcp_ports: *router_web_tcp_egress_ports
+    udp_ports: *router_web_udp_egress_ports
+    comment: dmz-vm-wan-web-egress
+  - interface: "{{ platform_zones.iot.router_interface }}"
+    source: "{{ platform_zones.iot.vm_ipv4_address }}"
+    tcp_ports: *router_web_tcp_egress_ports
+    udp_ports: *router_web_udp_egress_ports
+    comment: iot-vm-wan-web-egress
+  - interface: "{{ platform_zones.usr.router_interface }}"
+    source: "{{ platform_zones.usr.vm_ipv4_address }}"
+    tcp_ports: *router_web_tcp_egress_ports
+    udp_ports: *router_web_udp_egress_ports
+    comment: usr-vm-wan-web-egress
+  - interface: "{{ platform_control_zones.ops.router_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    tcp_ports: *router_web_tcp_egress_ports
+    udp_ports: *router_web_udp_egress_ports
+    comment: ops-vm-wan-web-egress
+
+router_local_presence_wan_web_egress_rules: >-
+  {{
+    (
+      router_local_presence_sources
+      | map('combine', {
+          'tcp_ports': router_web_tcp_egress_ports,
+          'udp_ports': router_web_udp_egress_ports,
+        })
+      | list
+    )
+    if (router_household_direct_egress_enabled | bool)
+    else []
+  }}
+
+router_wan_web_egress_rules: >-
+  {{
+    router_base_wan_web_egress_rules
+    + (
+      router_local_presence_wan_web_egress_rules
+      | map('combine', {'comment_suffix': '-direct-wan-web-egress'})
+      | list
+    )
+  }}
+
+router_local_presence_vlan_interfaces_all:
+  - parent: "{{ platform_network_realms.household.parent_interface }}"
+    name: "{{ platform_network_realms.household.router_interface }}"
+    vlan_id: "{{ platform_network_realms.household.vlan_id }}"
+  - parent: "{{ platform_network_realms.admin.parent_interface }}"
+    name: "{{ platform_network_realms.admin.router_interface }}"
+    vlan_id: "{{ platform_network_realms.admin.vlan_id }}"
+
+router_vlan_interfaces: "{{ router_local_presence_vlan_interfaces_all if (router_local_lan_enabled | bool) else [] }}"
+
+router_local_presence_interfaces_all:
+  - "{{ platform_network_realms.household.router_interface }}"
+  - "{{ platform_network_realms.admin.router_interface }}"
+  - "{{ platform_network_realms['ap-uplink'].router_interface }}"
+
+router_local_presence_interfaces: >-
+  {{
+    ([platform_network_realms.household.router_interface, platform_network_realms.admin.router_interface]
+      if (router_local_lan_enabled | bool) else [])
+    + ([platform_network_realms['ap-uplink'].router_interface]
+      if (router_ap_uplink_enabled | bool) else [])
+  }}
+
+router_local_presence_sources_all:
+  - name: household
+    interface: "{{ platform_network_realms.household.router_interface }}"
+    source: "{{ platform_network_realms.household.cidr }}"
+  - name: admin
+    interface: "{{ platform_network_realms.admin.router_interface }}"
+    source: "{{ platform_network_realms.admin.cidr }}"
+  - name: ap-uplink
+    interface: "{{ platform_network_realms['ap-uplink'].router_interface }}"
+    source: "{{ platform_network_realms['ap-uplink'].cidr }}"
+
+router_local_presence_sources: >-
+  {{
+    ([{
+      'name': 'household',
+      'interface': platform_network_realms.household.router_interface,
+      'source': platform_network_realms.household.cidr,
+    }, {
+      'name': 'admin',
+      'interface': platform_network_realms.admin.router_interface,
+      'source': platform_network_realms.admin.cidr,
+    }] if (router_local_lan_enabled | bool) else [])
+    + ([{
+      'name': 'ap-uplink',
+      'interface': platform_network_realms['ap-uplink'].router_interface,
+      'source': platform_network_realms['ap-uplink'].cidr,
+    }] if (router_ap_uplink_enabled | bool) else [])
+  }}
+
+router_local_presence_vpn_gateway_enabled: "{{ (router_local_lan_enabled | bool) and (router_household_vpn_egress_enabled | bool) }}"
+router_local_presence_vpn_gateway_ipv4_address: 192.168.200.40
+router_local_presence_vpn_gateway_interface: "{{ platform_zones.dmz.router_interface }}"
+router_local_presence_vpn_table: 110
+router_local_presence_vpn_priority_base: 11000
+router_local_presence_bypass_cidrs:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+router_local_presence_static_interfaces_all:
+  - interface: "{{ router_lan_interface }}"
+    address: "{{ router_lan_ipv4_address }}"
+    prefix: "{{ router_lan_ipv4_prefix }}"
+  - interface: "{{ router_admin_interface }}"
+    address: "{{ router_admin_ipv4_address }}"
+    prefix: "{{ router_admin_ipv4_prefix }}"
+  - interface: "{{ platform_network_realms['ap-uplink'].router_interface }}"
+    address: "{{ platform_network_realms['ap-uplink'].router_ipv4_address }}"
+    prefix: "{{ platform_network_realms['ap-uplink'].router_ipv4_prefix }}"
+
+router_local_presence_static_interfaces: >-
+  {{
+    ([{
+      'interface': router_lan_interface,
+      'address': router_lan_ipv4_address,
+      'prefix': router_lan_ipv4_prefix,
+    }, {
+      'interface': router_admin_interface,
+      'address': router_admin_ipv4_address,
+      'prefix': router_admin_ipv4_prefix,
+    }] if (router_local_lan_enabled | bool) else [])
+    + ([{
+      'interface': platform_network_realms['ap-uplink'].router_interface,
+      'address': platform_network_realms['ap-uplink'].router_ipv4_address,
+      'prefix': platform_network_realms['ap-uplink'].router_ipv4_prefix,
+    }] if (router_ap_uplink_enabled | bool) else [])
+  }}
+
+router_base_static_interfaces:
+  - interface: "{{ router_dmz_interface }}"
+    address: "{{ router_dmz_ipv4_address }}"
+    prefix: "{{ router_dmz_ipv4_prefix }}"
+  - interface: "{{ router_backend_interface }}"
+    address: "{{ router_backend_ipv4_address }}"
+    prefix: "{{ router_backend_ipv4_prefix }}"
+  - interface: "{{ router_iot_interface }}"
+    address: "{{ router_iot_ipv4_address }}"
+    prefix: "{{ router_iot_ipv4_prefix }}"
+  - interface: "{{ router_usr_interface }}"
+    address: "{{ router_usr_ipv4_address }}"
+    prefix: "{{ router_usr_ipv4_prefix }}"
+  - interface: "{{ router_ops_interface }}"
+    address: "{{ router_ops_ipv4_address }}"
+    prefix: "{{ router_ops_ipv4_prefix }}"
+
+router_static_interfaces: "{{ router_local_presence_static_interfaces + router_base_static_interfaces }}"
+
+# Keep service-specific WAN exceptions narrow. The bootstrap ISO builder on the
+# backend VM uploads artifacts to NanoKVM over SSH on the shared residential
+# LAN, so allow only that exact flow instead of reopening generic SSH egress.
+router_zone_wan_tcp_egress_exceptions:
+  - interface: "{{ platform_zones.bak.router_interface }}"
+    source: "{{ platform_zones.bak.vm_ipv4_address }}"
+    destination: 192.168.1.26
+    port: 22
+    comment: backend-oob-ssh
+
+# Keep inter-zone service paths narrow. DMZ public-ingress connectors may reach
+# only the declared backend app upstream port by default.
+router_interzone_tcp_rules:
+  - in_interface: "{{ platform_zones.bak.router_interface }}"
+    out_interface: "{{ platform_zones.dmz.router_interface }}"
+    source: "{{ platform_zones.bak.dom0_ipv4_address }}"
+    destination: "{{ platform_zones.dmz.vm_ipv4_address }}"
+    port: 22
+    comment: dom0-dmz-bootstrap-ssh
+  - in_interface: "{{ platform_zones.bak.router_interface }}"
+    out_interface: "{{ platform_zones.usr.router_interface }}"
+    source: "{{ platform_zones.bak.dom0_ipv4_address }}"
+    destination: "{{ platform_zones.usr.vm_ipv4_address }}"
+    port: 22
+    comment: dom0-usr-bootstrap-ssh
+  - in_interface: "{{ platform_zones.bak.router_interface }}"
+    out_interface: "{{ platform_zones.iot.router_interface }}"
+    source: "{{ platform_zones.bak.dom0_ipv4_address }}"
+    destination: "{{ platform_zones.iot.vm_ipv4_address }}"
+    port: 22
+    comment: dom0-iot-bootstrap-ssh
+
+# Same-box Tailscale direct transport between the controller and standard VMs.
+# Tailnet ACLs still authorize overlay services; these rules only permit the
+# WireGuard underlay UDP path so management traffic does not relay through DERP.
+router_tailscale_interzone_udp_rules:
+  - in_interface: "{{ platform_control_zones.ops.router_interface }}"
+    out_interface: "{{ platform_zones.bak.router_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    destination: "{{ platform_zones.bak.vm_ipv4_address }}"
+    port: 41641
+    comment: ops-backend-tailscale-underlay
+  - in_interface: "{{ platform_zones.bak.router_interface }}"
+    out_interface: "{{ platform_control_zones.ops.router_interface }}"
+    source: "{{ platform_zones.bak.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: backend-ops-tailscale-underlay
+  - in_interface: "{{ platform_control_zones.ops.router_interface }}"
+    out_interface: "{{ platform_zones.dmz.router_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    destination: "{{ platform_zones.dmz.vm_ipv4_address }}"
+    port: 41641
+    comment: ops-dmz-tailscale-underlay
+  - in_interface: "{{ platform_zones.dmz.router_interface }}"
+    out_interface: "{{ platform_control_zones.ops.router_interface }}"
+    source: "{{ platform_zones.dmz.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: dmz-ops-tailscale-underlay
+  - in_interface: "{{ platform_control_zones.ops.router_interface }}"
+    out_interface: "{{ platform_zones.iot.router_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    destination: "{{ platform_zones.iot.vm_ipv4_address }}"
+    port: 41641
+    comment: ops-iot-tailscale-underlay
+  - in_interface: "{{ platform_zones.iot.router_interface }}"
+    out_interface: "{{ platform_control_zones.ops.router_interface }}"
+    source: "{{ platform_zones.iot.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: iot-ops-tailscale-underlay
+  - in_interface: "{{ platform_control_zones.ops.router_interface }}"
+    out_interface: "{{ platform_zones.usr.router_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    destination: "{{ platform_zones.usr.vm_ipv4_address }}"
+    port: 41641
+    comment: ops-usr-tailscale-underlay
+  - in_interface: "{{ platform_zones.usr.router_interface }}"
+    out_interface: "{{ platform_control_zones.ops.router_interface }}"
+    source: "{{ platform_zones.usr.vm_ipv4_address }}"
+    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+    comment: usr-ops-tailscale-underlay
+
+# Tailscale direct connectivity is host-scoped and limited to the standard
+# WireGuard port. Other UDP egress stays closed by default.
+router_tailscale_udp_egress_rules:
+  - interface: "{{ platform_zones.bak.router_interface }}"
+    source: "{{ platform_zones.bak.vm_ipv4_address }}"
+    port: 41641
+  - interface: "{{ platform_zones.dmz.router_interface }}"
+    source: "{{ platform_zones.dmz.vm_ipv4_address }}"
+    port: 41641
+  - interface: "{{ platform_zones.iot.router_interface }}"
+    source: "{{ platform_zones.iot.vm_ipv4_address }}"
+    port: 41641
+  - interface: "{{ platform_zones.usr.router_interface }}"
+    source: "{{ platform_zones.usr.vm_ipv4_address }}"
+    port: 41641
+  - interface: "{{ platform_control_zones.ops.router_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    port: 41641
+
+# Start with IPv4-only downstream networks. The old jump-era DHCPv6-PD / RA
+# setup added latency and return-path complexity without helping the current
+# direct Tailscale model.
+router_enable_ipv6_downstream: false
+router_enable_dnsmasq: true
+
+router_base_internal_interfaces:
+  - "{{ platform_zones.dmz.router_interface }}"
+  - "{{ platform_zones.bak.router_interface }}"
+  - "{{ platform_zones.iot.router_interface }}"
+  - "{{ platform_zones.usr.router_interface }}"
+  - "{{ platform_control_zones.ops.router_interface }}"
+
+router_internal_interfaces: "{{ router_local_presence_interfaces + router_base_internal_interfaces }}"
+
+router_local_presence_dhcp_ranges_all:
+  - name: household
+    interface: "{{ platform_network_realms.household.router_interface }}"
+    start: "{{ platform_network_realms.household.dhcp_start }}"
+    end: "{{ platform_network_realms.household.dhcp_end }}"
+    router: "{{ platform_network_realms.household.router_ipv4_address }}"
+    dns: "{{ router_local_presence_vpn_gateway_ipv4_address if (router_local_presence_vpn_gateway_enabled | bool) else '' }}"
+  - name: admin
+    interface: "{{ platform_network_realms.admin.router_interface }}"
+    start: "{{ platform_network_realms.admin.dhcp_start }}"
+    end: "{{ platform_network_realms.admin.dhcp_end }}"
+    router: "{{ platform_network_realms.admin.router_ipv4_address }}"
+    dns: "{{ router_local_presence_vpn_gateway_ipv4_address if (router_local_presence_vpn_gateway_enabled | bool) else '' }}"
+  - name: ap-uplink
+    interface: "{{ platform_network_realms['ap-uplink'].router_interface }}"
+    start: "{{ platform_network_realms['ap-uplink'].dhcp_start }}"
+    end: "{{ platform_network_realms['ap-uplink'].dhcp_end }}"
+    router: "{{ platform_network_realms['ap-uplink'].router_ipv4_address }}"
+    dns: "{{ router_local_presence_vpn_gateway_ipv4_address if (router_local_presence_vpn_gateway_enabled | bool) else '' }}"
+
+router_local_presence_dhcp_ranges: >-
+  {{
+    ([{
+      'name': 'household',
+      'interface': platform_network_realms.household.router_interface,
+      'start': platform_network_realms.household.dhcp_start,
+      'end': platform_network_realms.household.dhcp_end,
+      'router': platform_network_realms.household.router_ipv4_address,
+      'dns': router_local_presence_vpn_gateway_ipv4_address
+        if (router_local_presence_vpn_gateway_enabled | bool) else '',
+    }, {
+      'name': 'admin',
+      'interface': platform_network_realms.admin.router_interface,
+      'start': platform_network_realms.admin.dhcp_start,
+      'end': platform_network_realms.admin.dhcp_end,
+      'router': platform_network_realms.admin.router_ipv4_address,
+      'dns': router_local_presence_vpn_gateway_ipv4_address
+        if (router_local_presence_vpn_gateway_enabled | bool) else '',
+    }] if (router_local_lan_enabled | bool) else [])
+    + ([{
+      'name': 'ap-uplink',
+      'interface': platform_network_realms['ap-uplink'].router_interface,
+      'start': platform_network_realms['ap-uplink'].dhcp_start,
+      'end': platform_network_realms['ap-uplink'].dhcp_end,
+      'router': platform_network_realms['ap-uplink'].router_ipv4_address,
+      'dns': router_local_presence_vpn_gateway_ipv4_address
+        if (router_local_presence_vpn_gateway_enabled | bool) else '',
+    }] if (router_ap_uplink_enabled | bool) else [])
+  }}
+
+router_base_dhcp_ranges:
+  - name: iot
+    interface: "{{ platform_zones.iot.router_interface }}"
+    start: 192.168.150.50
+    end: 192.168.150.150
+    router: "{{ platform_zones.iot.router_ipv4_address }}"
+
+router_dhcp_ranges: "{{ router_local_presence_dhcp_ranges + router_base_dhcp_ranges }}"
+router_dhcp_hosts: []
+router_managed_dhcp_hosts: []

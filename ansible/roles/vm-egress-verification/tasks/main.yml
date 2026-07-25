@@ -1,0 +1,73 @@
+#
+# Summary:
+# - Verifies a Podman VM can reach the network from both the host and a rootless container runtime.
+#
+---
+- name: Collect rootless Podman runtime information
+  ansible.builtin.command: /usr/bin/podman info --format=json
+  become: true
+  become_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+  register: verify_vm_egress_podman_info
+  changed_when: false
+
+- name: Parse the rootless Podman runtime information
+  ansible.builtin.set_fact:
+    verify_vm_egress_podman_info_json: "{{ verify_vm_egress_podman_info.stdout | from_json }}"
+
+- name: Collect runtime hostname
+  ansible.builtin.command: hostname
+  register: verify_vm_egress_hostname
+  changed_when: false
+
+- name: Collect IPv4 routes
+  ansible.builtin.command: /sbin/ip route
+  register: verify_vm_egress_ip_route
+  changed_when: false
+
+- name: Probe host HTTPS egress
+  ansible.builtin.shell: >-
+    wget -qO- {{ (podman_host_https_probe_url | default('https://dl-cdn.alpinelinux.org/alpine/')) | quote }} >/dev/null &&
+    echo host_https_ok
+  args:
+    executable: /bin/sh
+  register: verify_vm_egress_host_https
+  changed_when: false
+
+- name: Probe container HTTPS egress
+  ansible.builtin.command:
+    argv:
+      - podman
+      - run
+      - --rm
+      - --pull=never
+      - "{{ podman_test_image }}"
+      - sh
+      - -lc
+      - >-
+        wget -qO- {{ (podman_host_https_probe_url | default('https://dl-cdn.alpinelinux.org/alpine/')) | quote }} >/dev/null &&
+        echo container_https_ok
+  become: true
+  become_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"
+  register: verify_vm_egress_container_https
+  changed_when: false
+
+- name: Assert Podman-host egress readiness
+  ansible.builtin.assert:
+    that:
+      - verify_vm_egress_hostname.stdout == node_hostname
+      - verify_vm_egress_podman_info_json.host.security.rootless | default(false)
+      - verify_vm_egress_ip_route.stdout is search('default via .* dev eth0')
+      - verify_vm_egress_host_https.stdout == 'host_https_ok'
+      - verify_vm_egress_container_https.stdout == 'container_https_ok'
+    fail_msg: >-
+      VM egress verification failed. Review host routing, router NAT/firewall,
+      and container outbound HTTPS before depending on internet-facing workloads.
+
+- name: Show verified VM egress state
+  ansible.builtin.debug:
+    msg:
+      - "{{ verify_vm_egress_hostname.stdout }}"
+      - "rootless={{ verify_vm_egress_podman_info_json.host.security.rootless | default(false) | ternary('yes', 'no') }}"
+      - "{{ verify_vm_egress_ip_route.stdout_lines }}"
+      - "{{ verify_vm_egress_host_https.stdout }}"
+      - "{{ verify_vm_egress_container_https.stdout }}"

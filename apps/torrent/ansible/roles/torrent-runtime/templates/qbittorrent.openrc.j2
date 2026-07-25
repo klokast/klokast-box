@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+description="Klokast qBittorrent nox"
+
+command="/usr/bin/qbittorrent-nox"
+command_args="--profile={{ torrent_qbittorrent_profile }} --webui-port={{ torrent_qbittorrent_webui_port }} --confirm-legal-notice"
+command_user="{{ torrent_runtime_user }}:{{ torrent_runtime_group }}"
+command_background="yes"
+pidfile="/run/qbittorrent.pid"
+start_stop_daemon_args="--chdir {{ torrent_qbittorrent_home }} --umask 0027"
+
+export QBT_LEGAL_NOTICE="confirm"
+
+depend() {
+    need net nftables mihomo
+    after tailscaled
+}
+
+start_pre() {
+    checkpath -d -o {{ torrent_runtime_user }}:{{ torrent_runtime_group }} -m 0750 {{ torrent_qbittorrent_home }}
+    checkpath -d -o {{ torrent_runtime_user }}:{{ torrent_runtime_group }} -m 0750 {{ torrent_qbittorrent_config_dir }}
+    checkpath -d -o {{ torrent_runtime_user }}:{{ torrent_share_group }} -m 2750 {{ torrent_complete_dir }}
+    checkpath -d -o {{ torrent_runtime_user }}:{{ torrent_runtime_group }} -m 0700 {{ torrent_incomplete_dir }}
+}

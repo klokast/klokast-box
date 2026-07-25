@@ -1,0 +1,166 @@
+---
+- name: Assert the DMZ role targets a DMZ VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - node_name in [nextcloud_active_master, nextcloud_passive_backup]
+      - nextcloud_domain | length > 0
+    fail_msg: >-
+      nextcloud-dmz must target one selected DMZ VM.
+
+- name: Select DMZ site mode
+  ansible.builtin.set_fact:
+    nextcloud_site_mode: "{{ 'active' if node_name == nextcloud_active_master else 'passive' }}"
+
+- name: Stop disabled Cloudflare connector service
+  ansible.builtin.service:
+    name: "{{ nextcloud_cloudflared_service_name }}"
+    enabled: false
+    state: stopped
+  become: true
+  failed_when: false
+  when: not (nextcloud_cloudflare_tunnel_enabled | bool)
+
+- name: Remove disabled Cloudflare connector service and helper
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /etc/init.d/nextcloud-cloudflared
+    - /usr/local/sbin/nextcloud-cloudflared-deploy
+  when: not (nextcloud_cloudflare_tunnel_enabled | bool)
+
+- name: Select Cloudflare token
+  ansible.builtin.set_fact:
+    nextcloud_cloudflare_tunnel_token: >-
+      {{
+        lookup('env', 'NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE')
+        if node_name == nextcloud_active_master
+        else lookup('env', 'NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE')
+      }}
+  no_log: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Assert the Cloudflare tunnel token is available
+  ansible.builtin.assert:
+    that:
+      - nextcloud_cloudflare_tunnel_token | trim | length > 0
+    fail_msg: >-
+      Export NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE and
+      NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE before install.
+  no_log: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Ensure the Cloudflare Tunnel package is installed
+  community.general.apk:
+    name: "{{ nextcloud_cloudflared_package }}"
+    state: present
+    update_cache: true
+    no_cache: true
+    repository: "{{ nextcloud_cloudflared_apk_repositories }}"
+  become: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Check whether the generic cloudflared service exists
+  ansible.builtin.stat:
+    path: /etc/init.d/cloudflared
+  become: true
+  register: nextcloud_dmz_generic_cloudflared_service
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Keep the generic cloudflared service disabled
+  ansible.builtin.service:
+    name: cloudflared
+    enabled: false
+    state: stopped
+  become: true
+  when:
+    - nextcloud_cloudflare_tunnel_enabled | bool
+    - nextcloud_dmz_generic_cloudflared_service.stat.exists | default(false)
+
+- name: Ensure Cloudflare connector directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vm_admin_user_name) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ nextcloud_cloudflared_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_cloudflared_secret_root }}"
+      mode: "0700"
+    - path: "{{ nextcloud_cloudflared_log_root }}"
+      mode: "0750"
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Store the Cloudflare tunnel token
+  ansible.builtin.copy:
+    dest: "{{ nextcloud_cloudflared_secret_root }}/tunnel-token"
+    content: "{{ nextcloud_cloudflare_tunnel_token | trim }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Render the Cloudflare connector deploy helper
+  ansible.builtin.template:
+    src: nextcloud-cloudflared-deploy.sh.j2
+    dest: /usr/local/sbin/nextcloud-cloudflared-deploy
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Render the Cloudflare connector service
+  ansible.builtin.template:
+    src: nextcloud-cloudflared.init.j2
+    dest: /etc/init.d/nextcloud-cloudflared
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Deploy or refresh the Cloudflare connector container
+  ansible.builtin.command: /usr/local/sbin/nextcloud-cloudflared-deploy
+  become: true
+  register: nextcloud_dmz_deploy
+  changed_when: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Keep active tunnel running and passive tunnel stopped
+  ansible.builtin.service:
+    name: "{{ nextcloud_cloudflared_service_name }}"
+    enabled: "{{ nextcloud_site_mode == 'active' }}"
+    state: "{{ 'started' if nextcloud_site_mode == 'active' else 'stopped' }}"
+  become: true
+  when: nextcloud_cloudflare_tunnel_enabled | bool
+
+- name: Wait for the active Cloudflare connector to survive startup
+  ansible.builtin.pause:
+    seconds: 12
+  when:
+    - nextcloud_cloudflare_tunnel_enabled | bool
+    - nextcloud_site_mode == 'active'
+
+- name: Verify the active Cloudflare connector stays running
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ nextcloud_cloudflared_service_name }}"
+      - status
+  become: true
+  register: nextcloud_dmz_active_service_status
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: nextcloud_dmz_active_service_status.rc == 0
+  when:
+    - nextcloud_cloudflare_tunnel_enabled | bool
+    - nextcloud_site_mode == 'active'

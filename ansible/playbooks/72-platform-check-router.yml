@@ -1,0 +1,8 @@
+---
+- name: Check router steady-state Platform health
+  hosts: router
+  gather_facts: false
+  tasks:
+    - name: Verify router steady-state health
+      ansible.builtin.import_role:
+        name: router-verification

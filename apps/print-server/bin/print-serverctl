@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+APP_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = APP_DIR.parents[1]
+PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
+ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
+BASE_INVENTORY = REPO_ROOT / "ansible" / "inventory" / "hosts.yml"
+ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
+MAGICDNS_SUFFIX = os.environ.get(
+    "PRINT_SERVER_MAGICDNS_SUFFIX",
+    os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net"),
+)
+RESOURCES_REGISTRY_DEFAULT = os.environ.get(
+    "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
+    os.environ.get("KLOKAST_APP_RESOURCES_REGISTRY", ""),
+)
+
+BOX_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+ROLE_SUFFIXES = {
+    "bootstrap",
+    "dom0",
+    "router",
+    "bak",
+    "dmz",
+    "iot",
+    "usr",
+    "ops",
+    "agent",
+    "agt",
+}
+
+
+def die(message):
+    print(f"print-serverctl: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def valid_box(value):
+    if not isinstance(value, str) or not BOX_RE.fullmatch(value):
+        return False
+    return not any(value == suffix or value.endswith(f"-{suffix}") for suffix in ROLE_SUFFIXES)
+
+
+def require_box(value, field):
+    if not valid_box(value):
+        die(f"{field} must be a box name like k002, not a VM hostname")
+
+
+def run(argv, *, env=None):
+    subprocess.run(argv, cwd=REPO_ROOT, env=env, check=True)
+
+
+def output(argv):
+    return subprocess.check_output(argv, cwd=REPO_ROOT, text=True)
+
+
+def print_tailnet_resource(data, box):
+    matches = [
+        item
+        for item in data.get("tailnet_resources", [])
+        if item.get("app") == "print-server"
+        and item.get("id") == "print-ingress"
+        and item.get("node") == box
+    ]
+    if len(matches) > 1:
+        die("print-server registry compiled multiple print-ingress resources for --box")
+    return matches[0] if matches else None
+
+
+def load_resources(registry, box):
+    if not registry:
+        die("--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY")
+    registry_path = Path(registry).expanduser()
+    if not registry_path.is_file():
+        die(f"platform resources registry does not exist: {registry_path}")
+    data = json.loads(
+        output(
+            [
+                str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
+                "--registry",
+                str(registry_path),
+                "--app",
+                "print-server",
+                "show",
+            ]
+        )
+    )
+    app = (data.get("apps") or {}).get("print-server") or {}
+    if not app.get("enabled"):
+        die("print-server must be enabled in the platform resources registry")
+    if box not in (app.get("boxes") or []):
+        die("print-server registry placement.boxes must include --box")
+    resources = set(app.get("resources") or [])
+    required = {"printer-ipp"}
+    missing = sorted(required - resources)
+    if missing:
+        die("print-server registry is missing resources: " + ", ".join(missing))
+    devices = [
+        item
+        for item in data.get("managed_iot_devices", [])
+        if item.get("app") == "print-server"
+        and item.get("resource") == "printer"
+        and item.get("node") == box
+    ]
+    if len(devices) != 1:
+        die("print-server registry must define exactly one printer for --box")
+    ingress = print_tailnet_resource(data, box)
+    if not ingress or ingress.get("tag") != "tag:print":
+        die("print-server registry is missing the print-ingress tailnet resource")
+    return data, devices[0], ingress
+
+
+def render_box_inventory(box, output_path):
+    run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "render-node-inventory"),
+            "--node",
+            box,
+            "--magicdns-suffix",
+            MAGICDNS_SUFFIX,
+            "--output",
+            str(output_path),
+        ]
+    )
+
+
+def write_vars(tmp, box, device, ingress, queue_name, printer_uri):
+    uri = printer_uri or f"ipp://{device['ipv4_address']}/ipp/print"
+    payload = {
+        "print_box": box,
+        "print_printer_hostname": device["hostname"],
+        "print_printer_ipv4_address": device["ipv4_address"],
+        "print_printer_mac": device["mac"],
+        "print_printer_uri": uri,
+        "print_queue_name": queue_name,
+        "print_tailscale_hostname": ingress["hostname"],
+        "print_tailscale_tag": ingress["tag"],
+    }
+    path = tmp / "print-server-vars.yml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def ansible_env():
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
+    env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
+    return env
+
+
+def run_playbook(playbook, limit, vars_path, inventories):
+    argv = ["ansible-playbook", "-vv"]
+    for inventory in inventories:
+        argv.extend(["-i", str(inventory)])
+    argv.extend([str(playbook), "--limit", limit, "-e", f"@{vars_path}"])
+    run(argv, env=ansible_env())
+
+
+def verify_platform_resources(registry):
+    run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
+            "--registry",
+            str(Path(registry).expanduser()),
+            "--app",
+            "print-server",
+            "--magicdns-suffix",
+            MAGICDNS_SUFFIX,
+            "verify",
+        ]
+    )
+
+
+def build_and_load_images(box):
+    for command in ("build", "load"):
+        run(
+            [
+                str(REPO_ROOT / "ansible" / "bin" / "platform-image-build"),
+                "--app",
+                "print-server",
+                "--box",
+                box,
+                "--magicdns-suffix",
+                MAGICDNS_SUFFIX,
+                command,
+            ]
+        )
+
+
+def command_context(args):
+    require_box(args.box, "--box")
+    compiled, device, ingress = load_resources(args.resources_registry, args.box)
+    tmpdir = tempfile.TemporaryDirectory()
+    tmp = Path(tmpdir.name)
+    box_inventory = tmp / f"{args.box}.yml"
+    render_box_inventory(args.box, box_inventory)
+    vars_path = write_vars(
+        tmp,
+        args.box,
+        device,
+        ingress,
+        args.queue_name,
+        args.printer_uri,
+    )
+    return tmpdir, box_inventory, vars_path
+
+
+def cmd_preflight(args):
+    tmpdir, box_inventory, vars_path = command_context(args)
+    with tmpdir:
+        run_playbook(
+            PLAYBOOK_DIR / "00-preflight.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+
+
+def cmd_install(args):
+    verify_platform_resources(args.resources_registry)
+    tmpdir, box_inventory, vars_path = command_context(args)
+    with tmpdir:
+        run_playbook(
+            PLAYBOOK_DIR / "00-preflight.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+        build_and_load_images(args.box)
+        run_playbook(
+            PLAYBOOK_DIR / "20-backend-install.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+
+
+def cmd_verify(args):
+    verify_platform_resources(args.resources_registry)
+    tmpdir, box_inventory, vars_path = command_context(args)
+    with tmpdir:
+        run_playbook(
+            PLAYBOOK_DIR / "40-verify.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+
+
+def parser():
+    parser = argparse.ArgumentParser(description="Manage the Klokast print server app.")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--box", required=True)
+    common.add_argument(
+        "--resources-registry",
+        default=RESOURCES_REGISTRY_DEFAULT,
+        help="Platform resources registry path.",
+    )
+    common.add_argument(
+        "--queue-name",
+        default=os.environ.get("PRINT_SERVER_QUEUE_NAME", "epson"),
+        help="CUPS queue name.",
+    )
+    common.add_argument(
+        "--printer-uri",
+        default=os.environ.get("PRINT_SERVER_PRINTER_URI", ""),
+        help="Printer device URI. Defaults to ipp://<managed-printer-ip>/ipp/print.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("preflight", parents=[common]).set_defaults(func=cmd_preflight)
+    sub.add_parser("install", parents=[common]).set_defaults(func=cmd_install)
+    sub.add_parser("verify", parents=[common]).set_defaults(func=cmd_verify)
+    return parser
+
+
+def main():
+    args = parser().parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

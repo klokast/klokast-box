@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ -f /var/lib/klokast/desired/nextcloud-v2.json ]; then
+    /usr/local/sbin/klokast-node verify nextcloud-v2 >/dev/null 2>&1 || true
+fi

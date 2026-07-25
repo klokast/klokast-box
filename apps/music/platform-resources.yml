@@ -1,0 +1,73 @@
+---
+schema_version: 1
+app: music
+risk_class: private_media_endpoint
+default_isolation: zone_vm_rootless_podman_plus_low_trust_iot_device
+placement_mode: multi_box
+resources:
+  compute:
+    - id: backend-player
+      type: podman_workload
+      zone: bak
+      privilege: unprivileged
+      lifecycle: steady
+      rationale: >-
+        Hosts MPD, Snapserver, myMPD, upload ingress, and music volumes as a
+        rootless Podman pod on the backend VM.
+    - id: local-audio-endpoint
+      type: managed_iot_device
+      zone: iot
+      privilege: external_low_trust
+      lifecycle: steady
+      hostname_suffix: streamer
+      management_tag_default: tag:streamer
+      rationale: >-
+        Reserves and manages the Raspberry Pi LAN audio endpoint connected to
+        the local USB DAC.
+  network:
+    - id: snapcast-stream
+      type: device_to_zone_tcp
+      required: true
+      device: local-audio-endpoint
+      to_zone: bak
+      ports:
+        - 1704
+      rationale: >-
+        Allows only the local Raspberry Pi Snapclient to connect to the local
+        backend Snapserver stream.
+    - id: audio-endpoint-updates
+      type: device_wan_egress
+      required: true
+      device: local-audio-endpoint
+      tcp_ports:
+        - 80
+        - 443
+      udp_ports:
+        - 123
+        - 41641
+      rationale: >-
+        Allows the Pi to update packages, sync time, and maintain Tailscale
+        direct connectivity while keeping other IoT-to-WAN traffic closed.
+  tailnet:
+    - id: private-ui
+      enabled_by_default: true
+      access:
+        intent: local-presence-control
+        capability: overlay
+      hostname_pattern: "{box}-music"
+      tag_default: tag:music
+      grants:
+        - src: group:family
+          ports:
+            - 443
+    - id: upload-ingress
+      required: true
+      access:
+        intent: file-upload
+        capability: overlay
+      hostname_pattern: "{box}-music-upload"
+      tag_default: tag:music-upload
+      grants:
+        - src: group:family
+          ports:
+            - 22

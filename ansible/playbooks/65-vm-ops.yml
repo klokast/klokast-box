@@ -1,0 +1,328 @@
+---
+- name: Clone and boot the ops controller VM for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    ops_installed_spec: "{{ node_xen_guest_specs.ops | combine({'stage': 'installed'}, recursive=True) }}"
+  tasks:
+    - name: Persist the dom0 bridge configuration
+      ansible.builtin.import_role:
+        name: network-bridges
+
+    - name: Ensure the dom0 runtime bridges exist
+      ansible.builtin.import_role:
+        name: dom0-bridge-runtime
+
+    - name: Ensure the ops guest is stopped before cloning
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ ops_installed_spec.guest_name }}"
+        xen_guest_config_path: "{{ ops_installed_spec.config_path }}"
+        xen_guest_runtime_state: stopped
+
+    - name: Clone and personalize the ops guest disk from the Alpine VM template
+      ansible.builtin.import_role:
+        name: podman-guest-clone
+      vars:
+        podman_clone_guest_spec: "{{ ops_installed_spec }}"
+        podman_clone_inventory_host: "{{ node_name }}-ops"
+        podman_clone_bootstrap_ssh_sources:
+          - "{{ platform_control_zones.ops.dom0_ipv4_address }}"
+
+    - name: Copy the installed ops kernel and initramfs into dom0 shared storage
+      ansible.builtin.import_role:
+        name: xen-guest-artifacts
+      vars:
+        xen_guest_name: "{{ ops_installed_spec.guest_name }}"
+        xen_guest_lv_path: "{{ ops_installed_spec.installed.required_lvs | default(ops_installed_spec.required_lvs) | first }}"
+        xen_guest_kernel_source_name: vmlinuz-virt
+        xen_guest_initramfs_source_name: initramfs-virt
+        xen_guest_kernel_dest_path: "{{ ops_installed_spec.installed.kernel_path }}"
+        xen_guest_initramfs_dest_path: "{{ ops_installed_spec.installed.initramfs_path }}"
+
+    - name: Render the installed-stage ops Xen guest configuration
+      ansible.builtin.import_role:
+        name: xen-guest
+      vars:
+        xen_guest_spec: "{{ ops_installed_spec }}"
+
+    - name: Flush dom0 handlers after ops bridge persistence updates
+      ansible.builtin.meta: flush_handlers
+
+    - name: Start the ops guest
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ ops_installed_spec.guest_name }}"
+        xen_guest_config_path: "{{ ops_installed_spec.config_path }}"
+        xen_guest_runtime_state: running
+
+    - name: Persist ops guest state on the diskless dom0 host
+      ansible.builtin.shell: |
+        set -eu
+        apk cache sync >/dev/null
+        backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+        if [ -n "$backupdir" ]; then
+          mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+          if [ -n "$mount_info" ]; then
+            set -- $mount_info
+            case ",$2," in
+              *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+            esac
+          fi
+        fi
+        lbu commit -d
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+- name: Enroll the ops controller VM into Tailscale over its dom0 bootstrap SSH path
+  hosts: ops
+  gather_facts: false
+  become: false
+  vars:
+    ansible_user: root
+    ansible_become: false
+    ansible_host: "{{ vm_bootstrap_host }}"
+    ansible_remote_tmp: /tmp/ansible-remote-bootstrap
+    ansible_ssh_timeout: 30
+    ansible_ssh_private_key_file: "{{ vm_bootstrap_private_key_file }}"
+    vm_bootstrap_proxyjump_known_hosts_file: "{{ hostvars[node_name ~ '-dom0'].dom0_known_hosts_file }}"
+    vm_bootstrap_proxycommand: >-
+      ssh
+      -o BatchMode=yes
+      -o ConnectTimeout=10
+      -o ConnectionAttempts=1
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_proxyjump_known_hosts_file }}
+      -W %h:%p
+      {{ vm_bootstrap_proxyjump }}
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+      -o ProxyCommand='{{ vm_bootstrap_proxycommand }}'
+  pre_tasks:
+    - name: Discover the ops VM steady-state Tailscale identity when already online
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import subprocess
+        import sys
+
+        target_hostname = {{ node_hostname | to_json }}
+        expected_tags = {{ vm_tailscale_authkey_expected_tags | default([vm_tailscale_authkey_expected_tag]) | to_json }}
+
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"]))
+        candidates = []
+        for peer in (status.get("Peer") or {}).values():
+            if (
+                peer.get("HostName") == target_hostname
+                and all(tag in (peer.get("Tags") or []) for tag in expected_tags)
+                and peer.get("Online")
+                and peer.get("DNSName")
+            ):
+                candidates.append(peer)
+
+        if not candidates:
+            sys.exit(1)
+
+        candidates.sort(key=lambda peer: peer.get("Created") or "", reverse=True)
+        peer = candidates[0]
+        print(json.dumps({"dns_name": peer["DNSName"].rstrip(".")}))
+        PY
+      args:
+        executable: /bin/sh
+      delegate_to: localhost
+      become: false
+      register: ops_vm_steady_state_tailscale_check
+      retries: 20
+      delay: 3
+      until: ops_vm_steady_state_tailscale_check.rc == 0
+      failed_when: false
+      changed_when: false
+
+    - name: Use the live ops VM Tailscale DNS name when already enrolled
+      ansible.builtin.set_fact:
+        ansible_host: "{{ (ops_vm_steady_state_tailscale_check.stdout | from_json).dns_name }}"
+        ops_vm_tailscale_dns_name: "{{ (ops_vm_steady_state_tailscale_check.stdout | from_json).dns_name }}"
+      when: ops_vm_steady_state_tailscale_check.rc == 0
+
+    - name: Skip bootstrap enrollment when the steady-state ops identity is already online
+      ansible.builtin.meta: end_host
+      when: ops_vm_steady_state_tailscale_check.rc == 0
+
+    - name: Ensure the current controller has a local sbin for Tailscale wrappers
+      ansible.builtin.file:
+        path: /usr/local/sbin
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      delegate_to: localhost
+      become: true
+      vars:
+        ansible_become: true
+        ansible_become_method: doas
+        ansible_become_flags: -n
+
+    - name: Install current-controller Tailscale wrapper executables before ops enrollment
+      ansible.builtin.copy:
+        src: "{{ ops_controller_tailscale_wrapper_source_root }}/{{ item }}"
+        dest: "/usr/local/sbin/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ ops_controller_tailscale_wrappers }}"
+      delegate_to: localhost
+      become: true
+      vars:
+        ansible_become: true
+        ansible_become_method: doas
+        ansible_become_flags: -n
+
+    - name: Check the current controller can mint the ops enrollment key
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - -n
+          - "{{ vm_tailscale_authkey_wrapper }}"
+          - --check-config
+          - --hostname
+          - "{{ node_hostname }}"
+          - --tags
+          - "{{ vm_tailscale_authkey_advertise_tags }}"
+      delegate_to: localhost
+      become: false
+      register: ops_vm_authkey_wrapper_check
+      changed_when: false
+
+    - name: Ensure the ops VM bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ vm_bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove any stale ops VM bootstrap SSH host key before first-contact enrollment
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/ssh-keygen
+          - -f
+          - "{{ vm_bootstrap_known_hosts_file }}"
+          - -R
+          - "{{ vm_bootstrap_host }}"
+      delegate_to: localhost
+      become: false
+      register: ops_vm_bootstrap_known_hosts_cleanup
+      failed_when: false
+      changed_when: ops_vm_bootstrap_known_hosts_cleanup.rc == 0
+
+    - name: Wait for ops VM bootstrap SSH over the dom0 bridge path
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - "{{ vm_bootstrap_private_key_file }}"
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - -o
+          - ConnectionAttempts=1
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+          - -o
+          - ProxyCommand={{ vm_bootstrap_proxycommand }}
+          - "{{ ansible_user }}@{{ vm_bootstrap_host }}"
+          - "true"
+      delegate_to: localhost
+      become: false
+      register: ops_vm_bootstrap_ssh_probe
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: ops_vm_bootstrap_ssh_probe.rc == 0
+
+  tasks:
+    - name: Ensure Python is available over the ops VM bootstrap SSH path
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+
+    - name: Gather ops VM bootstrap facts
+      ansible.builtin.setup:
+
+    - name: Converge the ops VM base access model before Tailscale enrollment
+      ansible.builtin.import_role:
+        name: vm-base
+      vars:
+        vm_lock_root_password: false
+
+    - name: Ensure the ops VM Tailscale client is installed and running
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Enroll the ops VM into Tailscale through the auth-key wrapper
+      ansible.builtin.import_role:
+        name: vm-tailscale-enrollment
+
+    - name: Open the steady-state VM firewall baseline for Tailscale management
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+
+    - name: Use the live ops VM Tailscale DNS name after enrollment
+      ansible.builtin.set_fact:
+        ansible_host: "{{ vm_tailscale_enrollment_status_verify.Self.DNSName | regex_replace('\\.$', '') }}"
+        ops_vm_tailscale_dns_name: "{{ vm_tailscale_enrollment_status_verify.Self.DNSName | regex_replace('\\.$', '') }}"
+
+- name: Wait for the ops controller VM to be reachable over steady-state Tailscale SSH
+  hosts: ops
+  gather_facts: false
+  tasks:
+    - name: Wait for ops VM connectivity after enrollment
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+
+- name: Converge the ops controller VM baseline
+  hosts: ops
+  gather_facts: false
+  pre_tasks:
+    - name: Gather ops VM steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Keep the ops VM Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the ops VM SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the ops VM base system converged
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Converge the ops VM firewall baseline
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+
+    - name: Converge the ops controller authority split
+      ansible.builtin.import_role:
+        name: ops-controller
+
+    - name: Transfer private controller state and root-only Tailscale OAuth material
+      ansible.builtin.import_role:
+        name: ops-private-state-transfer
+      when: ops_private_state_transfer_enabled | default(true) | bool
+
+    - name: Show the ops VM state
+      ansible.builtin.debug:
+        msg:
+          - "{{ inventory_hostname }} is ready as an in-Platform controller."
+          - "Tailscale identity: {{ ops_vm_tailscale_dns_name | default(ansible_host) }}"
+          - "Infra access: tailscale ssh {{ ops_infra_user }}@{{ ops_vm_tailscale_dns_name | default(node_hostname) }}"

@@ -1,0 +1,6 @@
+---
+debian_tailscale_release: "{{ ansible_distribution_release | default('trixie') }}"
+debian_tailscale_track: stable
+debian_tailscale_keyring_path: /usr/share/keyrings/tailscale-archive-keyring.gpg
+debian_tailscale_sources_path: /etc/apt/sources.list.d/tailscale.list
+debian_tailscale_enable_ssh: "{{ tailscale_enable_ssh | default(true) }}"

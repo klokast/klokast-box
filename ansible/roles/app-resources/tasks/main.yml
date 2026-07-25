@@ -1,0 +1,111 @@
+---
+- name: Ensure app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Ensure keyed app-resource include directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  loop:
+    - /etc/klokast/app-resources/router-forward.d
+    - /etc/klokast/app-resources/vm-input.d
+
+- name: Ensure app-resource include glob sentinels exist
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: "# Empty placeholder so nft include globs always match.\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  loop:
+    - /etc/klokast/app-resources/router-forward.d/000-empty.nft
+    - /etc/klokast/app-resources/vm-input.d/000-empty.nft
+
+- name: Retire legacy aggregate app-resource include files
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: "# Legacy aggregate include retired by keyed platform-resources.\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  loop:
+    - /etc/klokast/app-resources/router-forward.nft
+    - /etc/klokast/app-resources/vm-input.nft
+
+- name: Ensure app-resource reconcile helper directory exists
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install app-resource reconcile helper
+  ansible.builtin.copy:
+    src: reconcile-app-resources.py
+    dest: /usr/local/libexec/klokast-app-resources-reconcile
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Stage desired platform-resource ledger for keyed materialization
+  ansible.builtin.copy:
+    dest: /tmp/klokast-platform-resources-desired.json
+    content: "{{ platform_resources_desired_json }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+
+- name: Reconcile keyed app-resource snippets
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          '/usr/bin/python3',
+          '/usr/local/libexec/klokast-app-resources-reconcile',
+          'apply',
+          '--desired',
+          '/tmp/klokast-platform-resources-desired.json',
+          '--node-name',
+          node_name,
+          '--node-role',
+          node_domain_role
+        ]
+        + (
+          platform_resources_apply_scope_apps
+          | default([])
+          | map('regex_replace', '^', '--scope-app=')
+          | list
+        )
+      }}
+  become: true
+  register: app_resources_reconcile
+  changed_when: (app_resources_reconcile.stdout | from_json).changed | default(false)
+  when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']
+
+- name: Validate nftables after app-resource rendering
+  ansible.builtin.command: /usr/sbin/nft -c -f /etc/nftables.nft
+  become: true
+  changed_when: false
+  when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']
+
+- name: Apply nftables after app-resource rendering
+  ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.nft
+  become: true
+  changed_when: app_resources_reconcile.changed | default(false)
+  when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']

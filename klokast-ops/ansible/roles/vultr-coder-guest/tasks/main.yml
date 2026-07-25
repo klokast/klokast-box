@@ -1,0 +1,306 @@
+---
+- name: Select coder guest paths and identity
+  ansible.builtin.set_fact:
+    coder_guest_home: "/home/{{ guest_user }}"
+    coder_guest_source_root: "/home/{{ guest_user }}/src/{{ guest_repo_owner }}"
+    coder_guest_repo_dest: "/home/{{ guest_user }}/src/{{ guest_repo_owner }}/{{ guest_repo_name }}"
+    coder_guest_github_key_path: "/home/{{ guest_user }}/.ssh/github-{{ guest_repo_owner }}-{{ guest_repo_name }}"
+    coder_guest_git_name: "{{ guest_git_user_name | default('Mulan Agent') }}"
+    coder_guest_git_email: "{{ guest_git_user_email | default(guest_user ~ '@' ~ ansible_hostname) }}"
+    coder_guest_clone_repo: "{{ guest_clone_repo | default(false) | bool }}"
+
+- name: Ensure coder guest support packages are present
+  become: true
+  ansible.builtin.apt:
+    name:
+      - bubblewrap
+      - build-essential
+      - ca-certificates
+      - curl
+      - git
+      - jq
+      - mosh
+      - nodejs
+      - npm
+      - openssh-client
+      - tmux
+      - vim
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the coder guest account exists
+  become: true
+  ansible.builtin.user:
+    name: "{{ guest_user }}"
+    shell: /bin/bash
+    create_home: true
+    password_lock: true
+
+- name: Ensure coder guest directories exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ coder_guest_home }}/src"
+      mode: "0755"
+    - path: "{{ coder_guest_source_root }}"
+      mode: "0755"
+    - path: "{{ coder_guest_home }}/.local/bin"
+      mode: "0755"
+    - path: "{{ coder_guest_home }}/.config"
+      mode: "0700"
+    - path: "{{ coder_guest_home }}/.config/systemd"
+      mode: "0700"
+    - path: "{{ coder_guest_home }}/.config/systemd/user"
+      mode: "0700"
+    - path: "{{ coder_guest_home }}/.ssh"
+      mode: "0700"
+    - path: "{{ coder_guest_home }}/.codex"
+      mode: "0700"
+
+- name: Clone nvm for the coder guest
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.git:
+    repo: https://github.com/nvm-sh/nvm.git
+    dest: "{{ coder_guest_home }}/.nvm"
+    version: "{{ ops_nvm_version }}"
+    recursive: false
+
+- name: Ensure coder guest login shells load nvm
+  become: true
+  ansible.builtin.blockinfile:
+    path: "{{ coder_guest_home }}/.bashrc"
+    create: true
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "0644"
+    marker: "# {mark} klokast coder guest nvm"
+    block: |
+      export NVM_DIR="$HOME/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+- name: Install the current Node.js LTS for the coder guest
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    nvm install --lts
+    nvm alias default 'lts/*'
+  args:
+    executable: /bin/bash
+  register: coder_guest_nvm_install
+  changed_when: "'already installed' not in ((coder_guest_nvm_install.stdout + coder_guest_nvm_install.stderr) | lower)"
+
+- name: Check whether coder guest npm packages are already installed
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    npm list -g --depth=0 '{{ item.name }}'
+  args:
+    executable: /bin/bash
+  loop: "{{ ops_agent_npm_packages }}"
+  register: coder_guest_npm_packages
+  changed_when: false
+  failed_when: false
+
+- name: Install missing coder guest npm packages
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    npm install -g '{{ item.item.install_spec }}'
+  args:
+    executable: /bin/bash
+  loop: "{{ coder_guest_npm_packages.results }}"
+  when: item.rc != 0
+
+- name: Verify the Codex CLI is available for the coder guest
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    codex --version
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Install the coder guest Codex config
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ coder_guest_home }}/.codex/config.toml"
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "0600"
+    content: |
+      model = "gpt-5.5"
+      model_reasoning_effort = "xhigh"
+      approvals_reviewer = "user"
+      personality = "pragmatic"
+      plan_mode_reasoning_effort = "xhigh"
+
+      approval_policy = "never"
+      sandbox_mode = "danger-full-access"
+
+      [projects."{{ coder_guest_repo_dest }}"]
+      trust_level = "trusted"
+
+      [tui]
+      status_line = ["model-with-reasoning", "context-remaining", "current-dir", "session-id", "run-state"]
+
+      [notice]
+      hide_full_access_warning = true
+
+- name: Install pinned GitHub SSH host keys for the coder guest
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ coder_guest_home }}/.ssh/known_hosts"
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "0644"
+    content: |
+      {% for host_key in ops_github_known_hosts %}
+      {{ host_key }}
+      {% endfor %}
+
+- name: Install coder guest GitHub SSH client config
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ coder_guest_home }}/.ssh/config"
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "0600"
+    content: |
+      Host github.com
+          HostName github.com
+          User git
+          IdentityFile {{ coder_guest_github_key_path }}
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+          UserKnownHostsFile {{ coder_guest_home }}/.ssh/known_hosts
+
+- name: Generate the coder guest GitHub deploy key when missing
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "{{ guest_user }}@{{ ansible_hostname }} {{ guest_repo_owner }}/{{ guest_repo_name }} deploy key"
+      - -f
+      - "{{ coder_guest_github_key_path }}"
+    creates: "{{ coder_guest_github_key_path }}"
+
+- name: Ensure coder guest GitHub deploy key permissions are strict
+  become: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ coder_guest_github_key_path }}"
+      mode: "0600"
+    - path: "{{ coder_guest_github_key_path }}.pub"
+      mode: "0644"
+
+- name: Configure coder guest Git defaults
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.command:
+    argv:
+      - git
+      - config
+      - --global
+      - "{{ item.name }}"
+      - "{{ item.value }}"
+  loop:
+    - name: user.name
+      value: "{{ coder_guest_git_name }}"
+    - name: user.email
+      value: "{{ coder_guest_git_email }}"
+    - name: init.defaultBranch
+      value: main
+    - name: core.editor
+      value: vi
+  changed_when: false
+
+- name: Ensure interactive bash defaults are installed for the coder guest
+  become: true
+  ansible.builtin.blockinfile:
+    path: "{{ coder_guest_home }}/.bashrc"
+    create: true
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "0644"
+    marker: "# {mark} klokast coder guest interactive shell"
+    block: |
+      export EDITOR=vi
+      export VISUAL=vi
+      export GIT_EDITOR=vi
+      export IGNOREEOF=999
+
+      if command -v tmux >/dev/null 2>&1 && [ -z "$TMUX" ] && [ -n "$PS1" ]; then
+          if tmux has-session -t main 2>/dev/null; then
+              exec tmux attach-session -t main
+          else
+              exec tmux new-session -s main -c "{{ coder_guest_repo_dest }}"
+          fi
+      fi
+
+- name: Install tmux defaults for the coder guest
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ coder_guest_home }}/.tmux.conf"
+    owner: "{{ guest_user }}"
+    group: "{{ guest_user }}"
+    mode: "0644"
+    content: |
+      set -g mouse on
+      set -g history-limit 100000
+      set -gw mode-keys vi
+      set -s set-clipboard on
+
+- name: Clone the coder guest repository after deploy key registration
+  become: true
+  become_user: "{{ guest_user }}"
+  ansible.builtin.git:
+    repo: "git@github.com:{{ guest_repo_owner }}/{{ guest_repo_name }}.git"
+    dest: "{{ coder_guest_repo_dest }}"
+    version: main
+    key_file: "{{ coder_guest_github_key_path }}"
+    update: true
+  when: coder_guest_clone_repo
+
+- name: Verify the coder guest repository checkout exists
+  become: true
+  ansible.builtin.stat:
+    path: "{{ coder_guest_repo_dest }}/.git"
+  register: coder_guest_repo_git_dir
+  when: coder_guest_clone_repo
+
+- name: Assert the coder guest repository checkout exists
+  ansible.builtin.assert:
+    that:
+      - coder_guest_repo_git_dir.stat.exists
+    fail_msg: "The {{ guest_repo_owner }}/{{ guest_repo_name }} checkout is missing for {{ guest_user }}."
+  when: coder_guest_clone_repo

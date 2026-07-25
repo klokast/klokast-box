@@ -1,0 +1,36 @@
+---
+- name: Assert backup marker exists
+  ansible.builtin.stat:
+    path: /srv/nextcloud/backup/last-success.epoch
+  become: true
+  register: nextcloud_backup_marker
+
+- name: Read backup marker
+  ansible.builtin.slurp:
+    src: /srv/nextcloud/backup/last-success.epoch
+  become: true
+  register: nextcloud_backup_marker_slurp
+  when: nextcloud_backup_marker.stat.exists
+
+- name: Read the current epoch from the target
+  ansible.builtin.command: date -u +%s
+  register: nextcloud_backup_now
+  changed_when: false
+  when: nextcloud_backup_marker.stat.exists
+
+- name: Assert active backup is recent
+  ansible.builtin.assert:
+    that:
+      - nextcloud_backup_marker.stat.exists
+      - ((nextcloud_backup_now.stdout | int) - (nextcloud_backup_marker_slurp.content | b64decode | trim | int)) <= 3900
+    fail_msg: >-
+      No successful Nextcloud backup marker exists, or the last success is
+      older than 65 minutes.
+  when: nextcloud_backup_marker.stat.exists
+
+- name: Fail when no active backup has completed
+  ansible.builtin.fail:
+    msg: >-
+      No Nextcloud backup marker exists yet. Run /usr/local/sbin/nextcloud-backup-run
+      on the active backend and verify the restic repository.
+  when: not nextcloud_backup_marker.stat.exists

@@ -1,0 +1,119 @@
+#
+# Summary:
+# - Renders the Xen guest definition for the requested boot stage and verifies the expected disks, interfaces, and autostart state.
+#
+---
+- name: Assert the Xen guest stage is supported
+  ansible.builtin.assert:
+    that:
+      - xen_guest_spec.stage in ['installer', 'installed']
+    fail_msg: >-
+      Unsupported Xen guest stage {{ xen_guest_spec.stage }} for
+      {{ xen_guest_spec.guest_name }}.
+
+- name: Select the active Xen guest boot stage
+  # The current repo still supports an explicit installer -> installed transition
+  # for development. Once the template-clone pipeline lands, many guests should
+  # skip the installer stage entirely and converge directly as finalized clones.
+  ansible.builtin.set_fact:
+    xen_guest_active_stage: "{{ xen_guest_spec[xen_guest_spec.stage] }}"
+    xen_guest_required_lvs: >-
+      {{ xen_guest_spec[xen_guest_spec.stage].required_lvs
+      | default(xen_guest_spec.required_lvs | default([])) }}
+
+- name: Check required Xen guest boot artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ xen_guest_active_stage.required_paths }}"
+  register: xen_guest_required_paths
+
+- name: Collect available logical volumes
+  # `neo` escalates with `doas`, whose PATH on Alpine does not include `/sbin`.
+  ansible.builtin.command: "/sbin/lvs --noheadings -o lv_path"
+  register: xen_guest_lv_paths
+  changed_when: false
+
+- name: Assert the Xen guest dependencies exist
+  ansible.builtin.assert:
+    that:
+      - (xen_guest_required_paths.results | map(attribute='stat.exists') | list | min)
+      - >-
+        ((xen_guest_required_lvs | difference(
+        xen_guest_lv_paths.stdout_lines | map('trim') | list)) | length) == 0
+    fail_msg: >-
+      Missing Xen guest boot artifacts or logical volumes for
+      {{ xen_guest_spec.guest_name }}.
+
+- name: Render the Xen guest configuration
+  ansible.builtin.template:
+    src: xen-guest.cfg.j2
+    dest: "{{ xen_guest_spec.config_path }}"
+    mode: "0644"
+  register: xen_guest_config_template
+
+- name: Ensure the Xen guest autostart symlink is present when requested
+  ansible.builtin.file:
+    src: "{{ xen_guest_spec.config_path }}"
+    dest: "{{ xen_guest_autostart_dir }}/{{ xen_guest_spec.guest_name }}.cfg"
+    state: link
+  register: xen_guest_autostart_present
+  when: xen_guest_spec.autostart | bool
+
+- name: Ensure the Xen guest autostart symlink is absent when not requested
+  ansible.builtin.file:
+    path: "{{ xen_guest_autostart_dir }}/{{ xen_guest_spec.guest_name }}.cfg"
+    state: absent
+  register: xen_guest_autostart_absent
+  when: not (xen_guest_spec.autostart | bool)
+
+- name: Record whether the Xen guest definition changed
+  ansible.builtin.set_fact:
+    xen_guest_definition_changed: >-
+      {{
+        xen_guest_config_template.changed
+        or (xen_guest_autostart_present.changed | default(false))
+        or (xen_guest_autostart_absent.changed | default(false))
+      }}
+
+- name: Read back the rendered Xen guest configuration
+  ansible.builtin.command: "/bin/cat {{ xen_guest_spec.config_path }}"
+  register: xen_guest_rendered_config
+  changed_when: false
+
+- name: Assert the rendered Xen guest configuration matches the active stage
+  ansible.builtin.assert:
+    that:
+      - xen_guest_rendered_config.stdout is search('name = \"' ~ xen_guest_spec.guest_name ~ '\"')
+      - xen_guest_rendered_config.stdout is search('type = \"pvh\"')
+      - xen_guest_rendered_config.stdout is search('kernel = \"' ~ xen_guest_active_stage.kernel_path | regex_escape ~ '\"')
+      - xen_guest_rendered_config.stdout is search('ramdisk = \"' ~ xen_guest_active_stage.initramfs_path | regex_escape ~ '\"')
+      - xen_guest_rendered_config.stdout is search('extra = \"' ~ xen_guest_active_stage.extra | regex_escape ~ '\"')
+    fail_msg: >-
+      Rendered Xen guest configuration for {{ xen_guest_spec.guest_name }}
+      does not match the requested {{ xen_guest_spec.stage }} stage.
+
+- name: Assert all configured disks are present in the rendered guest config
+  ansible.builtin.assert:
+    that:
+      - item in xen_guest_rendered_config.stdout
+    fail_msg: >-
+      Disk {{ item }} is missing from {{ xen_guest_spec.config_path }}.
+  loop: "{{ xen_guest_active_stage.disks }}"
+
+- name: Assert all configured interfaces are present in the rendered guest config
+  ansible.builtin.assert:
+    that:
+      - ("bridge=" ~ item.bridge ~ ",mac=" ~ item.mac) in xen_guest_rendered_config.stdout
+    fail_msg: >-
+      Interface {{ item.bridge }} / {{ item.mac }} is missing from
+      {{ xen_guest_spec.config_path }}.
+  loop: "{{ xen_guest_spec.vifs }}"
+
+- name: Show verified Xen guest stage state
+  ansible.builtin.debug:
+    msg:
+      - "{{ xen_guest_spec.guest_name }}"
+      - "{{ xen_guest_spec.stage }}"
+      - "{{ xen_guest_spec.config_path }}"
+      - "{{ xen_guest_required_lvs }}"
+      - "{{ xen_guest_active_stage.required_paths }}"

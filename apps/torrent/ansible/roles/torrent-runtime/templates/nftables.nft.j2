@@ -1,0 +1,30 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet klokast_torrent_filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iifname "lo" accept
+    ct state established,related accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+    {% if torrent_tailscale_underlay_source | length > 0 and torrent_tailscale_underlay_destination | length > 0 %}
+    iifname "{{ torrent_tailscale_underlay_interface }}" ip saddr {{ torrent_tailscale_underlay_source }} ip daddr {{ torrent_tailscale_underlay_destination }} udp dport {{ torrent_tailscale_underlay_port }} accept comment "ops-torrent-tailscale-underlay-input"
+    {% endif %}
+    iifname "tailscale0" tcp dport { 22, 443 } accept
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+
+    oifname "lo" accept
+    ct state established,related accept
+    meta skuid {{ torrent_qbittorrent_uid }} oifname "{{ torrent_mihomo_device }}" accept
+    meta skuid {{ torrent_qbittorrent_uid }} reject with icmpx type admin-prohibited
+  }
+}

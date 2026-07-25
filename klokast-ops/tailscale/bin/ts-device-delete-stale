@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SECRET_FILE="${TS_DEVICES_SECRET_FILE:-/etc/klokast/tailscale-devices.env}"
+device_id=""
+expected_hostname=""
+expected_tag=""
+GUARD="${KLOKAST_CONTROLLER_GUARD:-/usr/local/sbin/klokast-controller-guard}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: ts-device-delete-stale --id DEVICE_ID --hostname HOSTNAME --tag TAG
+
+Deletes one offline Tailscale device only after re-fetching the tailnet device
+list and verifying that the device id, short hostname, and tag all match.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --id)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      device_id="$2"
+      shift 2
+      ;;
+    --hostname)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      expected_hostname="$2"
+      shift 2
+      ;;
+    --tag)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      expected_tag="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$device_id" ] || [ -z "$expected_hostname" ] || [ -z "$expected_tag" ]; then
+  usage
+  exit 2
+fi
+
+if [ -x "$GUARD" ]; then
+  "$GUARD" --require-active
+fi
+
+if [[ ! "$device_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "Refusing unexpected device id: $device_id" >&2
+  exit 2
+fi
+
+if [[ ! "$expected_hostname" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+  echo "Refusing unexpected hostname: $expected_hostname" >&2
+  exit 2
+fi
+
+if [[ ! "$expected_tag" =~ ^tag:[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+  echo "Refusing unexpected Tailscale tag: $expected_tag" >&2
+  exit 2
+fi
+
+if [ ! -r "$SECRET_FILE" ]; then
+  echo "Secret file not readable: $SECRET_FILE" >&2
+  exit 2
+fi
+
+source "$SECRET_FILE"
+
+: "${TAILNET_ID:?TAILNET_ID is missing from $SECRET_FILE}"
+: "${TS_OAUTH_CLIENT_ID:?TS_OAUTH_CLIENT_ID is missing from $SECRET_FILE}"
+: "${TS_OAUTH_CLIENT_SECRET:?TS_OAUTH_CLIENT_SECRET is missing from $SECRET_FILE}"
+
+TOKEN="$(
+  curl -fsS \
+    -u "$TS_OAUTH_CLIENT_ID:$TS_OAUTH_CLIENT_SECRET" \
+    -d grant_type=client_credentials \
+    -d scope=devices:core \
+    "https://api.tailscale.com/api/v2/oauth/token" \
+  | jq -er '.access_token'
+)"
+
+devices_json="$(
+  curl -fsS \
+    -H "Authorization: Bearer $TOKEN" \
+    "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/devices"
+)"
+
+status_json="$(tailscale status --json)"
+
+tmp_devices="$(mktemp)"
+tmp_status="$(mktemp)"
+trap 'rm -f "$tmp_devices" "$tmp_status"' EXIT
+printf '%s' "$devices_json" > "$tmp_devices"
+printf '%s' "$status_json" > "$tmp_status"
+
+validation_summary="$(
+  python3 - "$device_id" "$expected_hostname" "$expected_tag" "$tmp_devices" "$tmp_status" <<'PY'
+import json
+import sys
+
+device_id, expected_hostname, expected_tag, devices_path, status_path = sys.argv[1:]
+expected_hostname = expected_hostname.lower()
+
+with open(devices_path, encoding="utf-8") as devices_file:
+    data = json.load(devices_file)
+with open(status_path, encoding="utf-8") as status_file:
+    status = json.load(status_file)
+devices = data.get("devices") or data.get("Devices") or []
+
+def name_candidates(device):
+    names = set()
+    for key in ("hostname", "HostName", "name", "Name", "dnsName", "DNSName"):
+        value = device.get(key)
+        if not value:
+            continue
+        name = str(value).rstrip(".").lower()
+        names.add(name)
+        names.add(name.split(".", 1)[0])
+    return names
+
+def addresses_for(device):
+    addresses = set()
+    for key in ("addresses", "Addresses", "tailscaleIPs", "TailscaleIPs"):
+        for value in device.get(key) or []:
+            addresses.add(str(value).split("/", 1)[0])
+    return addresses
+
+def full_names_for(device):
+    names = set()
+    for key in ("name", "Name", "dnsName", "DNSName"):
+        value = device.get(key)
+        if value:
+            names.add(str(value).rstrip(".").lower())
+    return names
+
+status_peers = list((status.get("Peer") or {}).values())
+if status.get("Self"):
+    status_peers.append(status["Self"])
+
+def status_names_for(peer):
+    names = set()
+    for key in ("HostName", "DNSName"):
+        value = peer.get(key)
+        if not value:
+            continue
+        name = str(value).rstrip(".").lower()
+        names.add(name)
+        names.add(name.split(".", 1)[0])
+    return names
+
+def status_full_names_for(peer):
+    names = set()
+    value = peer.get("DNSName")
+    if value:
+        names.add(str(value).rstrip(".").lower())
+    return names
+
+def matching_status_peer(device):
+    device_names = name_candidates(device)
+    device_full_names = full_names_for(device)
+    device_addresses = addresses_for(device)
+    node_ids = {
+        str(device.get("nodeId") or ""),
+        str(device.get("nodeID") or ""),
+        str(device.get("NodeID") or ""),
+    }
+    node_ids.discard("")
+
+    for peer in status_peers:
+        peer_full_names = status_full_names_for(peer)
+        peer_addresses = {str(value) for value in (peer.get("TailscaleIPs") or [])}
+        peer_ids = {str(peer.get("ID") or "")}
+        peer_ids.discard("")
+        if device_full_names and (device_full_names & peer_full_names):
+            return peer
+        if device_addresses and (device_addresses & peer_addresses):
+            return peer
+        if node_ids and (node_ids & peer_ids):
+            return peer
+
+    short_matches = [
+        peer
+        for peer in status_peers
+        if device_names & status_names_for(peer)
+    ]
+    if len(short_matches) == 1:
+        return short_matches[0]
+    return None
+
+match = None
+for device in devices:
+    if str(device.get("id") or device.get("ID") or "") == device_id:
+        match = device
+        break
+
+if match is None:
+    print(f"Device id {device_id} was not found", file=sys.stderr)
+    sys.exit(3)
+
+status_peer = matching_status_peer(match)
+if status_peer is None:
+    print(f"Refusing to delete device {device_id}: local Tailscale status did not include it", file=sys.stderr)
+    sys.exit(4)
+
+if status_peer.get("Online") is not False:
+    print(f"Refusing to delete online device {device_id}", file=sys.stderr)
+    sys.exit(5)
+
+tags = match.get("tags") or match.get("Tags") or []
+if expected_tag not in tags:
+    print(
+        f"Refusing to delete device {device_id}: expected tag {expected_tag}, got {tags}",
+        file=sys.stderr,
+    )
+    sys.exit(6)
+
+names = name_candidates(match)
+if expected_hostname not in names:
+    print(
+        f"Refusing to delete device {device_id}: expected hostname {expected_hostname}, got {sorted(names)}",
+        file=sys.stderr,
+    )
+    sys.exit(7)
+
+summary = {
+    "id": device_id,
+    "hostname": match.get("hostname") or match.get("HostName") or "",
+    "name": match.get("name") or match.get("Name") or "",
+    "lastSeen": match.get("lastSeen") or match.get("LastSeen") or "",
+    "tags": tags,
+}
+print(json.dumps(summary, sort_keys=True))
+PY
+)"
+
+echo "Deleting stale Tailscale device: $validation_summary" >&2
+
+curl -fsS \
+  -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "https://api.tailscale.com/api/v2/device/$device_id" \
+  >/dev/null
+
+echo "Deleted stale Tailscale device $device_id for $expected_hostname."

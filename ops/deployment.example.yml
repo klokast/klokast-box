@@ -1,0 +1,16 @@
+---
+schema_version: 1
+tailnet:
+  magicdns_suffix: example.ts.net
+  groups:
+    operators:
+      - admin@example.com
+    family:
+      - family@example.com
+boxes:
+  k001:
+    site: site-a
+    physical_location: Example location
+  k002:
+    site: site-b
+    physical_location: Example location

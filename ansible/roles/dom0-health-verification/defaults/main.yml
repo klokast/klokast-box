@@ -1,0 +1,14 @@
+---
+dom0_health_required_guest_keys:
+  - router
+  - backend
+  - dmz
+  - iot
+
+dom0_health_optional_guest_keys:
+  - ops
+
+dom0_health_optional_bridge_names:
+  - "{{ platform_control_zones.ops.bridge | default('br-ops') }}"
+
+dom0_health_guest_memory_tolerance_mib: 1

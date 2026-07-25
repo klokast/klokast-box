@@ -1,0 +1,39 @@
+---
+schema_version: 1
+app: household-vpn
+risk_class: local-presence-egress-gateway
+default_isolation: dedicated_alpine_app_vm
+placement_mode: single_box
+
+resources:
+  compute:
+    - id: gateway
+      type: app_vm
+      zone: dmz
+      access:
+        intent: household-wan-egress
+        capability: vpn-egress
+      privilege: privileged_network_forwarder
+      lifecycle: persistent
+      isolation: dedicated_pvh_vm
+      cleanup_required: true
+      hostname_suffix: household-vpn
+      tailnet_tag_default: tag:household-vpn
+      guest_os: alpine
+      container_runtime: none
+      memory_mb: 2048
+      vcpus: 2
+      lv_size: 8G
+      rationale: Local Wi-Fi egress gateway needs IP forwarding, TUN, and nftables without sharing a general-purpose VM.
+
+  network:
+    - id: vpn-egress
+      type: wan_egress
+      from_zone: dmz
+      access:
+        intent: household-wan-egress
+        capability: vpn-egress
+      tcp_ports: [53, 80, 443, 853]
+      udp_ports: [53, 123, 443, 853, 41641]
+      enabled_by_default: true
+      rationale: Allow VPN/subscription/DNS/NTP/control egress from the gateway VM.

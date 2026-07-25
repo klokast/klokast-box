@@ -1,0 +1,58 @@
+#
+# Summary:
+# - Captures and displays a concise Tailscale bootstrap summary for the disposable stage-1 host.
+#
+---
+- name: Verify the bootstrap host is the expected Tailscale entrypoint
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_bootstrap_status
+  changed_when: false
+
+- name: Check whether the Tailscale state directory exists
+  ansible.builtin.stat:
+    path: "{{ bootstrap_tailscale_state_dir }}"
+  register: tailscale_state_dir_stat
+
+- name: Check whether the Tailscale state file exists
+  ansible.builtin.stat:
+    path: "{{ bootstrap_tailscale_state_file }}"
+  register: tailscale_state_file_stat
+
+- name: Capture Tailscale IPs
+  ansible.builtin.command: tailscale ip
+  register: tailscale_bootstrap_ip
+  changed_when: false
+
+- name: Parse Tailscale bootstrap status
+  ansible.builtin.set_fact:
+    tailscale_bootstrap_status_parsed: "{{ tailscale_bootstrap_status.stdout | from_json }}"
+
+- name: Assert the bootstrap Tailscale identity is node-scoped and temporary
+  ansible.builtin.assert:
+    that:
+      - tailscale_bootstrap_status_parsed.BackendState | default('') == 'Running'
+      - tailscale_bootstrap_status_parsed.Self.HostName | default('') == bootstrap_tailscale_hostname
+      - bootstrap_tailscale_tag in (tailscale_bootstrap_status_parsed.Self.Tags | default([]))
+    fail_msg: >-
+      The Debian bootstrap host must be enrolled as
+      {{ bootstrap_tailscale_hostname }} with {{ bootstrap_tailscale_tag }} before
+      destructive bootstrap phases run.
+
+- name: Build Tailscale bootstrap summary
+  ansible.builtin.set_fact:
+    tailscale_bootstrap_summary:
+      backend_state: "{{ tailscale_bootstrap_status_parsed.BackendState | default('unknown') }}"
+      self_dns_name: "{{ tailscale_bootstrap_status_parsed.Self.DNSName | default('') }}"
+      self_host_name: "{{ tailscale_bootstrap_status_parsed.Self.HostName | default('') }}"
+      self_tailscale_ips: "{{ tailscale_bootstrap_status_parsed.Self.TailscaleIPs | default([]) }}"
+      self_tags: "{{ tailscale_bootstrap_status_parsed.Self.Tags | default([]) }}"
+      state_dir_exists: "{{ tailscale_state_dir_stat.stat.exists }}"
+      state_file_exists: "{{ tailscale_state_file_stat.stat.exists }}"
+      state_dir: "{{ bootstrap_tailscale_state_dir }}"
+      state_file: "{{ bootstrap_tailscale_state_file }}"
+      ssh_user: "{{ bootstrap_tailscale_user }}"
+      tailscale_ip_output: "{{ tailscale_bootstrap_ip.stdout_lines | default([]) }}"
+
+- name: Show Tailscale bootstrap summary
+  ansible.builtin.debug:
+    var: tailscale_bootstrap_summary

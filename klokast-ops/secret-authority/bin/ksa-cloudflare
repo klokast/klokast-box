@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+#
+# Controller-side Cloudflare Secret Authority dispatcher.
+#
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+from pathlib import Path
+
+
+SCHEMA_VERSION = 1
+AUTHORITY = "klokast-secret-authority"
+PROVIDER = "cloudflare"
+SIGNATURE_NAMESPACE = "klokast-secret-authority"
+DEFAULT_REPO_ROOT = "/home/smith/src/klokast/klokast-box"
+DEFAULT_CONFIG_ROOT = "/etc/klokast/secret-authority"
+DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority"
+DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
+DEFAULT_TTL_SECONDS = 600
+STATIC_SITE_ACTION = "static-site-tunnel"
+
+HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+GIT_HEAD_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+
+
+class SecretAuthorityError(Exception):
+    pass
+
+
+def die(message, code=1):
+    print(f"ksa-cloudflare: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def canonical_json(data):
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+
+
+def now_utc():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def format_utc(value):
+    return value.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_utc(value, name):
+    if not isinstance(value, str) or not value:
+        raise SecretAuthorityError(f"{name} must be a non-empty timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise SecretAuthorityError(f"{name} must be ISO-8601 UTC") from error
+    if parsed.tzinfo is None:
+        raise SecretAuthorityError(f"{name} must include timezone")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def safe_host(value, name):
+    if not HOST_RE.match(value or ""):
+        raise SecretAuthorityError(f"{name} must be a simple host label")
+    return value
+
+
+def safe_box(value):
+    safe_host(value, "--box")
+    if value in {"bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt"} or value.endswith(("-bootstrap", "-dom0", "-router", "-bak", "-dmz", "-iot", "-usr", "-agent", "-agt", "-ops")):
+        raise SecretAuthorityError("--box must be a box name, not a VM hostname")
+    return value
+
+
+def safe_domain(value):
+    if not DOMAIN_RE.match(value or "") or value.startswith(".") or value.endswith("."):
+        raise SecretAuthorityError("--domain must be a hostname")
+    return value
+
+
+def safe_id(value, name):
+    if not ID_RE.match(value or ""):
+        raise SecretAuthorityError(f"{name} contains unsafe characters")
+    return value
+
+
+def safe_service_url(value):
+    if not value.startswith(("http://127.0.0.1:", "http://localhost:", "https://127.0.0.1:", "https://localhost:")):
+        raise SecretAuthorityError("--service-url must target loopback")
+    return value
+
+
+def current_repo_head(repo_root):
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SecretAuthorityError(f"cannot read repo HEAD: {result.stderr.strip()}")
+    head = result.stdout.strip()
+    if not GIT_HEAD_RE.match(head):
+        raise SecretAuthorityError("repo HEAD is not a valid git object id")
+    return head
+
+
+def build_intent(args, repo_root):
+    ttl_seconds = int(getattr(args, "ttl_seconds", DEFAULT_TTL_SECONDS))
+    if ttl_seconds <= 0 or ttl_seconds > 3600:
+        raise SecretAuthorityError("--ttl-seconds must be between 1 and 3600")
+    expires_at = getattr(args, "expires_at", None)
+    expires = parse_utc(expires_at, "--expires-at") if expires_at else now_utc() + dt.timedelta(seconds=ttl_seconds)
+    nonce = getattr(args, "nonce", None) or secrets.token_urlsafe(18)
+    if not NONCE_RE.match(nonce):
+        raise SecretAuthorityError("--nonce contains unsafe characters")
+    intent = {
+        "schema_version": SCHEMA_VERSION,
+        "authority": AUTHORITY,
+        "provider": PROVIDER,
+        "action": STATIC_SITE_ACTION,
+        "guardian": safe_host(args.guardian, "--guardian"),
+        "box": safe_box(args.box),
+        "domain": safe_domain(args.domain),
+        "cloudflare_account_id": safe_id(args.cloudflare_account_id, "--cloudflare-account-id"),
+        "cloudflare_zone_id": safe_id(args.cloudflare_zone_id, "--cloudflare-zone-id"),
+        "tunnel_name": safe_host(args.tunnel_name, "--tunnel-name"),
+        "service_url": safe_service_url(args.service_url),
+        "repo_head": current_repo_head(repo_root),
+        "expires_at": format_utc(expires),
+        "nonce": nonce,
+    }
+    validate_intent(intent)
+    return intent
+
+
+def validate_intent(intent):
+    expected = {
+        "schema_version",
+        "authority",
+        "provider",
+        "action",
+        "guardian",
+        "box",
+        "domain",
+        "cloudflare_account_id",
+        "cloudflare_zone_id",
+        "tunnel_name",
+        "service_url",
+        "repo_head",
+        "expires_at",
+        "nonce",
+    }
+    if not isinstance(intent, dict):
+        raise SecretAuthorityError("approval intent must be a JSON object")
+    if set(intent) != expected:
+        extra = sorted(set(intent) - expected)
+        missing = sorted(expected - set(intent))
+        raise SecretAuthorityError(f"approval intent fields mismatch; missing={missing} extra={extra}")
+    if intent["schema_version"] != SCHEMA_VERSION or intent["authority"] != AUTHORITY:
+        raise SecretAuthorityError("approval intent authority is wrong")
+    if intent["provider"] != PROVIDER or intent["action"] != STATIC_SITE_ACTION:
+        raise SecretAuthorityError("approval intent action is unsupported")
+    safe_host(intent["guardian"], "guardian")
+    safe_box(intent["box"])
+    safe_domain(intent["domain"])
+    safe_id(intent["cloudflare_account_id"], "cloudflare_account_id")
+    safe_id(intent["cloudflare_zone_id"], "cloudflare_zone_id")
+    safe_host(intent["tunnel_name"], "tunnel_name")
+    safe_service_url(intent["service_url"])
+    if not GIT_HEAD_RE.match(intent["repo_head"]):
+        raise SecretAuthorityError("repo_head is invalid")
+    parse_utc(intent["expires_at"], "expires_at")
+    if not NONCE_RE.match(intent["nonce"]):
+        raise SecretAuthorityError("nonce is invalid")
+
+
+def load_intent(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as error:
+        raise SecretAuthorityError(f"cannot read approval intent: {error}") from error
+    except json.JSONDecodeError as error:
+        raise SecretAuthorityError(f"approval intent is not JSON: {error}") from error
+    validate_intent(data)
+    return data
+
+
+def append_jsonl(path, item, mode=0o600):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = canonical_json(item).encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+    os.chmod(path, mode)
+
+
+def nonce_seen(path, nonce):
+    path = Path(path)
+    if not path.exists():
+        return False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if item.get("nonce") == nonce:
+            return True
+    return False
+
+
+def consume_nonce(args, intent):
+    nonce_file = Path(args.state_root) / "cloudflare-used-approvals.jsonl"
+    if nonce_seen(nonce_file, intent["nonce"]):
+        raise SecretAuthorityError("approval intent nonce was already used")
+    append_jsonl(
+        nonce_file,
+        {
+            "ts": format_utc(now_utc()),
+            "nonce": intent["nonce"],
+            "action": intent["action"],
+            "repo_head": intent["repo_head"],
+            "signer_id": args.signer_id,
+        },
+    )
+
+
+def verify_signature(args, intent):
+    allowed_signers = Path(args.allowed_signers)
+    if not allowed_signers.is_file():
+        raise SecretAuthorityError(f"allowed signers file is missing: {allowed_signers}")
+    signature_file = Path(args.approval_signature)
+    if not signature_file.is_file():
+        raise SecretAuthorityError(f"approval signature file is missing: {signature_file}")
+    result = subprocess.run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "verify",
+            "-f",
+            str(allowed_signers),
+            "-I",
+            args.signer_id,
+            "-n",
+            SIGNATURE_NAMESPACE,
+            "-s",
+            str(signature_file),
+        ],
+        input=canonical_json(intent),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SecretAuthorityError(f"approval signature verification failed: {detail}")
+
+
+def require_root():
+    if os.geteuid() != 0:
+        raise SecretAuthorityError("this command must run as root through the checked sudo wrapper")
+
+
+def require_active_controller():
+    guard = os.environ.get("KLOKAST_CONTROLLER_GUARD", "/usr/local/sbin/klokast-controller-guard")
+    if not os.path.exists(guard) or not os.access(guard, os.X_OK):
+        return
+    result = subprocess.run([guard, "--require-active"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SecretAuthorityError(f"controller is not active: {detail}")
+
+
+def write_static_site_token(args, token):
+    token = token.strip()
+    if not token:
+        raise SecretAuthorityError("guardian returned an empty cloudflared token")
+    path = Path(args.config_root) / "apps" / "static-site" / "cloudflared-token"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def cmd_intent(args):
+    intent = build_intent(args, Path(args.repo_root))
+    print(canonical_json(intent), end="")
+
+
+def cmd_status(args):
+    require_root()
+    if not args.redacted:
+        raise SecretAuthorityError("status requires --redacted")
+    status = {
+        "schema_version": SCHEMA_VERSION,
+        "authority": AUTHORITY,
+        "provider": PROVIDER,
+        "allowed_signers_configured": Path(args.allowed_signers).is_file(),
+        "static_site_cloudflare_token_configured": (
+            Path(args.config_root) / "apps" / "static-site" / "cloudflared-token"
+        ).is_file(),
+        "audit_log": str(args.audit_log),
+        "state_root": str(args.state_root),
+    }
+    print(canonical_json(status), end="")
+
+
+def cmd_static_site_tunnel(args):
+    require_root()
+    require_active_controller()
+    if not args.approval_intent or not args.approval_signature or not args.signer_id:
+        raise SecretAuthorityError("missing --approval-intent, --approval-signature, or --signer-id")
+    intent = load_intent(args.approval_intent)
+    if parse_utc(intent["expires_at"], "expires_at") <= now_utc():
+        raise SecretAuthorityError("approval intent is expired")
+    expected = build_intent(args, Path(args.repo_root))
+    for key, expected_value in expected.items():
+        if key in {"expires_at", "nonce"}:
+            continue
+        if intent.get(key) != expected_value:
+            raise SecretAuthorityError(f"approval intent does not match command field: {key}")
+    verify_signature(args, intent)
+    consume_nonce(args, intent)
+    signature_text = Path(args.approval_signature).read_text(encoding="utf-8")
+    request = canonical_json({"approval_signature": signature_text, "intent": intent})
+    guardian_command = [
+        "tailscale",
+        "ssh",
+        f"neo@{intent['guardian']}",
+        "doas",
+        "/usr/local/sbin/cloudflare-guardian",
+        "--guardian",
+        intent["guardian"],
+    ]
+    if args.dry_run:
+        guardian_command.append("--dry-run")
+    guardian_command.extend(["--signer-id", args.signer_id, "static-site-tunnel"])
+    result = subprocess.run(
+        guardian_command,
+        input=request,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "guardian command failed"
+        raise SecretAuthorityError(f"Cloudflare guardian failed: {detail}")
+    try:
+        response = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise SecretAuthorityError("guardian returned invalid JSON") from error
+    token = response.pop("cloudflared_token", "")
+    if not args.dry_run:
+        write_static_site_token(args, token)
+    append_jsonl(
+        args.audit_log,
+        {
+            "ts": format_utc(now_utc()),
+            "event": "cloudflare.static-site-tunnel.finished",
+            "action": intent["action"],
+            "box": intent["box"],
+            "domain": intent["domain"],
+            "guardian": intent["guardian"],
+            "signer_id": args.signer_id,
+            "dry_run": args.dry_run,
+        },
+    )
+    response["cloudflared_token_configured"] = not args.dry_run
+    print(canonical_json(response), end="")
+
+
+def add_static_site_tunnel_args(parser):
+    parser.add_argument("--guardian", default="k001-dom0")
+    parser.add_argument("--box", default="k001")
+    parser.add_argument("--domain", default="www.klokast.ai")
+    parser.add_argument("--cloudflare-account-id", required=True)
+    parser.add_argument("--cloudflare-zone-id", required=True)
+    parser.add_argument("--tunnel-name")
+    parser.add_argument("--service-url", default="http://127.0.0.1:18081")
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Klokast Cloudflare Secret Authority dispatcher")
+    parser.add_argument("--repo-root", default=os.environ.get("KLOKAST_REPO_ROOT", DEFAULT_REPO_ROOT))
+    parser.add_argument("--config-root", default=os.environ.get("KSA_CONFIG_ROOT", DEFAULT_CONFIG_ROOT))
+    parser.add_argument("--state-root", default=os.environ.get("KSA_STATE_ROOT", DEFAULT_STATE_ROOT))
+    parser.add_argument("--audit-log", default=os.environ.get("KSA_AUDIT_LOG", DEFAULT_AUDIT_LOG))
+    parser.add_argument("--allowed-signers", default=os.environ.get("KSA_ALLOWED_SIGNERS"))
+    parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
+    commands = parser.add_subparsers(dest="command", required=True)
+    intent = commands.add_parser("intent")
+    intent_sub = intent.add_subparsers(dest="intent_provider", required=True)
+    cf_intent = intent_sub.add_parser("cloudflare")
+    cf_intent_actions = cf_intent.add_subparsers(dest="cloudflare_action", required=True)
+    static_intent = cf_intent_actions.add_parser("static-site-tunnel")
+    add_static_site_tunnel_args(static_intent)
+    static_intent.add_argument("--expires-at")
+    static_intent.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_SECONDS)
+    static_intent.add_argument("--nonce")
+
+    cloudflare = commands.add_parser("cloudflare")
+    actions = cloudflare.add_subparsers(dest="cloudflare_action", required=True)
+    status = actions.add_parser("status")
+    status.add_argument("--redacted", action="store_true")
+    static_tunnel = actions.add_parser("static-site-tunnel")
+    add_static_site_tunnel_args(static_tunnel)
+    static_tunnel.add_argument("--approval-intent")
+    static_tunnel.add_argument("--approval-signature")
+    static_tunnel.add_argument("--signer-id")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if not args.allowed_signers:
+        args.allowed_signers = str(Path(args.config_root) / "allowed-signers")
+    if hasattr(args, "box") and getattr(args, "tunnel_name", None) in {None, ""}:
+        args.tunnel_name = f"klokast-static-{args.box}"
+    try:
+        if args.command == "intent":
+            cmd_intent(args)
+            return
+        if args.cloudflare_action == "status":
+            cmd_status(args)
+            return
+        if args.cloudflare_action == "static-site-tunnel":
+            cmd_static_site_tunnel(args)
+            return
+    except SecretAuthorityError as error:
+        die(str(error))
+    die("unsupported command")
+
+
+if __name__ == "__main__":
+    main()

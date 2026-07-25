@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+container="${KLOKAST_AIRUNNER_NAME:-{{ ops_airunner_name }}}"
+exec /usr/bin/podman exec -it -u {{ ops_airunner_user }} -w /home/agent "$container" /bin/bash -l

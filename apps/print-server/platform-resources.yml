@@ -1,0 +1,45 @@
+---
+schema_version: 1
+app: print-server
+risk_class: private_local_printing
+default_isolation: zone_vm_rootless_podman_plus_low_trust_iot_device
+placement_mode: multi_box
+resources:
+  compute:
+    - id: cups
+      type: podman_workload
+      zone: bak
+      privilege: unprivileged
+      lifecycle: steady
+      rationale: >-
+        Hosts the private CUPS queue and app-specific Tailscale ingress as a
+        rootless Podman pod on the backend VM.
+    - id: printer
+      type: managed_iot_device
+      zone: iot
+      privilege: external_low_trust
+      lifecycle: steady
+      hostname_suffix: printer
+      management_tag_default: tag:iot
+      rationale: >-
+        Reserves the Ethernet printer on the router-controlled IoT segment.
+  network:
+    - id: printer-ipp
+      type: zone_to_device_tcp
+      required: true
+      from_zone: bak
+      device: printer
+      ports:
+        - 631
+      rationale: >-
+        Allows only the local backend CUPS queue to submit IPP jobs to the
+        managed IoT printer.
+  tailnet:
+    - id: print-ingress
+      required: true
+      hostname_pattern: "{box}-print"
+      tag_default: tag:print
+      grants:
+        - src: group:family
+          ports:
+            - 631

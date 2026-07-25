@@ -1,0 +1,114 @@
+#!/bin/sh
+set -eu
+
+mode="${1:-}"
+[ -n "$mode" ] || {
+    echo "usage: print-server-entrypoint MODE" >&2
+    exit 2
+}
+
+wait_for_tcp() {
+    host="$1"
+    port="$2"
+    label="$3"
+    for _ in $(seq 1 60); do
+        if nc -z "$host" "$port" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "timeout waiting for $label at $host:$port" >&2
+    exit 1
+}
+
+tailscale_status_ok() {
+    tailscale --socket "$ts_socket" status --json 2>/dev/null | jq -e \
+        --arg hostname "$ts_hostname" \
+        --arg tag "$ts_tag" \
+        '.BackendState == "Running"
+         and .Self.HostName == $hostname
+         and (.Self.Online == true)
+         and ((.Self.Tags // []) | index($tag))
+         and ((((.Health // []) | join(" ")) | contains("logged out")) | not)
+         and ((((.Health // []) | join(" ")) | contains("invalid key")) | not)' >/dev/null
+}
+
+run_tailscale_ingress() {
+    ts_hostname="${PRINT_TAILSCALE_HOSTNAME:?PRINT_TAILSCALE_HOSTNAME is required}"
+    ts_tag="${PRINT_TAILSCALE_TAG:?PRINT_TAILSCALE_TAG is required}"
+    ts_authkey_file="${PRINT_TAILSCALE_AUTHKEY_FILE:-/run/klokast-secrets/tailscale-authkey}"
+    ts_state_dir="${TS_STATE_DIR:-/var/lib/tailscale}"
+    ts_socket_dir="${TS_SOCKET_DIR:-/tmp/tailscale}"
+    ts_socket="${TS_SOCKET:-$ts_socket_dir/tailscaled.sock}"
+
+    mkdir -p "$ts_state_dir" "$ts_socket_dir"
+    /usr/sbin/tailscaled \
+        --statedir="$ts_state_dir" \
+        --socket="$ts_socket" \
+        --tun=userspace-networking \
+        --port=0 &
+    ts_pid="$!"
+    trap 'kill "$ts_pid" >/dev/null 2>&1 || true; wait "$ts_pid" 2>/dev/null || true' INT TERM
+
+    for _ in $(seq 1 30); do
+        [ -S "$ts_socket" ] && break
+        sleep 1
+    done
+    [ -S "$ts_socket" ] || {
+        echo "Tailscale socket is not ready: $ts_socket" >&2
+        exit 1
+    }
+
+    identity_ok=0
+    for _ in $(seq 1 30); do
+        if tailscale_status_ok; then
+            identity_ok=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$identity_ok" -ne 1 ]; then
+        [ -s "$ts_authkey_file" ] || {
+            echo "missing Tailscale auth key file: $ts_authkey_file" >&2
+            exit 1
+        }
+        authkey="$(sed -n '1p' "$ts_authkey_file")"
+        tailscale --socket "$ts_socket" up \
+            --auth-key="$authkey" \
+            --hostname="$ts_hostname" \
+            --advertise-tags="$ts_tag" \
+            --accept-dns=false \
+            --force-reauth \
+            --timeout=30s
+    else
+        tailscale --socket "$ts_socket" set --hostname="$ts_hostname" --accept-dns=false
+    fi
+
+    tailscale --socket "$ts_socket" serve reset >/dev/null 2>&1 || true
+    tailscale --socket "$ts_socket" serve --bg --yes --tcp=631 \
+        tcp://127.0.0.1:631 >/dev/null
+
+    wait "$ts_pid"
+}
+
+case "$mode" in
+    cups)
+        mkdir -p /etc/cups /run/cups /var/cache/cups /var/log/cups /var/spool/cups
+        cp /etc/klokast/print-server/cupsd.conf /etc/cups/cupsd.conf
+        if grep -q '^SystemGroup ' /etc/cups/cups-files.conf; then
+            sed -i 's/^SystemGroup .*/SystemGroup root wheel lpadmin/' /etc/cups/cups-files.conf
+        else
+            printf '\nSystemGroup root wheel lpadmin\n' >>/etc/cups/cups-files.conf
+        fi
+        exec /usr/sbin/cupsd -f -c /etc/cups/cupsd.conf
+        ;;
+    ingress)
+        wait_for_tcp 127.0.0.1 631 CUPS
+        run_tailscale_ingress
+        ;;
+    *)
+        echo "unknown print-server container mode: $mode" >&2
+        exit 2
+        ;;
+esac

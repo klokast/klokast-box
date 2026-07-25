@@ -1,0 +1,417 @@
+---
+- name: Plan platform app VM offline convergence
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    platform_app_vm_host_specs: >-
+      {{
+        platform_app_vm_specs
+        | default([])
+        | selectattr('node', 'equalto', node_name)
+        | list
+      }}
+  tasks:
+    - name: End host when no platform app VMs target this box
+      ansible.builtin.meta: end_host
+      when: platform_app_vm_host_specs | length == 0
+
+    - name: Initialize platform app VM offline convergence plan
+      ansible.builtin.set_fact:
+        platform_app_vm_offline_converge_inventory_hosts: []
+        platform_app_vm_offline_converge_specs: []
+
+    - name: Check which platform app VMs need offline convergence
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/platform-app-vm-plan-one.yml"
+      loop: "{{ platform_app_vm_host_specs }}"
+      loop_control:
+        loop_var: app_vm
+        label: "{{ app_vm.inventory_hostname }}"
+
+    - name: Show platform app VM offline convergence plan
+      ansible.builtin.debug:
+        msg:
+          - "node={{ node_name }}"
+          - "offline_converge={{ platform_app_vm_offline_converge_inventory_hosts }}"
+
+- name: Build Debian app VM artifacts on backend builder hosts
+  hosts: backend
+  gather_facts: false
+  vars:
+    platform_app_vm_builder_node_name: "{{ inventory_hostname | regex_replace('-bak$', '') }}"
+    platform_app_vm_builder_dom0_host: "{{ platform_app_vm_builder_node_name ~ '-dom0' }}"
+    platform_app_vm_builder_offline_converge_inventory_hosts: >-
+      {{
+        hostvars[platform_app_vm_builder_dom0_host].platform_app_vm_offline_converge_inventory_hosts
+        | default([])
+      }}
+    platform_app_vm_builder_specs: >-
+      {{
+        platform_app_vm_specs
+        | default([])
+        | selectattr('node', 'equalto', platform_app_vm_builder_node_name)
+        | selectattr('guest_spec.guest_os', 'equalto', 'debian')
+        | selectattr('inventory_hostname', 'in', platform_app_vm_builder_offline_converge_inventory_hosts)
+        | list
+      }}
+  tasks:
+    - name: End host when no Debian app VMs target this backend builder
+      ansible.builtin.meta: end_host
+      when: platform_app_vm_builder_specs | length == 0
+
+    - name: Build and serve Debian app VM artifacts from the backend VM
+      ansible.builtin.import_role:
+        name: debian-app-vm-image-builder
+
+- name: Clone and boot platform-managed app VMs
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    platform_app_vm_host_specs: >-
+      {{
+        platform_app_vm_specs
+        | default([])
+        | selectattr('node', 'equalto', node_name)
+        | list
+      }}
+  tasks:
+    - name: End host when no platform app VMs target this box
+      ansible.builtin.meta: end_host
+      when: platform_app_vm_host_specs | length == 0
+
+    - name: Converge platform app VMs
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/platform-app-vm-dom0.yml"
+
+- name: Stop backend Debian app VM artifact servers after dom0 consumption
+  hosts: backend
+  gather_facts: false
+  vars:
+    platform_app_vm_builder_node_name: "{{ inventory_hostname | regex_replace('-bak$', '') }}"
+    platform_app_vm_builder_specs: >-
+      {{
+        platform_app_vm_specs
+        | default([])
+        | selectattr('node', 'equalto', platform_app_vm_builder_node_name)
+        | selectattr('guest_spec.guest_os', 'equalto', 'debian')
+        | list
+      }}
+  tasks:
+    - name: End host when no Debian app VMs target this backend builder
+      ansible.builtin.meta: end_host
+      when: platform_app_vm_builder_specs | length == 0
+
+    - name: Stop the Debian app VM artifact service and temporary firewall rule
+      ansible.builtin.import_role:
+        name: debian-app-vm-image-builder
+      vars:
+        debian_app_vm_image_builder_state: stopped
+
+- name: Enroll passive app VMs into Tailscale over bootstrap SSH
+  hosts: passive_app_vms
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    ansible_user: root
+    ansible_become: false
+    ansible_host: "{{ vm_bootstrap_host }}"
+    ansible_remote_tmp: /tmp/ansible-remote-bootstrap
+    ansible_ssh_timeout: 30
+    ansible_ssh_private_key_file: "{{ vm_bootstrap_private_key_file }}"
+    app_vm_controller_remote_tmp: "{{ lookup('env', 'HOME') }}/.ansible/tmp"
+    vm_bootstrap_proxyjump_known_hosts_file: "{{ hostvars[node_name ~ '-dom0'].dom0_known_hosts_file }}"
+    vm_bootstrap_proxycommand: >-
+      ssh
+      -o BatchMode=yes
+      -o ConnectTimeout=10
+      -o ConnectionAttempts=1
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_proxyjump_known_hosts_file }}
+      -W %h:%p
+      {{ vm_bootstrap_proxyjump }}
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+      -o ProxyCommand='{{ vm_bootstrap_proxycommand }}'
+  pre_tasks: &app_vm_bootstrap_pre_tasks
+    - name: Discover steady-state Tailscale identity when already online
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import subprocess
+        import sys
+
+        target_hostname = {{ node_hostname | to_json }}
+        expected_tags = {{ vm_tailscale_authkey_expected_tags | to_json }}
+
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"]))
+        candidates = []
+        for peer in (status.get("Peer") or {}).values():
+            tags = peer.get("Tags") or []
+            if (
+                peer.get("HostName") == target_hostname
+                and all(tag in tags for tag in expected_tags)
+                and peer.get("Online")
+                and peer.get("DNSName")
+            ):
+                candidates.append(peer)
+
+        if not candidates:
+            sys.exit(1)
+
+        candidates.sort(key=lambda peer: peer.get("Created") or "", reverse=True)
+        peer = candidates[0]
+        print(json.dumps({"dns_name": peer["DNSName"].rstrip(".")}))
+        PY
+      args:
+        executable: /bin/sh
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_remote_tmp: "{{ app_vm_controller_remote_tmp }}"
+      register: app_vm_steady_state_tailscale_check
+      failed_when: false
+      changed_when: false
+
+    - name: Use the live app VM Tailscale DNS name when already enrolled
+      ansible.builtin.set_fact:
+        ansible_host: "{{ (app_vm_steady_state_tailscale_check.stdout | from_json).dns_name }}"
+        app_vm_tailscale_dns_name: "{{ (app_vm_steady_state_tailscale_check.stdout | from_json).dns_name }}"
+      when: app_vm_steady_state_tailscale_check.rc == 0
+
+    - name: Skip bootstrap enrollment when steady-state identity is already online
+      ansible.builtin.meta: end_host
+      when: app_vm_steady_state_tailscale_check.rc == 0
+
+    - name: Ensure the app VM bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ vm_bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_remote_tmp: "{{ app_vm_controller_remote_tmp }}"
+
+    - name: Remove any stale app VM bootstrap SSH host key before first-contact enrollment
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/ssh-keygen
+          - -f
+          - "{{ vm_bootstrap_known_hosts_file }}"
+          - -R
+          - "{{ vm_bootstrap_host }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_remote_tmp: "{{ app_vm_controller_remote_tmp }}"
+      register: app_vm_bootstrap_known_hosts_cleanup
+      failed_when: false
+      changed_when: app_vm_bootstrap_known_hosts_cleanup.rc == 0
+
+    - name: Wait for app VM bootstrap SSH over the dom0 bridge path
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - "{{ vm_bootstrap_private_key_file }}"
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - -o
+          - ConnectionAttempts=1
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+          - -o
+          - ProxyCommand={{ vm_bootstrap_proxycommand }}
+          - "{{ ansible_user }}@{{ vm_bootstrap_host }}"
+          - "true"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_remote_tmp: "{{ app_vm_controller_remote_tmp }}"
+      register: app_vm_bootstrap_ssh_probe
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: app_vm_bootstrap_ssh_probe.rc == 0
+  tasks: &app_vm_enrollment_tasks
+    - name: Ensure Python is available over the Alpine app VM bootstrap SSH path
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+      when: platform_app_vm_guest_os | default('') == 'alpine'
+
+    - name: Gather app VM bootstrap facts
+      ansible.builtin.setup:
+
+    - name: Assert the app VM OS matches its compiled guest spec
+      ansible.builtin.assert:
+        that:
+          - platform_app_vm_guest_os | default('') in ['alpine', 'debian']
+          - platform_app_vm_guest_os != 'debian' or ansible_service_mgr == 'systemd'
+        fail_msg: "Platform app VM guest OS does not match its compiled spec."
+
+    - name: Converge the Debian app VM base access model before Tailscale enrollment
+      ansible.builtin.import_role:
+        name: debian-vm-base
+      vars:
+        debian_vm_lock_root_password: false
+      when: platform_app_vm_guest_os | default('') == 'debian'
+
+    - name: Ensure the Debian app VM Tailscale client is installed and running
+      ansible.builtin.import_role:
+        name: debian-tailscale-client
+      when: platform_app_vm_guest_os | default('') == 'debian'
+
+    - name: Converge the Alpine app VM base access model before Tailscale enrollment
+      ansible.builtin.import_role:
+        name: vm-base
+      vars:
+        vm_lock_root_password: false
+      when: platform_app_vm_guest_os | default('') == 'alpine'
+
+    - name: Ensure the Alpine app VM Tailscale client is installed and running
+      ansible.builtin.import_role:
+        name: tailscale-client
+      when: platform_app_vm_guest_os | default('') == 'alpine'
+
+    - name: Enroll the app VM into Tailscale through the auth-key wrapper
+      ansible.builtin.import_role:
+        name: vm-tailscale-enrollment
+
+    - name: Use the live app VM Tailscale DNS name after enrollment
+      ansible.builtin.set_fact:
+        ansible_host: "{{ vm_tailscale_enrollment_status_verify.Self.DNSName | regex_replace('\\.$', '') }}"
+        app_vm_tailscale_dns_name: "{{ vm_tailscale_enrollment_status_verify.Self.DNSName | regex_replace('\\.$', '') }}"
+
+- name: Enroll active app VMs into Tailscale over bootstrap SSH
+  hosts: active_app_vms
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    ansible_user: root
+    ansible_become: false
+    ansible_host: "{{ vm_bootstrap_host }}"
+    ansible_remote_tmp: /tmp/ansible-remote-bootstrap
+    ansible_ssh_timeout: 30
+    ansible_ssh_private_key_file: "{{ vm_bootstrap_private_key_file }}"
+    app_vm_controller_remote_tmp: "{{ lookup('env', 'HOME') }}/.ansible/tmp"
+    vm_bootstrap_proxyjump_known_hosts_file: "{{ hostvars[node_name ~ '-dom0'].dom0_known_hosts_file }}"
+    vm_bootstrap_proxycommand: >-
+      ssh
+      -o BatchMode=yes
+      -o ConnectTimeout=10
+      -o ConnectionAttempts=1
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_proxyjump_known_hosts_file }}
+      -W %h:%p
+      {{ vm_bootstrap_proxyjump }}
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+      -o ProxyCommand='{{ vm_bootstrap_proxycommand }}'
+  pre_tasks: *app_vm_bootstrap_pre_tasks
+  tasks: *app_vm_enrollment_tasks
+
+- name: Wait for running app VMs to be reachable over steady-state Tailscale SSH
+  hosts: running_app_vms
+  gather_facts: false
+  tasks:
+    - name: Wait for app VM connectivity after enrollment
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+
+- name: Converge running app VMs into steady-state Debian Docker hosts
+  hosts: debian_app_vms:&running_app_vms
+  gather_facts: false
+  pre_tasks:
+    - name: Gather app VM steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Assert the steady-state app VM is Debian systemd
+      ansible.builtin.assert:
+        that:
+          - platform_app_vm_guest_os | default('') == 'debian'
+          - ansible_service_mgr == 'systemd'
+        fail_msg: "App VMs must be Debian systemd guests."
+
+    - name: Keep the Debian app VM Tailscale client converged first
+      ansible.builtin.import_role:
+        name: debian-tailscale-client
+
+    - name: Reset the app VM SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the Debian app VM base system converged
+      ansible.builtin.import_role:
+        name: debian-vm-base
+      vars:
+        debian_vm_manage_sshd: false
+
+    - name: Converge Docker inside the Debian app VM
+      ansible.builtin.import_role:
+        name: debian-docker-host
+
+    - name: Converge the Debian app VM firewall baseline
+      ansible.builtin.import_role:
+        name: debian-vm-firewall
+      vars:
+        debian_vm_firewall_input_udp_rules:
+          - interface: "{{ platform_app_vm_interface }}"
+            source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+            destination: "{{ vm_bootstrap_host }}"
+            port: 41641
+            comment: ops-app-vm-tailscale-underlay-input
+
+    - name: Show the app VM host state
+      ansible.builtin.debug:
+        msg:
+          - "{{ inventory_hostname }} is ready for Debian Docker app workloads."
+          - "Tailscale identity: {{ app_vm_tailscale_dns_name | default(ansible_host) }}"
+
+- name: Converge running app VMs into steady-state Alpine appliance hosts
+  hosts: alpine_app_vms:&running_app_vms
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    vm_removed_packages:
+      - openssh
+      - podman
+      - buildah
+      - fuse-overlayfs
+      - slirp4netns
+      - crun
+      - conmon
+  pre_tasks:
+    - name: Gather Alpine app VM steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Assert the steady-state app VM is Alpine
+      ansible.builtin.assert:
+        that:
+          - platform_app_vm_guest_os | default('') == 'alpine'
+        fail_msg: "Alpine app VM inventory must target Alpine guests."
+
+    - name: Keep the Alpine app VM Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the app VM SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the Alpine app VM base system converged
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Show the app VM host state
+      ansible.builtin.debug:
+        msg:
+          - "{{ inventory_hostname }} is ready for Alpine app workloads."
+          - "Tailscale identity: {{ app_vm_tailscale_dns_name | default(ansible_host) }}"

@@ -1,0 +1,31 @@
+---
+- name: Build the Alpine VIRT Podman golden image for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  tasks:
+    - name: Prepare shared Alpine VIRT assets on dom0
+      ansible.builtin.import_role:
+        name: alpine-virt-assets
+
+    - name: Build the sealed Alpine Podman template root disk
+      ansible.builtin.import_role:
+        name: podman-template-rootfs
+
+    - name: Persist Podman golden-image build state on the diskless dom0 host
+      ansible.builtin.shell: |
+        set -eu
+        apk cache sync >/dev/null
+        backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+        if [ -n "$backupdir" ]; then
+          mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+          if [ -n "$mount_info" ]; then
+            set -- $mount_info
+            case ",$2," in
+              *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+            esac
+          fi
+        fi
+        lbu commit -d
+      args:
+        executable: /bin/sh
+      changed_when: false

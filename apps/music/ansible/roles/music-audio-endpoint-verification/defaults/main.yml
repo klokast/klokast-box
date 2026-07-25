@@ -1,0 +1,6 @@
+---
+music_endpoint_hostname: ""
+music_endpoint_snapclient_service_name: klokast-snapclient
+music_endpoint_backend_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+music_endpoint_snapserver_port: 1704
+music_endpoint_soundcard: default

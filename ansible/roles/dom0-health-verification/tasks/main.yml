@@ -1,0 +1,596 @@
+#
+# Summary:
+# - Verifies steady-state dom0 health, including diskless persistence, Xen/PVH
+#   runtime, bridge runtime, and the hard invariant that QEMU is absent.
+#
+---
+- name: Collect dom0 steady-state health
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import glob
+    import json
+    import os
+    import re
+    import stat
+    import subprocess
+    from pathlib import Path
+
+
+    def env(name, default=""):
+        return os.environ.get(name, default)
+
+
+    def json_env(name, default):
+        raw = os.environ.get(name)
+        if raw is None or raw == "":
+            return default
+        return json.loads(raw)
+
+
+    def capture(argv):
+        try:
+            result = subprocess.run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            return {
+                "rc": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        except OSError as exc:
+            return {
+                "rc": 127,
+                "stdout": "",
+                "stderr": str(exc),
+            }
+
+
+    def read_text(path):
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+
+    def strip_lbu_path(value):
+        return value.strip().lstrip("+!").lstrip("/")
+
+
+    def parse_os_release(text):
+        result = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+            result[key] = value
+        return result
+
+
+    def parse_mounts():
+        mounts = []
+        for raw_line in read_text("/proc/mounts").splitlines():
+            parts = raw_line.split()
+            if len(parts) >= 4:
+                mounts.append(
+                    {
+                        "source": parts[0],
+                        "target": parts[1],
+                        "fstype": parts[2],
+                        "options": parts[3],
+                    }
+                )
+        return mounts
+
+    def parse_colon_file(text):
+        entries = {}
+        for raw_line in text.splitlines():
+            if ":" not in raw_line:
+                continue
+            parts = raw_line.split(":")
+            entries[parts[0]] = parts
+        return entries
+
+
+    def parse_xl_list(text):
+        domains = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.lower().startswith("name "):
+                continue
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            try:
+                memory_mib = int(parts[2])
+                vcpus = int(parts[3])
+            except ValueError:
+                continue
+            domains[parts[0]] = {
+                "memory_mib": memory_mib,
+                "vcpus": vcpus,
+                "state": parts[4],
+            }
+        return domains
+
+
+    def non_comment_lines(text):
+        lines = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            lines.append(line)
+        return "\n".join(lines)
+
+
+    def qemu_processes():
+        matches = []
+        proc_root = Path("/proc")
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                comm = (entry / "comm").read_text(encoding="utf-8").strip()
+                cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
+                    "utf-8", errors="replace"
+                ).strip()
+            except OSError:
+                continue
+            first_arg = cmdline.split(" ", 1)[0] if cmdline else comm
+            first_name = os.path.basename(first_arg)
+            if comm.startswith("qemu") or first_name.startswith("qemu"):
+                matches.append(f"{entry.name} {comm} {cmdline}".strip())
+        return sorted(matches)
+
+
+    def qemu_binaries():
+        roots = [
+            "/bin",
+            "/sbin",
+            "/usr/bin",
+            "/usr/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/libexec",
+        ]
+        matches = []
+        seen = set()
+        for root in roots:
+            root_path = Path(root)
+            if not root_path.is_dir():
+                continue
+            for child in root_path.iterdir():
+                if child.name in seen or not child.name.startswith("qemu"):
+                    continue
+                try:
+                    mode = child.stat().st_mode
+                except OSError:
+                    continue
+                if stat.S_ISREG(mode) and os.access(child, os.X_OK):
+                    seen.add(child.name)
+                    matches.append(str(child))
+        return sorted(matches)
+
+
+    def xen_config_files():
+        paths = []
+        for directory in ("/etc/xen", "/etc/xen/auto"):
+            paths.extend(glob.glob(f"{directory}/*.cfg"))
+        return sorted(set(paths))
+
+
+    def bridge_ports(bridge_name):
+        result = capture(["brctl", "show", bridge_name])
+        ports = []
+        if result["rc"] != 0:
+            return result, ports
+        for raw_line in result["stdout"].splitlines()[1:]:
+            if not raw_line.strip():
+                continue
+            parts = raw_line.split()
+            if len(parts) >= 4:
+                ports.append(parts[3])
+            elif raw_line[0].isspace() and parts:
+                ports.append(parts[0])
+        return result, ports
+
+
+    def grub_loader_valid(loader_lines):
+        current_loader = [
+            f"search --no-floppy --label {efi_partition_label} --set=root",
+            "set prefix=($root)/boot/grub",
+            "configfile ($root)/boot/grub/grub.cfg",
+        ]
+        legacy_loader = (
+            len(loader_lines) >= 3
+            and loader_lines[0].startswith("search.fs_uuid ")
+            and "set prefix=($root)'/boot/grub'" in loader_lines
+            and "configfile $prefix/grub.cfg" in loader_lines
+        )
+        return loader_lines == current_loader or legacy_loader
+
+
+    failures = []
+    warnings = []
+
+    def expect(condition, message):
+        if not condition:
+            failures.append(message)
+
+
+    node_hostname = env("DOM0_HEALTH_NODE_HOSTNAME")
+    efi_partition_device = env("DOM0_HEALTH_EFI_PARTITION_DEVICE")
+    efi_partition_fs = env("DOM0_HEALTH_EFI_PARTITION_FS")
+    efi_partition_label = env("DOM0_HEALTH_EFI_PARTITION_LABEL")
+    efi_bootloader_id = env("DOM0_HEALTH_EFI_BOOTLOADER_ID")
+    apk_repository_arch = env("DOM0_HEALTH_APK_REPOSITORY_ARCH")
+    lbu_protected_paths_file = env("DOM0_HEALTH_LBU_PROTECTED_PATHS_FILE")
+    apkovl_archive_name = env("DOM0_HEALTH_APKOVL_ARCHIVE_NAME")
+    tailscale_state_file = env("DOM0_HEALTH_TAILSCALE_STATE_FILE")
+    tailscale_expected_tag = env("DOM0_HEALTH_TAILSCALE_EXPECTED_TAG")
+    dom0_data_mount_path = env("DOM0_HEALTH_DOM0_DATA_MOUNT_PATH")
+    dom0_wan_bridge_name = env("DOM0_HEALTH_DOM0_WAN_BRIDGE_NAME")
+    node_xen_guest_specs = json_env("DOM0_HEALTH_NODE_XEN_GUEST_SPECS", {})
+    required_guest_keys = json_env("DOM0_HEALTH_REQUIRED_GUEST_KEYS", [])
+    optional_guest_keys = json_env("DOM0_HEALTH_OPTIONAL_GUEST_KEYS", [])
+    optional_bridge_names = json_env("DOM0_HEALTH_OPTIONAL_BRIDGE_NAMES", [])
+    guest_memory_tolerance_mib = int(env("DOM0_HEALTH_GUEST_MEMORY_TOLERANCE_MIB", "1"))
+    dom0_bridges = json_env("DOM0_HEALTH_DOM0_BRIDGES", [])
+    tailscale_persist_paths = json_env("DOM0_HEALTH_TAILSCALE_PERSIST_PATHS", [])
+    dom0_home_lbu_include_paths = json_env("DOM0_HEALTH_DOM0_HOME_LBU_INCLUDE_PATHS", [])
+    dom0_admin_user_name = env("DOM0_HEALTH_DOM0_ADMIN_USER_NAME")
+
+    hostname = capture(["hostname"])
+    os_release_text = read_text("/etc/os-release")
+    os_release = parse_os_release(os_release_text)
+    passwd_entries = parse_colon_file(read_text("/etc/passwd"))
+    shadow_entries = parse_colon_file(read_text("/etc/shadow"))
+    group_entries = parse_colon_file(read_text("/etc/group"))
+    doas_conf = read_text("/etc/doas.d/doas.conf")
+    tailscale_status = capture(["tailscale", "status", "--json"])
+    try:
+        tailscale = json.loads(tailscale_status["stdout"]) if tailscale_status["rc"] == 0 else {}
+    except json.JSONDecodeError:
+        tailscale = {}
+    mounts = parse_mounts()
+    efi_mount = next((m for m in mounts if m["source"] == efi_partition_device), None)
+    efi_mount_path = efi_mount["target"] if efi_mount else ""
+    efi_boot_directory = f"{efi_mount_path}/boot" if efi_mount_path else ""
+    efi_grub_directory = f"{efi_boot_directory}/grub" if efi_mount_path else ""
+    apk_boot_repository_root = f"{efi_mount_path}/apks" if efi_mount_path else ""
+    apk_boot_repository_path = f"{apk_boot_repository_root}/{apk_repository_arch}" if efi_mount_path else ""
+    apk_cache_path = f"{efi_mount_path}/cache" if efi_mount_path else ""
+    apkovl_archive_path = f"{efi_mount_path}/{apkovl_archive_name}" if efi_mount_path else ""
+    efi_grub_loader_config_paths = [
+        f"{efi_mount_path}/EFI/{efi_bootloader_id}/grub.cfg",
+        f"{efi_mount_path}/EFI/BOOT/grub.cfg",
+    ] if efi_mount_path else []
+    efi_node_grub_loader_config_path = efi_grub_loader_config_paths[0] if efi_grub_loader_config_paths else ""
+    efi_fallback_grub_loader_config_path = efi_grub_loader_config_paths[1] if len(efi_grub_loader_config_paths) > 1 else ""
+
+    lbu_conf = read_text("/etc/lbu/lbu.conf")
+    lbu_backupdir = ""
+    for raw_line in lbu_conf.splitlines():
+        if raw_line.startswith("LBU_BACKUPDIR="):
+            lbu_backupdir = raw_line.split("=", 1)[1].strip()
+    lbu_paths = read_text(lbu_protected_paths_file).splitlines()
+    normalized_lbu_paths = [strip_lbu_path(line) for line in lbu_paths if line.strip()]
+    required_lbu_paths = [
+        strip_lbu_path(value)
+        for value in (tailscale_persist_paths + dom0_home_lbu_include_paths)
+    ]
+    lbu_status = capture(["lbu", "status"])
+
+    root_mode = oct(Path("/").stat().st_mode & 0o777)[2:].zfill(4)
+    apk_cache_readlink = os.path.realpath("/etc/apk/cache")
+    apkovl_listing = sorted(
+        path.name for path in Path(efi_mount_path).glob("*.apkovl*")
+    ) if efi_mount_path and Path(efi_mount_path).is_dir() else []
+    grub_cfg = read_text(f"{efi_grub_directory}/grub.cfg") if efi_grub_directory else ""
+    boot_repo_marker_count = len(glob.glob(f"{apk_boot_repository_root}/.boot_repository"))
+    apkindex_count = len(glob.glob(f"{apk_boot_repository_path}/APKINDEX.tar.gz"))
+    repo_apk_count = len(glob.glob(f"{apk_boot_repository_path}/*.apk"))
+    alpine_base_count = len(glob.glob(f"{apk_boot_repository_path}/alpine-base-*.apk"))
+    python3_path = capture(["/bin/sh", "-c", "command -v python3"])
+
+    xl_info = capture(["xl", "info"])
+    xl_list = capture(["xl", "list"])
+    domains = parse_xl_list(xl_list["stdout"])
+    dom0_data_mount = next((m for m in mounts if m["target"] == dom0_data_mount_path), None)
+
+    apk_info = capture(["apk", "info"])
+    qemu_packages = sorted(
+        line.strip()
+        for line in apk_info["stdout"].splitlines()
+        if line.strip().startswith("qemu")
+    )
+    qemu_bin_matches = qemu_binaries()
+    qemu_proc_matches = qemu_processes()
+
+    xen_config_bad_lines = []
+    xen_config_text_by_path = {}
+    bad_config_re = re.compile(
+        r"qemu|(^|[\s])device_model\s*=|(^|[\s])builder\s*=\s*['\"]?hvm|(^|[\s])type\s*=\s*['\"]?hvm",
+        re.IGNORECASE,
+    )
+    for config_path in xen_config_files():
+        text = read_text(config_path)
+        xen_config_text_by_path[config_path] = text
+        for index, line in enumerate(non_comment_lines(text).splitlines(), start=1):
+            if bad_config_re.search(line):
+                xen_config_bad_lines.append(f"{config_path}:{index}:{line}")
+
+    missing_required_keys = sorted(set(required_guest_keys) - set(node_xen_guest_specs))
+    expect(not missing_required_keys, f"node_xen_guest_specs is missing required keys: {missing_required_keys}")
+
+    expected_guests = []
+    for key in required_guest_keys:
+        if key in node_xen_guest_specs:
+            expected_guests.append((key, node_xen_guest_specs[key], True))
+    for key in optional_guest_keys:
+        spec = node_xen_guest_specs.get(key)
+        if not spec:
+            continue
+        guest_name = spec.get("guest_name", key)
+        config_path = spec.get("config_path", "")
+        active_stage = spec.get("installed") or spec
+        lvs = active_stage.get("required_lvs") or spec.get("required_lvs") or []
+        optional_present = (
+            guest_name in domains
+            or (config_path and Path(config_path).exists())
+            or any(Path(path).exists() for path in lvs)
+        )
+        if optional_present:
+            expected_guests.append((key, spec, False))
+
+    checked_guest_names = []
+    for key, spec, required in expected_guests:
+        label = f"{key} ({spec.get('guest_name', key)})"
+        guest_name = spec.get("guest_name", key)
+        checked_guest_names.append(guest_name)
+        config_path = spec.get("config_path", "")
+        active_stage = spec.get("installed") or spec
+        lvs = active_stage.get("required_lvs") or spec.get("required_lvs") or []
+        required_paths = active_stage.get("required_paths") or []
+        config_text = read_text(config_path) if config_path else ""
+        active_config = non_comment_lines(config_text)
+        autostart_path = f"/etc/xen/auto/{Path(config_path).name}" if config_path else ""
+
+        expect(config_path and Path(config_path).exists(), f"missing Xen config for {label}: {config_path}")
+        if config_path and Path(config_path).exists():
+            expect(
+                re.search(r"(^|\n)\s*type\s*=\s*['\"]pvh['\"]", active_config) is not None,
+                f"Xen config for {label} is not explicitly PVH",
+            )
+            expect(
+                re.search(r"(^|\n)\s*kernel\s*=", active_config) is not None,
+                f"Xen config for {label} has no direct kernel boot path",
+            )
+            expect(
+                re.search(r"(^|\n)\s*ramdisk\s*=", active_config) is not None,
+                f"Xen config for {label} has no direct ramdisk boot path",
+            )
+            expect(
+                "builder" not in active_config.lower() and "device_model" not in active_config.lower(),
+                f"Xen config for {label} contains builder/device_model settings",
+            )
+        if spec.get("autostart"):
+            expect(Path(autostart_path).exists(), f"missing Xen autostart link for {label}: {autostart_path}")
+        for path in lvs:
+            expect(Path(path).exists(), f"missing required LV for {label}: {path}")
+        for path in required_paths:
+            expect(Path(path).exists(), f"missing required boot artifact for {label}: {path}")
+
+        domain = domains.get(guest_name)
+        expect(domain is not None, f"expected Xen guest is not running: {guest_name}")
+        if domain is not None:
+            expect(
+                domain["vcpus"] == int(spec.get("vcpus", domain["vcpus"])),
+                f"Xen guest {guest_name} vCPU mismatch: live={domain['vcpus']} expected={spec.get('vcpus')}",
+            )
+            expect(
+                abs(domain["memory_mib"] - int(spec.get("memory_mb", domain["memory_mib"]))) <= guest_memory_tolerance_mib,
+                f"Xen guest {guest_name} memory mismatch: live={domain['memory_mib']} expected={spec.get('memory_mb')}",
+            )
+
+    default_route = capture(["ip", "route", "show", "default"])
+    default_iface = ""
+    default_match = re.search(r"\bdev\s+(\S+)", default_route["stdout"])
+    if default_match:
+        default_iface = default_match.group(1)
+    brctl_wan, wan_ports = bridge_ports(dom0_wan_bridge_name)
+    interfaces_conf = read_text("/etc/network/interfaces")
+    bridge_names = [item.get("name") for item in dom0_bridges if item.get("name")]
+    required_bridge_names = [name for name in bridge_names if name not in optional_bridge_names]
+    missing_live_bridges = [
+        name for name in required_bridge_names
+        if capture(["ip", "link", "show", name])["rc"] != 0
+    ]
+    missing_interface_bridges = [
+        name for name in required_bridge_names
+        if f"auto {name}" not in interfaces_conf
+    ]
+
+    expect(hostname["stdout"].strip() == node_hostname, "runtime hostname does not match node_hostname")
+    expect(os_release.get("ID") == "alpine", "dom0 is not running Alpine Linux")
+    admin_passwd = passwd_entries.get(dom0_admin_user_name)
+    admin_shadow = shadow_entries.get(dom0_admin_user_name)
+    root_shadow = shadow_entries.get("root")
+    wheel_members = []
+    wheel_entry = group_entries.get("wheel")
+    if wheel_entry and len(wheel_entry) >= 4:
+        wheel_members = [item for item in wheel_entry[3].split(",") if item]
+    expect(admin_passwd is not None, f"dom0 admin user is missing: {dom0_admin_user_name}")
+    if admin_passwd is not None:
+        expect(admin_passwd[6] == "/bin/ash", f"{dom0_admin_user_name} shell is {admin_passwd[6]}, expected /bin/ash")
+    expect(admin_shadow is not None, f"dom0 admin shadow entry is missing: {dom0_admin_user_name}")
+    if admin_shadow is not None:
+        admin_hash = admin_shadow[1] if len(admin_shadow) > 1 else ""
+        expect(admin_hash.startswith("$"), f"{dom0_admin_user_name} console password is not a usable hash")
+        expect(not admin_hash.startswith(("!", "*")) and admin_hash != "", f"{dom0_admin_user_name} console password is locked or empty")
+    expect(root_shadow is not None, "root shadow entry is missing")
+    if root_shadow is not None:
+        root_hash = root_shadow[1] if len(root_shadow) > 1 else ""
+        expect(root_hash.startswith(("!", "*")), "root password is not locked")
+        expect(root_hash != "", "root password is empty")
+    expect(dom0_admin_user_name in wheel_members, f"{dom0_admin_user_name} is not listed in group wheel")
+    expect(
+        re.search(r"(?m)^permit nopass :wheel$", doas_conf) is not None,
+        "doas policy does not permit passwordless wheel escalation",
+    )
+    expect(efi_mount is not None, f"EFI partition is not mounted: {efi_partition_device}")
+    if efi_mount is not None:
+        expect(efi_mount["fstype"] == efi_partition_fs, f"EFI filesystem mismatch: {efi_mount['fstype']} != {efi_partition_fs}")
+    expect(root_mode == "0755", f"root directory mode is {root_mode}, expected 0755")
+    expect(apk_cache_readlink == apk_cache_path, f"/etc/apk/cache points to {apk_cache_readlink}, expected {apk_cache_path}")
+    expect(lbu_backupdir == efi_mount_path, f"LBU_BACKUPDIR is {lbu_backupdir}, expected {efi_mount_path}")
+    expect(lbu_status["rc"] == 0, f"lbu status failed: {lbu_status['stderr'].strip()}")
+    expect(lbu_status["stdout"].strip() == "", f"lbu status is not clean: {lbu_status['stdout'].strip()}")
+    expect(Path(apkovl_archive_path).exists(), f"missing apkovl archive: {apkovl_archive_path}")
+    expect(apkovl_listing == [apkovl_archive_name], f"unexpected apkovl files at EFI root: {apkovl_listing}")
+    expect("apkvol=" not in grub_cfg, "steady-state GRUB config still contains apkvol=")
+    expect(boot_repo_marker_count > 0, "APK boot repository marker is missing")
+    expect(apkindex_count > 0, "APK boot repository index is missing")
+    expect(repo_apk_count > 0, "APK boot repository contains no APK files")
+    expect(alpine_base_count > 0, "APK boot repository contains no alpine-base package")
+    expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
+    expect(Path(tailscale_state_file).exists(), f"missing persisted Tailscale state: {tailscale_state_file}")
+    expect(not Path("/etc/init.d/klokast-diskless-bootstrap").exists(), "temporary diskless bootstrap helper still exists")
+    if efi_mount_path:
+        expect(strip_lbu_path(efi_mount_path) not in normalized_lbu_paths, "EFI mount is included in lbu protected paths")
+    dom0_data_lbu_path = strip_lbu_path(dom0_data_mount_path)
+    expect(f"+{dom0_data_lbu_path}" not in lbu_paths, "dom0 data mount is included in lbu protected paths")
+    expect(f"-{dom0_data_lbu_path}" in lbu_paths, "dom0 data mount is not excluded from lbu protected paths")
+    missing_lbu_paths = sorted(set(required_lbu_paths) - set(normalized_lbu_paths))
+    expect(not missing_lbu_paths, f"lbu protected paths are missing required entries: {missing_lbu_paths}")
+
+    if efi_node_grub_loader_config_path:
+        loader_lines = read_text(efi_node_grub_loader_config_path).splitlines()
+        expect(
+            grub_loader_valid(loader_lines),
+            f"managed EFI GRUB loader is missing or invalid: {efi_node_grub_loader_config_path}",
+        )
+    if efi_fallback_grub_loader_config_path:
+        fallback_lines = read_text(efi_fallback_grub_loader_config_path).splitlines()
+        if fallback_lines:
+            expect(
+                grub_loader_valid(fallback_lines),
+                f"managed EFI fallback GRUB loader is invalid: {efi_fallback_grub_loader_config_path}",
+            )
+        else:
+            warnings.append(f"managed EFI fallback GRUB loader is absent: {efi_fallback_grub_loader_config_path}")
+
+    expect(tailscale_status["rc"] == 0, f"tailscale status failed: {tailscale_status['stderr'].strip()}")
+    expect(tailscale.get("BackendState") == "Running", "Tailscale backend is not Running")
+    expect((tailscale.get("Self") or {}).get("HostName") == node_hostname, "Tailscale hostname does not match node_hostname")
+    expect(
+        tailscale_expected_tag in ((tailscale.get("Self") or {}).get("Tags") or []),
+        f"Tailscale identity is missing {tailscale_expected_tag}",
+    )
+    tailscale_health = tailscale.get("Health") or []
+    tailscale_dns_health = [
+        entry for entry in tailscale_health
+        if re.search(r"resolv\.conf overwritten|dns-fight", entry)
+    ]
+    expect(not tailscale_dns_health, f"Tailscale DNS health entries: {tailscale_dns_health}")
+    tailscale_other_health = [
+        entry for entry in tailscale_health
+        if entry not in tailscale_dns_health
+    ]
+    if tailscale_other_health:
+        warnings.append(f"Tailscale health entries: {tailscale_other_health}")
+
+    expect(xl_info["rc"] == 0 and "xen_major" in xl_info["stdout"], "xl info does not report a Xen runtime")
+    expect(xl_list["rc"] == 0 and "Domain-0" in domains, "xl list does not include Domain-0")
+    expect(dom0_data_mount is not None, f"dom0 data mount is missing: {dom0_data_mount_path}")
+    if dom0_data_mount is not None:
+        expect(dom0_data_mount["fstype"] == "ext4", f"dom0 data mount is {dom0_data_mount['fstype']}, expected ext4")
+
+    expect(not qemu_packages, f"QEMU APK packages are installed: {qemu_packages}")
+    expect(not qemu_bin_matches, f"QEMU executables exist on dom0: {qemu_bin_matches}")
+    expect(not qemu_proc_matches, f"QEMU processes are running on dom0: {qemu_proc_matches}")
+    expect(not xen_config_bad_lines, f"Xen configs contain QEMU/HVM/device-model settings: {xen_config_bad_lines}")
+
+    expect(default_route["rc"] == 0, f"default route probe failed: {default_route['stderr'].strip()}")
+    expect(default_iface == dom0_wan_bridge_name, f"default route uses {default_iface}, expected {dom0_wan_bridge_name}")
+    expect(not missing_live_bridges, f"missing live bridges: {missing_live_bridges}")
+    expect(not missing_interface_bridges, f"/etc/network/interfaces is missing bridge stanzas: {missing_interface_bridges}")
+    expect(brctl_wan["rc"] == 0, f"brctl show {dom0_wan_bridge_name} failed: {brctl_wan['stderr'].strip()}")
+    expect(wan_ports, f"{dom0_wan_bridge_name} has no attached physical port")
+
+    payload = {
+        "failures": failures,
+        "warnings": warnings,
+        "summary": {
+            "hostname": hostname["stdout"].strip(),
+            "os_id": os_release.get("ID", ""),
+            "efi_mount_path": efi_mount_path,
+            "dom0_data_mount": dom0_data_mount_path if dom0_data_mount else "",
+            "tailscale_hostname": (tailscale.get("Self") or {}).get("HostName", ""),
+            "tailscale_tags": (tailscale.get("Self") or {}).get("Tags", []),
+            "dom0_admin_user": dom0_admin_user_name,
+            "xen_domains": sorted(domains),
+            "checked_guests": sorted(checked_guest_names),
+            "default_iface": default_iface,
+            "wan_bridge_ports": wan_ports,
+            "lbu_status": lbu_status["stdout"].splitlines(),
+            "qemu_packages": qemu_packages,
+            "qemu_binaries": qemu_bin_matches,
+            "qemu_processes": qemu_proc_matches,
+        },
+    }
+    print(json.dumps(payload, sort_keys=True))
+    PY
+  args:
+    executable: /bin/sh
+  environment:
+    DOM0_HEALTH_NODE_HOSTNAME: "{{ node_hostname }}"
+    DOM0_HEALTH_NODE_XEN_GUEST_SPECS: "{{ node_xen_guest_specs | default({}) | to_json }}"
+    DOM0_HEALTH_REQUIRED_GUEST_KEYS: "{{ dom0_health_required_guest_keys | to_json }}"
+    DOM0_HEALTH_OPTIONAL_GUEST_KEYS: "{{ dom0_health_optional_guest_keys | to_json }}"
+    DOM0_HEALTH_OPTIONAL_BRIDGE_NAMES: "{{ dom0_health_optional_bridge_names | to_json }}"
+    DOM0_HEALTH_GUEST_MEMORY_TOLERANCE_MIB: "{{ dom0_health_guest_memory_tolerance_mib }}"
+    DOM0_HEALTH_EFI_PARTITION_DEVICE: "{{ efi_partition_device }}"
+    DOM0_HEALTH_EFI_PARTITION_FS: "{{ efi_partition_fs }}"
+    DOM0_HEALTH_EFI_PARTITION_LABEL: "{{ efi_partition_label }}"
+    DOM0_HEALTH_EFI_BOOTLOADER_ID: "{{ efi_bootloader_id }}"
+    DOM0_HEALTH_APK_REPOSITORY_ARCH: "{{ apk_repository_arch }}"
+    DOM0_HEALTH_LBU_PROTECTED_PATHS_FILE: "{{ lbu_protected_paths_file }}"
+    DOM0_HEALTH_APKOVL_ARCHIVE_NAME: "{{ apkovl_archive_name }}"
+    DOM0_HEALTH_TAILSCALE_STATE_FILE: "{{ bootstrap_tailscale_state_file }}"
+    DOM0_HEALTH_TAILSCALE_EXPECTED_TAG: "{{ tailscale_handoff_expected_tag }}"
+    DOM0_HEALTH_DOM0_DATA_MOUNT_PATH: "{{ dom0_data_mount_path }}"
+    DOM0_HEALTH_DOM0_WAN_BRIDGE_NAME: "{{ dom0_wan_bridge_name }}"
+    DOM0_HEALTH_DOM0_BRIDGES: "{{ dom0_bridges | default([]) | to_json }}"
+    DOM0_HEALTH_TAILSCALE_PERSIST_PATHS: "{{ tailscale_persist_paths | default([]) | to_json }}"
+    DOM0_HEALTH_DOM0_HOME_LBU_INCLUDE_PATHS: "{{ dom0_home_lbu_include_paths | default([]) | to_json }}"
+    DOM0_HEALTH_DOM0_ADMIN_USER_NAME: "{{ dom0_admin_user_name }}"
+  register: dom0_health_result
+  changed_when: false
+
+- name: Parse dom0 steady-state health
+  ansible.builtin.set_fact:
+    dom0_health_state: "{{ dom0_health_result.stdout | from_json }}"
+
+- name: Assert dom0 steady-state health
+  ansible.builtin.assert:
+    that:
+      - dom0_health_state.failures | length == 0
+    fail_msg: "{{ dom0_health_state.failures | to_nice_yaml }}"
+
+- name: Show dom0 steady-state health summary
+  ansible.builtin.debug:
+    var: dom0_health_state.summary
+
+- name: Show dom0 steady-state health warnings
+  ansible.builtin.debug:
+    var: dom0_health_state.warnings
+  when: dom0_health_state.warnings | length > 0

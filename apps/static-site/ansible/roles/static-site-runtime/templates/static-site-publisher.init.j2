@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+description="Klokast static-site Git publisher"
+
+command="/usr/local/sbin/static-site-publisher"
+command_args="loop"
+command_user="{{ vm_admin_user_name }}:wheel"
+command_background=yes
+pidfile={{ static_site_publisher_pidfile | quote }}
+supervisor="supervise-daemon"
+
+output_log={{ (static_site_log_root ~ '/publisher.stdout.log') | quote }}
+error_log={{ (static_site_log_root ~ '/publisher.stderr.log') | quote }}
+
+depend() {
+    need net
+    after {{ static_site_web_service_name }}
+    use logger
+}
+
+start_pre() {
+    checkpath -d -m 0750 -o {{ vm_admin_user_name }}:wheel {{ static_site_log_root | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ static_site_incoming_root | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ static_site_git_repo_cache_root | quote }} || return 1
+    checkpath -d -m 0755 -o {{ vm_admin_user_name }}:wheel {{ static_site_public_root | quote }} || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel "$output_log" || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel "$error_log" || return 1
+}

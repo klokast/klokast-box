@@ -1,0 +1,38 @@
+---
+- name: Preflight the active and passive Nextcloud targets
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Assert the app wrapper passed the selected boxes
+      ansible.builtin.assert:
+        that:
+          - nextcloud_active_master is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - nextcloud_passive_backup is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - nextcloud_active_master != nextcloud_passive_backup
+          - nextcloud_domain is match('^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$')
+        fail_msg: >-
+          Pass box names with --active-master and --passive-backup, plus a
+          public hostname with --domain.
+
+    - name: Assert the host belongs to the selected Nextcloud box pair
+      ansible.builtin.assert:
+        that:
+          - node_name in [nextcloud_active_master, nextcloud_passive_backup]
+          - node_domain_role in ['backend', 'dmz']
+        fail_msg: >-
+          Nextcloud app playbooks only target the selected backend and DMZ VMs.
+
+    - name: Assert Podman is installed on selected Podman VMs
+      ansible.builtin.stat:
+        path: /usr/bin/podman
+      register: nextcloud_preflight_podman
+
+    - name: Fail when Podman is missing
+      ansible.builtin.assert:
+        that:
+          - nextcloud_preflight_podman.stat.exists
+        fail_msg: >-
+          Podman is required on {{ inventory_hostname }} before Nextcloud can
+          be installed. Run the Platform Podman VM phases first.

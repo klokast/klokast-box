@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+app=${KLOKAST_APP:-nextcloud-v2}
+desired=${KLOKAST_DESIRED_PATH:-/var/lib/klokast/desired/${app}.json}
+rendered=${KLOKAST_RENDERED_KUBE_PATH:-/var/lib/klokast/rendered/${app}/pod.yml}
+podman_user=${KLOKAST_PODMAN_USER:-neo}
+wipe_data="$(jq -r '.wipe_data // false' "$desired")"
+pod_name="$(jq -r '.runtime.pod_name // "nextcloud-v2"' "$desired")"
+
+run_podman() {
+    if [ "$(id -un)" = "$podman_user" ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u "$podman_user" /usr/bin/podman "$@"
+    fi
+}
+
+if [ -f "$rendered" ]; then
+    run_podman kube down "$rendered" >/dev/null 2>&1 || true
+fi
+run_podman pod rm -f "$pod_name" >/dev/null 2>&1 || true
+
+rm -f "/etc/init.d/${app}" "/etc/periodic/15min/${app}-verify"
+rm -rf "/etc/klokast/apps/${app}" "/var/lib/klokast/rendered/${app}"
+rm -f "/var/lib/klokast/desired/${app}.json" "/var/lib/klokast/status/${app}.json"
+
+if [ "$wipe_data" = "true" ]; then
+    jq -r '.runtime.volumes // {} | to_entries[].value' "$desired" |
+    while IFS= read -r volume; do
+        [ -n "$volume" ] && run_podman volume rm -f "$volume" >/dev/null 2>&1 || true
+    done
+fi

@@ -1,0 +1,12 @@
+---
+nextcloud_cloudflared_service_name: nextcloud-cloudflared
+nextcloud_cloudflare_tunnel_enabled: false
+nextcloud_cloudflared_container_name: nextcloud-cloudflared
+nextcloud_cloudflared_root: /etc/klokast/nextcloud-cloudflared
+nextcloud_cloudflared_secret_root: "{{ nextcloud_cloudflared_root }}/secrets"
+nextcloud_cloudflared_log_root: /var/log/klokast/nextcloud-cloudflared
+nextcloud_cloudflared_pidfile: /run/nextcloud-cloudflared.pid
+nextcloud_cloudflared_package: cloudflared=2026.3.0-r1
+nextcloud_cloudflared_apk_edge_testing_repository: http://dl-cdn.alpinelinux.org/alpine/edge/testing
+nextcloud_cloudflared_apk_repositories: "{{ (alpine_repositories | default([])) + [nextcloud_cloudflared_apk_edge_testing_repository] }}"
+nextcloud_backend_upstream: "http://{{ platform_zones.bak.vm_ipv4_address }}:8080"

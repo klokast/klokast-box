@@ -1,0 +1,69 @@
+---
+- name: Assert the pinned image lock is available
+  ansible.builtin.assert:
+    that:
+      - immich_images is mapping
+      - immich_images | length > 0
+    fail_msg: >-
+      apps/immich/images.lock.yml must be loaded before running image
+      preflight.
+
+- name: Ensure the Immich config root exists
+  ansible.builtin.file:
+    path: /etc/klokast/immich
+    state: directory
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0750"
+  become: true
+
+- name: Ensure /usr/local/sbin exists for app helpers
+  ansible.builtin.file:
+    path: /usr/local/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Render the image source preflight helper
+  ansible.builtin.template:
+    src: immich-image-source-preflight.py.j2
+    dest: /usr/local/sbin/immich-image-source-preflight
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Resolve the best image source profile for this VM
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/immich-image-source-preflight
+      - --profile
+      - "{{ immich_image_source_profile | default('auto') }}"
+      - --keys
+      - "{{ immich_image_preflight_keys | default('') }}"
+      - --verify-pull
+      - --pull-user
+      - "{{ vm_admin_user_name }}"
+      - --write
+      - /etc/klokast/immich/image-sources.json
+  become: true
+  register: immich_image_preflight
+  changed_when: "'selected_profile' in immich_image_preflight.stdout"
+
+- name: Read the selected image source map
+  ansible.builtin.slurp:
+    src: /etc/klokast/immich/image-sources.json
+  become: true
+  register: immich_image_sources_slurp
+
+- name: Publish the selected image source map
+  ansible.builtin.set_fact:
+    immich_image_sources: "{{ immich_image_sources_slurp.content | b64decode | from_json }}"
+
+- name: Show the selected image source profile
+  ansible.builtin.debug:
+    msg:
+      - "Immich image source profile on {{ inventory_hostname }}: {{ immich_image_sources.profile }}"
+      - "Verified images: {{ immich_image_sources.images.keys() | list | sort }}"

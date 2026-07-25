@@ -1,0 +1,192 @@
+---
+xen_guest_config_dir: /etc/xen
+xen_guest_autostart_dir: /etc/xen/auto
+
+dom0_bridge_names:
+  wan: "{{ platform_network_realms.wan.bridge }}"
+  lan: "{{ platform_network_realms.lan.bridge }}"
+  dmz: "{{ platform_zones.dmz.bridge }}"
+  backend: "{{ platform_zones.bak.bridge }}"
+  iot: "{{ platform_zones.iot.bridge }}"
+  usr: "{{ platform_zones.usr.bridge }}"
+  ops: "{{ platform_control_zones.ops.bridge }}"
+
+xen_shared_installer_iso_path: "{{ dom0_xen_images_path }}/alpine-virt.iso"
+xen_shared_installer_kernel_path: "{{ dom0_xen_images_path }}/vmlinuz-virt"
+xen_shared_installer_initramfs_path: "{{ dom0_xen_images_path }}/initramfs-virt"
+
+node_xen_mac_octet: "{{ (node_name | hash('sha1'))[0:2] }}"
+
+node_xen_guest_specs:
+  router:
+    guest_name: router
+    stage: installed
+    config_path: "{{ xen_guest_config_dir }}/router.cfg"
+    autostart: true
+    memory_mb: 512
+    vcpus: 1
+    required_lvs:
+      - /dev/vg0/lv_router
+    installed:
+      kernel_path: "{{ dom0_xen_images_path }}/router-kernel"
+      initramfs_path: "{{ dom0_xen_images_path }}/router-initramfs"
+      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
+      required_paths:
+        - "{{ dom0_xen_images_path }}/router-kernel"
+        - "{{ dom0_xen_images_path }}/router-initramfs"
+      disks:
+        - "phy:/dev/vg0/lv_router,xvda,w"
+    vifs:
+      - bridge: "{{ platform_network_realms.wan.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:00:01"
+      - bridge: "{{ platform_network_realms.lan.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:02"
+      - bridge: "{{ platform_zones.dmz.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:03"
+      - bridge: "{{ platform_zones.bak.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:04"
+      - bridge: "{{ platform_zones.iot.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:05"
+      - bridge: "{{ platform_zones.usr.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:06"
+      - bridge: "{{ platform_control_zones.ops.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:07"
+
+  backend:
+    guest_name: bak
+    stage: installed
+    config_path: "{{ xen_guest_config_dir }}/bak.cfg"
+    autostart: true
+    memory_mb: 4096
+    vcpus: 4
+    cpus: "4-7"
+    lv_size: 50G
+    installer:
+      required_lvs:
+        - /dev/vg0/lv_podman_bak
+      kernel_path: "{{ xen_shared_installer_kernel_path }}"
+      initramfs_path: "{{ xen_shared_installer_initramfs_path }}"
+      extra: "console=hvc0 alpine_dev=xvdb:iso9660 modules=loop,squashfs"
+      required_paths:
+        - "{{ xen_shared_installer_iso_path }}"
+        - "{{ xen_shared_installer_kernel_path }}"
+        - "{{ xen_shared_installer_initramfs_path }}"
+      disks:
+        - "phy:/dev/vg0/lv_podman_bak,xvda,w"
+        - "file:{{ xen_shared_installer_iso_path }},xvdb,r"
+    installed:
+      required_lvs:
+        - /dev/vg0/lv_podman_bak
+      kernel_path: "{{ dom0_xen_images_path }}/bak-kernel"
+      initramfs_path: "{{ dom0_xen_images_path }}/bak-initramfs"
+      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
+      required_paths:
+        - "{{ dom0_xen_images_path }}/bak-kernel"
+        - "{{ dom0_xen_images_path }}/bak-initramfs"
+      disks:
+        - "phy:/dev/vg0/lv_podman_bak,xvda,w"
+    vifs:
+      - bridge: "{{ platform_zones.bak.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:20:01"
+
+  dmz:
+    guest_name: dmz
+    stage: installed
+    config_path: "{{ xen_guest_config_dir }}/dmz.cfg"
+    autostart: true
+    memory_mb: 2048
+    vcpus: 2
+    lv_size: 50G
+    required_lvs:
+      - /dev/vg0/lv_podman_dmz
+    installer:
+      kernel_path: "{{ xen_shared_installer_kernel_path }}"
+      initramfs_path: "{{ xen_shared_installer_initramfs_path }}"
+      extra: "console=hvc0 alpine_dev=xvdb:iso9660 modules=loop,squashfs"
+      required_paths:
+        - "{{ xen_shared_installer_iso_path }}"
+        - "{{ xen_shared_installer_kernel_path }}"
+        - "{{ xen_shared_installer_initramfs_path }}"
+      disks:
+        - "phy:/dev/vg0/lv_podman_dmz,xvda,w"
+        - "file:{{ xen_shared_installer_iso_path }},xvdb,r"
+    installed:
+      kernel_path: "{{ dom0_xen_images_path }}/dmz-kernel"
+      initramfs_path: "{{ dom0_xen_images_path }}/dmz-initramfs"
+      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
+      required_paths:
+        - "{{ dom0_xen_images_path }}/dmz-kernel"
+        - "{{ dom0_xen_images_path }}/dmz-initramfs"
+      disks:
+        - "phy:/dev/vg0/lv_podman_dmz,xvda,w"
+    vifs:
+      - bridge: "{{ platform_zones.dmz.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:30:01"
+
+  iot:
+    guest_name: iot
+    stage: installed
+    config_path: "{{ xen_guest_config_dir }}/iot.cfg"
+    autostart: true
+    memory_mb: 2048
+    vcpus: 2
+    lv_size: 50G
+    required_lvs:
+      - /dev/vg0/lv_podman_iot
+    installer:
+      kernel_path: "{{ xen_shared_installer_kernel_path }}"
+      initramfs_path: "{{ xen_shared_installer_initramfs_path }}"
+      extra: "console=hvc0 alpine_dev=xvdb:iso9660 modules=loop,squashfs"
+      required_paths:
+        - "{{ xen_shared_installer_iso_path }}"
+        - "{{ xen_shared_installer_kernel_path }}"
+        - "{{ xen_shared_installer_initramfs_path }}"
+      disks:
+        - "phy:/dev/vg0/lv_podman_iot,xvda,w"
+        - "file:{{ xen_shared_installer_iso_path }},xvdb,r"
+    installed:
+      kernel_path: "{{ dom0_xen_images_path }}/iot-kernel"
+      initramfs_path: "{{ dom0_xen_images_path }}/iot-initramfs"
+      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
+      required_paths:
+        - "{{ dom0_xen_images_path }}/iot-kernel"
+        - "{{ dom0_xen_images_path }}/iot-initramfs"
+      disks:
+        - "phy:/dev/vg0/lv_podman_iot,xvda,w"
+    vifs:
+      - bridge: "{{ platform_zones.iot.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:40:01"
+
+  ops:
+    guest_name: ops
+    stage: installed
+    config_path: "{{ xen_guest_config_dir }}/ops.cfg"
+    autostart: true
+    memory_mb: 4096
+    vcpus: 2
+    lv_size: 50G
+    required_lvs:
+      - /dev/vg0/lv_ops
+    installer:
+      kernel_path: "{{ xen_shared_installer_kernel_path }}"
+      initramfs_path: "{{ xen_shared_installer_initramfs_path }}"
+      extra: "console=hvc0 alpine_dev=xvdb:iso9660 modules=loop,squashfs"
+      required_paths:
+        - "{{ xen_shared_installer_iso_path }}"
+        - "{{ xen_shared_installer_kernel_path }}"
+        - "{{ xen_shared_installer_initramfs_path }}"
+      disks:
+        - "phy:/dev/vg0/lv_ops,xvda,w"
+        - "file:{{ xen_shared_installer_iso_path }},xvdb,r"
+    installed:
+      kernel_path: "{{ dom0_xen_images_path }}/ops-kernel"
+      initramfs_path: "{{ dom0_xen_images_path }}/ops-initramfs"
+      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
+      required_paths:
+        - "{{ dom0_xen_images_path }}/ops-kernel"
+        - "{{ dom0_xen_images_path }}/ops-initramfs"
+      disks:
+        - "phy:/dev/vg0/lv_ops,xvda,w"
+    vifs:
+      - bridge: "{{ platform_control_zones.ops.bridge }}"
+        mac: "00:16:3e:{{ node_xen_mac_octet }}:60:01"

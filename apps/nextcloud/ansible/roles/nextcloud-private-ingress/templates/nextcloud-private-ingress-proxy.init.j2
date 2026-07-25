@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+description="Klokast Nextcloud private ingress local proxy"
+
+command="/usr/sbin/nginx"
+command_args="-p {{ (nextcloud_private_ingress_proxy_root ~ '/') | quote }} -c {{ nextcloud_private_ingress_proxy_config | quote }} -g 'daemon off;'"
+command_user="{{ vm_admin_user_name }}:wheel"
+command_background=yes
+pidfile={{ nextcloud_private_ingress_proxy_supervisor_pidfile | quote }}
+supervisor="supervise-daemon"
+
+depend() {
+    need net
+    after firewall
+    use logger
+}
+
+start_pre() {
+    checkpath -d -m 0755 -o {{ vm_admin_user_name }}:wheel {{ nextcloud_private_ingress_run_root | quote }} || return 1
+    checkpath -d -m 0750 -o {{ vm_admin_user_name }}:wheel {{ nextcloud_private_ingress_log_root | quote }} || return 1
+    checkpath -d -m 0750 -o {{ vm_admin_user_name }}:wheel {{ nextcloud_private_ingress_proxy_root | quote }} || return 1
+    checkpath -d -m 0750 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_proxy_root ~ '/logs') | quote }} || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_log_root ~ '/proxy-access.log') | quote }} || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_log_root ~ '/proxy-error.log') | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_proxy_root ~ '/client_body_temp') | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_proxy_root ~ '/proxy_temp') | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_proxy_root ~ '/fastcgi_temp') | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_proxy_root ~ '/uwsgi_temp') | quote }} || return 1
+    checkpath -d -m 0700 -o {{ vm_admin_user_name }}:wheel {{ (nextcloud_private_ingress_proxy_root ~ '/scgi_temp') | quote }} || return 1
+}

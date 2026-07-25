@@ -1,0 +1,1885 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION=""
+ACTION_ARG=""
+OOB_HOST="oob"
+OOB_USER="root"
+OOB_DATA_DIR="/data"
+MAGICDNS_SUFFIX=""
+CONNECT_TIMEOUT="10"
+MEDIA_MODE="auto"
+READ_MODE="auto"
+VERIFY_SHA512_SIDECAR=0
+PRETTY_JSON=0
+
+UPLOAD_URL=""
+UPLOAD_URL_B64=""
+UPLOAD_NAME=""
+SHA512_URL=""
+SHA512_URL_B64=""
+REPLACE_EXISTING=0
+ALLOW_HTTP=0
+LOAD_AFTER_UPLOAD=0
+DELETE_SIDECAR=0
+SHOW_PROGRESS=1
+
+HID_TEXT=""
+HID_TEXT_SET=0
+HID_PASTE_FILE=""
+HID_PAYLOAD_B64=""
+HID_LAYOUT=""
+HID_ENTER=0
+API_USER="neo"
+API_PASSWORD_FILE=""
+API_PASSWORD_OUT="/home/codex/nanokvm/oob.password"
+TOKEN_FILE=""
+TOKEN_B64=""
+TOKEN_OUT=""
+MINT_TOKEN=0
+LOGIN_PAYLOAD_B64=""
+MINT_ACCOUNT_B64=""
+RESET_PASSWORD_B64=""
+RESET_PASSWORD_PAYLOAD_B64=""
+RESET_PASSWORD_TMP=""
+
+CHECK_DEPS_FOR=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/nanokvm-virtual-media ACTION [options]
+
+Manage NanoKVM operations over root SSH. The helper avoids the NanoKVM web UI
+password for media and service operations. HID paste uses NanoKVM's local API
+because that endpoint owns keyboard layout mapping and key event emission.
+
+Actions:
+  --status                 Print NanoKVM service, web, USB, and media state as JSON
+  --check-deps             Check NanoKVM-side tools; combine with --for ACTION
+  --ensure-tools LIST      Check a comma-separated list of NanoKVM-side tools
+  --upload-url URL         Download an .iso or .img URL directly on NanoKVM
+  --delete IMAGE           Delete an image from the NanoKVM data directory
+  --load IMAGE             Load IMAGE from the NanoKVM data directory
+  --unload                 Detach the mounted image and expose the empty media
+  --eject                  Alias for --unload
+  --hid-paste TEXT         Type TEXT through NanoKVM HID
+  --hid-paste-file PATH    Type file content through NanoKVM HID; use - for stdin
+  --mint-token             Emergency token mint by temporary /etc/kvm/pwd rewrite
+  --reset-api-password     Generate and set a new NanoKVM web/API and root password
+  --restart-service        Restart the NanoKVM web/API service
+  --restart-web            Alias for --restart-service
+  --reboot                 Reboot the NanoKVM device
+  --usb-reset              Rebind the NanoKVM USB gadget without changing media
+
+Upload and delete options:
+  --as NAME                Store --upload-url as NAME under --data-dir
+  --sha512-url URL         Download and verify a SHA512 sidecar before publishing
+  --replace                Replace an existing unmounted image
+  --allow-http             Permit http:// image URLs; https:// is the default
+  --load-after-upload      Load the uploaded image after publishing it
+  --no-progress            Suppress --upload-url download progress on stderr
+  --delete-sidecar         Delete IMAGE.sha512 together with --delete IMAGE
+
+Virtual media options:
+  --cdrom                  Expose loaded media as a CD-ROM
+  --disk                   Expose loaded media as a writable-style USB disk
+  --read-only              Mark loaded media read-only
+  --read-write             Mark loaded media read-write
+  --verify-sha512-sidecar  Verify IMAGE.sha512 before loading IMAGE
+
+HID/API options:
+  --hid-layout LANG        NanoKVM keyboard layout, e.g. fr or de
+  --hid-enter              Append one final newline to the HID payload
+  --api-user USER          NanoKVM web/API user. Default: neo
+  --api-password-file PATH Read NanoKVM web/API password from a local file
+  --api-password-out PATH  With --reset-api-password, save the new password here.
+                           Default: /home/codex/nanokvm/oob.password
+  --token-file PATH        Read an existing nano-kvm-token from a local file
+  --token-out PATH         With --mint-token, write a local 0600 token file
+
+Connection options:
+  --host HOST               NanoKVM SSH host. Default: oob
+  --user USER               NanoKVM SSH user. Default: root
+  --data-dir PATH           NanoKVM data directory. Default: /data
+  --dest PATH               Alias for --data-dir
+  --magicdns-suffix SUFFIX  Tailscale MagicDNS suffix for short hostnames
+  --connect-timeout SEC     SSH connect timeout. Default: 10
+  --pretty                  Pretty-print JSON output
+  -h, --help                Show this help
+
+Examples:
+  ansible/bin/nanokvm-virtual-media --status --host oob
+  ansible/bin/nanokvm-virtual-media --upload-url https://example.invalid/debian.iso --as debian.iso
+  ansible/bin/nanokvm-virtual-media --delete debian.iso --delete-sidecar
+  ansible/bin/nanokvm-virtual-media --load klokast-bootstrap-debian-trixie-amd64.iso --verify-sha512-sidecar
+  ansible/bin/nanokvm-virtual-media --hid-paste 'echo NANOKVM_HID_OK' --api-password-file /home/codex/nanokvm/oob.password
+  ansible/bin/nanokvm-virtual-media --mint-token --token-out /run/klokast/nanokvm-oob.token
+  ansible/bin/nanokvm-virtual-media --reset-api-password
+  ansible/bin/nanokvm-virtual-media --restart-service
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+set_action() {
+  local action="$1"
+  local action_arg="${2:-}"
+
+  [ -z "$ACTION" ] || die "only one NanoKVM action can be used per invocation"
+  ACTION="$action"
+  ACTION_ARG="$action_arg"
+}
+
+require_local_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found in PATH"
+}
+
+b64_text() {
+  python3 -c 'import base64, sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$1"
+}
+
+read_token_file_b64() {
+  local path="$1"
+
+  [ -r "$path" ] || die "token file is not readable: $path"
+  python3 - "$path" <<'PY'
+import base64
+import pathlib
+import sys
+
+token = pathlib.Path(sys.argv[1]).read_text().strip()
+if not token:
+    raise SystemExit("empty token file")
+print(base64.b64encode(token.encode()).decode())
+PY
+}
+
+validate_image_basename() {
+  local name="$1"
+
+  case "$name" in
+    ""|.*|*/*|*".. "*|*".."*|*" "*)
+      die "image name must be a simple basename: $name"
+      ;;
+  esac
+  case "$name" in
+    *.iso|*.img) ;;
+    *) die "image name must end in .iso or .img: $name" ;;
+  esac
+  python3 - "$name" <<'PY'
+import re
+import sys
+
+name = sys.argv[1]
+if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+    raise SystemExit(f"error: image name contains unsupported characters: {name}")
+PY
+}
+
+derive_upload_name() {
+  python3 - "$UPLOAD_URL" <<'PY'
+import os
+import sys
+import urllib.parse
+
+url = urllib.parse.urlparse(sys.argv[1])
+name = os.path.basename(urllib.parse.unquote(url.path))
+if not name:
+    raise SystemExit("error: --as is required when the URL path has no filename")
+print(name)
+PY
+}
+
+validate_url_scheme() {
+  local url="$1"
+  local label="$2"
+
+  python3 - "$url" "$label" "$ALLOW_HTTP" <<'PY'
+import sys
+import urllib.parse
+
+url, label, allow_http = sys.argv[1:4]
+parsed = urllib.parse.urlparse(url)
+if not parsed.scheme or not parsed.netloc:
+    raise SystemExit(f"error: {label} must be an absolute URL")
+allowed = {"https"}
+if allow_http == "1":
+    allowed.add("http")
+if parsed.scheme not in allowed:
+    raise SystemExit(f"error: {label} must use https:// unless --allow-http is set")
+PY
+}
+
+login_payload_b64_from_password() {
+  local username="$1"
+  local password="$2"
+  local cipher
+
+  require_local_cmd openssl
+  cipher="$(
+    printf '%s' "$password" |
+      openssl enc -aes-256-cbc -a -salt \
+        -pass pass:nanokvm-sipeed-2024 -md md5 2>/dev/null |
+      tr -d '\n'
+  )"
+
+  python3 - "$username" "$cipher" <<'PY'
+import base64
+import json
+import sys
+import urllib.parse
+
+payload = {
+    "username": sys.argv[1],
+    "password": urllib.parse.quote(sys.argv[2], safe=""),
+}
+print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
+PY
+}
+
+prepare_password_login() {
+  local password
+
+  [ -r "$API_PASSWORD_FILE" ] || die "NanoKVM API password file is not readable: $API_PASSWORD_FILE"
+  password="$(python3 - "$API_PASSWORD_FILE" <<'PY'
+import pathlib
+import sys
+
+password = pathlib.Path(sys.argv[1]).read_text().rstrip("\r\n")
+if not password:
+    raise SystemExit("empty NanoKVM API password file")
+print(password, end="")
+PY
+)"
+  LOGIN_PAYLOAD_B64="$(login_payload_b64_from_password "$API_USER" "$password")"
+  unset password
+}
+
+prepare_mint_token() {
+  local tmp_password
+  local hash
+
+  require_local_cmd openssl
+  python3 - <<'PY' >/dev/null
+import bcrypt
+PY
+
+  tmp_password="$(python3 - <<'PY'
+import secrets
+print("klokast-hid-" + secrets.token_hex(12))
+PY
+)"
+  hash="$(
+    printf '%s' "$tmp_password" |
+      python3 -c 'import bcrypt, sys; print(bcrypt.hashpw(sys.stdin.buffer.read(), bcrypt.gensalt()).decode())'
+  )"
+  MINT_ACCOUNT_B64="$(
+    python3 - "$API_USER" "$hash" <<'PY'
+import base64
+import json
+import sys
+
+account = {"username": sys.argv[1], "password": sys.argv[2]}
+print(base64.b64encode(json.dumps(account, separators=(",", ":")).encode()).decode())
+PY
+  )"
+  LOGIN_PAYLOAD_B64="$(login_payload_b64_from_password "$API_USER" "$tmp_password")"
+  unset tmp_password hash
+}
+
+decode_local_b64() {
+  printf '%s' "$1" |
+    python3 -c 'import base64, sys; print(base64.b64decode(sys.stdin.read()).decode(), end="")'
+}
+
+prepare_reset_password() {
+  local password
+
+  require_local_cmd openssl
+  RESET_PASSWORD_B64="$(
+    python3 - <<'PY'
+import base64
+import secrets
+
+password = "klokast-" + secrets.token_urlsafe(32)
+print(base64.b64encode(password.encode()).decode())
+PY
+  )"
+  password="$(decode_local_b64 "$RESET_PASSWORD_B64")"
+  RESET_PASSWORD_PAYLOAD_B64="$(login_payload_b64_from_password "$API_USER" "$password")"
+  unset password
+}
+
+prepare_reset_password_out() {
+  case "$API_PASSWORD_OUT" in
+    ""|/) die "--api-password-out must not be empty or /" ;;
+    /*) ;;
+    *) die "--api-password-out must be an absolute path: $API_PASSWORD_OUT" ;;
+  esac
+
+  RESET_PASSWORD_TMP="$(
+    RESET_PASSWORD_B64="$RESET_PASSWORD_B64" python3 - "$API_PASSWORD_OUT" <<'PY'
+import base64
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+path = pathlib.Path(sys.argv[1])
+parent = path.parent
+password = base64.b64decode(os.environ["RESET_PASSWORD_B64"]).decode()
+if not password:
+    raise SystemExit("empty generated password")
+if path.exists() or path.is_symlink():
+    mode = path.lstat().st_mode
+    if not stat.S_ISREG(mode):
+        raise SystemExit(f"password output path is not a regular file: {path}")
+if not parent.exists():
+    parent.mkdir(parents=True, mode=0o700)
+elif not parent.is_dir():
+    raise SystemExit(f"password output parent is not a directory: {parent}")
+parent_mode = parent.stat().st_mode
+if parent_mode & 0o022:
+    raise SystemExit(f"password output parent must not be group/other writable: {parent}")
+fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(password + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+finally:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+print(tmp)
+PY
+  )"
+}
+
+cleanup_reset_password_tmp() {
+  if [ -n "$RESET_PASSWORD_TMP" ]; then
+    rm -f -- "$RESET_PASSWORD_TMP"
+  fi
+}
+
+commit_reset_password_out() {
+  [ -n "$RESET_PASSWORD_TMP" ] || die "missing temporary password output file"
+  python3 - "$RESET_PASSWORD_TMP" "$API_PASSWORD_OUT" <<'PY'
+import os
+import pathlib
+import sys
+
+tmp = pathlib.Path(sys.argv[1])
+path = pathlib.Path(sys.argv[2])
+os.replace(tmp, path)
+path.chmod(0o600)
+PY
+  RESET_PASSWORD_TMP=""
+}
+
+prepare_hid_payload() {
+  if [ -n "$HID_PASTE_FILE" ]; then
+    HID_PAYLOAD_B64="$(
+      python3 - "$HID_PASTE_FILE" "$HID_ENTER" <<'PY'
+import base64
+import pathlib
+import sys
+
+path, enter = sys.argv[1:3]
+if path == "-":
+    data = sys.stdin.buffer.read()
+else:
+    data = pathlib.Path(path).read_bytes()
+if enter == "1" and not data.endswith(b"\n"):
+    data += b"\n"
+if not data:
+    raise SystemExit("empty HID payload")
+print(base64.b64encode(data).decode())
+PY
+    )"
+  elif [ "$HID_TEXT_SET" -eq 1 ]; then
+    HID_PAYLOAD_B64="$(
+      HID_TEXT="$HID_TEXT" python3 - "$HID_ENTER" <<'PY'
+import base64
+import os
+import sys
+
+data = os.environ["HID_TEXT"].encode()
+if sys.argv[1] == "1" and not data.endswith(b"\n"):
+    data += b"\n"
+if not data:
+    raise SystemExit("empty HID payload")
+print(base64.b64encode(data).decode())
+PY
+    )"
+  fi
+}
+
+write_token_file_from_b64() {
+  local token_b64="$1"
+
+  [ -n "$TOKEN_OUT" ] || die "--token-out is required with standalone --mint-token"
+  TOKEN_B64="$token_b64" python3 - "$TOKEN_OUT" <<'PY'
+import base64
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+token = base64.b64decode(os.environ["TOKEN_B64"]).decode()
+if not token:
+    raise SystemExit("empty minted token")
+path.parent.mkdir(parents=True, exist_ok=True)
+old_umask = os.umask(0o077)
+try:
+    path.write_text(token + "\n")
+    path.chmod(0o600)
+finally:
+    os.umask(old_umask)
+PY
+}
+
+remote_value() {
+  local key="$1"
+  local raw="$2"
+
+  awk -F= -v wanted="$key" '$1 == wanted { sub(/^[^=]*=/, ""); print; exit }' <<<"$raw"
+}
+
+resolve_tailscale_suffix() {
+  if [ -n "$MAGICDNS_SUFFIX" ]; then
+    printf '%s\n' "$MAGICDNS_SUFFIX"
+    return 0
+  fi
+
+  command -v tailscale >/dev/null 2>&1 || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+
+  tailscale status --json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+suffix = (data.get("MagicDNSSuffix") or "").strip(".")
+if not suffix:
+    sys.exit(1)
+print(suffix)
+' || return 1
+}
+
+resolve_host() {
+  local host="$1"
+  local suffix
+
+  case "$host" in
+    *.*|*:*) printf '%s\n' "$host" ;;
+    *)
+      suffix="$(resolve_tailscale_suffix || true)"
+      if [ -n "$suffix" ]; then
+        printf '%s.%s\n' "$host" "$suffix"
+      else
+        printf '%s\n' "$host"
+      fi
+      ;;
+  esac
+}
+
+emit_json() {
+  local connect_host="$1"
+  local raw="$2"
+
+  REMOTE_OUTPUT="$raw" PRETTY_JSON="$PRETTY_JSON" python3 - "$ACTION" "$OOB_HOST" "$connect_host" "$OOB_USER" <<'PY'
+import json
+import os
+import sys
+
+action, requested_host, connect_host, user = sys.argv[1:5]
+data = {
+    "action": action,
+    "command": action,
+    "requested_host": requested_host,
+    "connect_host": connect_host,
+    "user": user,
+    "available_images": [],
+    "dependencies": [],
+    "missing_dependencies": [],
+}
+
+for raw_line in os.environ.get("REMOTE_OUTPUT", "").splitlines():
+    if "=" not in raw_line:
+        continue
+    key, value = raw_line.split("=", 1)
+    if key == "token_b64":
+        continue
+    if key == "available_image":
+        data["available_images"].append(value)
+    elif key == "dependency":
+        data["dependencies"].append(value)
+    elif key == "missing_dependency":
+        data["missing_dependencies"].append(value)
+    elif value == "true":
+        data[key] = True
+    elif value == "false":
+        data[key] = False
+    else:
+        data[key] = value
+
+if os.environ.get("PRETTY_JSON") == "1":
+    print(json.dumps(data, indent=2, sort_keys=True))
+else:
+    print(json.dumps(data, sort_keys=True))
+PY
+}
+
+run_remote() {
+  local connect_host="$1"
+  local remote_args
+  local remote_output
+  local status
+  local token_b64
+  local -a ssh_cmd
+
+  remote_args="$(
+    python3 - \
+      "$ACTION" \
+      "$OOB_DATA_DIR" \
+      "$ACTION_ARG" \
+      "$MEDIA_MODE" \
+      "$READ_MODE" \
+      "$VERIFY_SHA512_SIDECAR" \
+      "$UPLOAD_URL_B64" \
+      "$UPLOAD_NAME" \
+      "$SHA512_URL_B64" \
+      "$REPLACE_EXISTING" \
+      "$ALLOW_HTTP" \
+      "$LOAD_AFTER_UPLOAD" \
+      "$DELETE_SIDECAR" \
+      "$HID_PAYLOAD_B64" \
+      "$HID_LAYOUT" \
+      "$LOGIN_PAYLOAD_B64" \
+      "$TOKEN_B64" \
+      "$MINT_ACCOUNT_B64" \
+      "$API_USER" \
+      "$CHECK_DEPS_FOR" \
+      "$SHOW_PROGRESS" \
+      "$RESET_PASSWORD_PAYLOAD_B64" \
+      "$API_PASSWORD_OUT" <<'PY'
+import shlex
+import sys
+
+print(shlex.join(sys.argv[1:]))
+PY
+  )"
+
+  ssh_cmd=(
+    ssh
+    -o BatchMode=yes
+    -o ConnectTimeout="$CONNECT_TIMEOUT"
+    -o StrictHostKeyChecking=accept-new
+    "${OOB_USER}@${connect_host}"
+    "sh -s -- $remote_args"
+  )
+
+  set +e
+  remote_output="$("${ssh_cmd[@]}" <<'REMOTE'
+set -eu
+
+action="$1"
+data_dir="$2"
+[ "$data_dir" = "/" ] || data_dir="${data_dir%/}"
+image_arg="${3:-}"
+media_mode="${4:-auto}"
+read_mode="${5:-auto}"
+verify_sha512_sidecar="${6:-0}"
+upload_url_b64="${7:-}"
+upload_name="${8:-}"
+sha512_url_b64="${9:-}"
+replace_existing="${10:-0}"
+allow_http="${11:-0}"
+load_after_upload="${12:-0}"
+delete_sidecar="${13:-0}"
+hid_payload_b64="${14:-}"
+hid_layout="${15:-}"
+login_payload_b64="${16:-}"
+token_b64="${17:-}"
+mint_account_b64="${18:-}"
+api_user="${19:-neo}"
+check_deps_for="${20:-}"
+show_progress="${21:-1}"
+reset_password_payload_b64="${22:-}"
+api_password_out="${23:-}"
+
+image_none="/dev/mmcblk0p3"
+mount_device="/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/file"
+cdrom_flag="/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/cdrom"
+ro_flag="/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/ro"
+inquiry_string="/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/inquiry_string"
+udc_path="/sys/kernel/config/usb_gadget/g0/UDC"
+nanokvm_service="/etc/init.d/S95nanokvm"
+
+fail() {
+  printf 'remote_error=%s\n' "$*" >&2
+  exit 1
+}
+
+decode_b64() {
+  printf '%s' "$1" | base64 -d
+}
+
+read_state_file() {
+  if [ -e "$1" ]; then
+    tr -d '\n' <"$1"
+  fi
+}
+
+gadget_available() {
+  for path in "$mount_device" "$cdrom_flag" "$ro_flag" "$inquiry_string" "$udc_path"; do
+    [ -e "$path" ] || return 1
+  done
+}
+
+require_gadget() {
+  gadget_available || fail "NanoKVM USB gadget state is not available"
+}
+
+require_data_dir() {
+  [ -d "$data_dir" ] || fail "NanoKVM data directory does not exist: $data_dir"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is not available on NanoKVM"
+}
+
+list_images() {
+  require_data_dir
+  ls -td "$data_dir"/*.iso "$data_dir"/*.img 2>/dev/null || true
+}
+
+service_pids() {
+  pidof NanoKVM-Server 2>/dev/null || pgrep -f NanoKVM-Server 2>/dev/null || true
+}
+
+listener_lines() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -lntp 2>/dev/null | awk '/:80|:443/ {print}'
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -lntp 2>/dev/null | awk '/:80|:443/ {print}'
+  fi
+}
+
+probe_http_code() {
+  local url="$1"
+
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -kfsSI -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true
+}
+
+wait_for_web() {
+  local code
+  local i=0
+
+  command -v curl >/dev/null 2>&1 || return 0
+  while [ "$i" -lt 30 ]; do
+    code="$(probe_http_code "https://127.0.0.1/")"
+    case "$code" in
+      2*|3*) return 0 ;;
+    esac
+    code="$(probe_http_code "http://127.0.0.1/")"
+    case "$code" in
+      2*|3*) return 0 ;;
+    esac
+    i=$((i + 1))
+    sleep 1
+  done
+  return 1
+}
+
+validate_url_scheme_remote() {
+  local url="$1"
+  local label="$2"
+
+  case "$url" in
+    https://*) return 0 ;;
+    http://*)
+      [ "$allow_http" = "1" ] || fail "$label must use https:// unless --allow-http is set"
+      return 0
+      ;;
+    *) fail "$label must be an absolute http:// or https:// URL" ;;
+  esac
+}
+
+redact_url() {
+  local url="$1"
+  local redacted
+
+  redacted="${url%%\#*}"
+  redacted="${redacted%%\?*}"
+  printf '%s\n' "$redacted"
+}
+
+normalize_image_path() {
+  local requested="$1"
+  local image_path
+
+  [ -n "$requested" ] || fail "image name is required"
+  case "$requested" in
+    *"/../"*|*".."*"/"*|*"/."|*"/./"*) fail "image path must not contain dot path components: $requested" ;;
+  esac
+  case "$requested" in
+    /*)
+      image_path="$requested"
+      ;;
+    */*)
+      fail "image must be a basename or an absolute path under $data_dir: $requested"
+      ;;
+    *)
+      image_path="$data_dir/$requested"
+      ;;
+  esac
+  case "$image_path" in
+    "$data_dir"/*) ;;
+    *) fail "image path must be under $data_dir: $image_path" ;;
+  esac
+  case "$image_path" in
+    *.iso|*.img) ;;
+    *) fail "image must end in .iso or .img: $image_path" ;;
+  esac
+  [ -f "$image_path" ] || fail "image does not exist: $image_path"
+  printf '%s\n' "$image_path"
+}
+
+validate_target_image_name() {
+  local name="$1"
+
+  [ -n "$name" ] || fail "target image name is required"
+  case "$name" in
+    .*|*/*|*".. "*|*".."*|*" "*) fail "target image must be a simple basename: $name" ;;
+  esac
+  case "$name" in
+    *.iso|*.img) ;;
+    *) fail "target image must end in .iso or .img: $name" ;;
+  esac
+  case "$name" in
+    *[!A-Za-z0-9._-]*) fail "target image contains unsupported characters: $name" ;;
+  esac
+}
+
+verify_sha512_sidecar() {
+  local image_path="$1"
+  local image_name
+  local expected
+
+  require_cmd sha512sum
+  [ -f "$image_path.sha512" ] || fail "missing SHA512 sidecar: $image_path.sha512"
+  image_name="$(basename "$image_path")"
+  expected="$(awk 'NR == 1 {print $1}' "$image_path.sha512")"
+  [ -n "$expected" ] || fail "empty SHA512 sidecar: $image_path.sha512"
+
+  (
+    cd "$(dirname "$image_path")"
+    printf '%s  %s\n' "$expected" "$image_name" | sha512sum -c - >/dev/null
+  ) || fail "SHA512 verification failed for $image_name"
+}
+
+verify_sha512_file() {
+  local file_path="$1"
+  local checksum_path="$2"
+  local expected
+  local actual
+
+  require_cmd sha512sum
+  expected="$(awk 'NR == 1 {print $1}' "$checksum_path")"
+  [ -n "$expected" ] || fail "empty SHA512 sidecar: $checksum_path"
+  actual="$(sha512sum "$file_path" | awk '{print $1}')"
+  [ "$actual" = "$expected" ] || fail "SHA512 verification failed for downloaded image"
+}
+
+download_file() {
+  local url="$1"
+  local dest="$2"
+  local label="$3"
+
+  if command -v curl >/dev/null 2>&1; then
+    if [ "$show_progress" = "1" ]; then
+      printf 'nanokvm: downloading %s from %s\n' "$label" "$(redact_url "$url")" >&2
+      curl -fL --progress-bar --connect-timeout 20 --retry 2 --output "$dest" "$url"
+      printf 'nanokvm: downloaded %s\n' "$label" >&2
+    else
+      curl -fsSL --connect-timeout 20 --retry 2 --output "$dest" "$url"
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if [ "$show_progress" = "1" ]; then
+      printf 'nanokvm: downloading %s from %s\n' "$label" "$(redact_url "$url")" >&2
+      case "$(wget --help 2>&1 || true)" in
+        *"--progress"*) wget --progress=bar:force:noscroll -O "$dest" "$url" ;;
+        *) wget -O "$dest" "$url" ;;
+      esac
+      printf 'nanokvm: downloaded %s\n' "$label" >&2
+    else
+      wget -q -O "$dest" "$url"
+    fi
+  else
+    fail "curl or wget is required on NanoKVM"
+  fi
+}
+
+write_inquiry() {
+  local product="$1"
+
+  printf '%-8s%-16s%s' "NanoKVM" "$product" "0520" >"$inquiry_string"
+}
+
+reset_usb_gadget() {
+  local udc
+
+  require_gadget
+  : >"$udc_path"
+  sleep 0.1
+  udc="$(ls /sys/class/udc 2>/dev/null | head -n 1 || true)"
+  [ -n "$udc" ] || fail "no USB device controller found under /sys/class/udc"
+  printf '%s' "$udc" >"$udc_path"
+  sleep 0.1
+}
+
+unload_media() {
+  local previous_file
+  local previous_cdrom
+  local previous_ro
+  local changed="false"
+
+  require_gadget
+  previous_file="$(read_state_file "$mount_device")"
+  previous_cdrom="$(read_state_file "$cdrom_flag")"
+  previous_ro="$(read_state_file "$ro_flag")"
+
+  if [ "$previous_file" != "$image_none" ] || [ "$previous_cdrom" != "0" ] || [ "$previous_ro" != "0" ]; then
+    changed="true"
+    printf '\n' >"$mount_device"
+    printf '0' >"$ro_flag"
+    printf '0' >"$cdrom_flag"
+    write_inquiry "USB Mass Storage"
+    printf '%s' "$image_none" >"$mount_device"
+    reset_usb_gadget
+  fi
+
+  printf '%s\n' "$changed"
+}
+
+resolve_media_flags() {
+  local image_path="$1"
+  local cdrom
+  local ro
+
+  case "$media_mode" in
+    auto)
+      case "$image_path" in
+        *.iso) cdrom="1" ;;
+        *) cdrom="0" ;;
+      esac
+      ;;
+    cdrom) cdrom="1" ;;
+    disk) cdrom="0" ;;
+    *) fail "unknown media mode: $media_mode" ;;
+  esac
+
+  case "$read_mode" in
+    auto)
+      if [ "$cdrom" = "1" ]; then
+        ro="1"
+      else
+        ro="0"
+      fi
+      ;;
+    read-only) ro="1" ;;
+    read-write) ro="0" ;;
+    *) fail "unknown read mode: $read_mode" ;;
+  esac
+
+  if [ "$cdrom" = "1" ] && [ "$ro" != "1" ]; then
+    fail "CD-ROM media must be read-only"
+  fi
+
+  printf '%s %s\n' "$cdrom" "$ro"
+}
+
+mount_image() {
+  local selected_image="$1"
+  local previous_file
+  local previous_cdrom
+  local previous_ro
+  local desired_cdrom
+  local desired_ro
+  local changed="false"
+
+  require_gadget
+  set -- $(resolve_media_flags "$selected_image")
+  desired_cdrom="$1"
+  desired_ro="$2"
+  previous_file="$(read_state_file "$mount_device")"
+  previous_cdrom="$(read_state_file "$cdrom_flag")"
+  previous_ro="$(read_state_file "$ro_flag")"
+
+  if [ "$previous_file" != "$selected_image" ] || [ "$previous_cdrom" != "$desired_cdrom" ] || [ "$previous_ro" != "$desired_ro" ]; then
+    changed="true"
+    printf '\n' >"$mount_device"
+    printf '%s' "$desired_ro" >"$ro_flag"
+    printf '%s' "$desired_cdrom" >"$cdrom_flag"
+    if [ "$desired_cdrom" = "1" ]; then
+      write_inquiry "USB CD/DVD-ROM"
+    else
+      write_inquiry "USB Mass Storage"
+    fi
+    printf '%s' "$selected_image" >"$mount_device"
+    reset_usb_gadget
+  fi
+
+  printf '%s\n' "$changed"
+}
+
+print_state() {
+  local state_action="$1"
+  local changed="$2"
+  local selected_image="$3"
+  local previous_file="$4"
+  local current_file=""
+  local current_name=""
+  local cdrom=""
+  local ro=""
+  local mounted="false"
+  local gadget_state="false"
+  local service_running="false"
+  local pids=""
+  local listeners=""
+  local image
+  local udc=""
+
+  if gadget_available; then
+    gadget_state="true"
+    current_file="$(read_state_file "$mount_device")"
+    cdrom="$(read_state_file "$cdrom_flag")"
+    ro="$(read_state_file "$ro_flag")"
+    udc="$(read_state_file "$udc_path")"
+    if [ -n "$current_file" ] && [ "$current_file" != "$image_none" ]; then
+      mounted="true"
+      current_name="$(basename "$current_file")"
+    fi
+  fi
+
+  pids="$(service_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  if [ -n "$pids" ]; then
+    service_running="true"
+  fi
+  listeners="$(listener_lines | tr '\n' ';' | sed 's/;*$//')"
+
+  printf 'action=%s\n' "$state_action"
+  printf 'changed=%s\n' "$changed"
+  printf 'data_dir=%s\n' "$data_dir"
+  printf 'gadget_available=%s\n' "$gadget_state"
+  printf 'mounted=%s\n' "$mounted"
+  printf 'mounted_file=%s\n' "$current_file"
+  printf 'mounted_name=%s\n' "$current_name"
+  printf 'previous_file=%s\n' "$previous_file"
+  printf 'cdrom=%s\n' "$cdrom"
+  printf 'ro=%s\n' "$ro"
+  printf 'selected_image=%s\n' "$selected_image"
+  printf 'udc=%s\n' "$udc"
+  printf 'service_running=%s\n' "$service_running"
+  printf 'service_pids=%s\n' "$pids"
+  printf 'listeners=%s\n' "$listeners"
+  printf 'https_status=%s\n' "$(probe_http_code "https://127.0.0.1/")"
+  printf 'http_status=%s\n' "$(probe_http_code "http://127.0.0.1/")"
+  for image in $(list_images); do
+    printf 'available_image=%s\n' "$image"
+  done
+}
+
+check_one_dependency() {
+  local name="$1"
+
+  if command -v "$name" >/dev/null 2>&1; then
+    printf 'dependency=remote:%s:present\n' "$name"
+  else
+    printf 'dependency=remote:%s:missing\n' "$name"
+    printf 'missing_dependency=remote:%s\n' "$name"
+  fi
+}
+
+check_any_dependency() {
+  local label="$1"
+  shift
+  local tool
+
+  for tool in "$@"; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      printf 'dependency=remote:%s:present\n' "$tool"
+      return 0
+    fi
+  done
+
+  printf 'dependency=remote:%s:missing\n' "$label"
+  printf 'missing_dependency=remote:%s\n' "$label"
+}
+
+check_deps_for_action() {
+  local target="$1"
+  local tool
+
+  printf 'changed=false\n'
+  case "$target" in
+    ""|common)
+      for tool in sh awk sed tr ls basename dirname rm mv cp chmod cat; do
+        check_one_dependency "$tool"
+      done
+      ;;
+    status)
+      check_one_dependency curl
+      ;;
+    upload-url)
+      check_any_dependency "curl-or-wget" curl wget
+      for tool in awk mktemp mv rm wc; do
+        check_one_dependency "$tool"
+      done
+      ;;
+    delete)
+      check_one_dependency rm
+      ;;
+    load|unload|usb-reset)
+      for tool in ls sleep; do
+        check_one_dependency "$tool"
+      done
+      ;;
+    hid-paste)
+      for tool in base64 curl mktemp python3 rm wc; do
+        check_one_dependency "$tool"
+      done
+      ;;
+    mint-token)
+      for tool in base64 cp chmod curl mktemp python3 rm; do
+        check_one_dependency "$tool"
+      done
+      ;;
+    reset-api-password)
+      for tool in base64 cp chmod curl mktemp passwd python3 rm; do
+        check_one_dependency "$tool"
+      done
+      ;;
+    *)
+      fail "unknown dependency target: $target"
+      ;;
+  esac
+}
+
+ensure_tools() {
+  local csv="$1"
+  local old_ifs="$IFS"
+  local tool
+
+  IFS=","
+  for tool in $csv; do
+    [ -n "$tool" ] || continue
+    check_one_dependency "$tool"
+  done
+  IFS="$old_ifs"
+}
+
+api_check_ok() {
+  local response="$1"
+  local context="$2"
+
+  RESPONSE="$response" CONTEXT="$context" python3 - <<'PY'
+import json
+import os
+import sys
+
+context = os.environ["CONTEXT"]
+try:
+    rsp = json.loads(os.environ["RESPONSE"])
+except Exception as exc:
+    raise SystemExit(f"{context}: invalid JSON response: {exc}")
+if rsp.get("code") != 0:
+    raise SystemExit(f"{context}: {rsp}")
+PY
+}
+
+login_with_payload() {
+  local payload_b64="$1"
+  local login_json
+  local response
+
+  require_cmd base64
+  require_cmd curl
+  require_cmd mktemp
+  require_cmd python3
+  login_json="$(mktemp /tmp/nanokvm-login.XXXXXX)"
+  decode_b64 "$payload_b64" >"$login_json"
+  response="$(
+    curl -kfsS -X POST https://127.0.0.1/api/auth/login \
+      -H 'Content-Type: application/json' \
+      --data @"$login_json"
+  )"
+  rm -f "$login_json"
+  RESPONSE="$response" python3 - <<'PY'
+import json
+import os
+
+rsp = json.loads(os.environ["RESPONSE"])
+if rsp.get("code") != 0:
+    raise SystemExit(f"NanoKVM login failed: {rsp}")
+print(rsp["data"]["token"])
+PY
+}
+
+mint_token() {
+  local backup="/tmp/klokast-pwd-backup-$$"
+  local had_pwd="false"
+  local token
+
+  require_cmd base64
+  require_cmd cp
+  require_cmd chmod
+  require_cmd curl
+  require_cmd python3
+  [ -n "$mint_account_b64" ] || fail "--mint-token requires a generated account payload"
+  [ -n "$login_payload_b64" ] || fail "--mint-token requires a generated login payload"
+
+  restore_pwd() {
+    if [ "$had_pwd" = "true" ]; then
+      cp "$backup" /etc/kvm/pwd
+      chmod 0644 /etc/kvm/pwd
+      rm -f "$backup"
+    else
+      rm -f /etc/kvm/pwd
+    fi
+  }
+
+  if [ -f /etc/kvm/pwd ]; then
+    cp /etc/kvm/pwd "$backup"
+    had_pwd="true"
+  fi
+  trap restore_pwd EXIT
+  decode_b64 "$mint_account_b64" >/etc/kvm/pwd
+  chmod 0644 /etc/kvm/pwd
+  token="$(login_with_payload "$login_payload_b64")"
+  restore_pwd
+  trap - EXIT
+  printf '%s\n' "$token"
+}
+
+resolve_hid_token() {
+  if [ -n "$token_b64" ]; then
+    decode_b64 "$token_b64"
+    return 0
+  fi
+
+  if [ -n "$mint_account_b64" ]; then
+    mint_token
+    return 0
+  fi
+
+  if [ -n "$login_payload_b64" ]; then
+    login_with_payload "$login_payload_b64"
+    return 0
+  fi
+
+  fail "HID paste requires --api-password-file, --token-file, or --mint-token"
+}
+
+change_password_with_token() {
+  local token="$1"
+  local payload_b64="$2"
+  local change_json
+  local response
+
+  require_cmd base64
+  require_cmd curl
+  require_cmd mktemp
+  require_cmd rm
+  require_cmd python3
+  [ -n "$token" ] || fail "password reset requires a NanoKVM token"
+  [ -n "$payload_b64" ] || fail "password reset requires a generated password payload"
+
+  change_json="$(mktemp /tmp/nanokvm-password.XXXXXX)"
+  decode_b64 "$payload_b64" >"$change_json"
+  response="$(
+    curl -kfsS -X POST https://127.0.0.1/api/auth/password \
+      -b "nano-kvm-token=$token" \
+      -H 'Content-Type: application/json' \
+      --data @"$change_json"
+  )"
+  rm -f "$change_json"
+  api_check_ok "$response" "password reset"
+}
+
+reset_api_password() {
+  local backup="/tmp/klokast-pwd-reset-backup-$$"
+  local had_pwd="false"
+  local token
+  local reset_auth_method
+
+  require_cmd base64
+  require_cmd cp
+  require_cmd chmod
+  require_cmd curl
+  require_cmd mktemp
+  require_cmd passwd
+  require_cmd python3
+  require_cmd rm
+  [ -n "$reset_password_payload_b64" ] || fail "--reset-api-password requires a generated password payload"
+
+  reset_restore_original_pwd() {
+    if [ "$had_pwd" = "true" ]; then
+      cp "$backup" /etc/kvm/pwd
+      chmod 0644 /etc/kvm/pwd
+    else
+      rm -f /etc/kvm/pwd
+    fi
+  }
+
+  reset_remove_backup() {
+    rm -f "$backup"
+  }
+
+  if [ -f /etc/kvm/pwd ]; then
+    cp /etc/kvm/pwd "$backup"
+    had_pwd="true"
+  fi
+  trap 'reset_restore_original_pwd; reset_remove_backup' EXIT
+
+  if [ -n "$token_b64" ]; then
+    token="$(decode_b64 "$token_b64")"
+    reset_auth_method="token-file"
+  elif [ -n "$mint_account_b64" ]; then
+    [ -n "$login_payload_b64" ] || fail "temporary reset login payload is missing"
+    decode_b64 "$mint_account_b64" >/etc/kvm/pwd
+    chmod 0644 /etc/kvm/pwd
+    token="$(login_with_payload "$login_payload_b64")"
+    reset_restore_original_pwd
+    reset_auth_method="temporary-account"
+  elif [ -n "$login_payload_b64" ]; then
+    token="$(login_with_payload "$login_payload_b64")"
+    reset_auth_method="api-password-file"
+  else
+    fail "--reset-api-password requires --api-password-file, --token-file, or temporary account setup"
+  fi
+  [ -n "$token" ] || fail "failed to acquire NanoKVM token"
+
+  change_password_with_token "$token" "$reset_password_payload_b64"
+  trap - EXIT
+  reset_remove_backup
+
+  login_with_payload "$reset_password_payload_b64" >/dev/null
+  printf 'api_user=%s\n' "$api_user"
+  printf 'api_password_file=%s\n' "$api_password_out"
+  printf 'reset_auth_method=%s\n' "$reset_auth_method"
+  printf 'reset_verified=true\n'
+  print_state "reset-api-password" "true" "" "$(read_state_file "$mount_device")"
+}
+
+hid_paste() {
+  local token
+  local payload_file
+  local chunk_dir
+  local chunk
+  local response
+  local chunks="0"
+  local bytes
+
+  require_cmd base64
+  require_cmd curl
+  require_cmd mktemp
+  require_cmd python3
+  require_cmd rm
+  require_cmd wc
+  [ -n "$hid_payload_b64" ] || fail "HID paste requires a payload"
+
+  token="$(resolve_hid_token)"
+  [ -n "$token" ] || fail "failed to acquire NanoKVM token"
+
+  payload_file="$(mktemp /tmp/nanokvm-hid-payload.XXXXXX)"
+  chunk_dir="$(mktemp -d /tmp/nanokvm-hid-chunks.XXXXXX)"
+  decode_b64 "$hid_payload_b64" >"$payload_file"
+  bytes="$(wc -c <"$payload_file" | tr -d ' ')"
+  python3 - "$payload_file" "$chunk_dir" <<'PY'
+import pathlib
+import sys
+
+payload = pathlib.Path(sys.argv[1]).read_bytes()
+chunk_dir = pathlib.Path(sys.argv[2])
+if not payload:
+    raise SystemExit("empty HID payload")
+for index in range(0, len(payload), 900):
+    path = chunk_dir / f"chunk-{index // 900:04d}"
+    path.write_bytes(payload[index:index + 900])
+    print(path)
+PY
+
+  for chunk in "$chunk_dir"/chunk-*; do
+    [ -f "$chunk" ] || continue
+    if [ -n "$hid_layout" ]; then
+      response="$(
+        curl -kfsS -X POST https://127.0.0.1/api/hid/paste \
+          -b "nano-kvm-token=$token" \
+          --data-urlencode content@"$chunk" \
+          --data-urlencode "langue=$hid_layout"
+      )"
+    else
+      response="$(
+        curl -kfsS -X POST https://127.0.0.1/api/hid/paste \
+          -b "nano-kvm-token=$token" \
+          --data-urlencode content@"$chunk"
+      )"
+    fi
+    api_check_ok "$response" "HID paste"
+    chunks=$((chunks + 1))
+  done
+
+  rm -rf "$chunk_dir" "$payload_file"
+  printf 'hid_chunks=%s\n' "$chunks"
+  printf 'hid_bytes=%s\n' "$bytes"
+  printf 'hid_layout=%s\n' "$hid_layout"
+  print_state "hid-paste" "true" "" "$(read_state_file "$mount_device")"
+}
+
+upload_image() {
+  local url
+  local sha_url=""
+  local dest_path
+  local tmp_image
+  local tmp_sha=""
+  local previous_file
+  local uploaded_bytes
+  local mount_changed="false"
+  local changed="true"
+
+  require_data_dir
+  require_cmd mktemp
+  require_cmd mv
+  require_cmd rm
+  require_cmd wc
+  [ -n "$upload_url_b64" ] || fail "--upload-url requires a URL"
+  [ -n "$upload_name" ] || fail "--upload-url requires a target name"
+  validate_target_image_name "$upload_name"
+  url="$(decode_b64 "$upload_url_b64")"
+  validate_url_scheme_remote "$url" "--upload-url"
+  if [ -n "$sha512_url_b64" ]; then
+    sha_url="$(decode_b64 "$sha512_url_b64")"
+    validate_url_scheme_remote "$sha_url" "--sha512-url"
+  fi
+
+  dest_path="$data_dir/$upload_name"
+  previous_file="$(read_state_file "$mount_device")"
+  if [ "$previous_file" = "$dest_path" ]; then
+    fail "refusing to replace or overwrite currently mounted image: $dest_path"
+  fi
+  if [ -e "$dest_path" ] && [ "$replace_existing" != "1" ]; then
+    fail "image already exists; use --replace to overwrite: $dest_path"
+  fi
+
+  tmp_image="$(mktemp "$data_dir/.${upload_name}.download.XXXXXX")"
+  if [ -n "$sha_url" ]; then
+    tmp_sha="$(mktemp "$data_dir/.${upload_name}.sha512.XXXXXX")"
+  fi
+  cleanup_upload() {
+    rm -f "$tmp_image"
+    if [ -n "$tmp_sha" ]; then
+      rm -f "$tmp_sha"
+    fi
+  }
+  trap cleanup_upload EXIT
+
+  download_file "$url" "$tmp_image" "image"
+  if [ -n "$sha_url" ]; then
+    download_file "$sha_url" "$tmp_sha" "sha512 sidecar"
+    verify_sha512_file "$tmp_image" "$tmp_sha"
+  fi
+  uploaded_bytes="$(wc -c <"$tmp_image" | tr -d ' ')"
+  mv "$tmp_image" "$dest_path"
+  if [ -n "$tmp_sha" ]; then
+    mv "$tmp_sha" "$dest_path.sha512"
+  fi
+  trap - EXIT
+
+  if [ "$load_after_upload" = "1" ]; then
+    mount_changed="$(mount_image "$dest_path")"
+  fi
+
+  printf 'uploaded_image=%s\n' "$dest_path"
+  printf 'uploaded_name=%s\n' "$upload_name"
+  printf 'uploaded_bytes=%s\n' "$uploaded_bytes"
+  printf 'upload_url_redacted=%s\n' "$(redact_url "$url")"
+  printf 'uploaded_sha512_sidecar=%s\n' "$(if [ -n "$sha_url" ]; then printf true; else printf false; fi)"
+  printf 'load_after_upload=%s\n' "$load_after_upload"
+  printf 'load_changed=%s\n' "$mount_changed"
+  print_state "upload-url" "$changed" "$dest_path" "$previous_file"
+}
+
+delete_image() {
+  local image_path
+  local sidecar_deleted="false"
+  local previous_file
+
+  require_cmd rm
+  image_path="$(normalize_image_path "$image_arg")"
+  previous_file="$(read_state_file "$mount_device")"
+  if [ "$previous_file" = "$image_path" ]; then
+    fail "refusing to delete currently mounted image: $image_path"
+  fi
+  rm -f "$image_path"
+  if [ "$delete_sidecar" = "1" ] && [ -f "$image_path.sha512" ]; then
+    rm -f "$image_path.sha512"
+    sidecar_deleted="true"
+  fi
+
+  printf 'deleted_image=%s\n' "$image_path"
+  printf 'deleted_sidecar=%s\n' "$sidecar_deleted"
+  print_state "delete" "true" "" "$previous_file"
+}
+
+case "$action" in
+  status)
+    print_state "status" "false" "" ""
+    ;;
+  check-deps)
+    check_deps_for_action "$check_deps_for"
+    ;;
+  ensure-tools)
+    ensure_tools "$image_arg"
+    printf 'changed=false\n'
+    ;;
+  upload-url)
+    upload_image
+    ;;
+  delete)
+    delete_image
+    ;;
+  unload)
+    previous_file="$(read_state_file "$mount_device")"
+    changed="$(unload_media)"
+    print_state "unload" "$changed" "" "$previous_file"
+    ;;
+  load)
+    require_gadget
+    selected_image="$(normalize_image_path "$image_arg")"
+    if [ "$verify_sha512_sidecar" = "1" ]; then
+      verify_sha512_sidecar "$selected_image"
+    fi
+    previous_file="$(read_state_file "$mount_device")"
+    changed="$(mount_image "$selected_image")"
+    print_state "load" "$changed" "$selected_image" "$previous_file"
+    ;;
+  hid-paste)
+    hid_paste
+    ;;
+  mint-token)
+    token="$(mint_token)"
+    printf 'token_b64=%s\n' "$(printf '%s' "$token" | base64 | tr -d '\n')"
+    printf 'api_user=%s\n' "$api_user"
+    print_state "mint-token" "true" "" "$(read_state_file "$mount_device")"
+    ;;
+  reset-api-password)
+    reset_api_password
+    ;;
+  restart-service)
+    [ -x "$nanokvm_service" ] || fail "NanoKVM service script is not executable: $nanokvm_service"
+    "$nanokvm_service" restart >/tmp/nanokvm-service-restart.log 2>&1 || fail "NanoKVM service restart failed; see /tmp/nanokvm-service-restart.log"
+    wait_for_web || fail "NanoKVM web service did not become ready after restart"
+    print_state "restart-service" "true" "" ""
+    ;;
+  reboot)
+    print_state "reboot" "true" "" "$(read_state_file "$mount_device")"
+    nohup sh -c 'sleep 1; reboot' >/dev/null 2>&1 &
+    ;;
+  usb-reset)
+    reset_usb_gadget
+    print_state "usb-reset" "true" "" "$(read_state_file "$mount_device")"
+    ;;
+  *)
+    fail "unknown action: $action"
+    ;;
+esac
+REMOTE
+)"
+  status="$?"
+  set -e
+
+  if [ "$status" -ne 0 ]; then
+    if [ -n "$remote_output" ]; then
+      printf '%s\n' "$remote_output" >&2
+    fi
+    exit "$status"
+  fi
+
+  if [ "$ACTION" = "mint-token" ]; then
+    token_b64="$(remote_value token_b64 "$remote_output")"
+    [ -n "$token_b64" ] || die "mint-token did not return a token"
+    write_token_file_from_b64 "$token_b64"
+  fi
+  if [ "$ACTION" = "reset-api-password" ]; then
+    commit_reset_password_out
+  fi
+
+  emit_json "$connect_host" "$remote_output"
+}
+
+if [ "$#" -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --status|status)
+      set_action "status"
+      shift
+      ;;
+    --check-deps|check-deps)
+      set_action "check-deps"
+      shift
+      ;;
+    --for)
+      [ "$#" -ge 2 ] || die "--for requires a value"
+      CHECK_DEPS_FOR="$2"
+      shift 2
+      ;;
+    --ensure-tools|ensure-tools)
+      [ "$#" -ge 2 ] || die "$1 requires a comma-separated tool list"
+      set_action "ensure-tools" "$2"
+      shift 2
+      ;;
+    --upload-url|upload-url)
+      [ "$#" -ge 2 ] || die "$1 requires a URL"
+      set_action "upload-url" "$2"
+      UPLOAD_URL="$2"
+      shift 2
+      ;;
+    --delete|delete)
+      [ "$#" -ge 2 ] || die "$1 requires an image name"
+      set_action "delete" "$2"
+      shift 2
+      ;;
+    --load|load)
+      [ "$#" -ge 2 ] || die "$1 requires an image name"
+      set_action "load" "$2"
+      shift 2
+      ;;
+    --load=*)
+      set_action "load" "${1#--load=}"
+      shift
+      ;;
+    --unload|--eject|unload|eject)
+      set_action "unload"
+      shift
+      ;;
+    --hid-paste|hid-paste)
+      [ "$#" -ge 2 ] || die "$1 requires text"
+      set_action "hid-paste"
+      HID_TEXT="$2"
+      HID_TEXT_SET=1
+      shift 2
+      ;;
+    --hid-paste-file|hid-paste-file)
+      [ "$#" -ge 2 ] || die "$1 requires a path or -"
+      set_action "hid-paste"
+      HID_PASTE_FILE="$2"
+      shift 2
+      ;;
+    --mint-token|mint-token)
+      MINT_TOKEN=1
+      shift
+      ;;
+    --reset-api-password|reset-api-password)
+      set_action "reset-api-password"
+      shift
+      ;;
+    --restart-service|--restart-web|restart-service|restart-web)
+      set_action "restart-service"
+      shift
+      ;;
+    --reboot|reboot)
+      set_action "reboot"
+      shift
+      ;;
+    --usb-reset|usb-reset)
+      set_action "usb-reset"
+      shift
+      ;;
+    ensure-loaded|--ensure-loaded)
+      die "ensure-loaded has been replaced by --load IMAGE"
+      ;;
+    --host)
+      [ "$#" -ge 2 ] || die "--host requires a value"
+      OOB_HOST="$2"
+      shift 2
+      ;;
+    --user)
+      [ "$#" -ge 2 ] || die "--user requires a value"
+      OOB_USER="$2"
+      shift 2
+      ;;
+    --data-dir|--dest)
+      [ "$#" -ge 2 ] || die "$1 requires a value"
+      OOB_DATA_DIR="$2"
+      [ "$OOB_DATA_DIR" = "/" ] || OOB_DATA_DIR="${OOB_DATA_DIR%/}"
+      shift 2
+      ;;
+    --magicdns-suffix)
+      [ "$#" -ge 2 ] || die "--magicdns-suffix requires a value"
+      MAGICDNS_SUFFIX="${2#.}"
+      MAGICDNS_SUFFIX="${MAGICDNS_SUFFIX%.}"
+      shift 2
+      ;;
+    --connect-timeout)
+      [ "$#" -ge 2 ] || die "--connect-timeout requires a value"
+      CONNECT_TIMEOUT="$2"
+      shift 2
+      ;;
+    --as)
+      [ "$#" -ge 2 ] || die "--as requires a value"
+      UPLOAD_NAME="$2"
+      shift 2
+      ;;
+    --sha512-url)
+      [ "$#" -ge 2 ] || die "--sha512-url requires a URL"
+      SHA512_URL="$2"
+      shift 2
+      ;;
+    --replace)
+      REPLACE_EXISTING=1
+      shift
+      ;;
+    --allow-http)
+      ALLOW_HTTP=1
+      shift
+      ;;
+    --load-after-upload)
+      LOAD_AFTER_UPLOAD=1
+      shift
+      ;;
+    --no-progress)
+      SHOW_PROGRESS=0
+      shift
+      ;;
+    --delete-sidecar)
+      DELETE_SIDECAR=1
+      shift
+      ;;
+    --cdrom)
+      MEDIA_MODE="cdrom"
+      shift
+      ;;
+    --disk)
+      MEDIA_MODE="disk"
+      shift
+      ;;
+    --read-only)
+      READ_MODE="read-only"
+      shift
+      ;;
+    --read-write)
+      READ_MODE="read-write"
+      shift
+      ;;
+    --verify-sha512-sidecar)
+      VERIFY_SHA512_SIDECAR=1
+      shift
+      ;;
+    --hid-layout)
+      [ "$#" -ge 2 ] || die "--hid-layout requires a value"
+      HID_LAYOUT="$2"
+      shift 2
+      ;;
+    --hid-enter)
+      HID_ENTER=1
+      shift
+      ;;
+    --api-user)
+      [ "$#" -ge 2 ] || die "--api-user requires a value"
+      API_USER="$2"
+      shift 2
+      ;;
+    --api-password-file)
+      [ "$#" -ge 2 ] || die "--api-password-file requires a path"
+      API_PASSWORD_FILE="$2"
+      shift 2
+      ;;
+    --api-password-out)
+      [ "$#" -ge 2 ] || die "--api-password-out requires a path"
+      API_PASSWORD_OUT="$2"
+      shift 2
+      ;;
+    --token-file)
+      [ "$#" -ge 2 ] || die "--token-file requires a path"
+      TOKEN_FILE="$2"
+      shift 2
+      ;;
+    --token-out)
+      [ "$#" -ge 2 ] || die "--token-out requires a path"
+      TOKEN_OUT="$2"
+      shift 2
+      ;;
+    --pretty)
+      PRETTY_JSON=1
+      shift
+      ;;
+    --iso)
+      die "--iso has been replaced by --load IMAGE"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+if [ -z "$ACTION" ] && [ "$MINT_TOKEN" -eq 1 ]; then
+  ACTION="mint-token"
+fi
+[ -n "$ACTION" ] || die "one action is required; use --status, --upload-url, --delete, --load, --unload, --hid-paste, --reset-api-password, --restart-service, --reboot, or --usb-reset"
+
+case "$OOB_DATA_DIR" in
+  ""|/) die "--data-dir must not be empty or /" ;;
+  /*) ;;
+  *) die "--data-dir must be an absolute path: $OOB_DATA_DIR" ;;
+esac
+
+case "$API_USER" in
+  ""|*[!A-Za-z0-9._@-]*) die "--api-user contains unsupported characters: $API_USER" ;;
+esac
+
+case "$ACTION" in
+  load)
+    ;;
+  upload-url)
+    [ -n "$UPLOAD_URL" ] || die "--upload-url requires a URL"
+    if [ -z "$UPLOAD_NAME" ]; then
+      UPLOAD_NAME="$(derive_upload_name)"
+    fi
+    validate_image_basename "$UPLOAD_NAME"
+    validate_url_scheme "$UPLOAD_URL" "--upload-url"
+    UPLOAD_URL_B64="$(b64_text "$UPLOAD_URL")"
+    if [ -n "$SHA512_URL" ]; then
+      validate_url_scheme "$SHA512_URL" "--sha512-url"
+      SHA512_URL_B64="$(b64_text "$SHA512_URL")"
+    fi
+    if [ "$LOAD_AFTER_UPLOAD" -ne 1 ]; then
+      [ "$MEDIA_MODE" = "auto" ] || die "--cdrom and --disk require --load-after-upload with --upload-url"
+      [ "$READ_MODE" = "auto" ] || die "--read-only and --read-write require --load-after-upload with --upload-url"
+    fi
+    [ "$VERIFY_SHA512_SIDECAR" -eq 0 ] || die "--verify-sha512-sidecar is only valid with --load"
+    ;;
+  delete)
+    [ "$MEDIA_MODE" = "auto" ] || die "--cdrom and --disk are only valid with --load or --upload-url --load-after-upload"
+    [ "$READ_MODE" = "auto" ] || die "--read-only and --read-write are only valid with --load or --upload-url --load-after-upload"
+    [ "$VERIFY_SHA512_SIDECAR" -eq 0 ] || die "--verify-sha512-sidecar is only valid with --load"
+    ;;
+  hid-paste)
+    [ "$MEDIA_MODE" = "auto" ] || die "--cdrom and --disk are not valid with --hid-paste"
+    [ "$READ_MODE" = "auto" ] || die "--read-only and --read-write are not valid with --hid-paste"
+    [ "$VERIFY_SHA512_SIDECAR" -eq 0 ] || die "--verify-sha512-sidecar is only valid with --load"
+    [ -z "$TOKEN_OUT" ] || die "--token-out is only valid with standalone --mint-token"
+    auth_methods=0
+    [ -n "$API_PASSWORD_FILE" ] && auth_methods=$((auth_methods + 1))
+    [ -n "$TOKEN_FILE" ] && auth_methods=$((auth_methods + 1))
+    [ "$MINT_TOKEN" -eq 1 ] && auth_methods=$((auth_methods + 1))
+    [ "$auth_methods" -eq 1 ] || die "--hid-paste requires exactly one of --api-password-file, --token-file, or --mint-token"
+    prepare_hid_payload
+    [ -n "$HID_PAYLOAD_B64" ] || die "--hid-paste requires text or --hid-paste-file"
+    if [ -n "$TOKEN_FILE" ]; then
+      TOKEN_B64="$(read_token_file_b64 "$TOKEN_FILE")"
+    elif [ -n "$API_PASSWORD_FILE" ]; then
+      prepare_password_login
+    else
+      prepare_mint_token
+    fi
+    ;;
+  mint-token)
+    [ "$MINT_TOKEN" -eq 1 ] || die "internal error: mint-token flag missing"
+    [ -n "$TOKEN_OUT" ] || die "--token-out is required with standalone --mint-token"
+    [ "$API_PASSWORD_OUT" = "/home/codex/nanokvm/oob.password" ] || die "--api-password-out is only valid with --reset-api-password"
+    [ -z "$API_PASSWORD_FILE" ] || die "--api-password-file is not used with --mint-token"
+    [ -z "$TOKEN_FILE" ] || die "--token-file is not used with --mint-token"
+    [ -z "$HID_PASTE_FILE" ] || die "--hid-paste-file requires --hid-paste action"
+    [ "$HID_TEXT_SET" -eq 0 ] || die "--hid-paste requires --hid-paste action"
+    prepare_mint_token
+    ;;
+  reset-api-password)
+    [ "$MEDIA_MODE" = "auto" ] || die "--cdrom and --disk are not valid with --reset-api-password"
+    [ "$READ_MODE" = "auto" ] || die "--read-only and --read-write are not valid with --reset-api-password"
+    [ "$VERIFY_SHA512_SIDECAR" -eq 0 ] || die "--verify-sha512-sidecar is only valid with --load"
+    [ -z "$TOKEN_OUT" ] || die "--token-out is only valid with standalone --mint-token"
+    [ -z "$HID_PASTE_FILE" ] || die "--hid-paste-file requires --hid-paste action"
+    [ "$HID_TEXT_SET" -eq 0 ] || die "--hid-paste requires --hid-paste action"
+    [ -z "$HID_LAYOUT" ] || die "--hid-layout is only valid with --hid-paste"
+    [ "$HID_ENTER" -eq 0 ] || die "--hid-enter is only valid with --hid-paste"
+    auth_methods=0
+    [ -n "$API_PASSWORD_FILE" ] && auth_methods=$((auth_methods + 1))
+    [ -n "$TOKEN_FILE" ] && auth_methods=$((auth_methods + 1))
+    [ "$MINT_TOKEN" -eq 1 ] && auth_methods=$((auth_methods + 1))
+    [ "$auth_methods" -le 1 ] || die "--reset-api-password accepts at most one of --api-password-file, --token-file, or --mint-token"
+    if [ -n "$TOKEN_FILE" ]; then
+      TOKEN_B64="$(read_token_file_b64 "$TOKEN_FILE")"
+    elif [ -n "$API_PASSWORD_FILE" ]; then
+      prepare_password_login
+    else
+      prepare_mint_token
+    fi
+    prepare_reset_password
+    prepare_reset_password_out
+    trap cleanup_reset_password_tmp EXIT
+    ;;
+  check-deps|ensure-tools|status|unload|restart-service|reboot|usb-reset)
+    [ "$MEDIA_MODE" = "auto" ] || die "--cdrom and --disk are only valid with --load or --upload-url --load-after-upload"
+    [ "$READ_MODE" = "auto" ] || die "--read-only and --read-write are only valid with --load or --upload-url --load-after-upload"
+    [ "$VERIFY_SHA512_SIDECAR" -eq 0 ] || die "--verify-sha512-sidecar is only valid with --load"
+    ;;
+esac
+
+if [ "$ACTION" != "upload-url" ]; then
+  [ -z "$UPLOAD_NAME" ] || die "--as is only valid with --upload-url"
+  [ -z "$SHA512_URL" ] || die "--sha512-url is only valid with --upload-url"
+  [ "$REPLACE_EXISTING" -eq 0 ] || die "--replace is only valid with --upload-url"
+  [ "$ALLOW_HTTP" -eq 0 ] || die "--allow-http is only valid with --upload-url"
+  [ "$LOAD_AFTER_UPLOAD" -eq 0 ] || die "--load-after-upload is only valid with --upload-url"
+  [ "$SHOW_PROGRESS" -eq 1 ] || die "--no-progress is only valid with --upload-url"
+fi
+if [ "$ACTION" != "delete" ]; then
+  [ "$DELETE_SIDECAR" -eq 0 ] || die "--delete-sidecar is only valid with --delete"
+fi
+if [ "$ACTION" != "hid-paste" ] && [ "$ACTION" != "mint-token" ] && [ "$ACTION" != "reset-api-password" ]; then
+  [ "$MINT_TOKEN" -eq 0 ] || die "--mint-token is only valid alone, with --hid-paste, or with --reset-api-password"
+  [ -z "$HID_LAYOUT" ] || die "--hid-layout is only valid with --hid-paste"
+  [ "$HID_ENTER" -eq 0 ] || die "--hid-enter is only valid with --hid-paste"
+  [ -z "$API_PASSWORD_FILE" ] || die "--api-password-file is only valid with --hid-paste or --reset-api-password"
+  [ -z "$TOKEN_FILE" ] || die "--token-file is only valid with --hid-paste or --reset-api-password"
+  [ -z "$TOKEN_OUT" ] || die "--token-out is only valid with --mint-token"
+fi
+if [ "$ACTION" != "reset-api-password" ]; then
+  [ "$API_PASSWORD_OUT" = "/home/codex/nanokvm/oob.password" ] || die "--api-password-out is only valid with --reset-api-password"
+fi
+if [ "$ACTION" != "check-deps" ]; then
+  [ -z "$CHECK_DEPS_FOR" ] || die "--for is only valid with --check-deps"
+fi
+if [ "$ACTION" = "ensure-tools" ]; then
+  case "$ACTION_ARG" in
+    ""|*/*|*" "*|*[!A-Za-z0-9_,.+-]*) die "--ensure-tools expects a comma-separated list of command names" ;;
+  esac
+fi
+
+require_local_cmd ssh
+require_local_cmd python3
+
+CONNECT_HOST="$(resolve_host "$OOB_HOST")"
+run_remote "$CONNECT_HOST"

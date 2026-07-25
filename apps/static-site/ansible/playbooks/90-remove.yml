@@ -1,0 +1,9 @@
+---
+- name: Remove static-site services
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Remove static-site runtime artifacts
+      ansible.builtin.import_role:
+        name: static-site-remove
+      when: node_domain_role == 'dmz'

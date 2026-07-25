@@ -1,0 +1,212 @@
+#
+# Summary:
+# - Converges steady-state dom0 Tailscale installation, runtime settings, and persisted state tracking.
+#
+---
+- name: Ensure Tailscale package is installed
+  community.general.apk:
+    name:
+      - tailscale
+      - tailscale-openrc
+    state: present
+  register: dom0_tailscale_packages
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Schedule Tailscale restart after package changes
+  ansible.builtin.shell: |
+    set -eu
+    ( sleep 1; rc-service tailscale restart ) >/tmp/klokast-tailscale-restart.log 2>&1 &
+  args:
+    executable: /bin/sh
+  changed_when: true
+  when: dom0_tailscale_packages.changed | default(false)
+  notify: Commit lbu changes
+
+- name: Wait for Tailscale package-change restart to begin
+  ansible.builtin.pause:
+    seconds: 8
+  when: dom0_tailscale_packages.changed | default(false)
+
+- name: Wait for dom0 after Tailscale package-change restart
+  ansible.builtin.wait_for_connection:
+    connect_timeout: 10
+    sleep: 3
+    timeout: 120
+  when: dom0_tailscale_packages.changed | default(false)
+
+- name: Ensure Tailscale service is enabled and running
+  ansible.builtin.service:
+    name: tailscale
+    enabled: true
+    state: started
+  notify: Commit lbu changes
+
+- name: Collect Tailscale runtime status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status_json
+  changed_when: false
+  failed_when: false
+
+- name: Collect Tailscale CLI version
+  ansible.builtin.shell: |
+    set -eu
+    tailscale version | sed -n '1p'
+  args:
+    executable: /bin/sh
+  register: tailscale_cli_version
+  changed_when: false
+  failed_when: false
+
+- name: Parse Tailscale runtime status
+  ansible.builtin.set_fact:
+    tailscale_status_parsed: {}
+
+- name: Parse Tailscale runtime status JSON when available
+  ansible.builtin.set_fact:
+    tailscale_status_parsed: "{{ tailscale_status_json.stdout | from_json }}"
+  when:
+    - tailscale_status_json.rc == 0
+    - tailscale_status_json.stdout | length > 0
+
+- name: Detect stale Tailscale daemon after package upgrade
+  ansible.builtin.set_fact:
+    tailscale_daemon_version_mismatch: >-
+      {{
+        (tailscale_status_parsed.Version | default('')) | length > 0
+        and (tailscale_cli_version.stdout | default('') | trim) | length > 0
+        and (
+          tailscale_status_parsed.Version | default('') | regex_replace('-.*$', '')
+        ) != (
+          tailscale_cli_version.stdout | trim | regex_replace('-.*$', '')
+        )
+      }}
+
+- name: Schedule Tailscale restart when daemon version lags the CLI
+  ansible.builtin.shell: |
+    set -eu
+    ( sleep 1; rc-service tailscale restart ) >/tmp/klokast-tailscale-restart.log 2>&1 &
+  args:
+    executable: /bin/sh
+  changed_when: true
+  when: tailscale_daemon_version_mismatch | bool
+  notify: Commit lbu changes
+
+- name: Wait for stale Tailscale daemon restart to begin
+  ansible.builtin.pause:
+    seconds: 8
+  when: tailscale_daemon_version_mismatch | bool
+
+- name: Wait for dom0 after stale Tailscale daemon restart
+  ansible.builtin.wait_for_connection:
+    connect_timeout: 10
+    sleep: 3
+    timeout: 120
+  when: tailscale_daemon_version_mismatch | bool
+
+- name: Recollect Tailscale runtime status after daemon restart
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status_json_after_restart
+  changed_when: false
+  when: tailscale_daemon_version_mismatch | bool
+
+- name: Parse Tailscale runtime status after daemon restart
+  ansible.builtin.set_fact:
+    tailscale_status_json: "{{ tailscale_status_json_after_restart }}"
+    tailscale_status_parsed: "{{ tailscale_status_json_after_restart.stdout | from_json }}"
+  when: tailscale_daemon_version_mismatch | bool
+
+- name: Collect Tailscale preferences
+  ansible.builtin.command: tailscale debug prefs
+  register: tailscale_prefs_json
+  changed_when: false
+  failed_when: false
+  when: tailscale_status_json.rc == 0
+
+- name: Parse Tailscale preferences
+  ansible.builtin.set_fact:
+    tailscale_prefs_parsed: {}
+
+- name: Parse Tailscale preferences JSON when available
+  ansible.builtin.set_fact:
+    tailscale_prefs_parsed: "{{ tailscale_prefs_json.stdout | from_json }}"
+  when:
+    - tailscale_prefs_json is defined
+    - tailscale_prefs_json.rc == 0
+    - tailscale_prefs_json.stdout | length > 0
+
+- name: Detect whether Tailscale DNS is disabled
+  ansible.builtin.set_fact:
+    tailscale_dns_is_disabled: "{{ (tailscale_prefs_parsed.CorpDNS | default(false)) != true }}"
+
+- name: Detect whether Tailscale DNS was overwritten
+  ansible.builtin.set_fact:
+    tailscale_dns_is_overwritten: >-
+      {{
+        (
+          tailscale_status_parsed.Health | default([])
+          | select('search', 'resolv\\.conf overwritten|dns-fight')
+          | list
+          | length
+        ) > 0
+      }}
+
+- name: Ensure Tailscale owns dom0 DNS configuration
+  ansible.builtin.command: tailscale set --accept-dns=true
+  when:
+    - tailscale_status_json.rc == 0
+    - tailscale_dns_is_disabled | bool
+  notify: Commit lbu changes
+
+- name: Reapply Tailscale DNS after resolver overwrite
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - tailscale set --accept-dns=false
+    - tailscale set --accept-dns=true
+  when:
+    - tailscale_status_json.rc == 0
+    - not (tailscale_dns_is_disabled | bool)
+    - tailscale_dns_is_overwritten | bool
+  notify: Commit lbu changes
+
+- name: Ensure Tailscale advertises the dom0 hostname
+  # Keep the Tailscale machine name aligned with the OS hostname so MagicDNS
+  # converges to `duh-dom0` without waiting for another reboot.
+  ansible.builtin.command: "tailscale set --hostname={{ node_hostname }}"
+  when:
+    - tailscale_status_json.rc == 0
+    - tailscale_status_parsed.Self.HostName | default('') != node_hostname
+  notify: Commit lbu changes
+
+- name: Ensure Tailscale state path is tracked for persistence
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "+{{ item | regex_replace('^/', '') }}"
+    create: true
+    mode: "0644"
+  loop: "{{ tailscale_persist_paths }}"
+  notify: Commit lbu changes
+
+- name: Collect lbu status after Tailscale convergence
+  ansible.builtin.command: lbu status
+  register: dom0_tailscale_lbu_status
+  changed_when: false
+
+- name: Detect whether Tailscale dirtied persisted state
+  ansible.builtin.set_fact:
+    dom0_tailscale_lbu_dirty: >-
+      {{
+        (
+          dom0_tailscale_lbu_status.stdout_lines | default([])
+          | select('search', '^[AUD] (var/lib/tailscale|etc/resolv\\.conf)(/|$)')
+          | list
+          | length
+        ) > 0
+      }}
+
+- name: Persist Tailscale runtime state changes
+  ansible.builtin.command: /bin/true
+  changed_when: true
+  when: dom0_tailscale_lbu_dirty | bool
+  notify: Commit lbu changes

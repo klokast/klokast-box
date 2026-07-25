@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec /usr/local/sbin/ts-authkey-mint --purpose infra-agent "$@"

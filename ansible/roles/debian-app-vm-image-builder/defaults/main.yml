@@ -1,0 +1,37 @@
+#
+# Summary:
+# - Defaults for building Debian app-VM root images on a backend Podman host.
+#
+---
+debian_app_vm_image_builder_state: started
+debian_app_vm_image_builder_service_name: debian-app-vm-image-artifacts
+debian_app_vm_image_builder_service_user: "{{ vm_admin_user_name | default('neo') }}"
+
+debian_app_vm_image_builder_service_root: /etc/klokast/debian-app-vm-image-builder
+debian_app_vm_image_builder_workspace_root: /srv/debian-app-vm-image-builder
+debian_app_vm_image_builder_input_root: "{{ debian_app_vm_image_builder_workspace_root }}/input"
+debian_app_vm_image_builder_output_root: "{{ debian_app_vm_image_builder_workspace_root }}/output"
+debian_app_vm_image_builder_work_root: "{{ debian_app_vm_image_builder_workspace_root }}/work"
+
+debian_app_vm_image_builder_artifact_bind_address: "{{ platform_zones.bak.vm_ipv4_address }}"
+debian_app_vm_image_builder_artifact_port_default: 18082
+debian_app_vm_image_builder_temp_firewall_comment: klokast-debian-app-vm-image-artifacts
+debian_app_vm_image_builder_temp_firewall_source: "{{ platform_zones.bak.dom0_ipv4_address }}"
+debian_app_vm_image_builder_temp_firewall_destination: "{{ platform_zones.bak.vm_ipv4_address }}"
+debian_app_vm_image_builder_temp_firewall_interface: "{{ platform_zones.bak.vm_interface }}"
+
+debian_app_vm_image_builder_host_packages:
+  - bash
+  - binutils
+  - ca-certificates
+  - debian-archive-keyring
+  - debootstrap
+  - e2fsprogs
+  - e2fsprogs-extra
+  - gzip
+  - perl
+  - python3
+  - tar
+  - wget
+  - xz
+  - zstd

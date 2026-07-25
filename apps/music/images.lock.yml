@@ -1,0 +1,22 @@
+---
+schema_version: 1
+upstream_images:
+  alpine:
+    canonical: docker.io/library/alpine
+    tag: 3.23.4
+    digest: sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+    mirrors:
+      - docker.1ms.run/library/alpine
+      - docker.m.daocloud.io/library/alpine
+      - m.daocloud.io/docker.io/library/alpine
+
+built_images:
+  music-backend:
+    context: images/music-backend
+    containerfile: Containerfile
+    image: localhost/klokast/music-backend:latest
+    archive: music-backend.oci.tar
+    build_args:
+      ALPINE_IMAGE: alpine
+    digest: ""
+    archive_sha256: ""

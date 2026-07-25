@@ -1,0 +1,11 @@
+---
+- name: Resolve and verify Nextcloud image sources on target VMs
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Verify pinned image sources from this VM
+      ansible.builtin.import_role:
+        name: nextcloud-image-preflight
+      when: node_domain_role == 'backend'

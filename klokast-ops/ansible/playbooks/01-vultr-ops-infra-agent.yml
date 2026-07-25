@@ -1,0 +1,39 @@
+---
+- name: Bootstrap the Vultr ops infra-agent host
+  hosts: ops
+  gather_facts: true
+
+  vars:
+    ops_hostname: vultr-ops
+    ops_agent_user: agent
+    ops_git_user_name: Klokast Agent
+    ops_tailscale_tags:
+      - tag:infra
+    ops_tailscale_require_exact_hostname: true
+    ops_primary_user_password_lock: true
+    ops_primary_user_sudo_nopasswd: true
+    ops_github_auto_register_deploy_key: true
+    ops_motd: "Wake up, Neo...\n"
+
+  pre_tasks:
+    - name: Assert the target is an Ubuntu host
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+          - ansible_distribution == "Ubuntu"
+        fail_msg: This playbook supports only Ubuntu hosts.
+
+    - name: Assert the bootstrap connection uses root
+      ansible.builtin.assert:
+        that:
+          - ansible_user | default(ansible_user_id) == "root"
+        fail_msg: Run this playbook as root over the Vultr public bootstrap address.
+
+  roles:
+    - role: ubuntu-base
+    - role: user-accounts
+    - role: sudo-policy
+    - role: tailscale-client
+    - role: codex-cli
+    - role: source-repositories
+    - role: interactive-shell

@@ -1,0 +1,234 @@
+---
+- name: Ensure the agent SSH directory exists
+  ansible.builtin.file:
+    path: "/home/{{ ops_agent_user }}/.ssh"
+    state: directory
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0700"
+
+- name: Ensure the Klokast source root exists
+  ansible.builtin.file:
+    path: "{{ ops_source_root }}"
+    state: directory
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0755"
+
+- name: Install the pinned GitHub SSH host keys
+  ansible.builtin.copy:
+    dest: "/home/{{ ops_agent_user }}/.ssh/known_hosts"
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0644"
+    content: |
+      {% for host_key in ops_github_known_hosts %}
+      {{ host_key }}
+      {% endfor %}
+
+- name: Install the agent GitHub SSH client config
+  ansible.builtin.copy:
+    dest: "/home/{{ ops_agent_user }}/.ssh/config"
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0600"
+    content: |
+      Host github.com
+          HostName github.com
+          User git
+          IdentityFile {{ ops_github_ssh_key_path }}
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+          UserKnownHostsFile /home/{{ ops_agent_user }}/.ssh/known_hosts
+
+- name: Generate the agent GitHub deploy key when missing
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "{{ ops_agent_user }}@{{ ops_hostname }} klokast-box deploy key"
+      - -f
+      - "{{ ops_github_ssh_key_path }}"
+    creates: "{{ ops_github_ssh_key_path }}"
+
+- name: Ensure the GitHub deploy key permissions are strict
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ ops_github_ssh_key_path }}"
+      mode: "0600"
+    - path: "{{ ops_github_ssh_key_path }}.pub"
+      mode: "0644"
+
+- name: Read the GitHub deploy public key
+  ansible.builtin.command:
+    argv:
+      - cat
+      - "{{ ops_github_ssh_key_path }}.pub"
+  register: ops_github_public_key
+  changed_when: false
+
+- name: Check whether GitHub accepts the deploy key
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    ssh -i '{{ ops_github_ssh_key_path }}' \
+      -o BatchMode=yes \
+      -o IdentitiesOnly=yes \
+      -o StrictHostKeyChecking=yes \
+      -T git@github.com 2>&1
+  args:
+    executable: /bin/bash
+  register: ops_github_auth_check
+  changed_when: false
+  failed_when: false
+
+- name: Require GITHUB_TOKEN for GitHub deploy-key auto-registration
+  delegate_to: localhost
+  become: false
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'GITHUB_TOKEN') | length > 0
+    fail_msg: GITHUB_TOKEN is required on the controller for deploy-key auto-registration.
+  when:
+    - ops_github_auto_register_deploy_key | bool
+    - >-
+      'successfully authenticated' not in ops_github_auth_check.stdout
+      and not (ops_github_auth_check.stdout is search('^Hi '))
+
+- name: Read existing GitHub deploy keys when auto-registration is enabled
+  delegate_to: localhost
+  become: false
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ ops_github_repo_owner }}/{{ ops_github_repo_name }}/keys?per_page=100"
+    method: GET
+    headers:
+      Accept: application/vnd.github+json
+      Authorization: "Bearer {{ lookup('env', 'GITHUB_TOKEN') }}"
+      X-GitHub-Api-Version: "{{ ops_github_api_version }}"
+    return_content: true
+    status_code: 200
+  register: ops_github_existing_deploy_keys
+  no_log: true
+  when:
+    - ops_github_auto_register_deploy_key | bool
+    - >-
+      'successfully authenticated' not in ops_github_auth_check.stdout
+      and not (ops_github_auth_check.stdout is search('^Hi '))
+
+- name: Register the GitHub deploy public key when missing
+  delegate_to: localhost
+  become: false
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ ops_github_repo_owner }}/{{ ops_github_repo_name }}/keys"
+    method: POST
+    headers:
+      Accept: application/vnd.github+json
+      Authorization: "Bearer {{ lookup('env', 'GITHUB_TOKEN') }}"
+      X-GitHub-Api-Version: "{{ ops_github_api_version }}"
+    body_format: json
+    body:
+      title: "{{ ops_github_deploy_key_title }}"
+      key: "{{ ops_github_public_key.stdout }}"
+      read_only: "{{ ops_github_deploy_key_read_only | bool }}"
+    status_code:
+      - 201
+  register: ops_github_registered_deploy_key
+  no_log: true
+  when:
+    - ops_github_auto_register_deploy_key | bool
+    - >-
+      'successfully authenticated' not in ops_github_auth_check.stdout
+      and not (ops_github_auth_check.stdout is search('^Hi '))
+    - ops_github_public_key.stdout not in (ops_github_existing_deploy_keys.json | map(attribute='key') | list)
+
+- name: Re-check whether GitHub accepts the auto-registered deploy key
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    ssh -i '{{ ops_github_ssh_key_path }}' \
+      -o BatchMode=yes \
+      -o IdentitiesOnly=yes \
+      -o StrictHostKeyChecking=yes \
+      -T git@github.com 2>&1
+  args:
+    executable: /bin/bash
+  register: ops_github_auth_check_after_register
+  changed_when: false
+  failed_when: false
+  when:
+    - ops_github_auto_register_deploy_key | bool
+    - >-
+      'successfully authenticated' not in ops_github_auth_check.stdout
+      and not (ops_github_auth_check.stdout is search('^Hi '))
+
+- name: Require the deploy key to be registered in GitHub
+  ansible.builtin.assert:
+    that:
+      - >-
+        'successfully authenticated' in ops_github_auth_check.stdout
+        or ops_github_auth_check.stdout is search('^Hi ')
+        or (
+          ops_github_auth_check_after_register is defined
+          and (
+            'successfully authenticated' in (ops_github_auth_check_after_register.stdout | default(''))
+            or (ops_github_auth_check_after_register.stdout | default('')) is search('^Hi ')
+          )
+        )
+    fail_msg: |
+      Register this public key as a GitHub deploy key with write access on klokast/klokast-box, then re-run the playbook:
+      {{ ops_github_public_key.stdout }}
+
+- name: Configure the agent Git defaults
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.command:
+    argv:
+      - git
+      - config
+      - --global
+      - "{{ item.name }}"
+      - "{{ item.value }}"
+  loop:
+    - name: user.name
+      value: "{{ ops_git_user_name }}"
+    - name: user.email
+      value: "{{ ops_git_user_email }}"
+    - name: init.defaultBranch
+      value: main
+    - name: core.editor
+      value: vi
+  changed_when: false
+
+- name: Clone the Klokast repositories
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.git:
+    repo: "{{ item.repo }}"
+    dest: "{{ item.dest }}"
+    version: "{{ item.version }}"
+    key_file: "{{ ops_github_ssh_key_path }}"
+    update: true
+  loop: "{{ ops_repositories }}"
+
+- name: Verify the ops Ansible playbook is available locally
+  ansible.builtin.stat:
+    path: "{{ ops_source_root }}/klokast-box/klokast-ops/ansible/playbooks/00-ops-server.yml"
+  register: ops_local_playbook
+
+- name: Assert the ops Ansible playbook exists locally
+  ansible.builtin.assert:
+    that:
+      - ops_local_playbook.stat.exists
+    fail_msg: The klokast-box checkout is missing the ops Ansible playbook.

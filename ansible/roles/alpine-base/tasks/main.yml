@@ -1,0 +1,223 @@
+#
+# Summary:
+# - Converges the steady-state diskless Alpine runtime on dom0, including EFI-backed cache paths, hostname, overlay hygiene, repositories, and GRUB.
+#
+---
+- name: Detect the current EFI mountpoint on the running diskless host
+  # Bootstrap-time staging and the running diskless host can mount the same EFI
+  # partition at different paths. Detect the live mountpoint here so later
+  # phases always follow the real runtime path seen on the managed host.
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $2}' /proc/mounts | tail -n 1
+  register: alpine_base_runtime_efi_mount
+  changed_when: false
+
+- name: Assert the EFI partition is mounted on the running diskless host
+  ansible.builtin.assert:
+    that:
+      - alpine_base_runtime_efi_mount.stdout != ''
+    fail_msg: >-
+      Could not determine the runtime EFI mountpoint for {{ efi_partition_device }}.
+      Review `/proc/mounts` on the running diskless host before changing `/etc/apk/cache`
+      or `lbu` persistence settings.
+
+- name: Override diskless runtime paths to the mounted EFI partition
+  ansible.builtin.set_fact:
+    efi_mount_path: "{{ alpine_base_runtime_efi_mount.stdout }}"
+    efi_boot_directory: "{{ alpine_base_runtime_efi_mount.stdout }}/boot"
+    efi_grub_directory: "{{ alpine_base_runtime_efi_mount.stdout }}/boot/grub"
+    efi_fallback_directory: "{{ alpine_base_runtime_efi_mount.stdout }}/EFI/BOOT"
+    efi_fallback_bootloader_path: "{{ alpine_base_runtime_efi_mount.stdout }}/EFI/BOOT/BOOTX64.EFI"
+    apk_boot_repository_root: "{{ alpine_base_runtime_efi_mount.stdout }}/apks"
+    apk_boot_repository_path: "{{ alpine_base_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}"
+    apk_cache_path: "{{ alpine_base_runtime_efi_mount.stdout }}/cache"
+    apk_boot_repository_marker: "{{ alpine_base_runtime_efi_mount.stdout }}/apks/.boot_repository"
+    apk_boot_repository_index: "{{ alpine_base_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}/APKINDEX.tar.gz"
+    legacy_apk_root_boot_repository_marker: "{{ alpine_base_runtime_efi_mount.stdout }}/.boot_repository"
+    legacy_apk_cache_boot_repository_marker: "{{ alpine_base_runtime_efi_mount.stdout }}/cache/.boot_repository"
+
+- name: Collect the current root directory mode
+  ansible.builtin.stat:
+    path: /
+  register: alpine_base_root_dir_stat
+
+- name: Keep the runtime root directory traversable by non-root users
+  # Older staged apkovls archived a `mktemp` workspace root as `./`, which
+  # Alpine then restored onto `/` during boot. Repair it here before the `neo`
+  # admin user is expected to log in over Tailscale SSH.
+  ansible.builtin.file:
+    path: /
+    state: directory
+    mode: "0755"
+  when: alpine_base_root_dir_stat.stat.mode | default('') != '0755'
+  notify: Commit lbu changes
+
+- name: Capture the current EFI mount options
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $4}' /proc/mounts | tail -n 1
+  register: alpine_base_runtime_efi_mount_options
+  changed_when: false
+
+- name: Remount the runtime EFI partition read-write when needed
+  # Recovery boots can leave the EFI media mounted read-only. Remount it here
+  # before touching grub.cfg, boot-repository markers, or the persisted apkovl.
+  ansible.builtin.command:
+    argv:
+      - mount
+      - -o
+      - remount,rw
+      - "{{ efi_partition_device }}"
+      - "{{ efi_mount_path }}"
+  when: alpine_base_runtime_efi_mount_options.stdout is search('(^|,)ro(,|$)')
+
+- name: Keep the APK cache symlink aligned with the runtime EFI mountpoint
+  ansible.builtin.file:
+    src: "{{ apk_cache_path }}"
+    dest: /etc/apk/cache
+    state: link
+    force: true
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Keep lbu backups on the runtime EFI mountpoint
+  ansible.builtin.lineinfile:
+    path: /etc/lbu/lbu.conf
+    regexp: '^LBU_BACKUPDIR='
+    line: "LBU_BACKUPDIR={{ efi_mount_path }}"
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Ensure the runtime EFI mountpoint stays excluded from lbu payloads
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "-{{ efi_mount_path | regex_replace('^/', '') }}"
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Ensure the dom0 data mountpoint stays excluded from lbu payloads
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "-{{ dom0_data_mount_path | regex_replace('^/', '') }}"
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Remove any legacy EFI-root boot repository marker
+  ansible.builtin.file:
+    path: "{{ legacy_apk_root_boot_repository_marker }}"
+    state: absent
+
+- name: Remove any legacy cache-root boot repository marker
+  ansible.builtin.file:
+    path: "{{ legacy_apk_cache_boot_repository_marker }}"
+    state: absent
+
+- name: Ensure the apks boot repository marker exists
+  ansible.builtin.copy:
+    dest: "{{ apk_boot_repository_marker }}"
+    content: ""
+    force: false
+    mode: "0644"
+
+- name: Collect the current runtime hostname
+  ansible.builtin.command: hostname
+  register: alpine_base_current_hostname
+  changed_when: false
+
+- name: Persist the target hostname
+  # Alpine/OpenRC picks up `/etc/hostname` on boot, but changing the file alone
+  # does not reliably update the current kernel hostname during a live session.
+  ansible.builtin.copy:
+    dest: /etc/hostname
+    content: "{{ node_hostname }}\n"
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Update the runtime hostname immediately
+  ansible.builtin.command: "hostname {{ node_hostname }}"
+  when: alpine_base_current_hostname.stdout != node_hostname
+  changed_when: alpine_base_current_hostname.stdout != node_hostname
+
+- name: Ensure the runtime EFI mount has a quarantine directory for stale overlays
+  ansible.builtin.file:
+    path: "{{ efi_mount_path }}/_disabled"
+    state: directory
+    mode: "0755"
+
+- name: Collect stale root-level apkovl files
+  # Alpine's automatic overlay discovery becomes ambiguous as soon as multiple
+  # `*.apkovl*` files exist at the repository root. Move obsolete ones out of
+  # the way before the next reboot so the intended overlay stays deterministic.
+  ansible.builtin.shell: >-
+    find {{ efi_mount_path | quote }} -maxdepth 1 -type f -name '*.apkovl*'
+    ! -name {{ apkovl_archive_name | quote }} -print
+  register: alpine_base_stale_apkovl_paths
+  changed_when: false
+
+- name: Quarantine stale root-level apkovl files
+  ansible.builtin.command: >-
+    mv {{ item }} {{ efi_mount_path }}/_disabled/{{ item | basename }}
+  loop: "{{ alpine_base_stale_apkovl_paths.stdout_lines }}"
+  when: alpine_base_stale_apkovl_paths.stdout_lines | length > 0
+  notify: Commit lbu changes
+
+- name: Remove stale managed-home lbu entries from earlier admin models
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    regexp: '^\\+home/(codex|one)$'
+    state: absent
+  notify: Commit lbu changes
+
+- name: Render steady-state diskless GRUB configuration
+  # Keep the steady-state GRUB entry aligned with the persisted node hostname
+  # and the current EFI mountpoint. Older manual bootstrap paths reached this
+  # point after a hostname change from `alpine`; the custom bootstrap ISO now
+  # starts with the final hostname already in place.
+  ansible.builtin.template:
+    src: grub-diskless.cfg.j2
+    dest: "{{ efi_grub_directory }}/grub.cfg"
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Ensure Alpine repositories are configured
+  ansible.builtin.copy:
+    dest: /etc/apk/repositories
+    mode: "0644"
+    content: |
+      {% for repo in alpine_repositories %}
+      {{ repo }}
+      {% endfor %}
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Ensure the steady-state Python runtime is installed
+  community.general.apk:
+    name:
+      - python3
+    state: present
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Remove the temporary first-boot bootstrap helper runlevel link
+  ansible.builtin.file:
+    path: /etc/runlevels/default/klokast-diskless-bootstrap
+    state: absent
+  notify: Commit lbu changes
+
+- name: Remove the temporary first-boot bootstrap helper service
+  ansible.builtin.file:
+    path: /etc/init.d/klokast-diskless-bootstrap
+    state: absent
+  notify: Commit lbu changes
+
+- name: Ensure the dom0 MOTD is configured
+  ansible.builtin.copy:
+    dest: /etc/motd
+    mode: "0644"
+    content: "Open your eyes.\n"
+  notify: Commit lbu changes

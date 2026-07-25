@@ -1,0 +1,16 @@
+---
+- name: Remove stale offline non-dom0 Tailscale identities for the decommissioned box
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Review and optionally delete stale non-dom0 Tailscale identities
+      ansible.builtin.import_role:
+        name: tailscale-box-stale-devices
+      vars:
+        tailscale_box_device_prefix: "{{ decommission_box_name }}-"
+        tailscale_box_device_excluded_hostnames:
+          - "{{ decommission_box_name }}-dom0"
+        tailscale_box_device_apply: "{{ decommission_tailscale_apply | default(false) }}"
+        tailscale_box_device_confirm: "{{ decommission_tailscale_confirm | default('') }}"
+        tailscale_box_device_expected_confirm: "decommission tailscale identities for {{ decommission_box_name }}"

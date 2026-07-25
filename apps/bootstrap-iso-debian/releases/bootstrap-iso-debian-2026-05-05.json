@@ -1,0 +1,36 @@
+{
+  "schema": "klokast.bootstrap_iso_release.v1",
+  "tag": "bootstrap-iso-debian-2026-05-05",
+  "title": "Bootstrap ISO Debian trixie / Alpine 3.23.3",
+  "created_at_utc": "2026-05-06T05:02:29Z",
+  "github_repository": "klokast/klokast-box",
+  "source_directory": "tmp",
+  "release_repository_commit": "2f07f74349766434f734405412e781931ef380c5",
+  "used_for": ["k001"],
+  "security": {
+    "secret_free_iso": true,
+    "notes": "The bootstrap ISO must not embed a box name, Tailscale auth key, OAuth material, or inventory secret."
+  },
+  "artifacts": [
+    {
+      "role": "bootstrap_iso",
+      "filename": "klokast-bootstrap-debian-trixie-amd64.iso",
+      "debian_release": "trixie",
+      "architecture": "amd64",
+      "built_or_first_observed_complete_at_utc": "2026-05-05T01:53:00Z",
+      "size_bytes": 441450496,
+      "sha256": "27becc8e90719ce2681af0629c7281eb4a28941a8fd7c6d81d6394d5d53ca465",
+      "sha512": "09e0be2bb26410187dd05c0eae9edc829020ca2bad3c7b6f4ac6ad5f92109e7f27f85f4cc2a17f3eda756c41eea1200eca7acd23b07994b544826295c1654291"
+    },
+    {
+      "role": "alpine_seed",
+      "filename": "alpine-standard-3.23.3-x86_64.tar.gz",
+      "alpine_release": "3.23.3",
+      "architecture": "x86_64",
+      "built_or_first_observed_complete_at_utc": "2026-05-02T00:33:00Z",
+      "size_bytes": 351982616,
+      "sha256": "587000b85a39195cd5824a134db5646893317bbb8f84e9bfb0d783f24c49da32",
+      "sha512": "71b357e07794fb9febbcc0ba03e20c520d5938829e304bdb75b2875c9ab334b3df327ea0cfe6b0f2dd23dd404ce7bc44e64cec0c13d67afe97bda49606132e36"
+    }
+  ]
+}

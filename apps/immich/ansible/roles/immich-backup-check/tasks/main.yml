@@ -1,0 +1,63 @@
+---
+- name: Assert backup volume exists
+  ansible.builtin.command:
+    argv:
+      - podman
+      - volume
+      - exists
+      - "{{ immich_backup_volume }}"
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  changed_when: false
+
+- name: Check backup marker inside the volume
+  block:
+    - name: Mount backup volume for marker check
+      ansible.builtin.command:
+        argv:
+          - podman
+          - volume
+          - mount
+          - "{{ immich_backup_volume }}"
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: immich_backup_volume_mount
+      changed_when: false
+
+    - name: Read backup marker
+      ansible.builtin.command:
+        argv:
+          - cat
+          - "{{ immich_backup_volume_mount.stdout }}/last-success.epoch"
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: immich_backup_marker_read
+      changed_when: false
+      failed_when: false
+
+    - name: Read the current epoch from the target
+      ansible.builtin.command: date -u +%s
+      register: immich_backup_now
+      changed_when: false
+
+    - name: Assert active backup is recent
+      ansible.builtin.assert:
+        that:
+          - immich_backup_marker_read.rc == 0
+          - ((immich_backup_now.stdout | int) - (immich_backup_marker_read.stdout | trim | int)) <= 3900
+        fail_msg: >-
+          No successful Immich backup marker exists, or the last success is
+          older than 65 minutes.
+  always:
+    - name: Unmount backup volume
+      ansible.builtin.command:
+        argv:
+          - podman
+          - volume
+          - unmount
+          - "{{ immich_backup_volume }}"
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      changed_when: false
+      failed_when: false
+      when: immich_backup_volume_mount.stdout | default('') | length > 0

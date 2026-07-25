@@ -1,0 +1,45 @@
+#
+# Summary:
+# - Stages the bootstrap Tailscale auth key onto the EFI media so the first SSD
+#   boot can enroll itself over Tailscale SSH before phase 21 replaces that
+#   temporary identity with the steady-state dom0 identity.
+#
+---
+- name: Read the bootstrap Tailscale auth key from the ops wrapper
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - "{{ diskless_first_boot_authkey_wrapper }}"
+      - --hostname
+      - "{{ bootstrap_tailscale_hostname }}"
+      - --tags
+      - "{{ bootstrap_tailscale_tags | join(',') }}"
+  delegate_to: localhost
+  become: false
+  register: diskless_bootstrap_tailscale_authkey
+  no_log: true
+  changed_when: false
+
+- name: Assert the bootstrap Tailscale auth key is available for the first SSD boot
+  ansible.builtin.assert:
+    that:
+      - diskless_bootstrap_tailscale_authkey.stdout | trim | length > 0
+    fail_msg: >-
+      The bootstrap Tailscale auth key wrapper {{ diskless_first_boot_authkey_wrapper }}
+      did not return a usable key. Phase 12 needs that key so the first diskless
+      Alpine SSD boot can enroll into the temporary bootstrap identity over
+      Tailscale SSH.
+  no_log: true
+
+- name: Ensure the EFI bootstrap auth-key directory exists
+  ansible.builtin.file:
+    path: "{{ diskless_first_boot_authkey_stage_path | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Stage the bootstrap Tailscale auth key on the EFI media
+  ansible.builtin.copy:
+    dest: "{{ diskless_first_boot_authkey_stage_path }}"
+    content: "{{ diskless_bootstrap_tailscale_authkey.stdout | trim }}\n"
+  no_log: true

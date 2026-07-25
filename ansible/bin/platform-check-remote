@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CONTROLLER="auto"
+REMOTE_REPO_DIR="~/src/klokast/klokast-box"
+PULL_MODE="pull"
+DRY_RUN=0
+PLATFORM_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/platform-check-remote [remote options] --box BOX [--target TARGET] [platform-check options] [-- extra ansible-playbook args]
+
+Dispatch a Platform health check to the active Ansible controller.
+
+Options:
+  --controller USER@HOST  Controller Tailscale SSH target, or "auto".
+                          Default: auto
+  --repo-dir PATH         Repo path on the controller. A leading ~/ expands
+                          on the controller. Default: ~/src/klokast/klokast-box
+  --no-pull               Do not run git pull --ff-only on the controller first.
+  --dry-run-plan          Print the dispatch command, then exit.
+  -h, --help              Show this help.
+
+Examples:
+  ansible/bin/platform-check-remote --box k001
+  ansible/bin/platform-check-remote --box k001 --target all
+  ansible/bin/platform-check-remote --box k001 --target dom0
+  ansible/bin/platform-check-remote --no-pull --box k001 --target dom0 -- --syntax-check
+EOF
+}
+
+die() {
+  printf 'platform-check-remote: %s\n' "$*" >&2
+  exit 1
+}
+
+quote_args() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --controller)
+      [ "$#" -ge 2 ] || die "--controller requires a value"
+      CONTROLLER="$2"
+      shift 2
+      ;;
+    --repo-dir)
+      [ "$#" -ge 2 ] || die "--repo-dir requires a value"
+      REMOTE_REPO_DIR="$2"
+      shift 2
+      ;;
+    --no-pull)
+      PULL_MODE="no-pull"
+      shift
+      ;;
+    --dry-run-plan)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      PLATFORM_ARGS+=("$1")
+      shift
+      PLATFORM_ARGS+=("$@")
+      break
+      ;;
+    *)
+      PLATFORM_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+[ -n "$CONTROLLER" ] || die "--controller must not be empty"
+[ -n "$REMOTE_REPO_DIR" ] || die "--repo-dir must not be empty"
+if [ "$DRY_RUN" -eq 0 ]; then
+  command -v tailscale >/dev/null 2>&1 || die "tailscale not found in PATH"
+fi
+
+if [ "$CONTROLLER" = "auto" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    CONTROLLER="smith@<active-controller>"
+  else
+    ACTIVE_CONTROLLER="$("$SCRIPT_DIR/ops-controller-ha" resolve-active)"
+    CONTROLLER="smith@${ACTIVE_CONTROLLER}"
+  fi
+fi
+
+printf 'platform-check-remote: dispatching to %s\n' "$CONTROLLER"
+printf 'platform-check-remote: controller repo: %s\n' "$REMOTE_REPO_DIR"
+printf 'platform-check-remote: controller command:\n  cd %s && ' "$REMOTE_REPO_DIR"
+if [ "$PULL_MODE" = "pull" ]; then
+  printf 'git pull --ff-only && '
+fi
+printf 'ansible/bin/platform-check '
+quote_args "${PLATFORM_ARGS[@]}"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  exit 0
+fi
+
+tailscale ssh "$CONTROLLER" sh -s -- "$REMOTE_REPO_DIR" "$PULL_MODE" "${PLATFORM_ARGS[@]}" <<'REMOTE_SCRIPT'
+set -eu
+
+repo_dir="$1"
+pull_mode="$2"
+shift 2
+
+case "$repo_dir" in
+  "~")
+    repo_dir="$HOME"
+    ;;
+  "~/"*)
+    repo_dir="$HOME/${repo_dir#~/}"
+    ;;
+esac
+
+cd "$repo_dir"
+if [ "$pull_mode" = "pull" ]; then
+  git pull --ff-only
+fi
+
+exec ansible/bin/platform-check "$@"
+REMOTE_SCRIPT

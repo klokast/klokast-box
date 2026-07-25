@@ -1,0 +1,45 @@
+---
+schema_version: 1
+app: torrent
+risk_class: untrusted-download-edge
+default_isolation: dedicated_alpine_app_vm
+placement_mode: single_box
+
+resources:
+  compute:
+    - id: torrent
+      type: app_vm
+      zone: dmz
+      privilege: unprivileged_app_with_privileged_vpn_helper
+      lifecycle: persistent
+      isolation: dedicated_pvh_vm
+      cleanup_required: true
+      hostname_suffix: torrent
+      tailnet_tag_default: tag:torrent
+      guest_os: alpine
+      container_runtime: none
+      memory_mb: 2048
+      vcpus: 2
+      lv_size: 50G
+      rationale: qBittorrent is untrusted download edge; isolate it from shared zone VMs.
+
+  network:
+    - id: vpn-egress
+      type: wan_egress
+      from_zone: dmz
+      tcp_ports: [53, 80, 443, 853]
+      udp_ports: [53, 123, 443, 853, 41641]
+      enabled_by_default: true
+      rationale: Allow only VPN/subscription/DNS/NTP/control egress from the torrent VM.
+
+  tailnet:
+    - id: private-ingress
+      required: true
+      access:
+        intent: private-service-ingress
+        capability: overlay
+      hostname_pattern: "{box}-torrent"
+      tag_default: tag:torrent
+      grants:
+        - src: group:family
+          tcp_ports: [443]

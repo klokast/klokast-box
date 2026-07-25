@@ -1,0 +1,9 @@
+---
+- name: Install the Raspberry Pi audio endpoint
+  hosts: music_audio_endpoints
+  gather_facts: true
+  tasks:
+    - name: Install music audio endpoint services
+      ansible.builtin.import_role:
+        name: music-audio-endpoint
+      when: node_domain_role == 'audio_endpoint'

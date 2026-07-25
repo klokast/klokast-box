@@ -1,0 +1,100 @@
+#!/bin/sh
+set -eu
+
+socket={{ nextcloud_private_ingress_socket | quote }}
+authkey_file={{ (nextcloud_private_ingress_secret_root ~ '/tailscale-authkey') | quote }}
+hostname={{ nextcloud_private_tailscale_hostname | quote }}
+tag={{ nextcloud_private_tailscale_tag | quote }}
+accept_dns={{ nextcloud_private_tailscale_accept_dns | ternary('true', 'false') | quote }}
+local_upstream={{ nextcloud_private_ingress_local_upstream | quote }}
+service_user={{ vm_admin_user_name | quote }}
+
+run_ts() {
+    if [ "$(id -un)" = "$service_user" ]; then
+        /usr/bin/tailscale --socket "$socket" "$@"
+    else
+        /usr/bin/doas -u "$service_user" /usr/bin/tailscale --socket "$socket" "$@"
+    fi
+}
+
+for _ in $(seq 1 30); do
+    [ -S "$socket" ] && break
+    sleep 1
+done
+
+if [ ! -S "$socket" ]; then
+    echo "Tailscale socket is not ready: $socket" >&2
+    exit 1
+fi
+
+status_identity_ok() {
+    run_ts status --json 2>/dev/null | /usr/bin/python3 -c '
+import json
+import sys
+
+hostname, tag = sys.argv[1:]
+try:
+    data = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+self_node = data.get("Self") or {}
+dns_name = str(self_node.get("DNSName") or "").rstrip(".").lower()
+dns_short = dns_name.split(".", 1)[0] if dns_name else ""
+if (
+    data.get("BackendState") == "Running"
+    and self_node.get("HostName") == hostname
+    and dns_short == hostname
+    and tag in (self_node.get("Tags") or [])
+):
+    raise SystemExit(0)
+raise SystemExit(1)
+' "$hostname" "$tag"
+}
+
+status_backend_state() {
+    run_ts status --json 2>/dev/null | /usr/bin/python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+print(data.get("BackendState") or "")
+'
+}
+
+needs_enrollment=true
+for _ in $(seq 1 30); do
+    if status_identity_ok; then
+        needs_enrollment=false
+        break
+    fi
+
+    backend_state="$(status_backend_state || true)"
+    case "$backend_state" in
+        Running|NeedsLogin)
+            break
+            ;;
+    esac
+
+    sleep 1
+done
+
+if [ "$needs_enrollment" = true ]; then
+    if [ ! -s "$authkey_file" ]; then
+        echo "Private Tailscale auth key file is missing or empty: $authkey_file" >&2
+        exit 1
+    fi
+    authkey="$(sed -n '1p' "$authkey_file")"
+    run_ts up \
+        --auth-key="$authkey" \
+        --hostname="$hostname" \
+        --advertise-tags="$tag" \
+        --accept-dns="$accept_dns" \
+        --force-reauth \
+        --timeout=30s
+fi
+
+run_ts serve reset >/dev/null 2>&1 || true
+run_ts serve --bg --yes --https=443 "$local_upstream" >/dev/null

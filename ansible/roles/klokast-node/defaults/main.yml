@@ -1,0 +1,7 @@
+---
+klokast_node_app: nextcloud-v2
+klokast_node_repo_root: "{{ playbook_dir }}/../.."
+klokast_node_build_dir: "{{ klokast_node_repo_root }}/.run/klokast-node"
+klokast_node_binary: "{{ klokast_node_build_dir }}/klokast-node"
+klokast_node_handler_source_dir: "{{ klokast_node_repo_root }}/apps/nextcloud-v2/handlers"
+klokast_node_handler_target_dir: /usr/lib/klokast/apps/nextcloud-v2

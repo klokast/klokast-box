@@ -1,0 +1,10 @@
+---
+storage_inspection_expected_efi_partition_label: "{{ efi_partition_label | default('ALPINE_EFI') }}"
+storage_inspection_expected_efi_mount_path: "{{ efi_mount_path | default('/media/nvme') }}"
+
+storage_inspection_fallback_target_disk_device: "{{ target_disk_device | default('') }}"
+storage_inspection_fallback_efi_partition_device: "{{ efi_partition_device | default('') }}"
+storage_inspection_fallback_lvm_partition_device: "{{ lvm_partition_device | default('') }}"
+storage_inspection_fallback_volume_group_name: "{{ volume_group_name | default('') }}"
+
+storage_inspection_show_summary: false

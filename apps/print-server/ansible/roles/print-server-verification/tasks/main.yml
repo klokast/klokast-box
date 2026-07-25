@@ -1,0 +1,174 @@
+---
+- name: Assert print server verification targets the selected backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == platform_zones.bak.role
+      - node_name == print_box
+    fail_msg: >-
+      print-server-verification must target the selected backend VM.
+
+- name: Collect print server OpenRC service state
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ print_service_name }}"
+      - status
+  become: true
+  register: print_verify_service
+  changed_when: false
+
+- name: Collect print server pod state
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - pod
+      - inspect
+      - "--format={{ '{{' }}.State{{ '}}' }}"
+      - "{{ print_pod_name }}"
+  become: true
+  register: print_verify_pod_state
+  changed_when: false
+
+- name: Assert print server pod is running
+  ansible.builtin.assert:
+    that:
+      - print_verify_pod_state.stdout == "Running"
+    fail_msg: >-
+      Print server Podman pod must be running.
+
+- name: Collect print server containers
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - ps
+      - "--format={{ '{{' }}.Names{{ '}}' }}"
+      - --filter
+      - "pod={{ print_pod_name }}"
+  become: true
+  register: print_verify_containers
+  changed_when: false
+
+- name: Assert expected print server containers are running
+  ansible.builtin.assert:
+    that:
+      - print_container_cups_name in print_verify_containers.stdout_lines
+      - print_container_ingress_name in print_verify_containers.stdout_lines
+    fail_msg: >-
+      Print server containers are incomplete.
+
+- name: Collect print ingress Tailscale status
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ print_container_ingress_name }}"
+      - tailscale
+      - --socket
+      - /tmp/tailscale/tailscaled.sock
+      - status
+      - --json
+      - --peers=false
+  become: true
+  register: print_verify_tailscale
+  changed_when: false
+
+- name: Assert print ingress Tailscale identity is online
+  ansible.builtin.assert:
+    that:
+      - (print_verify_tailscale.stdout | from_json).BackendState | default('') == 'Running'
+      - (print_verify_tailscale.stdout | from_json).Self.HostName | default('') == print_tailscale_hostname
+      - (print_verify_tailscale.stdout | from_json).Self.Online | default(false) | bool
+      - print_tailscale_tag in ((print_verify_tailscale.stdout | from_json).Self.Tags | default([]))
+    fail_msg: >-
+      Print Tailscale ingress is not online with the expected tag.
+
+- name: Verify CUPS daemon responds inside the pod
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ print_container_cups_name }}"
+      - lpstat
+      - -r
+  become: true
+  changed_when: false
+
+- name: Verify CUPS queue exists
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ print_container_cups_name }}"
+      - lpstat
+      - -p
+      - "{{ print_queue_name }}"
+  become: true
+  changed_when: false
+
+- name: Verify CUPS default printer
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - exec
+      - "{{ print_container_cups_name }}"
+      - lpstat
+      - -d
+  become: true
+  register: print_verify_default_queue
+  changed_when: false
+
+- name: Assert expected CUPS default queue
+  ansible.builtin.assert:
+    that:
+      - print_queue_name in print_verify_default_queue.stdout
+    fail_msg: >-
+      CUPS default queue is not {{ print_queue_name }}.
+
+- name: Verify printer IPP port is reachable from the backend VM
+  ansible.builtin.wait_for:
+    host: "{{ print_printer_ipv4_address }}"
+    port: 631
+    timeout: 10
+  changed_when: false
+
+- name: Collect print Podman volumes
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - volume
+      - ls
+      - "--format={{ '{{' }}.Name{{ '}}' }}"
+  become: true
+  register: print_verify_volumes
+  changed_when: false
+
+- name: Assert expected print Podman volumes exist
+  ansible.builtin.assert:
+    that:
+      - print_cups_etc_volume in print_verify_volumes.stdout_lines
+      - print_cups_spool_volume in print_verify_volumes.stdout_lines
+      - print_cups_cache_volume in print_verify_volumes.stdout_lines
+      - print_tailscale_state_volume in print_verify_volumes.stdout_lines
+    fail_msg: >-
+      Print server Podman volumes are incomplete.

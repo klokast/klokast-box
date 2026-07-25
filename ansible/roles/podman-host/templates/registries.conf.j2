@@ -1,0 +1,20 @@
+# Managed by Ansible. Keep image references fully qualified in code and use
+# this file only for registry policy and mirror selection.
+{% for registry in podman_host_registries %}
+[[registry]]
+location = {{ registry.location | to_json }}
+{% if registry.insecure | default(false) %}
+insecure = true
+{% endif %}
+{% if registry.blocked | default(false) %}
+blocked = true
+{% endif %}
+{% for mirror in registry.mirrors | default([]) %}
+[[registry.mirror]]
+location = {{ (mirror.location if mirror is mapping else mirror) | to_json }}
+{% if mirror is mapping and (mirror.insecure | default(false)) %}
+insecure = true
+{% endif %}
+{% endfor %}
+
+{% endfor %}

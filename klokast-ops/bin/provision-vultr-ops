@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TF_DIR="$REPO_DIR/klokast-ops/terraform/vultr-ops"
+ANSIBLE_DIR="$REPO_DIR/klokast-ops/ansible"
+PLAYBOOK="$ANSIBLE_DIR/playbooks/01-vultr-ops-infra-agent.yml"
+DEFAULT_OS_ID="2760"
+DEFAULT_OS_NAME="Ubuntu 26.04 LTS x64"
+
+usage() {
+  cat <<'EOF'
+usage: klokast-ops/bin/provision-vultr-ops [--plan-only]
+
+Creates or updates the Vultr infra-agent host `vultr-ops`, enrolls it into
+Tailscale as tag:infra, registers the generated GitHub deploy key, and
+clones klokast/klokast-box as user agent.
+
+Required environment:
+  VULTR_API_KEY
+  GITHUB_TOKEN
+  VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE
+
+Optional environment:
+  VULTR_OPS_BOOTSTRAP_SSH_PUBLIC_KEY_FILE
+  VULTR_OPS_BOOTSTRAP_SSH_KEY_NAME
+  VULTR_OPS_BOOTSTRAP_SSH_IPV4_CIDRS
+  VULTR_OPS_BOOTSTRAP_SSH_IPV6_CIDRS
+  VULTR_OPS_OS_ID
+  VULTR_OPS_OS_NAME
+EOF
+}
+
+die() {
+  printf 'provision-vultr-ops: %s\n' "$*" >&2
+  exit 2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 is required"
+}
+
+check_tailscale_hostname_available() {
+  local hostname="$1"
+  local status_json
+  local conflict_json
+
+  status_json="$(tailscale status --json 2>/dev/null || true)"
+  [ -n "$status_json" ] || return 0
+
+  conflict_json="$(
+    printf '%s\n' "$status_json" |
+      jq -er --arg hostname "$hostname" '
+        def short_name:
+          rtrimstr(".") | split(".")[0];
+
+        ([.Self] + ((.Peer // {}) | to_entries | map(.value)))
+        | map(select(. != null))
+        | map(
+            select(
+              (((.DNSName // .HostName // "") | short_name) == $hostname)
+              and (
+                (.Online != true)
+                or (
+                  (((.Tags // []) | index("tag:infra")) | not)
+                  and (((.Tags // []) | index("tag:infra-agent")) | not)
+                )
+              )
+            )
+          )
+        | first // empty
+        | {
+            id: (.ID // ""),
+            dnsName: (.DNSName // ""),
+            tags: (.Tags // []),
+            online: (.Online // false),
+            lastSeen: (.LastSeen // ""),
+            tailscaleIPs: (.TailscaleIPs // [])
+          }
+        | @json
+      ' 2>/dev/null || true
+  )"
+
+  if [ -n "$conflict_json" ]; then
+    die "Tailscale hostname $hostname is already held by a stale or incompatible device: $conflict_json. Delete the stale tailnet device before commissioning, otherwise Tailscale will assign a suffixed name."
+  fi
+}
+
+json_array_from_csv() {
+  local value="${1:-}"
+
+  if [ -z "$value" ]; then
+    printf '[]\n'
+    return
+  fi
+
+  printf '%s\n' "$value" |
+    tr ',' '\n' |
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' |
+    awk 'NF' |
+    jq -R . |
+    jq -s .
+}
+
+discover_ipv4_cidr() {
+  local ip
+  ip="$(curl -fsS --max-time 10 https://api.ipify.org)" || return 1
+  [ -n "$ip" ] || return 1
+  printf '%s/32\n' "$ip"
+}
+
+discover_ipv6_cidr() {
+  local ip
+  ip="$(curl -fsS --max-time 5 https://api6.ipify.org 2>/dev/null)" || return 0
+  case "$ip" in
+    *:*) printf '%s/128\n' "$ip" ;;
+  esac
+}
+
+resolve_vultr_ssh_key_id() {
+  local key_name="$1"
+  local keys_json
+
+  keys_json="$(
+    curl -fsS \
+      -H "Authorization: Bearer ${VULTR_API_KEY}" \
+      https://api.vultr.com/v2/ssh-keys
+  )"
+
+  printf '%s\n' "$keys_json" |
+    jq -er --arg name "$key_name" '
+      first(.ssh_keys[] | select(.name == $name) | .id)
+    '
+}
+
+plan_only=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --plan-only)
+      plan_only=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+need_cmd curl
+need_cmd jq
+need_cmd ssh-keygen
+need_cmd tailscale
+need_cmd terraform
+need_cmd ansible-playbook
+
+[ -n "${VULTR_API_KEY:-}" ] || die "VULTR_API_KEY is required"
+[ -n "${GITHUB_TOKEN:-}" ] || die "GITHUB_TOKEN is required for GitHub deploy-key registration"
+[ -n "${VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE:-}" ] || die "VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE is required"
+[ -r "$VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE" ] || die "bootstrap SSH private key is not readable: $VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE"
+
+ssh_public_key_file="${VULTR_OPS_BOOTSTRAP_SSH_PUBLIC_KEY_FILE:-${VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE}.pub}"
+if [ -r "$ssh_public_key_file" ]; then
+  ssh_public_key="$(sed -n '1p' "$ssh_public_key_file")"
+else
+  ssh_public_key="$(ssh-keygen -y -f "$VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE")" \
+    || die "could not derive the public key from $VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE"
+fi
+
+[ -n "$ssh_public_key" ] || die "bootstrap SSH public key is empty"
+
+os_id="${VULTR_OPS_OS_ID:-$DEFAULT_OS_ID}"
+os_name="${VULTR_OPS_OS_NAME:-$DEFAULT_OS_NAME}"
+[[ "$os_id" =~ ^[0-9]+$ ]] || die "VULTR_OPS_OS_ID must be numeric"
+ssh_key_name="${VULTR_OPS_BOOTSTRAP_SSH_KEY_NAME:-klokast-infra-vultr-ops}"
+check_tailscale_hostname_available "vultr-ops"
+
+ipv4_cidrs="${VULTR_OPS_BOOTSTRAP_SSH_IPV4_CIDRS:-}"
+if [ -z "$ipv4_cidrs" ]; then
+  ipv4_cidrs="$(discover_ipv4_cidr)" || die "set VULTR_OPS_BOOTSTRAP_SSH_IPV4_CIDRS; automatic IPv4 discovery failed"
+fi
+
+ipv6_cidrs="${VULTR_OPS_BOOTSTRAP_SSH_IPV6_CIDRS:-$(discover_ipv6_cidr)}"
+
+tfvars_file="$(mktemp --suffix=.tfvars.json)"
+ansible_vars_file="$(mktemp --suffix=.json)"
+cleanup() {
+  rm -f "$tfvars_file" "$ansible_vars_file"
+  unset TS_AUTH_KEY
+}
+trap cleanup EXIT
+
+chmod 0600 "$tfvars_file" "$ansible_vars_file"
+
+jq -n \
+  --argjson os_id "$os_id" \
+  --arg os_name "$os_name" \
+  --arg ssh_key_name "$ssh_key_name" \
+  --arg ssh_public_key "$ssh_public_key" \
+  --argjson ipv4_cidrs "$(json_array_from_csv "$ipv4_cidrs")" \
+  --argjson ipv6_cidrs "$(json_array_from_csv "$ipv6_cidrs")" \
+  '{
+    os_id: $os_id,
+    expected_os_name: $os_name,
+    bootstrap_ssh_key_name: $ssh_key_name,
+    bootstrap_ssh_public_key: $ssh_public_key,
+    bootstrap_ssh_ipv4_cidrs: $ipv4_cidrs,
+    bootstrap_ssh_ipv6_cidrs: $ipv6_cidrs
+  }' >"$tfvars_file"
+
+terraform -chdir="$TF_DIR" init -input=false
+
+if ! terraform -chdir="$TF_DIR" state show vultr_ssh_key.bootstrap >/dev/null 2>&1; then
+  existing_ssh_key_id="$(resolve_vultr_ssh_key_id "$ssh_key_name" || true)"
+  if [ -n "$existing_ssh_key_id" ]; then
+    terraform -chdir="$TF_DIR" import -input=false -var-file="$tfvars_file" vultr_ssh_key.bootstrap "$existing_ssh_key_id"
+  fi
+fi
+
+terraform -chdir="$TF_DIR" plan -input=false -out=vultr-ops.tfplan -var-file="$tfvars_file"
+
+if [ "$plan_only" -eq 1 ]; then
+  printf 'Terraform plan written to %s/vultr-ops.tfplan\n' "$TF_DIR"
+  exit 0
+fi
+
+terraform -chdir="$TF_DIR" apply -input=false vultr-ops.tfplan
+vultr_ipv4="$(terraform -chdir="$TF_DIR" output -raw ipv4_address)"
+[ -n "$vultr_ipv4" ] || die "terraform output ipv4_address is empty"
+
+sudo /usr/local/sbin/ts-authkey-infra \
+  --check-config \
+  --hostname vultr-ops \
+  --tags tag:infra >/dev/null
+
+TS_AUTH_KEY="$(
+  sudo /usr/local/sbin/ts-authkey-infra \
+    --hostname vultr-ops \
+    --tags tag:infra
+)"
+[ -n "$TS_AUTH_KEY" ] || die "Tailscale auth-key minting returned an empty key"
+
+jq -n \
+  --arg ansible_host "$vultr_ipv4" \
+  --arg key_file "$VULTR_OPS_BOOTSTRAP_SSH_KEY_FILE" \
+  --arg tailscale_auth_key "$TS_AUTH_KEY" \
+  '{
+    ansible_host: $ansible_host,
+    ansible_user: "root",
+    ansible_ssh_private_key_file: $key_file,
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new",
+    tailscale_auth_key: $tailscale_auth_key
+  }' >"$ansible_vars_file"
+
+(
+  cd "$ANSIBLE_DIR"
+  ansible-playbook \
+    -i inventory/hosts.yml \
+    "$PLAYBOOK" \
+    -e "@$ansible_vars_file" \
+    -vv
+)

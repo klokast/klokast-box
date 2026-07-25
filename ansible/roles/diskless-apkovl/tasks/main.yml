@@ -1,0 +1,57 @@
+#
+# Summary:
+# - Orchestrates the first SSD-boot apkovl build by separating generic overlay staging, temporary bootstrap Tailscale bridge state, and final archive assembly.
+#
+---
+- name: Build the first diskless apkovl in an isolated workspace
+  block:
+    - name: Create a temporary build directory for the first diskless apkovl
+      ansible.builtin.tempfile:
+        state: directory
+        path: /tmp
+        prefix: klokast-apkovl-build.
+      register: diskless_apkovl_build_root
+
+    - name: Normalize the staged apkovl root directory mode
+      # `tar -C <dir> -czf ... .` preserves the metadata of the staging root as
+      # the archive's `./` entry. Keep it at `0755` so the first SSD boot never
+      # restores `/` with mktemp's private permissions.
+      ansible.builtin.file:
+        path: "{{ diskless_apkovl_build_root.path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create a temporary archive path for the first diskless apkovl
+      ansible.builtin.tempfile:
+        state: file
+        path: /tmp
+        prefix: "{{ apkovl_archive_name }}."
+      register: diskless_apkovl_archive_tmp
+
+    - name: Stage the generic first-boot overlay content
+      ansible.builtin.import_tasks: apkovl-base.yml
+
+    - name: Stage the temporary first-boot bootstrap helper
+      ansible.builtin.import_tasks: apkovl-bootstrap-runtime.yml
+
+    - name: Carry over the temporary bootstrap Tailscale bridge state
+      ansible.builtin.import_tasks: apkovl-bootstrap-tailscale.yml
+
+    - name: Assemble the first diskless apkovl archive
+      ansible.builtin.import_tasks: apkovl-archive.yml
+  always:
+    - name: Remove the temporary first-boot apkovl build directory
+      ansible.builtin.file:
+        path: "{{ diskless_apkovl_build_root.path }}"
+        state: absent
+      when:
+        - diskless_apkovl_build_root is defined
+        - diskless_apkovl_build_root.path is defined
+
+    - name: Remove the temporary first-boot apkovl archive path
+      ansible.builtin.file:
+        path: "{{ diskless_apkovl_archive_tmp.path }}"
+        state: absent
+      when:
+        - diskless_apkovl_archive_tmp is defined
+        - diskless_apkovl_archive_tmp.path is defined

@@ -1,0 +1,287 @@
+#
+# Summary:
+# - Verifies one isolated airunner container and its permitted access without
+#   reading controller secrets.
+#
+---
+- name: Assert airunner verification inputs are defined
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_verify_name | default('') is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - ops_airunner_verify_network_name | default('') == 'airunner'
+      - ops_airunner_verify_home | default('') is match('^/home/')
+      - ops_airunner_verify_tailscale_state_dir | default('') is match('^/')
+      - ops_airunner_verify_expected_tag | default('') == 'tag:airunner'
+
+- name: Inspect the airunner container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - inspect
+      - "{{ ops_airunner_verify_name }}"
+  register: ops_airunner_verify_inspect_command
+  changed_when: false
+  retries: "{{ ops_airunner_verify_retries | default(10) }}"
+  delay: "{{ ops_airunner_verify_delay | default(1) }}"
+  until: ops_airunner_verify_inspect_command.rc == 0
+
+- name: Record the airunner container inspection
+  ansible.builtin.set_fact:
+    ops_airunner_verify_inspect: "{{ (ops_airunner_verify_inspect_command.stdout | from_json) | first }}"
+    ops_airunner_verify_mount_sources: >-
+      {{
+        ((ops_airunner_verify_inspect_command.stdout | from_json) | first).Mounts
+        | map(attribute='Source')
+        | list
+      }}
+
+- name: Collect the airunner Tailnet identity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ ops_airunner_verify_name }}"
+      - tailscale
+      - --socket=/run/tailscale/tailscaled.sock
+      - status
+      - --json
+  register: ops_airunner_verify_tailscale_command
+  changed_when: false
+  retries: "{{ ops_airunner_verify_retries | default(10) }}"
+  delay: "{{ ops_airunner_verify_delay | default(1) }}"
+  until: ops_airunner_verify_tailscale_command.rc == 0
+
+- name: Record the airunner Tailnet identity
+  ansible.builtin.set_fact:
+    ops_airunner_verify_tailscale: "{{ ops_airunner_verify_tailscale_command.stdout | from_json }}"
+
+- name: Check Mosh inside the airunner
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ ops_airunner_verify_name }}"
+      - mosh-server
+      - --version
+  register: ops_airunner_verify_mosh
+  changed_when: false
+
+- name: Check the airunner coding toolchain
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --user
+      - "{{ ops_airunner_user }}"
+      - --env
+      - "HOME={{ ops_airunner_verify_home }}"
+      - "{{ ops_airunner_verify_name }}"
+      - /bin/sh
+      - -c
+      - >-
+        command -v codex >/dev/null &&
+        command -v git >/dev/null &&
+        command -v jq >/dev/null &&
+        command -v less >/dev/null &&
+        command -v make >/dev/null &&
+        command -v mosh-server >/dev/null &&
+        command -v rg >/dev/null &&
+        command -v shellcheck >/dev/null &&
+        command -v tmux >/dev/null &&
+        command -v vim >/dev/null &&
+        locale -a | grep -qi '^en_GB\.utf-\?8$'
+  register: ops_airunner_verify_toolchain
+  changed_when: false
+  when: ops_airunner_verify_workspace_features | default(true) | bool
+
+- name: Check the persistent airunner workspace
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --user
+      - "{{ ops_airunner_user }}"
+      - --env
+      - "HOME={{ ops_airunner_verify_home }}"
+      - "{{ ops_airunner_verify_name }}"
+      - /bin/sh
+      - -c
+      - |
+        set -u
+        fail() {
+          printf 'airunner workspace check failed: %s\n' "$*" >&2
+          exit 1
+        }
+        repo="$1"
+        expected_origin="$2"
+        key="$3"
+        test -d "$repo/.git" || fail "repository checkout is missing"
+        actual_origin="$(git -C "$repo" remote get-url origin)" ||
+          fail "repository origin cannot be read"
+        test "$actual_origin" = "$expected_origin" ||
+          fail "repository origin is $actual_origin"
+        test -f "$HOME/.bashrc" || fail ".bashrc is missing"
+        test -f "$HOME/.profile" || fail ".profile is missing"
+        test -f "$HOME/.tmux.conf" || fail ".tmux.conf is missing"
+        test -f "$HOME/.codex/auth.json" || fail "Codex auth is missing"
+        test -f "$HOME/.codex/config.toml" || fail "Codex config is missing"
+        test -f "$key" || fail "GitHub private key is missing"
+        test -f "$key.pub" || fail "GitHub public key is missing"
+        test "$(stat -c %a "$HOME/.codex")" = 700 ||
+          fail ".codex mode is $(stat -c %a "$HOME/.codex")"
+        test "$(stat -c %a "$HOME/.codex/auth.json")" = 600 ||
+          fail "Codex auth mode is $(stat -c %a "$HOME/.codex/auth.json")"
+        test "$(stat -c %a "$HOME/.codex/config.toml")" = 600 ||
+          fail "Codex config mode is $(stat -c %a "$HOME/.codex/config.toml")"
+        test "$(stat -c %a "$HOME/.ssh")" = 700 ||
+          fail ".ssh mode is $(stat -c %a "$HOME/.ssh")"
+        test "$(stat -c %a "$key")" = 600 ||
+          fail "GitHub private-key mode is $(stat -c %a "$key")"
+        test "$(git config --global user.name)" = "Klokast Agent" ||
+          fail "global Git user.name is unexpected"
+        test "$(git config --global user.email)" = "agent@{{ node_name }}-ops-airunner" ||
+          fail "global Git user.email is unexpected"
+        grep -q "BEGIN klokast airunner interactive shell" "$HOME/.bashrc" ||
+          fail "managed .bashrc block is missing"
+        grep -q "BEGIN klokast airunner login shell" "$HOME/.profile" ||
+          fail "managed .profile block is missing"
+        grep -q "history-limit 100000" "$HOME/.tmux.conf" ||
+          fail "managed tmux history limit is missing"
+      - airunner-workspace-check
+      - "{{ ops_airunner_repo_dest }}"
+      - "{{ ops_airunner_repo_url }}"
+      - "{{ ops_airunner_git_ssh_key_path }}"
+    expand_argument_vars: false
+  register: ops_airunner_verify_workspace
+  changed_when: false
+  when: ops_airunner_verify_workspace_features | default(true) | bool
+
+- name: Exercise a disposable airunner tmux server
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --user
+      - "{{ ops_airunner_user }}"
+      - --env
+      - "HOME={{ ops_airunner_verify_home }}"
+      - "{{ ops_airunner_verify_name }}"
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        socket="airunner-verify-$$"
+        trap 'tmux -L "$socket" kill-server >/dev/null 2>&1 || true' EXIT
+        tmux -L "$socket" new-session -d -s verify -c "$1"
+        test "$(tmux -L "$socket" display-message -p -t verify:0.0 '#{pane_current_path}')" = "$1"
+      - airunner-tmux-check
+      - "{{ ops_airunner_repo_dest }}"
+    expand_argument_vars: false
+  register: ops_airunner_verify_tmux
+  changed_when: false
+  when: ops_airunner_verify_workspace_features | default(true) | bool
+
+- name: Check the airunner can reach its GitHub remote
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --user
+      - "{{ ops_airunner_user }}"
+      - --env
+      - "HOME={{ ops_airunner_verify_home }}"
+      - --workdir
+      - /home/agent/src/klokast/klokast-box
+      - "{{ ops_airunner_verify_name }}"
+      - git
+      - ls-remote
+      - origin
+      - HEAD
+  register: ops_airunner_verify_github
+  changed_when: false
+  when: ops_airunner_verify_external_access | default(true) | bool
+
+- name: Check the airunner remote-terminal path to the controller
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --user
+      - "{{ ops_airunner_user }}"
+      - --env
+      - "HOME={{ ops_airunner_verify_home }}"
+      - "{{ ops_airunner_verify_name }}"
+      - tailscale
+      - --socket=/run/tailscale/tailscaled.sock
+      - ssh
+      - "smith@{{ node_name }}-ops"
+      - "true"
+  register: ops_airunner_verify_controller_access
+  changed_when: false
+  when: ops_airunner_verify_external_access | default(true) | bool
+
+- name: Check the controller-to-airunner archive path
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - ssh
+      - "{{ ops_airunner_user }}@{{ ops_airunner_verify_name }}"
+      - >-
+        test -d "$HOME/.codex" &&
+        command -v find >/dev/null &&
+        command -v rsync >/dev/null
+    expand_argument_vars: false
+  delegate_to: localhost
+  become: false
+  register: ops_airunner_verify_archive_command
+  changed_when: false
+  when:
+    - ops_airunner_verify_external_access | default(true) | bool
+    - ops_airunner_verify_workspace_features | default(true) | bool
+
+- name: Check controller-private paths are absent from the airunner
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ ops_airunner_verify_name }}"
+      - /bin/sh
+      - -c
+      - >-
+        test ! -e /home/smith &&
+        test ! -e /etc/klokast &&
+        test ! -e /var/lib/klokast/approved-state &&
+        test ! -e /var/lib/klokast/secret-authority
+  changed_when: false
+
+- name: Assert the airunner runtime boundary and identity
+  ansible.builtin.assert:
+    that:
+      - ops_airunner_verify_inspect.State.Running | bool
+      - ops_airunner_verify_inspect.Config.Hostname == ops_airunner_verify_name
+      - ops_airunner_verify_inspect.HostConfig.NetworkMode != 'host'
+      - ops_airunner_verify_network_name in ops_airunner_verify_inspect.NetworkSettings.Networks
+      - "'CAP_NET_ADMIN' in (ops_airunner_verify_inspect.HostConfig.CapAdd | default([]))"
+      - "'CAP_NET_RAW' in (ops_airunner_verify_inspect.HostConfig.CapAdd | default([]))"
+      - >-
+        (ops_airunner_verify_inspect.HostConfig.Devices | default([]))
+        | selectattr('PathOnHost', 'equalto', '/dev/net/tun')
+        | selectattr('PathInContainer', 'equalto', '/dev/net/tun')
+        | list
+        | length == 1
+      - (ops_airunner_verify_mount_sources | sort) == ([ops_airunner_verify_home, ops_airunner_verify_tailscale_state_dir] | sort)
+      - ops_airunner_verify_tailscale.TUN | default(false) | bool
+      - ops_airunner_verify_tailscale.BackendState | default('') == 'Running'
+      - ops_airunner_verify_tailscale.Self.HostName | default('') == ops_airunner_verify_name
+      - ops_airunner_verify_tailscale.Self.Tags | default([]) == [ops_airunner_verify_expected_tag]
+      - ops_airunner_verify_mosh.rc == 0
+      - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_toolchain.rc == 0
+      - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_workspace.rc == 0
+      - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_tmux.rc == 0
+      - not (ops_airunner_verify_external_access | default(true) | bool) or ops_airunner_verify_github.rc == 0
+      - not (ops_airunner_verify_external_access | default(true) | bool) or ops_airunner_verify_controller_access.rc == 0
+      - >-
+        not (ops_airunner_verify_external_access | default(true) | bool)
+        or not (ops_airunner_verify_workspace_features | default(true) | bool)
+        or ops_airunner_verify_archive_command.rc == 0
+    fail_msg: "Airunner verification failed for {{ ops_airunner_verify_name }}."

@@ -1,0 +1,18 @@
+---
+- name: Resolve and verify Immich image sources on target VMs
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Verify pinned image sources from this VM
+      ansible.builtin.import_role:
+        name: immich-image-preflight
+      when: node_domain_role == 'backend'
+
+    - name: Verify pinned ingress image source from this DMZ VM
+      ansible.builtin.import_role:
+        name: immich-image-preflight
+      vars:
+        immich_image_preflight_keys: alpine
+      when: node_domain_role == 'dmz'

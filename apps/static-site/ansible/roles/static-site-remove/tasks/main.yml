@@ -1,0 +1,56 @@
+---
+- name: Stop static-site OpenRC services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  become: true
+  failed_when: false
+  loop:
+    - "{{ static_site_cloudflared_service_name }}"
+    - "{{ static_site_publisher_service_name }}"
+    - "{{ static_site_web_service_name }}"
+
+- name: Remove static-site web container
+  ansible.builtin.command:
+    argv:
+      - podman
+      - rm
+      - -f
+      - "{{ static_site_web_container_name }}"
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: static_site_remove_container
+  changed_when: static_site_remove_container.rc == 0
+  failed_when: static_site_remove_container.rc not in [0, 1, 125]
+
+- name: Remove static-site service files and helpers
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - /etc/init.d/static-site-web
+    - /etc/init.d/static-site-publisher
+    - /etc/init.d/static-site-cloudflared
+    - /usr/local/sbin/static-site-web-deploy
+    - /usr/local/sbin/static-site-publisher
+    - /usr/local/sbin/static-site-cloudflared-check
+    - "{{ static_site_service_root }}"
+
+- name: Remove static-site generated logs
+  ansible.builtin.file:
+    path: "{{ static_site_log_root }}"
+    state: absent
+  become: true
+
+- name: Optionally remove static-site published data
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - "{{ static_site_public_root }}"
+    - "{{ static_site_incoming_root }}"
+    - "{{ static_site_git_repo_cache_root }}"
+  when: static_site_wipe_data | bool

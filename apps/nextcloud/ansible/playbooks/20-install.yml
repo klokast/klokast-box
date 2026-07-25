@@ -1,0 +1,26 @@
+---
+- name: Install the multisite Nextcloud stack
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Resolve and verify image sources
+      ansible.builtin.import_role:
+        name: nextcloud-image-preflight
+      when: node_domain_role == 'backend'
+
+    - name: Install the backend Nextcloud stack
+      ansible.builtin.import_role:
+        name: nextcloud-backend
+      when: node_domain_role == 'backend'
+
+    - name: Install the DMZ Cloudflare Tunnel connector
+      ansible.builtin.import_role:
+        name: nextcloud-dmz
+      when: node_domain_role == 'dmz'
+
+    - name: Install the DMZ private Tailscale ingress
+      ansible.builtin.import_role:
+        name: nextcloud-private-ingress
+      when: node_domain_role == 'dmz'

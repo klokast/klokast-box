@@ -1,0 +1,21 @@
+---
+alpine_diskless_seed_release: "3.23.3"
+alpine_diskless_seed_arch: "{{ apk_repository_arch | default('x86_64') }}"
+alpine_diskless_seed_major_minor: "{{ alpine_diskless_seed_release | regex_replace('^([0-9]+\\.[0-9]+).*', '\\1') }}"
+alpine_diskless_seed_mirror: http://mirrors.hust.edu.cn/alpine
+alpine_diskless_seed_iso_filename: "alpine-standard-{{ alpine_diskless_seed_release }}-{{ alpine_diskless_seed_arch }}.iso"
+alpine_diskless_seed_iso_url: "{{ alpine_diskless_seed_mirror }}/v{{ alpine_diskless_seed_major_minor }}/releases/{{ alpine_diskless_seed_arch }}/{{ alpine_diskless_seed_iso_filename }}"
+alpine_diskless_seed_checksum_url: "{{ alpine_diskless_seed_iso_url }}.sha256"
+alpine_diskless_seed_iso_path: "{{ alpine_diskless_seed_remote_directory }}/{{ alpine_diskless_seed_iso_filename }}"
+alpine_diskless_seed_checksum_path: "{{ alpine_diskless_seed_iso_path }}.sha256"
+alpine_diskless_seed_partial_path: "{{ alpine_diskless_seed_iso_path }}.part"
+alpine_diskless_seed_minimum_iso_size: 100000000
+alpine_diskless_seed_connect_timeout_seconds: 30
+alpine_diskless_seed_download_timeout_seconds: 3600
+alpine_diskless_seed_retry_count: 5
+alpine_diskless_seed_retry_delay_seconds: 5
+alpine_diskless_seed_speed_time_seconds: 60
+alpine_diskless_seed_speed_limit_bytes: 1024
+# Leave empty to let curl choose the fastest usable address family. Set to
+# ["--ipv4"] or ["--ipv6"] in inventory when a specific site needs it.
+alpine_diskless_seed_curl_extra_args: []

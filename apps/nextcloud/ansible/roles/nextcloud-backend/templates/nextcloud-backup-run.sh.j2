@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+podman_cmd() {
+    if [ "$(id -un)" = "{{ vm_admin_user_name }}" ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name }} /usr/bin/podman "$@"
+    fi
+}
+
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+dump_dir={{ nextcloud_backup_root | quote }}
+dump_path="$dump_dir/postgres-$timestamp.sql"
+
+/usr/local/sbin/nextcloud-occ maintenance:mode --on >/dev/null
+trap '/usr/local/sbin/nextcloud-occ maintenance:mode --off >/dev/null || true' EXIT
+
+podman_cmd exec {{ nextcloud_postgres_container_name | quote }} \
+    sh -eu -c 'PGPASSWORD=$(cat /run/secrets/postgres-password) pg_dump -U "$(cat /run/secrets/postgres-user)" "$(cat /run/secrets/postgres-db)"' > "$dump_path"
+
+podman_cmd run --rm \
+    --name {{ nextcloud_backup_container_name | quote }}-run \
+    --env-file {{ (nextcloud_env_root ~ '/restic.env') | quote }} \
+    -v {{ nextcloud_stack_root | quote }}:/srv/nextcloud:ro \
+    -v {{ nextcloud_backup_root | quote }}:/srv/nextcloud-backup \
+    --secret restic-password,target=restic-password,uid=65532,gid=65532,mode=0400 \
+    {{ nextcloud_backup_image | quote }} \
+    -c 'restic snapshots >/dev/null 2>&1 || restic init; restic backup /srv/nextcloud'
+
+rm -f "$dump_path"
+date -u +%s > {{ (nextcloud_backup_root ~ '/last-success.epoch') | quote }}

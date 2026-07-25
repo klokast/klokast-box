@@ -1,0 +1,67 @@
+---
+- name: Ensure the root password is locked
+  ansible.builtin.user:
+    name: root
+    password_lock: true
+
+- name: Ensure the primary account exists with a local password
+  ansible.builtin.user:
+    name: "{{ ops_primary_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups: sudo
+    append: true
+    password: "{{ neo_password | password_hash('sha512') }}"
+    update_password: on_create
+    password_lock: "{{ ops_primary_user_password_lock }}"
+  when: neo_password | default("") | length > 0
+
+- name: Ensure the primary account exists without a local password
+  ansible.builtin.user:
+    name: "{{ ops_primary_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups: sudo
+    append: true
+    password_lock: "{{ ops_primary_user_password_lock }}"
+  when: neo_password | default("") | length == 0
+
+- name: Ensure the agent account exists
+  ansible.builtin.user:
+    name: "{{ ops_agent_user }}"
+    shell: /bin/bash
+    create_home: true
+    password_lock: true
+
+- name: Ensure the user source directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "/home/{{ ops_primary_user }}/src"
+      owner: "{{ ops_primary_user }}"
+      group: "{{ ops_primary_user }}"
+      mode: "0755"
+    - path: "/home/{{ ops_agent_user }}/src"
+      owner: "{{ ops_agent_user }}"
+      group: "{{ ops_agent_user }}"
+      mode: "0755"
+    - path: "/home/{{ ops_agent_user }}/.local/bin"
+      owner: "{{ ops_agent_user }}"
+      group: "{{ ops_agent_user }}"
+      mode: "0755"
+    - path: "/home/{{ ops_agent_user }}/.config"
+      owner: "{{ ops_agent_user }}"
+      group: "{{ ops_agent_user }}"
+      mode: "0700"
+    - path: "/home/{{ ops_agent_user }}/.config/systemd"
+      owner: "{{ ops_agent_user }}"
+      group: "{{ ops_agent_user }}"
+      mode: "0700"
+    - path: "/home/{{ ops_agent_user }}/.config/systemd/user"
+      owner: "{{ ops_agent_user }}"
+      group: "{{ ops_agent_user }}"
+      mode: "0700"

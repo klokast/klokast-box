@@ -1,0 +1,30 @@
+---
+- name: Configure the backend VM over the dom0 bootstrap SSH path
+  hosts: backend
+  gather_facts: false
+  vars:
+    ansible_host: "{{ backend_bootstrap_host }}"
+    ansible_ssh_private_key_file: "{{ backend_bootstrap_private_key_file }}"
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ backend_bootstrap_known_hosts_file }}
+      -J {{ backend_bootstrap_proxyjump }}
+  pre_tasks:
+    - name: Ensure Python 3 is present on the backend VM
+      ansible.builtin.raw: "test -x /usr/bin/python3 || apk add --no-cache python3"
+      register: backend_python_bootstrap
+      changed_when: backend_python_bootstrap.stdout | default('') | length > 0
+
+    - name: Gather backend bootstrap facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Converge the backend VM base system
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Show the next backend step
+      ansible.builtin.debug:
+        msg:
+          - "The backend VM now has a stable neo/doas/python3 bootstrap path through {{ node_name }}-dom0."
+          - "Run the backend Tailscale enrollment playbook next to switch the guest onto its steady-state Tailscale identity."

@@ -1,0 +1,49 @@
+#!/sbin/openrc-run
+description="Klokast rootless Podman boot preparation"
+
+depend() {
+    need localmount
+    before net
+}
+
+start() {
+    ebegin "Preparing rootless Podman boot state for {{ podman_host_runner_user }}"
+
+    /sbin/modprobe tun >/dev/null 2>&1 || true
+    if [ ! -e /dev/net/tun ]; then
+        mkdir -p /dev/net || {
+            eend 1 "failed to create /dev/net"
+            return 1
+        }
+        mknod /dev/net/tun c 10 200 >/dev/null 2>&1 || true
+    fi
+    if [ -e /dev/net/tun ]; then
+        chgrp netdev /dev/net/tun || {
+            eend 1 "failed to set /dev/net/tun group"
+            return 1
+        }
+        chmod 0666 /dev/net/tun || {
+            eend 1 "failed to set /dev/net/tun mode"
+            return 1
+        }
+    else
+        eend 1 "missing /dev/net/tun"
+        return 1
+    fi
+
+    uid="$(id -u {{ podman_host_runner_user | quote }} 2>/dev/null)" || {
+        eend 1 "missing Podman runner user"
+        return 1
+    }
+    runroot="/tmp/storage-run-${uid}"
+
+    if command -v pgrep >/dev/null 2>&1; then
+        if pgrep -u "$uid" -f 'podman|conmon|crun|netavark|pasta' >/dev/null 2>&1; then
+            eend 0 "Podman runtime is active; leaving runroot untouched"
+            return 0
+        fi
+    fi
+
+    rm -rf -- "${runroot}/containers" "${runroot}/libpod/tmp"
+    eend $?
+}

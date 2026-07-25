@@ -1,0 +1,22 @@
+---
+router_alpine_lv_path: "{{ node_xen_guest_specs.router.required_lvs | first }}"
+router_alpine_lv_size: 2G
+router_alpine_boot_size: 256M
+router_alpine_reserved_size: 1M
+router_alpine_rebuild: false
+router_alpine_mount_path: "/tmp/{{ node_xen_guest_specs.router.guest_name }}-root"
+router_alpine_hostname: "{{ hostvars[node_name ~ '-router'].node_hostname }}"
+router_alpine_repositories: "{{ hostvars[node_name ~ '-router'].alpine_repositories }}"
+router_alpine_local_repository: "{{ dom0_xen_images_path }}/alpine-virt-apks"
+router_alpine_install_repositories:
+  - "{{ router_alpine_local_repository }}"
+router_alpine_modloop_path: "{{ dom0_xen_images_path }}/modloop-virt"
+router_alpine_modloop_mount_path: "/tmp/{{ node_xen_guest_specs.router.guest_name }}-modloop"
+router_alpine_bootstrap_key_file: "{{ hostvars[node_name ~ '-router'].vm_admin_authorized_key_file }}"
+router_alpine_bootstrap_host: "{{ hostvars[node_name ~ '-router'].router_bootstrap_host }}"
+router_alpine_bootstrap_prefix: "{{ hostvars[node_name ~ '-router'].router_backend_ipv4_prefix }}"
+router_alpine_packages:
+  - alpine-base
+  - openssh
+  - doas
+  - dhcpcd

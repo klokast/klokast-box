@@ -1,0 +1,9 @@
+Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+    IdentityFile {{ static_site_git_ssh_key_path }}
+    IdentitiesOnly yes
+    HostKeyAlias github.com
+    StrictHostKeyChecking yes
+    UserKnownHostsFile {{ static_site_git_ssh_known_hosts_path }}

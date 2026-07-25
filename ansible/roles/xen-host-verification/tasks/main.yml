@@ -1,0 +1,87 @@
+#
+# Summary:
+# - Verifies the Xen-ready dom0 state, including storage mountpoints, EFI boot artifacts, and Xen GRUB entries.
+#
+---
+- name: Collect dom0 data mount state
+  ansible.builtin.shell: >-
+    awk '$2 == "{{ dom0_data_mount_path }}" {print $1, $2, $3}' /proc/mounts
+  register: verify_xen_dom0_data_mount
+  changed_when: false
+
+- name: Check required Xen boot artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ xen_required_paths }}"
+  register: verify_xen_required_paths
+
+- name: Collect Xen boot repository artifacts
+  ansible.builtin.shell: >-
+    printf 'boot_repo_marker=%s\n' "$(find {{ apk_boot_repository_root | quote }} -maxdepth 1 -name .boot_repository | wc -l)";
+    printf 'apkindex=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name 'APKINDEX.tar.gz' | wc -l)";
+    printf 'repo_apk=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name '*.apk' | wc -l)";
+    printf 'alpine_base=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name 'alpine-base-*.apk' | wc -l)"
+  register: verify_xen_apk_cache_artifacts
+  changed_when: false
+
+- name: Collect Xen GRUB configuration
+  ansible.builtin.command: "cat {{ efi_grub_directory }}/grub.cfg"
+  register: verify_xen_grub_cfg
+  changed_when: false
+
+- name: Collect managed EFI GRUB loader configurations
+  ansible.builtin.command: "cat {{ item }}"
+  loop: "{{ efi_grub_loader_config_paths }}"
+  register: verify_xen_efi_grub_loader_cfg
+  changed_when: false
+  failed_when: false
+
+- name: Assert dom0 Xen storage and artifact readiness
+  ansible.builtin.assert:
+    that:
+      - "verify_xen_dom0_data_mount.stdout is search(dom0_data_mount_path)"
+      - "verify_xen_dom0_data_mount.stdout is search('ext4')"
+      - "verify_xen_apk_cache_artifacts.stdout is search('boot_repo_marker=[1-9]')"
+      - "verify_xen_apk_cache_artifacts.stdout is search('apkindex=[1-9]')"
+      - "verify_xen_apk_cache_artifacts.stdout is search('repo_apk=[1-9]')"
+      - "verify_xen_apk_cache_artifacts.stdout is search('alpine_base=[1-9]')"
+      - (verify_xen_required_paths.results | map(attribute='stat.exists') | list | min)
+    fail_msg: >-
+      Xen host verification failed. Review dom0 data storage, the `apks/`
+      boot repository, xen.gz on the EFI media, and the rendered GRUB
+      Xen+rescue entries before approving a Xen reboot.
+
+- name: Assert Xen GRUB entries contain the required patterns
+  ansible.builtin.assert:
+    that:
+      - item in verify_xen_grub_cfg.stdout
+    fail_msg: >-
+      Xen host verification failed. Missing GRUB pattern {{ item }} in
+      {{ efi_grub_directory }}/grub.cfg.
+  loop: "{{ xen_grub_required_patterns }}"
+
+- name: Assert managed EFI GRUB loader configurations hand off to the canonical menu
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - >-
+        item.stdout_lines == [
+        'search --no-floppy --label ' ~ efi_partition_label ~ ' --set=root',
+        'set prefix=($root)/boot/grub',
+        'configfile ($root)/boot/grub/grub.cfg'
+        ]
+    fail_msg: >-
+      Managed EFI GRUB loader {{ item.item }} is missing or does not hand off to
+      {{ efi_grub_directory }}/grub.cfg through the {{ efi_partition_label }}
+      filesystem label.
+  loop: "{{ verify_xen_efi_grub_loader_cfg.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Show verified Xen host state
+  ansible.builtin.debug:
+    msg:
+      - "{{ verify_xen_dom0_data_mount.stdout }}"
+      - "{{ verify_xen_apk_cache_artifacts.stdout_lines }}"
+      - "{{ verify_xen_grub_cfg.stdout_lines }}"
+      - "{{ verify_xen_efi_grub_loader_cfg.results | map(attribute='stdout_lines') | list }}"

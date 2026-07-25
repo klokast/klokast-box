@@ -1,0 +1,67 @@
+---
+- name: Collect endpoint Snapclient service state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ music_endpoint_snapclient_service_name }}"
+  become: true
+  register: music_endpoint_verify_snapclient
+  changed_when: false
+
+- name: Assert endpoint Snapclient is running
+  ansible.builtin.assert:
+    that:
+      - music_endpoint_verify_snapclient.stdout == 'active'
+    fail_msg: >-
+      Klokast Snapclient must be active on the Raspberry Pi endpoint.
+
+- name: Collect endpoint Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: music_endpoint_verify_tailscale_json
+  changed_when: false
+
+- name: Parse endpoint Tailscale status
+  ansible.builtin.set_fact:
+    music_endpoint_verify_tailscale: "{{ music_endpoint_verify_tailscale_json.stdout | from_json }}"
+
+- name: Assert endpoint Tailscale identity is correct
+  ansible.builtin.assert:
+    that:
+      - music_endpoint_verify_tailscale.BackendState | default('') == 'Running'
+      - music_endpoint_verify_tailscale.Self.HostName | default('') == music_endpoint_hostname
+    fail_msg: >-
+      Raspberry Pi endpoint must be enrolled in Tailscale with its managed
+      hostname.
+
+- name: Collect endpoint nftables ruleset
+  ansible.builtin.command: /usr/sbin/nft list ruleset
+  become: true
+  register: music_endpoint_verify_nftables
+  changed_when: false
+
+- name: Assert endpoint firewall baseline is active
+  ansible.builtin.assert:
+    that:
+      - '"table inet klokast_audio_endpoint_filter" in music_endpoint_verify_nftables.stdout'
+      - '"policy drop" in music_endpoint_verify_nftables.stdout'
+      - '"tailscale-management-ssh" in music_endpoint_verify_nftables.stdout'
+    fail_msg: >-
+      Raspberry Pi endpoint nftables policy is not active.
+
+- name: List ALSA playback devices
+  ansible.builtin.command:
+    argv:
+      - aplay
+      - -L
+  register: music_endpoint_verify_aplay
+  changed_when: false
+
+- name: Assert ALSA exposes the configured playback device
+  ansible.builtin.assert:
+    that:
+      - >-
+        music_endpoint_soundcard == 'default'
+        or (music_endpoint_soundcard in music_endpoint_verify_aplay.stdout)
+    fail_msg: >-
+      The configured ALSA soundcard was not found by aplay -L.

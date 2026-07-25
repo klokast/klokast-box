@@ -1,0 +1,95 @@
+# ------------------------------
+# OS / macOS
+# ------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# ------------------------------
+# Editors / IDEs
+# ------------------------------
+.vscode/
+.idea/
+.obsidian
+.obsidian/
+*.swp
+*.swo
+*~
+
+# ------------------------------
+# Logs
+# ------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ------------------------------
+# Environment / secrets
+# ------------------------------
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+credentials.*
+
+# ------------------------------
+# Python
+# ------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ------------------------------
+# Jupyter
+# ------------------------------
+.ipynb_checkpoints/
+
+# ------------------------------
+# Node / JavaScript / TypeScript
+# ------------------------------
+node_modules/
+.npm/
+.pnpm-store/
+.next/
+.nuxt/
+.svelte-kit/
+coverage/
+dist/
+
+# ------------------------------
+# Generated / temporary files
+# ------------------------------
+tmp/
+temp/
+.cache/
+.run/
+ansible/artifacts/
+ansible/.run/
+screenshots/
+
+# ------------------------------
+# Local tooling / misc
+# ------------------------------
+.direnv/
+.codex/

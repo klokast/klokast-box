@@ -1,0 +1,9 @@
+---
+# The disposable bootstrap identity keeps its own MagicDNS name so the later
+# steady-state dom0 handoff can claim `{{ node_hostname }}` without a suffix.
+ansible_host: "{{ bootstrap_tailscale_hostname }}.{{ platform_magicdns_suffix }}"
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile={{ bootstrap_known_hosts_file }}
+target_disk_device: /dev/nvme0n1
+ansible_python_interpreter: /usr/bin/python3

@@ -1,0 +1,506 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TAILNET_SUFFIX="${KLOKAST_TAILNET_SUFFIX:-example.ts.net}"
+DEFAULT_MUSIC_REMOTE_DIR="/music/library"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+usage() {
+  cat <<EOF
+Usage:
+  kk doctor [--install] [--fix-ssh-config]
+  kk app list [--controller HOST] [--no-pull]
+  kk app status <app> [--controller HOST] [--no-pull]
+  kk app start|stop|restart|apply|verify|remove <app> [--controller HOST] [--no-pull]
+  kk app destroy <app> --wipe-data --yes [--controller HOST] [--no-pull]
+  kk poweroff <box>-streamer
+  kk music upload --from DIR --to BOX
+  kk torrent open --to BOX
+  kk torrent status --to BOX
+
+Uploads local music files to <box>-music-upload, then asks MPD to rescan the
+library. Powers off the local Raspberry Pi streamer for a box.
+EOF
+}
+
+quote_args() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+resolve_controller() {
+  local controller="$1"
+  if [ "$controller" = "auto" ]; then
+    "$REPO_ROOT/ansible/bin/ops-controller-ha" resolve-active
+  else
+    printf '%s\n' "$controller"
+  fi
+}
+
+die() {
+  printf 'kk: %s\n' "$*" >&2
+  exit 2
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found"
+}
+
+app_dispatch() {
+  local controller="${KLOKAST_CONTROLLER:-auto}"
+  local pull_mode=pull
+  local remote_repo_dir="${KLOKAST_CONTROLLER_REPO_DIR:-~/src/klokast/klokast-box}"
+  local args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --controller)
+        [ "$#" -ge 2 ] || die "--controller needs a host"
+        controller="$2"
+        shift 2
+        ;;
+      --no-pull)
+        pull_mode=no-pull
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  [ "${#args[@]}" -gt 0 ] || die "app command is required"
+
+  need_command tailscale
+  controller="$(resolve_controller "$controller")"
+  case "$controller" in
+    *[!A-Za-z0-9_.-]*|"") die "controller contains unsafe characters" ;;
+  esac
+
+  printf 'kk app: dispatching to smith@%s\n' "$controller"
+  printf 'kk app: controller command: cd %s && ' "$remote_repo_dir"
+  if [ "$pull_mode" = "pull" ]; then
+    printf 'git pull --ff-only && '
+  fi
+  printf 'ansible/bin/platform-app '
+  quote_args "${args[@]}"
+
+  tailscale ssh "smith@${controller}" sh -s -- "$remote_repo_dir" "$pull_mode" "${args[@]}" <<'REMOTE_SCRIPT'
+set -eu
+
+repo_dir="$1"
+pull_mode="$2"
+shift 2
+
+case "$repo_dir" in
+  "~")
+    repo_dir="$HOME"
+    ;;
+  "~/"*)
+    repo_dir="$HOME/${repo_dir#~/}"
+    ;;
+esac
+
+cd "$repo_dir"
+if [ "$pull_mode" = "pull" ]; then
+  git pull --ff-only
+fi
+
+exec ansible/bin/platform-app "$@"
+REMOTE_SCRIPT
+}
+
+homebrew_ssh_keygen() {
+  local candidate=""
+  for candidate in /opt/homebrew/bin/ssh-keygen /usr/local/bin/ssh-keygen; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ssh_config_needs_usekeychain_ignore() {
+  local ssh_config="$1"
+
+  [ -f "$ssh_config" ] || return 1
+  grep -Eiq '^[[:space:]]*UseKeychain[[:space:]]+' "$ssh_config" || return 1
+  if grep -Eiq '^[[:space:]]*IgnoreUnknown[[:space:]].*UseKeychain' "$ssh_config"; then
+    return 1
+  fi
+  return 0
+}
+
+fix_ssh_config_usekeychain_ignore() {
+  local ssh_config="$1"
+  local backup=""
+  local tmp=""
+
+  [ -f "$ssh_config" ] || return 0
+  ssh_config_needs_usekeychain_ignore "$ssh_config" || return 0
+
+  backup="${ssh_config}.klokast-backup-$(date +%Y%m%d%H%M%S)"
+  tmp="${ssh_config}.klokast-tmp.$$"
+  cp -p "$ssh_config" "$backup"
+  {
+    printf 'IgnoreUnknown UseKeychain\n'
+    cat "$backup"
+  } > "$tmp"
+  chmod 0600 "$tmp"
+  mv "$tmp" "$ssh_config"
+  printf 'fixed: added IgnoreUnknown UseKeychain to %s\n' "$ssh_config"
+  printf 'backup: %s\n' "$backup"
+}
+
+expand_path() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+valid_box() {
+  [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  [[ ! "$1" =~ -(bak|dmz|iot|router|dom0|ops|agent)$ ]]
+}
+
+doctor() {
+  local install_missing=false
+  local fix_ssh_config=false
+  local missing=false
+  local found=""
+  local ssh_config="${HOME}/.ssh/config"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --install)
+        install_missing=true
+        shift
+        ;;
+      --fix-ssh-config)
+        fix_ssh_config=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown doctor argument: $1"
+        ;;
+    esac
+  done
+
+  printf 'Checking MacBook/client prerequisites...\n'
+
+  if command -v tailscale >/dev/null 2>&1; then
+    printf 'ok: tailscale CLI found\n'
+  else
+    printf 'missing: tailscale CLI. Install Tailscale using the official macOS .pkg, not Homebrew or App Store.\n' >&2
+    missing=true
+  fi
+
+  if command -v ssh >/dev/null 2>&1; then
+    printf 'ok: ssh found\n'
+  else
+    printf 'missing: ssh\n' >&2
+    missing=true
+  fi
+
+  if command -v rsync >/dev/null 2>&1; then
+    printf 'ok: rsync found\n'
+  else
+    printf 'missing: rsync\n' >&2
+    missing=true
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    printf 'ok: python3 found\n'
+  elif [ "$(uname -s)" = "Darwin" ] && [ "$install_missing" = true ]; then
+    need_command brew
+    printf 'Installing Python for JSON-handling operator wrappers...\n'
+    brew install python
+    command -v python3 >/dev/null 2>&1 || die "brew install python completed, but python3 was not found"
+    printf 'ok: python3 found\n'
+  else
+    printf 'missing: python3\n' >&2
+    missing=true
+  fi
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if found="$(homebrew_ssh_keygen)"; then
+      printf 'ok: Homebrew OpenSSH ssh-keygen found at %s\n' "$found"
+    elif [ "$install_missing" = true ]; then
+      need_command brew
+      printf 'Installing Homebrew OpenSSH for YubiKey/FIDO-backed approval keys...\n'
+      brew install openssh
+      found="$(homebrew_ssh_keygen)" || die "brew install openssh completed, but Homebrew ssh-keygen was not found"
+      printf 'ok: Homebrew OpenSSH ssh-keygen found at %s\n' "$found"
+    else
+      printf 'missing: Homebrew OpenSSH. Run `kk doctor --install` or `brew install openssh` for YubiKey/FIDO-backed approval keys.\n' >&2
+      missing=true
+    fi
+  elif command -v ssh-keygen >/dev/null 2>&1; then
+    printf 'ok: ssh-keygen found\n'
+  else
+    printf 'missing: ssh-keygen\n' >&2
+    missing=true
+  fi
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if ssh_config_needs_usekeychain_ignore "$ssh_config"; then
+      if [ "$install_missing" = true ] || [ "$fix_ssh_config" = true ]; then
+        fix_ssh_config_usekeychain_ignore "$ssh_config"
+      else
+        printf 'missing: %s contains Apple-only UseKeychain without IgnoreUnknown; Homebrew OpenSSH and Git may fail. Run `kk doctor --fix-ssh-config`.\n' "$ssh_config" >&2
+        missing=true
+      fi
+    elif [ -f "$ssh_config" ]; then
+      printf 'ok: ssh config is compatible with Homebrew OpenSSH UseKeychain handling\n'
+    fi
+  fi
+
+  if [ "$missing" = true ]; then
+    exit 2
+  fi
+  printf 'kk doctor ok\n'
+}
+
+poweroff_streamer() {
+  local target="${1:-}"
+  local extra="${2:-}"
+  local box=""
+  local ssh_host=""
+  local ssh_rc=0
+  local ping_rc=0
+  local ssh_opts=(
+    -o BatchMode=yes
+    -o ConnectTimeout=10
+    -o StrictHostKeyChecking=accept-new
+  )
+
+  case "$target" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    "")
+      usage
+      exit 2
+      ;;
+  esac
+  [ -z "$extra" ] || die "poweroff accepts exactly one target"
+  case "$target" in
+    *-streamer) box="${target%-streamer}" ;;
+    *) die "poweroff target must be a streamer name like k002-streamer" ;;
+  esac
+  valid_box "$box" || die "poweroff target must start with a box name like k002"
+
+  need_command tailscale
+  need_command ssh
+
+  ssh_host="${target}.${TAILNET_SUFFIX}"
+  printf 'Powering off %s...\n' "$target"
+  set +e
+  ssh "${ssh_opts[@]}" "streamer-power@${ssh_host}" 'sudo -n /sbin/poweroff'
+  ssh_rc=$?
+  set -e
+  case "$ssh_rc" in
+    0|255) ;;
+    *) die "poweroff command failed for ${target} (ssh rc ${ssh_rc})" ;;
+  esac
+
+  sleep 20
+  set +e
+  tailscale ping --c 1 --timeout=5s "$ssh_host" >/dev/null 2>&1
+  ping_rc=$?
+  set -e
+  if [ "$ping_rc" -eq 0 ]; then
+    die "${target} still answers on Tailscale after poweroff"
+  fi
+  printf '%s is powered off.\n' "$target"
+}
+
+music_upload_candidates() {
+  local expected="$1"
+
+  tailscale status 2>/dev/null | awk -v expected="$expected" '
+    ($2 == expected || $2 ~ ("^" expected "-[0-9]+$")) && $0 !~ / offline/ {
+      print $2 "\t" $1
+    }
+  '
+  printf '%s\t%s\n' "$expected" "$expected"
+}
+
+resolve_music_upload_target() {
+  local expected="$1"
+  local label=""
+  local target=""
+  local seen=" "
+  local last_error=""
+  local ssh_opts=(
+    -o BatchMode=yes
+    -o ConnectTimeout=10
+    -o StrictHostKeyChecking=accept-new
+  )
+
+  while IFS=$'\t' read -r label target; do
+    [ -n "$target" ] || continue
+    case "$seen" in
+      *" $target "*) continue ;;
+    esac
+    seen="${seen}${target} "
+
+    if last_error="$(ssh "${ssh_opts[@]}" "music@${target}" true 2>&1 >/dev/null)"; then
+      printf '%s\n' "$target"
+      return 0
+    fi
+  done < <(music_upload_candidates "$expected")
+
+  printf 'kk: cannot reach music upload ingress for %s\n' "$expected" >&2
+  [ -z "$last_error" ] || printf 'kk: last ssh error: %s\n' "$last_error" >&2
+  exit 2
+}
+
+music_upload() {
+  local from=""
+  local box=""
+  local remote_dir="$DEFAULT_MUSIC_REMOTE_DIR"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --from)
+        [ "$#" -ge 2 ] || die "--from needs a directory"
+        from="$2"
+        shift 2
+        ;;
+      --to)
+        [ "$#" -ge 2 ] || die "--to needs a box name"
+        box="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown music upload argument: $1"
+        ;;
+    esac
+  done
+
+  [ -n "$from" ] || die "--from is required"
+  [ -n "$box" ] || die "--to is required"
+  valid_box "$box" || die "--to must be a box name like k002, not a VM hostname"
+
+  need_command tailscale
+  need_command ssh
+  need_command rsync
+
+  from="$(expand_path "$from")"
+  [ -d "$from" ] || die "source directory does not exist: $from"
+  from="$(cd "$from" && pwd -P)"
+
+  local upload_host="${box}-music-upload"
+  local upload_target=""
+  local rsync_progress=()
+  local music_url="https://${box}-music.${TAILNET_SUFFIX}"
+
+  printf 'Checking upload path %s...\n' "$upload_host"
+  upload_target="$(resolve_music_upload_target "$upload_host")"
+  if rsync --info=progress2 --version >/dev/null 2>&1; then
+    rsync_progress=(--human-readable --info=progress2)
+  else
+    rsync_progress=(--progress)
+  fi
+
+  printf 'Uploading %s to %s:%s...\n' "$from" "$upload_host" "$remote_dir"
+  rsync -a "${rsync_progress[@]}" -e "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new" \
+    "${from}/" "music@${upload_target}:${remote_dir}/"
+  printf 'Indexing music library...\n'
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "music@${upload_target}" \
+    'printf "update\nclose\n" | nc 127.0.0.1 6600 >/dev/null'
+
+  printf 'Upload complete. Music UI: %s\n' "$music_url"
+}
+
+torrent_url() {
+  local box=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --to|--box)
+        [ "$#" -ge 2 ] || die "$1 needs a box name"
+        box="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown torrent argument: $1"
+        ;;
+    esac
+  done
+
+  [ -n "$box" ] || die "--to is required"
+  valid_box "$box" || die "--to must be a box name like k002, not a VM hostname"
+  printf 'https://%s-torrent.%s\n' "$box" "$TAILNET_SUFFIX"
+}
+
+torrent_open() {
+  local url=""
+  url="$(torrent_url "$@")"
+  printf '%s\n' "$url"
+  if command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1 || true
+  fi
+}
+
+main() {
+  local domain="${1:-}"
+  local action="${2:-}"
+  if [ "$domain" = "doctor" ]; then
+    shift
+    doctor "$@"
+    return
+  fi
+  if [ "$domain" = "poweroff" ]; then
+    shift
+    poweroff_streamer "$@"
+    return
+  fi
+  if [ "$domain" = "app" ]; then
+    shift
+    app_dispatch "$@"
+    return
+  fi
+  [ -n "$domain" ] && [ -n "$action" ] || {
+    usage
+    exit 2
+  }
+  shift 2
+
+  case "${domain}:${action}" in
+    music:upload) music_upload "$@" ;;
+    torrent:open) torrent_open "$@" ;;
+    torrent:status) torrent_url "$@" ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

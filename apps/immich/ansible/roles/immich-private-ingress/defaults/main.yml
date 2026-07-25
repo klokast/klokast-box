@@ -1,0 +1,21 @@
+---
+immich_private_ingress_service_name: immich-private-ingress
+immich_private_ingress_root: /etc/klokast/immich-private-ingress
+immich_private_ingress_secret_root: "{{ immich_private_ingress_root }}/secrets"
+immich_private_ingress_source_map: /etc/klokast/immich/image-sources.json
+immich_private_ingress_proxy_config: "{{ immich_private_ingress_root }}/nginx.conf"
+immich_private_ingress_pod_name: immich-private-ingress
+immich_private_ingress_proxy_container_name: immich-private-ingress-proxy
+immich_private_ingress_tailscale_container_name: immich-private-ingress-tailscale
+immich_private_ingress_tailscale_state_volume: klokast-immich-ingress-ts-state
+immich_private_ingress_legacy_state_root: /var/lib/klokast/immich-private-ingress
+
+immich_private_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-immich
+immich_private_tailscale_hostname: photos
+immich_private_tailscale_tag: tag:immich
+immich_private_tailscale_accept_dns: false
+immich_magicdns_suffix: example.ts.net
+immich_private_domain: "{{ immich_private_tailscale_hostname }}.{{ immich_magicdns_suffix }}"
+immich_private_backend_upstream: "http://{{ platform_zones.bak.vm_ipv4_address }}:2283"
+immich_private_ingress_proxy_port: 18083
+immich_private_ingress_local_upstream: "http://127.0.0.1:{{ immich_private_ingress_proxy_port }}"

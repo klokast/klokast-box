@@ -1,0 +1,9 @@
+---
+- name: Install the music backend stack
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install music backend services
+      ansible.builtin.import_role:
+        name: music-backend
+      when: node_domain_role == platform_zones.bak.role

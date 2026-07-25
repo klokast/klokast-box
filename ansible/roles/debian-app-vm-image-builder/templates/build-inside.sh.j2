@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+input_dir="${DEBIAN_APP_VM_IMAGE_BUILDER_INPUT_DIR:-/input}"
+output_dir="${DEBIAN_APP_VM_IMAGE_BUILDER_OUTPUT_DIR:-/output}"
+workspace="${DEBIAN_APP_VM_IMAGE_BUILDER_WORKSPACE:-/workspace}"
+spec_path="${input_dir}/spec.json"
+authorized_keys_path="${input_dir}/authorized_keys"
+rootfs="${workspace}/rootfs"
+image_path="${workspace}/root.img"
+
+if [ ! -r "$spec_path" ]; then
+    echo "missing spec: $spec_path" >&2
+    exit 1
+fi
+if [ ! -r "$authorized_keys_path" ]; then
+    echo "missing authorized_keys: $authorized_keys_path" >&2
+    exit 1
+fi
+
+mkdir -p "$output_dir" "$workspace"
+export DEBIAN_APP_VM_IMAGE_BUILDER_INPUT_DIR="$input_dir"
+export DEBIAN_APP_VM_IMAGE_BUILDER_OUTPUT_DIR="$output_dir"
+export DEBIAN_APP_VM_IMAGE_BUILDER_WORKSPACE="$workspace"
+
+python3 - <<'PY'
+import json
+import os
+import pathlib
+import shlex
+
+input_dir = pathlib.Path(os.environ["DEBIAN_APP_VM_IMAGE_BUILDER_INPUT_DIR"])
+workspace = pathlib.Path(os.environ["DEBIAN_APP_VM_IMAGE_BUILDER_WORKSPACE"])
+spec = json.loads((input_dir / "spec.json").read_text(encoding="utf-8"))
+required = [
+    "guest_name",
+    "hostname",
+    "release",
+    "mirror",
+    "security_mirror",
+    "architecture",
+    "variant",
+    "image_size",
+    "packages",
+    "network_interfaces",
+    "bootstrap_interface",
+    "bootstrap_host",
+    "bootstrap_ssh_sources",
+    "build_profile_version",
+    "build_id",
+]
+missing = [key for key in required if key not in spec]
+if missing:
+    raise SystemExit(f"missing spec keys: {', '.join(missing)}")
+if not isinstance(spec["packages"], list) or not spec["packages"]:
+    raise SystemExit("packages must be a non-empty list")
+if not isinstance(spec["bootstrap_ssh_sources"], list) or not spec["bootstrap_ssh_sources"]:
+    raise SystemExit("bootstrap_ssh_sources must be a non-empty list")
+
+env = {
+    "guest_name": spec["guest_name"],
+    "hostname": spec["hostname"],
+    "release": spec["release"],
+    "mirror": spec["mirror"],
+    "security_mirror": spec["security_mirror"],
+    "architecture": spec["architecture"],
+    "variant": spec["variant"],
+    "image_size": spec["image_size"],
+    "packages_csv": ",".join(spec["packages"]),
+    "bootstrap_interface": spec["bootstrap_interface"],
+    "bootstrap_host": spec["bootstrap_host"],
+    "bootstrap_sources_nft": ", ".join(spec["bootstrap_ssh_sources"]),
+    "build_id": spec["build_id"],
+}
+workspace.joinpath("network_interfaces").write_text(
+    spec["network_interfaces"], encoding="utf-8"
+)
+with workspace.joinpath("spec.env").open("w", encoding="utf-8") as handle:
+    for key, value in env.items():
+        handle.write(f"{key}={shlex.quote(str(value))}\n")
+PY
+
+# shellcheck disable=SC1091
+. "${workspace}/spec.env"
+
+rootfs_matches_build_id() {
+    marker_path="${rootfs}/etc/klokast-debian-app-vm-rootfs.json"
+    [ -r "$marker_path" ] || return 1
+    python3 - "$build_id" "$marker_path" <<'PY'
+import json
+import pathlib
+import sys
+
+expected = sys.argv[1]
+marker_path = pathlib.Path(sys.argv[2])
+try:
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if marker.get("build_id") == expected else 1)
+PY
+}
+
+unmount_rootfs_mounts() {
+    awk -v root="$rootfs" '$2 == root || index($2, root "/") == 1 { print $2 }' /proc/mounts |
+        sort -r |
+        while IFS= read -r mount_path; do
+            [ -n "$mount_path" ] || continue
+            umount "$mount_path" || umount -l "$mount_path"
+        done
+}
+
+if [ -r "${output_dir}/manifest.json" ] &&
+   python3 - "$build_id" "${output_dir}/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+expected = sys.argv[1]
+manifest_path = pathlib.Path(sys.argv[2])
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+artifacts = manifest.get("artifacts") or {}
+required = ["root_img_gz", "kernel", "initramfs"]
+if manifest.get("build_id") != expected:
+    sys.exit(1)
+for name in required:
+    filename = artifacts.get(name, {}).get("filename")
+    if not filename or not (manifest_path.parent / filename).is_file():
+        sys.exit(1)
+sys.exit(0)
+PY
+then
+    echo "rebuilt=no guest=${guest_name} build_id=${build_id}"
+    exit 0
+fi
+
+if rootfs_matches_build_id; then
+    echo "reuse-rootfs=yes guest=${guest_name} build_id=${build_id}"
+else
+unmount_rootfs_mounts
+rm -rf "$rootfs"
+mkdir -p "$rootfs"
+
+debootstrap \
+    "--variant=${variant}" \
+    "--arch=${architecture}" \
+    "--include=${packages_csv}" \
+    "$release" \
+    "$rootfs" \
+    "$mirror"
+
+printf '%s\n' "$hostname" >"${rootfs}/etc/hostname"
+cat >"${rootfs}/etc/hosts" <<EOF
+127.0.0.1 localhost localhost.localdomain
+::1 localhost localhost.localdomain
+127.0.1.1 ${hostname}
+EOF
+install -m 0644 "${workspace}/network_interfaces" "${rootfs}/etc/network/interfaces"
+cat >"${rootfs}/etc/resolv.conf" <<'EOF'
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+EOF
+cat >"${rootfs}/etc/apt/sources.list" <<EOF
+deb ${mirror} ${release} main
+deb ${mirror} ${release}-updates main
+deb ${security_mirror} ${release}-security main
+EOF
+rm -f "${rootfs}/etc/apt/sources.list.d/debian.sources"
+cat >"${rootfs}/etc/fstab" <<'EOF'
+/dev/xvda / ext4 defaults,errors=remount-ro 0 1
+EOF
+
+rm -f "${rootfs}/etc/machine-id"
+: >"${rootfs}/etc/machine-id"
+rm -f "${rootfs}/var/lib/dbus/machine-id"
+rm -rf "${rootfs}/var/lib/tailscale"
+mkdir -p "${rootfs}/var/lib/tailscale"
+rm -f "${rootfs}"/etc/ssh/ssh_host_*
+
+mkdir -p "${rootfs}/etc/ssh/sshd_config.d"
+cat >"${rootfs}/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf" <<EOF
+ListenAddress ${bootstrap_host}
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin prohibit-password
+EOF
+
+cat >"${rootfs}/etc/systemd/system/klokast-ssh-host-keys.service" <<'EOF'
+[Unit]
+Description=Generate SSH host keys for the Klokast app VM
+Before=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >"${rootfs}/etc/nftables.conf" <<EOF
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet klokast_vm_filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state invalid drop
+        ct state { established, related } accept
+        iifname "lo" accept
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+        iifname "${bootstrap_interface}" ip saddr { ${bootstrap_sources_nft} } ip daddr ${bootstrap_host} tcp dport 22 accept comment "klokast-bootstrap-ssh-input"
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+EOF
+chmod 0644 "${rootfs}/etc/nftables.conf"
+
+install -d -m 0700 "${rootfs}/root/.ssh"
+install -m 0600 "$authorized_keys_path" "${rootfs}/root/.ssh/authorized_keys"
+sed -i -E 's/^root:[^:]*:/root:*:/' "${rootfs}/etc/shadow"
+
+mkdir -p "${rootfs}/etc/systemd/system/multi-user.target.wants"
+ln -sf /etc/systemd/system/klokast-ssh-host-keys.service "${rootfs}/etc/systemd/system/multi-user.target.wants/klokast-ssh-host-keys.service"
+ln -sf /lib/systemd/system/ssh.service "${rootfs}/etc/systemd/system/multi-user.target.wants/ssh.service"
+ln -sf /lib/systemd/system/networking.service "${rootfs}/etc/systemd/system/multi-user.target.wants/networking.service"
+ln -sf /lib/systemd/system/nftables.service "${rootfs}/etc/systemd/system/multi-user.target.wants/nftables.service"
+
+python3 - "$rootfs" "$spec_path" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+spec = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+marker = {
+    "schema_version": 1,
+    "build_id": spec["build_id"],
+    "build_profile_version": spec["build_profile_version"],
+    "guest_name": spec["guest_name"],
+    "hostname": spec["hostname"],
+    "release": spec["release"],
+    "architecture": spec["architecture"],
+}
+(root / "etc/klokast-debian-app-vm-rootfs.json").write_text(
+    json.dumps(marker, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+fi
+
+unmount_rootfs_mounts
+rm -rf "${rootfs}/run"/*
+
+kernel="$(find "${rootfs}/boot" -maxdepth 1 -type f -name 'vmlinuz-*' | sort | tail -n 1)"
+initramfs="$(find "${rootfs}/boot" -maxdepth 1 -type f -name 'initrd.img-*' | sort | tail -n 1)"
+if [ -z "$kernel" ] || [ -z "$initramfs" ]; then
+    echo "missing Debian kernel/initramfs artifacts in ${rootfs}/boot" >&2
+    exit 1
+fi
+
+rm -f "$image_path" "${image_path}.gz"
+truncate -s "$image_size" "$image_path"
+mkfs.ext4 -F -L rootfs -d "$rootfs" "$image_path"
+gzip -1c "$image_path" >"${image_path}.gz"
+
+install -m 0644 "$kernel" "${output_dir}/kernel"
+install -m 0644 "$initramfs" "${output_dir}/initramfs"
+install -m 0644 "${image_path}.gz" "${output_dir}/root.img.gz"
+
+python3 - "$output_dir" "$spec_path" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+output = pathlib.Path(sys.argv[1])
+spec = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+def artifact(name, filename):
+    path = output / filename
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "filename": filename,
+        "sha256": digest.hexdigest(),
+        "bytes": path.stat().st_size,
+    }
+
+manifest = {
+    "schema_version": 1,
+    "guest_name": spec["guest_name"],
+    "hostname": spec["hostname"],
+    "build_id": spec["build_id"],
+    "release": spec["release"],
+    "architecture": spec["architecture"],
+    "image_size": spec["image_size"],
+    "artifacts": {
+        "root_img_gz": artifact("root_img_gz", "root.img.gz"),
+        "kernel": artifact("kernel", "kernel"),
+        "initramfs": artifact("initramfs", "initramfs"),
+    },
+}
+(output / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+
+rm -f "$image_path" "${image_path}.gz"
+echo "rebuilt=yes guest=${guest_name} build_id=${build_id}"

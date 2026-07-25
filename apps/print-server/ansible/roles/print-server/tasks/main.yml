@@ -1,0 +1,139 @@
+---
+- name: Assert the print server targets the selected backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == platform_zones.bak.role
+      - node_name == print_box
+      - print_printer_ipv4_address is match('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - print_printer_mac is match('^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$')
+      - print_queue_name is match('^[A-Za-z0-9_.-]+$')
+      - print_tailscale_hostname is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - print_tailscale_tag is match('^tag:[A-Za-z0-9][A-Za-z0-9_-]*$')
+    fail_msg: >-
+      print-server must target the selected backend VM and use safe printer
+      and Tailscale settings.
+
+- name: Verify Podman is available on the backend VM
+  ansible.builtin.stat:
+    path: /usr/bin/podman
+  register: print_backend_podman
+
+- name: Fail when Podman is missing
+  ansible.builtin.assert:
+    that:
+      - print_backend_podman.stat.exists
+    fail_msg: >-
+      Podman is required on {{ inventory_hostname }} before print-server can be
+      installed. Run the Platform Podman VM phases first.
+
+- name: Ensure print server directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ print_service_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ print_config_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ print_secret_root }}"
+      owner: "{{ vm_admin_user_name }}"
+      group: wheel
+      mode: "0700"
+
+- name: Read print Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    print_tailscale_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            (print_tailscale_authkey_command_prefix | quote)
+            ~ ' ' ~ (print_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (print_tailscale_hostname | quote)
+            ~ ' --tags ' ~ (print_tailscale_tag | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+
+- name: Assert print Tailscale auth key is available
+  ansible.builtin.assert:
+    that:
+      - print_tailscale_authkey.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      Print Tailscale auth-key wrapper did not return a usable auth key.
+  no_log: true
+
+- name: Store print Tailscale auth key
+  ansible.builtin.copy:
+    dest: "{{ print_secret_root }}/tailscale-authkey"
+    content: "{{ print_tailscale_authkey.stdout | trim }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Render CUPS configuration
+  ansible.builtin.template:
+    src: cupsd.conf.j2
+    dest: "{{ print_config_root }}/cupsd.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Render print server service files and helpers
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - src: print-server-deploy.sh.j2
+      dest: /usr/local/sbin/print-server-deploy
+      mode: "0750"
+    - src: klokast-print-server.init.j2
+      dest: "/etc/init.d/{{ print_service_name }}"
+      mode: "0755"
+
+- name: Deploy or refresh print server containers
+  ansible.builtin.command: /usr/local/sbin/print-server-deploy
+  become: true
+  register: print_server_deploy
+  changed_when: true
+
+- name: Keep print server pod service running
+  ansible.builtin.service:
+    name: "{{ print_service_name }}"
+    enabled: true
+    state: started
+  become: true
+
+- name: Verify print server pod is running
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ vm_admin_user_name }}"
+      - podman
+      - pod
+      - inspect
+      - "--format={{ '{{' }}.State{{ '}}' }}"
+      - "{{ print_pod_name }}"
+  become: true
+  register: print_server_pod_state
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: print_server_pod_state.stdout == "Running"

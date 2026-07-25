@@ -1,0 +1,361 @@
+#
+# Summary:
+# - Builds an installed Alpine VIRT router root disk directly from dom0 for a
+#   pure Xen PVH guest. No QEMU/HVM installer path is used.
+#
+---
+- name: Assert the router LV path is supported
+  ansible.builtin.assert:
+    that:
+      - router_alpine_lv_path is match('^/dev/[^/]+/[^/]+$')
+    fail_msg: >-
+      Router LV path {{ router_alpine_lv_path | default('undefined') }} is not
+      a supported /dev/<vg>/<lv> path.
+
+- name: Derive router LV and mapper names
+  ansible.builtin.set_fact:
+    router_alpine_vg_name: "{{ router_alpine_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1') }}"
+    router_alpine_lv_name: "{{ router_alpine_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\2') }}"
+    router_alpine_mapper_name: "{{ router_alpine_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}"
+    router_alpine_boot_mapper_path: "/dev/mapper/{{ router_alpine_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}1"
+    router_alpine_root_mapper_path: "/dev/mapper/{{ router_alpine_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}3"
+
+- name: Check whether the router LV already exists
+  ansible.builtin.stat:
+    path: "{{ router_alpine_lv_path }}"
+  register: router_alpine_lv_stat
+
+- name: Remove the existing router LV when an explicit rebuild is requested
+  community.general.lvol:
+    vg: "{{ router_alpine_vg_name }}"
+    lv: "{{ router_alpine_lv_name }}"
+    state: absent
+    force: true
+  when:
+    - router_alpine_rebuild | bool
+    - router_alpine_lv_stat.stat.exists | default(false)
+
+- name: Ensure router disk build tooling is installed on dom0
+  community.general.apk:
+    name:
+      - e2fsprogs
+      - kpartx
+      - sfdisk
+    state: present
+
+- name: Ensure the router LV exists
+  community.general.lvol:
+    vg: "{{ router_alpine_vg_name }}"
+    lv: "{{ router_alpine_lv_name }}"
+    size: "{{ router_alpine_lv_size }}"
+    state: present
+  register: router_alpine_lv_create
+
+- name: Decide whether the router root disk must be built
+  ansible.builtin.set_fact:
+    router_alpine_needs_build: "{{ (router_alpine_lv_create.changed | default(false)) or (router_alpine_rebuild | bool) }}"
+
+- name: Build the router Alpine disk
+  when: router_alpine_needs_build | bool
+  block:
+    - name: Remove any stale router partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ router_alpine_lv_path }}"
+      register: router_alpine_kpartx_cleanup
+      failed_when: false
+      changed_when: router_alpine_kpartx_cleanup.rc == 0
+
+    - name: Partition the router LV with boot and root partitions
+      ansible.builtin.shell: |
+        set -eu
+        printf '%s\n' \
+          'label: dos' \
+          ',{{ router_alpine_boot_size }},83,*' \
+          ',{{ router_alpine_reserved_size }},83' \
+          ',,83' |
+          /sbin/sfdisk --wipe always --wipe-partitions always {{ router_alpine_lv_path | quote }}
+      args:
+        executable: /bin/sh
+      changed_when: true
+
+    - name: Create router partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ router_alpine_lv_path }}"
+      register: router_alpine_kpartx_add
+      changed_when: true
+
+    - name: Wait for router mapped partitions
+      ansible.builtin.wait_for:
+        path: "{{ item }}"
+        timeout: 15
+      loop:
+        - "{{ router_alpine_boot_mapper_path }}"
+        - "{{ router_alpine_root_mapper_path }}"
+
+    - name: Format the router boot partition
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ router_alpine_boot_mapper_path }}"
+        force: true
+
+    - name: Format the router root partition
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ router_alpine_root_mapper_path }}"
+        force: true
+
+    - name: Ensure the router root mount path exists
+      ansible.builtin.file:
+        path: "{{ router_alpine_mount_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Mount and populate the router root filesystem
+      block:
+        - name: Mount the router root filesystem
+          ansible.builtin.command: "/bin/mount {{ router_alpine_root_mapper_path }} {{ router_alpine_mount_path }}"
+
+        - name: Ensure the router boot mount path exists
+          ansible.builtin.file:
+            path: "{{ router_alpine_mount_path }}/boot"
+            state: directory
+            mode: "0755"
+
+        - name: Mount the router boot filesystem
+          ansible.builtin.command: "/bin/mount {{ router_alpine_boot_mapper_path }} {{ router_alpine_mount_path }}/boot"
+
+        - name: Seed APK key directory in the router root
+          ansible.builtin.file:
+            path: "{{ router_alpine_mount_path }}/etc/apk/keys"
+            state: directory
+            mode: "0755"
+
+        - name: Copy APK signing keys into the router root
+          ansible.builtin.shell: "cp -a /etc/apk/keys/. {{ router_alpine_mount_path | quote }}/etc/apk/keys/"
+          args:
+            executable: /bin/sh
+          changed_when: true
+
+        - name: Configure router APK repositories before package installation
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/apk/repositories"
+            mode: "0644"
+            content: |
+              {% for repo in router_alpine_install_repositories %}
+              {{ repo }}
+              {% endfor %}
+
+        - name: Install Alpine router packages into the target root
+          ansible.builtin.command: >-
+            timeout 600
+            /sbin/apk
+            --root {{ router_alpine_mount_path }}
+            --initdb
+            --repositories-file {{ router_alpine_mount_path }}/etc/apk/repositories
+            --keys-dir {{ router_alpine_mount_path }}/etc/apk/keys
+            add
+            --no-cache
+            {{ router_alpine_packages | join(' ') }}
+          register: router_alpine_apk_install
+          changed_when: true
+
+        - name: Configure router APK repositories for first boot
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/apk/repositories"
+            mode: "0644"
+            content: |
+              {% for repo in router_alpine_repositories %}
+              {{ repo }}
+              {% endfor %}
+
+        - name: Seed router PVH boot artifacts from the Alpine VIRT ISO
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ item.src }}"
+            dest: "{{ router_alpine_mount_path }}/boot/{{ item.dest }}"
+            mode: "0644"
+          loop:
+            - src: "{{ xen_shared_installer_kernel_path }}"
+              dest: vmlinuz-virt
+            - src: "{{ xen_shared_installer_initramfs_path }}"
+              dest: initramfs-virt
+
+        - name: Ensure the router modloop mount path exists
+          ansible.builtin.file:
+            path: "{{ router_alpine_modloop_mount_path }}"
+            state: directory
+            mode: "0755"
+
+        - name: Seed router kernel modules from the Alpine VIRT modloop
+          block:
+            - name: Unmount any stale router modloop mount
+              ansible.builtin.command: "/bin/umount {{ router_alpine_modloop_mount_path }}"
+              register: router_alpine_modloop_stale_umount
+              failed_when: false
+              changed_when: router_alpine_modloop_stale_umount.rc == 0
+
+            - name: Mount the Alpine VIRT modloop
+              ansible.builtin.command: "/bin/mount -o loop,ro {{ router_alpine_modloop_path }} {{ router_alpine_modloop_mount_path }}"
+              changed_when: true
+
+            - name: Copy Alpine VIRT kernel modules into the router root
+              ansible.builtin.shell: |
+                set -eu
+                mkdir -p {{ router_alpine_mount_path | quote }}/lib/modules {{ router_alpine_mount_path | quote }}/lib/firmware
+                for module_dir in {{ router_alpine_modloop_mount_path | quote }}/modules/*; do
+                    [ -d "$module_dir" ] || continue
+                    [ "$(basename "$module_dir")" != firmware ] || continue
+                    cp -a "$module_dir" {{ router_alpine_mount_path | quote }}/lib/modules/
+                done
+                if [ -d {{ router_alpine_modloop_mount_path | quote }}/modules/firmware ]; then
+                    cp -a {{ router_alpine_modloop_mount_path | quote }}/modules/firmware/. {{ router_alpine_mount_path | quote }}/lib/firmware/
+                fi
+              args:
+                executable: /bin/sh
+              changed_when: true
+
+          always:
+            - name: Unmount the Alpine VIRT modloop if mounted
+              ansible.builtin.command: "/bin/umount {{ router_alpine_modloop_mount_path }}"
+              register: router_alpine_modloop_umount
+              failed_when: false
+              changed_when: router_alpine_modloop_umount.rc == 0
+
+        - name: Ensure router hostname is configured
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/hostname"
+            content: "{{ router_alpine_hostname }}\n"
+            mode: "0644"
+
+        - name: Ensure router hosts file is configured
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/hosts"
+            mode: "0644"
+            content: |
+              127.0.0.1 localhost localhost.localdomain
+              ::1 localhost localhost.localdomain
+              127.0.1.1 {{ router_alpine_hostname }}
+
+        - name: Seed router first-contact network configuration
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/network/interfaces"
+            mode: "0644"
+            content: |
+              auto lo
+              iface lo inet loopback
+
+              auto eth0
+              iface eth0 inet dhcp
+
+              auto eth3
+              iface eth3 inet static
+                  address {{ router_alpine_bootstrap_host }}/{{ router_alpine_bootstrap_prefix }}
+
+        - name: Seed router filesystem table
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/fstab"
+            mode: "0644"
+            content: |
+              /dev/xvda3 / ext4 defaults 0 1
+              /dev/xvda1 /boot ext4 defaults 0 2
+
+        - name: Seed router DNS resolver for first boot
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/resolv.conf"
+            mode: "0644"
+            content: |
+              nameserver 1.1.1.1
+              nameserver 1.0.0.1
+
+        - name: Ensure router root SSH directory exists
+          ansible.builtin.file:
+            path: "{{ router_alpine_mount_path }}/root/.ssh"
+            state: directory
+            mode: "0700"
+
+        - name: Seed router root bootstrap authorized key
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/root/.ssh/authorized_keys"
+            content: "{{ lookup('file', router_alpine_bootstrap_key_file) }}\n"
+            mode: "0600"
+
+        - name: Restrict first-contact OpenSSH to the backend bridge address
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf"
+            mode: "0644"
+            content: |
+              ListenAddress {{ router_alpine_bootstrap_host }}
+              PasswordAuthentication no
+              KbdInteractiveAuthentication no
+              PubkeyAuthentication yes
+              PermitRootLogin prohibit-password
+
+        - name: Ensure router OpenRC default runlevel directory exists
+          ansible.builtin.file:
+            path: "{{ router_alpine_mount_path }}/etc/runlevels/default"
+            state: directory
+            mode: "0755"
+
+        - name: Enable first-contact router services
+          ansible.builtin.file:
+            src: "/etc/init.d/{{ item }}"
+            dest: "{{ router_alpine_mount_path }}/etc/runlevels/default/{{ item }}"
+            state: link
+            force: true
+            follow: false
+          loop:
+            - networking
+            - sshd
+
+        - name: Ensure router boot artifacts were installed
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ router_alpine_mount_path }}/boot/vmlinuz-virt"
+            - "{{ router_alpine_mount_path }}/boot/initramfs-virt"
+          register: router_alpine_boot_files
+
+        - name: Assert router boot artifacts exist in the installed root
+          ansible.builtin.assert:
+            that:
+              - (router_alpine_boot_files.results | map(attribute='stat.exists') | list | min)
+            fail_msg: >-
+              Alpine package installation did not create the expected router
+              linux-virt boot artifacts.
+
+        - name: Mark the router root filesystem as built
+          ansible.builtin.copy:
+            dest: "{{ router_alpine_mount_path }}/etc/klokast-router-rootfs-built"
+            mode: "0644"
+            content: |
+              hostname={{ router_alpine_hostname }}
+              lv={{ router_alpine_lv_path }}
+
+      always:
+        - name: Unmount the router boot filesystem if mounted
+          ansible.builtin.command: "/bin/umount {{ router_alpine_mount_path }}/boot"
+          register: router_alpine_umount_boot
+          failed_when: false
+          changed_when: router_alpine_umount_boot.rc == 0
+
+        - name: Unmount the router root filesystem if mounted
+          ansible.builtin.command: "/bin/umount {{ router_alpine_mount_path }}"
+          register: router_alpine_umount_root
+          failed_when: false
+          changed_when: router_alpine_umount_root.rc == 0
+
+  always:
+    - name: Remove router partition mappings after rootfs build
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ router_alpine_lv_path }}"
+      register: router_alpine_kpartx_remove
+      failed_when: false
+      changed_when: router_alpine_kpartx_remove.rc == 0
+
+- name: Verify the router LV exists
+  ansible.builtin.stat:
+    path: "{{ router_alpine_lv_path }}"
+  register: router_alpine_lv_verify
+
+- name: Assert the router LV is ready
+  ansible.builtin.assert:
+    that:
+      - router_alpine_lv_verify.stat.exists | default(false)
+    fail_msg: "Router LV {{ router_alpine_lv_path }} does not exist."

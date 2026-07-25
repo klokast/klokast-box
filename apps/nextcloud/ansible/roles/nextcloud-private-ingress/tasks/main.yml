@@ -1,0 +1,288 @@
+---
+- name: Assert the private ingress role targets a DMZ VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - node_name in [nextcloud_active_master, nextcloud_passive_backup]
+      - nextcloud_private_tailscale_hostname is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - nextcloud_private_tailscale_tag is match('^tag:[A-Za-z0-9][A-Za-z0-9_-]*$')
+      - nextcloud_private_domain | length > 0
+    fail_msg: >-
+      nextcloud-private-ingress must target one selected DMZ VM and use a safe
+      Tailscale hostname/tag.
+
+- name: Select private ingress site mode
+  ansible.builtin.set_fact:
+    nextcloud_site_mode: "{{ 'active' if node_name == nextcloud_active_master else 'passive' }}"
+
+- name: Ensure private ingress packages are installed
+  community.general.apk:
+    name: "{{ nextcloud_private_ingress_packages }}"
+    state: present
+  become: true
+
+- name: Ensure private ingress directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vm_admin_user_name) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ nextcloud_private_ingress_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_private_ingress_secret_root }}"
+      mode: "0700"
+    - path: "{{ nextcloud_private_ingress_state_root }}"
+      mode: "0700"
+    - path: "{{ nextcloud_private_ingress_log_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}"
+      mode: "0750"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}/logs"
+      mode: "0750"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}/client_body_temp"
+      mode: "0700"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}/proxy_temp"
+      mode: "0700"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}/fastcgi_temp"
+      mode: "0700"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}/uwsgi_temp"
+      mode: "0700"
+    - path: "{{ nextcloud_private_ingress_proxy_root }}/scgi_temp"
+      mode: "0700"
+
+- name: Read the private Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    nextcloud_private_tailscale_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (nextcloud_private_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (nextcloud_private_tailscale_hostname | quote)
+            ~ ' --tags ' ~ (nextcloud_private_tailscale_tag | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+
+- name: Assert the private Tailscale auth key is available
+  ansible.builtin.assert:
+    that:
+      - nextcloud_private_tailscale_authkey.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      The private Nextcloud Tailscale auth-key wrapper
+      {{ nextcloud_private_tailscale_authkey_wrapper }} did not return a usable
+      auth key.
+  no_log: true
+
+- name: Store the private Tailscale auth key
+  ansible.builtin.copy:
+    dest: "{{ nextcloud_private_ingress_secret_root }}/tailscale-authkey"
+    content: "{{ nextcloud_private_tailscale_authkey.stdout | trim }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Render the private ingress converge helper
+  ansible.builtin.template:
+    src: nextcloud-private-ingress-converge.sh.j2
+    dest: /usr/local/sbin/nextcloud-private-ingress-converge
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+  register: nextcloud_private_ingress_converge_render
+
+- name: Render the private ingress local proxy config
+  ansible.builtin.template:
+    src: nextcloud-private-ingress-nginx.conf.j2
+    dest: "{{ nextcloud_private_ingress_proxy_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  register: nextcloud_private_ingress_proxy_config_render
+
+- name: Render the private ingress local proxy OpenRC service
+  ansible.builtin.template:
+    src: nextcloud-private-ingress-proxy.init.j2
+    dest: "/etc/init.d/{{ nextcloud_private_ingress_proxy_service_name }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  register: nextcloud_private_ingress_proxy_service_render
+
+- name: Render the private ingress OpenRC service
+  ansible.builtin.template:
+    src: nextcloud-private-ingress.init.j2
+    dest: "/etc/init.d/{{ nextcloud_private_ingress_service_name }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  register: nextcloud_private_ingress_service_render
+
+- name: Collect active private ingress OpenRC state
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ nextcloud_private_ingress_service_name }}"
+      - status
+  become: true
+  register: nextcloud_private_ingress_openrc_status
+  changed_when: false
+  failed_when: false
+  when: nextcloud_site_mode == 'active'
+
+- name: Stop stale active private ingress supervisor
+  ansible.builtin.command:
+    argv:
+      - supervise-daemon
+      - "{{ nextcloud_private_ingress_service_name }}"
+      - --stop
+      - --pidfile
+      - "{{ nextcloud_private_ingress_pidfile }}"
+  become: true
+  environment:
+    RC_SVCNAME: "{{ nextcloud_private_ingress_service_name }}"
+  register: nextcloud_private_ingress_stale_supervisor_stop
+  changed_when: nextcloud_private_ingress_stale_supervisor_stop.rc == 0
+  failed_when: false
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_openrc_status.rc != 0
+
+- name: Collect existing active private ingress identity
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - --socket
+      - "{{ nextcloud_private_ingress_socket }}"
+      - status
+      - --json
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: nextcloud_private_ingress_existing_status_json
+  changed_when: false
+  failed_when: false
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_openrc_status.rc == 0
+
+- name: Parse existing active private ingress identity
+  ansible.builtin.set_fact:
+    nextcloud_private_ingress_existing_status: "{{ nextcloud_private_ingress_existing_status_json.stdout | from_json }}"
+    nextcloud_private_ingress_existing_dns_short: >-
+      {{
+        (
+          (nextcloud_private_ingress_existing_status_json.stdout | from_json).Self.DNSName
+          | default('')
+          | lower
+          | trim('.')
+        ).split('.')[0]
+      }}
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_existing_status_json.rc | default(1) == 0
+    - nextcloud_private_ingress_existing_status_json.stdout | default('') | length > 0
+
+- name: Stop active private ingress with a non-stable MagicDNS name
+  ansible.builtin.service:
+    name: "{{ nextcloud_private_ingress_service_name }}"
+    state: stopped
+  become: true
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_existing_dns_short | default('') | length > 0
+    - nextcloud_private_ingress_existing_dns_short != nextcloud_private_tailscale_hostname
+
+- name: Clear active private ingress state with a non-stable MagicDNS name
+  ansible.builtin.file:
+    path: "{{ nextcloud_private_ingress_state_root }}"
+    state: absent
+  become: true
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_existing_dns_short | default('') | length > 0
+    - nextcloud_private_ingress_existing_dns_short != nextcloud_private_tailscale_hostname
+
+- name: Stop active private ingress local proxy before applying config changes
+  ansible.builtin.service:
+    name: "{{ nextcloud_private_ingress_proxy_service_name }}"
+    state: stopped
+  become: true
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_proxy_config_render.changed or nextcloud_private_ingress_proxy_service_render.changed
+
+- name: Keep private ingress local proxy running only on the active DMZ
+  ansible.builtin.service:
+    name: "{{ nextcloud_private_ingress_proxy_service_name }}"
+    enabled: "{{ nextcloud_site_mode == 'active' }}"
+    state: "{{ 'started' if nextcloud_site_mode == 'active' else 'stopped' }}"
+  become: true
+
+- name: Stop active private ingress before applying service changes
+  ansible.builtin.service:
+    name: "{{ nextcloud_private_ingress_service_name }}"
+    state: stopped
+  become: true
+  when:
+    - nextcloud_site_mode == 'active'
+    - nextcloud_private_ingress_service_render.changed
+
+- name: Keep private ingress running only on the active DMZ
+  ansible.builtin.service:
+    name: "{{ nextcloud_private_ingress_service_name }}"
+    enabled: "{{ nextcloud_site_mode == 'active' }}"
+    state: "{{ 'started' if nextcloud_site_mode == 'active' else 'stopped' }}"
+  become: true
+
+- name: Converge active private ingress Serve configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/nextcloud-private-ingress-converge
+  become: true
+  changed_when: false
+  when: nextcloud_site_mode == 'active'
+
+- name: Collect active private ingress Tailscale status
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - --socket
+      - "{{ nextcloud_private_ingress_socket }}"
+      - status
+      - --json
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: nextcloud_private_ingress_status_json
+  changed_when: false
+  retries: 10
+  delay: 2
+  until: nextcloud_private_ingress_status_json.rc == 0
+  when: nextcloud_site_mode == 'active'
+
+- name: Parse active private ingress Tailscale status
+  ansible.builtin.set_fact:
+    nextcloud_private_ingress_status: "{{ nextcloud_private_ingress_status_json.stdout | from_json }}"
+  when: nextcloud_site_mode == 'active'
+
+- name: Assert active private ingress identity
+  ansible.builtin.assert:
+    that:
+      - nextcloud_private_ingress_status.BackendState | default('') == 'Running'
+      - nextcloud_private_ingress_status.Self.HostName | default('') == nextcloud_private_tailscale_hostname
+      - ((nextcloud_private_ingress_status.Self.DNSName | default('') | lower | trim('.')).split('.')[0]) == nextcloud_private_tailscale_hostname
+      - nextcloud_private_tailscale_tag in (nextcloud_private_ingress_status.Self.Tags | default([]))
+    fail_msg: >-
+      Nextcloud private ingress did not enroll as the stable
+      {{ nextcloud_private_tailscale_hostname }} MagicDNS identity with
+      {{ nextcloud_private_tailscale_tag }}.
+  when: nextcloud_site_mode == 'active'

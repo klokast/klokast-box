@@ -1,0 +1,64 @@
+---
+- name: Snapshot the currently served static-site tree
+  hosts: all
+  gather_facts: false
+  vars:
+    static_site_public_root: /srv/static-site/public
+  tasks:
+    - name: Assert the snapshot targets the selected DMZ VM
+      ansible.builtin.assert:
+        that:
+          - static_site_box is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - static_site_domain | length > 0
+          - static_site_snapshot_archive | length > 0
+          - node_name == static_site_box
+          - node_domain_role == 'dmz'
+        fail_msg: >-
+          Static-site snapshot playbook only targets the selected DMZ VM.
+
+    - name: Check the current static-site public root
+      ansible.builtin.stat:
+        path: "{{ static_site_public_root }}"
+      become: true
+      register: static_site_snapshot_public_root
+
+    - name: Require an existing public root to snapshot
+      ansible.builtin.assert:
+        that:
+          - static_site_snapshot_public_root.stat.isdir | default(false)
+        fail_msg: >-
+          Cannot bootstrap the Git repo because {{ static_site_public_root }}
+          does not exist on {{ inventory_hostname }}.
+
+    - name: Create a temporary static-site snapshot archive
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .tar
+      become: true
+      register: static_site_snapshot_remote_archive
+
+    - name: Archive the current static-site public root
+      ansible.builtin.command:
+        argv:
+          - tar
+          - -C
+          - "{{ static_site_public_root }}"
+          - -cf
+          - "{{ static_site_snapshot_remote_archive.path }}"
+          - .
+      become: true
+      changed_when: false
+
+    - name: Fetch the static-site snapshot archive
+      ansible.builtin.fetch:
+        src: "{{ static_site_snapshot_remote_archive.path }}"
+        dest: "{{ static_site_snapshot_archive }}"
+        flat: true
+      become: true
+
+    - name: Remove the temporary static-site snapshot archive
+      ansible.builtin.file:
+        path: "{{ static_site_snapshot_remote_archive.path }}"
+        state: absent
+      become: true
+      when: static_site_snapshot_remote_archive.path is defined

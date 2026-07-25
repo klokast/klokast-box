@@ -1,0 +1,19 @@
+---
+- name: Install torrent runtime
+  hosts: torrent_app_vms
+  gather_facts: false
+  tasks:
+    - name: Gather torrent VM facts
+      ansible.builtin.setup:
+
+    - name: Assert torrent VM target shape
+      ansible.builtin.assert:
+        that:
+          - platform_app_vm_guest_os | default('') == 'alpine'
+          - platform_app_vm_container_runtime | default('') == 'none'
+          - node_domain_role == 'dmz'
+        fail_msg: "Torrent must target the dedicated Alpine DMZ app VM."
+
+    - name: Install torrent runtime services
+      ansible.builtin.import_role:
+        name: torrent-runtime

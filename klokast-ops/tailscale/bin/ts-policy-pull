@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SECRET_FILE="/etc/klokast/tailscale-policy.env"
+PRIVATE_POLICY="${KLOKAST_TAILSCALE_POLICY_FILE:-/home/smith/private/klokast/tailscale-policy.hujson}"
+
+if [ "$PRIVATE_POLICY" != /home/smith/private/klokast/tailscale-policy.hujson ]; then
+  echo "Refusing unexpected policy path: $PRIVATE_POLICY" >&2
+  exit 2
+fi
+
+if [ ! -r "$SECRET_FILE" ]; then
+  echo "Secret file not readable: $SECRET_FILE" >&2
+  exit 2
+fi
+
+source "$SECRET_FILE"
+WRITE_USER=smith
+
+run_as_write_user() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$WRITE_USER" -- "$@"
+    return
+  fi
+  su "$WRITE_USER" -s /bin/sh -c 'exec "$@"' sh "$@"
+}
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+tmp_policy="$tmpdir/tailscale-policy.hujson"
+
+# Preferred: OAuth client, scoped to policy_file:read.
+if [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_CLIENT_SECRET:-}" ]; then
+  TOKEN="$(
+    curl -fsS \
+      -u "$TS_OAUTH_CLIENT_ID:$TS_OAUTH_CLIENT_SECRET" \
+      -d grant_type=client_credentials \
+      -d scope=policy_file:read \
+      "https://api.tailscale.com/api/v2/oauth/token" \
+    | jq -er '.access_token'
+  )"
+
+  curl -fsS \
+    -H "Authorization: Bearer $TOKEN" \
+    "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/acl" \
+    -o "$tmp_policy"
+
+# Fallback: classic API key.
+elif [ -n "${TS_API_KEY:-}" ]; then
+  curl -fsS \
+    -u "$TS_API_KEY:" \
+    "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/acl" \
+    -o "$tmp_policy"
+
+else
+  echo "No usable Tailscale credential found in $SECRET_FILE" >&2
+  exit 2
+fi
+
+# Basic sanity check: non-empty file.
+if [ ! -s "$tmp_policy" ]; then
+  echo "Downloaded policy is empty; refusing to overwrite local file." >&2
+  exit 2
+fi
+
+# Create repo directory as the repo owner if needed.
+run_as_write_user mkdir -p "$(dirname "$PRIVATE_POLICY")"
+
+# Important:
+# root reads the downloaded temp file, then the repo owner writes an atomic
+# replacement in the repo. This avoids making root follow repo symlinks, and
+# avoids truncating the repo file before a failed read.
+cat "$tmp_policy" | run_as_write_user bash -c '
+  set -euo pipefail
+  repo_policy=$1
+  repo_dir=$(dirname "$repo_policy")
+  repo_base=$(basename "$repo_policy")
+  tmp_repo=$(mktemp "$repo_dir/.${repo_base}.tmp.XXXXXX")
+  trap '\''rm -f "$tmp_repo"'\'' EXIT
+  cat > "$tmp_repo"
+  mv "$tmp_repo" "$repo_policy"
+  trap - EXIT
+' bash "$PRIVATE_POLICY"
+
+echo "Downloaded current Tailscale policy to:"
+echo "$PRIVATE_POLICY"

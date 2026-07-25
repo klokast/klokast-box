@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+validate() {
+  case "$1" in
+    *.ts.net) printf '%s\n' "$1" ;;
+    *) echo "magicdns-suffix: invalid MagicDNS suffix: $1" >&2; exit 2 ;;
+  esac
+}
+
+if [ -n "${KLOKAST_MAGICDNS_SUFFIX:-}" ]; then
+  validate "$KLOKAST_MAGICDNS_SUFFIX"
+  exit 0
+fi
+
+if command -v tailscale >/dev/null 2>&1; then
+  suffix="$(
+    tailscale status --json 2>/dev/null |
+      python3 -c '
+import json
+import sys
+data = json.load(sys.stdin)
+dns = str((data.get("Self") or {}).get("DNSName") or "").rstrip(".")
+parts = dns.split(".", 1)
+print(parts[1] if len(parts) == 2 else "")
+' 2>/dev/null || :
+  )"
+  if [ -n "$suffix" ]; then
+    validate "$suffix"
+    exit 0
+  fi
+fi
+
+deployment="${KLOKAST_DEPLOYMENT_CONFIG:-$HOME/private/klokast/deployment.yml}"
+if [ -r "$deployment" ]; then
+  suffix="$(
+    python3 - "$deployment" <<'PY'
+import sys
+import yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = yaml.safe_load(handle) or {}
+print(((data.get("tailnet") or {}).get("magicdns_suffix") or ""))
+PY
+  )"
+  validate "$suffix"
+  exit 0
+fi
+
+echo "magicdns-suffix: set KLOKAST_MAGICDNS_SUFFIX, join Tailscale, or provide $deployment" >&2
+exit 2

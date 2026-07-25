@@ -1,0 +1,50 @@
+---
+- name: Check qBittorrent service
+  ansible.builtin.command: rc-service qbittorrent status
+  changed_when: false
+
+- name: Check Mihomo service
+  ansible.builtin.command: rc-service mihomo status
+  changed_when: false
+
+- name: Check qBittorrent WebUI on loopback
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -fsS
+      - "http://127.0.0.1:8080/api/v2/app/version"
+  register: torrent_verify_qbittorrent_version
+  changed_when: false
+
+- name: Check torrent nftables policy is loaded
+  ansible.builtin.command: nft list ruleset
+  register: torrent_verify_nft
+  changed_when: false
+
+- name: Assert torrent nftables kill switch is present
+  ansible.builtin.assert:
+    that:
+      - "'table inet klokast_torrent_filter' in torrent_verify_nft.stdout"
+      - "'klokastvpn' in torrent_verify_nft.stdout"
+      - "'ops-torrent-tailscale-underlay-input' in torrent_verify_nft.stdout"
+      - >-
+        'reject with icmpx type admin-prohibited' in torrent_verify_nft.stdout
+        or 'reject with icmpx admin-prohibited' in torrent_verify_nft.stdout
+    fail_msg: "Torrent nftables kill switch is missing."
+
+- name: Check Mihomo TUN device
+  ansible.builtin.command: "ip link show klokastvpn"
+  changed_when: false
+
+- name: Check Tailscale identity tags
+  ansible.builtin.command: tailscale status --json
+  register: torrent_verify_tailscale_status
+  changed_when: false
+
+- name: Assert torrent Tailscale identity
+  ansible.builtin.assert:
+    that:
+      - (torrent_verify_tailscale_status.stdout | from_json).Self.HostName == node_hostname
+      - "'tag:torrent' in ((torrent_verify_tailscale_status.stdout | from_json).Self.Tags | default([]))"
+      - "'tag:vm' in ((torrent_verify_tailscale_status.stdout | from_json).Self.Tags | default([]))"
+    fail_msg: "Torrent Tailscale identity/tags are not correct."

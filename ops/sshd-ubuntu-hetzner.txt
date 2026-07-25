@@ -1,0 +1,74 @@
+# /etc/ssh/sshd_config
+# This is openSSH configuration for `codex-hetzner` on Ubuntu VPS
+
+# allow users to ssh with `sudo usermod -a -G ssh <username>`
+AllowGroups ssh
+
+# all clients must use those algo only
+Protocol 2
+HostKeyAlgorithms ssh-ed25519
+PubkeyAcceptedAlgorithms ssh-ed25519
+CASignatureAlgorithms ssh-ed25519
+KexAlgorithms curve25519-sha256
+hostkey /etc/ssh/ssh_host_ed25519_key
+Ciphers aes256-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com
+hostbasedacceptedalgorithms ssh-ed25519
+
+# only authenticate with keys
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication no
+PermitRootLogin no
+HostbasedAuthentication no
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+
+# Don't read the user's ~/.rhosts and ~/.shosts files
+IgnoreRhosts yes
+
+# removing Kerberos support
+GSSAPIKexAlgorithms gss-curve25519-sha256-
+KerberosAuthentication no
+KerberosOrLocalPasswd no
+GSSAPIAuthentication no
+KerberosTicketCleanup no
+GSSAPICleanupCredentials no
+GSSAPIStrictAcceptorCheck no
+
+# override default of no subsystems
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# Allow client to pass locale environment variables
+AcceptEnv LANG LC_*
+
+# further hardening    
+# maxauthtries 3  
+# MaxSessions 3
+# MaxStartups 5:30:10
+# PerSourceMaxStartups 1
+Compression no
+PermitUserRC no
+DebianBanner no
+Banner none
+
+## server disconnects after 15min idle connection (300s x3)
+ClientAliveInterval 300
+ClientAliveCountMax 3
+
+# to check
+# StrictHostKeyChecking yes
+
+AllowAgentForwarding no
+X11Forwarding no
+AllowTcpForwarding yes
+GatewayPorts no
+PermitOpen none
+PermitListen none
+PermitTunnel no
+UsePAM yes
+PrintMotd no
+PrintLastLog no
+UseDNS no
+LogLevel INFO

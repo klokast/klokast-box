@@ -1,0 +1,8 @@
+---
+- name: Remove the old root-level Nextcloud proof of concept
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Remove legacy Nextcloud service and containers
+      ansible.builtin.import_role:
+        name: nextcloud-legacy-cleanup

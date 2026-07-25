@@ -1,0 +1,168 @@
+---
+- name: Wipe the managed SSD from diskless dom0 and run final action
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    decommission_final_action: poweroff
+  tasks:
+    - name: Assert the requested final action is supported
+      ansible.builtin.assert:
+        that:
+          - decommission_final_action in ["poweroff", "reboot"]
+        fail_msg: "Unsupported decommission_final_action={{ decommission_final_action }}."
+
+    - name: Inspect target dom0 storage layout read-only before wipe
+      ansible.builtin.import_role:
+        name: storage-inspection
+      vars:
+        storage_inspection_show_summary: true
+
+    - name: Assert dom0 root is RAM-backed before wiping the SSD
+      ansible.builtin.assert:
+        that:
+          - storage_inspection_root_fstype == "tmpfs"
+          - storage_inspection_managed_layout.confidence == "exact"
+          - storage_inspection_managed_layout.target_disk_device is match('^/dev/nvme[0-9]+n[0-9]+$')
+          - storage_inspection_managed_layout.efi_partition_device is match('^' ~ (storage_inspection_managed_layout.target_disk_device | regex_escape) ~ 'p[0-9]+$')
+          - storage_inspection_managed_layout.lvm_partition_device is match('^' ~ (storage_inspection_managed_layout.target_disk_device | regex_escape) ~ 'p[0-9]+$')
+          - storage_inspection_managed_layout.volume_group_name | length > 0
+        fail_msg: >-
+          Refusing to wipe {{ inventory_hostname }} because dom0 is not
+          diskless or the managed SSD layout was not uniquely discovered:
+          {{ storage_inspection_managed_layout | to_json }}.
+
+    - name: Bind wipe target variables from the discovered storage layout
+      ansible.builtin.set_fact:
+        decommission_target_disk_device: "{{ storage_inspection_managed_layout.target_disk_device }}"
+        decommission_efi_partition_device: "{{ storage_inspection_managed_layout.efi_partition_device }}"
+        decommission_lvm_partition_device: "{{ storage_inspection_managed_layout.lvm_partition_device }}"
+        decommission_volume_group_name: "{{ storage_inspection_managed_layout.volume_group_name }}"
+
+    - name: Ensure dom0-side wipe prerequisite packages are available in RAM
+      ansible.builtin.package:
+        name:
+          - lvm2
+          - parted
+          - util-linux-misc
+          - wipefs
+        state: present
+
+    - name: Assert the target disk exists
+      ansible.builtin.stat:
+        path: "{{ decommission_target_disk_device }}"
+      register: decommission_dom0_target_disk_stat
+
+    - name: Verify required wipe commands are available before unmounting SSD state
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - "command -v {{ item }}"
+      loop:
+        - blockdev
+        - dd
+        - partprobe
+        - pvremove
+        - vgchange
+        - vgremove
+        - wipefs
+      changed_when: false
+
+    - name: Fail when the target disk is missing
+      ansible.builtin.assert:
+        that:
+          - decommission_dom0_target_disk_stat.stat.exists
+        fail_msg: "Target disk {{ decommission_target_disk_device }} does not exist."
+
+    - name: Assert the target disk looks like the expected NVMe install target
+      ansible.builtin.assert:
+        that:
+          - decommission_target_disk_device is match('^/dev/nvme[0-9]+n[0-9]+$')
+        fail_msg: >-
+          Target disk {{ decommission_target_disk_device }} is not an NVMe namespace path.
+          Refusing to continue.
+
+    - name: Collect remaining Xen domains before dom0 wipe
+      ansible.builtin.command: /usr/sbin/xl list
+      register: decommission_dom0_xl_list
+      changed_when: false
+
+    - name: Assert no Xen guests remain before dom0 wipe
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import sys
+
+            guests = []
+            for line in sys.stdin.read().splitlines()[1:]:
+                fields = line.split()
+                if fields and fields[0] != "Domain-0":
+                    guests.append(fields[0])
+            if guests:
+                print("Running Xen guests: " + ", ".join(guests), file=sys.stderr)
+                sys.exit(1)
+      args:
+        stdin: "{{ decommission_dom0_xl_list.stdout }}"
+      changed_when: false
+
+    - name: Show dom0 wipe target state
+      ansible.builtin.debug:
+        msg:
+          - "target_disk_device={{ decommission_target_disk_device }}"
+          - "efi_partition_device={{ decommission_efi_partition_device }}"
+          - "lvm_partition_device={{ decommission_lvm_partition_device }}"
+          - "volume_group_name={{ decommission_volume_group_name }}"
+
+    - name: Unmount all target-disk and managed-VG mountpoints
+      ansible.builtin.shell: |
+        set -eu
+        awk \
+          -v disk="{{ decommission_target_disk_device }}" \
+          -v vg="/dev/{{ decommission_volume_group_name }}/" \
+          -v mapper="/dev/mapper/{{ decommission_volume_group_name }}-" \
+          '
+            $1 == disk || $1 ~ ("^" disk "p[0-9]+$") || index($1, vg) == 1 || index($1, mapper) == 1 {
+              print $2
+            }
+          ' /proc/mounts | sort -r | while read -r target; do
+          umount "$target" || umount -l "$target"
+        done
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+    - name: Deactivate and remove the managed volume group
+      ansible.builtin.shell: |
+        set +e
+        vgchange -an "{{ decommission_volume_group_name }}"
+        vgremove -ff -y "{{ decommission_volume_group_name }}"
+        pvremove -ff -y "{{ decommission_lvm_partition_device }}"
+        exit 0
+      args:
+        executable: /bin/sh
+      changed_when: true
+
+    - name: Remove filesystem and partition signatures from the SSD
+      ansible.builtin.shell: |
+        set +e
+        for device in "{{ decommission_efi_partition_device }}" "{{ decommission_lvm_partition_device }}" "{{ decommission_target_disk_device }}"; do
+          if [ -b "$device" ]; then
+            wipefs -a -f "$device"
+          fi
+        done
+        dd if=/dev/zero of="{{ decommission_target_disk_device }}" bs=1M count=64 conv=fsync
+        blockdev --rereadpt "{{ decommission_target_disk_device }}"
+        partprobe "{{ decommission_target_disk_device }}"
+        exit 0
+      args:
+        executable: /bin/sh
+      changed_when: true
+
+    - name: Schedule the final action after dom0 SSD wipe
+      ansible.builtin.shell: |
+        nohup sh -c 'sleep 2; {{ decommission_final_action }}' >/dev/null 2>&1 &
+      args:
+        executable: /bin/sh
+      changed_when: true

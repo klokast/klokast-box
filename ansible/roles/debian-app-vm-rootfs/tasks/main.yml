@@ -1,0 +1,317 @@
+#
+# Summary:
+# - Installs a prebuilt Debian app-VM root image from the backend builder onto
+#   a dom0 LVM volume and verifies the image marker and Xen boot artifacts.
+#
+---
+- name: Assert Debian app VM rootfs inputs are valid
+  ansible.builtin.assert:
+    that:
+      - platform_app_vm_guest_spec is mapping
+      - platform_app_vm_guest_spec.guest_os | default('') == 'debian'
+      - platform_app_vm_inventory_host | default('') | length > 0
+      - debian_app_vm_target_lv_path is match('^/dev/[^/]+/[^/]+$')
+      - debian_app_vm_rootfs_build_id | length == 64
+      - debian_app_vm_release is match('^[a-z][a-z0-9-]+$')
+    fail_msg: >-
+      Debian app VM rootfs inputs are incomplete for
+      {{ platform_app_vm_guest_spec.guest_name | default('undefined') }}.
+
+- name: Derive Debian app VM LV paths and artifact destinations
+  ansible.builtin.set_fact:
+    debian_app_vm_target_vg_name: "{{ debian_app_vm_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1') }}"
+    debian_app_vm_target_lv_name: "{{ debian_app_vm_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\2') }}"
+    debian_app_vm_marker_path: "{{ debian_app_vm_mount_path }}/etc/klokast-debian-app-vm-rootfs.json"
+    debian_app_vm_kernel_dest_path: "{{ platform_app_vm_guest_spec.installed.kernel_path }}"
+    debian_app_vm_initramfs_dest_path: "{{ platform_app_vm_guest_spec.installed.initramfs_path }}"
+
+- name: Ensure Debian app VM tooling is installed on dom0
+  community.general.apk:
+    name:
+      - curl
+      - e2fsprogs
+      - e2fsprogs-extra
+      - lvm2
+      - util-linux
+    state: present
+
+- name: Ensure the dom0 Debian app VM work directory exists
+  ansible.builtin.file:
+    path: "{{ debian_app_vm_work_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Fetch the Debian app VM artifact manifest from the backend builder
+  ansible.builtin.shell: |
+    set -eu
+    tmp={{ debian_app_vm_manifest_path | quote }}.tmp
+    curl -fsSL --connect-timeout 5 --max-time 60 \
+      -o "$tmp" \
+      {{ (debian_app_vm_artifact_base_url ~ '/manifest.json') | quote }}
+    mv "$tmp" {{ debian_app_vm_manifest_path | quote }}
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+- name: Read the Debian app VM artifact manifest
+  ansible.builtin.slurp:
+    src: "{{ debian_app_vm_manifest_path }}"
+  register: debian_app_vm_manifest_slurp
+
+- name: Parse Debian app VM artifact manifest
+  ansible.builtin.set_fact:
+    debian_app_vm_manifest: "{{ debian_app_vm_manifest_slurp.content | b64decode | from_json }}"
+
+- name: Assert the Debian app VM artifact manifest matches the requested image
+  ansible.builtin.assert:
+    that:
+      - debian_app_vm_manifest.schema_version | int == 1
+      - debian_app_vm_manifest.guest_name == platform_app_vm_guest_spec.guest_name
+      - debian_app_vm_manifest.build_id == debian_app_vm_rootfs_build_id
+      - debian_app_vm_manifest.artifacts.root_img_gz.sha256 | length == 64
+      - debian_app_vm_manifest.artifacts.kernel.sha256 | length == 64
+      - debian_app_vm_manifest.artifacts.initramfs.sha256 | length == 64
+    fail_msg: >-
+      Backend builder manifest for {{ platform_app_vm_guest_spec.guest_name }}
+      does not match the requested Debian app VM image.
+
+- name: Check whether the Debian app VM target LV already exists
+  ansible.builtin.stat:
+    path: "{{ debian_app_vm_target_lv_path }}"
+  register: debian_app_vm_target_lv_stat_before
+
+- name: Ensure the Debian app VM target LV exists
+  community.general.lvol:
+    vg: "{{ debian_app_vm_target_vg_name }}"
+    lv: "{{ debian_app_vm_target_lv_name }}"
+    size: "{{ debian_app_vm_target_lv_size }}"
+    state: present
+  register: debian_app_vm_target_lv_create
+
+- name: Ensure the Debian app VM root mount path exists
+  ansible.builtin.file:
+    path: "{{ debian_app_vm_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Inspect any existing Debian app VM root filesystem
+  block:
+    - name: Mount the existing Debian app VM root filesystem read-only
+      ansible.builtin.command: "/bin/mount -o ro {{ debian_app_vm_target_lv_path }} {{ debian_app_vm_mount_path }}"
+      register: debian_app_vm_probe_mount
+      failed_when: false
+      changed_when: false
+
+    - name: Read the existing Debian app VM rootfs marker
+      ansible.builtin.slurp:
+        src: "{{ debian_app_vm_marker_path }}"
+      register: debian_app_vm_probe_marker
+      failed_when: false
+      changed_when: false
+      when: debian_app_vm_probe_mount.rc == 0
+
+    - name: Select the current Debian app VM rootfs build id
+      ansible.builtin.set_fact:
+        debian_app_vm_current_build_id: >-
+          {{
+            (
+              (debian_app_vm_probe_marker.content | default('') | b64decode | from_json).build_id
+              if (debian_app_vm_probe_marker.content | default('') | length > 0)
+              else ''
+            )
+          }}
+      when: debian_app_vm_probe_mount.rc == 0
+
+  always:
+    - name: Unmount the inspected Debian app VM root filesystem
+      ansible.builtin.command: "/bin/umount {{ debian_app_vm_mount_path }}"
+      register: debian_app_vm_probe_unmount
+      failed_when: false
+      changed_when: debian_app_vm_probe_unmount.rc == 0
+
+- name: Decide whether the Debian app VM rootfs must be installed
+  ansible.builtin.set_fact:
+    debian_app_vm_needs_install: >-
+      {{
+        (debian_app_vm_rebuild | bool)
+        or (debian_app_vm_target_lv_create.changed | default(false))
+        or (debian_app_vm_probe_mount.rc | default(1) != 0)
+        or ((debian_app_vm_current_build_id | default('')) != debian_app_vm_rootfs_build_id)
+      }}
+
+- name: Refuse to overwrite unmanaged Debian app VM LVs
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (
+          (debian_app_vm_target_lv_stat_before.stat.exists | default(false))
+          and (
+            (debian_app_vm_probe_mount.rc | default(1) != 0)
+            or ((debian_app_vm_current_build_id | default('')) == '')
+          )
+          and not (debian_app_vm_rebuild | bool)
+        )
+    fail_msg: >-
+      Refusing to overwrite existing unmanaged app VM LV
+      {{ debian_app_vm_target_lv_path }}. Back up or remove the LV first, or
+      set debian_app_vm_rebuild=true when replacement is intentional.
+
+- name: Refuse implicit Debian app VM rootfs replacement after first install
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (
+          (debian_app_vm_target_lv_stat_before.stat.exists | default(false))
+          and (debian_app_vm_probe_mount.rc | default(1) == 0)
+          and ((debian_app_vm_current_build_id | default('')) not in ['', debian_app_vm_rootfs_build_id])
+          and not (debian_app_vm_rebuild | bool)
+        )
+    fail_msg: >-
+      Existing app VM LV {{ debian_app_vm_target_lv_path }} was built from a
+      different Debian rootfs. Back up user data before replacing it, then set
+      debian_app_vm_rebuild=true.
+
+- name: Download and verify the Debian app VM compressed root image
+  ansible.builtin.shell: |
+    set -eu
+    tmp={{ debian_app_vm_root_img_gz_path | quote }}.tmp
+    curl -fsSL --connect-timeout 5 --max-time 3600 \
+      -o "$tmp" \
+      {{ (debian_app_vm_artifact_base_url ~ '/' ~ debian_app_vm_manifest.artifacts.root_img_gz.filename) | quote }}
+    printf '%s  %s\n' {{ debian_app_vm_manifest.artifacts.root_img_gz.sha256 | quote }} "$tmp" | sha256sum -c -
+    mv "$tmp" {{ debian_app_vm_root_img_gz_path | quote }}
+  args:
+    executable: /bin/sh
+  when: debian_app_vm_needs_install | bool
+
+- name: Stream the Debian app VM root image into the target LV
+  ansible.builtin.shell: |
+    set -eu
+    gunzip -c {{ debian_app_vm_root_img_gz_path | quote }} |
+      dd of={{ debian_app_vm_target_lv_path | quote }} bs=16M conv=fsync
+  args:
+    executable: /bin/sh
+  when: debian_app_vm_needs_install | bool
+
+- name: Expand the Debian app VM root filesystem to the target LV size
+  ansible.builtin.shell: |
+    set -eu
+    e2fsck -fy {{ debian_app_vm_target_lv_path | quote }} || rc=$?
+    rc="${rc:-0}"
+    if [ "$rc" -gt 1 ]; then
+      exit "$rc"
+    fi
+    resize2fs {{ debian_app_vm_target_lv_path | quote }}
+    rm -f {{ debian_app_vm_root_img_gz_path | quote }}
+  args:
+    executable: /bin/sh
+  register: debian_app_vm_resize_rootfs
+  changed_when: >-
+    ('FILE SYSTEM WAS MODIFIED' in (debian_app_vm_resize_rootfs.stdout | default('')))
+    or
+    ('Nothing to do' not in (
+      (debian_app_vm_resize_rootfs.stdout | default(''))
+      ~ (debian_app_vm_resize_rootfs.stderr | default(''))
+    ))
+  when: >-
+    (debian_app_vm_needs_install | bool)
+    or ((debian_app_vm_current_build_id | default('')) == debian_app_vm_rootfs_build_id)
+
+- name: Define Debian app VM boot artifacts
+  ansible.builtin.set_fact:
+    debian_app_vm_boot_artifacts:
+      - name: kernel
+        filename: "{{ debian_app_vm_manifest.artifacts.kernel.filename }}"
+        sha256: "{{ debian_app_vm_manifest.artifacts.kernel.sha256 }}"
+        dest: "{{ debian_app_vm_kernel_dest_path }}"
+      - name: initramfs
+        filename: "{{ debian_app_vm_manifest.artifacts.initramfs.filename }}"
+        sha256: "{{ debian_app_vm_manifest.artifacts.initramfs.sha256 }}"
+        dest: "{{ debian_app_vm_initramfs_dest_path }}"
+
+- name: Check existing Debian app VM boot artifact checksums
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    checksum_algorithm: sha256
+  register: debian_app_vm_boot_artifact_stats
+  loop: "{{ debian_app_vm_boot_artifacts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Fetch Debian app VM boot artifacts into dom0 Xen image storage
+  ansible.builtin.shell: |
+    set -eu
+    dest={{ item.item.dest | quote }}
+    tmp="${dest}.tmp"
+    mkdir -p "$(dirname "$dest")"
+    curl -fsSL --connect-timeout 5 --max-time 300 \
+      -o "$tmp" \
+      {{ (debian_app_vm_artifact_base_url ~ '/' ~ item.item.filename) | quote }}
+    printf '%s  %s\n' {{ item.item.sha256 | quote }} "$tmp" | sha256sum -c -
+    mv "$tmp" "$dest"
+    chmod 0644 "$dest"
+  args:
+    executable: /bin/sh
+  loop: "{{ debian_app_vm_boot_artifact_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: >-
+    (not (item.stat.exists | default(false)))
+    or ((item.stat.checksum | default('')) != item.item.sha256)
+
+- name: Verify the installed Debian app VM rootfs marker
+  block:
+    - name: Mount the installed Debian app VM root filesystem read-only
+      ansible.builtin.command: "/bin/mount -o ro {{ debian_app_vm_target_lv_path }} {{ debian_app_vm_mount_path }}"
+      register: debian_app_vm_verify_mount
+      changed_when: false
+
+    - name: Read the installed Debian app VM rootfs marker
+      ansible.builtin.slurp:
+        src: "{{ debian_app_vm_marker_path }}"
+      register: debian_app_vm_verify_marker
+      changed_when: false
+
+    - name: Parse the installed Debian app VM rootfs marker
+      ansible.builtin.set_fact:
+        debian_app_vm_verified_marker: "{{ debian_app_vm_verify_marker.content | b64decode | from_json }}"
+
+    - name: Assert the installed Debian app VM rootfs marker matches the manifest
+      ansible.builtin.assert:
+        that:
+          - debian_app_vm_verified_marker.build_id == debian_app_vm_rootfs_build_id
+          - debian_app_vm_verified_marker.hostname == debian_app_vm_hostname
+        fail_msg: >-
+          Installed Debian app VM rootfs marker does not match the requested
+          image for {{ platform_app_vm_guest_spec.guest_name }}.
+
+  always:
+    - name: Unmount the verified Debian app VM root filesystem
+      ansible.builtin.command: "/bin/umount {{ debian_app_vm_mount_path }}"
+      register: debian_app_vm_verify_unmount
+      failed_when: false
+      changed_when: debian_app_vm_verify_unmount.rc == 0
+
+- name: Remove stale controller known_hosts entry for the Debian app VM bootstrap IP
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh-keygen
+      - -f
+      - "{{ debian_app_vm_bootstrap_known_hosts_file }}"
+      - -R
+      - "{{ debian_app_vm_bootstrap_host }}"
+  delegate_to: localhost
+  become: false
+  register: debian_app_vm_known_hosts_cleanup
+  failed_when: false
+  changed_when: debian_app_vm_known_hosts_cleanup.rc == 0
+  when: debian_app_vm_needs_install | bool
+
+- name: Show the Debian app VM rootfs state
+  ansible.builtin.debug:
+    msg:
+      - "{{ platform_app_vm_guest_spec.guest_name }}"
+      - "{{ debian_app_vm_target_lv_path }}"
+      - "{{ debian_app_vm_hostname }}"
+      - "{{ debian_app_vm_bootstrap_host }}"
+      - "{{ debian_app_vm_rootfs_build_id }}"

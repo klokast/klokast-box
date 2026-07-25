@@ -1,0 +1,56 @@
+#!/bin/sh
+set -eu
+
+container_name={{ static_site_web_container_name | quote }}
+image={{ static_site_web_image | quote }}
+public_root={{ static_site_public_root | quote }}
+config_file={{ (static_site_config_root ~ '/sws.toml') | quote }}
+host={{ static_site_web_host | quote }}
+host_port={{ (static_site_web_host_port | string) | quote }}
+container_port={{ (static_site_web_container_port | string) | quote }}
+
+podman_cmd() {
+    if [ "$(id -un)" = "{{ vm_admin_user_name }}" ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name }} /usr/bin/podman "$@"
+    fi
+}
+
+if [ ! -d "$public_root" ]; then
+    echo "public root is missing: $public_root" >&2
+    exit 1
+fi
+
+if [ ! -s "$config_file" ]; then
+    echo "static-web-server config is missing: $config_file" >&2
+    exit 1
+fi
+
+if ! podman_cmd image exists "$image"; then
+    podman_cmd pull --policy=missing --retry=0 "$image"
+fi
+
+if podman_cmd container exists "$container_name"; then
+    podman_cmd rm -f "$container_name" >/dev/null
+fi
+
+podman_cmd run -d \
+    --name "$container_name" \
+    --restart=unless-stopped \
+    --read-only \
+    --cap-drop=all \
+    --security-opt=no-new-privileges \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+    -p "${host}:${host_port}:${container_port}" \
+    -e SERVER_HOST=0.0.0.0 \
+    -e SERVER_PORT="$container_port" \
+    -e SERVER_ROOT=/public \
+    -e SERVER_CONFIG_FILE=/etc/sws/config.toml \
+    -e SERVER_DIRECTORY_LISTING=false \
+    -e SERVER_SECURITY_HEADERS=true \
+    -e SERVER_LOG_LEVEL=info \
+    -v "$public_root:/public:ro" \
+    -v "$config_file:/etc/sws/config.toml:ro" \
+    --pull=never \
+    "$image" >/dev/null

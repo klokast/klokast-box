@@ -1,0 +1,39 @@
+---
+schema_version: 1
+app: bootstrap-iso-debian
+risk_class: ephemeral_privileged_build
+default_isolation: short_lived_privileged_builder
+resources:
+  compute:
+    - id: live-builder
+      type: ephemeral_privileged_builder
+      zone: bak
+      privilege: privileged_rootful_podman
+      lifecycle: ephemeral
+      cleanup_required: true
+      rationale: >-
+        Debian live-build requires mount-capable chroot stages. This privileged
+        builder is allowed only as a short-lived, explicitly approved exception.
+  network:
+    - id: builder-to-oob-ssh
+      type: tailnet_tcp
+      required: true
+      rationale: >-
+        The builder uploads the generic bootstrap ISO and checksum to the
+        NanoKVM data directory over Tailscale SSH. This must stay scoped to the
+        builder identity and tag:oob.
+  tailnet:
+    - id: live-builder
+      required: true
+      hostname_default: bootstrap-live-builder
+      tag_default: tag:back
+      grants:
+        - src: tag:back
+          dst: tag:oob
+          ports:
+            - 22
+  artifacts:
+    - id: generic-bootstrap-iso
+      type: release_artifact
+      secret_free: true
+      require_sha512: true

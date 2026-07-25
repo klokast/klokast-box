@@ -1,0 +1,10 @@
+---
+- name: Remove stale Tailscale machine identities that block Podman VM names
+  hosts: podman_vms
+  gather_facts: false
+  tasks:
+    - name: Find and optionally delete stale Tailscale machine identities
+      ansible.builtin.import_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_expected_confirm: "delete stale tailscale machines for {{ node_name }}"

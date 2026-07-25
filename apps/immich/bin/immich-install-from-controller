@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
+MAGICDNS_SUFFIX="${IMMICH_MAGICDNS_SUFFIX:-${KLOKAST_MAGICDNS_SUFFIX:-example.ts.net}}"
+DEFAULT_REGISTRY="/home/smith/private/klokast/platform-resources.yml"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  apps/immich/bin/immich-install-from-controller \
+    --active-master k001 \
+    --passive-backup k002
+
+Options:
+  --registry PATH             Controller-local private platform resources registry.
+                              Default: /home/smith/private/klokast/platform-resources.yml
+  --secrets PATH              Controller-local secrets file. Default:
+                              ~/private/klokast/apps/immich/ACTIVE-PASSIVE.env
+  --restic-repository VALUE   Override generated restic repository URL.
+  --rotate-secrets            Replace an existing controller-local Immich secrets file.
+  --dry-run                   Print the controller-local steps without changing state.
+  -h, --help                  Show this help.
+
+Run this as smith on the active Ansible controller, not on vultr-ops.
+USAGE
+}
+
+die() {
+    printf 'immich-install-from-controller: %s\n' "$*" >&2
+    exit 1
+}
+
+need_value() {
+    [[ $# -ge 2 && -n "${2:-}" ]] || die "$1 requires a value"
+}
+
+valid_box() {
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    case "$1" in
+    *-bootstrap|*-dom0|*-router|*-bak|*-dmz|*-iot|*-usr|*-ops|*-agent|*-agt|bootstrap|dom0|router|bak|dmz|iot|usr|ops|agent|agt)
+        return 1
+        ;;
+    esac
+}
+
+require_box() {
+    local value=$1 name=$2
+    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+}
+
+expand_controller_path() {
+    case "$1" in
+    \~) printf '%s\n' "$HOME" ;;
+    \~/*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    /*) printf '%s\n' "$1" ;;
+    *) die "controller paths must be absolute or start with ~/; got $1" ;;
+    esac
+}
+
+file_mode() {
+    if stat -f '%Lp' "$1" >/dev/null 2>&1; then
+        stat -f '%Lp' "$1"
+    else
+        stat -c '%a' "$1"
+    fi
+}
+
+random_alnum() {
+    python3 - <<'PY'
+import secrets
+import string
+
+alphabet = string.ascii_letters + string.digits
+print("".join(secrets.choice(alphabet) for _ in range(48)))
+PY
+}
+
+write_secret_file() {
+    mkdir -p "$(dirname "$secrets_path")"
+    if [[ -f "$secrets_path" && "$rotate_secrets" != true ]]; then
+        [[ "$(file_mode "$secrets_path")" == "600" ]] || die "controller secrets file must be mode 0600: $secrets_path"
+        return
+    fi
+
+    local tmp_secret
+    tmp_secret="$(mktemp "${secrets_path}.XXXXXX")"
+    chmod 0600 "$tmp_secret"
+    {
+        printf 'IMMICH_POSTGRES_PASSWORD=%q\n' "$(random_alnum)"
+        printf 'IMMICH_RESTIC_PASSWORD=%q\n' "$(random_alnum)"
+        printf 'IMMICH_RESTIC_REPOSITORY=%q\n' "$restic_repository"
+    } >"$tmp_secret"
+    mv "$tmp_secret" "$secrets_path"
+}
+
+load_secret_file() {
+    # shellcheck source=/dev/null
+    source "$secrets_path"
+    [[ -n "${IMMICH_POSTGRES_PASSWORD:-}" ]] || die "IMMICH_POSTGRES_PASSWORD is missing from $secrets_path"
+    [[ -n "${IMMICH_RESTIC_PASSWORD:-}" ]] || die "IMMICH_RESTIC_PASSWORD is missing from $secrets_path"
+    [[ -n "${IMMICH_RESTIC_REPOSITORY:-}" ]] || die "IMMICH_RESTIC_REPOSITORY is missing from $secrets_path"
+    if [[ "$rotate_secrets" == true && "$IMMICH_RESTIC_REPOSITORY" != "$restic_repository" ]]; then
+        die "generated restic repository did not match controller secrets file"
+    fi
+}
+
+enable_immich_registry_entry() {
+    python3 - "$registry" "$active_master" "$passive_backup" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+active = sys.argv[2]
+passive = sys.argv[3]
+if path.exists():
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+else:
+    data = {"schema_version": 1, "apps": {}}
+if data.get("schema_version") != 1:
+    raise SystemExit(f"{path} must use schema_version: 1")
+apps = data.setdefault("apps", {})
+if not isinstance(apps, dict):
+    raise SystemExit(f"{path}.apps must be a mapping")
+entry = dict(apps.get("immich") or {})
+entry["enabled"] = True
+entry["placement"] = {"active_master": active, "passive_backup": passive}
+entry["ingress_mode"] = "tailscale"
+resources = entry.get("resources")
+if resources is None:
+    entry["resources"] = {}
+elif not isinstance(resources, dict):
+    raise SystemExit(f"{path}.apps.immich.resources must be a mapping")
+apps["immich"] = entry
+path.parent.mkdir(parents=True, exist_ok=True)
+tmp = path.with_name(path.name + ".tmp")
+tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+tmp.chmod(0o600)
+tmp.replace(path)
+PY
+}
+
+prepare_app_workspace() {
+    local approved_commit=$1
+    local app_workspace="/home/minion/src/klokast-box"
+    local grant_dir="/var/lib/klokast/approved-state/apps/immich"
+    local grant_path="${grant_dir}/grant.json"
+    local work_tmp
+    work_tmp="$(mktemp -d)"
+
+    cleanup_workspace_tmp() {
+        rm -rf "$work_tmp"
+    }
+    trap cleanup_workspace_tmp RETURN
+
+    git archive "$approved_commit" | tar -C "$work_tmp" -xf -
+    printf '%s\n' "$approved_commit" >"$work_tmp/.klokast-approved-commit"
+    doas rm -rf "${app_workspace}.new" "${app_workspace}.old"
+    doas install -d -o minion -g minion -m 0750 "${app_workspace}.new"
+    (cd "$work_tmp" && tar -cf - .) | doas tar -C "${app_workspace}.new" -xf -
+    doas chown -R minion:minion "${app_workspace}.new"
+    if doas test -d "$app_workspace"; then
+        doas mv "$app_workspace" "${app_workspace}.old"
+    fi
+    doas mv "${app_workspace}.new" "$app_workspace"
+    doas rm -rf "${app_workspace}.old"
+    doas install -o minion -g minion -m 0644 "$work_tmp/.klokast-approved-commit" "${app_workspace}/.klokast-approved-commit"
+
+    cat >"$work_tmp/20-minion-immich" <<'SUDOERS'
+Defaults:minion !requiretty
+minion ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-immich --hostname photos --tags tag\:immich
+SUDOERS
+    doas install -o root -g root -m 0440 "$work_tmp/20-minion-immich" /etc/sudoers.d/20-minion-immich
+    doas /usr/sbin/visudo -cf /etc/sudoers.d/20-minion-immich >/dev/null
+
+    ansible/bin/platform-resources \
+        --registry "$registry" \
+        --app immich \
+        --approved-commit "$approved_commit" \
+        grant >"$work_tmp/grant.json"
+    doas install -d -o root -g minion -m 0750 "$grant_dir"
+    doas install -o root -g minion -m 0640 "$work_tmp/grant.json" "$grant_path"
+}
+
+run_app_phase() {
+    local app_env_file
+    app_env_file="$(mktemp /tmp/immich-controller-env.XXXXXX)"
+
+    cleanup_app_env() {
+        doas rm -f "$app_env_file"
+    }
+    trap cleanup_app_env RETURN
+
+    {
+        printf 'IMMICH_POSTGRES_PASSWORD=%q\n' "$IMMICH_POSTGRES_PASSWORD"
+        printf 'IMMICH_RESTIC_PASSWORD=%q\n' "$IMMICH_RESTIC_PASSWORD"
+        printf 'IMMICH_RESTIC_REPOSITORY=%q\n' "$IMMICH_RESTIC_REPOSITORY"
+    } >"$app_env_file"
+    chmod 0600 "$app_env_file"
+    doas chown minion:minion "$app_env_file"
+    doas install -d -o minion -g minion -m 0700 \
+        /home/minion/.ansible \
+        /home/minion/.ansible/tmp \
+        /home/minion/.ansible/cp \
+        /home/minion/.ansible/facts
+
+    doas -u minion /usr/bin/env -i \
+        HOME=/home/minion \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        ANSIBLE_LOCAL_TEMP=/home/minion/.ansible/tmp \
+        ANSIBLE_SSH_CONTROL_PATH_DIR=/home/minion/.ansible/cp \
+        ANSIBLE_CACHE_PLUGIN_CONNECTION=/home/minion/.ansible/facts \
+        IMMICH_CONTROLLER_ENV="$app_env_file" \
+        /bin/bash -se <<APP
+set -euo pipefail
+set -a
+# shellcheck source=/dev/null
+source "\$IMMICH_CONTROLLER_ENV"
+set +a
+unset KLOKAST_PLATFORM_RESOURCES_REGISTRY KLOKAST_APP_RESOURCES_REGISTRY
+cd /home/minion/src/klokast-box
+apps/immich/bin/immichctl resource-grant-check --active-master "$active_master" --passive-backup "$passive_backup" --resource-grant /var/lib/klokast/approved-state/apps/immich/grant.json
+apps/immich/bin/immichctl install --active-master "$active_master" --passive-backup "$passive_backup" --resource-grant /var/lib/klokast/approved-state/apps/immich/grant.json
+apps/immich/bin/immichctl verify --active-master "$active_master" --passive-backup "$passive_backup" --resource-grant /var/lib/klokast/approved-state/apps/immich/grant.json
+APP
+}
+
+active_master=
+passive_backup=
+registry="$DEFAULT_REGISTRY"
+secrets_path=
+restic_repository=
+rotate_secrets=false
+dry_run=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --active-master)
+        need_value "$@"; active_master=$2; shift 2 ;;
+    --passive-backup)
+        need_value "$@"; passive_backup=$2; shift 2 ;;
+    --registry)
+        need_value "$@"; registry=$2; shift 2 ;;
+    --secrets)
+        need_value "$@"; secrets_path=$2; shift 2 ;;
+    --restic-repository)
+        need_value "$@"; restic_repository=$2; shift 2 ;;
+    --rotate-secrets)
+        rotate_secrets=true; shift ;;
+    --dry-run)
+        dry_run=true; shift ;;
+    -h|--help|help)
+        usage; exit 0 ;;
+    *)
+        die "unknown argument: $1" ;;
+    esac
+done
+
+[[ -n "$active_master" ]] || die "--active-master is required"
+[[ -n "$passive_backup" ]] || die "--passive-backup is required"
+require_box "$active_master" "--active-master"
+require_box "$passive_backup" "--passive-backup"
+[[ "$active_master" != "$passive_backup" ]] || die "active master and passive backup must differ"
+command -v python3 >/dev/null 2>&1 || die "python3 is required on the controller"
+
+registry="$(expand_controller_path "$registry")"
+if [[ -z "$secrets_path" ]]; then
+    secrets_path="${HOME}/private/klokast/apps/immich/${active_master}-${passive_backup}.env"
+else
+    secrets_path="$(expand_controller_path "$secrets_path")"
+fi
+if [[ -z "$restic_repository" ]]; then
+    restic_repository="sftp:neo@${passive_backup}-bak.${MAGICDNS_SUFFIX}:/srv/immich-restic/${active_master}"
+fi
+
+if [[ "$dry_run" == true ]]; then
+    printf 'Controller user: %s\n' "$(id -un)"
+    printf 'Repository: %s\n' "$REPO_ROOT"
+    printf 'Registry: %s\n' "$registry"
+    printf 'Secrets: %s\n' "$secrets_path"
+    printf 'Restic repository: %s\n' "$restic_repository"
+    printf 'Would: enable Immich registry entry, apply app-scoped resources, mint private ingress identity, prepare minion workspace, install and verify Immich.\n'
+    exit 0
+fi
+
+[[ "$(id -un)" == "smith" ]] || die "run this as smith on the active ops controller"
+[[ -d "$REPO_ROOT/.git" ]] || die "script must run from the checked-out klokast-box repository"
+
+write_secret_file
+load_secret_file
+
+cd "$REPO_ROOT"
+git pull --ff-only
+git status --short --branch
+enable_immich_registry_entry
+
+approved_commit="$(git rev-parse HEAD)"
+ansible/bin/platform-resources --registry "$registry" lint
+ansible/bin/platform-resources --registry "$registry" --app immich diff
+ansible/bin/platform-resources --registry "$registry" --app immich --approved-commit "$approved_commit" apply
+ansible/bin/platform-resources --registry "$registry" --app immich --magicdns-suffix "$MAGICDNS_SUFFIX" verify
+sudo -n /usr/local/sbin/ts-authkey-immich --check-config --hostname photos --tags tag:immich >/dev/null
+apps/immich/bin/immichctl private-ingress-identity \
+    --active-master "$active_master" \
+    --passive-backup "$passive_backup" \
+    --resources-registry "$registry"
+
+prepare_app_workspace "$approved_commit"
+run_app_phase
+
+printf 'Immich install complete for active=%s passive=%s\n' "$active_master" "$passive_backup"
+printf 'Controller secrets: %s\n' "$secrets_path"

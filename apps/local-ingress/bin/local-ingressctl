@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+APP_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = APP_DIR.parents[1]
+PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
+ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
+BASE_INVENTORY = REPO_ROOT / "ansible" / "inventory" / "hosts.yml"
+ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
+MAGICDNS_SUFFIX = os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net")
+RESOURCES_REGISTRY_DEFAULT = os.environ.get(
+    "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
+    os.environ.get("KLOKAST_APP_RESOURCES_REGISTRY", ""),
+)
+LOCAL_DOMAIN_DEFAULT = os.environ.get("KLOKAST_HOUSEHOLD_LOCAL_DOMAIN", "")
+TLS_CERT_DEFAULT = os.environ.get("KLOKAST_LOCAL_INGRESS_TLS_CERT", "")
+TLS_KEY_DEFAULT = os.environ.get("KLOKAST_LOCAL_INGRESS_TLS_KEY", "")
+
+BOX_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+DOMAIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+")
+ROLE_SUFFIXES = {"bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt"}
+
+
+def die(message):
+    print(f"local-ingressctl: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def valid_box(value):
+    if not isinstance(value, str) or not BOX_RE.fullmatch(value):
+        return False
+    return not any(value == suffix or value.endswith(f"-{suffix}") for suffix in ROLE_SUFFIXES)
+
+
+def require_box(value, field):
+    if not valid_box(value):
+        die(f"{field} must be a box name like k001, not a VM hostname")
+
+
+def require_domain(value, field):
+    if not isinstance(value, str) or not DOMAIN_RE.fullmatch(value.strip(".")):
+        die(f"{field} must be an owned DNS name like home.example.com")
+    return value.strip(".").lower()
+
+
+def require_file(value, field):
+    path = Path(value).expanduser()
+    if not path.is_file():
+        die(f"{field} must point to an existing file: {path}")
+    return str(path)
+
+
+def run(argv, *, env=None):
+    subprocess.run(argv, cwd=REPO_ROOT, env=env, check=True)
+
+
+def output(argv):
+    return subprocess.check_output(argv, cwd=REPO_ROOT, text=True)
+
+
+def git_head():
+    return output(["git", "rev-parse", "HEAD"]).strip()
+
+
+def load_resources(registry, box):
+    if not registry:
+        die("--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY")
+    registry_path = Path(registry).expanduser()
+    if not registry_path.is_file():
+        die(f"platform resources registry does not exist: {registry_path}")
+    data = json.loads(
+        output(
+            [
+                str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
+                "--registry",
+                str(registry_path),
+                "--app",
+                "local-ingress",
+                "show",
+            ]
+        )
+    )
+    app = (data.get("apps") or {}).get("local-ingress") or {}
+    if not app.get("enabled"):
+        die("local-ingress must be enabled in the platform resources registry")
+    if box not in (app.get("boxes") or []):
+        die("local-ingress registry placement.active_master must match --box")
+    required_resources = {
+        "household-https",
+        "music-upstream",
+    }
+    missing = sorted(required_resources - set(app.get("resources") or []))
+    if missing:
+        die(
+            "local-ingress registry is missing local-lan resources: "
+            + ", ".join(missing)
+        )
+    return data
+
+
+def render_box_inventory(box, output_path):
+    run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "render-node-inventory"),
+            "--node",
+            box,
+            "--magicdns-suffix",
+            MAGICDNS_SUFFIX,
+            "--output",
+            str(output_path),
+        ]
+    )
+
+
+def write_vars(tmp, local_domain, tls_cert="", tls_key=""):
+    data = {"local_ingress_domain": local_domain}
+    if tls_cert:
+        data["local_ingress_tls_cert_source"] = tls_cert
+    if tls_key:
+        data["local_ingress_tls_key_source"] = tls_key
+    path = tmp / "local-ingress-vars.yml"
+    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def ansible_env():
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
+    env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
+    return env
+
+
+def run_playbook(tmp, playbook, box, vars_path):
+    inventory = tmp / f"{box}.yml"
+    render_box_inventory(box, inventory)
+    limit = f"{box}-dmz"
+    run(
+        [
+            "ansible-playbook",
+            "-vv",
+            "-i",
+            str(BASE_INVENTORY),
+            "-i",
+            str(inventory),
+            str(playbook),
+            "--limit",
+            limit,
+            "-e",
+            f"@{vars_path}",
+        ],
+        env={
+            **ansible_env(),
+            "ANSIBLE_SSH_COMMON_ARGS": (
+                "-o StrictHostKeyChecking=accept-new "
+                f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
+            ),
+        },
+    )
+
+
+def apply_platform_resources(registry, approved_commit):
+    run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
+            "--registry",
+            str(Path(registry).expanduser()),
+            "--app",
+            "local-ingress",
+            "--approved-commit",
+            approved_commit or git_head(),
+            "apply",
+        ]
+    )
+
+
+def cmd_install(args):
+    require_box(args.box, "--box")
+    local_domain = require_domain(args.local_domain, "--local-domain")
+    tls_cert = require_file(args.tls_cert, "--tls-cert")
+    tls_key = require_file(args.tls_key, "--tls-key")
+    load_resources(args.resources_registry, args.box)
+    with tempfile.TemporaryDirectory(prefix="local-ingressctl-") as tmp_name:
+        tmp = Path(tmp_name)
+        vars_path = write_vars(tmp, local_domain, tls_cert, tls_key)
+        run_playbook(tmp, PLAYBOOK_DIR / "20-install.yml", args.box, vars_path)
+
+
+def cmd_verify(args):
+    require_box(args.box, "--box")
+    local_domain = require_domain(args.local_domain, "--local-domain")
+    load_resources(args.resources_registry, args.box)
+    with tempfile.TemporaryDirectory(prefix="local-ingressctl-") as tmp_name:
+        tmp = Path(tmp_name)
+        vars_path = write_vars(tmp, local_domain)
+        run_playbook(tmp, PLAYBOOK_DIR / "40-verify.yml", args.box, vars_path)
+
+
+def cmd_deploy(args):
+    require_box(args.box, "--box")
+    require_domain(args.local_domain, "--local-domain")
+    require_file(args.tls_cert, "--tls-cert")
+    require_file(args.tls_key, "--tls-key")
+    load_resources(args.resources_registry, args.box)
+    apply_platform_resources(args.resources_registry, args.approved_commit)
+    cmd_install(args)
+    cmd_verify(args)
+
+
+def cmd_status(args):
+    require_box(args.box, "--box")
+    load_resources(args.resources_registry, args.box)
+    print(f"dmz={args.box}-dmz")
+    if args.local_domain:
+        local_domain = require_domain(args.local_domain, "--local-domain")
+        for label in ("music", "nextcloud", "immich"):
+            print(f"{label}=https://{label}.{local_domain}")
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Deploy and verify the Klokast local HTTPS ingress.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for name in ("deploy", "install", "verify", "status"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--box", required=True)
+        command.add_argument(
+            "--resources-registry",
+            default=RESOURCES_REGISTRY_DEFAULT,
+            help="private platform resources registry",
+        )
+        command.add_argument(
+            "--local-domain",
+            default=LOCAL_DOMAIN_DEFAULT,
+            help="owned split-DNS domain for local apps",
+        )
+        if name in ("deploy", "install"):
+            command.add_argument(
+                "--tls-cert",
+                default=TLS_CERT_DEFAULT,
+                help="wildcard/fullchain certificate file for the local domain",
+            )
+            command.add_argument(
+                "--tls-key",
+                default=TLS_KEY_DEFAULT,
+                help="private key file for the local domain",
+            )
+        if name == "deploy":
+            command.add_argument(
+                "--approved-commit",
+                default="",
+                help="approved pushed repo commit; defaults to HEAD",
+            )
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
+    if args.command == "deploy":
+        cmd_deploy(args)
+    elif args.command == "install":
+        cmd_install(args)
+    elif args.command == "verify":
+        cmd_verify(args)
+    else:
+        cmd_status(args)
+
+
+if __name__ == "__main__":
+    main()

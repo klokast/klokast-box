@@ -1,0 +1,102 @@
+#!/bin/sh
+set -eu
+{% if immich_manage_default_restic_sftp | bool %}
+{% set restic_option = '-o "sftp.args=-P ' ~ (immich_restic_sftp_port | string) ~ ' -i /run/secrets/immich-restic-sftp-key -o UserKnownHostsFile=/run/secrets/immich-restic-known-hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=240"' %}
+{% else %}
+{% set restic_option = '' %}
+{% endif %}
+
+podman_cmd() {
+    if [ "$(id -un)" = "{{ vm_admin_user_name }}" ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name }} /usr/bin/podman "$@"
+    fi
+}
+
+image_ref() {
+    /usr/bin/jq -r --arg key "$1" '.images[$key].pull_ref' {{ (immich_service_root ~ '/image-sources.json') | quote }}
+}
+
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+dump_name="postgres-$timestamp.sql"
+dump_tmp=$(mktemp)
+server_was_running=false
+
+cleanup_tmp() {
+    rm -f "$dump_tmp"
+}
+
+restore_server() {
+    if [ "$server_was_running" = true ]; then
+        podman_cmd start {{ immich_server_container_name | quote }} >/dev/null
+    fi
+}
+
+restore_server_on_exit() {
+    restore_server || true
+    cleanup_tmp
+}
+trap restore_server_on_exit EXIT
+
+alpine_ref=$(image_ref alpine)
+podman_cmd pull --policy=missing --retry=0 "$alpine_ref" >/dev/null
+
+if podman_cmd container exists {{ immich_server_container_name | quote }}; then
+    server_running=$(
+        podman_cmd inspect \
+            --format '{% raw %}{{.State.Running}}{% endraw %}' \
+            {{ immich_server_container_name | quote }} \
+            2>/dev/null || printf false
+    )
+    if [ "$server_running" = true ]; then
+        server_was_running=true
+        podman_cmd stop -t 60 {{ immich_server_container_name | quote }} >/dev/null
+    fi
+fi
+
+# shellcheck disable=SC2016
+podman_cmd exec {{ immich_postgres_container_name | quote }} \
+    sh -eu -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump --clean --if-exists --dbname="$POSTGRES_DB" --username="$POSTGRES_USER"' > "$dump_tmp"
+
+# shellcheck disable=SC2016
+podman_cmd run --rm -i \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    --entrypoint /bin/sh \
+    -v {{ immich_backup_volume | quote }}:/srv/immich/backup \
+    "$alpine_ref" \
+    -c 'set -eu; cat >"/srv/immich/backup/$1"' sh "$dump_name" <"$dump_tmp"
+
+set -- run --rm \
+    --name {{ (immich_backup_container_name ~ '-run') | quote }} \
+    --user 0:0 \
+    --env-file {{ (immich_env_root ~ '/restic.env') | quote }} \
+    -e HOME=/tmp \
+    -e XDG_CACHE_HOME=/tmp/restic-cache \
+    -v {{ immich_library_volume | quote }}:/srv/immich/library:ro \
+    -v {{ immich_model_cache_volume | quote }}:/srv/immich/model-cache:ro \
+    -v {{ immich_backup_volume | quote }}:/srv/immich/backup:ro
+if [ {{ (immich_manage_default_restic_sftp | bool) | ternary('true', 'false') | quote }} = true ]; then
+    set -- "$@" \
+        -v {{ immich_restic_ssh_key_path | quote }}:/run/secrets/immich-restic-sftp-key:ro \
+        -v {{ immich_restic_known_hosts_path | quote }}:/run/secrets/immich-restic-known-hosts:ro
+fi
+set -- "$@" \
+    --pull=never \
+    "$alpine_ref" \
+    -c 'set -eu; apk add --no-cache ca-certificates openssh-client restic tzdata >/dev/null; restic {{ restic_option }} snapshots >/dev/null 2>&1 || restic {{ restic_option }} init; restic {{ restic_option }} backup /srv/immich'
+podman_cmd "$@"
+
+# shellcheck disable=SC2016
+podman_cmd run --rm \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    --entrypoint /bin/sh \
+    -v {{ immich_backup_volume | quote }}:/srv/immich/backup \
+    "$alpine_ref" \
+    -c 'set -eu; rm -f "/srv/immich/backup/$1"; date -u +%s > /srv/immich/backup/last-success.epoch' sh "$dump_name"
+restore_server
+server_was_running=false
+trap - EXIT
+cleanup_tmp

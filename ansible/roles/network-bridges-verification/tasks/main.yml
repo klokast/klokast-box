@@ -1,0 +1,52 @@
+---
+- name: Check the resolved WAN uplink interface path
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ dom0_wan_uplink_interface_resolved }}"
+    follow: true
+  register: verify_network_bridges_uplink
+
+- name: Collect the rendered dom0 interfaces file
+  ansible.builtin.command: cat /etc/network/interfaces
+  register: verify_network_bridges_interfaces
+  changed_when: false
+
+- name: Check whether bridge-utils is installed
+  ansible.builtin.command: apk info -e bridge-utils
+  register: verify_network_bridges_package
+  changed_when: false
+
+- name: Collect bridge module boot-load entries
+  ansible.builtin.command: grep '^bridge$' /etc/modules
+  register: verify_network_bridges_modules
+  changed_when: false
+
+- name: Assert the dom0 bridge configuration matches the detected uplink
+  ansible.builtin.assert:
+    that:
+      - verify_network_bridges_uplink.stat.exists | default(false)
+      - verify_network_bridges_uplink.stat.isdir | default(false)
+      - verify_network_bridges_package.rc == 0
+      - verify_network_bridges_modules.rc == 0
+      - "'auto ' ~ dom0_wan_uplink_interface_resolved in verify_network_bridges_interfaces.stdout"
+      - "'iface ' ~ dom0_wan_uplink_interface_resolved ~ ' inet manual' in verify_network_bridges_interfaces.stdout"
+      - "'auto ' ~ dom0_wan_bridge_name in verify_network_bridges_interfaces.stdout"
+      - "'bridge-ports ' ~ dom0_wan_uplink_interface_resolved in verify_network_bridges_interfaces.stdout"
+      - >-
+        ((dom0_bridges | map(attribute='name') | list)
+        | difference(
+            verify_network_bridges_interfaces.stdout_lines
+            | select('match', '^auto ')
+            | map('regex_replace', '^auto ', '')
+            | list
+          )
+        | length) == 0
+    fail_msg: >-
+      Dom0 bridge verification failed. Review the detected uplink interface and
+      the rendered /etc/network/interfaces file before rebooting into the bridge
+      configuration.
+
+- name: Show verified dom0 bridge configuration summary
+  ansible.builtin.debug:
+    msg:
+      - "wan_uplink={{ dom0_wan_uplink_interface_resolved }}"
+      - "{{ verify_network_bridges_interfaces.stdout_lines }}"

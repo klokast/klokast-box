@@ -1,0 +1,1068 @@
+{
+	"groups": {
+		// Source of truth for Tailscale ACL and Grants is the Tailscale API.
+		// The file `ops/tailscale-config.json` in the git repository is copied from that API output, and might be out of date.
+		//
+		// `group:operator` is the developer of the Platform, connecting from his laptop.
+		"group:operators": {{ operators_json }},
+
+		// Trusted family users allowed to access private application frontends.
+		"group:family": {{ family_json }},
+	},
+
+	"tagOwners": {
+		// The Ansible controller: where ansible-playbook runs.
+		"tag:ops": ["group:operators", "tag:ops"],
+
+		// The infra service host: where Codex/LLM automation runs. This tag
+		// does not carry controller authority by itself; it can only reach
+		// tag:ops through the explicit grants and SSH rules below.
+		"tag:infra": ["group:operators", "tag:ops"],
+
+		// Legacy name for tag:infra, kept until enrolled machines converge.
+		"tag:infra-agent": ["group:operators", "tag:ops"],
+
+		// Containerized AI runner inside an ops VM. It is a remote terminal,
+		// not a trusted controller.
+		"tag:airunner": ["group:operators", "tag:ops"],
+
+		// The "Out Of Band" access to the nodes, via Remote KVM devices.
+		"tag:oob": ["group:operators"],
+
+		// The Virtual Machines that run on top of `dom0`: the router VM and the 4 container engines VMs: `dmz`, `bak`, `iot`, `usr`.
+		"tag:vm": ["tag:ops"],
+
+		// The `dom0` domain of each node, maintained by the Xen hypervisor.
+		"tag:dom0": ["tag:ops"],
+
+		// The containers started by the `DMZ` container engine VM: internet-facing services.
+		"tag:dmz": ["tag:ops"],
+
+		// The stable private Tailscale ingress for the active Nextcloud service.
+		"tag:nextcloud": ["tag:ops"],
+
+		// The stable private Tailscale ingress for the active Immich service.
+		"tag:immich": ["tag:ops"],
+
+		// The stable private Tailscale ingress for local music playback.
+		"tag:music": ["tag:ops"],
+
+		// The stable private Tailscale upload ingress for local music libraries.
+		"tag:music-upload": ["tag:ops"],
+
+		// The stable private Tailscale ingress for local printing.
+		"tag:print": ["tag:ops"],
+
+		// The Raspberry Pi streamer endpoint attached to the local USB DAC.
+		"tag:streamer": ["tag:ops"],
+
+		// Dedicated torrent app VM and private qBittorrent ingress.
+		"tag:torrent": ["tag:ops"],
+
+		// Dedicated household/admin Wi-Fi VPN egress gateway.
+		"tag:household-vpn": ["tag:ops"],
+		// The containers started by the `backend` container engine VM: services that are not internet-facing, for example database, `etcd`, `vault`.
+		"tag:back": ["tag:ops"],
+
+		// The containers started by the `IOT` container engine VM: services that are untrusted because they interact with internet-connected devices in the LAN of the node, for example: air purifier, weather sensors, smart TV, video surveillance camera, IOT-hub, smart assistant.
+		"tag:iot": ["tag:ops"],
+
+		// TAG TO BE REMOVED
+		"tag:eph": ["tag:ops"],
+
+		// The containers started by the `usr` container engine VM: per-user app endpoints and user-facing workloads.
+		"tag:usr": ["tag:ops"],
+
+		// `dom0` after booting from the bootstrap .iso, but before rebooting into its final Alpine Linux form.
+		// OAuth access: `pre-approved, ephemeral, reusable.
+		"tag:bootstrap": ["tag:ops"],
+	},
+
+	"grants": [
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:ops"],
+
+			"ip": [
+				"tcp:22",
+				"tcp:80",
+				"tcp:443",
+				"udp:60000-61000",
+			],
+		},
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:infra", "tag:infra-agent"],
+			"ip":  ["tcp:22", "udp:60000-61000"],
+		},
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:airunner"],
+			"ip":  ["tcp:22", "udp:60000-61000"],
+		},
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:oob"],
+
+			"ip": [
+				"tcp:22",
+				"tcp:80",
+				"tcp:443",
+				"udp:60000-61000",
+			],
+		},
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:bootstrap"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:streamer"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["group:family"],
+			"dst": ["tag:nextcloud"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["group:family"],
+			"dst": ["tag:immich"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["group:family"],
+			"dst": ["tag:music"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["group:family"],
+			"dst": ["tag:music-upload"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["group:family"],
+			"dst": ["tag:print"],
+			"ip":  ["tcp:631"],
+		},
+		{
+			"src": ["group:family"],
+			"dst": ["tag:torrent"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["tag:music-upload"],
+			"dst": ["tag:torrent"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:oob"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:nextcloud"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:immich"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:music"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:music-upload"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:print"],
+			"ip":  ["tcp:631"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:streamer"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:torrent"],
+			"ip":  ["tcp:443"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:infra", "tag:infra-agent"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:infra", "tag:infra-agent"],
+			"dst": ["tag:ops"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:ops"],
+			"dst": ["tag:airunner"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			"src": ["tag:airunner"],
+			"dst": ["tag:ops"],
+			"ip":  ["tcp:22"],
+		},
+		{
+			// App-managed VM-to-VM backup replication uses OpenSSH/SFTP with
+			// per-app keys and host-level sshd restrictions.
+			"src": ["tag:vm"],
+			"dst": ["tag:vm"],
+			"ip":  ["tcp:22220"],
+		},
+		{
+			"src": ["tag:ops"],
+
+			"dst": [
+				"tag:dom0",
+				"tag:bootstrap",
+				"tag:dmz",
+				"tag:back",
+				"tag:iot",
+				"tag:streamer",
+				"tag:vm",
+				"tag:eph",
+				"tag:ops",
+			],
+
+			"ip": ["tcp:22"],
+		},
+		{
+			"src": ["tag:back"],
+			"dst": ["tag:oob"],
+			"ip":  ["tcp:22"],
+		},
+	],
+
+	"ssh": [
+		// Failsafe access by the admin to the out of band device.
+		{
+			"src":         ["group:operators"],
+			"dst":         ["tag:oob"],
+			"users":       ["root"],
+			"action":      "check",
+			"checkPeriod": "12h0m0s",
+		},
+		// Connection of the admin to ops controllers.
+			// Hetzner `codex` and `vultr-ops` `agent` remain AI runners;
+			// in-Platform, `<box>-ops` uses `smith` and `minion`.
+		{
+			"src": ["group:operators"],
+			"dst": ["tag:ops"],
+
+			"users": [
+					"neo",
+					"codex",
+					"smith",
+					"minion",
+					"klokast-infra",
+					"klokast-app",
+					"agent",
+			],
+
+			"action":      "check",
+			"checkPeriod": "12h0m0s",
+		},
+		// Connection from the admin to the host that runs the infra agent.
+		{
+			"src":         ["group:operators"],
+			"dst":         ["tag:infra", "tag:infra-agent"],
+			"users":       ["neo", "codex", "agent", "ml-agent"],
+			"action":      "check",
+			"checkPeriod": "12h0m0s",
+		},
+		// Connection from the admin to an in-Platform AI runner container.
+		{
+			"src":         ["group:operators"],
+			"dst":         ["tag:airunner"],
+			"users":       ["neo", "agent"],
+			"action":      "check",
+			"checkPeriod": "12h0m0s",
+		},
+		// Controller-to-infra-agent path for the bootstrap controller to
+		// verify and repair the standalone infra-agent host.
+		{
+			"src":    ["tag:ops"],
+			"dst":    ["tag:infra", "tag:infra-agent"],
+			"users":  ["agent"],
+			"action": "accept",
+		},
+		// Controller-to-airunner path for checking and repairing the local
+		// remote-terminal container.
+		{
+			"src":    ["tag:ops"],
+			"dst":    ["tag:airunner"],
+			"users":  ["agent"],
+			"action": "accept",
+		},
+		// Remote-terminal path from the infra agent host to the Ansible
+		// controller. The controller's Unix and sudo boundaries still decide
+		// which operations can mutate infrastructure.
+		{
+			"src":    ["tag:infra", "tag:infra-agent"],
+			"dst":    ["tag:ops"],
+				"users":  ["smith", "klokast-infra"],
+			"action": "accept",
+		},
+		// Remote-terminal path from an in-Platform AI runner container to the
+		// Ansible controller.
+		{
+			"src":    ["tag:airunner"],
+			"dst":    ["tag:ops"],
+				"users":  ["smith", "klokast-infra"],
+			"action": "accept",
+		},
+		// Migration and break-glass controller-to-controller access. This lets
+		// the current Hetzner ops host converge the first in-Platform ops VM.
+		{
+			"src":    ["tag:ops"],
+			"dst":    ["tag:ops"],
+				"users":  ["smith", "klokast-infra"],
+			"action": "accept",
+		},
+		// Connection from the admin to the mini PC host during bootstrap phase, usually for tests only,
+		{
+			"src":         ["group:operators"],
+			"dst":         ["tag:bootstrap"],
+			"users":       ["root"],
+			"action":      "check",
+			"checkPeriod": "12h0m0s",
+		},
+		// Access by the coding agent to the out of band device, usually not necessary.
+		{
+			"src":    ["tag:ops"],
+			"dst":    ["tag:oob"],
+			"users":  ["root"],
+			"action": "accept",
+		},
+		// From deployment server to out of band, during bootstrap phase, to install the persistent Alpine Linux host.
+		{
+			"src":    ["tag:ops"],
+			"dst":    ["tag:bootstrap"],
+			"users":  ["root"],
+			"action": "accept",
+		},
+		// Connection from the deployment server (coding agent and Ansible playbooks) to the production machines: VMs and containers.
+		{
+			"src": ["tag:ops"],
+
+			"dst": [
+				"tag:dom0",
+				"tag:dmz",
+				"tag:back",
+				"tag:iot",
+				"tag:streamer",
+				"tag:vm",
+			],
+
+			"users":  ["neo"],
+			"action": "accept",
+		},
+		// To transfer the boostrap iso file to the out of band device, for the mini pc to boot from and start the bootstrap phase.
+		{
+			"src":    ["tag:back"],
+			"dst":    ["tag:oob"],
+			"users":  ["root"],
+			"action": "accept",
+		},
+		// Family music upload path; the target container exposes only the
+		// local `music` account through Tailscale SSH.
+		{
+			"src":    ["group:family"],
+			"dst":    ["tag:music-upload"],
+			"users":  ["music"],
+			"action": "accept",
+		},
+		// Operator shutdown path for the local Raspberry Pi streamer.
+		{
+			"src":    ["group:operators"],
+			"dst":    ["tag:streamer"],
+			"users":  ["streamer-power"],
+			"action": "accept",
+		},
+		// Pull-only import path from media upload containers to completed torrents.
+		{
+			"src":    ["tag:music-upload"],
+			"dst":    ["tag:torrent"],
+			"users":  ["torrent-export"],
+			"action": "accept",
+		},
+	],
+
+	"tests": [
+		{
+			"src": "group:operators",
+
+			"accept": [
+				"tag:ops:22",
+				"tag:ops:80",
+				"tag:ops:443",
+				"tag:ops:60001",
+				"tag:ops:60010",
+				"tag:ops:61000",
+				"tag:infra:22",
+				"tag:infra:60001",
+				"tag:infra:60010",
+				"tag:infra:61000",
+				"tag:infra-agent:22",
+				"tag:infra-agent:60001",
+				"tag:infra-agent:60010",
+				"tag:infra-agent:61000",
+				"tag:airunner:22",
+				"tag:airunner:60001",
+				"tag:airunner:60010",
+				"tag:airunner:61000",
+				"tag:oob:22",
+				"tag:oob:80",
+				"tag:oob:443",
+				"tag:oob:60001",
+				"tag:oob:60010",
+				"tag:oob:61000",
+				"tag:bootstrap:22",
+				"tag:streamer:22",
+			],
+
+			"deny": [
+				"tag:dom0:22",
+				"tag:dom0:80",
+				"tag:dom0:443",
+				"tag:dom0:60010",
+				"tag:bootstrap:80",
+				"tag:bootstrap:443",
+				"tag:bootstrap:60010",
+				"tag:dmz:22",
+				"tag:dmz:80",
+				"tag:dmz:443",
+				"tag:dmz:60010",
+				"tag:nextcloud:22",
+				"tag:nextcloud:80",
+				"tag:nextcloud:60010",
+				"tag:immich:22",
+				"tag:immich:80",
+				"tag:immich:60010",
+				"tag:music:22",
+				"tag:music:80",
+				"tag:music:60010",
+				"tag:music-upload:80",
+				"tag:music-upload:443",
+				"tag:music-upload:60010",
+				"tag:print:22",
+				"tag:print:443",
+				"tag:print:60010",
+				"tag:streamer:80",
+				"tag:streamer:443",
+				"tag:streamer:60010",
+				"tag:torrent:22",
+				"tag:torrent:80",
+				"tag:torrent:60010",
+				"tag:back:22",
+				"tag:back:80",
+				"tag:back:443",
+				"tag:back:60010",
+				"tag:iot:22",
+				"tag:iot:80",
+				"tag:iot:443",
+				"tag:iot:60010",
+				"tag:vm:22",
+				"tag:vm:80",
+				"tag:vm:443",
+				"tag:vm:60010",
+				"tag:eph:22",
+				"tag:eph:80",
+				"tag:eph:443",
+				"tag:eph:60010",
+				"tag:usr:22",
+				"tag:usr:80",
+				"tag:usr:443",
+				"tag:usr:60010"
+			],
+		},
+		{
+			"src": "tag:ops",
+
+			"accept": [
+				"tag:oob:22",
+				"tag:dom0:22",
+				"tag:bootstrap:22",
+				"tag:dmz:22",
+				"tag:back:22",
+				"tag:iot:22",
+				"tag:streamer:22",
+				"tag:vm:22",
+				"tag:eph:22",
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+				"tag:torrent:443",
+				"tag:ops:22",
+				"tag:infra:22",
+				"tag:infra-agent:22",
+				"tag:airunner:22",
+			],
+
+			"deny": [
+				"tag:oob:80",
+				"tag:oob:443",
+				"tag:oob:60010",
+				"tag:dom0:80",
+				"tag:dom0:443",
+				"tag:dom0:60010",
+				"tag:bootstrap:80",
+				"tag:bootstrap:443",
+				"tag:bootstrap:60010",
+				"tag:dmz:80",
+				"tag:dmz:443",
+				"tag:dmz:60010",
+				"tag:back:80",
+				"tag:back:443",
+				"tag:back:60010",
+				"tag:iot:80",
+				"tag:iot:443",
+				"tag:iot:60010",
+				"tag:streamer:80",
+				"tag:streamer:443",
+				"tag:streamer:60010",
+				"tag:vm:80",
+				"tag:vm:443",
+				"tag:vm:60010",
+				"tag:eph:80",
+				"tag:eph:443",
+				"tag:eph:60010",
+				"tag:usr:22",
+				"tag:usr:80",
+				"tag:usr:443",
+				"tag:usr:60010",
+				"tag:nextcloud:22",
+				"tag:nextcloud:80",
+				"tag:nextcloud:60010",
+				"tag:immich:22",
+				"tag:immich:80",
+				"tag:immich:60010",
+				"tag:music:22",
+				"tag:music:80",
+				"tag:music:60010",
+				"tag:music-upload:80",
+				"tag:music-upload:443",
+				"tag:music-upload:60010",
+				"tag:print:22",
+				"tag:print:443",
+				"tag:print:60010",
+				"tag:torrent:22",
+				"tag:torrent:80",
+				"tag:torrent:60010",
+				"tag:ops:80",
+				"tag:ops:443",
+				"tag:ops:60010",
+				"tag:infra:80",
+				"tag:infra:443",
+				"tag:infra:60010",
+				"tag:infra-agent:80",
+				"tag:infra-agent:443",
+				"tag:infra-agent:60010",
+				"tag:airunner:80",
+				"tag:airunner:443",
+				"tag:airunner:60010",
+			],
+		},
+		{
+			"src":    "tag:infra",
+			"accept": ["tag:ops:22"],
+
+			"deny": [
+				"tag:ops:80",
+				"tag:ops:443",
+				"tag:ops:60010",
+				"tag:oob:22",
+				"tag:dom0:22",
+				"tag:bootstrap:22",
+				"tag:dmz:22",
+				"tag:back:22",
+				"tag:iot:22",
+				"tag:streamer:22",
+				"tag:vm:22",
+				"tag:eph:22",
+				"tag:usr:22",
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+				"tag:torrent:443",
+			],
+		},
+		{
+			"src":    "tag:infra-agent",
+			"accept": ["tag:ops:22"],
+
+			"deny": [
+				"tag:ops:80",
+				"tag:ops:443",
+				"tag:ops:60010",
+				"tag:oob:22",
+				"tag:dom0:22",
+				"tag:bootstrap:22",
+				"tag:dmz:22",
+				"tag:back:22",
+				"tag:iot:22",
+				"tag:streamer:22",
+				"tag:vm:22",
+				"tag:eph:22",
+				"tag:usr:22",
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+				"tag:torrent:443",
+			],
+		},
+		{
+			"src":    "tag:airunner",
+			"accept": ["tag:ops:22"],
+
+			"deny": [
+				"tag:ops:80",
+				"tag:ops:443",
+				"tag:ops:60010",
+				"tag:oob:22",
+				"tag:dom0:22",
+				"tag:bootstrap:22",
+				"tag:dmz:22",
+				"tag:back:22",
+				"tag:iot:22",
+				"tag:streamer:22",
+				"tag:vm:22",
+				"tag:eph:22",
+				"tag:usr:22",
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+				"tag:torrent:443",
+			],
+		},
+		{
+			"src":    "tag:vm",
+			"accept": ["tag:vm:22220"],
+
+			"deny": [
+				"tag:vm:22",
+				"tag:vm:80",
+				"tag:vm:443",
+				"tag:vm:60010",
+				"tag:ops:22",
+				"tag:dom0:22",
+				"tag:dmz:22",
+				"tag:back:22",
+				"tag:iot:22",
+				"tag:streamer:22",
+				"tag:usr:22",
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+				"tag:torrent:443",
+			],
+		},
+		{
+			"src":    "tag:back",
+			"accept": ["tag:oob:22"],
+
+			"deny": [
+				"tag:oob:80",
+				"tag:oob:443",
+				"tag:oob:60010",
+				"tag:ops:22",
+				"tag:dom0:22",
+				"tag:bootstrap:22",
+				"tag:dmz:22",
+				"tag:back:22",
+				"tag:iot:22",
+				"tag:streamer:22",
+				"tag:vm:22",
+				"tag:eph:22",
+				"tag:usr:22",
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+			],
+		},
+		{
+			"src":    "tag:music-upload",
+			"accept": ["tag:torrent:22"],
+
+			"deny": [
+				"tag:torrent:443",
+				"tag:ops:22",
+				"tag:back:22",
+				"tag:music:443",
+				"tag:streamer:22",
+			],
+		},
+		{
+			"src":    "group:operators",
+			"accept": ["tag:nextcloud:443", "tag:immich:443", "tag:music:443", "tag:music-upload:22", "tag:print:631", "tag:streamer:22", "tag:torrent:443"],
+
+			"deny": [
+				"tag:nextcloud:22",
+				"tag:nextcloud:80",
+				"tag:nextcloud:60010",
+				"tag:immich:22",
+				"tag:immich:80",
+				"tag:immich:60010",
+				"tag:music:22",
+				"tag:music:80",
+				"tag:music:60010",
+				"tag:music-upload:80",
+				"tag:music-upload:443",
+				"tag:music-upload:60010",
+				"tag:print:22",
+				"tag:print:443",
+				"tag:print:60010",
+				"tag:streamer:80",
+				"tag:streamer:443",
+				"tag:streamer:60010",
+				"tag:torrent:22",
+				"tag:torrent:80",
+				"tag:torrent:60010",
+				"tag:back:8080",
+				"tag:back:22220",
+				"tag:dmz:443",
+			],
+		},
+	],
+
+	"sshTests": [
+		{
+			"src":   "group:operators",
+			"dst":   ["tag:oob"],
+			"check": ["root"],
+
+			"deny": [
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src": "group:operators",
+			"dst": ["tag:ops"],
+
+			"check": [
+					"neo",
+					"codex",
+					"smith",
+					"minion",
+					"klokast-infra",
+					"klokast-app",
+			],
+
+			"deny": ["root", "xiaoju", "one"],
+		},
+		{
+			"src":   "group:operators",
+			"dst":   ["tag:infra", "tag:infra-agent"],
+			"check": ["neo", "codex", "agent", "ml-agent"],
+
+				"deny": [
+					"root",
+					"smith",
+					"minion",
+					"klokast-infra",
+					"klokast-app",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":   "group:operators",
+			"dst":   ["tag:airunner"],
+			"check": ["neo", "agent"],
+
+				"deny": [
+					"root",
+					"codex",
+					"smith",
+					"minion",
+					"klokast-infra",
+					"klokast-app",
+				"ml-agent",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":   "group:operators",
+			"dst":   ["tag:bootstrap"],
+			"check": ["root"],
+
+			"deny": [
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src": "group:operators",
+
+			"dst": [
+				"tag:dom0",
+				"tag:dmz",
+				"tag:back",
+				"tag:iot",
+				"tag:vm",
+				"tag:eph",
+				"tag:usr",
+				"tag:nextcloud",
+				"tag:immich",
+				"tag:music",
+				"tag:print",
+				"tag:torrent",
+			],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "group:operators",
+			"dst":    ["tag:music-upload"],
+			"accept": ["music"],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "group:operators",
+			"dst":    ["tag:streamer"],
+			"accept": ["streamer-power"],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+				"music",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:ops",
+			"dst":    ["tag:oob"],
+			"accept": ["root"],
+
+			"deny": [
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:ops",
+			"dst":    ["tag:bootstrap"],
+			"accept": ["root"],
+
+			"deny": [
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src": "tag:ops",
+
+			"dst": [
+				"tag:dom0",
+				"tag:dmz",
+				"tag:back",
+				"tag:iot",
+				"tag:streamer",
+				"tag:vm",
+			],
+
+			"accept": ["neo"],
+
+			"deny": [
+				"root",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src": "tag:ops",
+			"dst": ["tag:usr", "tag:nextcloud", "tag:immich"],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:ops",
+			"dst":    ["tag:ops"],
+				"accept": ["smith", "klokast-infra"],
+
+			"deny": [
+				"root",
+					"neo",
+					"codex",
+					"minion",
+					"klokast-app",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:ops",
+			"dst":    ["tag:infra", "tag:infra-agent"],
+			"accept": ["agent"],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+					"ml-agent",
+					"smith",
+					"minion",
+					"klokast-infra",
+					"klokast-app",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:ops",
+			"dst":    ["tag:airunner"],
+			"accept": ["agent"],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+					"ml-agent",
+					"smith",
+					"minion",
+					"klokast-infra",
+					"klokast-app",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:infra",
+			"dst":    ["tag:ops"],
+				"accept": ["smith", "klokast-infra"],
+
+			"deny": [
+				"root",
+					"neo",
+					"codex",
+					"minion",
+					"klokast-app",
+				"ml-agent",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:airunner",
+			"dst":    ["tag:ops"],
+				"accept": ["smith", "klokast-infra"],
+
+			"deny": [
+				"root",
+					"neo",
+					"codex",
+					"minion",
+					"klokast-app",
+				"agent",
+				"ml-agent",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:infra-agent",
+			"dst":    ["tag:ops"],
+				"accept": ["smith", "klokast-infra"],
+
+			"deny": [
+				"root",
+					"neo",
+					"codex",
+					"minion",
+					"klokast-app",
+				"ml-agent",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:back",
+			"dst":    ["tag:oob"],
+			"accept": ["root"],
+
+			"deny": [
+				"neo",
+				"codex",
+				"xiaoju",
+				"one",
+			],
+		},
+		{
+			"src":    "tag:music-upload",
+			"dst":    ["tag:torrent"],
+			"accept": ["torrent-export"],
+
+			"deny": [
+				"root",
+				"neo",
+				"codex",
+				"music",
+			],
+		},
+	],
+
+	"nodeAttrs": [
+		{
+			"target": ["autogroup:member"],
+			"attr":   ["funnel"],
+		},
+	],
+}

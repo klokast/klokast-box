@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_GUARDIAN="${KLOKAST_CLOUDFLARE_GUARDIAN:-k001-dom0}"
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 --guardian HOST --ciphertext PATH --policy PATH [--allowed-signers PATH] [--unseal-command PATH]
+
+Installs Cloudflare guardian root-only material on the dom0 guardian host.
+This wrapper never accepts a plaintext Cloudflare token. Encrypt or otherwise
+prepare the authority ciphertext before running it.
+
+Options:
+  --guardian HOST        Guardian dom0 host. Default: ${DEFAULT_GUARDIAN}
+  --ciphertext PATH      Encrypted Cloudflare authority blob.
+  --policy PATH          Guardian policy JSON.
+  --allowed-signers PATH OpenSSH allowed-signers file for human approvals.
+  --unseal-command PATH  Executable YubiKey-backed unseal command.
+EOF
+}
+
+die() {
+  printf 'install-cloudflare-authority: %s\n' "$*" >&2
+  exit 2
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found"
+}
+
+expand_path() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+valid_host() {
+  case "$1" in
+    ""|*[!A-Za-z0-9.-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+guardian="$DEFAULT_GUARDIAN"
+ciphertext=""
+policy=""
+allowed_signers=""
+unseal_command=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --guardian)
+      [ "$#" -ge 2 ] || die "--guardian needs a host"
+      guardian="$2"
+      shift 2
+      ;;
+    --ciphertext)
+      [ "$#" -ge 2 ] || die "--ciphertext needs a path"
+      ciphertext="$2"
+      shift 2
+      ;;
+    --policy)
+      [ "$#" -ge 2 ] || die "--policy needs a path"
+      policy="$2"
+      shift 2
+      ;;
+    --allowed-signers)
+      [ "$#" -ge 2 ] || die "--allowed-signers needs a path"
+      allowed_signers="$2"
+      shift 2
+      ;;
+    --unseal-command)
+      [ "$#" -ge 2 ] || die "--unseal-command needs a path"
+      unseal_command="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+valid_host "$guardian" || die "--guardian contains unsafe characters"
+[ -n "$ciphertext" ] || die "--ciphertext is required"
+[ -n "$policy" ] || die "--policy is required"
+
+ciphertext="$(expand_path "$ciphertext")"
+policy="$(expand_path "$policy")"
+[ -r "$ciphertext" ] || die "ciphertext is not readable: $ciphertext"
+[ -r "$policy" ] || die "policy is not readable: $policy"
+python3 -m json.tool "$policy" >/dev/null || die "policy is not valid JSON: $policy"
+if [ -n "$allowed_signers" ]; then
+  allowed_signers="$(expand_path "$allowed_signers")"
+  [ -r "$allowed_signers" ] || die "allowed-signers is not readable: $allowed_signers"
+fi
+if [ -n "$unseal_command" ]; then
+  unseal_command="$(expand_path "$unseal_command")"
+  [ -x "$unseal_command" ] || die "unseal command is not executable: $unseal_command"
+fi
+
+need_command tailscale
+need_command python3
+need_command base64
+
+ssh_target="neo@${guardian}"
+remote_dir="$(
+  tailscale ssh "$ssh_target" 'mktemp -d /tmp/cloudflare-authority.XXXXXX'
+)"
+case "$remote_dir" in
+  /tmp/cloudflare-authority.*) ;;
+  *) die "guardian returned unsafe temporary directory: $remote_dir" ;;
+esac
+
+cleanup() {
+  tailscale ssh "$ssh_target" "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT HUP INT TERM
+
+base64 < "$ciphertext" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/cloudflare-authority.enc'"
+base64 < "$policy" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/policy.json'"
+if [ -n "$allowed_signers" ]; then
+  base64 < "$allowed_signers" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/allowed-signers'"
+fi
+if [ -n "$unseal_command" ]; then
+  base64 < "$unseal_command" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/unseal-cloudflare-authority'"
+fi
+
+tailscale ssh "$ssh_target" sh -s -- "$remote_dir" <<'SH'
+set -eu
+remote_dir=$1
+root=/etc/klokast/cloudflare-guardian
+
+doas install -d -m 0700 -o root -g root "$root"
+doas install -m 0600 -o root -g root "$remote_dir/cloudflare-authority.enc" "$root/cloudflare-authority.enc"
+doas install -m 0600 -o root -g root "$remote_dir/policy.json" "$root/policy.json"
+if [ -f "$remote_dir/allowed-signers" ]; then
+  doas install -m 0600 -o root -g root "$remote_dir/allowed-signers" "$root/allowed-signers"
+fi
+if [ -f "$remote_dir/unseal-cloudflare-authority" ]; then
+  doas install -m 0700 -o root -g root "$remote_dir/unseal-cloudflare-authority" "$root/unseal-cloudflare-authority"
+fi
+SH
+
+tailscale ssh "$ssh_target" 'doas /usr/local/sbin/cloudflare-guardian status --redacted'

@@ -1,0 +1,62 @@
+---
+immich_service_name: immich
+immich_pod_name: immich
+immich_http_bind_host: "{{ backend_bootstrap_host }}"
+immich_http_host_port: 2283
+immich_http_container_port: 2283
+
+immich_service_root: /etc/klokast/immich
+immich_env_root: "{{ immich_service_root }}/env"
+immich_script_root: "{{ immich_service_root }}/bin"
+immich_legacy_stack_root: /srv/immich
+immich_legacy_library_root: "{{ immich_legacy_stack_root }}/library"
+immich_legacy_postgres_root: "{{ immich_legacy_stack_root }}/postgres"
+immich_legacy_valkey_root: "{{ immich_legacy_stack_root }}/valkey"
+immich_legacy_model_cache_root: "{{ immich_legacy_stack_root }}/model-cache"
+immich_legacy_ml_dotcache_root: "{{ immich_legacy_stack_root }}/ml-dotcache"
+immich_legacy_ml_config_root: "{{ immich_legacy_stack_root }}/ml-config"
+immich_legacy_backup_root: "{{ immich_legacy_stack_root }}/backup"
+immich_legacy_restore_root: "{{ immich_legacy_stack_root }}/restore"
+immich_library_volume: klokast-immich-library
+immich_postgres_volume: klokast-immich-postgres
+immich_valkey_volume: klokast-immich-valkey
+immich_model_cache_volume: klokast-immich-model-cache
+immich_ml_dotcache_volume: klokast-immich-ml-dotcache
+immich_ml_config_volume: klokast-immich-ml-config
+immich_backup_volume: klokast-immich-backup
+immich_restore_volume: klokast-immich-restore
+immich_restic_ssh_root: "{{ immich_service_root }}/ssh"
+immich_restic_ssh_key_path: "{{ immich_restic_ssh_root }}/restic-sftp"
+immich_restic_known_hosts_path: "{{ immich_restic_ssh_root }}/known_hosts"
+immich_restic_sftp_repository_root: /srv/immich-restic
+immich_restic_sftp_client_packages:
+  - openssh-client-default
+immich_restic_sftp_server_packages:
+  - openssh
+immich_restic_sftp_port: 22220
+immich_restic_sshd_config_path: /etc/ssh/sshd_config.d/30-immich-restic-sftp.conf
+
+immich_server_container_name: immich-server
+immich_machine_learning_container_name: immich-machine-learning
+immich_postgres_container_name: immich-postgres
+immich_valkey_container_name: immich-valkey
+immich_backup_container_name: immich-backup
+
+immich_postgres_db: immich
+immich_postgres_user: postgres
+immich_db_hostname: 127.0.0.1
+immich_db_port: 5432
+immich_redis_hostname: 127.0.0.1
+immich_redis_port: 6379
+immich_machine_learning_url: http://127.0.0.1:3003
+immich_private_tailscale_hostname: photos
+immich_magicdns_suffix: example.ts.net
+immich_private_domain: "{{ immich_private_tailscale_hostname }}.{{ immich_magicdns_suffix }}"
+immich_public_url: "https://{{ immich_private_domain }}"
+immich_trusted_proxies:
+  - "{{ platform_zones.dmz.vm_ipv4_address }}"
+
+immich_backend_required_secret_env:
+  - IMMICH_POSTGRES_PASSWORD
+  - IMMICH_RESTIC_PASSWORD
+  - IMMICH_RESTIC_REPOSITORY

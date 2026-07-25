@@ -1,0 +1,433 @@
+---
+- name: Assert the static-site runtime targets the selected DMZ VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - node_name == static_site_box
+      - static_site_domain | length > 0
+    fail_msg: >-
+      static-site-runtime must target the selected DMZ VM.
+
+- name: Read static-site install secrets from controller environment
+  ansible.builtin.set_fact:
+    static_site_cloudflared_token_secret: "{{ static_site_cloudflared_token | trim }}"
+  no_log: true
+
+- name: Assert required static-site secrets are available
+  ansible.builtin.assert:
+    that:
+      - static_site_cloudflared_token_secret | length > 0
+    fail_msg: >-
+      Export STATIC_SITE_CLOUDFLARED_TOKEN before install.
+  no_log: true
+
+- name: Assert static-site Git source parameters are safe
+  ansible.builtin.assert:
+    that:
+      - static_site_github_owner is match('^[A-Za-z0-9][A-Za-z0-9-]{0,38}$')
+      - static_site_github_repo_name is match('^[A-Za-z0-9._-]{1,100}$')
+      - static_site_git_branch is match('^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$')
+      - static_site_git_source_dir is match('^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$')
+      - "'..' not in static_site_git_branch"
+      - "'..' not in static_site_git_source_dir"
+      - "'@{' not in static_site_git_branch"
+      - "'//' not in static_site_git_branch"
+      - "'//' not in static_site_git_source_dir"
+      - "'\\' not in static_site_git_branch"
+      - "'\\' not in static_site_git_source_dir"
+      - static_site_git_branch[-1:] != '.'
+      - static_site_git_branch[-1:] != '/'
+      - static_site_git_source_dir[-1:] != '/'
+    fail_msg: >-
+      static-site Git owner, repository, branch, and source directory must be
+      simple safe names.
+
+- name: Ensure static-site DMZ packages are installed
+  community.general.apk:
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - openssh-client-default
+      - python3
+      - "{{ static_site_cloudflared_package }}"
+    state: present
+    update_cache: true
+    no_cache: true
+    repository: "{{ static_site_cloudflared_apk_repositories }}"
+  become: true
+
+- name: Check whether the generic cloudflared service exists
+  ansible.builtin.stat:
+    path: /etc/init.d/cloudflared
+  become: true
+  register: static_site_generic_cloudflared_service
+
+- name: Keep the generic cloudflared service disabled
+  ansible.builtin.service:
+    name: cloudflared
+    enabled: false
+    state: stopped
+  become: true
+  when: static_site_generic_cloudflared_service.stat.exists | default(false)
+
+- name: Ensure static-site directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vm_admin_user_name) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ static_site_service_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ static_site_config_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ static_site_secret_root }}"
+      mode: "0700"
+    - path: "{{ static_site_public_root }}"
+      mode: "0755"
+    - path: "{{ static_site_incoming_root }}"
+      mode: "0700"
+    - path: "{{ static_site_git_repo_cache_root }}"
+      mode: "0700"
+    - path: "{{ static_site_log_root }}"
+      mode: "0750"
+
+- name: Store static-site Cloudflare secret
+  ansible.builtin.copy:
+    dest: "{{ static_site_secret_root }}/cloudflared-token"
+    content: "{{ static_site_cloudflared_token_secret }}\n"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Remove obsolete static-site WebDAV secrets
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  no_log: true
+  loop:
+    - "{{ static_site_secret_root }}/nextcloud-username"
+    - "{{ static_site_secret_root }}/nextcloud-password"
+
+- name: Render static-site GitHub known hosts
+  ansible.builtin.copy:
+    dest: "{{ static_site_git_ssh_known_hosts_path }}"
+    content: |
+      {% for host_key in static_site_github_known_hosts %}
+      {{ host_key }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Render static-site Git SSH config
+  ansible.builtin.template:
+    src: static-site-git-ssh-config.j2
+    dest: "{{ static_site_git_ssh_config_path }}"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0600"
+  become: true
+
+- name: Generate the static-site GitHub deploy key when missing
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "{{ inventory_hostname }} static-site deploy key"
+      - -f
+      - "{{ static_site_git_ssh_key_path }}"
+    creates: "{{ static_site_git_ssh_key_path }}"
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+
+- name: Ensure the static-site GitHub deploy key permissions are strict
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ static_site_git_ssh_key_path }}"
+      mode: "0600"
+    - path: "{{ static_site_git_ssh_public_key_path }}"
+      mode: "0644"
+
+- name: Read the static-site GitHub deploy public key
+  ansible.builtin.command:
+    argv:
+      - cat
+      - "{{ static_site_git_ssh_public_key_path }}"
+  become: true
+  register: static_site_github_public_key
+  changed_when: false
+
+- name: Check whether GitHub accepts the static-site deploy key
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -F
+      - "{{ static_site_git_ssh_config_path }}"
+      - -o
+      - BatchMode=yes
+      - -T
+      - git@github.com
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: static_site_github_auth_check
+  changed_when: false
+  failed_when: false
+
+- name: Combine static-site GitHub deploy key check output
+  ansible.builtin.set_fact:
+    static_site_github_auth_output: >-
+      {{ static_site_github_auth_check.stdout | default('') }}
+      {{ static_site_github_auth_check.stderr | default('') }}
+
+- name: Require GITHUB_TOKEN for static-site deploy-key registration
+  delegate_to: localhost
+  become: false
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'GITHUB_TOKEN') | length > 0
+    fail_msg: |
+      GITHUB_TOKEN is required on the controller to register the read-only deploy key for {{ static_site_github_owner }}/{{ static_site_github_repo_name }}.
+      Public key:
+      {{ static_site_github_public_key.stdout }}
+  when:
+    - >-
+      'successfully authenticated' not in static_site_github_auth_output
+      and not (static_site_github_auth_output is search('Hi '))
+
+- name: Read existing static-site GitHub deploy keys
+  delegate_to: localhost
+  become: false
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ static_site_github_owner }}/{{ static_site_github_repo_name }}/keys?per_page=100"
+    method: GET
+    headers:
+      Accept: application/vnd.github+json
+      Authorization: "Bearer {{ lookup('env', 'GITHUB_TOKEN') }}"
+      X-GitHub-Api-Version: "{{ static_site_github_api_version }}"
+    return_content: true
+    status_code: 200
+  register: static_site_github_existing_deploy_keys
+  no_log: true
+  when:
+    - >-
+      'successfully authenticated' not in static_site_github_auth_output
+      and not (static_site_github_auth_output is search('Hi '))
+
+- name: Register the static-site GitHub deploy public key when missing
+  delegate_to: localhost
+  become: false
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ static_site_github_owner }}/{{ static_site_github_repo_name }}/keys"
+    method: POST
+    headers:
+      Accept: application/vnd.github+json
+      Authorization: "Bearer {{ lookup('env', 'GITHUB_TOKEN') }}"
+      X-GitHub-Api-Version: "{{ static_site_github_api_version }}"
+    body_format: json
+    body:
+      title: "{{ static_site_github_deploy_key_title }}"
+      key: "{{ static_site_github_public_key.stdout }}"
+      read_only: true
+    status_code:
+      - 201
+  register: static_site_github_registered_deploy_key
+  no_log: true
+  when:
+    - static_site_github_existing_deploy_keys.json is defined
+    - static_site_github_public_key.stdout not in (static_site_github_existing_deploy_keys.json | map(attribute='key') | list)
+
+- name: Re-check whether GitHub accepts the static-site deploy key
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -F
+      - "{{ static_site_git_ssh_config_path }}"
+      - -o
+      - BatchMode=yes
+      - -T
+      - git@github.com
+  become: true
+  become_user: "{{ vm_admin_user_name }}"
+  register: static_site_github_auth_check_after_register
+  changed_when: false
+  failed_when: false
+  when:
+    - >-
+      'successfully authenticated' not in static_site_github_auth_output
+      and not (static_site_github_auth_output is search('Hi '))
+
+- name: Combine static-site GitHub deploy key re-check output
+  ansible.builtin.set_fact:
+    static_site_github_auth_after_output: >-
+      {{ static_site_github_auth_check_after_register.stdout | default('') }}
+      {{ static_site_github_auth_check_after_register.stderr | default('') }}
+  when: static_site_github_auth_check_after_register is defined
+
+- name: Require GitHub to accept the static-site deploy key
+  ansible.builtin.assert:
+    that:
+      - >-
+        'successfully authenticated' in static_site_github_auth_output
+        or static_site_github_auth_output is search('Hi ')
+        or (
+          static_site_github_auth_after_output is defined
+          and (
+            'successfully authenticated' in static_site_github_auth_after_output
+            or static_site_github_auth_after_output is search('Hi ')
+          )
+        )
+    fail_msg: >-
+      GitHub still does not accept the static-site deploy key for
+      {{ static_site_github_owner }}/{{ static_site_github_repo_name }}.
+
+- name: Render static-site web server config
+  ansible.builtin.template:
+    src: static-site-sws.toml.j2
+    dest: "{{ static_site_config_root }}/sws.toml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Render static-site publisher config
+  ansible.builtin.template:
+    src: static-site-publisher.env.j2
+    dest: "{{ static_site_config_root }}/publisher.env"
+    owner: root
+    group: wheel
+    mode: "0640"
+  become: true
+
+- name: Render static-site web deploy helper
+  ansible.builtin.template:
+    src: static-site-web-deploy.sh.j2
+    dest: /usr/local/sbin/static-site-web-deploy
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+
+- name: Render static-site publisher helper
+  ansible.builtin.copy:
+    src: static-site-publisher
+    dest: /usr/local/sbin/static-site-publisher
+    owner: root
+    group: wheel
+    mode: "0750"
+  become: true
+
+- name: Render static-site cloudflared check helper
+  ansible.builtin.template:
+    src: static-site-cloudflared-check.sh.j2
+    dest: /usr/local/sbin/static-site-cloudflared-check
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+
+- name: Render static-site OpenRC services
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  loop:
+    - src: static-site-web.init.j2
+      dest: /etc/init.d/static-site-web
+    - src: static-site-publisher.init.j2
+      dest: /etc/init.d/static-site-publisher
+    - src: static-site-cloudflared.init.j2
+      dest: /etc/init.d/static-site-cloudflared
+
+- name: Deploy or refresh the static-site web container
+  ansible.builtin.command: /usr/local/sbin/static-site-web-deploy
+  become: true
+  register: static_site_web_deploy
+  changed_when: true
+
+- name: Keep the static-site web service running
+  ansible.builtin.service:
+    name: "{{ static_site_web_service_name }}"
+    enabled: true
+    state: started
+  become: true
+
+- name: Keep the static-site publisher running
+  ansible.builtin.service:
+    name: "{{ static_site_publisher_service_name }}"
+    enabled: true
+    state: restarted
+  become: true
+
+- name: Keep the static-site Cloudflare connector running
+  ansible.builtin.service:
+    name: "{{ static_site_cloudflared_service_name }}"
+    enabled: true
+    state: restarted
+  become: true
+
+- name: Wait for the static-site services to survive startup
+  ansible.builtin.pause:
+    seconds: 8
+
+- name: Verify the static-site web service stays running
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ static_site_web_service_name }}"
+      - status
+  become: true
+  register: static_site_runtime_web_status
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: static_site_runtime_web_status.rc == 0
+
+- name: Verify the static-site publisher stays running
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ static_site_publisher_service_name }}"
+      - status
+  become: true
+  register: static_site_runtime_publisher_status
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: static_site_runtime_publisher_status.rc == 0
+
+- name: Verify the static-site Cloudflare connector stays running
+  ansible.builtin.command:
+    argv:
+      - rc-service
+      - "{{ static_site_cloudflared_service_name }}"
+      - status
+  become: true
+  register: static_site_runtime_cloudflared_status
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: static_site_runtime_cloudflared_status.rc == 0

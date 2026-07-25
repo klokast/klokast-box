@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+NANOKVM_VIRTUAL_MEDIA="$SCRIPT_DIR/nanokvm-virtual-media"
+DECOMMISSION_BOX="$SCRIPT_DIR/decommission-box"
+PROVISION_BOX="$SCRIPT_DIR/provision-box"
+
+BOX=""
+INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+TARGET_DISK_DEVICE="/dev/nvme0n1"
+MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+OOB_HOST="oob"
+OOB_USER="root"
+BOOTSTRAP_ISO=""
+SELECTED_BOOTSTRAP_ISO=""
+BOOTSTRAP_TIMEOUT="3600"
+DRY_RUN=0
+AUTO_CONFIRM=0
+EXTRA_ARGS=()
+NANOKVM_STATUS_CMD=()
+NANOKVM_LOAD_CMD=()
+DECOMMISSION_CMD=()
+PROVISION_CMD=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/reinstall-box --box BOX [options] [-- extra ansible-playbook args]
+
+Reinstall one managed box from a clean slate. The flow loads the Klokast Debian
+bootstrap ISO on NanoKVM, decommissions and reboots the current box, waits for
+the operator to enroll the rebooted ISO as BOX-bootstrap, then runs provision-box.
+
+Options:
+  --box BOX                 Box short name, for example k001
+  --inventory PATH          Base Ansible inventory. Default: ansible/inventory/hosts.yml
+  --target-disk-device DEV  Provisioning install target. Default: /dev/nvme0n1
+  --magicdns-suffix SUFFIX  Tailscale MagicDNS suffix. Default: auto-discovered
+  --oob-host HOST           NanoKVM SSH host. Default: oob
+  --oob-user USER           NanoKVM SSH user. Default: root
+  --bootstrap-iso NAME      Force a specific ISO basename on NanoKVM
+  --bootstrap-timeout SEC   Wait time for BOX-bootstrap enrollment. Default: 3600
+  --dry-run-plan            Print the selected commands, then exit
+  --yes                     Bypass decommission/provision typed confirmations
+  -h, --help                Show this help
+
+Examples:
+  ansible/bin/reinstall-box --box k001
+  ansible/bin/reinstall-box --box k001 --bootstrap-iso klokast-bootstrap-debian-trixie-amd64.iso
+  ansible/bin/reinstall-box --box k001 --yes -- -vvv
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+info() {
+  printf '%s\n' "$*"
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+validate_box_name() {
+  python3 - "$BOX" <<'PY'
+import re
+import sys
+
+box = sys.argv[1]
+suffixes = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt")
+if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", box):
+    print(
+        "error: --box must be a lowercase DNS label: letters, digits, "
+        "hyphens, and no leading/trailing hyphen",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+for suffix in suffixes:
+    if box == suffix or box.endswith(f"-{suffix}"):
+        print(
+            f"error: --box must be the box name only, not a role hostname ending in -{suffix}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+PY
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --box)
+      [ "$#" -ge 2 ] || die "--box requires a value"
+      BOX="$2"
+      shift 2
+      ;;
+    --inventory)
+      [ "$#" -ge 2 ] || die "--inventory requires a value"
+      INVENTORY="$2"
+      shift 2
+      ;;
+    --target-disk-device)
+      [ "$#" -ge 2 ] || die "--target-disk-device requires a value"
+      TARGET_DISK_DEVICE="$2"
+      shift 2
+      ;;
+    --magicdns-suffix)
+      [ "$#" -ge 2 ] || die "--magicdns-suffix requires a value"
+      MAGICDNS_SUFFIX="${2#.}"
+      MAGICDNS_SUFFIX="${MAGICDNS_SUFFIX%.}"
+      shift 2
+      ;;
+    --oob-host)
+      [ "$#" -ge 2 ] || die "--oob-host requires a value"
+      OOB_HOST="$2"
+      shift 2
+      ;;
+    --oob-user)
+      [ "$#" -ge 2 ] || die "--oob-user requires a value"
+      OOB_USER="$2"
+      shift 2
+      ;;
+    --bootstrap-iso)
+      [ "$#" -ge 2 ] || die "--bootstrap-iso requires a value"
+      BOOTSTRAP_ISO="$2"
+      shift 2
+      ;;
+    --bootstrap-timeout)
+      [ "$#" -ge 2 ] || die "--bootstrap-timeout requires a value"
+      BOOTSTRAP_TIMEOUT="$2"
+      shift 2
+      ;;
+    --dry-run-plan)
+      DRY_RUN=1
+      shift
+      ;;
+    --yes)
+      AUTO_CONFIRM=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      EXTRA_ARGS=("$@")
+      break
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$BOX" ] || die "--box is required"
+validate_box_name
+
+case "$BOOTSTRAP_ISO" in
+  ""|klokast-bootstrap-debian-*-amd64.iso) ;;
+  */*|.*) die "--bootstrap-iso must be a basename, not a path: $BOOTSTRAP_ISO" ;;
+  *) die "--bootstrap-iso must match klokast-bootstrap-debian-*-amd64.iso" ;;
+esac
+
+case "$INVENTORY" in
+  /*) ;;
+  *) INVENTORY="$PWD/$INVENTORY" ;;
+esac
+
+RUN_DIR="$REPO_DIR/.run/reinstall-box-${BOX}"
+STATE_FILE="$RUN_DIR/state"
+BOOTSTRAP_HOST="${BOX}-bootstrap"
+BOOTSTRAP_CONNECT_HOST="${BOOTSTRAP_HOST}.${MAGICDNS_SUFFIX}"
+BOOTSTRAP_KNOWN_HOSTS_FILE="/tmp/klokast-bootstrap-known_hosts"
+
+preflight() {
+  command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+  command -v ssh >/dev/null 2>&1 || die "ssh not found in PATH"
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found in PATH"
+  command -v tailscale >/dev/null 2>&1 || die "tailscale CLI not found in PATH"
+  [ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
+  [ -x "$NANOKVM_VIRTUAL_MEDIA" ] || die "NanoKVM helper not executable: $NANOKVM_VIRTUAL_MEDIA"
+  [ -x "$DECOMMISSION_BOX" ] || die "decommission-box not executable: $DECOMMISSION_BOX"
+  [ -x "$PROVISION_BOX" ] || die "provision-box not executable: $PROVISION_BOX"
+}
+
+write_state() {
+  local key="$1"
+  local value="$2"
+  mkdir -p "$RUN_DIR"
+  {
+    printf 'box=%s\n' "$BOX"
+    printf 'bootstrap_host=%s\n' "$BOOTSTRAP_HOST"
+    printf 'oob_host=%s\n' "$OOB_HOST"
+    printf '%s=%s\n' "$key" "$value"
+    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$STATE_FILE"
+}
+
+build_nanokvm_status_command() {
+  NANOKVM_STATUS_CMD=(
+    "$NANOKVM_VIRTUAL_MEDIA"
+    --status
+    --host "$OOB_HOST"
+    --user "$OOB_USER"
+    --magicdns-suffix "$MAGICDNS_SUFFIX"
+  )
+}
+
+build_nanokvm_load_command() {
+  local iso_name="$1"
+
+  NANOKVM_LOAD_CMD=(
+    "$NANOKVM_VIRTUAL_MEDIA"
+    --load "$iso_name"
+    --verify-sha512-sidecar
+    --host "$OOB_HOST"
+    --user "$OOB_USER"
+    --magicdns-suffix "$MAGICDNS_SUFFIX"
+  )
+}
+
+select_bootstrap_iso() {
+  local status_json
+
+  build_nanokvm_status_command
+
+  info ""
+  info "==> inspect NanoKVM virtual media"
+  printf 'Command: '
+  quote_command "${NANOKVM_STATUS_CMD[@]}"
+  write_state "last_started" "inspect NanoKVM virtual media"
+  status_json="$("${NANOKVM_STATUS_CMD[@]}")"
+  printf '%s\n' "$status_json"
+
+  SELECTED_BOOTSTRAP_ISO="$(STATUS_JSON="$status_json" python3 - "$BOOTSTRAP_ISO" <<'PY'
+import json
+import os
+import re
+import sys
+
+forced = sys.argv[1]
+pattern = re.compile(r"^klokast-bootstrap-debian-.+-amd64\.iso$")
+try:
+    data = json.loads(os.environ["STATUS_JSON"])
+except Exception as exc:
+    print(f"error: NanoKVM --status did not return valid JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+images = data.get("available_images") or []
+matching = []
+for image in images:
+    name = os.path.basename(image)
+    if pattern.fullmatch(name):
+        matching.append(name)
+
+if forced:
+    if forced not in matching:
+        print(f"error: requested bootstrap ISO is not available on NanoKVM: {forced}", file=sys.stderr)
+        sys.exit(1)
+    print(forced)
+    sys.exit(0)
+
+if not matching:
+    print("error: no klokast-bootstrap-debian-*-amd64.iso found on NanoKVM", file=sys.stderr)
+    sys.exit(1)
+
+print(matching[0])
+PY
+)"
+  [ -n "$SELECTED_BOOTSTRAP_ISO" ] || die "failed to select a bootstrap ISO from NanoKVM status"
+  write_state "selected_bootstrap_iso" "$SELECTED_BOOTSTRAP_ISO"
+  write_state "last_completed" "inspect NanoKVM virtual media"
+  info "Selected bootstrap ISO: ${SELECTED_BOOTSTRAP_ISO}"
+}
+
+build_decommission_command() {
+  DECOMMISSION_CMD=(
+    "$DECOMMISSION_BOX"
+    --box "$BOX"
+    --inventory "$INVENTORY"
+    --final-action reboot
+  )
+  if [ "$AUTO_CONFIRM" -eq 1 ]; then
+    DECOMMISSION_CMD+=(--yes)
+  fi
+  if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+    DECOMMISSION_CMD+=(-- "${EXTRA_ARGS[@]}")
+  fi
+}
+
+build_provision_command() {
+  PROVISION_CMD=(
+    "$PROVISION_BOX"
+    --box "$BOX"
+    --inventory "$INVENTORY"
+    --target-disk-device "$TARGET_DISK_DEVICE"
+    --magicdns-suffix "$MAGICDNS_SUFFIX"
+    --oob-host "$OOB_HOST"
+    --oob-user "$OOB_USER"
+  )
+  if [ "$AUTO_CONFIRM" -eq 1 ]; then
+    PROVISION_CMD+=(--yes)
+  fi
+  if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+    PROVISION_CMD+=(-- "${EXTRA_ARGS[@]}")
+  fi
+}
+
+tailscale_bootstrap_visible() {
+  local status_json
+
+  status_json="$(tailscale status --json 2>/dev/null)" || return 1
+  STATUS_JSON="$status_json" python3 - "$BOOTSTRAP_HOST" <<'PY'
+import json
+import os
+import sys
+
+target = sys.argv[1]
+try:
+    data = json.loads(os.environ["STATUS_JSON"])
+except Exception:
+    sys.exit(1)
+
+machines = []
+self_machine = data.get("Self") or {}
+if self_machine:
+    machines.append(self_machine)
+machines.extend((data.get("Peer") or {}).values())
+
+for machine in machines:
+    hostname = machine.get("HostName") or ""
+    dns_name = (machine.get("DNSName") or "").rstrip(".")
+    tags = set(machine.get("Tags") or [])
+    if (
+        machine.get("Online")
+        and "tag:bootstrap" in tags
+        and (hostname == target or dns_name.startswith(target + "."))
+    ):
+        sys.exit(0)
+sys.exit(2)
+PY
+}
+
+bootstrap_ssh_ready() {
+  ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$BOOTSTRAP_KNOWN_HOSTS_FILE" \
+    "root@${BOOTSTRAP_CONNECT_HOST}" \
+    'true' >/dev/null 2>&1
+}
+
+wait_for_bootstrap() {
+  local deadline
+  local last_notice=0
+  local now
+
+  mkdir -p "$(dirname "$BOOTSTRAP_KNOWN_HOSTS_FILE")"
+  touch "$BOOTSTRAP_KNOWN_HOSTS_FILE"
+  chmod 0600 "$BOOTSTRAP_KNOWN_HOSTS_FILE"
+  ssh-keygen -R "$BOOTSTRAP_CONNECT_HOST" -f "$BOOTSTRAP_KNOWN_HOSTS_FILE" >/dev/null 2>&1 || true
+
+  info ""
+  info "Waiting for ${BOOTSTRAP_HOST} enrollment."
+  info "Boot the ISO, open the onboarding portal, enter box ${BOX}, and paste the bootstrap Tailscale auth key."
+  info "Expected Tailscale SSH target: root@${BOOTSTRAP_CONNECT_HOST}"
+
+  deadline=$((SECONDS + BOOTSTRAP_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if tailscale_bootstrap_visible && bootstrap_ssh_ready; then
+      info "Bootstrap identity is reachable: ${BOOTSTRAP_CONNECT_HOST}"
+      return 0
+    fi
+
+    now="$SECONDS"
+    if [ $((now - last_notice)) -ge 30 ]; then
+      info "Still waiting for ${BOOTSTRAP_HOST} over Tailscale SSH..."
+      last_notice="$now"
+    fi
+    sleep 5
+  done
+
+  die "timed out waiting for ${BOOTSTRAP_HOST} after ${BOOTSTRAP_TIMEOUT} seconds"
+}
+
+run_command() {
+  local label="$1"
+  shift
+  local -a cmd=("$@")
+
+  info ""
+  info "==> ${label}"
+  printf 'Command: '
+  quote_command "${cmd[@]}"
+  write_state "last_started" "$label"
+  "${cmd[@]}"
+  write_state "last_completed" "$label"
+}
+
+print_plan() {
+  build_nanokvm_status_command
+  if [ -n "$BOOTSTRAP_ISO" ]; then
+    build_nanokvm_load_command "$BOOTSTRAP_ISO"
+  fi
+  build_decommission_command
+  build_provision_command
+
+  info "Clean reinstall plan for box ${BOX}"
+  info "NanoKVM: ${OOB_USER}@${OOB_HOST}"
+  if [ -n "$BOOTSTRAP_ISO" ]; then
+    info "Bootstrap ISO: ${BOOTSTRAP_ISO}"
+  else
+    info "Bootstrap ISO: newest klokast-bootstrap-debian-*-amd64.iso on NanoKVM"
+  fi
+  info "Bootstrap wait target: root@${BOOTSTRAP_CONNECT_HOST}"
+  info "Run directory: ${RUN_DIR}"
+  info ""
+  info "Selected commands:"
+  printf '  '
+  quote_command "${NANOKVM_STATUS_CMD[@]}"
+  printf '  '
+  if [ -n "$BOOTSTRAP_ISO" ]; then
+    quote_command "${NANOKVM_LOAD_CMD[@]}"
+  else
+    quote_command "$NANOKVM_VIRTUAL_MEDIA" --load "NEWEST_KLOKAST_BOOTSTRAP_ISO_FROM_STATUS" --verify-sha512-sidecar --host "$OOB_HOST" --user "$OOB_USER" --magicdns-suffix "$MAGICDNS_SUFFIX"
+  fi
+  printf '  '
+  quote_command "${DECOMMISSION_CMD[@]}"
+  printf '  wait for %s, then\n' "$BOOTSTRAP_CONNECT_HOST"
+  printf '  '
+  quote_command "${PROVISION_CMD[@]}"
+}
+
+preflight
+print_plan
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  exit 0
+fi
+
+select_bootstrap_iso
+build_nanokvm_load_command "$SELECTED_BOOTSTRAP_ISO"
+build_decommission_command
+build_provision_command
+
+run_command "load NanoKVM bootstrap ISO" "${NANOKVM_LOAD_CMD[@]}"
+run_command "decommission ${BOX} and reboot" "${DECOMMISSION_CMD[@]}"
+wait_for_bootstrap
+run_command "provision ${BOX}" "${PROVISION_CMD[@]}"
+
+info ""
+info "reinstall-box completed."

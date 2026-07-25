@@ -1,0 +1,91 @@
+#
+# Summary:
+# - Stages the generic first-boot overlay content for the SSD-backed Alpine diskless host before any temporary bootstrap identity data is added.
+#
+---
+- name: Create the base directory tree for the first diskless apkovl
+  ansible.builtin.file:
+    path: "{{ diskless_apkovl_build_root.path }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - etc/apk/protected_paths.d
+    - etc/init.d
+    - etc/network
+    - etc/lbu
+    - etc/runlevels/boot
+    - etc/runlevels/default
+    - var/lib/tailscale
+
+- name: Persist the first-boot hostname in the diskless apkovl
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/hostname"
+    content: "{{ node_hostname }}\n"
+    mode: "0644"
+
+- name: Restore Alpine's native default boot-service population marker in the first diskless apkovl
+  # Alpine's initramfs only auto-enables `modloop` and the standard runlevel
+  # services on apkovl boots when `/etc/.default_boot_services` exists in the
+  # overlay. Without this marker, the first SSD boot reaches userspace with no
+  # `modloop`, no `/lib/modules`, and therefore no NIC or HID drivers.
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/.default_boot_services"
+    content: ""
+    mode: "0644"
+
+- name: Persist the first-boot network interface configuration in the diskless apkovl
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/network/interfaces"
+    mode: "0644"
+    content: |
+      auto lo
+      iface lo inet loopback
+
+- name: Persist the first-boot APK repositories in the diskless apkovl
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/apk/repositories"
+    mode: "0644"
+    content: |
+      {% for repo in diskless_first_boot_repositories %}
+      {{ repo }}
+      {% endfor %}
+
+- name: Point the first-boot APK cache at the managed diskless cache path
+  ansible.builtin.file:
+    src: "{{ diskless_first_boot_cache_path }}"
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/apk/cache"
+    state: link
+    force: true
+
+- name: Persist the first-boot package set in the diskless apkovl
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/apk/world"
+    mode: "0644"
+    content: |
+      {% for package_name in diskless_first_boot_world_packages %}
+      {{ package_name }}
+      {% endfor %}
+
+- name: Persist lbu media settings in the first diskless apkovl
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/lbu/lbu.conf"
+    mode: "0644"
+    content: |
+      DEFAULT_CIPHER=aes-256-cbc
+      LBU_MEDIA={{ lbu_media_name }}
+
+- name: Persist protected lbu paths in the first diskless apkovl
+  ansible.builtin.copy:
+    dest: "{{ diskless_apkovl_build_root.path }}/{{ lbu_protected_paths_file | regex_replace('^/', '') }}"
+    mode: "0644"
+    content: |
+      {% for persistent_path in (tailscale_persist_paths + diskless_lbu_include_paths) %}
+      +{{ persistent_path | regex_replace('^/', '') }}
+      {% endfor %}
+
+- name: Enable the first-boot bootstrap helper service in the diskless apkovl
+  ansible.builtin.file:
+    src: /etc/init.d/klokast-diskless-bootstrap
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/runlevels/default/klokast-diskless-bootstrap"
+    state: link
+    force: true

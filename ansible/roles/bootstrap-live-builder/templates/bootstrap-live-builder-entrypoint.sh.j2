@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /workspace /output /root /run/tailscale /var/lib/tailscale
+
+if command -v tailscaled >/dev/null 2>&1; then
+    tailscaled \
+        --state=/var/lib/tailscale/tailscaled.state \
+        --socket=/run/tailscale/tailscaled.sock &
+fi
+
+tail -f /dev/null &
+wait $!

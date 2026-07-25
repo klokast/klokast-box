@@ -1,0 +1,85 @@
+---
+- name: Reboot into Xen dom0
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Detect the current EFI mountpoint on the running diskless host
+      ansible.builtin.shell: >-
+        awk '$1 == "{{ efi_partition_device }}" {print $2}' /proc/mounts | tail -n 1
+      register: xen_reboot_runtime_efi_mount
+      changed_when: false
+
+    - name: Assert the EFI partition is mounted before the Xen reboot
+      ansible.builtin.assert:
+        that:
+          - xen_reboot_runtime_efi_mount.stdout != ''
+        fail_msg: >-
+          Could not determine the runtime EFI mountpoint for {{ efi_partition_device }}
+          before the Xen reboot.
+
+    - name: Override Xen verification paths to the mounted EFI partition
+      ansible.builtin.set_fact:
+        efi_mount_path: "{{ xen_reboot_runtime_efi_mount.stdout }}"
+        efi_boot_directory: "{{ xen_reboot_runtime_efi_mount.stdout }}/boot"
+        efi_grub_directory: "{{ xen_reboot_runtime_efi_mount.stdout }}/boot/grub"
+        efi_fallback_directory: "{{ xen_reboot_runtime_efi_mount.stdout }}/EFI/BOOT"
+        efi_fallback_bootloader_path: "{{ xen_reboot_runtime_efi_mount.stdout }}/EFI/BOOT/BOOTX64.EFI"
+        efi_bootloader_grub_config_path: "{{ xen_reboot_runtime_efi_mount.stdout }}/EFI/{{ efi_bootloader_id }}/grub.cfg"
+        efi_fallback_grub_config_path: "{{ xen_reboot_runtime_efi_mount.stdout }}/EFI/BOOT/grub.cfg"
+        efi_grub_loader_config_paths:
+          - "{{ xen_reboot_runtime_efi_mount.stdout }}/EFI/{{ efi_bootloader_id }}/grub.cfg"
+          - "{{ xen_reboot_runtime_efi_mount.stdout }}/EFI/BOOT/grub.cfg"
+        apk_boot_repository_root: "{{ xen_reboot_runtime_efi_mount.stdout }}/apks"
+        apk_boot_repository_path: "{{ xen_reboot_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}"
+        apk_cache_path: "{{ xen_reboot_runtime_efi_mount.stdout }}/cache"
+        apk_boot_repository_marker: "{{ xen_reboot_runtime_efi_mount.stdout }}/apks/.boot_repository"
+        apk_boot_repository_index: "{{ xen_reboot_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}/APKINDEX.tar.gz"
+
+    - name: Verify Xen boot readiness before allowing reboot
+      ansible.builtin.import_role:
+        name: xen-host-verification
+
+    - name: Record the current boot ID before the Xen reboot
+      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
+      register: xen_reboot_boot_id_before
+      changed_when: false
+      become: false
+
+    - name: Trigger a detached reboot into Xen dom0
+      ansible.builtin.shell: >-
+        nohup /bin/sh -c 'sleep 2; doas -n reboot'
+        >/tmp/klokast-dom0-reboot.log 2>&1 </dev/null &
+      args:
+        executable: /bin/sh
+      changed_when: true
+      become: false
+
+    - name: Wait for the Xen reboot to drop Tailscale SSH
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}"
+        port: 22
+        state: stopped
+        timeout: 120
+        sleep: 2
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for Xen dom0 to come back after reboot
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 1200
+        sleep: 2
+      become: false
+
+    - name: Record the boot ID after the Xen reboot
+      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
+      register: xen_reboot_boot_id_after
+      changed_when: false
+      become: false
+
+    - name: Assert the Xen reboot changed the boot ID
+      ansible.builtin.assert:
+        that:
+          - xen_reboot_boot_id_after.stdout != xen_reboot_boot_id_before.stdout
+        fail_msg: >-
+          The Xen reboot task returned, but the host boot ID did not change.

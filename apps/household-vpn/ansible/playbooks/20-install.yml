@@ -1,0 +1,19 @@
+---
+- name: Install household VPN gateway runtime
+  hosts: household_vpn_app_vms
+  gather_facts: false
+  tasks:
+    - name: Gather household VPN VM facts
+      ansible.builtin.setup:
+
+    - name: Assert household VPN VM target shape
+      ansible.builtin.assert:
+        that:
+          - platform_app_vm_guest_os | default('') == 'alpine'
+          - platform_app_vm_container_runtime | default('') == 'none'
+          - node_domain_role == 'dmz'
+        fail_msg: "Household VPN must target the dedicated Alpine DMZ app VM."
+
+    - name: Install household VPN runtime services
+      ansible.builtin.import_role:
+        name: household-vpn-runtime

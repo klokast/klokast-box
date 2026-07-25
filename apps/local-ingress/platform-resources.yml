@@ -1,0 +1,57 @@
+---
+schema_version: 1
+app: local-ingress
+risk_class: local_presence_private_ingress
+default_isolation: dmz_host_service
+placement_mode: single_box
+
+resources:
+  compute:
+    - id: ingress
+      type: host_service
+      zone: dmz
+      privilege: root_service
+      lifecycle: steady
+      rationale: Local HTTPS termination belongs in the DMZ and proxies only to declared backend app ports.
+
+  network:
+    - id: household-https
+      type: realm_to_zone_tcp
+      access:
+        intent: local-presence-control
+        capability: local-lan
+      from_realm: household
+      to_zone: dmz
+      port: 443
+      required: true
+      rationale: Household Wi-Fi clients may reach only the local DMZ HTTPS ingress.
+    - id: music-upstream
+      type: interzone_tcp
+      access:
+        intent: local-presence-control
+        capability: local-lan
+      from_zone: dmz
+      to_zone: bak
+      port: 18082
+      required: true
+      rationale: Local ingress proxies music UI commands to myMPD on the backend VM.
+    - id: nextcloud-upstream
+      type: interzone_tcp
+      access:
+        intent: private-service-ingress
+        capability: local-lan
+      from_zone: dmz
+      to_zone: bak
+      port: 8080
+      required: true
+      rationale: Local ingress proxies Nextcloud to the backend app upstream.
+    - id: immich-upstream
+      type: interzone_tcp
+      access:
+        intent: private-service-ingress
+        capability: local-lan
+      from_zone: dmz
+      to_zone: bak
+      port: 2283
+      required: true
+      rationale: Local ingress proxies Immich to the backend app upstream.

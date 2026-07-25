@@ -1,0 +1,36 @@
+---
+household_vpn_config:
+  enabled: false
+
+household_vpn_local_domain: ""
+household_vpn_local_ingress_ipv4_address: "{{ platform_zones.dmz.vm_ipv4_address }}"
+household_vpn_client_cidrs:
+  - "{{ platform_network_realms.household.cidr }}"
+  - "{{ platform_network_realms.admin.cidr }}"
+
+household_vpn_mihomo_config_dir: /etc/mihomo
+household_vpn_mihomo_config_path: "{{ household_vpn_mihomo_config_dir }}/config.yaml"
+household_vpn_mihomo_subscription_path: "{{ household_vpn_mihomo_config_dir }}/subscription.yml"
+household_vpn_mihomo_state_dir: /var/lib/mihomo
+household_vpn_mihomo_cache_dir: /var/cache/klokast/household-vpn
+household_vpn_mihomo_download_path: "{{ household_vpn_mihomo_cache_dir }}/mihomo.download"
+household_vpn_mihomo_binary: /usr/local/bin/mihomo
+household_vpn_mihomo_archive_format: "{{ (household_vpn_config.mihomo | default({})).archive_format | default('gzip') }}"
+household_vpn_mihomo_controller_artifact_path: "{{ (household_vpn_config.mihomo | default({})).controller_artifact_path | default('') }}"
+household_vpn_mihomo_download_timeout: 300
+household_vpn_mihomo_device: householdvpn
+household_vpn_mihomo_service_name: mihomo
+household_vpn_mihomo_private_root: /etc/klokast/household-vpn
+household_vpn_mihomo_private_config_path: "{{ household_vpn_mihomo_private_root }}/private.yml"
+household_vpn_mihomo_renderer_path: /usr/local/libexec/household-vpn-render
+household_vpn_mihomo_refresh_path: /usr/local/sbin/household-vpn-refresh
+household_vpn_mihomo_subscription_controller_artifact_path: "{{ (household_vpn_config.subscription | default({})).controller_artifact_path | default('') }}"
+household_vpn_mihomo_subscription_sha256: "{{ (household_vpn_config.subscription | default({})).sha256 | default('') }}"
+household_vpn_mihomo_dns_listen: "0.0.0.0:53"
+household_vpn_mihomo_selector_name: "{{ (household_vpn_config.selector | default({})).name | default('KLOKAST-HOUSEHOLD-VPN') }}"
+
+household_vpn_nftables_path: /etc/nftables.nft
+household_vpn_tailscale_underlay_interface: "{{ platform_app_vm_interface | default('eth0') }}"
+household_vpn_tailscale_underlay_source: "{{ platform_control_zones.ops.vm_ipv4_address | default('') }}"
+household_vpn_tailscale_underlay_destination: "{{ vm_bootstrap_host | default('') }}"
+household_vpn_tailscale_underlay_port: 41641

@@ -1,0 +1,95 @@
+---
+- name: Preflight the box decommission flow from the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    decommission_required_hosts:
+      - "{{ decommission_box_name }}-dom0"
+      - "{{ decommission_box_name }}-router"
+      - "{{ decommission_box_name }}-bak"
+      - "{{ decommission_box_name }}-dmz"
+      - "{{ decommission_box_name }}-iot"
+  tasks:
+    - name: Assert required decommission variables are set
+      ansible.builtin.assert:
+        that:
+          - decommission_box_name | length > 0
+          - decommission_wipe_source | default('dom0') == 'dom0'
+        fail_msg: decommission_box_name is required and decommission_wipe_source must be dom0.
+
+    - name: Check required controller executables
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - "command -v {{ item }}"
+      loop:
+        - ansible-playbook
+        - python3
+        - tailscale
+        - jq
+      changed_when: false
+
+    - name: Check required Tailscale wrappers
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/local/sbin/ts-devices-list
+        - /usr/local/sbin/ts-device-delete-stale
+      register: decommission_wrapper_stats
+
+    - name: Assert the Tailscale wrappers exist on the controller
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.executable
+        fail_msg: "Missing required wrapper {{ item.stat.path | default('unknown') }} on the controller."
+      loop: "{{ decommission_wrapper_stats.results }}"
+
+    - name: Assert the inventory contains every required host for this box
+      ansible.builtin.assert:
+        that:
+          - item in hostvars
+        fail_msg: "Inventory does not define {{ item }}."
+      loop: "{{ decommission_required_hosts }}"
+
+    - name: Check controller SSH reachability to dom0 before decommission stop phase
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - UserKnownHostsFile={{ hostvars[decommission_box_name ~ '-dom0'].dom0_known_hosts_file }}
+          - "{{ hostvars[decommission_box_name ~ '-dom0'].ansible_user }}@{{ hostvars[decommission_box_name ~ '-dom0'].ansible_host }}"
+          - "true"
+      changed_when: false
+
+- name: Inspect the target dom0 storage layout before decommission
+  hosts: "{{ decommission_box_name }}-dom0"
+  gather_facts: false
+  tasks:
+    - name: Inspect target dom0 storage layout read-only
+      ansible.builtin.import_role:
+        name: storage-inspection
+      vars:
+        storage_inspection_show_summary: true
+
+    - name: Assert the target dom0 storage layout is discoverable
+      ansible.builtin.assert:
+        that:
+          - storage_inspection_root_fstype == "tmpfs"
+          - storage_inspection_managed_layout.confidence == "exact"
+          - storage_inspection_managed_layout.target_disk_device is match('^/dev/nvme[0-9]+n[0-9]+$')
+          - storage_inspection_managed_layout.efi_partition_device is match('^' ~ (storage_inspection_managed_layout.target_disk_device | regex_escape) ~ 'p[0-9]+$')
+          - storage_inspection_managed_layout.lvm_partition_device is match('^' ~ (storage_inspection_managed_layout.target_disk_device | regex_escape) ~ 'p[0-9]+$')
+          - storage_inspection_managed_layout.volume_group_name | length > 0
+        fail_msg: >-
+          Refusing to continue because {{ inventory_hostname }} does not expose
+          a uniquely discovered diskless dom0 storage layout:
+          {{ storage_inspection_managed_layout | to_json }}.

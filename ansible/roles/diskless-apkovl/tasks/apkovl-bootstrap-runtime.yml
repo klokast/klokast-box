@@ -1,0 +1,10 @@
+#
+# Summary:
+# - Stages the temporary first-boot helper that brings up networking dynamically and installs the runtime management packages needed before phase 20.
+#
+---
+- name: Install the first-boot bootstrap helper service script in the diskless apkovl
+  ansible.builtin.template:
+    src: klokast-diskless-bootstrap.init.j2
+    dest: "{{ diskless_apkovl_build_root.path }}/etc/init.d/klokast-diskless-bootstrap"
+    mode: "0755"

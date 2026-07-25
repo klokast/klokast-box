@@ -1,0 +1,565 @@
+#
+# Summary:
+# - Collects read-only block, mount, and LVM facts for Platform storage checks.
+#
+---
+- name: Collect the root filesystem type
+  ansible.builtin.command: >-
+    awk '$2 == "/" { print $3 }' /proc/mounts
+  register: storage_inspection_root_fstype_command
+  changed_when: false
+
+- name: Collect the kernel mount table
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/mounts
+  register: storage_inspection_proc_mounts_command
+  changed_when: false
+
+- name: Collect block device topology
+  ansible.builtin.shell: |
+    set -eu
+    command -v lsblk >/dev/null 2>&1 || exit 127
+    lsblk --json --bytes --paths --output NAME,PATH,TYPE,FSTYPE,LABEL,PKNAME,SIZE,MOUNTPOINTS \
+      || lsblk --json --bytes --paths --output NAME,PATH,TYPE,FSTYPE,LABEL,PKNAME,SIZE,MOUNTPOINT
+  args:
+    executable: /bin/sh
+  register: storage_inspection_lsblk_command
+  changed_when: false
+  failed_when: false
+
+- name: Collect mounted filesystem topology
+  ansible.builtin.shell: |
+    set -eu
+    command -v findmnt >/dev/null 2>&1 || exit 127
+    findmnt --json --output SOURCE,TARGET,FSTYPE,OPTIONS
+  args:
+    executable: /bin/sh
+  register: storage_inspection_findmnt_command
+  changed_when: false
+  failed_when: false
+
+- name: Collect block device identifiers
+  ansible.builtin.shell: |
+    set -eu
+    command -v blkid >/dev/null 2>&1 || exit 127
+    devices=""
+    for device in \
+      "{{ storage_inspection_fallback_efi_partition_device }}" \
+      "{{ storage_inspection_fallback_lvm_partition_device }}"; do
+      [ -n "$device" ] && devices="${devices} ${device}"
+    done
+    if command -v pvs >/dev/null 2>&1; then
+      for pv_device in $(pvs --noheadings -o pv_name 2>/dev/null | awk '{ print $1 }'); do
+        [ -n "$pv_device" ] || continue
+        devices="${devices} ${pv_device}"
+        case "$pv_device" in
+          /dev/nvme*n*p[0-9]*|/dev/mmcblk*p[0-9]*)
+            disk_device="$(printf '%s\n' "$pv_device" | sed -E 's#p[0-9]+$##')"
+            devices="${devices} ${disk_device}p1 ${disk_device}p2"
+            ;;
+          /dev/*[0-9])
+            disk_device="$(printf '%s\n' "$pv_device" | sed -E 's#[0-9]+$##')"
+            devices="${devices} ${disk_device}1 ${disk_device}2"
+            ;;
+        esac
+      done
+    fi
+    if [ -z "$devices" ] && command -v lsblk >/dev/null 2>&1; then
+      devices="$(lsblk --noheadings --paths --output PATH,TYPE | awk '$2 == "part" { print $1 }')"
+    fi
+    printf '%s\n' $devices | awk 'NF && !seen[$1]++' | while read -r device; do
+      [ -b "$device" ] || continue
+      blkid -o export "$device" || true
+    done
+  args:
+    executable: /bin/sh
+  register: storage_inspection_blkid_command
+  changed_when: false
+  failed_when: false
+
+- name: Collect LVM physical volumes
+  ansible.builtin.shell: |
+    set -eu
+    command -v pvs >/dev/null 2>&1 || exit 127
+    pvs --reportformat json --units b --nosuffix -o pv_name,vg_name,pv_size,pv_free
+  args:
+    executable: /bin/sh
+  register: storage_inspection_pvs_command
+  changed_when: false
+  failed_when: false
+
+- name: Collect LVM volume groups
+  ansible.builtin.shell: |
+    set -eu
+    command -v vgs >/dev/null 2>&1 || exit 127
+    vgs --reportformat json --units b --nosuffix -o vg_name,vg_size,vg_free,pv_count,lv_count
+  args:
+    executable: /bin/sh
+  register: storage_inspection_vgs_command
+  changed_when: false
+  failed_when: false
+
+- name: Collect LVM logical volumes
+  ansible.builtin.shell: |
+    set -eu
+    command -v lvs >/dev/null 2>&1 || exit 127
+    lvs --reportformat json --units b --nosuffix -o lv_name,vg_name,lv_path,lv_size
+  args:
+    executable: /bin/sh
+  register: storage_inspection_lvs_command
+  changed_when: false
+  failed_when: false
+
+- name: Normalize storage inspection facts
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import re
+        import sys
+
+        payload = json.loads(sys.stdin.read())
+        expected = payload["expected"]
+        command_payloads = payload["commands"]
+        warnings = []
+
+        def command_available(name):
+            return command_payloads[name]["rc"] != 127
+
+        def load_json_command(name):
+            command = command_payloads[name]
+            stdout = command.get("stdout", "")
+            if command["rc"] == 127:
+                warnings.append(f"{name} is not available")
+                return {}
+            if command["rc"] != 0:
+                stderr = command.get("stderr", "").strip()
+                detail = f": {stderr}" if stderr else ""
+                warnings.append(f"{name} returned rc={command['rc']}{detail}")
+                return {}
+            if not stdout.strip():
+                return {}
+            try:
+                return json.loads(stdout)
+            except json.JSONDecodeError as exc:
+                warnings.append(f"{name} returned invalid JSON: {exc}")
+                return {}
+
+        def parse_bytes(value):
+            if value in (None, ""):
+                return None
+            match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+            if not match:
+                return None
+            return int(float(match.group(0)))
+
+        def dev_path(value):
+            if not value:
+                return ""
+            value = str(value)
+            if value.startswith("/dev/"):
+                return value
+            return "/dev/" + value
+
+        def parent_disk_from_path(path):
+            if not path:
+                return ""
+            nvme = re.match(r"^(/dev/nvme\d+n\d+)p\d+$", path)
+            if nvme:
+                return nvme.group(1)
+            mmc = re.match(r"^(/dev/mmcblk\d+)p\d+$", path)
+            if mmc:
+                return mmc.group(1)
+            standard = re.match(r"^(/dev/[a-zA-Z]+)\d+$", path)
+            if standard:
+                return standard.group(1)
+            return ""
+
+        def normalize_mountpoints(value):
+            if value in (None, ""):
+                return []
+            if isinstance(value, list):
+                return [str(item) for item in value if item not in (None, "")]
+            return [str(value)]
+
+        def flatten_lsblk_devices(devices, parent_path=""):
+            flattened = []
+            for device in devices:
+                path = dev_path(device.get("path") or device.get("name"))
+                device_type = device.get("type") or ""
+                pkname = device.get("pkname") or ""
+                parent = dev_path(pkname) if pkname else parent_path
+                entry = {
+                    "name": device.get("name") or "",
+                    "path": path,
+                    "type": device_type,
+                    "fstype": device.get("fstype") or "",
+                    "label": device.get("label") or "",
+                    "parent_disk": parent if device_type == "part" else "",
+                    "size_bytes": parse_bytes(device.get("size")),
+                    "mountpoints": normalize_mountpoints(device.get("mountpoints", device.get("mountpoint"))),
+                }
+                flattened.append(entry)
+                flattened.extend(flatten_lsblk_devices(device.get("children") or [], path))
+            return flattened
+
+        def parse_blkid_export(stdout):
+            records = []
+            current = {}
+            for raw_line in stdout.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    if current:
+                        records.append(current)
+                        current = {}
+                    continue
+                if line.startswith("DEVNAME=") and current:
+                    records.append(current)
+                    current = {}
+                if line.startswith("/dev/") and ":" in line:
+                    path, values = line.split(":", 1)
+                    record = {"devname": path}
+                    for key, value in re.findall(r'([A-Z0-9_]+)="([^"]*)"', values):
+                        record[key.lower()] = value
+                    records.append(record)
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    current[key.lower()] = value
+                    continue
+            if current:
+                records.append(current)
+            return records
+
+        def lvm_report(name, key):
+            data = load_json_command(name)
+            reports = data.get("report") or []
+            if not reports:
+                return []
+            return reports[0].get(key) or []
+
+        def flatten_findmnt(filesystems):
+            flattened = []
+            for filesystem in filesystems:
+                entry = {
+                    "source": filesystem.get("source") or "",
+                    "target": filesystem.get("target") or "",
+                    "fstype": filesystem.get("fstype") or "",
+                    "options": filesystem.get("options") or "",
+                }
+                flattened.append(entry)
+                flattened.extend(flatten_findmnt(filesystem.get("children") or []))
+            return flattened
+
+        def parse_proc_mounts(stdout):
+            mounts = []
+            for line in stdout.splitlines():
+                fields = line.split()
+                if len(fields) >= 4:
+                    mounts.append({
+                        "source": fields[0],
+                        "target": fields[1],
+                        "fstype": fields[2],
+                        "options": fields[3],
+                    })
+            return mounts
+
+        lsblk_data = load_json_command("lsblk")
+        all_block_devices = flatten_lsblk_devices(lsblk_data.get("blockdevices") or [])
+        disks = [device for device in all_block_devices if device["type"] == "disk"]
+        partitions = [device for device in all_block_devices if device["type"] == "part"]
+
+        blkid_records = parse_blkid_export(command_payloads["blkid"].get("stdout", "")) if command_payloads["blkid"]["rc"] == 0 else []
+        blkid_by_path = {record.get("devname", ""): record for record in blkid_records if record.get("devname")}
+        if not partitions:
+            for record in blkid_records:
+                path = record.get("devname", "")
+                if not path:
+                    continue
+                parent = parent_disk_from_path(path)
+                if not parent:
+                    continue
+                partitions.append({
+                    "name": path.rsplit("/", 1)[-1],
+                    "path": path,
+                    "type": "part",
+                    "fstype": record.get("type", ""),
+                    "label": record.get("label", ""),
+                    "parent_disk": parent,
+                    "size_bytes": None,
+                    "mountpoints": [],
+                    "uuid": record.get("uuid", ""),
+                    "partuuid": record.get("partuuid", ""),
+                })
+        for partition in partitions:
+            blkid = blkid_by_path.get(partition["path"], {})
+            partition["fstype"] = partition["fstype"] or blkid.get("type", "")
+            partition["label"] = partition["label"] or blkid.get("label", "")
+            partition["uuid"] = blkid.get("uuid", "")
+            partition["partuuid"] = blkid.get("partuuid", "")
+        devices_by_path = {device["path"]: device for device in all_block_devices + partitions if device["path"]}
+
+        raw_pvs = lvm_report("pvs", "pv")
+        physical_volumes = []
+        for pv in raw_pvs:
+            physical_volumes.append({
+                "pv_name": pv.get("pv_name") or "",
+                "vg_name": pv.get("vg_name") or "",
+                "pv_size_bytes": parse_bytes(pv.get("pv_size")),
+                "pv_free_bytes": parse_bytes(pv.get("pv_free")),
+            })
+
+        raw_vgs = lvm_report("vgs", "vg")
+        volume_groups = []
+        for vg in raw_vgs:
+            volume_groups.append({
+                "vg_name": vg.get("vg_name") or "",
+                "vg_size_bytes": parse_bytes(vg.get("vg_size")),
+                "vg_free_bytes": parse_bytes(vg.get("vg_free")),
+                "pv_count": parse_bytes(vg.get("pv_count")),
+                "lv_count": parse_bytes(vg.get("lv_count")),
+            })
+        volume_groups_by_name = {vg["vg_name"]: vg for vg in volume_groups if vg["vg_name"]}
+
+        raw_lvs = lvm_report("lvs", "lv")
+        logical_volumes = []
+        for lv in raw_lvs:
+            logical_volumes.append({
+                "lv_name": lv.get("lv_name") or "",
+                "vg_name": lv.get("vg_name") or "",
+                "lv_path": lv.get("lv_path") or "",
+                "lv_size_bytes": parse_bytes(lv.get("lv_size")),
+            })
+
+        findmnt_data = load_json_command("findmnt")
+        mounts = flatten_findmnt(findmnt_data.get("filesystems") or [])
+        if not mounts:
+            mounts = parse_proc_mounts(command_payloads["proc_mounts"].get("stdout", ""))
+
+        layout_warnings = []
+        expected_label = expected["efi_partition_label"]
+        expected_mount = expected["efi_mount_path"]
+        fallback = {
+            "target_disk_device": expected["fallback_target_disk_device"],
+            "efi_partition_device": expected["fallback_efi_partition_device"],
+            "lvm_partition_device": expected["fallback_lvm_partition_device"],
+            "volume_group_name": expected["fallback_volume_group_name"],
+        }
+
+        selected_pv = None
+        pv_candidates = [pv for pv in physical_volumes if pv["pv_name"] and pv["vg_name"]]
+        fallback_lvm = fallback["lvm_partition_device"]
+        fallback_vg = fallback["volume_group_name"]
+        matching_fallback_pvs = [
+            pv for pv in pv_candidates
+            if (fallback_lvm and pv["pv_name"] == fallback_lvm)
+            or (fallback_vg and pv["vg_name"] == fallback_vg)
+        ]
+        if len(pv_candidates) == 1:
+            selected_pv = pv_candidates[0]
+        elif len(matching_fallback_pvs) == 1:
+            selected_pv = matching_fallback_pvs[0]
+            layout_warnings.append("multiple LVM PVs were found; configured fallback selected the Platform PV")
+        elif len(pv_candidates) > 1:
+            layout_warnings.append("multiple LVM PVs were found and none was uniquely identifiable as the Platform PV")
+        else:
+            lvm_partitions = [part for part in partitions if part["fstype"] == "LVM2_member"]
+            if len(lvm_partitions) == 1:
+                selected_pv = {
+                    "pv_name": lvm_partitions[0]["path"],
+                    "vg_name": fallback_vg,
+                    "pv_size_bytes": lvm_partitions[0]["size_bytes"],
+                    "pv_free_bytes": None,
+                }
+
+        detected_lvm_partition = selected_pv["pv_name"] if selected_pv else ""
+        detected_vg = selected_pv["vg_name"] if selected_pv else ""
+        detected_disk = ""
+        if detected_lvm_partition:
+            detected_disk = devices_by_path.get(detected_lvm_partition, {}).get("parent_disk") or parent_disk_from_path(detected_lvm_partition)
+
+        efi_candidates = []
+        for partition in partitions:
+            if detected_disk and partition["parent_disk"] != detected_disk:
+                continue
+            lower_fstype = partition["fstype"].lower()
+            mountpoints = set(partition["mountpoints"])
+            is_expected_label = expected_label and partition["label"] == expected_label
+            is_fat = lower_fstype in ("vfat", "fat", "fat32", "msdos")
+            is_expected_mount = expected_mount and expected_mount in mountpoints
+            if is_expected_label or is_fat or is_expected_mount:
+                efi_candidates.append(partition)
+
+        selected_efi = None
+        label_matches = [part for part in efi_candidates if expected_label and part["label"] == expected_label]
+        fallback_efi_matches = [part for part in efi_candidates if fallback["efi_partition_device"] and part["path"] == fallback["efi_partition_device"]]
+        if len(label_matches) == 1:
+            selected_efi = label_matches[0]
+        elif len(fallback_efi_matches) == 1:
+            selected_efi = fallback_efi_matches[0]
+            layout_warnings.append("multiple EFI-like partitions were found; configured fallback selected the Platform EFI partition")
+        elif len(efi_candidates) == 1:
+            selected_efi = efi_candidates[0]
+        elif len(efi_candidates) > 1:
+            layout_warnings.append("multiple EFI-like partitions were found and none was uniquely identifiable as the Platform EFI partition")
+
+        detected_efi = selected_efi["path"] if selected_efi else ""
+        if not detected_disk and selected_efi:
+            detected_disk = selected_efi["parent_disk"]
+
+        if detected_disk and detected_lvm_partition and detected_lvm_partition == detected_disk:
+            layout_warnings.append("the LVM PV is the whole target disk, not a partition")
+
+        detected = {
+            "target_disk_device": detected_disk,
+            "efi_partition_device": detected_efi,
+            "lvm_partition_device": detected_lvm_partition,
+            "volume_group_name": detected_vg,
+        }
+        for field, detected_value in detected.items():
+            fallback_value = fallback[field]
+            if fallback_value and detected_value and fallback_value != detected_value:
+                layout_warnings.append(
+                    f"detected {field}={detected_value} differs from configured {field}={fallback_value}"
+                )
+
+        conflict = any("differs from configured" in warning for warning in layout_warnings)
+        exact = all(detected.values()) and not conflict
+        fallback_complete = all(fallback.values())
+        disk_paths = {disk["path"] for disk in disks}
+
+        if exact:
+            confidence = "exact"
+            source = "detected"
+            layout_values = detected
+        elif fallback_complete and not conflict:
+            confidence = "fallback"
+            source = "configured"
+            layout_values = fallback
+            if command_available("lsblk") and fallback["target_disk_device"] not in disk_paths:
+                layout_warnings.append(
+                    f"configured target_disk_device={fallback['target_disk_device']} was not found in lsblk disk output"
+                )
+                confidence = "none"
+                source = "none"
+        else:
+            confidence = "none"
+            source = "none"
+            layout_values = {
+                "target_disk_device": detected["target_disk_device"] or fallback["target_disk_device"],
+                "efi_partition_device": detected["efi_partition_device"] or fallback["efi_partition_device"],
+                "lvm_partition_device": detected["lvm_partition_device"] or fallback["lvm_partition_device"],
+                "volume_group_name": detected["volume_group_name"] or fallback["volume_group_name"],
+            }
+
+        selected_vg = volume_groups_by_name.get(layout_values["volume_group_name"], {})
+        managed_layout = {
+            **layout_values,
+            "volume_group_size_bytes": selected_vg.get("vg_size_bytes"),
+            "volume_group_free_bytes": selected_vg.get("vg_free_bytes"),
+            "confidence": confidence,
+            "source": source,
+            "warnings": warnings + layout_warnings,
+        }
+
+        result = {
+            "root_fstype": payload["root_fstype"].strip(),
+            "commands": {
+                name: {
+                    "available": command_available(name),
+                    "rc": command_payloads[name]["rc"],
+                }
+                for name in ("lsblk", "findmnt", "blkid", "pvs", "vgs", "lvs")
+            },
+            "disks": disks,
+            "partitions": partitions,
+            "physical_volumes": physical_volumes,
+            "volume_groups": volume_groups,
+            "logical_volumes": logical_volumes,
+            "mounts": mounts,
+            "managed_layout": managed_layout,
+        }
+        print(json.dumps(result, sort_keys=True))
+  args:
+    stdin: >-
+      {{
+        {
+          'root_fstype': storage_inspection_root_fstype_command.stdout | default(''),
+          'expected': {
+            'efi_partition_label': storage_inspection_expected_efi_partition_label,
+            'efi_mount_path': storage_inspection_expected_efi_mount_path,
+            'fallback_target_disk_device': storage_inspection_fallback_target_disk_device,
+            'fallback_efi_partition_device': storage_inspection_fallback_efi_partition_device,
+            'fallback_lvm_partition_device': storage_inspection_fallback_lvm_partition_device,
+            'fallback_volume_group_name': storage_inspection_fallback_volume_group_name,
+          },
+          'commands': {
+            'proc_mounts': {
+              'rc': storage_inspection_proc_mounts_command.rc | default(0),
+              'stdout': storage_inspection_proc_mounts_command.stdout | default(''),
+              'stderr': storage_inspection_proc_mounts_command.stderr | default(''),
+            },
+            'lsblk': {
+              'rc': storage_inspection_lsblk_command.rc | default(127),
+              'stdout': storage_inspection_lsblk_command.stdout | default(''),
+              'stderr': storage_inspection_lsblk_command.stderr | default(''),
+            },
+            'findmnt': {
+              'rc': storage_inspection_findmnt_command.rc | default(127),
+              'stdout': storage_inspection_findmnt_command.stdout | default(''),
+              'stderr': storage_inspection_findmnt_command.stderr | default(''),
+            },
+            'blkid': {
+              'rc': storage_inspection_blkid_command.rc | default(127),
+              'stdout': storage_inspection_blkid_command.stdout | default(''),
+              'stderr': storage_inspection_blkid_command.stderr | default(''),
+            },
+            'pvs': {
+              'rc': storage_inspection_pvs_command.rc | default(127),
+              'stdout': storage_inspection_pvs_command.stdout | default(''),
+              'stderr': storage_inspection_pvs_command.stderr | default(''),
+            },
+            'vgs': {
+              'rc': storage_inspection_vgs_command.rc | default(127),
+              'stdout': storage_inspection_vgs_command.stdout | default(''),
+              'stderr': storage_inspection_vgs_command.stderr | default(''),
+            },
+            'lvs': {
+              'rc': storage_inspection_lvs_command.rc | default(127),
+              'stdout': storage_inspection_lvs_command.stdout | default(''),
+              'stderr': storage_inspection_lvs_command.stderr | default(''),
+            },
+          },
+        } | to_json
+      }}
+  register: storage_inspection_result_command
+  changed_when: false
+
+- name: Publish storage inspection facts
+  ansible.builtin.set_fact:
+    storage_inspection_root_fstype: "{{ (storage_inspection_result_command.stdout | from_json).root_fstype }}"
+    storage_inspection_commands: "{{ (storage_inspection_result_command.stdout | from_json).commands }}"
+    storage_inspection_disks: "{{ (storage_inspection_result_command.stdout | from_json).disks }}"
+    storage_inspection_partitions: "{{ (storage_inspection_result_command.stdout | from_json).partitions }}"
+    storage_inspection_physical_volumes: "{{ (storage_inspection_result_command.stdout | from_json).physical_volumes }}"
+    storage_inspection_volume_groups: "{{ (storage_inspection_result_command.stdout | from_json).volume_groups }}"
+    storage_inspection_logical_volumes: "{{ (storage_inspection_result_command.stdout | from_json).logical_volumes }}"
+    storage_inspection_mounts: "{{ (storage_inspection_result_command.stdout | from_json).mounts }}"
+    storage_inspection_managed_layout: "{{ (storage_inspection_result_command.stdout | from_json).managed_layout }}"
+
+- name: Show storage inspection summary
+  ansible.builtin.debug:
+    msg:
+      - "root_fstype={{ storage_inspection_root_fstype }}"
+      - "managed_layout_confidence={{ storage_inspection_managed_layout.confidence }}"
+      - "target_disk_device={{ storage_inspection_managed_layout.target_disk_device }}"
+      - "efi_partition_device={{ storage_inspection_managed_layout.efi_partition_device }}"
+      - "lvm_partition_device={{ storage_inspection_managed_layout.lvm_partition_device }}"
+      - "volume_group_name={{ storage_inspection_managed_layout.volume_group_name }}"
+      - "volume_group_free_bytes={{ storage_inspection_managed_layout.volume_group_free_bytes }}"
+      - "warnings={{ storage_inspection_managed_layout.warnings }}"
+  when: storage_inspection_show_summary | bool

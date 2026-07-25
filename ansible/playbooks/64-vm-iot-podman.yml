@@ -1,0 +1,38 @@
+---
+- name: Converge the iot VM as a Podman host
+  hosts: iot
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    vm_removed_packages:
+      - openssh
+  pre_tasks:
+    - name: Gather iot steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Keep the iot Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the iot SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the iot VM base system converged
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Converge the iot Podman host
+      ansible.builtin.import_role:
+        name: podman-host
+
+    - name: Verify iot host and container internet egress
+      ansible.builtin.import_role:
+        name: vm-egress-verification
+
+    - name: Show the iot Podman host state
+      ansible.builtin.debug:
+        msg:
+          - "IoT VM {{ inventory_hostname }} is ready for rootless Podman workloads."
+          - "Use the steady-state Tailscale identity {{ node_hostname }}.{{ platform_magicdns_suffix }} for the next workload slice."
+          - "Direct operator access should now use: tailscale ssh neo@{{ node_hostname }}"

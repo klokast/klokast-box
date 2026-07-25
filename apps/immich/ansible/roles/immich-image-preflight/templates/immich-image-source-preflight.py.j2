@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import socket
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+IMAGES = {{ immich_images | to_json }}
+DOCKER_PROFILES = {
+    "direct": {
+        "registry": "registry-1.docker.io",
+        "source_prefix": "docker.io",
+        "auth": "https://auth.docker.io/token",
+        "service": "registry.docker.io",
+    },
+    "china-daocloud": {
+        "registry": "docker.m.daocloud.io",
+        "source_prefix": "docker.m.daocloud.io",
+        "auth": None,
+        "service": None,
+    },
+    "china-1ms": {
+        "registry": "docker.1ms.run",
+        "source_prefix": "docker.1ms.run",
+        "auth": None,
+        "service": None,
+    },
+    "china-daocloud-prefix": {
+        "registry": "m.daocloud.io",
+        "source_prefix": "m.daocloud.io/docker.io",
+        "auth": None,
+        "service": None,
+    },
+}
+PROFILE_ORDER = ["direct", "china-1ms", "china-daocloud", "china-daocloud-prefix"]
+ACCEPT = ", ".join(
+    [
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ]
+)
+RETRYABLE_ERRNOS = {-3, -2, 104, 110, 111}
+
+
+def is_retryable_url_error(error):
+    reason = getattr(error, "reason", error)
+    reason_errno = getattr(reason, "errno", None)
+    if reason_errno == 101:
+        return False
+    return (
+        reason_errno in RETRYABLE_ERRNOS
+        or isinstance(reason, socket.timeout)
+        or isinstance(reason, TimeoutError)
+    )
+
+
+def request(url, headers=None, method="GET", timeout=15, attempts=3):
+    context = ssl.create_default_context()
+    for attempt in range(attempts):
+        req = urllib.request.Request(url, headers=headers or {}, method=method)
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=context)
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError as error:
+            if attempt == attempts - 1 or not is_retryable_url_error(error):
+                raise
+            time.sleep(2**attempt)
+
+
+def bearer_from_www_authenticate(value, repository):
+    if not value or "bearer" not in value.lower():
+        return None
+    params = {}
+    for item in value.split(" ", 1)[1].split(","):
+        if "=" not in item:
+            continue
+        key, raw = item.split("=", 1)
+        params[key.strip()] = raw.strip().strip('"')
+    realm = params.get("realm")
+    service = params.get("service")
+    scope = params.get("scope") or f"repository:{repository}:pull"
+    if not realm:
+        return None
+    query = urllib.parse.urlencode({"service": service, "scope": scope})
+    with request(f"{realm}?{query}", timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))["token"]
+
+
+def docker_hub_token(profile, repository):
+    if not profile.get("auth"):
+        return None
+    query = urllib.parse.urlencode(
+        {
+            "service": profile["service"],
+            "scope": f"repository:{repository}:pull",
+        }
+    )
+    with request(f"{profile['auth']}?{query}", timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))["token"]
+
+
+def profile_for_image(profile_name, image):
+    registry = image.get("registry") or ""
+    if registry == "ghcr.io":
+        return {
+            "registry": "ghcr.io",
+            "source_prefix": "ghcr.io",
+            "auth": None,
+            "service": "ghcr.io",
+        }
+    if registry == "docker.io":
+        return DOCKER_PROFILES[profile_name]
+    raise RuntimeError(f"unsupported registry for {image['repository']}: {registry}")
+
+
+def manifest_digest(profile, repository, reference):
+    url = f"https://{profile['registry']}/v2/{repository}/manifests/{reference}"
+    headers = {"Accept": ACCEPT}
+    token = docker_hub_token(profile, repository)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        with request(url, headers=headers, method="HEAD", timeout=15) as response:
+            return response.headers.get("Docker-Content-Digest")
+    except urllib.error.HTTPError as error:
+        token = bearer_from_www_authenticate(error.headers.get("Www-Authenticate"), repository)
+        if not token:
+            raise
+        headers["Authorization"] = f"Bearer {token}"
+        with request(url, headers=headers, method="HEAD", timeout=15) as response:
+            return response.headers.get("Docker-Content-Digest")
+
+
+def source_ref(profile, image):
+    return f"{profile['source_prefix']}/{image['repository']}:{image['tag']}"
+
+
+def digest_ref(profile, image):
+    return f"{profile['source_prefix']}/{image['repository']}@{image['digest']}"
+
+
+def summarize_process_output(result):
+    output = "\n".join([result.stdout.strip(), result.stderr.strip()]).strip()
+    if len(output) <= 2000:
+        return output
+    return output[-2000:]
+
+
+def podman_command(args, pull_user):
+    command = ["/usr/bin/podman"] + args
+    if pull_user and os.geteuid() == 0:
+        command = ["/usr/bin/doas", "-u", pull_user] + command
+    return command
+
+
+def image_exists(reference, pull_user):
+    result = subprocess.run(
+        podman_command(["image", "exists", reference], pull_user),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+    )
+    return result.returncode == 0
+
+
+def pull_image(reference, pull_user):
+    if image_exists(reference, pull_user):
+        return
+    command = podman_command(["pull", "--policy=missing", "--retry=0", reference], pull_user)
+    result = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "pull failed for "
+            + reference
+            + ": "
+            + summarize_process_output(result)
+        )
+
+
+def check_profile(name, verify_pull=False, pull_user=None, keys=None):
+    output = {"profile": name, "images": {}, "checked_at_epoch": int(time.time())}
+    selected = IMAGES
+    if keys:
+        selected = {key: IMAGES[key] for key in keys}
+    for key, image in selected.items():
+        profile = profile_for_image(name, image)
+        expected = image["digest"]
+        digest = manifest_digest(profile, image["repository"], expected)
+        if not digest:
+            raise RuntimeError(
+                f"{key} digest check through {name} returned no Docker-Content-Digest"
+            )
+        if digest != expected:
+            raise RuntimeError(
+                f"{key} digest mismatch through {name}: got {digest}, expected {expected}"
+            )
+        output["images"][key] = {
+            "canonical_ref": f"{image['canonical']}:{image['tag']}",
+            "source_ref": source_ref(profile, image),
+            "pull_ref": digest_ref(profile, image),
+            "digest": digest,
+        }
+        if verify_pull:
+            pull_image(output["images"][key]["pull_ref"], pull_user)
+    return output
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", default="auto")
+    parser.add_argument("--keys", default="")
+    parser.add_argument("--write", required=True)
+    parser.add_argument("--verify-pull", action="store_true")
+    parser.add_argument("--pull-user")
+    args = parser.parse_args()
+
+    keys = [item.strip() for item in args.keys.split(",") if item.strip()]
+    unknown = sorted(set(keys) - set(IMAGES))
+    if unknown:
+        raise SystemExit("unknown image key(s): " + ", ".join(unknown))
+
+    candidates = PROFILE_ORDER if args.profile == "auto" else [args.profile]
+    errors = {}
+    for name in candidates:
+        if name not in PROFILE_ORDER:
+            raise SystemExit(f"unknown image source profile: {name}")
+        try:
+            result = check_profile(
+                name,
+                verify_pull=args.verify_pull,
+                pull_user=args.pull_user,
+                keys=keys,
+            )
+            with open(args.write, "w", encoding="utf-8") as handle:
+                json.dump(result, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            print(json.dumps({"selected_profile": name, "write": args.write}, sort_keys=True))
+            return
+        except Exception as error:
+            errors[name] = str(error)
+
+    print(json.dumps({"errors": errors}, indent=2, sort_keys=True), file=sys.stderr)
+    raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

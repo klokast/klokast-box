@@ -1,0 +1,36 @@
+---
+- name: Ensure platform-resource metadata directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/platform-resources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Persist desired platform-resource plan
+  ansible.builtin.copy:
+    dest: /etc/klokast/platform-resources/desired.json
+    content: "{{ platform_resources_desired_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Persist platform-resource apply metadata
+  ansible.builtin.copy:
+    dest: /etc/klokast/platform-resources/last-applied.json
+    content: |
+      {{
+        {
+          "approved_commit": platform_resources_approved_commit | default(""),
+          "registry_sha256": platform_resources_registry_sha256 | default(""),
+          "compiler": "platform-resources",
+          "compiler_version": platform_resources_compiler_version | default(1),
+          "inventory_hostname": inventory_hostname
+        } | to_nice_json
+      }}
+    owner: root
+    group: root
+    mode: "0644"
+  become: true

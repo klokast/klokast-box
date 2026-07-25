@@ -1,0 +1,9 @@
+---
+- name: Verify the static-site stack
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Verify static-site runtime state
+      ansible.builtin.import_role:
+        name: static-site-verification
+      when: node_domain_role == 'dmz'

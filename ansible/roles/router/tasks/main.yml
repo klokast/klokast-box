@@ -1,0 +1,375 @@
+#
+# Summary:
+# - Converges the router package set, interfaces, dhcpcd, dnsmasq, nftables, sysctls, and live cleanup of stale routes and rules.
+#
+---
+- name: Ensure router packages are installed
+  community.general.apk:
+    name:
+      - dhcpcd
+      - dnsmasq
+      - iproute2
+      - nftables
+    state: present
+
+- name: Ensure router interfaces configuration is present
+  # Keep the file managed, but do not bounce all interfaces here. The live
+  # router already uses these addresses, and the first safe convergence only
+  # needs the service restarts below.
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+    mode: "0644"
+
+- name: Ensure router dhcpcd configuration is present
+  ansible.builtin.template:
+    src: dhcpcd.conf.j2
+    dest: /etc/dhcpcd.conf
+    mode: "0644"
+  notify: Restart router dhcpcd
+
+- name: Ensure router dnsmasq configuration is present
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.conf
+    mode: "0644"
+    validate: "dnsmasq --test --conf-file=%s"
+  notify: Restart router dnsmasq
+
+- name: Ensure router app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure router keyed app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources/router-forward.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure router keyed app-resource include sentinel exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/app-resources/router-forward.d/000-empty.nft
+    content: "# Empty placeholder so nft include globs always match.\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure router app-resource include file exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/app-resources/router-forward.nft
+    content: |
+      # Managed by Klokast platform-resources. Empty until deployment policy is applied.
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Ensure router nftables configuration is present
+  ansible.builtin.template:
+    src: nftables.nft.j2
+    dest: /etc/nftables.nft
+    mode: "0644"
+    validate: "/usr/sbin/nft -c -f %s"
+  notify: Restart router nftables
+
+- name: Ensure IPv4 forwarding is enabled
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_file: /etc/sysctl.conf
+    state: present
+    reload: true
+
+- name: Ensure IPv6 forwarding is disabled for now
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "0"
+    sysctl_file: /etc/sysctl.conf
+    state: present
+    reload: true
+  when: not router_enable_ipv6_downstream
+
+- name: Check whether sysctl is in the boot runlevel
+  ansible.builtin.shell: |
+    set -eu
+    /sbin/rc-update show boot | awk '$1 == "sysctl" { found=1 } END { exit found ? 0 : 1 }'
+  args:
+    executable: /bin/sh
+  register: router_sysctl_boot_runlevel
+  changed_when: false
+  failed_when: false
+
+- name: Enable sysctl at boot
+  ansible.builtin.command:
+    argv:
+      - /sbin/rc-update
+      - add
+      - sysctl
+      - boot
+  when: router_sysctl_boot_runlevel.rc != 0
+
+- name: Ensure sysctl is applied in the live router
+  ansible.builtin.service:
+    name: sysctl
+    state: started
+
+- name: Ensure router VLAN interfaces exist
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    {% for vlan in router_vlan_interfaces | default([]) %}
+    if ! /sbin/ip link show dev "{{ vlan.name }}" >/dev/null 2>&1; then
+      /sbin/ip link add link "{{ vlan.parent }}" name "{{ vlan.name }}" type vlan id "{{ vlan.vlan_id }}"
+      changed=1
+    fi
+    /sbin/ip link set dev "{{ vlan.parent }}" up
+    /sbin/ip link set dev "{{ vlan.name }}" up
+    {% endfor %}
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_vlan_interfaces_result
+  changed_when: "'changed' in router_vlan_interfaces_result.stdout"
+  when: (router_vlan_interfaces | default([]) | length) > 0
+
+- name: Remove local-presence VLAN interfaces when local LAN access is disabled
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    {% for vlan in router_local_presence_vlan_interfaces_all | default([]) %}
+    if /sbin/ip link show dev "{{ vlan.name }}" >/dev/null 2>&1; then
+      /sbin/ip link del dev "{{ vlan.name }}"
+      changed=1
+    fi
+    {% endfor %}
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_local_presence_vlan_cleanup_result
+  changed_when: "'changed' in router_local_presence_vlan_cleanup_result.stdout"
+  when: not (router_local_lan_enabled | default(false) | bool)
+
+- name: Remove stale untagged local-presence IPv4 addresses from AP parent interfaces
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    {% for realm in [platform_network_realms.household, platform_network_realms.admin] %}
+    parent="{{ realm.parent_interface }}"
+    cidr="{{ realm.router_ipv4_address }}/{{ realm.router_ipv4_prefix }}"
+    if /sbin/ip link show dev "$parent" >/dev/null 2>&1; then
+      if /sbin/ip -o -4 addr show dev "$parent" scope global | awk '{print $4}' | grep -Fx "$cidr" >/dev/null 2>&1; then
+        /sbin/ip address del "$cidr" dev "$parent"
+        changed=1
+      fi
+    fi
+    {% endfor %}
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_local_presence_parent_address_cleanup_result
+  changed_when: "'changed' in router_local_presence_parent_address_cleanup_result.stdout"
+
+- name: Remove AP uplink IPv4 address when AP uplink access is disabled
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    dev="{{ platform_network_realms['ap-uplink'].router_interface }}"
+    cidr="{{ platform_network_realms['ap-uplink'].router_ipv4_address }}/{{ platform_network_realms['ap-uplink'].router_ipv4_prefix }}"
+    if /sbin/ip link show dev "$dev" >/dev/null 2>&1; then
+      if /sbin/ip -o -4 addr show dev "$dev" scope global | awk '{print $4}' | grep -Fx "$cidr" >/dev/null 2>&1; then
+        /sbin/ip address del "$cidr" dev "$dev"
+        changed=1
+      fi
+    fi
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_ap_uplink_address_cleanup_result
+  changed_when: "'changed' in router_ap_uplink_address_cleanup_result.stdout"
+  when: not (router_ap_uplink_enabled | default(false) | bool)
+
+- name: Ensure the managed static router interfaces are up with the expected IPv4 addresses
+  ansible.builtin.command: "/sbin/ip address replace {{ item.address }}/{{ item.prefix }} dev {{ item.interface }}"
+  loop: "{{ router_static_interfaces }}"
+  changed_when: false
+
+- name: Ensure the managed static router interfaces are administratively up
+  ansible.builtin.command: "/sbin/ip link set dev {{ item }} up"
+  loop: "{{ router_static_interfaces | map(attribute='interface') | list }}"
+  changed_when: false
+
+- name: Ensure router services are enabled and started
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - dhcpcd
+    - dnsmasq
+    - nftables
+    - tailscale
+
+- name: Apply the managed nftables ruleset to the live kernel state
+  ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.nft
+  changed_when: false
+
+- name: Ensure local-presence policy routing uses the VPN gateway
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    table="{{ router_local_presence_vpn_table }}"
+    base="{{ router_local_presence_vpn_priority_base }}"
+    gateway="{{ router_local_presence_vpn_gateway_ipv4_address }}"
+    gateway_dev="{{ router_local_presence_vpn_gateway_interface }}"
+
+    route="$(/sbin/ip -4 route show table "$table" default || true)"
+    if [ "$route" != "default via $gateway dev $gateway_dev" ]; then
+      /sbin/ip -4 route replace table "$table" default via "$gateway" dev "$gateway_dev"
+      changed=1
+    fi
+
+    ensure_rule() {
+      prio="$1"
+      source="$2"
+      destination="$3"
+      lookup="$4"
+      if [ "$destination" = "-" ]; then
+        desired="$prio: from $source lookup $lookup"
+      else
+        desired="$prio: from $source to $destination lookup $lookup"
+      fi
+      rules="$(/sbin/ip -4 rule show | tr '\t' ' ' | sed 's/  */ /g')"
+      if ! printf '%s\n' "$rules" | grep -Fqx "$desired"; then
+        while /sbin/ip -4 rule show | awk -F: -v p="$prio" '$1 == p { found=1 } END { exit found ? 0 : 1 }'; do
+          /sbin/ip -4 rule del priority "$prio" 2>/dev/null || break
+          changed=1
+        done
+        if [ "$destination" = "-" ]; then
+          /sbin/ip -4 rule add priority "$prio" from "$source" lookup "$lookup"
+        else
+          /sbin/ip -4 rule add priority "$prio" from "$source" to "$destination" lookup "$lookup"
+        fi
+        changed=1
+      fi
+    }
+
+    source_index=0
+    for source in {% for rule in router_local_presence_sources | default([]) %}{{ rule.source }} {% endfor %}; do
+      bypass_index=0
+      for destination in {% for cidr in router_local_presence_bypass_cidrs | default([]) %}{{ cidr }} {% endfor %}; do
+        ensure_rule "$((base + source_index * 100 + bypass_index))" "$source" "$destination" main
+        bypass_index=$((bypass_index + 1))
+      done
+      ensure_rule "$((base + source_index * 100 + 90))" "$source" "-" "$table"
+      source_index=$((source_index + 1))
+    done
+
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_local_presence_policy_routing_result
+  changed_when: "'changed' in router_local_presence_policy_routing_result.stdout"
+  when: router_local_presence_vpn_gateway_enabled | default(false) | bool
+
+- name: Remove local-presence policy routing when the VPN gateway is not enabled
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    table="{{ router_local_presence_vpn_table }}"
+    base="{{ router_local_presence_vpn_priority_base }}"
+
+    if /sbin/ip -4 route show table "$table" default | grep -q .; then
+      /sbin/ip -4 route del table "$table" default 2>/dev/null || true
+      changed=1
+    fi
+
+    source_index=0
+    for _source in {% for rule in router_local_presence_sources_all | default([]) %}{{ rule.source }} {% endfor %}; do
+      bypass_index=0
+      for _destination in {% for cidr in router_local_presence_bypass_cidrs | default([]) %}{{ cidr }} {% endfor %}; do
+        priority="$((base + source_index * 100 + bypass_index))"
+        while /sbin/ip -4 rule show | awk -F: -v p="$priority" '$1 == p { found=1 } END { exit found ? 0 : 1 }'; do
+          /sbin/ip -4 rule del priority "$priority" 2>/dev/null || break
+          changed=1
+        done
+        bypass_index=$((bypass_index + 1))
+      done
+      priority="$((base + source_index * 100 + 90))"
+      while /sbin/ip -4 rule show | awk -F: -v p="$priority" '$1 == p { found=1 } END { exit found ? 0 : 1 }'; do
+        /sbin/ip -4 rule del priority "$priority" 2>/dev/null || break
+        changed=1
+      done
+      source_index=$((source_index + 1))
+    done
+
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_local_presence_policy_routing_cleanup_result
+  changed_when: "'changed' in router_local_presence_policy_routing_cleanup_result.stdout"
+  when: not (router_local_presence_vpn_gateway_enabled | default(false) | bool)
+
+- name: Remove stale IPv4 link-local addresses from internal interfaces
+  # Earlier DHCPv6-PD experiments left 169.254/16 addresses on the static
+  # inside links. Clear them explicitly so the router converges to the managed
+  # IPv4-only downstream model.
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    for dev in {{ router_internal_interfaces | join(' ') }}; do
+      for cidr in $(ip -o -4 addr show dev "$dev" scope global | awk '$4 ~ /^169\.254\./ {print $4}'); do
+        ip address del "$cidr" dev "$dev"
+        changed=1
+      done
+    done
+    if [ "$changed" -eq 1 ]; then
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_stale_ipv4ll_cleanup
+  changed_when: "'changed' in router_stale_ipv4ll_cleanup.stdout"
+
+- name: Remove stale jump-era nftables rules from the live ruleset
+  # The managed nftables file no longer contains these 41641 DNAT/forward
+  # exceptions, but older runs can leave them loaded in the kernel ruleset.
+  ansible.builtin.shell: |
+    set -eu
+    handles="$(
+      /usr/sbin/nft -a list ruleset | awk '
+        /iifname "{{ router_wan_interface }}" oifname "{{ router_lan_interface }}" ip daddr 10\.10\.10\.10 udp dport 41641 accept/ {print "inet filter forward " $NF}
+        /iifname "{{ router_wan_interface }}" oifname "{{ router_lan_interface }}" udp dport 41641 accept/ {print "inet filter forward " $NF}
+        /iifname "{{ router_wan_interface }}" udp dport 41641 dnat to 10\.10\.10\.10/ {print "ip nat prerouting " $NF}
+      '
+    )"
+    if [ -n "$handles" ]; then
+      while read -r family table chain handle; do
+        [ -n "$handle" ] || continue
+        /usr/sbin/nft delete rule "$family" "$table" "$chain" handle "$handle"
+      done <<EOF
+    $handles
+    EOF
+      echo changed
+    fi
+  args:
+    executable: /bin/sh
+  register: router_stale_jump_nft_cleanup
+  changed_when: "'changed' in router_stale_jump_nft_cleanup.stdout"

@@ -1,0 +1,49 @@
+---
+schema_version: 1
+app: static-site
+risk_class: public_static_site
+default_isolation: zone_vm_rootless_podman
+placement_mode: single_box
+resources:
+  compute:
+    - id: web
+      type: podman_workload
+      zone: dmz
+      privilege: rootless
+      lifecycle: steady
+    - id: publisher
+      type: host_service
+      zone: dmz
+      privilege: unprivileged
+      lifecycle: steady
+    - id: cloudflare-ingress
+      type: host_service
+      zone: dmz
+      privilege: unprivileged
+      lifecycle: steady
+  network:
+    - id: github-ssh-egress
+      type: wan_egress
+      required: true
+      rationale: >-
+        Allows the DMZ-hosted static-site publisher to fetch the private
+        klokast-site Git repository from GitHub SSH-over-HTTPS.
+      from_zone: dmz
+      tcp_ports:
+        - 443
+    - id: cloudflare-tunnel-egress
+      type: wan_egress
+      required: true
+      rationale: >-
+        Allows the DMZ-hosted Cloudflare Tunnel connector to publish the static
+        site without exposing residential WAN ports.
+      from_zone: dmz
+      tcp_ports:
+        - 7844
+      udp_ports:
+        - 7844
+  artifacts:
+    - id: web-image
+      type: oci_images
+      lock_file: images.lock.yml
+      require_digest: true

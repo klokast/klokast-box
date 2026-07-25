@@ -1,0 +1,15 @@
+duid
+persistent
+vendorclassid
+option domain_name_servers, domain_name, domain_search
+option static_routes, classless_static_routes
+option interface_mtu
+option host_name
+require dhcp_server_identifier
+slaac private
+noipv4ll
+denyinterfaces {{ router_internal_interfaces | join(' ') }}
+
+interface {{ router_wan_interface }}
+    ipv6rs
+    ia_na 1

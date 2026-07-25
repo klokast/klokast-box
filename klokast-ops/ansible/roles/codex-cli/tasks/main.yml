@@ -1,0 +1,109 @@
+---
+- name: Clone nvm for the agent user
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.git:
+    repo: https://github.com/nvm-sh/nvm.git
+    dest: "/home/{{ ops_agent_user }}/.nvm"
+    version: "{{ ops_nvm_version }}"
+    recursive: false
+
+- name: Ensure agent login shells load nvm
+  ansible.builtin.blockinfile:
+    path: "/home/{{ ops_agent_user }}/.bashrc"
+    create: true
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0644"
+    marker: "# {mark} klokast ops nvm"
+    block: |
+      export NVM_DIR="$HOME/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+- name: Install the current Node.js LTS for the agent
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    nvm install --lts
+    nvm alias default 'lts/*'
+  args:
+    executable: /bin/bash
+  register: codex_nvm_install
+  changed_when: "'already installed' not in ((codex_nvm_install.stdout + codex_nvm_install.stderr) | lower)"
+
+- name: Check whether the agent npm packages are already installed
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    npm list -g --depth=0 '{{ item.name }}'
+  args:
+    executable: /bin/bash
+  loop: "{{ ops_agent_npm_packages }}"
+  register: codex_npm_packages
+  changed_when: false
+  failed_when: false
+
+- name: Install the missing agent npm packages
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    npm install -g '{{ item.item.install_spec }}'
+  args:
+    executable: /bin/bash
+  loop: "{{ codex_npm_packages.results }}"
+  when: item.rc != 0
+
+- name: Verify the codex CLI is available
+  become: true
+  become_user: "{{ ops_agent_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="$HOME/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    codex --version
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Ensure the Codex config directory exists
+  ansible.builtin.file:
+    path: "{{ ops_codex_config_path | dirname }}"
+    state: directory
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0700"
+
+- name: Install the Codex config
+  ansible.builtin.copy:
+    dest: "{{ ops_codex_config_path }}"
+    owner: "{{ ops_agent_user }}"
+    group: "{{ ops_agent_user }}"
+    mode: "0600"
+    content: |
+      model = "gpt-5.5"
+      model_reasoning_effort = "xhigh"
+      approvals_reviewer = "user"
+      personality = "pragmatic"
+      plan_mode_reasoning_effort = "xhigh"
+
+      approval_policy = "never"
+      sandbox_mode = "danger-full-access"
+
+      [projects."{{ ops_source_root }}/klokast-box"]
+      trust_level = "trusted"
+
+      [tui]
+      status_line = ["model-with-reasoning", "context-remaining", "current-dir", "session-id", "run-state"]
+
+      [notice]
+      hide_full_access_warning = true

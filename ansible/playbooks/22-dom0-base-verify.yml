@@ -1,0 +1,34 @@
+---
+- name: Verify dom0 base system from the steady-state identity
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Ensure the dom0 known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ dom0_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove any stale dom0 Tailscale SSH host key before reconnecting as neo
+      ansible.builtin.shell: >-
+        ssh-keygen -R {{ ansible_host | quote }} -f {{ dom0_known_hosts_file | quote }}
+        >/dev/null 2>&1 || true
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Gather facts from the steady-state dom0 identity
+      ansible.builtin.setup:
+
+    - name: Converge Tailscale runtime settings
+      ansible.builtin.import_role:
+        name: dom0-tailscale
+
+    - name: Flush dom0-base handlers before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify dom0 base persistence and remote-access readiness
+      ansible.builtin.import_role:
+        name: dom0-base-verification

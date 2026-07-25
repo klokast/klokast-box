@@ -1,0 +1,18 @@
+ARG ALPINE_IMAGE=docker.io/library/alpine:3.23
+FROM ${ALPINE_IMAGE}
+
+RUN apk add --no-cache \
+    busybox-extras \
+    ca-certificates \
+    cups \
+    cups-client \
+    cups-filters \
+    jq \
+    shadow \
+    tailscale \
+    tzdata
+
+COPY print-server-entrypoint /usr/local/bin/print-server-entrypoint
+RUN chmod 0755 /usr/local/bin/print-server-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/print-server-entrypoint"]

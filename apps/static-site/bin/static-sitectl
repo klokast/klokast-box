@@ -1,0 +1,490 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "${APP_DIR}/../.." && pwd)"
+PLAYBOOK_DIR="${APP_DIR}/ansible/playbooks"
+ROLE_PATH="${APP_DIR}/ansible/roles:${REPO_ROOT}/ansible/roles"
+BASE_INVENTORY="${REPO_ROOT}/ansible/inventory/hosts.yml"
+ANSIBLE_CONFIG_PATH="${REPO_ROOT}/ansible/ansible.cfg"
+MAGICDNS_SUFFIX="${STATIC_SITE_MAGICDNS_SUFFIX:-${KLOKAST_MAGICDNS_SUFFIX:-example.ts.net}}"
+RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+STATIC_SITE_GITHUB_OWNER_DEFAULT="${STATIC_SITE_GITHUB_OWNER:-klokast}"
+STATIC_SITE_GITHUB_REPO_NAME_DEFAULT="${STATIC_SITE_GITHUB_REPO_NAME:-klokast-site}"
+STATIC_SITE_GIT_BRANCH_DEFAULT="${STATIC_SITE_GIT_BRANCH:-main}"
+STATIC_SITE_GIT_SOURCE_DIR_DEFAULT="${STATIC_SITE_GIT_SOURCE_DIR:-www}"
+COMMON_ANSIBLE_ARGS=(-vv)
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  apps/static-site/bin/static-sitectl bootstrap-repo --box BOX --domain HOST
+  apps/static-site/bin/static-sitectl preflight --box BOX --domain HOST
+  apps/static-site/bin/static-sitectl install --box BOX --domain HOST --resources-registry PATH
+  apps/static-site/bin/static-sitectl verify --box BOX --domain HOST --resources-registry PATH
+  apps/static-site/bin/static-sitectl remove --box BOX [--wipe-data]
+
+Required install environment:
+  STATIC_SITE_CLOUDFLARED_TOKEN
+
+Required bootstrap-repo environment:
+  GITHUB_TOKEN
+
+Platform resources:
+  Pass --resources-registry, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY.
+  KLOKAST_APP_RESOURCES_REGISTRY is still accepted for compatibility.
+
+Git source defaults:
+  --repo-owner klokast --repo-name klokast-site --branch main --source-dir www
+USAGE
+}
+
+die() {
+    printf 'static-sitectl: %s\n' "$*" >&2
+    exit 1
+}
+
+valid_box() {
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    case "$1" in
+    *-bootstrap|*-dom0|*-router|*-bak|*-dmz|*-iot|*-usr|*-ops|*-agent|*-agt|bootstrap|dom0|router|bak|dmz|iot|usr|ops|agent|agt)
+            return 1
+            ;;
+    esac
+}
+
+valid_github_owner() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]
+}
+
+valid_github_repo_name() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]{1,100}$ ]]
+}
+
+valid_git_ref() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || return 1
+    [[ "$1" != *..* && "$1" != *@\{* && "$1" != *\\* && "$1" != *//* && "$1" != *. && "$1" != */ ]]
+}
+
+valid_source_dir() {
+    valid_git_ref "$1" || return 1
+    [[ "$1" != /* ]]
+}
+
+require_box() {
+    local value=$1 name=$2
+    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+}
+
+render_inventory() {
+    local box=$1 out=$2
+    "${REPO_ROOT}/ansible/bin/render-node-inventory" \
+        --node "$box" \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        --output "$out"
+}
+
+inventory_args() {
+    local tmp=$1
+    shift
+    printf -- '-i\n%s\n' "$BASE_INVENTORY"
+    local box
+    for box in "$@"; do
+        render_inventory "$box" "${tmp}/${box}.yml"
+        printf -- '-i\n%s\n' "${tmp}/${box}.yml"
+    done
+}
+
+limit_for_box_roles() {
+    local roles_csv=$1
+    shift
+    local roles=()
+    IFS=',' read -r -a roles <<< "$roles_csv"
+    local first=true
+    local box role
+    for box in "$@"; do
+        for role in "${roles[@]}"; do
+            if [[ "$first" == true ]]; then
+                first=false
+            else
+                printf ','
+            fi
+            printf '%s-%s' "$box" "$role"
+        done
+    done
+}
+
+run_playbook_extra_for_roles() {
+    local roles_csv=$1 tmp=$2 playbook=$3 extra_vars=$4
+    shift 4
+    local inv=(-i "$BASE_INVENTORY")
+    local box
+    for box in "$@"; do
+        render_inventory "$box" "${tmp}/${box}.yml"
+        inv+=(-i "${tmp}/${box}.yml")
+    done
+    local limit
+    limit="$(limit_for_box_roles "$roles_csv" "$@")"
+    local extra_args=()
+    if [[ -n "$extra_vars" ]]; then
+        extra_args=(-e "$extra_vars")
+    fi
+    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
+    ANSIBLE_ROLES_PATH="$ROLE_PATH" \
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
+        ansible-playbook "${COMMON_ANSIBLE_ARGS[@]}" "${inv[@]}" "$playbook" --limit "$limit" "${extra_args[@]}"
+}
+
+json_extra_vars() {
+    python3 - "$@" <<'PY'
+import json
+import sys
+
+data = {}
+for item in sys.argv[1:]:
+    key, value = item.split("=", 1)
+    if value == "true":
+        data[key] = True
+    elif value == "false":
+        data[key] = False
+    else:
+        data[key] = value
+print(json.dumps(data, separators=(",", ":")))
+PY
+}
+
+parse_box_domain() {
+    box=
+    domain=
+    resources_registry="$RESOURCES_REGISTRY_DEFAULT"
+    repo_owner="$STATIC_SITE_GITHUB_OWNER_DEFAULT"
+    repo_name="$STATIC_SITE_GITHUB_REPO_NAME_DEFAULT"
+    git_branch="$STATIC_SITE_GIT_BRANCH_DEFAULT"
+    git_source_dir="$STATIC_SITE_GIT_SOURCE_DIR_DEFAULT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --box)
+                box=${2:-}; shift 2 ;;
+            --domain)
+                domain=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; shift 2 ;;
+            --repo-owner)
+                repo_owner=${2:-}; shift 2 ;;
+            --repo-name)
+                repo_name=${2:-}; shift 2 ;;
+            --branch)
+                git_branch=${2:-}; shift 2 ;;
+            --source-dir)
+                git_source_dir=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$box" ]] || die "--box is required"
+    [[ -n "$domain" ]] || die "--domain is required"
+    require_box "$box" "--box"
+    [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || die "--domain must be a hostname"
+    valid_github_owner "$repo_owner" || die "--repo-owner must be a GitHub organization/user name"
+    valid_github_repo_name "$repo_name" || die "--repo-name must be a GitHub repository name"
+    valid_git_ref "$git_branch" || die "--branch must be a simple Git branch name"
+    valid_source_dir "$git_source_dir" || die "--source-dir must be a safe relative path"
+}
+
+parse_remove() {
+    box=
+    wipe=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --box)
+                box=${2:-}; shift 2 ;;
+            --wipe-data)
+                wipe=true; shift ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$box" ]] || die "--box is required"
+    require_box "$box" "--box"
+}
+
+static_site_extra() {
+    json_extra_vars \
+        "static_site_box=${box}" \
+        "static_site_domain=${domain}" \
+        "static_site_github_owner=${repo_owner}" \
+        "static_site_github_repo_name=${repo_name}" \
+        "static_site_git_branch=${git_branch}" \
+        "static_site_git_source_dir=${git_source_dir}"
+}
+
+static_site_snapshot_extra() {
+    local snapshot_archive=$1
+    json_extra_vars \
+        "static_site_box=${box}" \
+        "static_site_domain=${domain}" \
+        "static_site_snapshot_archive=${snapshot_archive}"
+}
+
+static_site_remove_extra() {
+    json_extra_vars "static_site_wipe_data=${wipe}"
+}
+
+check_secret_env() {
+    [[ -n "${STATIC_SITE_CLOUDFLARED_TOKEN:-}" ]] || die "missing required environment: STATIC_SITE_CLOUDFLARED_TOKEN"
+}
+
+check_github_token() {
+    [[ -n "${GITHUB_TOKEN:-}" ]] || die "GITHUB_TOKEN is required for GitHub repository bootstrap"
+}
+
+require_resources_registry() {
+    [[ -n "${resources_registry:-}" ]] || die "--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY"
+    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
+}
+
+load_static_site_resource_state() {
+    local resource_json
+    require_resources_registry
+    resource_json="$("${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app static-site \
+        show)"
+    RESOURCE_JSON="$resource_json" python3 - "$box" <<'PY' || die "invalid static-site platform resources registry state"
+import json
+import os
+import sys
+
+box = sys.argv[1]
+data = json.loads(os.environ["RESOURCE_JSON"])
+app = (data.get("apps") or {}).get("static-site") or {}
+if not app.get("enabled"):
+    raise SystemExit("static-site must be enabled in the platform resources registry")
+boxes = sorted(app.get("boxes") or [])
+if boxes != [box]:
+    raise SystemExit("static-site registry boxes must match --box")
+placement = app.get("placement") or {}
+if placement.get("active_master") != box:
+    raise SystemExit("static-site placement.active_master must match --box")
+resources = set(app.get("resources") or [])
+required = {"github-ssh-egress", "cloudflare-tunnel-egress"}
+missing = sorted(required - resources)
+if missing:
+    raise SystemExit("static-site registry is missing resources: " + ", ".join(missing))
+PY
+}
+
+verify_static_site_app_resources() {
+    require_resources_registry
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app static-site \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        verify
+}
+
+github_ensure_private_empty_repo() {
+    GITHUB_REPO_OWNER="$repo_owner" \
+    GITHUB_REPO_NAME="$repo_name" \
+    python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+
+api = "https://api.github.com"
+owner = os.environ["GITHUB_REPO_OWNER"]
+repo = os.environ["GITHUB_REPO_NAME"]
+token = os.environ.get("GITHUB_TOKEN", "")
+if not token:
+    raise SystemExit("GITHUB_TOKEN is required")
+
+
+def request(method, path, body=None, status=(200,)):
+    data = None
+    if body is not None:
+        data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    request_obj = urllib.request.Request(
+        api + path,
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=30) as response:
+            payload = response.read()
+            if response.status not in status:
+                raise SystemExit(f"GitHub API returned HTTP {response.status} for {method} {path}")
+            return json.loads(payload.decode("utf-8")) if payload else None
+    except urllib.error.HTTPError as error:
+        payload = error.read().decode("utf-8", errors="replace")
+        if error.code in status:
+            return json.loads(payload) if payload else None
+        try:
+            message = json.loads(payload).get("message", payload)
+        except json.JSONDecodeError:
+            message = payload
+        raise SystemExit(f"GitHub API returned HTTP {error.code} for {method} {path}: {message}")
+
+
+try:
+    repo_data = request("GET", f"/repos/{owner}/{repo}")
+except SystemExit as error:
+    message = str(error)
+    if "HTTP 404" not in message:
+        raise
+    repo_data = request(
+        "POST",
+        f"/orgs/{owner}/repos",
+        {
+            "name": repo,
+            "private": True,
+            "auto_init": False,
+            "has_issues": False,
+            "has_projects": False,
+            "has_wiki": False,
+            "description": "Private source repository for https://www.klokast.ai",
+        },
+        status=(201,),
+    )
+    print(f"created private GitHub repository {owner}/{repo}")
+else:
+    print(f"using existing GitHub repository {owner}/{repo}")
+
+if not repo_data.get("private"):
+    raise SystemExit(f"refusing to use non-private repository {owner}/{repo}")
+
+try:
+    refs = request("GET", f"/repos/{owner}/{repo}/git/matching-refs/heads")
+except SystemExit as error:
+    message = str(error)
+    if "HTTP 409" in message and "empty" in message.lower():
+        refs = []
+    else:
+        raise
+if refs:
+    names = ", ".join(sorted(item.get("ref", "") for item in refs if item.get("ref")))
+    raise SystemExit(f"refusing to bootstrap non-empty repository {owner}/{repo}: {names}")
+PY
+}
+
+seed_static_site_repo() {
+    local snapshot_archive=$1 tmp=$2
+    local snapshot_dir="${tmp}/snapshot"
+    local repo_dir="${tmp}/klokast-site"
+    local askpass="${tmp}/git-askpass.sh"
+    local remote_url="https://github.com/${repo_owner}/${repo_name}.git"
+
+    mkdir -p "$snapshot_dir" "$repo_dir"
+    tar -C "$snapshot_dir" -xf "$snapshot_archive"
+    if ! find "$snapshot_dir" -type f -print -quit | grep -q .; then
+        die "refusing to seed ${repo_owner}/${repo_name}: current public root contains no files"
+    fi
+
+    cat > "$askpass" <<'SH'
+#!/bin/sh
+case "$1" in
+    *Username*) printf '%s\n' x-access-token ;;
+    *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+    *) printf '\n' ;;
+esac
+SH
+    chmod 0700 "$askpass"
+
+    git -C "$repo_dir" init
+    git -C "$repo_dir" checkout -B "$git_branch"
+    git -C "$repo_dir" config user.name "Klokast Static Site Bootstrap"
+    git -C "$repo_dir" config user.email "static-site@klokast.ai"
+    mkdir -p "${repo_dir}/${git_source_dir}"
+    tar -C "$snapshot_dir" -cf - . | tar -C "${repo_dir}/${git_source_dir}" -xf -
+    printf "# Klokast Site\n\nPrivate static-site source for https://%s/.\n\nPublished web root: \`%s/\`.\n" \
+        "$domain" "$git_source_dir" > "${repo_dir}/README.md"
+    git -C "$repo_dir" add README.md "$git_source_dir"
+    git -C "$repo_dir" commit -m "Seed static site from Platform"
+    git -C "$repo_dir" remote add origin "$remote_url"
+    GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" \
+        git -C "$repo_dir" push -u origin "$git_branch"
+}
+
+cmd_bootstrap_repo() {
+    parse_box_domain "$@"
+    check_github_token
+    local tmp snapshot_archive
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    snapshot_archive="${tmp}/public.tar"
+    run_playbook_extra_for_roles "dmz" "$tmp" "${PLAYBOOK_DIR}/10-snapshot-public.yml" \
+        "$(static_site_snapshot_extra "$snapshot_archive")" \
+        "$box"
+    github_ensure_private_empty_repo
+    seed_static_site_repo "$snapshot_archive" "$tmp"
+}
+
+cmd_preflight() {
+    parse_box_domain "$@"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra_for_roles "dmz" "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+        "$(static_site_extra)" \
+        "$box"
+}
+
+cmd_install() {
+    parse_box_domain "$@"
+    load_static_site_resource_state
+    check_secret_env
+    verify_static_site_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra_for_roles "dmz" "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+        "$(static_site_extra)" \
+        "$box"
+    run_playbook_extra_for_roles "dmz" "$tmp" "${PLAYBOOK_DIR}/20-install.yml" \
+        "$(static_site_extra)" \
+        "$box"
+}
+
+cmd_verify() {
+    parse_box_domain "$@"
+    load_static_site_resource_state
+    verify_static_site_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra_for_roles "dmz" "$tmp" "${PLAYBOOK_DIR}/40-verify.yml" \
+        "$(static_site_extra)" \
+        "$box"
+}
+
+cmd_remove() {
+    parse_remove "$@"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra_for_roles "dmz" "$tmp" "${PLAYBOOK_DIR}/90-remove.yml" \
+        "$(static_site_remove_extra)" \
+        "$box"
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+cmd=$1
+shift
+
+case "$cmd" in
+    bootstrap-repo) cmd_bootstrap_repo "$@" ;;
+    preflight) cmd_preflight "$@" ;;
+    install) cmd_install "$@" ;;
+    verify) cmd_verify "$@" ;;
+    remove) cmd_remove "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage; die "unknown command: $cmd" ;;
+esac

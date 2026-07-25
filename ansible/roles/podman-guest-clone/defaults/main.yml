@@ -1,0 +1,17 @@
+---
+podman_clone_template_lv_path: "{{ podman_template_lv_path | default('/dev/' ~ (volume_group_name | default('vg0')) ~ '/lv_podman_template') }}"
+podman_clone_rebuild: false
+podman_clone_target_lv_path: "{{ podman_clone_guest_spec.installed.required_lvs | default(podman_clone_guest_spec.required_lvs) | first }}"
+podman_clone_target_lv_size: "{{ podman_clone_guest_spec.lv_size | default('50G') }}"
+podman_clone_mount_path: "/tmp/{{ podman_clone_guest_spec.guest_name }}-root"
+podman_clone_bootstrap_authorized_key_file: "{{ hostvars[podman_clone_inventory_host].vm_admin_authorized_key_file }}"
+podman_clone_hostname: "{{ hostvars[podman_clone_inventory_host].node_hostname }}"
+podman_clone_network_interfaces: "{{ hostvars[podman_clone_inventory_host].vm_bootstrap_network_interfaces }}"
+podman_clone_bootstrap_interface: "{{ hostvars[podman_clone_inventory_host].vm_interface | default('eth0') }}"
+podman_clone_bootstrap_host: "{{ hostvars[podman_clone_inventory_host].vm_bootstrap_host }}"
+podman_clone_bootstrap_ssh_sources:
+  - "{{ platform_zones.bak.dom0_ipv4_address }}"
+podman_clone_bootstrap_known_hosts_file: "{{ hostvars[podman_clone_inventory_host].vm_bootstrap_known_hosts_file }}"
+podman_clone_dns_resolvers:
+  - 1.1.1.1
+  - 1.0.0.1

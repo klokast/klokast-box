@@ -1,0 +1,425 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE_MACHINE=""
+SOURCE_USER="agent"
+ARCHIVE_ROOT="${CODEX_ARCHIVE_ROOT:-$HOME/private/klokast/codex-archives}"
+DELETE_SOURCE=0
+DRY_RUN_PLAN=0
+SSH_CONNECT_TIMEOUT=15
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/archive-codex-sessions --source-machine MACHINE [options]
+
+Pull Codex conversation/state records from a retiring Codex host into the
+private state directory of the active in-Platform ops controller.
+
+Options:
+  --source-machine NAME   Tailscale machine name or MagicDNS name to pull from.
+  --source-user USER      Unix user on the source machine. Default: agent
+  --archive-root PATH     Destination root on the controller.
+                          Default: ~/private/klokast/codex-archives
+  --delete-source         Delete archived source files only after transfer,
+                          checksum generation, verification, and atomic publish.
+  --dry-run-plan          Print the selected plan and exit without connecting.
+  -h, --help              Show this help.
+
+The wrapper must run on <box>-ops as smith. It archives selected
+conversation-bearing Codex files from ~/.codex and intentionally excludes
+auth.json, config.toml, caches, temp files, plugins, and skills.
+EOF
+}
+
+die() {
+  printf 'archive-codex-sessions: %s\n' "$*" >&2
+  exit 1
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found in PATH"
+}
+
+validate_source_machine() {
+  case "$SOURCE_MACHINE" in
+    ""|"-"*) die "--source-machine must not be empty or start with '-'" ;;
+  esac
+  if ! printf '%s' "$SOURCE_MACHINE" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'; then
+    die "--source-machine must be a Tailscale DNS label or MagicDNS name"
+  fi
+}
+
+validate_source_user() {
+  case "$SOURCE_USER" in
+    ""|"-"*) die "--source-user must not be empty or start with '-'" ;;
+  esac
+  if ! printf '%s' "$SOURCE_USER" | grep -Eq '^[A-Za-z_][A-Za-z0-9_-]*[$]?$'; then
+    die "--source-user must be a simple Unix user name"
+  fi
+}
+
+validate_archive_root() {
+  case "$ARCHIVE_ROOT" in
+    /*) ;;
+    \~) ARCHIVE_ROOT="$HOME" ;;
+    \~/*) ARCHIVE_ROOT="$HOME/${ARCHIVE_ROOT#~/}" ;;
+    *) die "--archive-root must be an absolute path or ~/ path" ;;
+  esac
+}
+
+assert_controller_locus() {
+  local current_user
+  current_user="$(id -un)"
+  [ "$current_user" = "smith" ] || die "run this on <box>-ops as smith, not as $current_user"
+  [ "${HOME:-}" = "/home/smith" ] || die "unexpected HOME for smith: ${HOME:-unset}"
+}
+
+safe_source_name() {
+  printf '%s' "$SOURCE_MACHINE" | sed 's/[^A-Za-z0-9_.-]/_/g'
+}
+
+emit_remote_list() {
+  local output_file="$1"
+  "${SSH_CMD[@]}" sh -s >"$output_file" <<'REMOTE_LIST'
+set -eu
+
+base="$HOME/.codex"
+test -d "$base"
+cd "$base"
+
+emit_one() {
+  path="$1"
+  if [ -f "$path" ] || [ -L "$path" ]; then
+    printf '%s\0' "$path"
+  fi
+}
+
+emit_one history.jsonl
+
+for path in logs*.sqlite* state*.sqlite* goals*.sqlite*; do
+  emit_one "$path"
+done
+
+for dir in sessions log shell_snapshots; do
+  if [ -d "$dir" ]; then
+    find "$dir" \( -type f -o -type l \) -print0
+  fi
+done
+REMOTE_LIST
+}
+
+validate_file_list() {
+  local nul_list="$1"
+  local text_list="$2"
+  python3 - "$nul_list" "$text_list" <<'PY'
+import os
+import sys
+
+nul_path, text_path = sys.argv[1:3]
+data = open(nul_path, "rb").read()
+entries = [entry for entry in data.split(b"\0") if entry]
+
+for entry in entries:
+    parts = entry.split(b"/")
+    if entry.startswith(b"/") or any(part in (b"", b".", b"..") for part in parts):
+        print(f"unsafe source path in file list: {entry!r}", file=sys.stderr)
+        sys.exit(1)
+
+with open(text_path, "w", encoding="utf-8", errors="surrogateescape") as handle:
+    for entry in sorted(entries):
+        handle.write(os.fsdecode(entry))
+        handle.write("\n")
+
+print(len(entries))
+PY
+}
+
+write_archive_metadata() {
+  local archive_dir="$1"
+  local source_deleted="$2"
+  local delete_requested="$3"
+  local phase_timestamp
+  phase_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  python3 - "$archive_dir" "$SOURCE_MACHINE" "$SOURCE_USER" "$CREATED_AT" \
+    "$phase_timestamp" "$source_deleted" "$delete_requested" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+archive_dir, source_machine, source_user, created_at, updated_at, source_deleted, delete_requested = sys.argv[1:8]
+codex_dir = os.path.join(archive_dir, "codex")
+sha_path = os.path.join(archive_dir, "SHA256SUMS")
+manifest_path = os.path.join(archive_dir, "manifest.json")
+source_list_path = os.path.join(archive_dir, "source-files.nul")
+source_text_path = os.path.join(archive_dir, "source-files.txt")
+
+regular_files = []
+symlink_count = 0
+byte_count = 0
+
+for root, dirs, files in os.walk(codex_dir, topdown=True, followlinks=False):
+    for dirname in dirs:
+        path = os.path.join(root, dirname)
+        if not os.path.islink(path):
+            os.chmod(path, 0o700)
+    for filename in files:
+        path = os.path.join(root, filename)
+        rel = os.path.relpath(path, archive_dir)
+        if os.path.islink(path):
+            symlink_count += 1
+            continue
+        if not os.path.isfile(path):
+            continue
+        os.chmod(path, 0o600)
+        size = os.path.getsize(path)
+        byte_count += size
+        regular_files.append((rel, path, size))
+
+regular_files.sort()
+
+with open(sha_path, "w", encoding="utf-8") as sha_file:
+    for rel, path, _size in regular_files:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        sha_file.write(f"{digest.hexdigest()}  {rel}\n")
+
+source_entries = []
+if os.path.exists(source_list_path):
+    data = open(source_list_path, "rb").read()
+    source_entries = [entry for entry in data.split(b"\0") if entry]
+
+manifest = {
+    "schema_version": 1,
+    "created_at": created_at,
+    "updated_at": updated_at,
+    "source_machine": source_machine,
+    "source_user": source_user,
+    "source_codex_dir": "~/.codex",
+    "archive_path": archive_dir,
+    "delete_source_requested": delete_requested == "true",
+    "source_deleted": source_deleted == "true",
+    "source_entry_count": len(source_entries),
+    "regular_file_count": len(regular_files),
+    "symlink_count": symlink_count,
+    "byte_count": byte_count,
+    "included": [
+        "~/.codex/sessions/",
+        "~/.codex/history.jsonl",
+        "~/.codex/logs*.sqlite*",
+        "~/.codex/state*.sqlite*",
+        "~/.codex/goals*.sqlite*",
+        "~/.codex/log/",
+        "~/.codex/shell_snapshots/",
+    ],
+    "excluded": [
+        "~/.codex/auth.json",
+        "~/.codex/config.toml",
+        "~/.codex/cache/",
+        "~/.codex/tmp/",
+        "~/.codex/.tmp/",
+        "~/.codex/skills/",
+    ],
+}
+
+with open(manifest_path, "w", encoding="utf-8") as manifest_file:
+    json.dump(manifest, manifest_file, indent=2, sort_keys=True)
+    manifest_file.write("\n")
+
+for path in (sha_path, manifest_path, source_list_path, source_text_path):
+    if os.path.exists(path) and not os.path.islink(path):
+        os.chmod(path, 0o600)
+
+for root, dirs, _files in os.walk(archive_dir, topdown=False, followlinks=False):
+    for dirname in dirs:
+        path = os.path.join(root, dirname)
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(mode) and not stat.S_ISLNK(mode):
+            os.chmod(path, 0o700)
+os.chmod(archive_dir, 0o700)
+PY
+}
+
+delete_source_files() {
+  # shellcheck disable=SC2016
+  "${SSH_CMD[@]}" 'set -eu
+cd "$HOME/.codex"
+xargs -0 rm -f --
+for dir in shell_snapshots log sessions; do
+  if [ -d "$dir" ]; then
+    find "$dir" -depth -type d -empty -exec rmdir {} + 2>/dev/null || true
+  fi
+done' <"$DEST/source-files.nul"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --source-machine)
+      [ "$#" -ge 2 ] || die "--source-machine requires a value"
+      SOURCE_MACHINE="$2"
+      shift 2
+      ;;
+    --source-user)
+      [ "$#" -ge 2 ] || die "--source-user requires a value"
+      SOURCE_USER="$2"
+      shift 2
+      ;;
+    --archive-root)
+      [ "$#" -ge 2 ] || die "--archive-root requires a value"
+      ARCHIVE_ROOT="$2"
+      shift 2
+      ;;
+    --delete-source)
+      DELETE_SOURCE=1
+      shift
+      ;;
+    --dry-run-plan)
+      DRY_RUN_PLAN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+validate_source_machine
+validate_source_user
+validate_archive_root
+
+SOURCE_TARGET="${SOURCE_USER}@${SOURCE_MACHINE}"
+SAFE_SOURCE="$(safe_source_name)"
+CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ARCHIVE_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+DEST_PARENT="$ARCHIVE_ROOT/$SAFE_SOURCE"
+DEST="$DEST_PARENT/$ARCHIVE_ID"
+INCOMING="$DEST.incoming"
+KNOWN_HOSTS="$ARCHIVE_ROOT/known_hosts"
+SOURCE_LIST="$INCOMING/source-files.nul"
+SOURCE_TEXT_LIST="$INCOMING/source-files.txt"
+
+SSH_OPTS=(
+  -o BatchMode=yes
+  -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
+  -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile="$KNOWN_HOSTS"
+)
+SSH_CMD=(ssh "${SSH_OPTS[@]}" "$SOURCE_TARGET")
+RSYNC_RSH="ssh -o BatchMode=yes -o ConnectTimeout=$SSH_CONNECT_TIMEOUT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS"
+
+printf 'Source: %s\n' "$SOURCE_TARGET"
+printf 'Archive root: %s\n' "$ARCHIVE_ROOT"
+printf 'Archive path: %s\n' "$DEST"
+printf 'Delete source after verified archive: '
+if [ "$DELETE_SOURCE" -eq 1 ]; then
+  printf 'yes\n'
+else
+  printf 'no\n'
+fi
+
+if [ "$DRY_RUN_PLAN" -eq 1 ]; then
+  printf 'Controller locus: must be /home/smith on <box>-ops\n'
+  printf 'SSH command: '
+  quote_command "${SSH_CMD[@]}"
+  printf 'Rsync source: %s:.codex/\n' "$SOURCE_TARGET"
+  exit 0
+fi
+
+assert_controller_locus
+require_command ssh
+require_command rsync
+require_command python3
+require_command sha256sum
+
+umask 077
+mkdir -p "$DEST_PARENT"
+chmod 0700 "$ARCHIVE_ROOT" "$DEST_PARENT"
+touch "$KNOWN_HOSTS"
+chmod 0600 "$KNOWN_HOSTS"
+
+[ ! -e "$DEST" ] || die "archive path already exists: $DEST"
+[ ! -e "$INCOMING" ] || die "incoming path already exists: $INCOMING"
+mkdir -p "$INCOMING/codex"
+chmod 0700 "$INCOMING" "$INCOMING/codex"
+
+printf 'Checking source prerequisites...\n'
+# shellcheck disable=SC2016
+"${SSH_CMD[@]}" 'set -eu
+test -d "$HOME/.codex"
+test -d "$HOME/.codex/sessions" || true
+command -v rsync >/dev/null
+command -v find >/dev/null
+printf "source_home=%s\n" "$HOME"'
+
+printf 'Collecting source file list...\n'
+emit_remote_list "$SOURCE_LIST"
+ENTRY_COUNT="$(validate_file_list "$SOURCE_LIST" "$SOURCE_TEXT_LIST")"
+[ "$ENTRY_COUNT" -gt 0 ] || die "no Codex conversation files found on $SOURCE_TARGET"
+printf 'Source entries selected: %s\n' "$ENTRY_COUNT"
+
+RSYNC_CMD=(
+  rsync
+  -a
+  -z
+  --relative
+  --from0
+  --files-from="$SOURCE_LIST"
+  --partial
+  --no-owner
+  --no-group
+  "--chmod=Du=rwx,Dgo=,Fu=rw,Fgo="
+  -e "$RSYNC_RSH"
+  "$SOURCE_TARGET:.codex/"
+  "$INCOMING/codex/"
+)
+
+printf 'Running rsync pull...\n'
+printf 'Command: '
+quote_command "${RSYNC_CMD[@]}"
+"${RSYNC_CMD[@]}"
+
+printf 'Writing archive manifest and checksums...\n'
+write_archive_metadata "$INCOMING" false "$([ "$DELETE_SOURCE" -eq 1 ] && printf true || printf false)"
+
+printf 'Verifying archive checksums...\n'
+(cd "$INCOMING" && sha256sum -c SHA256SUMS >/dev/null)
+
+printf 'Publishing archive atomically...\n'
+mv "$INCOMING" "$DEST"
+
+if [ "$DELETE_SOURCE" -eq 1 ]; then
+  printf 'Deleting archived source files...\n'
+  delete_source_files
+  AFTER_DELETE_LIST="$DEST/source-files-after-delete.nul"
+  emit_remote_list "$AFTER_DELETE_LIST"
+  if [ -s "$AFTER_DELETE_LIST" ]; then
+    validate_file_list "$AFTER_DELETE_LIST" "$DEST/source-files-after-delete.txt" >/dev/null
+    die "source still has conversation files after deletion; see $DEST/source-files-after-delete.txt"
+  fi
+  rm -f "$AFTER_DELETE_LIST" "$DEST/source-files-after-delete.txt"
+  write_archive_metadata "$DEST" true true
+  (cd "$DEST" && sha256sum -c SHA256SUMS >/dev/null)
+fi
+
+printf '\narchive-codex-sessions completed.\n'
+printf 'Archive: %s\n' "$DEST"

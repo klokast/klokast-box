@@ -1,0 +1,93 @@
+#
+# Summary:
+# - Starts or stops a Xen guest instance and recovers the required Xen daemons if they are not healthy.
+#
+---
+- name: Assert the requested Xen guest runtime state is supported
+  ansible.builtin.assert:
+    that:
+      - xen_guest_runtime_state in ["running", "stopped"]
+    fail_msg: >-
+      Unsupported Xen guest runtime state {{ xen_guest_runtime_state }} for
+      {{ xen_guest_name }}.
+
+- name: Check the current Xen guest runtime state
+  ansible.builtin.command: "/usr/sbin/xl list {{ xen_guest_name }}"
+  register: xen_guest_runtime_probe
+  failed_when: false
+  changed_when: false
+
+- name: Check xenstored status before guest startup
+  ansible.builtin.command: "/sbin/rc-service xenstored status"
+  register: xen_guest_xenstored_status
+  failed_when: false
+  changed_when: false
+  when:
+    - xen_guest_runtime_state == "running"
+    - xen_guest_runtime_probe.rc != 0
+
+- name: Check xenconsoled status before guest startup
+  ansible.builtin.command: "/sbin/rc-service xenconsoled status"
+  register: xen_guest_xenconsoled_status
+  failed_when: false
+  changed_when: false
+  when:
+    - xen_guest_runtime_state == "running"
+    - xen_guest_runtime_probe.rc != 0
+
+# Remote Xen guest starts still depend on xenstored/xenconsoled being healthy
+# even though the management path no longer relies on xl console.
+- name: Recover xenstored before guest startup when needed
+  ansible.builtin.command: "/sbin/rc-service xenstored restart"
+  when:
+    - xen_guest_runtime_state == "running"
+    - xen_guest_runtime_probe.rc != 0
+    - "'status: started' not in (xen_guest_xenstored_status.stdout | default(''))"
+
+- name: Recover xenconsoled before guest startup when needed
+  ansible.builtin.command: "/sbin/rc-service xenconsoled restart"
+  when:
+    - xen_guest_runtime_state == "running"
+    - xen_guest_runtime_probe.rc != 0
+    - "'status: started' not in (xen_guest_xenconsoled_status.stdout | default(''))"
+
+- name: Start the Xen guest when requested and not already running
+  ansible.builtin.command: "/usr/sbin/xl create {{ xen_guest_config_path }}"
+  when:
+    - xen_guest_runtime_state == "running"
+    - xen_guest_runtime_probe.rc != 0
+
+- name: Request a clean shutdown when the Xen guest should be stopped
+  ansible.builtin.command: "/usr/sbin/xl shutdown {{ xen_guest_name }}"
+  when:
+    - xen_guest_runtime_state == "stopped"
+    - xen_guest_runtime_probe.rc == 0
+
+- name: Wait for the Xen guest to stop
+  ansible.builtin.command: "/usr/sbin/xl list {{ xen_guest_name }}"
+  register: xen_guest_runtime_wait
+  failed_when: false
+  changed_when: false
+  until: xen_guest_runtime_wait.rc != 0
+  retries: 12
+  delay: 5
+  when:
+    - xen_guest_runtime_state == "stopped"
+    - xen_guest_runtime_probe.rc == 0
+
+- name: Refresh the Xen guest runtime state after changes
+  ansible.builtin.command: "/usr/sbin/xl list {{ xen_guest_name }}"
+  register: xen_guest_runtime_final
+  failed_when: false
+  changed_when: false
+
+- name: Assert the Xen guest reached the requested runtime state
+  ansible.builtin.assert:
+    that:
+      - >-
+        (xen_guest_runtime_state == "running" and xen_guest_runtime_final.rc == 0)
+        or
+        (xen_guest_runtime_state == "stopped" and xen_guest_runtime_final.rc != 0)
+    fail_msg: >-
+      Xen guest {{ xen_guest_name }} did not reach the requested runtime state
+      {{ xen_guest_runtime_state }}.

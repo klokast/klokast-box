@@ -1,0 +1,10 @@
+schema_version: 1
+remote_user: smith
+legacy_remote_users:
+  - klokast-infra
+repo_dir: ~/src/klokast/klokast-box
+controllers:
+  - box: k002
+    hostname: k002-ops
+  - box: k001
+    hostname: k001-ops

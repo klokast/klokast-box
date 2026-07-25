@@ -1,0 +1,201 @@
+---
+- name: Enroll Podman guests into Tailscale over their dom0 bootstrap SSH paths
+  hosts: podman_vms
+  gather_facts: false
+  become: false
+  vars:
+    ansible_user: root
+    ansible_become: false
+    ansible_host: "{{ vm_bootstrap_host }}"
+    ansible_remote_tmp: /tmp/ansible-remote-bootstrap
+    ansible_ssh_timeout: 30
+    ansible_ssh_private_key_file: "{{ vm_bootstrap_private_key_file }}"
+    vm_bootstrap_proxyjump_known_hosts_file: "{{ hostvars[node_name ~ '-dom0'].dom0_known_hosts_file }}"
+    vm_bootstrap_proxycommand: >-
+      ssh
+      -o BatchMode=yes
+      -o ConnectTimeout=10
+      -o ConnectionAttempts=1
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_proxyjump_known_hosts_file }}
+      -W %h:%p
+      {{ vm_bootstrap_proxyjump }}
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+      -o ProxyCommand='{{ vm_bootstrap_proxycommand }}'
+  pre_tasks:
+    - name: Discover the Podman VM steady-state Tailscale identity when already online
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import subprocess
+        import sys
+
+        target_hostname = {{ node_hostname | to_json }}
+        expected_tags = {{ vm_tailscale_authkey_expected_tags | default([vm_tailscale_authkey_expected_tag]) | to_json }}
+
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"]))
+        candidates = []
+        for peer in (status.get("Peer") or {}).values():
+            if (
+                peer.get("HostName") == target_hostname
+                and all(tag in (peer.get("Tags") or []) for tag in expected_tags)
+                and peer.get("Online")
+                and peer.get("DNSName")
+            ):
+                candidates.append(peer)
+
+        if not candidates:
+            sys.exit(1)
+
+        candidates.sort(key=lambda peer: peer.get("Created") or "", reverse=True)
+        peer = candidates[0]
+        print(json.dumps({"dns_name": peer["DNSName"].rstrip(".")}))
+        PY
+      args:
+        executable: /bin/sh
+      delegate_to: localhost
+      become: false
+      register: podman_vm_steady_state_tailscale_check
+      failed_when: false
+      changed_when: false
+
+    - name: Use the live Podman VM Tailscale DNS name when already enrolled
+      ansible.builtin.set_fact:
+        ansible_host: "{{ (podman_vm_steady_state_tailscale_check.stdout | from_json).dns_name }}"
+        podman_vm_tailscale_dns_name: "{{ (podman_vm_steady_state_tailscale_check.stdout | from_json).dns_name }}"
+      when: podman_vm_steady_state_tailscale_check.rc == 0
+
+    - name: Skip bootstrap enrollment when the steady-state identity is already online
+      ansible.builtin.meta: end_host
+      when: podman_vm_steady_state_tailscale_check.rc == 0
+
+    - name: Ensure the Podman VM bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ vm_bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove any stale Podman VM bootstrap SSH host key before first-contact enrollment
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/ssh-keygen
+          - -f
+          - "{{ vm_bootstrap_known_hosts_file }}"
+          - -R
+          - "{{ vm_bootstrap_host }}"
+      delegate_to: localhost
+      become: false
+      register: podman_vm_bootstrap_known_hosts_cleanup
+      failed_when: false
+      changed_when: podman_vm_bootstrap_known_hosts_cleanup.rc == 0
+
+    - name: Wait for Podman VM bootstrap SSH over the dom0 bridge path
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - "{{ vm_bootstrap_private_key_file }}"
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - -o
+          - ConnectionAttempts=1
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+          - -o
+          - ProxyCommand={{ vm_bootstrap_proxycommand }}
+          - "{{ ansible_user }}@{{ vm_bootstrap_host }}"
+          - "true"
+      delegate_to: localhost
+      become: false
+      register: podman_vm_bootstrap_ssh_probe
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: podman_vm_bootstrap_ssh_probe.rc == 0
+
+  tasks:
+    - name: Ensure Python is available over the Podman VM bootstrap SSH path
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+
+    - name: Gather Podman VM bootstrap facts
+      ansible.builtin.setup:
+
+    - name: Converge the Podman VM base access model before Tailscale enrollment
+      ansible.builtin.import_role:
+        name: vm-base
+      vars:
+        vm_lock_root_password: false
+
+    - name: Ensure the Podman VM Tailscale client is installed and running
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Enroll the Podman VM into Tailscale through the auth-key wrapper
+      ansible.builtin.import_role:
+        name: vm-tailscale-enrollment
+
+    - name: Use the live Podman VM Tailscale DNS name after enrollment
+      ansible.builtin.set_fact:
+        ansible_host: "{{ vm_tailscale_enrollment_status_verify.Self.DNSName | regex_replace('\\.$', '') }}"
+        podman_vm_tailscale_dns_name: "{{ vm_tailscale_enrollment_status_verify.Self.DNSName | regex_replace('\\.$', '') }}"
+
+- name: Wait for Podman guests to be reachable over steady-state Tailscale SSH
+  hosts: podman_vms
+  gather_facts: false
+  tasks:
+    - name: Wait for Podman VM connectivity after enrollment
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+
+- name: Converge Podman guests into steady-state rootless Podman hosts
+  hosts: podman_vms
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    vm_removed_packages:
+      - openssh
+  pre_tasks:
+    - name: Gather Podman VM steady-state facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Keep the Podman VM Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the Podman VM SSH connection after Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Keep the Podman VM base system converged
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Converge the Podman VM rootless Podman host
+      ansible.builtin.import_role:
+        name: podman-host
+
+    - name: Converge the Podman VM firewall baseline
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+
+    - name: Verify Podman VM host and container internet egress
+      ansible.builtin.import_role:
+        name: vm-egress-verification
+
+    - name: Show the Podman VM host state
+      ansible.builtin.debug:
+        msg:
+          - "{{ inventory_hostname }} is ready for rootless Podman workloads."
+          - "Tailscale identity: {{ podman_vm_tailscale_dns_name | default(ansible_host) }}"
+          - "Direct operator access: tailscale ssh neo@{{ podman_vm_tailscale_dns_name | default(node_hostname) }}"

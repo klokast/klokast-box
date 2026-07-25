@@ -1,0 +1,28 @@
+domain-needed
+bogus-priv
+
+{% for interface in router_internal_interfaces %}
+interface={{ interface }}
+{% endfor %}
+bind-interfaces
+
+{% for server in router_dns_upstreams %}
+server={{ server }}
+{% endfor %}
+
+{% for range in router_dhcp_ranges %}
+dhcp-range=set:{{ range.name }},{{ range.start }},{{ range.end }},24h
+dhcp-option=tag:{{ range.name }},option:router,{{ range.router }}
+{% if range.dns is defined and range.dns %}
+dhcp-option=tag:{{ range.name }},option:dns-server,{{ range.dns }}
+{% endif %}
+{% endfor %}
+
+{% for host in router_dhcp_hosts %}
+dhcp-host={{ host.mac }},{{ host.address }},{{ host.name }}
+{% endfor %}
+{% for host in router_managed_dhcp_hosts | default([]) %}
+{% if host.node == node_name %}
+dhcp-host={{ host.mac }},{{ host.address }},{{ host.name }}
+{% endif %}
+{% endfor %}

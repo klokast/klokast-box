@@ -1,0 +1,32 @@
+---
+immich_images:
+  immich_server:
+    registry: ghcr.io
+    repository: immich-app/immich-server
+    canonical: ghcr.io/immich-app/immich-server
+    tag: v2.7.5
+    digest: sha256:c15bff75068effb03f4355997d03dc7e0fc58720c2b54ad6f7f10d1bc57efaa5
+  immich_machine_learning:
+    registry: ghcr.io
+    repository: immich-app/immich-machine-learning
+    canonical: ghcr.io/immich-app/immich-machine-learning
+    tag: v2.7.5
+    digest: sha256:a2501141440f10516d329fdfba2c68082e19eb9ba6016c061ac80d23beadf7f3
+  immich_postgres:
+    registry: ghcr.io
+    repository: immich-app/postgres
+    canonical: ghcr.io/immich-app/postgres
+    tag: 14-vectorchord0.4.3-pgvectors0.2.0
+    digest: sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+  valkey:
+    registry: docker.io
+    repository: valkey/valkey
+    canonical: docker.io/valkey/valkey
+    tag: 9
+    digest: sha256:3b55fbaa0cd93cf0d9d961f405e4dfcc70efe325e2d84da207a0a8e6d8fde4f9
+  alpine:
+    registry: docker.io
+    repository: library/alpine
+    canonical: docker.io/library/alpine
+    tag: 3.23.4
+    digest: sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11

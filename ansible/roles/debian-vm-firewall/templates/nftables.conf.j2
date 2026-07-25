@@ -1,0 +1,27 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet klokast_vm_filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state invalid drop
+        ct state { established, related } accept
+        iifname "lo" accept
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+        {% if debian_vm_firewall_tailnet_tcp_ports | default([]) | length > 0 %}
+        iifname "{{ debian_vm_firewall_tailnet_interface }}" tcp dport { {{ debian_vm_firewall_tailnet_tcp_ports | join(', ') }} } accept comment "tailscale-management-input"
+        {% endif %}
+        {% if debian_vm_firewall_tailnet_udp_ports | default([]) | length > 0 %}
+        iifname "{{ debian_vm_firewall_tailnet_interface }}" udp dport { {{ debian_vm_firewall_tailnet_udp_ports | join(', ') }} } accept comment "tailscale-mosh-input"
+        {% endif %}
+        {% for rule in debian_vm_firewall_input_udp_rules | default([]) %}
+        iifname "{{ rule.interface | default('eth0') }}" ip saddr {{ rule.source }} ip daddr {{ rule.destination }} udp dport {{ rule.port }} accept comment "{{ rule.comment }}"
+        {% endfor %}
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

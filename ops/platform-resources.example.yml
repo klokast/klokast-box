@@ -1,0 +1,121 @@
+---
+schema_version: 1
+boxes:
+  k001:
+    access:
+      available_capabilities:
+        - overlay
+        - ap-uplink
+        - direct-egress
+      enabled_capabilities:
+        - overlay
+        - ap-uplink
+        - direct-egress
+      prohibited_capabilities:
+        - rg-lan
+        - direct-ingress
+      policy:
+        local-presence-control: overlay
+        private-service-ingress: overlay
+        file-upload: overlay
+        household-wan-egress: direct-egress
+        public-ingress: none
+    dom0_bridge_ports:
+      lan:
+        - eth2
+    dhcp_reservations:
+      - hostname: flint2
+        mac: "02:00:00:00:00:01"
+        ipv4_address: "10.10.30.2"
+  k002:
+    access:
+      available_capabilities:
+        - overlay
+      enabled_capabilities:
+        - overlay
+      prohibited_capabilities:
+        - rg-lan
+        - direct-egress
+        - direct-ingress
+      policy:
+        local-presence-control: overlay
+        private-service-ingress: overlay
+        file-upload: overlay
+        household-wan-egress: none
+        public-ingress: none
+    dom0_bridge_ports:
+      iot:
+        - eth3
+apps:
+  # Enabled steady/persistent apps may set runtime_state: running|stopped.
+  # Omit it for the default running state. enabled: false always means stopped.
+  nextcloud:
+    enabled: false
+    placement:
+      active_master: ""
+      passive_backup: ""
+    ingress_mode: tailscale
+    resources:
+      cloudflare-tunnel-egress: false
+
+  nextcloud-v2:
+    enabled: false
+    placement:
+      active_master: ""
+      passive_backup: ""
+    ingress_mode: tailscale
+    resources:
+      cloudflare-tunnel-egress: false
+
+  immich:
+    enabled: false
+    placement:
+      active_master: ""
+      passive_backup: ""
+    ingress_mode: tailscale
+    resources: {}
+
+  static-site:
+    enabled: false
+    placement:
+      active_master: ""
+    resources: {}
+
+  music:
+    enabled: false
+    placement:
+      boxes: []
+    devices:
+      local-audio-endpoint: {}
+    resources: {}
+
+  torrent:
+    enabled: false
+    placement:
+      active_master: ""
+    app_vms:
+      torrent: {}
+    resources: {}
+
+  household-vpn:
+    enabled: false
+    placement:
+      active_master: ""
+    app_vms:
+      gateway: {}
+    resources: {}
+
+  local-ingress:
+    enabled: false
+    placement:
+      active_master: ""
+    resources: {}
+
+  bootstrap-iso-debian:
+    enabled: false
+    placement:
+      builder_box: ""
+    ephemeral:
+      privileged_approval: false
+      expires_at: ""
+      cleanup_required: true

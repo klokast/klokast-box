@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+description="Klokast Nextcloud Cloudflare Tunnel connector"
+
+token_file={{ (nextcloud_cloudflared_secret_root ~ '/tunnel-token') | quote }}
+
+command="/usr/bin/cloudflared"
+command_args="tunnel --no-autoupdate --loglevel info run --token-file $token_file"
+command_user="{{ vm_admin_user_name }}:wheel"
+command_background=yes
+pidfile={{ nextcloud_cloudflared_pidfile | quote }}
+supervisor="supervise-daemon"
+
+output_log={{ (nextcloud_cloudflared_log_root ~ '/stdout.log') | quote }}
+error_log={{ (nextcloud_cloudflared_log_root ~ '/stderr.log') | quote }}
+
+depend() {
+    need net
+    after firewall
+    use logger
+}
+
+start_pre() {
+    /usr/local/sbin/nextcloud-cloudflared-deploy >/dev/null || return 1
+    checkpath -d -m 0750 -o {{ vm_admin_user_name }}:wheel {{ nextcloud_cloudflared_log_root | quote }} || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel "$output_log" || return 1
+    checkpath -f -m 0640 -o {{ vm_admin_user_name }}:wheel "$error_log" || return 1
+}

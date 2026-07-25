@@ -1,0 +1,80 @@
+last_updated: 2026-03-30
+
+platform:
+  management_plane: tailscale
+
+providers:
+  Hetzner:
+    type: cloud
+    note: Use provider-native location ids where available.
+  residential:
+    type: self_hosted_site
+    note: Coarse operator-managed site bucket.
+
+locations:
+  hel1:
+    provider: Hetzner
+    country: FI
+    timezone: Europe/Helsinki
+    note: Hetzner Helsinki.
+  pek:
+    provider: residential
+    country: CN
+    timezone: Asia/Shanghai
+    note: Current coarse site code for yii, duh, and the nearby developer laptop.
+
+machines:
+  ops:
+    hostname: codex
+    planned_hostname: ops
+    users: [codex, neo]
+    provider: Hetzner
+    location: hel1
+    note: Current deployment server. Provider and location may change later.
+
+  og:
+    hostname: og
+    provider: residential
+    location: pek
+    note: Developer MacBook. Currently near yii and duh.
+
+  n000:
+    hostname: yii
+    provider: residential
+    location: pek
+    note: Current reference node. Same site as n001.
+
+    dom0:
+      hostname: yii-dom0
+      users: [neo]
+    router:
+      hostname: yii-router
+      users: [neo]
+    bak:
+      hostname: yii-bak
+      users: [neo]
+    dmz:
+      hostname: yii-dmz
+      users: [neo]
+    iot:
+      hostname: yii-iot
+      users: [neo]
+      note: Rollout in progress.
+    services:
+      builder:
+        vm: bak
+        note: Build the platform mkimage bootstrap image. Alpine.
+      nc:
+        vm: bak
+        note: Nextcloud proof of concept.
+
+  n001:
+    hostname: duh
+    provider: residential
+    location: pek
+    note: Second node under active build-out. Same site as n000.
+
+    dom0:
+      hostname: duh-dom0
+      users: [neo]
+      note: Current infrastructure milestone.

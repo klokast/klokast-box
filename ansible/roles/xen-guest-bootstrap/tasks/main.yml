@@ -1,0 +1,122 @@
+#
+# Summary:
+# - Mounts the installed guest root filesystem and seeds the first-boot admin access needed for guest bootstrap automation.
+#
+- name: Assert the Xen guest LV path is defined
+  ansible.builtin.assert:
+    that:
+      - xen_guest_lv_path is match('^/dev/[^/]+/[^/]+$')
+    fail_msg: >-
+      Xen guest LV path {{ xen_guest_lv_path | default('undefined') }} is not
+      a supported /dev/<vg>/<lv> device path.
+
+- name: Derive mapper and mount paths for the Xen guest root filesystem
+  ansible.builtin.set_fact:
+    xen_guest_root_mapper_path: >-
+      /dev/mapper/{{ xen_guest_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\1-\2') }}3
+    xen_guest_root_mount_path: "/tmp/{{ xen_guest_name }}-root"
+
+- name: Ensure the Xen guest root mount directory exists
+  ansible.builtin.file:
+    path: "{{ xen_guest_root_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Verify the guest bootstrap SSH key file exists
+  ansible.builtin.stat:
+    path: "{{ xen_guest_bootstrap_authorized_key_file }}"
+  delegate_to: localhost
+  become: false
+  register: xen_guest_bootstrap_key_file
+
+- name: Assert the guest bootstrap SSH key file exists
+  ansible.builtin.assert:
+    that:
+      - xen_guest_bootstrap_key_file.stat.exists | default(false)
+    fail_msg: >-
+      Guest {{ xen_guest_name }} bootstrap key file
+      {{ xen_guest_bootstrap_authorized_key_file }} does not exist on the controller.
+
+- name: Seed first-boot guest access on the installed root filesystem
+  block:
+    - name: Remove any stale kpartx mappings for the guest LV
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ xen_guest_lv_path }}"
+      register: xen_guest_bootstrap_kpartx_cleanup
+      failed_when: false
+      changed_when: xen_guest_bootstrap_kpartx_cleanup.rc == 0
+
+    - name: Create partition mappings for the guest LV
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ xen_guest_lv_path }}"
+      register: xen_guest_bootstrap_kpartx_add
+      changed_when: true
+
+    - name: Mount the guest root filesystem
+      ansible.builtin.command:
+        cmd: "/bin/mount {{ xen_guest_root_mapper_path }} {{ xen_guest_root_mount_path }}"
+
+    - name: Ensure OpenSSH is present on the guest root for bootstrap recovery
+      ansible.builtin.command:
+        cmd: >-
+          /sbin/apk --root {{ xen_guest_root_mount_path }}
+          --repositories-file {{ xen_guest_root_mount_path }}/etc/apk/repositories
+          add --no-cache openssh
+      args:
+        creates: "{{ xen_guest_root_mount_path }}/usr/sbin/sshd"
+
+    # setup-disk preserves /etc/network/interfaces, but not always the default
+    # runlevel symlink we need for the first installed boot to bring links up.
+    - name: Ensure the guest networking service is enabled for first boot
+      ansible.builtin.file:
+        src: /etc/init.d/networking
+        dest: "{{ xen_guest_root_mount_path }}/etc/runlevels/default/networking"
+        state: link
+        force: true
+        follow: false
+
+    - name: Seed first-boot guest network interfaces when requested
+      ansible.builtin.copy:
+        dest: "{{ xen_guest_root_mount_path }}/etc/network/interfaces"
+        content: "{{ xen_guest_bootstrap_network_interfaces }}"
+        mode: "0644"
+      when: xen_guest_bootstrap_network_interfaces is defined
+
+    - name: Ensure the guest sshd service is enabled for first boot
+      ansible.builtin.file:
+        src: /etc/init.d/sshd
+        dest: "{{ xen_guest_root_mount_path }}/etc/runlevels/default/sshd"
+        state: link
+        force: true
+        follow: false
+
+    - name: Ensure the guest root SSH directory exists
+      ansible.builtin.file:
+        path: "{{ xen_guest_root_mount_path }}/root/.ssh"
+        state: directory
+        mode: "0700"
+
+    - name: Seed the guest root bootstrap authorized key
+      ansible.builtin.copy:
+        dest: "{{ xen_guest_root_mount_path }}/root/.ssh/authorized_keys"
+        content: "{{ lookup('file', xen_guest_bootstrap_authorized_key_file) }}\n"
+        mode: "0600"
+
+  always:
+    - name: Unmount the guest root filesystem if it is mounted
+      ansible.builtin.command: "/bin/umount {{ xen_guest_root_mount_path }}"
+      register: xen_guest_bootstrap_unmount
+      failed_when: false
+      changed_when: xen_guest_bootstrap_unmount.rc == 0
+
+    - name: Remove the guest partition mappings after bootstrap seeding
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ xen_guest_lv_path }}"
+      register: xen_guest_bootstrap_kpartx_remove
+      failed_when: false
+      changed_when: xen_guest_bootstrap_kpartx_remove.rc == 0
+
+- name: Show the guest first-boot bootstrap state
+  ansible.builtin.debug:
+    msg:
+      - "{{ xen_guest_name }}"
+      - "{{ xen_guest_root_mapper_path }}"
+      - "{{ xen_guest_root_mount_path }}"
+      - "{{ xen_guest_bootstrap_authorized_key_file }}"

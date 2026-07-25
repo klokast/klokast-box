@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+description="Klokast household Mihomo VPN gateway"
+
+command="{{ household_vpn_mihomo_binary }}"
+command_args="-f {{ household_vpn_mihomo_config_path }} -d {{ household_vpn_mihomo_state_dir }}"
+command_background="yes"
+pidfile="/run/mihomo.pid"
+start_stop_daemon_args="--chdir {{ household_vpn_mihomo_state_dir }}"
+
+depend() {
+    need net
+    after tailscaled
+}
+
+start_pre() {
+    checkpath -d -o root:root -m 0750 {{ household_vpn_mihomo_state_dir }}
+}

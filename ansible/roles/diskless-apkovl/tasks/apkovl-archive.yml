@@ -1,0 +1,20 @@
+#
+# Summary:
+# - Archives the staged first-boot overlay tree into the managed root-level apkovl and only replaces the destination when its content changed.
+#
+---
+- name: Build and install the first diskless apkovl archive when content changed
+  ansible.builtin.shell: |
+    set -eu
+    tar -C "{{ diskless_apkovl_build_root.path }}" -czf "{{ diskless_apkovl_archive_tmp.path }}" .
+
+    if [ -f "{{ apkovl_archive_path }}" ] && cmp -s "{{ diskless_apkovl_archive_tmp.path }}" "{{ apkovl_archive_path }}"; then
+      exit 0
+    fi
+
+    mv "{{ diskless_apkovl_archive_tmp.path }}" "{{ apkovl_archive_path }}"
+    echo apkovl_updated
+  args:
+    executable: /bin/sh
+  register: diskless_apkovl_build
+  changed_when: "'apkovl_updated' in diskless_apkovl_build.stdout"

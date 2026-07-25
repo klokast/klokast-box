@@ -1,0 +1,46 @@
+---
+- name: Install narrow root wrappers for the agent user
+  ansible.builtin.copy:
+    dest: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    content: "{{ item.content }}"
+  loop:
+    - path: /usr/local/sbin/codex-apt-update
+      content: |
+        #!/bin/sh
+        set -eu
+        exec /usr/bin/apt-get update
+    - path: /usr/local/sbin/codex-apt-upgrade
+      content: |
+        #!/bin/sh
+        set -eu
+        exec /usr/bin/apt-get upgrade -y
+    - path: /usr/local/sbin/codex-tailscale-status
+      content: |
+        #!/bin/sh
+        set -eu
+        exec /usr/bin/tailscale status
+    - path: /usr/local/sbin/codex-tailscale-prefs
+      content: |
+        #!/bin/sh
+        set -eu
+        exec /usr/bin/tailscale debug prefs
+
+- name: Configure sudo for the ops users
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/klokast-ops
+    owner: root
+    group: root
+    mode: "0440"
+    content: |
+      Cmnd_Alias AGENT_ALLOWED = {{ ops_agent_allowed_root_commands | join(', ') }}
+
+      Defaults editor=/usr/bin/vi
+      {{ ops_primary_user }} ALL=(ALL:ALL) {% if ops_primary_user_sudo_nopasswd | bool %}NOPASSWD: {% endif %}ALL
+      {{ ops_agent_user }} ALL=(root) NOPASSWD: AGENT_ALLOWED
+
+- name: Validate the klokast ops sudoers file
+  ansible.builtin.command: visudo -cf /etc/sudoers.d/klokast-ops
+  changed_when: false

@@ -1,0 +1,236 @@
+---
+- name: Verify backend service state
+  when: node_domain_role == 'backend'
+  block:
+    - name: Select backend site mode for verification
+      ansible.builtin.set_fact:
+        nextcloud_site_mode: "{{ 'active' if node_name == nextcloud_active_master else 'passive' }}"
+
+    - name: Collect the Nextcloud pod state
+      ansible.builtin.command:
+        argv:
+          - podman
+          - pod
+          - inspect
+          - --format
+          - "{% raw %}{{.State}}{% endraw %}"
+          - nextcloud
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: nextcloud_verify_pod_state
+      changed_when: false
+
+    - name: Collect the Nextcloud pod port bindings
+      ansible.builtin.command:
+        argv:
+          - podman
+          - pod
+          - inspect
+          - --format
+          - "{% raw %}{{json .InfraConfig.PortBindings}}{% endraw %}"
+          - nextcloud
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: nextcloud_verify_port_bindings
+      changed_when: false
+
+    - name: Parse Nextcloud pod port bindings
+      ansible.builtin.set_fact:
+        nextcloud_verify_port_bindings_json: "{{ nextcloud_verify_port_bindings.stdout | from_json }}"
+
+    - name: Assert backend port exposure is narrow
+      ansible.builtin.assert:
+        that:
+          - (nextcloud_verify_port_bindings_json.keys() | list | sort) == ['8080/tcp']
+          - nextcloud_verify_port_bindings_json['8080/tcp'] | length == 1
+          - nextcloud_verify_port_bindings_json['8080/tcp'][0].HostIp == backend_bootstrap_host
+          - nextcloud_verify_port_bindings_json['8080/tcp'][0].HostPort == '8080'
+        fail_msg: >-
+          Nextcloud backend must expose only the web upstream on the backend
+          zone address.
+
+    - name: Verify active backend HTTP status
+      ansible.builtin.uri:
+        url: "http://{{ backend_bootstrap_host }}:8080/status.php"
+        headers:
+          Host: "{{ nextcloud_domain }}"
+        return_content: true
+        status_code: 200
+      register: nextcloud_verify_status
+      retries: 30
+      delay: 5
+      until:
+        - nextcloud_verify_status.status == 200
+        - (nextcloud_verify_status.content | from_json).installed | default(false)
+      changed_when: false
+      when: nextcloud_site_mode == 'active'
+
+    - name: Collect active Nextcloud system configuration
+      ansible.builtin.command: /usr/local/sbin/nextcloud-occ config:list system --private --output=json
+      become: true
+      register: nextcloud_verify_config
+      changed_when: false
+      no_log: true
+      when: nextcloud_site_mode == 'active'
+
+    - name: Parse active Nextcloud system configuration
+      ansible.builtin.set_fact:
+        nextcloud_verify_config_json: "{{ nextcloud_verify_config.stdout | from_json }}"
+      no_log: true
+      when: nextcloud_site_mode == 'active'
+
+    - name: Normalize active Nextcloud trusted domains
+      ansible.builtin.set_fact:
+        nextcloud_verify_trusted_domains: >-
+          {{
+            (
+              nextcloud_verify_config_json.system.trusted_domains
+              | default({})
+              | dict2items
+              | map(attribute='value')
+              | list
+            )
+            if (nextcloud_verify_config_json.system.trusted_domains | default({})) is mapping
+            else (nextcloud_verify_config_json.system.trusted_domains | default([]))
+          }}
+      no_log: true
+      when: nextcloud_site_mode == 'active'
+
+    - name: Assert active Nextcloud cache and proxy settings
+      ansible.builtin.assert:
+        that:
+          - nextcloud_verify_config_json.system.dbtype | default('') == 'pgsql'
+          - nextcloud_verify_config_json.system.redis.host | default('') == '127.0.0.1'
+          - nextcloud_domain in nextcloud_verify_trusted_domains
+          - nextcloud_private_domain in nextcloud_verify_trusted_domains
+          - (nextcloud_local_hostname | length == 0) or nextcloud_local_hostname in nextcloud_verify_trusted_domains
+          - nextcloud_verify_config_json.system['overwrite.cli.url'] | default('') == 'https://' ~ nextcloud_domain
+          - nextcloud_verify_config_json.system.overwritehost is not defined
+        fail_msg: >-
+          Nextcloud active configuration does not match the managed multisite
+          contract.
+      no_log: true
+      when: nextcloud_site_mode == 'active'
+
+    - name: Assert passive backend is stopped
+      ansible.builtin.assert:
+        that:
+          - nextcloud_verify_pod_state.stdout != 'Running'
+        fail_msg: >-
+          Passive backup backend must not serve traffic until promoted.
+      when: nextcloud_site_mode == 'passive'
+
+- name: Verify DMZ Cloudflare connector state
+  when: node_domain_role == 'dmz'
+  block:
+    - name: Select DMZ site mode for verification
+      ansible.builtin.set_fact:
+        nextcloud_site_mode: "{{ 'active' if node_name == nextcloud_active_master else 'passive' }}"
+
+    - name: Collect the Cloudflare connector service state
+      ansible.builtin.command:
+        argv:
+          - rc-service
+          - nextcloud-cloudflared
+          - status
+      become: true
+      register: nextcloud_verify_cloudflared_state
+      changed_when: false
+      failed_when: false
+
+    - name: Assert Cloudflare connector runs only on active DMZ
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              (nextcloud_cloudflare_tunnel_enabled | default(false) | bool)
+              and nextcloud_site_mode == 'active'
+              and nextcloud_verify_cloudflared_state.rc == 0
+            )
+            or
+            (
+              (
+                not (nextcloud_cloudflare_tunnel_enabled | default(false) | bool)
+                or nextcloud_site_mode == 'passive'
+              )
+              and nextcloud_verify_cloudflared_state.rc != 0
+            )
+        fail_msg: >-
+          Cloudflare Tunnel must be running only when enabled and only on the
+          active master DMZ.
+
+- name: Verify DMZ private Tailscale ingress state
+  when: node_domain_role == 'dmz'
+  block:
+    - name: Select private ingress site mode for verification
+      ansible.builtin.set_fact:
+        nextcloud_site_mode: "{{ 'active' if node_name == nextcloud_active_master else 'passive' }}"
+
+    - name: Collect the private ingress service state
+      ansible.builtin.command:
+        argv:
+          - rc-service
+          - nextcloud-private-ingress
+          - status
+      become: true
+      register: nextcloud_verify_private_ingress_state
+      changed_when: false
+      failed_when: false
+
+    - name: Assert private ingress runs only on active DMZ
+      ansible.builtin.assert:
+        that:
+          - >-
+            (nextcloud_site_mode == 'active' and nextcloud_verify_private_ingress_state.rc == 0)
+            or
+            (nextcloud_site_mode == 'passive' and nextcloud_verify_private_ingress_state.rc != 0)
+        fail_msg: >-
+          Nextcloud private Tailscale ingress must run only on the active
+          master DMZ.
+
+    - name: Collect active private ingress Tailscale status
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - --socket
+          - /run/nextcloud-private-ingress/tailscaled.sock
+          - status
+          - --json
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: nextcloud_verify_private_ingress_status_json
+      changed_when: false
+      when: nextcloud_site_mode == 'active'
+
+    - name: Parse active private ingress Tailscale status
+      ansible.builtin.set_fact:
+        nextcloud_verify_private_ingress_status: "{{ nextcloud_verify_private_ingress_status_json.stdout | from_json }}"
+      when: nextcloud_site_mode == 'active'
+
+    - name: Assert active private ingress identity
+      ansible.builtin.assert:
+        that:
+          - nextcloud_verify_private_ingress_status.BackendState | default('') == 'Running'
+          - nextcloud_verify_private_ingress_status.Self.HostName | default('') == (nextcloud_private_tailscale_hostname | default('next'))
+          - ((nextcloud_verify_private_ingress_status.Self.DNSName | default('') | lower | trim('.')).split('.')[0]) == (nextcloud_private_tailscale_hostname | default('next'))
+          - "'tag:nextcloud' in (nextcloud_verify_private_ingress_status.Self.Tags | default([]))"
+        fail_msg: >-
+          Active private ingress must be enrolled as the stable next MagicDNS
+          identity with tag:nextcloud.
+      when: nextcloud_site_mode == 'active'
+
+    - name: Verify the active private Nextcloud URL from the controller
+      ansible.builtin.uri:
+        url: "https://{{ nextcloud_private_domain }}/status.php"
+        return_content: true
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      register: nextcloud_verify_private_url
+      retries: 10
+      delay: 3
+      until:
+        - nextcloud_verify_private_url.status == 200
+        - (nextcloud_verify_private_url.content | from_json).installed | default(false)
+      changed_when: false
+      when: nextcloud_site_mode == 'active'

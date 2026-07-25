@@ -1,0 +1,3 @@
+---
+node_domain_role: router
+ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"

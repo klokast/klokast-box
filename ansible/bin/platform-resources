@@ -1,0 +1,3531 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+
+COMPILER_VERSION = 22
+TAILSCALE_WIREGUARD_PORT = 41641
+ROLE_SUFFIXES = ("router", "bak", "dmz", "iot")
+CLEANUP_HOST_ROLES = ("router", "backend", "dmz", "iot")
+PODMAN_ROLE_SUFFIXES = ("bak", "dmz", "iot")
+PODMAN_NODE_ROLES = {
+    "bak": "backend",
+    "dmz": "dmz",
+    "iot": "iot",
+}
+ROLE_HOST_SUFFIXES = {
+    "router": "router",
+    "backend": "bak",
+    "bak": "bak",
+    "dmz": "dmz",
+    "iot": "iot",
+    "usr": "usr",
+}
+BOX_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
+USER_FIELD_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,23}")
+SYSTEM_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+IFACE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,32}")
+TAG_RE = re.compile(r"tag:[A-Za-z0-9][A-Za-z0-9_-]*")
+LOGIN_RE = re.compile(r"[^@\s]+@[^@\s]+")
+MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOPOLOGY_PATH = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
+WORKLOAD_ROLES = ("backend", "dmz", "iot", "usr")
+DEBIAN_APP_VM_SECURITY_MIRROR = "http://security.debian.org/debian-security"
+DEBIAN_APP_VM_ARCHITECTURE = "amd64"
+DEBIAN_APP_VM_VARIANT = "minbase"
+DEBIAN_APP_VM_IMAGE_SIZE = "8G"
+DEBIAN_APP_VM_BUILD_PROFILE_VERSION = 2
+DEBIAN_APP_VM_BUILDER_ARTIFACT_PORT = 18082
+DOM0_XEN_CONFIG_DIR = "/etc/xen"
+DOM0_XEN_IMAGES_PATH = "/mnt/dom0_data/xen_images"
+DEBIAN_APP_VM_PACKAGES = (
+    "bash",
+    "ca-certificates",
+    "curl",
+    "dbus",
+    "dbus-user-session",
+    "gnupg",
+    "ifupdown",
+    "initramfs-tools",
+    "iproute2",
+    "iptables",
+    "linux-image-amd64",
+    "locales",
+    "netbase",
+    "nftables",
+    "openssh-client",
+    "openssh-server",
+    "procps",
+    "python3",
+    "sudo",
+    "systemd-sysv",
+    "udev",
+)
+RAW_NETWORK_FIELDS = {
+    "router",
+    "vm_input",
+    "source",
+    "destination",
+    "interface",
+    "in_interface",
+    "out_interface",
+    "wan_interface",
+    "target_role",
+}
+TCB_CONTROL_FIELDS = {
+    "auth_key",
+    "authkey",
+    "box",
+    "boxes",
+    "builder_box",
+    "builder_host",
+    "builder_node",
+    "builder_vm",
+    "node",
+    "nodes",
+    "oauth_client",
+    "oauth_secret",
+    "owner",
+    "owners",
+    "placement",
+    "privileged_builder_host",
+    "tag_owner",
+    "tag_owners",
+    "tailnet_tag_owner",
+    "tailnet_tag_owners",
+    "target_box",
+}
+MANIFEST_TOP_LEVEL_FIELDS = {
+    "schema_version",
+    "app",
+    "risk_class",
+    "default_isolation",
+    "placement_mode",
+    "resources",
+    "_manifest_path",
+}
+RESOURCE_SECTION_FIELDS = {
+    "compute",
+    "network",
+    "tailnet",
+    "artifacts",
+}
+COMPUTE_COMMON_FIELDS = {
+    "id",
+    "type",
+    "zone",
+    "privilege",
+    "lifecycle",
+    "rationale",
+    "isolation",
+    "cleanup_required",
+    "access",
+}
+COMPUTE_FIELDS_BY_TYPE = {
+    "podman_workload": COMPUTE_COMMON_FIELDS,
+    "host_service": COMPUTE_COMMON_FIELDS,
+    "ephemeral_privileged_builder": COMPUTE_COMMON_FIELDS,
+    "managed_iot_device": COMPUTE_COMMON_FIELDS
+    | {
+        "hostname_suffix",
+        "hostname_default",
+        "management_tag_default",
+    },
+    "per_user_app_vm": COMPUTE_COMMON_FIELDS
+    | {
+        "vm_name_prefix",
+        "tailnet_tag_prefix",
+        "guest_os",
+        "debian_release",
+        "container_runtime",
+        "memory_mb",
+        "vcpus",
+        "lv_size",
+    },
+    "app_vm": COMPUTE_COMMON_FIELDS
+    | {
+        "hostname_suffix",
+        "tailnet_tag_default",
+        "guest_os",
+        "container_runtime",
+        "memory_mb",
+        "vcpus",
+        "lv_size",
+    },
+}
+NETWORK_COMMON_FIELDS = {
+    "id",
+    "type",
+    "required",
+    "enabled_by_default",
+    "exclusive",
+    "rationale",
+    "access",
+}
+NETWORK_FIELDS_BY_TYPE = {
+    "interzone_tcp": NETWORK_COMMON_FIELDS
+    | {"from_zone", "to_zone", "ports", "port", "ports_from_user"},
+    "realm_to_zone_tcp": NETWORK_COMMON_FIELDS
+    | {"from_realm", "to_zone", "ports", "port"},
+    "wan_egress": NETWORK_COMMON_FIELDS | {"from_zone", "tcp_ports", "udp_ports"},
+    "zone_to_device_tcp": NETWORK_COMMON_FIELDS
+    | {"from_zone", "device", "ports", "port"},
+    "device_to_zone_tcp": NETWORK_COMMON_FIELDS
+    | {"device", "to_zone", "ports", "port"},
+    "device_wan_egress": NETWORK_COMMON_FIELDS | {"device", "tcp_ports", "udp_ports"},
+    "tailnet_tcp": NETWORK_COMMON_FIELDS,
+}
+TAILNET_RESOURCE_FIELDS = {
+    "id",
+    "required",
+    "enabled_by_default",
+    "hostname_default",
+    "hostname",
+    "hostname_pattern",
+    "tag_default",
+    "tag",
+    "tag_pattern",
+    "grants",
+    "access",
+}
+TAILNET_GRANT_FIELDS = {
+    "src",
+    "dst",
+    "ports",
+    "tcp_ports",
+    "udp_ports",
+}
+ARTIFACT_COMMON_FIELDS = {
+    "id",
+    "type",
+    "rationale",
+}
+ARTIFACT_FIELDS_BY_TYPE = {
+    "release_artifact": ARTIFACT_COMMON_FIELDS | {"secret_free", "require_sha512"},
+    "npm_package": ARTIFACT_COMMON_FIELDS | {"package", "version", "integrity"},
+    "oci_images": ARTIFACT_COMMON_FIELDS | {"lock_file", "require_digest"},
+}
+RESERVED_APP_TAILNET_TAGS = {
+    "tag:bootstrap",
+    "tag:dom0",
+    "tag:infra",
+    "tag:infra-agent",
+    "tag:oob",
+    "tag:ops",
+    "tag:router",
+    "tag:vm",
+}
+ACCESS_CAPABILITIES = (
+    "ap-uplink",
+    "local-lan",
+    "rg-lan",
+    "overlay",
+    "vpn-egress",
+    "edge-ingress",
+    "direct-egress",
+    "direct-ingress",
+)
+ACCESS_NONE = "none"
+ACCESS_POLICY_INTENTS = (
+    "local-presence-control",
+    "private-service-ingress",
+    "file-upload",
+    "household-wan-egress",
+    "public-ingress",
+)
+ACCESS_DEFAULT_OVERLAY_INTENTS = (
+    "local-presence-control",
+    "private-service-ingress",
+    "file-upload",
+)
+ACCESS_RESOURCE_FIELDS = {
+    "intent",
+    "capability",
+}
+ACCESS_BOX_FIELDS = {
+    "available_capabilities",
+    "enabled_capabilities",
+    "prohibited_capabilities",
+    "policy",
+}
+APP_RESOURCE_RECONCILE_SOURCE = (
+    REPO_ROOT
+    / "ansible"
+    / "roles"
+    / "app-resources"
+    / "files"
+    / "reconcile-app-resources.py"
+)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Compile, apply, and verify Klokast platform resources."
+    )
+    parser.add_argument(
+        "--registry",
+        required=True,
+        help="Deployment platform resource registry YAML.",
+    )
+    parser.add_argument(
+        "--app",
+        action="append",
+        default=[],
+        help="Limit to one app name. May be passed more than once.",
+    )
+    parser.add_argument(
+        "--magicdns-suffix",
+        default=os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net"),
+        help="Tailscale MagicDNS suffix for generated inventories.",
+    )
+    parser.add_argument(
+        "--approved-commit",
+        default="",
+        help="Required for apply; must equal the checked-out HEAD commit.",
+    )
+    parser.add_argument(
+        "--inventory-output",
+        default="",
+        help="Write the compiled app-VM Ansible inventory to this path.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("lint", help="Validate manifests and registry only.")
+    subparsers.add_parser("show", help="Print the compiled resource plan as JSON.")
+    subparsers.add_parser("diff", help="Print desired managed resource comments.")
+    subparsers.add_parser("apply", help="Apply compiled platform resources.")
+    subparsers.add_parser("verify", help="Verify compiled platform resources.")
+    subparsers.add_parser("inventory", help="Render compiled app-VM inventory.")
+    subparsers.add_parser("grant", help="Print an app-scoped approved grant JSON.")
+    return parser.parse_args()
+
+
+def die(message):
+    print(f"platform-resources: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def require_active_controller():
+    guard = os.environ.get("KLOKAST_CONTROLLER_GUARD", "/usr/local/sbin/klokast-controller-guard")
+    if not os.path.exists(guard) or not os.access(guard, os.X_OK):
+        return
+    result = subprocess.run([guard, "--require-active"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        die(f"controller is not active: {detail}")
+
+
+def load_yaml(path):
+    try:
+        with path.open(encoding="utf-8") as handle:
+            value = yaml.safe_load(handle)
+    except FileNotFoundError:
+        die(f"missing YAML file: {path}")
+    except yaml.YAMLError as error:
+        die(f"invalid YAML in {path}: {error}")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        die(f"YAML root must be a mapping: {path}")
+    return value
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_id(value, field):
+    if not isinstance(value, str) or not ID_RE.fullmatch(value):
+        die(f"{field} must be kebab-case and start with a letter")
+
+
+def validate_user_field(value, field):
+    if not isinstance(value, str) or not USER_FIELD_RE.fullmatch(value):
+        die(f"{field} must be snake_case and start with a letter")
+
+
+def validate_box(value, field):
+    if not isinstance(value, str) or not BOX_RE.fullmatch(value):
+        die(f"{field} must be a box name like k001")
+    for suffix in ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt"):
+        if value == suffix or value.endswith(f"-{suffix}"):
+            die(f"{field} must be a box name, not a role hostname")
+
+
+def validate_hostname(value, field):
+    if not isinstance(value, str) or not BOX_RE.fullmatch(value):
+        die(f"{field} must be a DNS-safe hostname")
+
+
+def validate_mac(value, field):
+    if not isinstance(value, str) or not MAC_RE.fullmatch(value):
+        die(f"{field} must be a MAC address like aa:bb:cc:dd:ee:ff")
+
+
+def validate_iface(value, field):
+    if not isinstance(value, str) or not IFACE_RE.fullmatch(value):
+        die(f"{field} must be a network interface name")
+
+
+def validate_ip(value, field, allow_empty=False):
+    if allow_empty and value == "":
+        return
+    if not isinstance(value, str) or not value:
+        die(f"{field} must be an IPv4 address or CIDR")
+    try:
+        if "/" in value:
+            ipaddress.ip_network(value, strict=False)
+        else:
+            ipaddress.ip_address(value)
+    except ValueError:
+        die(f"{field} must be an IPv4 address or CIDR: {value}")
+
+
+def validate_ports(values, field):
+    if not isinstance(values, list) or not values:
+        die(f"{field} must be a non-empty list of explicit ports")
+    ports = []
+    for value in values:
+        if not isinstance(value, int):
+            die(f"{field} must contain integer ports only")
+        if value < 1 or value > 65535:
+            die(f"{field} contains an invalid TCP/UDP port: {value}")
+        ports.append(value)
+    return sorted(set(ports))
+
+
+def validate_tailnet_port_selectors(values, field):
+    if not isinstance(values, list) or not values:
+        die(f"{field} must be a non-empty list of ports or port ranges")
+    selectors = []
+    for value in values:
+        if isinstance(value, int):
+            validate_ports([value], field)
+            selectors.append(str(value))
+            continue
+        if isinstance(value, str):
+            match = re.fullmatch(r"([0-9]+)-([0-9]+)", value)
+            if match:
+                start = int(match.group(1))
+                end = int(match.group(2))
+                validate_ports([start, end], field)
+                if start > end:
+                    die(f"{field} contains an invalid port range: {value}")
+                selectors.append(value)
+                continue
+        die(f"{field} must contain integer ports or start-end ranges")
+    return sorted(set(selectors), key=lambda item: (int(item.split("-", 1)[0]), item))
+
+
+def validate_tag(value, field):
+    if not isinstance(value, str) or not TAG_RE.fullmatch(value):
+        die(f"{field} must be a Tailscale tag like tag:nextcloud")
+
+
+def validate_app_tailnet_tag(value, field):
+    validate_tag(value, field)
+    if value in RESERVED_APP_TAILNET_TAGS:
+        die(f"{field} must not use reserved Platform control tag {value}")
+
+
+def validate_slug(value, field):
+    if not isinstance(value, str) or not SLUG_RE.fullmatch(value):
+        die(f"{field} must be a lowercase slug like alice")
+
+
+def validate_login(value, field):
+    if not isinstance(value, str) or not LOGIN_RE.fullmatch(value):
+        die(f"{field} must be an exact Tailscale login email")
+
+
+def validate_system_user(value, field):
+    if not isinstance(value, str) or not SYSTEM_USER_RE.fullmatch(value):
+        die(f"{field} must be a POSIX user name like alice")
+    if value in {"root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "gnats", "nobody"}:
+        die(f"{field} must not be a reserved system account: {value}")
+
+
+def validate_ip_in_cidr(value, cidr, field):
+    validate_ip(value, field)
+    address = ipaddress.ip_address(value)
+    network = ipaddress.ip_network(cidr, strict=False)
+    if address not in network:
+        die(f"{field} must be inside {cidr}: {value}")
+
+
+def load_topology():
+    inventory_vars = load_yaml(TOPOLOGY_PATH)
+    zones = inventory_vars.get("platform_zones") or {}
+    control_zones = inventory_vars.get("platform_control_zones") or {}
+    aliases = inventory_vars.get("platform_zone_aliases") or {}
+    realms = inventory_vars.get("platform_network_realms") or {}
+    if not isinstance(zones, dict) or not zones:
+        die(f"{TOPOLOGY_PATH} platform_zones must be a non-empty mapping")
+    if not isinstance(aliases, dict):
+        die(f"{TOPOLOGY_PATH} platform_zone_aliases must be a mapping")
+    if not isinstance(control_zones, dict):
+        die(f"{TOPOLOGY_PATH} platform_control_zones must be a mapping")
+    if not isinstance(realms, dict):
+        die(f"{TOPOLOGY_PATH} platform_network_realms must be a mapping")
+
+    for zone_name, zone in zones.items():
+        validate_id(zone_name, f"platform_zones.{zone_name}")
+        if not isinstance(zone, dict):
+            die(f"platform_zones.{zone_name} must be a mapping")
+        role = zone.get("role")
+        if role not in WORKLOAD_ROLES:
+            die(
+                f"platform_zones.{zone_name}.role must be one of "
+                f"{', '.join(WORKLOAD_ROLES)}"
+            )
+        for key in ("hostname_suffix", "bridge", "router_interface", "vm_interface"):
+            validate_iface(zone.get(key), f"platform_zones.{zone_name}.{key}")
+        for key in ("router_ipv4_address", "vm_ipv4_address"):
+            validate_ip(zone.get(key), f"platform_zones.{zone_name}.{key}")
+        validate_ip(zone.get("cidr"), f"platform_zones.{zone_name}.cidr")
+
+    ops_zone = control_zones.get("ops") or {}
+    if not isinstance(ops_zone, dict):
+        die("platform_control_zones.ops must be a mapping")
+    for key in ("router_interface", "vm_interface"):
+        validate_iface(ops_zone.get(key), f"platform_control_zones.ops.{key}")
+    for key in ("router_ipv4_address", "vm_ipv4_address"):
+        validate_ip(ops_zone.get(key), f"platform_control_zones.ops.{key}")
+    validate_ip(ops_zone.get("cidr"), "platform_control_zones.ops.cidr")
+
+    for alias, target in aliases.items():
+        validate_id(alias, f"platform_zone_aliases.{alias}")
+        validate_id(target, f"platform_zone_aliases.{alias}")
+        if target not in zones:
+            die(f"platform_zone_aliases.{alias} points to unknown zone {target}")
+
+    for required_realm in ("wan", "lan"):
+        if required_realm not in realms:
+            die(f"platform_network_realms.{required_realm} is required")
+    for realm_name, realm in realms.items():
+        validate_id(realm_name, f"platform_network_realms.{realm_name}")
+        if not isinstance(realm, dict):
+            die(f"platform_network_realms.{realm_name} must be a mapping")
+        validate_iface(
+            realm.get("router_interface"),
+            f"platform_network_realms.{realm_name}.router_interface",
+        )
+        if realm.get("parent_interface"):
+            validate_iface(
+                realm.get("parent_interface"),
+                f"platform_network_realms.{realm_name}.parent_interface",
+            )
+        if realm.get("vlan_id") is not None:
+            vlan_id = realm.get("vlan_id")
+            if not isinstance(vlan_id, int) or vlan_id < 1 or vlan_id > 4094:
+                die(f"platform_network_realms.{realm_name}.vlan_id must be 1-4094")
+        for key in (
+            "router_ipv4_address",
+            "cidr",
+            "dhcp_start",
+            "dhcp_end",
+            "ap_management_ipv4_address",
+        ):
+            if realm.get(key):
+                validate_ip(realm.get(key), f"platform_network_realms.{realm_name}.{key}")
+
+    return {
+        "zones": zones,
+        "control_zones": control_zones,
+        "aliases": aliases,
+        "realms": realms,
+    }
+
+
+def resolve_zone(value, field, topology):
+    if not isinstance(value, str) or not value:
+        die(f"{field} must be a Platform zone")
+    canonical = topology["aliases"].get(value, value)
+    if canonical not in topology["zones"]:
+        valid = sorted(set(topology["zones"]) | set(topology["aliases"]))
+        die(f"{field} must be one of: {', '.join(valid)}")
+    return canonical, topology["zones"][canonical]
+
+
+def resolve_realm(value, field, topology, require_cidr=False):
+    if not isinstance(value, str) or not value:
+        die(f"{field} must be a Platform network realm")
+    if value not in topology["realms"]:
+        valid = sorted(topology["realms"])
+        die(f"{field} must be one of: {', '.join(valid)}")
+    realm = topology["realms"][value]
+    if require_cidr and not realm.get("cidr"):
+        die(f"{field} must reference a realm with a cidr")
+    return value, realm
+
+
+def reject_raw_network_fields(value, field):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_field = f"{field}.{key}"
+            if key in RAW_NETWORK_FIELDS:
+                die(
+                    f"{child_field} is implementation topology; "
+                    "use from_zone/to_zone instead"
+                )
+            reject_raw_network_fields(child, child_field)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            reject_raw_network_fields(child, f"{field}[{index}]")
+
+
+def reject_tcb_control_fields(value, field):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_field = f"{field}.{key}"
+            if key in TCB_CONTROL_FIELDS:
+                die(
+                    f"{child_field} is TCB-owned control data; "
+                    "app manifests may declare resource intent only"
+                )
+            reject_tcb_control_fields(child, child_field)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            reject_tcb_control_fields(child, f"{field}[{index}]")
+
+
+def reject_unknown_fields(value, allowed, field):
+    if not isinstance(value, dict):
+        die(f"{field} must be a mapping")
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        die(
+            f"{field} contains unsupported app-manifest field(s): "
+            f"{', '.join(unknown)}"
+        )
+
+
+def validate_access_capability(value, field, allow_none=False):
+    valid = set(ACCESS_CAPABILITIES)
+    if allow_none:
+        valid.add(ACCESS_NONE)
+    if value not in valid:
+        choices = sorted(valid)
+        die(f"{field} must be one of: {', '.join(choices)}")
+
+
+def validate_access_intent(value, field):
+    if value not in ACCESS_POLICY_INTENTS:
+        die(f"{field} must be one of: {', '.join(sorted(ACCESS_POLICY_INTENTS))}")
+
+
+def validate_access_capability_list(values, field):
+    if not isinstance(values, list):
+        die(f"{field} must be a list")
+    normalized = []
+    for index, value in enumerate(values):
+        validate_access_capability(value, f"{field}[{index}]")
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def default_box_access():
+    enabled = ["overlay"]
+    return {
+        "available_capabilities": ["overlay"],
+        "enabled_capabilities": enabled,
+        "prohibited_capabilities": [],
+        "policy": default_access_policy(enabled),
+    }
+
+
+def default_access_policy(enabled_capabilities):
+    enabled = set(enabled_capabilities or [])
+    policy = {}
+    for intent in ACCESS_POLICY_INTENTS:
+        if intent in ACCESS_DEFAULT_OVERLAY_INTENTS and "overlay" in enabled:
+            policy[intent] = "overlay"
+        else:
+            policy[intent] = ACCESS_NONE
+    return policy
+
+
+def normalize_box_access(access, field):
+    if access is None:
+        access = {}
+    if not isinstance(access, dict):
+        die(f"{field} must be a mapping")
+    reject_unknown_fields(access, ACCESS_BOX_FIELDS, field)
+    available = validate_access_capability_list(
+        access.get("available_capabilities", ["overlay"]),
+        f"{field}.available_capabilities",
+    )
+    prohibited = validate_access_capability_list(
+        access.get("prohibited_capabilities", []),
+        f"{field}.prohibited_capabilities",
+    )
+    prohibited_set = set(prohibited)
+    available_prohibited = sorted(set(available) & prohibited_set)
+    if available_prohibited:
+        die(
+            f"{field}.available_capabilities includes prohibited capability: "
+            f"{', '.join(available_prohibited)}"
+        )
+    enabled_default = ["overlay"] if "overlay" in available else []
+    enabled = validate_access_capability_list(
+        access.get("enabled_capabilities", enabled_default),
+        f"{field}.enabled_capabilities",
+    )
+    for capability in enabled:
+        if capability not in available:
+            die(f"{field}.enabled_capabilities contains unavailable capability: {capability}")
+        if capability in prohibited_set:
+            die(f"{field}.enabled_capabilities contains prohibited capability: {capability}")
+
+    policy_input = access.get("policy") or {}
+    if not isinstance(policy_input, dict):
+        die(f"{field}.policy must be a mapping")
+    unknown_intents = sorted(set(policy_input) - set(ACCESS_POLICY_INTENTS))
+    if unknown_intents:
+        die(f"{field}.policy contains unsupported intent(s): {', '.join(unknown_intents)}")
+    policy = default_access_policy(enabled)
+    for intent, capability in policy_input.items():
+        validate_access_intent(intent, f"{field}.policy")
+        validate_access_capability(capability, f"{field}.policy.{intent}", allow_none=True)
+        if capability != ACCESS_NONE and capability not in enabled:
+            die(f"{field}.policy.{intent} selects disabled capability: {capability}")
+        if capability in prohibited_set:
+            die(f"{field}.policy.{intent} selects prohibited capability: {capability}")
+        policy[intent] = capability
+
+    return {
+        "available_capabilities": available,
+        "enabled_capabilities": enabled,
+        "prohibited_capabilities": prohibited,
+        "policy": policy,
+    }
+
+
+def validate_resource_access(resource, field):
+    access = resource.get("access")
+    if access is None:
+        return
+    if not isinstance(access, dict):
+        die(f"{field}.access must be a mapping")
+    reject_unknown_fields(access, ACCESS_RESOURCE_FIELDS, f"{field}.access")
+    intent = access.get("intent")
+    capability = access.get("capability")
+    validate_access_intent(intent, f"{field}.access.intent")
+    validate_access_capability(capability, f"{field}.access.capability")
+
+
+def default_box_config():
+    return {
+        "dom0_bridge_ports": {},
+        "access": default_box_access(),
+        "dhcp_reservations": [],
+    }
+
+
+def box_config_for(box_configs, box):
+    return (box_configs or {}).get(box) or default_box_config()
+
+
+def resource_access_allowed(resource, box_config):
+    access = resource.get("access")
+    if not access:
+        return True
+    box_access = (box_config or default_box_config()).get("access") or default_box_access()
+    capability = access.get("capability")
+    intent = access.get("intent")
+    return (
+        capability in set(box_access.get("enabled_capabilities") or [])
+        and (box_access.get("policy") or {}).get(intent, ACCESS_NONE) == capability
+    )
+
+
+def resource_access_allowed_for_any_box(resource, box_configs, boxes):
+    if not resource.get("access"):
+        return True
+    selected_boxes = boxes or [""]
+    return any(
+        resource_access_allowed(resource, box_config_for(box_configs, box))
+        for box in selected_boxes
+    )
+
+
+def app_manifest(app_name):
+    manifest_path = REPO_ROOT / "apps" / app_name / "platform-resources.yml"
+    if not manifest_path.exists():
+        die(f"missing platform resource manifest: {manifest_path}")
+
+    manifest = load_yaml(manifest_path)
+    if manifest.get("schema_version") != 1:
+        die(f"{manifest_path} must use schema_version: 1")
+    if manifest.get("app") != app_name:
+        die(f"{manifest_path} app field must equal {app_name}")
+    resources = manifest.get("resources") or {}
+    if not isinstance(resources, dict):
+        die(f"{manifest_path} resources must be a mapping")
+    manifest["_manifest_path"] = str(manifest_path)
+    return manifest
+
+
+def entry_placement(entry):
+    placement = entry.get("placement") or {}
+    if not isinstance(placement, dict):
+        die("app placement must be a mapping")
+    merged = dict(placement)
+    for field in ("active_master", "passive_backup", "builder_box", "boxes"):
+        if field in entry and field not in merged:
+            merged[field] = entry[field]
+    return merged
+
+
+def manifest_placement_mode(manifest):
+    mode = manifest.get("placement_mode") or "active_passive"
+    if mode not in ("active_passive", "single_box", "multi_box"):
+        die(
+            f"{manifest['_manifest_path']} placement_mode must be "
+            "active_passive, single_box, or multi_box"
+        )
+    return mode
+
+
+def selected_boxes(app_name, manifest, entry):
+    enabled = bool(entry.get("enabled"))
+    placement = entry_placement(entry)
+    placement_mode = manifest_placement_mode(manifest)
+    per_user_vm_app = bool(per_user_app_vm_resources(manifest))
+    boxes = []
+    placement_boxes = placement.get("boxes") or []
+    if placement_boxes:
+        if not isinstance(placement_boxes, list):
+            die(f"apps.{app_name}.placement.boxes must be a list")
+        for index, value in enumerate(placement_boxes):
+            validate_box(value, f"apps.{app_name}.placement.boxes[{index}]")
+            boxes.append(value)
+
+    for field in ("active_master", "passive_backup", "builder_box"):
+        value = placement.get(field)
+        if value:
+            validate_box(value, f"apps.{app_name}.placement.{field}")
+            boxes.append(value)
+    if enabled and app_name != "bootstrap-iso-debian":
+        if placement_mode == "multi_box":
+            if not placement_boxes:
+                die(f"apps.{app_name}.placement.boxes is required when enabled")
+            if placement.get("active_master") or placement.get("passive_backup"):
+                die(
+                    f"apps.{app_name}.placement active_master/passive_backup "
+                    "must be empty for multi_box apps"
+                )
+        else:
+            required_fields = (
+                ("active_master",)
+                if per_user_vm_app or placement_mode == "single_box"
+                else ("active_master", "passive_backup")
+            )
+            for field in required_fields:
+                if not placement.get(field):
+                    die(f"apps.{app_name}.placement.{field} is required when enabled")
+        if placement_mode == "single_box" and placement.get("passive_backup"):
+            die(f"apps.{app_name}.placement.passive_backup must be empty for single_box apps")
+    if enabled and app_name == "bootstrap-iso-debian" and not placement.get("builder_box"):
+        die("apps.bootstrap-iso-debian.placement.builder_box is required when enabled")
+    if len(set(boxes)) != len(boxes):
+        die(f"apps.{app_name} placement boxes must be unique")
+    return sorted(set(boxes))
+
+
+def app_runtime_state(app_name, entry, manifest):
+    enabled = bool(entry.get("enabled"))
+    value = entry.get("runtime_state", "running")
+    if value in (None, ""):
+        value = "running"
+    if value not in ("running", "stopped"):
+        die(f"apps.{app_name}.runtime_state must be running or stopped")
+    if not enabled:
+        return "stopped"
+    return value
+
+
+def registry_box_configs(registry, topology):
+    boxes = registry.get("boxes") or {}
+    if not isinstance(boxes, dict):
+        die("boxes must be a mapping")
+
+    valid_bridge_keys = set(topology["zones"]) | set(topology["aliases"]) | set(topology["realms"])
+    normalized = {}
+    for box, config in boxes.items():
+        validate_box(box, f"boxes.{box}")
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            die(f"boxes.{box} must be a mapping")
+        dom0_bridge_ports = config.get("dom0_bridge_ports") or {}
+        if not isinstance(dom0_bridge_ports, dict):
+            die(f"boxes.{box}.dom0_bridge_ports must be a mapping")
+        normalized_ports = {}
+        for bridge_key, ports in dom0_bridge_ports.items():
+            if bridge_key not in valid_bridge_keys:
+                die(
+                    f"boxes.{box}.dom0_bridge_ports.{bridge_key} must be one of: "
+                    f"{', '.join(sorted(valid_bridge_keys))}"
+                )
+            canonical = topology["aliases"].get(bridge_key, bridge_key)
+            if not isinstance(ports, list) or not ports:
+                die(f"boxes.{box}.dom0_bridge_ports.{bridge_key} must be a non-empty list")
+            normalized_ports.setdefault(canonical, [])
+            for index, port in enumerate(ports):
+                validate_iface(port, f"boxes.{box}.dom0_bridge_ports.{bridge_key}[{index}]")
+                if port not in normalized_ports[canonical]:
+                    normalized_ports[canonical].append(port)
+        dhcp_reservations = config.get("dhcp_reservations") or []
+        if not isinstance(dhcp_reservations, list):
+            die(f"boxes.{box}.dhcp_reservations must be a list")
+        normalized_reservations = []
+        seen_reservation_keys = set()
+        for index, reservation in enumerate(dhcp_reservations):
+            field = f"boxes.{box}.dhcp_reservations[{index}]"
+            if not isinstance(reservation, dict):
+                die(f"{field} must be a mapping")
+            hostname = reservation.get("hostname")
+            mac = reservation.get("mac")
+            ipv4_address = reservation.get("ipv4_address")
+            validate_hostname(hostname, f"{field}.hostname")
+            validate_mac(mac, f"{field}.mac")
+            validate_ip(ipv4_address, f"{field}.ipv4_address")
+            normalized_mac = mac.lower()
+            for key_name, key_value in (
+                ("hostname", hostname),
+                ("mac", normalized_mac),
+                ("ipv4_address", ipv4_address),
+            ):
+                key = (key_name, key_value)
+                if key in seen_reservation_keys:
+                    die(f"{field}.{key_name} duplicates another reservation on {box}")
+                seen_reservation_keys.add(key)
+            normalized_reservations.append(
+                {
+                    "hostname": hostname,
+                    "mac": normalized_mac,
+                    "ipv4_address": ipv4_address,
+                }
+            )
+        normalized[box] = {
+            "dom0_bridge_ports": normalized_ports,
+            "access": normalize_box_access(config.get("access"), f"boxes.{box}.access"),
+            "dhcp_reservations": normalized_reservations,
+        }
+    return normalized
+
+
+def resource_comment(app_name, resource_id, suffix):
+    base = f"app-{app_name}-{resource_id}"
+    return f"{base}-{suffix}" if suffix else base
+
+
+def resource_enabled(resource, entry):
+    resource_flags = entry.get("resources") or {}
+    if not isinstance(resource_flags, dict):
+        die("app resources must be a mapping")
+    resource_id = resource.get("id")
+    return bool(
+        resource.get("required")
+        or resource.get("enabled_by_default")
+        or resource_flags.get(resource_id)
+    )
+
+
+def resource_selected_for_box(resource, entry, box_config):
+    return resource_enabled(resource, entry) and resource_access_allowed(resource, box_config)
+
+
+def selected_network_resources(manifest, entry, box_config=None):
+    network = (manifest.get("resources") or {}).get("network") or []
+    if not isinstance(network, list):
+        die(f"{manifest['_manifest_path']} resources.network must be a list")
+    selected = []
+    for resource in network:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} network resources must be mappings")
+        resource_id = resource.get("id")
+        validate_id(resource_id, f"{manifest['app']}.network.id")
+        if resource_selected_for_box(resource, entry, box_config or default_box_config()):
+            selected.append(resource)
+    return selected
+
+
+def validate_compute_resource_shape(app_name, resource, topology):
+    resource_id = resource.get("id")
+    validate_id(resource_id, f"{app_name}.compute.id")
+    resource_type = resource.get("type")
+    allowed = COMPUTE_FIELDS_BY_TYPE.get(resource_type)
+    if not allowed:
+        die(f"unsupported compute resource type for {app_name}.{resource_id}: {resource_type}")
+    reject_unknown_fields(resource, allowed, f"{app_name}.{resource_id}")
+    validate_resource_access(resource, f"{app_name}.{resource_id}")
+    if resource.get("zone"):
+        zone_name, zone = resolve_zone(
+            resource.get("zone"),
+            f"{app_name}.{resource_id}.zone",
+            topology,
+        )
+    else:
+        zone_name, zone = "", {}
+    if resource_type == "managed_iot_device":
+        if not resource.get("zone"):
+            die(f"{app_name}.{resource_id}.zone is required for managed_iot_device")
+        if zone_name != "iot":
+            die(f"{app_name}.{resource_id}.zone must be iot for managed_iot_device")
+        if resource.get("hostname_suffix"):
+            validate_id(
+                resource.get("hostname_suffix"),
+                f"{app_name}.{resource_id}.hostname_suffix",
+            )
+        if resource.get("hostname_default"):
+            validate_hostname(
+                resource.get("hostname_default"),
+                f"{app_name}.{resource_id}.hostname_default",
+            )
+        if resource.get("management_tag_default"):
+            validate_app_tailnet_tag(
+                resource.get("management_tag_default"),
+                f"{app_name}.{resource_id}.management_tag_default",
+            )
+    if resource_type == "per_user_app_vm":
+        validate_id(
+            resource.get("vm_name_prefix", "usr"),
+            f"{app_name}.{resource_id}.vm_name_prefix",
+        )
+        validate_id(
+            resource.get("tailnet_tag_prefix", app_name),
+            f"{app_name}.{resource_id}.tailnet_tag_prefix",
+        )
+    if resource_type == "app_vm":
+        if not resource.get("zone"):
+            die(f"{app_name}.{resource_id}.zone is required for app_vm")
+        if resource.get("hostname_suffix"):
+            validate_id(
+                resource.get("hostname_suffix"),
+                f"{app_name}.{resource_id}.hostname_suffix",
+            )
+        if resource.get("tailnet_tag_default"):
+            validate_app_tailnet_tag(
+                resource.get("tailnet_tag_default"),
+                f"{app_name}.{resource_id}.tailnet_tag_default",
+            )
+        guest_os = str(resource.get("guest_os") or "alpine")
+        if guest_os != "alpine":
+            die(f"{app_name}.{resource_id}.guest_os must be alpine for app_vm")
+        container_runtime = str(resource.get("container_runtime") or "none")
+        if container_runtime != "none":
+            die(f"{app_name}.{resource_id}.container_runtime must be none for app_vm")
+
+
+def validate_network_resource_shape(app_name, resource, topology):
+    resource_id = resource.get("id")
+    validate_id(resource_id, f"{app_name}.network.id")
+    reject_raw_network_fields(resource, f"{app_name}.{resource_id}")
+    resource_type = resource.get("type")
+    allowed = NETWORK_FIELDS_BY_TYPE.get(resource_type)
+    if not allowed:
+        die(f"unsupported network resource type for {app_name}.{resource_id}: {resource_type}")
+    reject_unknown_fields(resource, allowed, f"{app_name}.{resource_id}")
+    validate_resource_access(resource, f"{app_name}.{resource_id}")
+
+    if resource_type == "interzone_tcp":
+        from_zone, _ = resolve_zone(
+            resource.get("from_zone"),
+            f"{app_name}.{resource_id}.from_zone",
+            topology,
+        )
+        to_zone, _ = resolve_zone(
+            resource.get("to_zone"),
+            f"{app_name}.{resource_id}.to_zone",
+            topology,
+        )
+        if from_zone == to_zone:
+            die(f"{app_name}.{resource_id} interzone_tcp requires distinct zones")
+        if resource.get("ports_from_user"):
+            validate_user_field(resource.get("ports_from_user"), f"{app_name}.{resource_id}.ports_from_user")
+        else:
+            validate_ports(
+                resource.get("ports", [resource.get("port")]),
+                f"{app_name}.{resource_id}.ports",
+            )
+        return
+
+    if resource_type == "realm_to_zone_tcp":
+        resolve_realm(
+            resource.get("from_realm"),
+            f"{app_name}.{resource_id}.from_realm",
+            topology,
+            require_cidr=True,
+        )
+        resolve_zone(
+            resource.get("to_zone"),
+            f"{app_name}.{resource_id}.to_zone",
+            topology,
+        )
+        validate_ports(
+            resource.get("ports", [resource.get("port")]),
+            f"{app_name}.{resource_id}.ports",
+        )
+        return
+
+    if resource_type == "wan_egress":
+        resolve_zone(
+            resource.get("from_zone"),
+            f"{app_name}.{resource_id}.from_zone",
+            topology,
+        )
+        has_ports = False
+        for key in ("tcp_ports", "udp_ports"):
+            if resource.get(key):
+                validate_ports(resource.get(key), f"{app_name}.{resource_id}.{key}")
+                has_ports = True
+        if not has_ports:
+            die(f"{app_name}.{resource_id} wan_egress requires tcp_ports or udp_ports")
+        return
+
+    if resource_type == "zone_to_device_tcp":
+        resolve_zone(
+            resource.get("from_zone"),
+            f"{app_name}.{resource_id}.from_zone",
+            topology,
+        )
+        validate_id(resource.get("device"), f"{app_name}.{resource_id}.device")
+        validate_ports(
+            resource.get("ports", [resource.get("port")]),
+            f"{app_name}.{resource_id}.ports",
+        )
+        return
+
+    if resource_type == "device_to_zone_tcp":
+        validate_id(resource.get("device"), f"{app_name}.{resource_id}.device")
+        resolve_zone(
+            resource.get("to_zone"),
+            f"{app_name}.{resource_id}.to_zone",
+            topology,
+        )
+        validate_ports(
+            resource.get("ports", [resource.get("port")]),
+            f"{app_name}.{resource_id}.ports",
+        )
+        return
+
+    if resource_type == "device_wan_egress":
+        validate_id(resource.get("device"), f"{app_name}.{resource_id}.device")
+        has_ports = False
+        for key in ("tcp_ports", "udp_ports"):
+            if resource.get(key):
+                validate_ports(resource.get(key), f"{app_name}.{resource_id}.{key}")
+                has_ports = True
+        if not has_ports:
+            die(f"{app_name}.{resource_id} device_wan_egress requires tcp_ports or udp_ports")
+        return
+
+    if resource_type == "tailnet_tcp":
+        return
+
+
+def validate_tailnet_resource_shape(app_name, resource):
+    resource_id = resource.get("id")
+    validate_id(resource_id, f"{app_name}.tailnet.id")
+    reject_unknown_fields(resource, TAILNET_RESOURCE_FIELDS, f"{app_name}.{resource_id}")
+    validate_resource_access(resource, f"{app_name}.{resource_id}")
+    tag = resource.get("tag_default") or resource.get("tag") or resource.get("tag_pattern")
+    if tag and "{" not in tag:
+        validate_app_tailnet_tag(tag, f"{app_name}.{resource_id}.tag")
+    grants = resource.get("grants") or []
+    if not isinstance(grants, list):
+        die(f"{app_name}.{resource_id}.grants must be a list")
+    for index, grant in enumerate(grants):
+        reject_unknown_fields(
+            grant,
+            TAILNET_GRANT_FIELDS,
+            f"{app_name}.{resource_id}.grants[{index}]",
+        )
+        if "ports" in grant:
+            validate_ports(grant.get("ports"), f"{app_name}.{resource_id}.grants[{index}].ports")
+        if "tcp_ports" in grant:
+            validate_ports(
+                grant.get("tcp_ports"),
+                f"{app_name}.{resource_id}.grants[{index}].tcp_ports",
+            )
+        if "udp_ports" in grant:
+            validate_tailnet_port_selectors(
+                grant.get("udp_ports"),
+                f"{app_name}.{resource_id}.grants[{index}].udp_ports",
+            )
+
+
+def validate_artifact_resource_shape(app_name, resource):
+    resource_id = resource.get("id")
+    validate_id(resource_id, f"{app_name}.artifacts.id")
+    resource_type = resource.get("type")
+    allowed = ARTIFACT_FIELDS_BY_TYPE.get(resource_type)
+    if not allowed:
+        die(f"unsupported artifact resource type for {app_name}.{resource_id}: {resource_type}")
+    reject_unknown_fields(resource, allowed, f"{app_name}.{resource_id}")
+
+
+def validate_manifest_resources(app_name, manifest, topology):
+    reject_unknown_fields(manifest, MANIFEST_TOP_LEVEL_FIELDS, app_name)
+    resources = manifest.get("resources") or {}
+    if not isinstance(resources, dict):
+        die(f"{manifest['_manifest_path']} resources must be a mapping")
+    reject_tcb_control_fields(resources, f"{app_name}.resources")
+    reject_unknown_fields(resources, RESOURCE_SECTION_FIELDS, f"{app_name}.resources")
+
+    compute = resources.get("compute") or []
+    if not isinstance(compute, list):
+        die(f"{manifest['_manifest_path']} resources.compute must be a list")
+    for resource in compute:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} compute resources must be mappings")
+        validate_compute_resource_shape(app_name, resource, topology)
+
+    network = resources.get("network") or []
+    if not isinstance(network, list):
+        die(f"{manifest['_manifest_path']} resources.network must be a list")
+    for resource in network:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} network resources must be mappings")
+        validate_network_resource_shape(app_name, resource, topology)
+    managed_device_ids = {
+        resource["id"]
+        for resource in compute
+        if isinstance(resource, dict) and resource.get("type") == "managed_iot_device"
+    }
+    for resource in network:
+        if resource.get("type") in (
+            "zone_to_device_tcp",
+            "device_to_zone_tcp",
+            "device_wan_egress",
+        ):
+            device_id = resource.get("device")
+            if device_id not in managed_device_ids:
+                die(
+                    f"{app_name}.{resource['id']}.device must reference a "
+                    "managed_iot_device compute resource"
+                )
+
+    tailnet = resources.get("tailnet") or []
+    if not isinstance(tailnet, list):
+        die(f"{manifest['_manifest_path']} resources.tailnet must be a list")
+    for resource in tailnet:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} tailnet resources must be mappings")
+        validate_tailnet_resource_shape(app_name, resource)
+
+    artifacts = resources.get("artifacts") or []
+    if not isinstance(artifacts, list):
+        die(f"{manifest['_manifest_path']} resources.artifacts must be a list")
+    for resource in artifacts:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} artifact resources must be mappings")
+        validate_artifact_resource_shape(app_name, resource)
+
+
+def selected_tailnet_resources(manifest, entry):
+    tailnet = (manifest.get("resources") or {}).get("tailnet") or []
+    if not isinstance(tailnet, list):
+        die(f"{manifest['_manifest_path']} resources.tailnet must be a list")
+    selected = []
+    for resource in tailnet:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} tailnet resources must be mappings")
+        resource_id = resource.get("id")
+        validate_id(resource_id, f"{manifest['app']}.tailnet.id")
+        tag = resource.get("tag_default") or resource.get("tag") or resource.get("tag_pattern")
+        if tag and "{" not in tag:
+            validate_app_tailnet_tag(tag, f"{manifest['app']}.{resource_id}.tag")
+        if resource_enabled(resource, entry):
+            selected.append(resource)
+    return selected
+
+
+def tailnet_resource_value(resource, *keys):
+    for key in keys:
+        value = resource.get(key)
+        if value:
+            return value
+    return ""
+
+
+def render_tailnet_resource_value(value, box):
+    if not isinstance(value, str) or "{box}" not in value or "{slug}" in value:
+        return value
+    return value.replace("{box}", box)
+
+
+def per_user_app_vm_resources(manifest):
+    compute = (manifest.get("resources") or {}).get("compute") or []
+    return [
+        resource
+        for resource in compute
+        if isinstance(resource, dict) and resource.get("type") == "per_user_app_vm"
+    ]
+
+
+def app_vm_resources(manifest):
+    compute = (manifest.get("resources") or {}).get("compute") or []
+    return [
+        resource
+        for resource in compute
+        if isinstance(resource, dict) and resource.get("type") == "app_vm"
+    ]
+
+
+def managed_iot_device_resources(manifest):
+    compute = (manifest.get("resources") or {}).get("compute") or []
+    return [
+        resource
+        for resource in compute
+        if isinstance(resource, dict) and resource.get("type") == "managed_iot_device"
+    ]
+
+
+def registry_managed_devices(entry):
+    devices = entry.get("devices") or {}
+    if not isinstance(devices, dict):
+        die("app devices must be a mapping")
+    return devices
+
+
+def selected_managed_iot_devices(app_name, manifest, entry, boxes, topology, box_configs=None):
+    devices_config = registry_managed_devices(entry)
+    devices = []
+    for resource in managed_iot_device_resources(manifest):
+        resource_id = resource["id"]
+        zone_name, zone = resolve_zone(
+            resource.get("zone"),
+            f"{app_name}.{resource_id}.zone",
+            topology,
+        )
+        by_box = devices_config.get(resource_id) or {}
+        if not isinstance(by_box, dict):
+            die(f"apps.{app_name}.devices.{resource_id} must be a mapping by box")
+        for box in boxes:
+            if not resource_access_allowed(resource, box_config_for(box_configs, box)):
+                continue
+            config = by_box.get(box) or {}
+            if not isinstance(config, dict):
+                die(f"apps.{app_name}.devices.{resource_id}.{box} must be a mapping")
+            mac = config.get("mac")
+            if not mac:
+                die(f"apps.{app_name}.devices.{resource_id}.{box}.mac is required")
+            validate_mac(mac, f"apps.{app_name}.devices.{resource_id}.{box}.mac")
+            ipv4_address = config.get("ipv4_address")
+            validate_ip_in_cidr(
+                ipv4_address,
+                zone["cidr"],
+                f"apps.{app_name}.devices.{resource_id}.{box}.ipv4_address",
+            )
+            hostname = (
+                config.get("hostname")
+                or resource.get("hostname_default")
+                or f"{box}-{resource.get('hostname_suffix', resource_id)}"
+            )
+            validate_hostname(hostname, f"apps.{app_name}.devices.{resource_id}.{box}.hostname")
+            tag = config.get("tailnet_tag") or resource.get("management_tag_default") or "tag:iot"
+            validate_app_tailnet_tag(tag, f"apps.{app_name}.devices.{resource_id}.{box}.tailnet_tag")
+            devices.append(
+                {
+                    "schema_version": 1,
+                    "app": app_name,
+                    "resource": resource_id,
+                    "node": box,
+                    "zone": zone_name,
+                    "role": zone["role"],
+                    "hostname": hostname,
+                    "mac": mac.lower(),
+                    "ipv4_address": ipv4_address,
+                    "tailnet_tag": tag,
+                }
+            )
+    return devices
+
+
+def managed_iot_device_map(devices):
+    return {
+        (device["node"], device["resource"]): device
+        for device in devices
+    }
+
+
+def user_fields_referenced_by_network(manifest, entry):
+    fields = set()
+    for resource in selected_network_resources(manifest, entry):
+        source_field = resource.get("ports_from_user")
+        if source_field:
+            validate_user_field(
+                source_field,
+                f"{manifest['app']}.{resource['id']}.ports_from_user",
+            )
+            fields.add(source_field)
+    return fields
+
+
+def selected_users(app_name, manifest, entry, topology):
+    if not bool(entry.get("enabled")):
+        return []
+    if not per_user_app_vm_resources(manifest):
+        return []
+
+    users = entry.get("users")
+    if not isinstance(users, list) or not users:
+        die(f"apps.{app_name}.users must be a non-empty list")
+
+    usr_zone = topology["zones"].get("usr")
+    if not usr_zone:
+        die("platform_zones.usr is required for per-user app VMs")
+    reserved_ips = {
+        str(ipaddress.ip_address(usr_zone["router_ipv4_address"])),
+        str(ipaddress.ip_address(usr_zone["vm_ipv4_address"])),
+    }
+
+    normalized = []
+    seen_slugs = set()
+    seen_logins = set()
+    seen_system_users = set()
+    seen_ips = set()
+    seen_storage_ports = set()
+    required_fields = user_fields_referenced_by_network(manifest, entry)
+    for index, user in enumerate(users):
+        if not isinstance(user, dict):
+            die(f"apps.{app_name}.users[{index}] must be a mapping")
+        slug = user.get("slug")
+        login = user.get("tailscale_login")
+        system_user = user.get("system_user") or slug
+        vm_ip = user.get("vm_ipv4_address")
+        storage_port = user.get("storage_port")
+        validate_slug(slug, f"apps.{app_name}.users[{index}].slug")
+        validate_login(login, f"apps.{app_name}.users[{index}].tailscale_login")
+        validate_system_user(system_user, f"apps.{app_name}.users[{index}].system_user")
+        validate_ip_in_cidr(
+            vm_ip,
+            usr_zone["cidr"],
+            f"apps.{app_name}.users[{index}].vm_ipv4_address",
+        )
+        if "storage_port" in required_fields or storage_port is not None:
+            storage_ports = validate_ports(
+                [storage_port],
+                f"apps.{app_name}.users[{index}].storage_port",
+            )
+            storage_port = storage_ports[0]
+        if slug in seen_slugs:
+            die(f"apps.{app_name}.users duplicate slug: {slug}")
+        if login in seen_logins:
+            die(f"apps.{app_name}.users duplicate tailscale_login: {login}")
+        if system_user in seen_system_users:
+            die(f"apps.{app_name}.users duplicate system_user: {system_user}")
+        if vm_ip in reserved_ips:
+            die(f"apps.{app_name}.users[{index}].vm_ipv4_address is reserved: {vm_ip}")
+        if vm_ip in seen_ips:
+            die(f"apps.{app_name}.users duplicate vm_ipv4_address: {vm_ip}")
+        if storage_port is not None and storage_port in seen_storage_ports:
+            die(f"apps.{app_name}.users duplicate storage_port: {storage_port}")
+        seen_slugs.add(slug)
+        seen_logins.add(login)
+        seen_system_users.add(system_user)
+        seen_ips.add(vm_ip)
+        if storage_port is not None:
+            seen_storage_ports.add(storage_port)
+        normalized_user = {
+            "slug": slug,
+            "tailscale_login": login,
+            "system_user": system_user,
+            "vm_ipv4_address": vm_ip,
+        }
+        if storage_port is not None:
+            normalized_user["storage_port"] = storage_port
+        normalized.append(normalized_user)
+    return normalized
+
+
+def registry_app_vms(entry):
+    app_vms = entry.get("app_vms") or {}
+    if not isinstance(app_vms, dict):
+        die("app app_vms must be a mapping")
+    return app_vms
+
+
+def app_vm_lv_fragment(value):
+    return re.sub(r"[^a-z0-9_]+", "_", value.replace("-", "_")).strip("_")
+
+
+def compile_alpine_app_vm_guest_spec(app_name, box, resource, config, zone, runtime_state="running"):
+    resource_id = resource["id"]
+    guest_name = resource.get("hostname_suffix") or resource_id
+    validate_id(guest_name, f"{app_name}.{resource_id}.guest_name")
+    hostname = config["hostname"]
+    vm_ip = config["vm_ipv4_address"]
+    lv_name = f"lv_{app_vm_lv_fragment(app_name)}_{app_vm_lv_fragment(guest_name)}"
+    digest = hashlib.sha1(f"{box}:{app_name}:{resource_id}".encode("utf-8")).hexdigest()
+    mac = f"00:16:3e:{digest[0:2]}:{digest[2:4]}:{digest[4:6]}"
+    network_interfaces = (
+        "auto lo\n"
+        "iface lo inet loopback\n\n"
+        f"auto {zone['vm_interface']}\n"
+        f"iface {zone['vm_interface']} inet static\n"
+        f"    address {vm_ip}/{zone['router_ipv4_prefix']}\n"
+        f"    gateway {zone['router_ipv4_address']}\n"
+    )
+    return {
+        "guest_name": guest_name,
+        "guest_os": "alpine",
+        "container_runtime": "none",
+        "stage": "installed",
+        "config_path": f"{DOM0_XEN_CONFIG_DIR}/{guest_name}.cfg",
+        "autostart": runtime_state == "running",
+        "runtime_state": runtime_state,
+        "memory_mb": int(resource.get("memory_mb", 1024)),
+        "vcpus": int(resource.get("vcpus", 1)),
+        "lv_size": str(resource.get("lv_size", "20G")),
+        "network_interfaces": network_interfaces,
+        "installed": {
+            "required_lvs": [f"/dev/vg0/{lv_name}"],
+            "kernel_path": f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-kernel",
+            "initramfs_path": f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-initramfs",
+            "extra": "console=hvc0 root=/dev/xvda3 rw modules=ext4",
+            "required_paths": [
+                f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-kernel",
+                f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-initramfs",
+            ],
+            "disks": [f"phy:/dev/vg0/{lv_name},xvda,w"],
+        },
+        "vifs": [{"bridge": zone["bridge"], "mac": mac}],
+        "hostname": hostname,
+        "vm_interface": zone["vm_interface"],
+    }
+
+
+def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=None):
+    if not bool(entry.get("enabled")):
+        return []
+    resources = app_vm_resources(manifest)
+    if not resources:
+        return []
+
+    registry = registry_app_vms(entry)
+    runtime_state = app_runtime_state(app_name, entry, manifest)
+    specs = []
+    seen_ips = set()
+    for resource in resources:
+        resource_id = resource["id"]
+        zone_name, zone = resolve_zone(
+            resource.get("zone"),
+            f"{app_name}.{resource_id}.zone",
+            topology,
+        )
+        reserved_ips = {
+            str(ipaddress.ip_address(zone["router_ipv4_address"])),
+            str(ipaddress.ip_address(zone["vm_ipv4_address"])),
+        }
+        dom0_ip = zone.get("dom0_ipv4_address")
+        if dom0_ip:
+            validate_ip(dom0_ip, f"platform_zones.{zone_name}.dom0_ipv4_address")
+            reserved_ips.add(str(ipaddress.ip_address(dom0_ip)))
+        by_box = registry.get(resource_id) or {}
+        if not isinstance(by_box, dict):
+            die(f"apps.{app_name}.app_vms.{resource_id} must be a mapping by box")
+        for box in boxes:
+            if not resource_access_allowed(resource, box_config_for(box_configs, box)):
+                continue
+            config = by_box.get(box) or {}
+            if not isinstance(config, dict):
+                die(f"apps.{app_name}.app_vms.{resource_id}.{box} must be a mapping")
+            vm_ip = config.get("vm_ipv4_address")
+            validate_ip_in_cidr(
+                vm_ip,
+                zone["cidr"],
+                f"apps.{app_name}.app_vms.{resource_id}.{box}.vm_ipv4_address",
+            )
+            if vm_ip in reserved_ips:
+                die(f"apps.{app_name}.app_vms.{resource_id}.{box}.vm_ipv4_address is reserved: {vm_ip}")
+            if vm_ip in seen_ips:
+                die(f"apps.{app_name}.app_vms duplicate vm_ipv4_address: {vm_ip}")
+            seen_ips.add(vm_ip)
+            hostname_suffix = resource.get("hostname_suffix") or resource_id
+            hostname = config.get("hostname") or f"{box}-{hostname_suffix}"
+            validate_hostname(hostname, f"apps.{app_name}.app_vms.{resource_id}.{box}.hostname")
+            tailnet_tag = (
+                config.get("tailnet_tag")
+                or resource.get("tailnet_tag_default")
+                or f"tag:{app_name}"
+            )
+            validate_app_tailnet_tag(
+                tailnet_tag,
+                f"apps.{app_name}.app_vms.{resource_id}.{box}.tailnet_tag",
+            )
+            normalized_config = {
+                "hostname": hostname,
+                "vm_ipv4_address": vm_ip,
+            }
+            guest_spec = compile_alpine_app_vm_guest_spec(
+                app_name,
+                box,
+                resource,
+                normalized_config,
+                zone,
+                runtime_state=runtime_state,
+            )
+            specs.append(
+                {
+                    "node": box,
+                    "app": app_name,
+                    "resource": resource_id,
+                    "user_slug": resource_id,
+                    "tailscale_login": "",
+                    "site_role": "active",
+                    "runtime_state": runtime_state,
+                    "inventory_hostname": hostname,
+                    "node_domain_role": zone["role"],
+                    "node_hostname": hostname,
+                    "box_scoped_hostname": hostname,
+                    "tailnet_hostname": hostname,
+                    "tailnet_tag": tailnet_tag,
+                    "advertised_tags": ["tag:vm", tailnet_tag],
+                    "zone": zone_name,
+                    "vm_ipv4_address": vm_ip,
+                    "vm_interface": zone["vm_interface"],
+                    "router_ipv4_address": zone["router_ipv4_address"],
+                    "router_ipv4_prefix": zone["router_ipv4_prefix"],
+                    "guest_spec": guest_spec,
+                    "user": {
+                        "slug": resource_id,
+                        "tailscale_login": "",
+                        "system_user": "neo",
+                        "vm_ipv4_address": vm_ip,
+                    },
+                }
+            )
+    return specs
+
+
+def app_vm_sources_for_box(app_vm_specs, box):
+    return [
+        {"slug": spec["resource"], "vm_ipv4_address": spec["vm_ipv4_address"]}
+        for spec in app_vm_specs
+        if spec["node"] == box
+    ]
+
+
+def validate_privileged_runtime(app_name, manifest, entry):
+    if not bool(entry.get("enabled")):
+        return
+    compute = (manifest.get("resources") or {}).get("compute") or []
+    if not isinstance(compute, list):
+        die(f"{manifest['_manifest_path']} resources.compute must be a list")
+    privileged = []
+    for resource in compute:
+        if not isinstance(resource, dict):
+            die(f"{manifest['_manifest_path']} compute resources must be mappings")
+        resource_id = resource.get("id")
+        validate_id(resource_id, f"{app_name}.compute.id")
+        privilege = str(resource.get("privilege") or "")
+        rtype = str(resource.get("type") or "")
+        if privilege in ("privileged", "privileged_rootful_podman") or rtype == "ephemeral_privileged_builder":
+            privileged.append(resource_id)
+    if not privileged:
+        return
+    controls = entry.get("ephemeral") or entry.get("controls") or {}
+    if not isinstance(controls, dict):
+        die(f"apps.{app_name}.ephemeral/controls must be a mapping")
+    if not bool(controls.get("privileged_approval")):
+        die(f"apps.{app_name} enables privileged resources without privileged_approval")
+    expires_at = controls.get("expires_at")
+    if not isinstance(expires_at, str) or not expires_at:
+        die(f"apps.{app_name} privileged resources require expires_at")
+    normalized = expires_at.replace("Z", "+00:00")
+    try:
+        expires = datetime.fromisoformat(normalized)
+    except ValueError:
+        die(f"apps.{app_name}.expires_at must be ISO-8601 UTC")
+    if expires.tzinfo is None:
+        die(f"apps.{app_name}.expires_at must include timezone")
+    if expires.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+        die(f"apps.{app_name} privileged resource approval expired at {expires_at}")
+
+
+def user_port_values(resource, user, field):
+    source_field = resource.get("ports_from_user")
+    if source_field:
+        value = user.get(source_field)
+        if not isinstance(value, int):
+            die(f"{field} user field {source_field} must be an integer port")
+        return validate_ports([value], field)
+    return validate_ports(resource.get("ports", [resource.get("port")]), field)
+
+
+def compile_app_vm_guest_spec(app_name, box, user, resource, zone, topology, runtime_state="running"):
+    slug = user["slug"]
+    vm_prefix = resource.get("vm_name_prefix", "usr")
+    guest_name = f"{vm_prefix}-{slug}"
+    guest_os = str(resource.get("guest_os") or "debian")
+    if guest_os != "debian":
+        die(f"{app_name}.{resource['id']}.guest_os must be debian for per-user app VMs")
+    lv_name = f"lv_{app_name}_{vm_prefix.replace('-', '_')}_{slug.replace('-', '_')}"
+    digest = hashlib.sha1(f"{box}:{app_name}:{slug}".encode("utf-8")).hexdigest()
+    mac = f"00:16:3e:{digest[0:2]}:{digest[2:4]}:{digest[4:6]}"
+    release = str(resource.get("debian_release") or "trixie")
+    mirror = str(resource.get("debian_mirror") or "http://deb.debian.org/debian")
+    node_hostname = f"{box}-{guest_name}"
+    network_interfaces = (
+        "auto lo\n"
+        "iface lo inet loopback\n\n"
+        f"auto {zone['vm_interface']}\n"
+        f"iface {zone['vm_interface']} inet static\n"
+        f"    address {user['vm_ipv4_address']}/{zone['router_ipv4_prefix']}\n"
+        f"    gateway {zone['router_ipv4_address']}\n"
+    )
+    backend_zone = topology["zones"].get("bak")
+    if not backend_zone:
+        die("platform_zones.bak is required for Debian app VM image building")
+    dom0_source = backend_zone.get("dom0_ipv4_address")
+    validate_ip(dom0_source, "platform_zones.bak.dom0_ipv4_address")
+    image_inputs = {
+        "schema_version": 1,
+        "build_profile_version": DEBIAN_APP_VM_BUILD_PROFILE_VERSION,
+        "guest_name": guest_name,
+        "hostname": node_hostname,
+        "release": release,
+        "mirror": mirror,
+        "security_mirror": DEBIAN_APP_VM_SECURITY_MIRROR,
+        "architecture": DEBIAN_APP_VM_ARCHITECTURE,
+        "variant": DEBIAN_APP_VM_VARIANT,
+        "image_size": str(resource.get("debian_image_size") or DEBIAN_APP_VM_IMAGE_SIZE),
+        "packages": list(DEBIAN_APP_VM_PACKAGES),
+        "network_interfaces": network_interfaces,
+        "bootstrap_interface": zone["vm_interface"],
+        "bootstrap_host": user["vm_ipv4_address"],
+        "bootstrap_ssh_sources": [dom0_source],
+        "artifact_port": int(
+            resource.get("debian_builder_artifact_port")
+            or DEBIAN_APP_VM_BUILDER_ARTIFACT_PORT
+        ),
+        "builder_host": f"{box}-bak",
+    }
+    image_inputs["build_id"] = hashlib.sha256(
+        json.dumps(image_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "guest_name": guest_name,
+        "guest_os": guest_os,
+        "container_runtime": str(resource.get("container_runtime") or "docker"),
+        "debian_release": release,
+        "debian_mirror": mirror,
+        "debian_image": image_inputs,
+        "stage": "installed",
+        "config_path": f"{DOM0_XEN_CONFIG_DIR}/{guest_name}.cfg",
+        "autostart": runtime_state == "running",
+        "runtime_state": runtime_state,
+        "memory_mb": int(resource.get("memory_mb", 4096)),
+        "vcpus": int(resource.get("vcpus", 4)),
+        "lv_size": str(resource.get("lv_size", "50G")),
+        "installed": {
+            "required_lvs": [f"/dev/vg0/{lv_name}"],
+            "kernel_path": f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-kernel",
+            "initramfs_path": f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-initramfs",
+            "extra": "console=hvc0 root=/dev/xvda rw net.ifnames=0 biosdevname=0",
+            "required_paths": [
+                f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-kernel",
+                f"{DOM0_XEN_IMAGES_PATH}/{guest_name}-initramfs",
+            ],
+            "disks": [f"phy:/dev/vg0/{lv_name},xvda,w"],
+        },
+        "vifs": [{"bridge": zone["bridge"], "mac": mac}],
+        "vm_interface": zone["vm_interface"],
+    }
+
+
+def compile_app_vm_specs_for_box(app_name, box, entry, manifest, users, topology):
+    placement = entry_placement(entry)
+    active_master = placement.get("active_master")
+    runtime_state = app_runtime_state(app_name, entry, manifest)
+    specs = []
+    for resource in per_user_app_vm_resources(manifest):
+        zone_name, zone = resolve_zone(
+            resource.get("zone"),
+            f"{app_name}.{resource['id']}.zone",
+            topology,
+        )
+        vm_prefix = resource.get("vm_name_prefix", "usr")
+        tag_prefix = resource.get("tailnet_tag_prefix", app_name)
+        for user in users:
+            slug = user["slug"]
+            active = box == active_master
+            inventory_hostname = f"{box}-{vm_prefix}-{slug}"
+            box_scoped_hostname = f"{box}-{vm_prefix}-{slug}"
+            tailnet_hostname = box_scoped_hostname
+            tailnet_tag = f"tag:{tag_prefix}-{slug}"
+            node_hostname = box_scoped_hostname
+            advertised_tags = ["tag:vm", tailnet_tag]
+            specs.append(
+                {
+                    "node": box,
+                    "app": app_name,
+                    "resource": resource["id"],
+                    "user_slug": slug,
+                    "tailscale_login": user["tailscale_login"],
+                    "site_role": "active" if active else "passive",
+                    "runtime_state": runtime_state,
+                    "inventory_hostname": inventory_hostname,
+                    "node_domain_role": zone["role"],
+                    "node_hostname": node_hostname,
+                    "box_scoped_hostname": box_scoped_hostname,
+                    "tailnet_hostname": tailnet_hostname,
+                    "tailnet_tag": tailnet_tag,
+                    "advertised_tags": advertised_tags,
+                    "zone": zone_name,
+                    "vm_ipv4_address": user["vm_ipv4_address"],
+                    "vm_interface": zone["vm_interface"],
+                    "router_ipv4_address": zone["router_ipv4_address"],
+                    "router_ipv4_prefix": zone["router_ipv4_prefix"],
+                    "storage_port": user.get("storage_port"),
+                    "guest_spec": compile_app_vm_guest_spec(
+                        app_name,
+                        box,
+                        user,
+                        resource,
+                        zone,
+                        topology,
+                        runtime_state=runtime_state,
+                    ),
+                    "user": user,
+                }
+            )
+    return specs
+
+
+def compile_app_vm_bootstrap_router_rules(app_vm_specs, topology):
+    backend_zone = topology["zones"].get("bak")
+    if not backend_zone:
+        die("platform_zones.bak is required for app VM bootstrap routing")
+    dom0_source = backend_zone.get("dom0_ipv4_address")
+    validate_ip(dom0_source, "platform_zones.bak.dom0_ipv4_address")
+
+    rules = []
+    for spec in app_vm_specs:
+        zone_name, zone = resolve_zone(
+            spec["zone"],
+            f"{spec['app']}.{spec['resource']}.zone",
+            topology,
+        )
+        rules.append(
+            {
+                "node": spec["node"],
+                "app": spec["app"],
+                "resource": "app-vm-bootstrap-ssh",
+                "in_interface": backend_zone["router_interface"],
+                "out_interface": zone["router_interface"],
+                "source": dom0_source,
+                "destination": spec["vm_ipv4_address"],
+                "protocol": "tcp",
+                "ports": [22],
+                "comment": resource_comment(
+                    spec["app"],
+                    "app-vm-bootstrap-ssh",
+                    f"{spec.get('user_slug') or spec['resource']}-{zone_name}-router",
+                ),
+            }
+        )
+    return rules
+
+
+def compile_app_vm_tailscale_underlay_router_rules(app_vm_specs, topology):
+    ops_zone = topology["control_zones"].get("ops")
+    if not ops_zone:
+        die("platform_control_zones.ops is required for app VM Tailscale underlay routing")
+    ops_source = ops_zone.get("vm_ipv4_address")
+    validate_ip(ops_source, "platform_control_zones.ops.vm_ipv4_address")
+
+    rules = []
+    for spec in app_vm_specs:
+        zone_name, zone = resolve_zone(
+            spec["zone"],
+            f"{spec['app']}.{spec['resource']}.zone",
+            topology,
+        )
+        suffix = f"{spec.get('user_slug') or spec['resource']}-{zone_name}"
+        rules.append(
+            {
+                "node": spec["node"],
+                "app": spec["app"],
+                "resource": "app-vm-tailscale-underlay",
+                "in_interface": ops_zone["router_interface"],
+                "out_interface": zone["router_interface"],
+                "source": ops_source,
+                "destination": spec["vm_ipv4_address"],
+                "protocol": "udp",
+                "ports": [TAILSCALE_WIREGUARD_PORT],
+                "comment": resource_comment(
+                    spec["app"],
+                    "app-vm-tailscale-underlay",
+                    f"{suffix}-ops-to-app-router",
+                ),
+            }
+        )
+        rules.append(
+            {
+                "node": spec["node"],
+                "app": spec["app"],
+                "resource": "app-vm-tailscale-underlay",
+                "in_interface": zone["router_interface"],
+                "out_interface": ops_zone["router_interface"],
+                "source": spec["vm_ipv4_address"],
+                "destination": ops_source,
+                "protocol": "udp",
+                "ports": [TAILSCALE_WIREGUARD_PORT],
+                "comment": resource_comment(
+                    spec["app"],
+                    "app-vm-tailscale-underlay",
+                    f"{suffix}-app-to-ops-router",
+                ),
+            }
+        )
+    return rules
+
+
+def compile_platform_map_app_vms(app_vm_specs):
+    app_vms = []
+    for spec in app_vm_specs:
+        guest_spec = spec.get("guest_spec") or {}
+        app_vms.append(
+            {
+                "node": spec["node"],
+                "app": spec["app"],
+                "resource": spec["resource"],
+                "hostname": spec["node_hostname"],
+                "tailnet_hostname": spec["tailnet_hostname"],
+                "inventory_hostname": spec["inventory_hostname"],
+                "guest_name": guest_spec["guest_name"],
+                "user_slug": spec["user_slug"],
+                "tailscale_login": spec["tailscale_login"],
+                "site_role": spec["site_role"],
+                "runtime_state": spec.get("runtime_state", "running"),
+                "zone": spec["zone"],
+                "vm_ipv4_address": spec["vm_ipv4_address"],
+                "expected_tags": spec["advertised_tags"],
+                "tailnet_tag": spec["tailnet_tag"],
+                "memory_mb": int(guest_spec.get("memory_mb", 0)),
+                "vcpus": int(guest_spec.get("vcpus", 0)),
+                "autostart": bool(guest_spec.get("autostart")),
+            }
+        )
+    return app_vms
+
+
+def compile_tailnet_policy_resources(app_name, manifest, users, placement, selected_tailnet=None):
+    resources = []
+    per_user_resources = per_user_app_vm_resources(manifest)
+    tag_prefix = (
+        per_user_resources[0].get("tailnet_tag_prefix", app_name)
+        if per_user_resources
+        else app_name
+    )
+    vm_prefix = (
+        per_user_resources[0].get("vm_name_prefix", "usr")
+        if per_user_resources
+        else "usr"
+    )
+    active_master = placement.get("active_master", "")
+    tailnet_grants = []
+    for resource in (selected_tailnet if selected_tailnet is not None else ((manifest.get("resources") or {}).get("tailnet") or [])):
+        tailnet_grants.extend(resource.get("grants") or [])
+    exact_login_grants = [
+        grant for grant in tailnet_grants if grant.get("src") == "exact_user_login"
+    ]
+    if exact_login_grants:
+        tcp_ports = []
+        udp_ports = []
+        for grant in exact_login_grants:
+            tcp_ports.extend(grant.get("tcp_ports") or grant.get("ports") or [])
+            udp_ports.extend(grant.get("udp_ports") or [])
+        tcp_ports = validate_ports(tcp_ports, f"{app_name}.tailnet.tcp_ports")
+        udp_ports = validate_tailnet_port_selectors(
+            udp_ports,
+            f"{app_name}.tailnet.udp_ports",
+        ) if udp_ports else []
+    else:
+        tcp_ports = []
+        udp_ports = []
+    ip_selectors = [f"tcp:{port}" for port in tcp_ports] + [
+        f"udp:{port}" for port in udp_ports
+    ]
+    for user in users:
+        slug = user["slug"]
+        tag = f"tag:{tag_prefix}-{slug}"
+        hostname = f"{active_master}-{vm_prefix}-{slug}" if active_master else slug
+        ssh_users = [user["system_user"]]
+        resources.append(
+            {
+                "app": app_name,
+                "id": f"user-{slug}",
+                "hostname": hostname,
+                "tag": tag,
+                "tag_owner": "tag:ops",
+                "tag_owners": ["tag:ops"],
+                "grants": [
+                    {
+                        "src": user["tailscale_login"],
+                        "dst": tag,
+                        "ports": tcp_ports,
+                        "udp_ports": udp_ports,
+                        "ip": ip_selectors,
+                    }
+                ],
+                "ssh": [
+                    {
+                        "src": user["tailscale_login"],
+                        "dst": tag,
+                        "users": ssh_users,
+                        "action": "accept",
+                    }
+                ],
+            }
+        )
+    return resources
+
+
+def compile_resource_for_box(
+    app_name,
+    box,
+    resource,
+    router_rules,
+    vm_rules,
+    topology,
+    users=None,
+    devices=None,
+):
+    resource_id = resource["id"]
+    resource_type = resource.get("type")
+    devices = devices or {}
+
+    if resource_type == "interzone_tcp":
+        _, from_zone = resolve_zone(
+            resource.get("from_zone"),
+            f"{app_name}.{resource_id}.from_zone",
+            topology,
+        )
+        _, to_zone = resolve_zone(
+            resource.get("to_zone"),
+            f"{app_name}.{resource_id}.to_zone",
+            topology,
+        )
+        sources = users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
+        for user in sources:
+            suffix = f"{user['slug']}-" if user.get("slug") else ""
+            ports = user_port_values(resource, user, f"{app_name}.{resource_id}.ports")
+            router_rules.append(
+                {
+                    "node": box,
+                    "app": app_name,
+                    "resource": resource_id,
+                    "in_interface": from_zone["router_interface"],
+                    "out_interface": to_zone["router_interface"],
+                    "source": user["vm_ipv4_address"],
+                    "destination": to_zone["vm_ipv4_address"],
+                    "protocol": "tcp",
+                    "ports": ports,
+                    "exclusive": bool(resource.get("exclusive", False)),
+                    "comment": resource_comment(app_name, resource_id, f"{suffix}router"),
+                }
+            )
+            vm_rules.append(
+                {
+                    "node": box,
+                    "app": app_name,
+                    "resource": resource_id,
+                    "target_role": to_zone["role"],
+                    "interface": to_zone["vm_interface"],
+                    "source": user["vm_ipv4_address"],
+                    "destination": to_zone["vm_ipv4_address"],
+                    "ports": ports,
+                    "exclusive": bool(resource.get("exclusive", False)),
+                    "comment": resource_comment(app_name, resource_id, f"{suffix}vm-input"),
+                }
+            )
+        return
+
+    if resource_type == "realm_to_zone_tcp":
+        _, from_realm = resolve_realm(
+            resource.get("from_realm"),
+            f"{app_name}.{resource_id}.from_realm",
+            topology,
+            require_cidr=True,
+        )
+        _, to_zone = resolve_zone(
+            resource.get("to_zone"),
+            f"{app_name}.{resource_id}.to_zone",
+            topology,
+        )
+        ports = validate_ports(
+            resource.get("ports", [resource.get("port")]),
+            f"{app_name}.{resource_id}.ports",
+        )
+        router_rules.append(
+            {
+                "node": box,
+                "app": app_name,
+                "resource": resource_id,
+                "in_interface": from_realm["router_interface"],
+                "out_interface": to_zone["router_interface"],
+                "source": from_realm["cidr"],
+                "destination": to_zone["vm_ipv4_address"],
+                "protocol": "tcp",
+                "ports": ports,
+                "exclusive": bool(resource.get("exclusive", False)),
+                "comment": resource_comment(app_name, resource_id, "router"),
+            }
+        )
+        vm_rules.append(
+            {
+                "node": box,
+                "app": app_name,
+                "resource": resource_id,
+                "target_role": to_zone["role"],
+                "interface": to_zone["vm_interface"],
+                "source": from_realm["cidr"],
+                "destination": to_zone["vm_ipv4_address"],
+                "ports": ports,
+                "exclusive": bool(resource.get("exclusive", False)),
+                "comment": resource_comment(app_name, resource_id, "vm-input"),
+            }
+        )
+        return
+
+    if resource_type == "wan_egress":
+        _, from_zone = resolve_zone(
+            resource.get("from_zone"),
+            f"{app_name}.{resource_id}.from_zone",
+            topology,
+        )
+        wan_interface = topology["realms"]["wan"]["router_interface"]
+        sources = users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
+        for protocol, key in (("tcp", "tcp_ports"), ("udp", "udp_ports")):
+            ports = resource.get(key, [])
+            if not ports:
+                continue
+            for user in sources:
+                suffix = f"{user['slug']}-{protocol}" if user.get("slug") else protocol
+                router_rules.append(
+                    {
+                        "node": box,
+                        "app": app_name,
+                        "resource": resource_id,
+                        "in_interface": from_zone["router_interface"],
+                        "out_interface": wan_interface,
+                        "source": user["vm_ipv4_address"],
+                        "destination": "",
+                        "protocol": protocol,
+                        "ports": validate_ports(ports, f"{app_name}.{resource_id}.{key}"),
+                        "exclusive": bool(resource.get("exclusive", False)),
+                        "comment": resource_comment(app_name, resource_id, suffix),
+                    }
+                )
+        return
+
+    if resource_type == "zone_to_device_tcp":
+        _, from_zone = resolve_zone(
+            resource.get("from_zone"),
+            f"{app_name}.{resource_id}.from_zone",
+            topology,
+        )
+        device = devices.get(resource.get("device"))
+        if not device:
+            die(f"{app_name}.{resource_id} references unknown device {resource.get('device')}")
+        _, to_zone = resolve_zone(
+            device["zone"],
+            f"{app_name}.{resource_id}.device.zone",
+            topology,
+        )
+        ports = validate_ports(
+            resource.get("ports", [resource.get("port")]),
+            f"{app_name}.{resource_id}.ports",
+        )
+        sources = users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
+        for user in sources:
+            suffix = f"{user['slug']}-" if user.get("slug") else ""
+            router_rules.append(
+                {
+                    "node": box,
+                    "app": app_name,
+                    "resource": resource_id,
+                    "in_interface": from_zone["router_interface"],
+                    "out_interface": to_zone["router_interface"],
+                    "source": user["vm_ipv4_address"],
+                    "destination": device["ipv4_address"],
+                    "protocol": "tcp",
+                    "ports": ports,
+                    "exclusive": bool(resource.get("exclusive", False)),
+                    "comment": resource_comment(app_name, resource_id, f"{suffix}router"),
+                }
+            )
+        return
+
+    if resource_type == "device_to_zone_tcp":
+        device = devices.get(resource.get("device"))
+        if not device:
+            die(f"{app_name}.{resource_id} references unknown device {resource.get('device')}")
+        _, from_zone = resolve_zone(
+            device["zone"],
+            f"{app_name}.{resource_id}.device.zone",
+            topology,
+        )
+        _, to_zone = resolve_zone(
+            resource.get("to_zone"),
+            f"{app_name}.{resource_id}.to_zone",
+            topology,
+        )
+        ports = validate_ports(
+            resource.get("ports", [resource.get("port")]),
+            f"{app_name}.{resource_id}.ports",
+        )
+        router_rules.append(
+            {
+                "node": box,
+                "app": app_name,
+                "resource": resource_id,
+                "in_interface": from_zone["router_interface"],
+                "out_interface": to_zone["router_interface"],
+                "source": device["ipv4_address"],
+                "destination": to_zone["vm_ipv4_address"],
+                "protocol": "tcp",
+                "ports": ports,
+                "exclusive": bool(resource.get("exclusive", False)),
+                "comment": resource_comment(app_name, resource_id, "router"),
+            }
+        )
+        vm_rules.append(
+            {
+                "node": box,
+                "app": app_name,
+                "resource": resource_id,
+                "target_role": to_zone["role"],
+                "interface": to_zone["vm_interface"],
+                "source": device["ipv4_address"],
+                "destination": to_zone["vm_ipv4_address"],
+                "ports": ports,
+                "exclusive": bool(resource.get("exclusive", False)),
+                "comment": resource_comment(app_name, resource_id, "vm-input"),
+            }
+        )
+        return
+
+    if resource_type == "device_wan_egress":
+        device = devices.get(resource.get("device"))
+        if not device:
+            die(f"{app_name}.{resource_id} references unknown device {resource.get('device')}")
+        _, from_zone = resolve_zone(
+            device["zone"],
+            f"{app_name}.{resource_id}.device.zone",
+            topology,
+        )
+        wan_interface = topology["realms"]["wan"]["router_interface"]
+        for protocol, key in (("tcp", "tcp_ports"), ("udp", "udp_ports")):
+            ports = resource.get(key, [])
+            if not ports:
+                continue
+            router_rules.append(
+                {
+                    "node": box,
+                    "app": app_name,
+                    "resource": resource_id,
+                    "in_interface": from_zone["router_interface"],
+                    "out_interface": wan_interface,
+                    "source": device["ipv4_address"],
+                    "destination": "",
+                    "protocol": protocol,
+                    "ports": validate_ports(ports, f"{app_name}.{resource_id}.{key}"),
+                    "exclusive": bool(resource.get("exclusive", False)),
+                    "comment": resource_comment(app_name, resource_id, protocol),
+                }
+            )
+        return
+
+    if resource_type == "tailnet_tcp":
+        return
+
+    die(f"unsupported network resource type for {app_name}.{resource_id}: {resource_type}")
+
+
+def nft_port_expr(ports):
+    values = validate_ports(ports, "nft ports")
+    if len(values) == 1:
+        return str(values[0])
+    return "{ " + ", ".join(str(port) for port in values) + " }"
+
+
+def normalized_router_rule(rule):
+    normalized = {
+        "kind": "router-forward",
+        "node": rule["node"],
+        "in_interface": rule["in_interface"],
+        "out_interface": rule["out_interface"],
+        "source": rule["source"],
+        "destination": rule.get("destination") or "",
+        "protocol": rule.get("protocol") or "tcp",
+        "ports": validate_ports(rule["ports"], f"{rule.get('comment', 'router')}.ports"),
+    }
+    return normalized
+
+
+def normalized_vm_rule(rule):
+    normalized = {
+        "kind": "vm-input",
+        "node": rule["node"],
+        "target_role": rule["target_role"],
+        "interface": rule.get("interface") or "eth0",
+        "source": rule["source"],
+        "destination": rule["destination"],
+        "protocol": "tcp",
+        "ports": validate_ports(rule["ports"], f"{rule.get('comment', 'vm')}.ports"),
+    }
+    return normalized
+
+
+def resource_key(normalized):
+    digest = hashlib.sha256(
+        json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"{normalized['kind']}-{digest[:24]}"
+
+
+def rendered_rule_identity(key):
+    return f"klokast-{key[:32]}"
+
+
+def render_router_resource_rule(normalized, identity):
+    destination = ""
+    if normalized["destination"]:
+        destination = f" ip daddr {normalized['destination']}"
+    return (
+        f"iifname \"{normalized['in_interface']}\" "
+        f"oifname \"{normalized['out_interface']}\" "
+        f"ip saddr {normalized['source']}{destination} "
+        f"{normalized['protocol']} dport {nft_port_expr(normalized['ports'])} "
+        f"accept comment \"{identity}\""
+    )
+
+
+def render_vm_resource_rule(normalized, identity):
+    return (
+        f"iifname \"{normalized['interface']}\" "
+        f"ip saddr {normalized['source']} "
+        f"ip daddr {normalized['destination']} "
+        f"tcp dport {nft_port_expr(normalized['ports'])} "
+        f"accept comment \"{identity}\""
+    )
+
+
+def build_resource_claim(kind, rule):
+    if kind == "router-forward":
+        normalized = normalized_router_rule(rule)
+        host_role = "router"
+        line_renderer = render_router_resource_rule
+    elif kind == "vm-input":
+        normalized = normalized_vm_rule(rule)
+        host_role = rule["target_role"]
+        line_renderer = render_vm_resource_rule
+    else:
+        die(f"unsupported app-resource kind: {kind}")
+
+    key = resource_key(normalized)
+    identity = rendered_rule_identity(key)
+    content = line_renderer(normalized, identity) + "\n"
+    return {
+        "schema_version": 1,
+        "kind": kind,
+        "key": key,
+        "app": rule["app"],
+        "resource": rule["resource"],
+        "node": rule["node"],
+        "host_role": host_role,
+        "exclusive": bool(rule.get("exclusive", False)),
+        "claim_comment": rule.get("comment", ""),
+        "rendered_rule_identity": identity,
+        "normalized": normalized,
+        "content": content,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "approved_commit": "",
+    }
+
+
+def build_effective_resource_file(claims):
+    first = claims[0]
+    owners = sorted({claim["app"] for claim in claims})
+    exclusive_owners = sorted({claim["app"] for claim in claims if claim.get("exclusive")})
+    if exclusive_owners and len(owners) > 1:
+        die(
+            "exclusive platform-resource conflict for "
+            f"{first['key']}: {', '.join(owners)}"
+        )
+    content_hashes = {claim["content_sha256"] for claim in claims}
+    if len(content_hashes) != 1:
+        die(
+            "platform-resource claims normalized to the same key but render "
+            f"different snippets: {first['key']}"
+        )
+    header = (
+        "# Managed by Klokast platform-resources. Do not edit.\n"
+        f"# klokast-resource-kind: {first['kind']}\n"
+        f"# klokast-resource-key: {first['key']}\n"
+        f"# klokast-resource-owners: {','.join(owners)}\n"
+        f"# klokast-resource-rendered-identity: {first['rendered_rule_identity']}\n"
+        f"# klokast-resource-exclusive: {'true' if exclusive_owners else 'false'}\n"
+    )
+    content = header + first["content"]
+    return {
+        "schema_version": 1,
+        "kind": first["kind"],
+        "key": first["key"],
+        "filename": f"{first['key']}.nft",
+        "node": first["node"],
+        "host_role": first["host_role"],
+        "owners": owners,
+        "resources": sorted({f"{claim['app']}:{claim['resource']}" for claim in claims}),
+        "exclusive": bool(exclusive_owners),
+        "rendered_rule_identity": first["rendered_rule_identity"],
+        "content": content,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "claim_keys": sorted({claim["claim_comment"] for claim in claims if claim.get("claim_comment")}),
+        "approved_commit": "",
+    }
+
+
+def build_app_resource_ledger(router_rules, vm_rules):
+    claims = []
+    for rule in router_rules:
+        claims.append(build_resource_claim("router-forward", rule))
+    for rule in vm_rules:
+        claims.append(build_resource_claim("vm-input", rule))
+
+    grouped = {}
+    for claim in claims:
+        grouped.setdefault(
+            (claim["node"], claim["host_role"], claim["kind"], claim["key"]),
+            [],
+        ).append(claim)
+
+    effective = [
+        build_effective_resource_file(items)
+        for _, items in sorted(grouped.items(), key=lambda item: item[0])
+    ]
+    return {
+        "claims": sorted(
+            claims,
+            key=lambda item: (
+                item["node"],
+                item["host_role"],
+                item["kind"],
+                item["key"],
+                item["app"],
+                item["resource"],
+            ),
+        ),
+        "effective_files": effective,
+    }
+
+
+def build_app_resource_cleanup_scope(app_name, node, reason):
+    return {
+        "schema_version": 1,
+        "app": app_name,
+        "node": node,
+        "host_roles": list(CLEANUP_HOST_ROLES),
+        "reason": reason,
+    }
+
+
+def compile_registry(registry_path, app_filter):
+    topology = load_topology()
+    registry = load_yaml(registry_path)
+    if registry.get("schema_version") != 1:
+        die(f"{registry_path} must use schema_version: 1")
+    apps = registry.get("apps") or {}
+    if not isinstance(apps, dict):
+        die(f"{registry_path} apps must be a mapping")
+    box_configs = registry_box_configs(registry, topology)
+
+    requested = set(app_filter)
+    router_rules = []
+    vm_rules = []
+    tailnet_resources = []
+    tailnet_policy_resources = []
+    app_vm_specs = []
+    managed_devices = []
+    cleanup_scopes = []
+    boxes = set()
+    compiled_apps = {}
+    manifest_paths = {}
+
+    for app_name, entry in sorted(apps.items()):
+        validate_id(app_name, "apps key")
+        if requested and app_name not in requested:
+            continue
+        if not isinstance(entry, dict):
+            die(f"apps.{app_name} must be a mapping")
+        manifest = app_manifest(app_name)
+        manifest_paths[app_name] = manifest["_manifest_path"]
+        validate_manifest_resources(app_name, manifest, topology)
+        validate_privileged_runtime(app_name, manifest, entry)
+        app_boxes = selected_boxes(app_name, manifest, entry)
+        app_enabled = bool(entry.get("enabled"))
+        app_users = selected_users(app_name, manifest, entry, topology)
+        app_box_vms = (
+            selected_app_vms(app_name, manifest, entry, app_boxes, topology, box_configs)
+            if app_enabled
+            else []
+        )
+        app_managed_devices = (
+            selected_managed_iot_devices(
+                app_name,
+                manifest,
+                entry,
+                app_boxes,
+                topology,
+                box_configs,
+            )
+            if app_enabled
+            else []
+        )
+        tailnet_candidates = selected_tailnet_resources(manifest, entry) if app_enabled else []
+        managed_devices.extend(app_managed_devices)
+        app_network_resource_ids = []
+        app_tailnet_resource_ids = []
+
+        if not app_enabled:
+            for box in app_boxes:
+                cleanup_scopes.append(
+                    build_app_resource_cleanup_scope(app_name, box, "disabled-app")
+                )
+
+        for box in app_boxes:
+            boxes.add(box)
+            box_config = box_config_for(box_configs, box)
+            box_app_vm_specs = [
+                spec for spec in app_box_vms if spec["node"] == box
+            ]
+            app_vm_specs.extend(box_app_vm_specs)
+            app_vm_specs.extend(
+                compile_app_vm_specs_for_box(app_name, box, entry, manifest, app_users, topology)
+            )
+            network_sources = app_users or app_vm_sources_for_box(box_app_vm_specs, box)
+            network_resources = (
+                selected_network_resources(manifest, entry, box_config) if app_enabled else []
+            )
+            for resource in network_resources:
+                if resource["id"] not in app_network_resource_ids:
+                    app_network_resource_ids.append(resource["id"])
+                box_devices = {
+                    device["resource"]: device
+                    for device in app_managed_devices
+                    if device["node"] == box
+                }
+                compile_resource_for_box(
+                    app_name,
+                    box,
+                    resource,
+                    router_rules,
+                    vm_rules,
+                    topology,
+                    users=network_sources,
+                    devices=box_devices,
+                )
+        tailnet_policy_selected = []
+        for resource in tailnet_candidates:
+            hostname_value = tailnet_resource_value(
+                resource,
+                "hostname_default",
+                "hostname",
+                "hostname_pattern",
+            )
+            tag_value = tailnet_resource_value(
+                resource,
+                "tag_default",
+                "tag",
+                "tag_pattern",
+            )
+            scope_boxes = app_boxes if "{box}" in hostname_value or "{box}" in tag_value else [""]
+            for box in scope_boxes:
+                if box:
+                    if not resource_access_allowed(resource, box_config_for(box_configs, box)):
+                        continue
+                elif not resource_access_allowed_for_any_box(resource, box_configs, app_boxes):
+                    continue
+                hostname = render_tailnet_resource_value(hostname_value, box)
+                tag = render_tailnet_resource_value(tag_value, box)
+                if hostname and "{" not in hostname:
+                    validate_hostname(hostname, f"{app_name}.{resource['id']}.hostname")
+                if tag and "{" not in tag:
+                    validate_app_tailnet_tag(tag, f"{app_name}.{resource['id']}.tag")
+                tailnet_resources.append(
+                    {
+                        "app": app_name,
+                        "id": resource["id"],
+                        "node": box,
+                        "hostname": hostname,
+                        "tag": tag,
+                        "grants": resource.get("grants") or [],
+                    }
+                )
+                if resource["id"] not in app_tailnet_resource_ids:
+                    app_tailnet_resource_ids.append(resource["id"])
+                if resource not in tailnet_policy_selected:
+                    tailnet_policy_selected.append(resource)
+        placement = entry_placement(entry)
+        tailnet_policy_resources.extend(
+            compile_tailnet_policy_resources(
+                app_name,
+                manifest,
+                app_users,
+                placement,
+                selected_tailnet=tailnet_policy_selected,
+            )
+        )
+        compiled_apps[app_name] = {
+            "enabled": app_enabled,
+            "runtime_state": app_runtime_state(app_name, entry, manifest) if app_enabled else "stopped",
+            "boxes": app_boxes,
+            "placement": placement,
+            "resources": app_network_resource_ids,
+            "tailnet_resources": app_tailnet_resource_ids,
+            "isolation": entry.get("isolation", manifest.get("default_isolation", "")),
+            "resource_flags": entry.get("resources") or {},
+            "controls": entry.get("controls") or entry.get("ephemeral") or {},
+            "users": app_users,
+            "app_vms": sorted({spec["resource"] for spec in app_box_vms}),
+            "managed_iot_devices": sorted({device["resource"] for device in app_managed_devices}),
+        }
+
+    if requested:
+        missing = sorted(requested - set(compiled_apps))
+        if missing:
+            die(f"registry has no app entry for: {', '.join(missing)}")
+
+    router_rules.extend(compile_app_vm_bootstrap_router_rules(app_vm_specs, topology))
+    router_rules.extend(
+        compile_app_vm_tailscale_underlay_router_rules(app_vm_specs, topology)
+    )
+
+    app_resource_ledger = build_app_resource_ledger(router_rules, vm_rules)
+    effective_box_configs = {
+        box: box_config_for(box_configs, box)
+        for box in sorted(set(boxes) | set(box_configs))
+    }
+
+    return {
+        "schema_version": 1,
+        "compiler": "platform-resources",
+        "compiler_version": COMPILER_VERSION,
+        "registry_path": str(registry_path),
+        "registry_sha256": sha256_file(registry_path),
+        "apps": compiled_apps,
+        "box_configs": effective_box_configs,
+        "boxes": sorted(boxes),
+        "manifest_paths": manifest_paths,
+        "tailnet_resources": tailnet_resources,
+        "tailnet_policy_resources": tailnet_policy_resources,
+        "app_vm_specs": app_vm_specs,
+        "managed_iot_devices": sorted(
+            managed_devices,
+            key=lambda item: (item["node"], item["app"], item["resource"]),
+        ),
+        "platform_map": {
+            "app_vms": compile_platform_map_app_vms(app_vm_specs),
+            "managed_iot_devices": sorted(
+                managed_devices,
+                key=lambda item: (item["node"], item["app"], item["resource"]),
+            ),
+        },
+        "app_resource_claims": app_resource_ledger["claims"],
+        "app_resource_effective_files": app_resource_ledger["effective_files"],
+        "app_resource_cleanup_scopes": cleanup_scopes,
+    }
+
+
+def build_app_grant(compiled, app_name, approved_commit):
+    apps = compiled.get("apps") or {}
+    if app_name not in apps:
+        die(f"compiled resources do not include app: {app_name}")
+    app = apps[app_name]
+    effective_files = []
+    for item in compiled.get("app_resource_effective_files") or []:
+        if app_name not in (item.get("owners") or []):
+            continue
+        sanitized = {
+            key: item[key]
+            for key in (
+                "schema_version",
+                "kind",
+                "key",
+                "filename",
+                "node",
+                "host_role",
+                "exclusive",
+                "rendered_rule_identity",
+                "content_sha256",
+                "approved_commit",
+            )
+            if key in item
+        }
+        sanitized["owned_by_app"] = True
+        sanitized["approved_commit"] = approved_commit
+        effective_files.append(sanitized)
+
+    app_vms = []
+    for spec in compiled.get("app_vm_specs") or []:
+        if spec.get("app") != app_name:
+            continue
+        guest_spec = spec.get("guest_spec") or {}
+        user = spec.get("user") or {}
+        app_vms.append(
+            {
+                "schema_version": 1,
+                "app": app_name,
+                "resource": spec["resource"],
+                "node": spec["node"],
+                "site_role": spec["site_role"],
+                "runtime_state": spec.get("runtime_state", "running"),
+                "inventory_hostname": spec["inventory_hostname"],
+                "node_domain_role": spec["node_domain_role"],
+                "node_hostname": spec["node_hostname"],
+                "tailnet_hostname": spec["tailnet_hostname"],
+                "tailnet_tag": spec["tailnet_tag"],
+                "advertised_tags": spec["advertised_tags"],
+                "zone": spec["zone"],
+                "vm_ipv4_address": spec["vm_ipv4_address"],
+                "user_slug": spec["user_slug"],
+                "system_user": user.get("system_user", spec["user_slug"]),
+                "guest_name": guest_spec.get("guest_name", ""),
+                "guest_os": guest_spec.get("guest_os", ""),
+                "container_runtime": guest_spec.get("container_runtime", ""),
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "kind": "platform-resource-grant",
+        "app": app_name,
+        "enabled": app["enabled"],
+        "runtime_state": app.get("runtime_state", "stopped"),
+        "approved_commit": approved_commit,
+        "compiler": compiled["compiler"],
+        "compiler_version": compiled["compiler_version"],
+        "registry_sha256": compiled["registry_sha256"],
+        "boxes": app["boxes"],
+        "placement": app["placement"],
+        "resources": app["resources"],
+        "tailnet_resources": [
+            item for item in compiled["tailnet_resources"] if item.get("app") == app_name
+        ],
+        "managed_iot_devices": [
+            item for item in compiled.get("managed_iot_devices", []) if item.get("app") == app_name
+        ],
+        "app_vms": app_vms,
+        "app_resource_effective_files": effective_files,
+    }
+
+
+def render_inventory(box, output_path, magicdns_suffix, box_configs=None):
+    extra_args = []
+    config = (box_configs or {}).get(box) or {}
+    dom0_bridge_ports = config.get("dom0_bridge_ports") or {}
+    for bridge in sorted(dom0_bridge_ports):
+        ports = dom0_bridge_ports[bridge]
+        if ports:
+            extra_args.extend(["--dom0-bridge-port", f"{bridge}={','.join(ports)}"])
+    subprocess.run(
+        [
+            str(REPO_ROOT / "ansible" / "bin" / "render-node-inventory"),
+            "--node",
+            box,
+            "--magicdns-suffix",
+            magicdns_suffix,
+            "--output",
+            str(output_path),
+            *extra_args,
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+
+def render_app_vm_inventory(compiled, output_path, magicdns_suffix, app_vm_specs=None):
+    app_vm_specs = app_vm_specs if app_vm_specs is not None else compiled["app_vm_specs"]
+    hosts = {}
+    active_hosts = {}
+    passive_hosts = {}
+    running_hosts = {}
+    stopped_hosts = {}
+    os_hosts = {}
+    role_groups = {}
+    app_groups = {}
+    box_groups = {}
+    for spec in app_vm_specs:
+        user = dict(spec.get("user") or {})
+        host_vars = {
+            "node_name": spec["node"],
+            "node_domain_role": spec["node_domain_role"],
+            "node_hostname": spec["node_hostname"],
+            "ansible_host": f"{spec['node_hostname']}.{magicdns_suffix}",
+            "ansible_user": "neo",
+            "ansible_become": True,
+            "ansible_python_interpreter": "/usr/bin/python3",
+            "platform_app_vm_guest_os": spec["guest_spec"]["guest_os"],
+            "platform_app_vm_container_runtime": spec["guest_spec"]["container_runtime"],
+            "platform_app_vm_runtime_state": spec.get("runtime_state", "running"),
+            "platform_app_vm_zone": spec["zone"],
+            "platform_app_vm_interface": spec["guest_spec"]["vm_interface"],
+            "vm_bootstrap_host": spec["vm_ipv4_address"],
+            "vm_bootstrap_proxyjump": "{{ 'neo@' ~ (hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0')) }}",
+            "vm_bootstrap_private_key_file": "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex",
+            "vm_bootstrap_known_hosts_file": "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap",
+            "vm_bootstrap_network_interfaces": (
+                spec["guest_spec"].get("network_interfaces")
+                or spec["guest_spec"].get("debian_image", {}).get("network_interfaces", "")
+            ),
+            "vm_admin_user_name": "neo",
+            "vm_local_users": [
+                {
+                    "name": "neo",
+                    "shell": "/bin/ash",
+                    "groups": ["wheel"],
+                }
+            ],
+            "vm_base_packages": ["python3", "doas", "openssh"],
+            "vm_admin_authorized_key_file": "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub",
+            "tailscale_enable_ssh": True,
+            "alpine_repositories": [
+                "http://dl-cdn.alpinelinux.org/alpine/v3.23/main",
+                "http://dl-cdn.alpinelinux.org/alpine/v3.23/community",
+            ],
+            "vm_tailscale_authkey_wrapper": "/usr/local/sbin/ts-authkey-vm",
+            "vm_tailscale_authkey_advertise_tags": ",".join(spec["advertised_tags"]),
+            "vm_tailscale_authkey_expected_tag": "tag:vm",
+            "vm_tailscale_authkey_expected_tags": spec["advertised_tags"],
+        }
+        if spec["guest_spec"]["guest_os"] == "debian":
+            user.setdefault("tailscale_domain", f"{spec['tailnet_hostname']}.{magicdns_suffix}")
+            host_vars.update(
+                {
+                    "ansible_become_method": "sudo",
+                    "ansible_become_flags": "-n",
+                    "ansible_become_timeout": 30,
+                    "ansible_ssh_pipelining": False,
+                }
+            )
+        else:
+            host_vars.update(
+                {
+                    "ansible_become_method": "doas",
+                    "ansible_become_flags": "-n",
+                    "ansible_become_timeout": 30,
+                    "ansible_ssh_pipelining": True,
+                }
+            )
+        hosts[spec["inventory_hostname"]] = host_vars
+        os_hosts.setdefault(f"{spec['guest_spec']['guest_os']}_app_vms", {})[
+            spec["inventory_hostname"]
+        ] = {}
+        role_group = f"{spec['node_domain_role']}_app_vms"
+        role_groups.setdefault(role_group, {})[spec["inventory_hostname"]] = {}
+        app_group = f"{spec['app'].replace('-', '_')}_app_vms"
+        app_groups.setdefault(app_group, {})[spec["inventory_hostname"]] = {}
+        box_group_name = re.sub(r"[^A-Za-z0-9_]", "_", spec["node"])
+        box_groups.setdefault(box_group_name, {})[spec["inventory_hostname"]] = {}
+        if spec.get("runtime_state", "running") == "running":
+            running_hosts[spec["inventory_hostname"]] = {}
+            if spec["site_role"] == "active":
+                active_hosts[spec["inventory_hostname"]] = {}
+            else:
+                passive_hosts[spec["inventory_hostname"]] = {}
+        else:
+            stopped_hosts[spec["inventory_hostname"]] = {}
+    children = {
+        "app_vms": {"hosts": {host: {} for host in hosts}},
+        "active_app_vms": {"hosts": active_hosts},
+        "passive_app_vms": {"hosts": passive_hosts},
+        "running_app_vms": {"hosts": running_hosts},
+        "stopped_app_vms": {"hosts": stopped_hosts},
+    }
+    for group_name, group_hosts in os_hosts.items():
+        children[group_name] = {"hosts": group_hosts}
+    for group_name, group_hosts in role_groups.items():
+        children[group_name] = {"hosts": group_hosts}
+    for group_name, group_hosts in app_groups.items():
+        children[group_name] = {"hosts": group_hosts}
+    for box_group_name, box_hosts in box_groups.items():
+        app_group_name = f"{box_group_name}_app_vms"
+        children.setdefault(box_group_name, {}).setdefault("children", {})[app_group_name] = {}
+        children[app_group_name] = {"hosts": box_hosts}
+
+    payload = {
+        "all": {
+            "children": children,
+            "hosts": hosts,
+        }
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+
+
+def resource_host_for_node_role(node, host_role):
+    suffix = ROLE_HOST_SUFFIXES.get(host_role)
+    if not suffix:
+        die(f"unknown app-resource host_role: {host_role}")
+    return f"{node}-{suffix}"
+
+
+def resource_host_for_effective_file(resource):
+    if resource["kind"] == "router-forward":
+        return resource_host_for_node_role(resource["node"], "router")
+    if resource["kind"] == "vm-input":
+        return resource_host_for_node_role(resource["node"], resource["host_role"])
+    die(f"unsupported app-resource kind: {resource['kind']}")
+
+
+def add_host(hosts, seen, host):
+    if host not in seen:
+        seen.add(host)
+        hosts.append(host)
+
+
+def resource_hosts_for_scope(compiled, scope_apps=None):
+    scope = set(scope_apps or [])
+    hosts = []
+    seen = set()
+
+    effective_files = compiled.get("app_resource_effective_files") or []
+    ordered_files = [
+        item for item in effective_files if item.get("kind") == "router-forward"
+    ] + [
+        item for item in effective_files if item.get("kind") != "router-forward"
+    ]
+    for resource in ordered_files:
+        if scope and not (scope & set(resource.get("owners") or [])):
+            continue
+        add_host(hosts, seen, resource_host_for_effective_file(resource))
+    for cleanup in compiled.get("app_resource_cleanup_scopes") or []:
+        if scope and cleanup.get("app") not in scope:
+            continue
+        for host_role in cleanup.get("host_roles") or []:
+            add_host(hosts, seen, resource_host_for_node_role(cleanup["node"], host_role))
+    if scope:
+        for app_name in sorted(scope):
+            app = (compiled.get("apps") or {}).get(app_name)
+            if not app:
+                die(f"compiled resources do not include app: {app_name}")
+            for box in app.get("boxes") or []:
+                for suffix in ROLE_SUFFIXES:
+                    add_host(hosts, seen, f"{box}-{suffix}")
+    for spec in compiled["app_vm_specs"]:
+        if scope and spec.get("app") not in scope:
+            continue
+        add_host(hosts, seen, spec["inventory_hostname"])
+    return hosts
+
+
+def limit_for_resource_hosts(compiled, scope_apps=None):
+    return ",".join(resource_hosts_for_scope(compiled, scope_apps))
+
+
+def is_podman_resource_host(host):
+    try:
+        _node, suffix = host.rsplit("-", 1)
+    except ValueError:
+        return False
+    return suffix in PODMAN_ROLE_SUFFIXES
+
+
+def podman_host_node_role(host):
+    try:
+        node, suffix = host.rsplit("-", 1)
+    except ValueError:
+        die(f"invalid Podman resource host: {host}")
+    role = PODMAN_NODE_ROLES.get(suffix)
+    if not role:
+        die(f"unsupported Podman resource host role: {host}")
+    return node, role
+
+
+def router_resource_hosts(compiled, scope_apps=None):
+    return [
+        host
+        for host in resource_hosts_for_scope(compiled, scope_apps)
+        if host.endswith("-router")
+    ]
+
+
+def ansible_resource_hosts(compiled, scope_apps=None):
+    return [
+        host
+        for host in resource_hosts_for_scope(compiled, scope_apps)
+        if not is_podman_resource_host(host)
+    ]
+
+
+def podman_resource_hosts(compiled, scope_apps=None):
+    return [
+        host
+        for host in resource_hosts_for_scope(compiled, scope_apps)
+        if is_podman_resource_host(host)
+    ]
+
+
+def limit_for_app_vms(boxes, app_vm_specs):
+    hosts = [f"{box}-bak" for box in boxes]
+    hosts.extend(f"{box}-dom0" for box in boxes)
+    hosts.extend(spec["inventory_hostname"] for spec in app_vm_specs)
+    return ",".join(hosts)
+
+
+def app_vm_specs_for_scope(compiled, scope_apps=None):
+    scope = set(scope_apps or [])
+    if not scope:
+        return compiled["app_vm_specs"]
+    return [
+        spec for spec in compiled["app_vm_specs"]
+        if spec.get("app") in scope
+    ]
+
+
+def boxes_for_scope(compiled, scope_apps=None):
+    scope = sorted(set(scope_apps or []))
+    if not scope:
+        return sorted(set(compiled["boxes"]) | set(compiled.get("box_configs") or {}))
+    boxes = set()
+    for app_name in scope:
+        app = (compiled.get("apps") or {}).get(app_name)
+        if not app:
+            die(f"compiled resources do not include app: {app_name}")
+        boxes.update(app.get("boxes") or [])
+    return sorted(boxes)
+
+
+def write_platform_resources_vars(vars_path, vars_payload, desired_json):
+    vars_path.write_text(yaml.safe_dump(vars_payload, sort_keys=True), encoding="utf-8")
+    with vars_path.open("a", encoding="utf-8") as handle:
+        handle.write("platform_resources_desired_json: !unsafe |-\n")
+        for line in desired_json.splitlines():
+            handle.write(f"  {line}\n")
+
+
+def router_managed_dhcp_hosts(compiled):
+    hosts = [
+        {
+            "node": device["node"],
+            "name": device["hostname"],
+            "mac": device["mac"],
+            "address": device["ipv4_address"],
+            "app": device["app"],
+            "resource": device["resource"],
+        }
+        for device in compiled.get("managed_iot_devices", [])
+    ]
+    for node, config in sorted((compiled.get("box_configs") or {}).items()):
+        for reservation in config.get("dhcp_reservations") or []:
+            hosts.append(
+                {
+                    "node": node,
+                    "name": reservation["hostname"],
+                    "mac": reservation["mac"],
+                    "address": reservation["ipv4_address"],
+                    "app": "",
+                    "resource": "box-dhcp-reservation",
+                }
+            )
+    return hosts
+
+
+def git_output(args):
+    try:
+        return subprocess.check_output(
+            ["git", *args], cwd=REPO_ROOT, text=True, stderr=subprocess.STDOUT
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        output = (error.output or "").strip()
+        suffix = f": {output}" if output else ""
+        die(f"git {' '.join(args)} failed{suffix}")
+
+
+def assert_approved_commit(approved_commit):
+    if not approved_commit:
+        die("apply requires --approved-commit")
+    head = git_output(["rev-parse", "HEAD"])
+    if approved_commit != head:
+        die(f"--approved-commit must equal HEAD ({head})")
+    status = git_output(["status", "--short"])
+    if status:
+        die("apply requires a clean git worktree")
+    branch = git_output(["rev-parse", "--abbrev-ref", "HEAD"])
+    upstream = git_output(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    remote_head = git_output(["rev-parse", upstream])
+    if remote_head != head:
+        die(f"apply requires pushed HEAD; {branch} differs from {upstream}")
+
+
+def attach_approved_commit(compiled, approved_commit):
+    if not approved_commit:
+        return compiled
+    encoded = json.loads(json.dumps(compiled))
+    encoded["approved_commit"] = approved_commit
+    for key in ("app_resource_claims", "app_resource_effective_files"):
+        for item in encoded.get(key) or []:
+            item["approved_commit"] = approved_commit
+    return encoded
+
+
+def run_tailscale_ssh(host, remote_args, input_text=None, timeout=180):
+    remote_command = " ".join(shlex.quote(str(arg)) for arg in remote_args)
+    subprocess.run(
+        ["tailscale", "ssh", f"neo@{host}", remote_command],
+        cwd=REPO_ROOT,
+        input=input_text,
+        text=True,
+        timeout=timeout,
+        check=True,
+    )
+
+
+def upload_tailscale_ssh_text(host, remote_path, content, timeout=120):
+    quoted_dir = shlex.quote(str(Path(remote_path).parent))
+    quoted_path = shlex.quote(remote_path)
+    run_tailscale_ssh(
+        host,
+        [
+            "sh",
+            "-c",
+            f"umask 077 && mkdir -p {quoted_dir} && cat > {quoted_path}",
+        ],
+        input_text=content,
+        timeout=timeout,
+    )
+
+
+def podman_resource_remote_script():
+    return r"""set -eu
+staging_dir="$1"
+desired_path="$2"
+helper_path="$3"
+last_applied_path="$4"
+mode="$5"
+node_name="$6"
+node_role="$7"
+shift 7
+
+if [ ! -x /usr/sbin/nft ] || [ ! -f /etc/nftables.nft ]; then
+  echo "missing Podman VM firewall baseline on $(hostname); run the Podman host convergence workflow before platform-resources" >&2
+  exit 42
+fi
+
+doas -n install -d -o root -g root -m 0755 /usr/local/libexec
+doas -n install -o root -g root -m 0755 "$helper_path" /usr/local/libexec/klokast-app-resources-reconcile
+doas -n install -d -o root -g root -m 0755 /etc/klokast/platform-resources
+
+if [ "$mode" = "apply" ]; then
+  apply_output="$(
+    doas -n /usr/bin/python3 /usr/local/libexec/klokast-app-resources-reconcile \
+      apply \
+      --desired "$desired_path" \
+      --node-name "$node_name" \
+      --node-role "$node_role" \
+      "$@"
+  )"
+  printf '%s\n' "$apply_output"
+  changed="$(
+    printf '%s\n' "$apply_output" |
+    /usr/bin/python3 -c 'import json, sys; print("1" if json.load(sys.stdin).get("changed") else "0")'
+  )"
+  doas -n /usr/sbin/nft -c -f /etc/nftables.nft
+  if [ "$changed" = "1" ]; then
+    doas -n /usr/sbin/nft -f /etc/nftables.nft
+  fi
+  doas -n install -o root -g root -m 0644 "$desired_path" /etc/klokast/platform-resources/desired.json
+  doas -n install -o root -g root -m 0644 "$last_applied_path" /etc/klokast/platform-resources/last-applied.json
+  doas -n /usr/bin/python3 /usr/local/libexec/klokast-app-resources-reconcile \
+    verify \
+    --desired "$desired_path" \
+    --node-name "$node_name" \
+    --node-role "$node_role" \
+    "$@"
+else
+  doas -n /usr/bin/python3 /usr/local/libexec/klokast-app-resources-reconcile \
+    verify \
+    --desired "$desired_path" \
+    --node-name "$node_name" \
+    --node-role "$node_role" \
+    "$@"
+fi
+
+rm -rf "$staging_dir"
+"""
+
+
+def run_podman_resource_host(
+    command,
+    host,
+    compiled,
+    desired_json,
+    approved_commit,
+    scope_apps,
+    run_id,
+):
+    node_name, node_role = podman_host_node_role(host)
+    staging_dir = f"/home/neo/.cache/klokast-platform-resources/{run_id}"
+    desired_path = f"{staging_dir}/desired.json"
+    helper_path = f"{staging_dir}/klokast-app-resources-reconcile"
+    last_applied_path = f"{staging_dir}/last-applied.json"
+    scope_args = [f"--scope-app={app}" for app in sorted(set(scope_apps or []))]
+
+    upload_tailscale_ssh_text(host, desired_path, f"{desired_json}\n")
+    upload_tailscale_ssh_text(
+        host,
+        helper_path,
+        APP_RESOURCE_RECONCILE_SOURCE.read_text(encoding="utf-8"),
+    )
+
+    if command == "apply":
+        last_applied = {
+            "approved_commit": approved_commit,
+            "registry_sha256": compiled["registry_sha256"],
+            "compiler": "platform-resources",
+            "compiler_version": COMPILER_VERSION,
+            "inventory_hostname": host,
+        }
+        upload_tailscale_ssh_text(
+            host,
+            last_applied_path,
+            json.dumps(last_applied, indent=4, sort_keys=True) + "\n",
+        )
+
+    run_tailscale_ssh(
+        host,
+        [
+            "sh",
+            "-s",
+            "--",
+            staging_dir,
+            desired_path,
+            helper_path,
+            last_applied_path,
+            command,
+            node_name,
+            node_role,
+            *scope_args,
+        ],
+        input_text=podman_resource_remote_script(),
+        timeout=240,
+    )
+
+
+def run_podman_resource_hosts(
+    command,
+    compiled,
+    desired_json,
+    approved_commit,
+    scope_apps,
+    run_id,
+):
+    hosts = podman_resource_hosts(compiled, scope_apps)
+    if not hosts:
+        return
+    for host in hosts:
+        run_podman_resource_host(
+            command,
+            host,
+            compiled,
+            desired_json,
+            approved_commit,
+            scope_apps,
+            run_id,
+        )
+
+
+def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_apps=None):
+    scope_apps = sorted(set(scope_apps or []))
+    compiled = attach_approved_commit(compiled, approved_commit)
+    app_vm_specs = app_vm_specs_for_scope(compiled, scope_apps)
+    boxes = boxes_for_scope(compiled, scope_apps)
+    if not boxes:
+        print("platform-resources: no selected boxes; nothing to do")
+        return
+    if (
+        not scope_apps
+        and not compiled["app_vm_specs"]
+        and not compiled.get("app_resource_effective_files")
+        and not compiled.get("app_resource_cleanup_scopes")
+        and not compiled.get("box_configs")
+    ):
+        print("platform-resources: no managed platform resources; nothing to apply")
+        return
+
+    run_root = REPO_ROOT / ".run" / "platform-resources"
+    run_root.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=f"{command}-", dir=run_root))
+    vars_path = tmp / "extra-vars.yml"
+    desired_json = json.dumps(compiled, indent=2, sort_keys=True)
+    vars_payload = {
+        "app_resource_claims": compiled.get("app_resource_claims") or [],
+        "app_resource_effective_files": compiled.get("app_resource_effective_files") or [],
+        "app_resource_cleanup_scopes": compiled.get("app_resource_cleanup_scopes") or [],
+        "platform_app_vm_specs": app_vm_specs,
+        "platform_managed_iot_devices": compiled.get("managed_iot_devices") or [],
+        "platform_resources_box_access": {
+            box: (config.get("access") or default_box_access())
+            for box, config in (compiled.get("box_configs") or {}).items()
+        },
+        "router_managed_dhcp_hosts": router_managed_dhcp_hosts(compiled),
+        "platform_resources_approved_commit": approved_commit,
+        "platform_resources_registry_sha256": compiled["registry_sha256"],
+        "platform_resources_compiler_version": COMPILER_VERSION,
+        "platform_resources_apply_scope_apps": scope_apps,
+    }
+    write_platform_resources_vars(vars_path, vars_payload, desired_json)
+
+    inventory_args = ["-i", str(REPO_ROOT / "ansible" / "inventory" / "hosts.yml")]
+    for box in boxes:
+        inventory_path = tmp / f"{box}.yml"
+        render_inventory(
+            box,
+            inventory_path,
+            magicdns_suffix,
+            compiled.get("box_configs"),
+        )
+        inventory_args.extend(["-i", str(inventory_path)])
+    if app_vm_specs:
+        app_inventory_path = tmp / "app-vms.yml"
+        render_app_vm_inventory(
+            compiled,
+            app_inventory_path,
+            magicdns_suffix,
+            app_vm_specs=app_vm_specs,
+        )
+        inventory_args.extend(["-i", str(app_inventory_path)])
+
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(REPO_ROOT / "ansible" / "ansible.cfg")
+    env["ANSIBLE_ROLES_PATH"] = str(REPO_ROOT / "ansible" / "roles")
+    env["ANSIBLE_SSH_COMMON_ARGS"] = (
+        "-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
+    )
+
+    resource_playbook = (
+        REPO_ROOT
+        / "ansible"
+        / "playbooks"
+        / ("80-platform-resources.yml" if command == "apply" else "81-platform-resources-verify.yml")
+    )
+    router_topology_playbook = REPO_ROOT / "ansible" / "playbooks" / "31-vm-router.yml"
+
+    def run_router_topology_playbook():
+        subprocess.run(
+            [
+                "ansible-playbook",
+                "-vv",
+                *inventory_args,
+                str(router_topology_playbook),
+                "--limit",
+                ",".join(boxes),
+                "-e",
+                f"@{vars_path}",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+        )
+
+    run_id = tmp.name
+
+    def run_resource_playbook():
+        resource_hosts = ansible_resource_hosts(compiled, scope_apps)
+        resource_limit = ",".join(resource_hosts)
+        if not resource_limit:
+            print("platform-resources: no selected Ansible resource hosts; nothing to do")
+            return
+        subprocess.run(
+            [
+                "ansible-playbook",
+                "-vv",
+                *inventory_args,
+                str(resource_playbook),
+                "--limit",
+                resource_limit,
+                "-e",
+                f"@{vars_path}",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+        )
+
+    def run_resource_targets():
+        run_resource_playbook()
+        run_podman_resource_hosts(
+            command,
+            compiled,
+            desired_json,
+            approved_commit,
+            scope_apps,
+            run_id,
+        )
+
+    if command == "apply":
+        box_config_boxes = set((compiled.get("box_configs") or {}).keys())
+        if router_resource_hosts(compiled, scope_apps) or (set(boxes) & box_config_boxes):
+            run_router_topology_playbook()
+
+    run_resource_targets()
+
+    if command == "apply" and app_vm_specs:
+        app_vm_playbook = REPO_ROOT / "ansible" / "playbooks" / "79-platform-app-vms.yml"
+        subprocess.run(
+            [
+                "ansible-playbook",
+                "-vv",
+                *inventory_args,
+                str(app_vm_playbook),
+                "--limit",
+                limit_for_app_vms(boxes, app_vm_specs),
+                "-e",
+                f"@{vars_path}",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+        )
+        run_resource_targets()
+
+
+def show_diff(compiled):
+    print("Box access capabilities:")
+    for box, config in (compiled.get("box_configs") or {}).items():
+        access = config.get("access") or {}
+        policy = access.get("policy") or {}
+        print(
+            f"  {box} available={','.join(access.get('available_capabilities') or [])} "
+            f"enabled={','.join(access.get('enabled_capabilities') or [])} "
+            f"prohibited={','.join(access.get('prohibited_capabilities') or [])} "
+            f"policy={','.join(f'{key}:{policy[key]}' for key in sorted(policy))}"
+        )
+    print("Managed app VMs:")
+    for spec in compiled["app_vm_specs"]:
+        print(f"  {spec['inventory_hostname']} {spec['site_role']} {spec['node_hostname']} {spec['vm_ipv4_address']}")
+    print("Managed app-resource effective files:")
+    for item in compiled.get("app_resource_effective_files") or []:
+        host = resource_host_for_effective_file(item)
+        owners = ",".join(item.get("owners") or [])
+        resources = ",".join(item.get("resources") or [])
+        print(
+            f"  {host} {item['kind']} {item['key']} "
+            f"owners={owners} identity={item['rendered_rule_identity']} resources={resources}"
+        )
+    print("Managed app-resource claims:")
+    for item in compiled.get("app_resource_claims") or []:
+        host = resource_host_for_node_role(item["node"], item["host_role"])
+        print(
+            f"  {host} {item['app']}:{item['resource']} "
+            f"key={item['key']} exclusive={'true' if item.get('exclusive') else 'false'}"
+        )
+    print("Managed Tailnet declarations:")
+    for resource in compiled["tailnet_resources"]:
+        print(f"  {resource['app']} {resource['id']} {resource['hostname']} {resource['tag']}")
+    print("Managed IoT devices:")
+    for device in compiled.get("managed_iot_devices") or []:
+        print(
+            f"  {device['node']} {device['app']}:{device['resource']} "
+            f"{device['hostname']} {device['ipv4_address']} {device['mac']} "
+            f"{device['tailnet_tag']}"
+        )
+    print("Managed Tailnet policy resources:")
+    for resource in compiled["tailnet_policy_resources"]:
+        print(f"  {resource['app']} {resource['id']} {resource['hostname']} {resource['tag']}")
+        for ssh_rule in resource.get("ssh") or []:
+            print(
+                "    ssh "
+                f"{ssh_rule['src']} -> {ssh_rule['dst']} users={','.join(ssh_rule['users'])}"
+            )
+    print("Managed app-resource cleanup scopes:")
+    for item in compiled.get("app_resource_cleanup_scopes") or []:
+        print(
+            f"  {item['node']} {item['app']} "
+            f"roles={','.join(item.get('host_roles') or [])} reason={item.get('reason', '')}"
+        )
+
+
+def assert_command_scope(args):
+    if args.command == "grant" and len(args.app) != 1:
+        die("grant requires exactly one --app")
+
+
+def requested_apps_present(compiled, app_filter):
+    requested = set(app_filter or [])
+    if not requested:
+        return
+    missing = sorted(requested - set((compiled.get("apps") or {}).keys()))
+    if missing:
+        die(f"registry has no app entry for: {', '.join(missing)}")
+
+
+def main():
+    args = parse_args()
+    assert_command_scope(args)
+    registry_path = Path(args.registry)
+    compiled = compile_registry(registry_path, args.app)
+    requested_apps_present(compiled, args.app)
+    if args.command == "lint":
+        print("platform-resources: lint ok")
+        return
+    if args.command == "show":
+        print(json.dumps(compiled, indent=2, sort_keys=True))
+        return
+    if args.command == "diff":
+        show_diff(compiled)
+        return
+    if args.command == "inventory":
+        if not args.inventory_output:
+            die("--inventory-output is required for the inventory command")
+        render_app_vm_inventory(compiled, Path(args.inventory_output), args.magicdns_suffix)
+        return
+    if args.command == "grant":
+        assert_approved_commit(args.approved_commit)
+        grant = build_app_grant(compiled, args.app[0], args.approved_commit)
+        print(json.dumps(grant, indent=2, sort_keys=True))
+        return
+    if args.command == "apply":
+        assert_approved_commit(args.approved_commit)
+        require_active_controller()
+        run_ansible(
+            "apply",
+            compiled,
+            args.magicdns_suffix,
+            args.approved_commit,
+            scope_apps=args.app,
+        )
+        return
+    run_ansible("verify", compiled, args.magicdns_suffix, scope_apps=args.app)
+
+
+if __name__ == "__main__":
+    main()

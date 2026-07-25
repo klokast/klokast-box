@@ -1,0 +1,40 @@
+#!/bin/sh
+# shellcheck shell=sh disable=SC1083
+set -eu
+
+if [ $# -ne 1 ]; then
+    echo "usage: debian-app-vm-image-builder-build GUEST_NAME" >&2
+    exit 2
+fi
+
+guest_name="$1"
+case "$guest_name" in
+    *[!A-Za-z0-9_.-]*|"")
+        echo "invalid guest name: $guest_name" >&2
+        exit 2
+        ;;
+esac
+
+input_root={{ debian_app_vm_image_builder_input_root | quote }}
+output_root={{ debian_app_vm_image_builder_output_root | quote }}
+work_root={{ debian_app_vm_image_builder_work_root | quote }}
+inside_builder=/usr/local/sbin/debian-app-vm-image-builder-build-inside
+
+input_dir="${input_root}/${guest_name}"
+output_dir="${output_root}/${guest_name}"
+work_dir="${work_root}/${guest_name}"
+
+test -r "${input_dir}/spec.json"
+test -r "${input_dir}/authorized_keys"
+test -x "$inside_builder"
+mkdir -p "$output_dir" "$work_dir"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "debian-app-vm-image-builder-build must run as root" >&2
+    exit 1
+fi
+
+DEBIAN_APP_VM_IMAGE_BUILDER_INPUT_DIR="$input_dir" \
+DEBIAN_APP_VM_IMAGE_BUILDER_OUTPUT_DIR="$output_dir" \
+DEBIAN_APP_VM_IMAGE_BUILDER_WORKSPACE="$work_dir" \
+    "$inside_builder"

@@ -1,0 +1,57 @@
+auto lo
+iface lo inet loopback
+
+auto {{ router_wan_interface }}
+iface {{ router_wan_interface }} inet dhcp
+iface {{ router_wan_interface }} inet6 dhcp
+
+{% for parent in (router_vlan_interfaces | default([]) | map(attribute='parent') | unique | list) %}
+{% if not (router_ap_uplink_enabled | default(false) | bool) or parent != platform_network_realms['ap-uplink'].router_interface %}
+auto {{ parent }}
+iface {{ parent }} inet manual
+{% endif %}
+{% endfor %}
+
+{% if router_local_lan_enabled | default(false) | bool %}
+auto {{ router_lan_interface }}
+iface {{ router_lan_interface }} inet static
+    address {{ router_lan_ipv4_address }}
+    netmask {{ router_lan_ipv4_netmask }}
+
+auto {{ router_admin_interface }}
+iface {{ router_admin_interface }} inet static
+    address {{ router_admin_ipv4_address }}
+    netmask {{ router_admin_ipv4_netmask }}
+{% endif %}
+
+{% if router_ap_uplink_enabled | default(false) | bool %}
+auto {{ platform_network_realms['ap-uplink'].router_interface }}
+iface {{ platform_network_realms['ap-uplink'].router_interface }} inet static
+    address {{ platform_network_realms['ap-uplink'].router_ipv4_address }}
+    netmask {{ platform_network_realms['ap-uplink'].router_ipv4_netmask }}
+{% endif %}
+
+auto {{ router_dmz_interface }}
+iface {{ router_dmz_interface }} inet static
+    address {{ router_dmz_ipv4_address }}
+    netmask {{ router_dmz_ipv4_netmask }}
+
+auto {{ router_backend_interface }}
+iface {{ router_backend_interface }} inet static
+    address {{ router_backend_ipv4_address }}
+    netmask {{ router_backend_ipv4_netmask }}
+
+auto {{ router_iot_interface }}
+iface {{ router_iot_interface }} inet static
+    address {{ router_iot_ipv4_address }}
+    netmask {{ router_iot_ipv4_netmask }}
+
+auto {{ router_usr_interface }}
+iface {{ router_usr_interface }} inet static
+    address {{ router_usr_ipv4_address }}
+    netmask {{ router_usr_ipv4_netmask }}
+
+auto {{ router_ops_interface }}
+iface {{ router_ops_interface }} inet static
+    address {{ router_ops_ipv4_address }}
+    netmask {{ router_ops_ipv4_netmask }}

@@ -1,0 +1,672 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "${APP_DIR}/../.." && pwd)"
+PLAYBOOK_DIR="${APP_DIR}/ansible/playbooks"
+ROLE_PATH="${APP_DIR}/ansible/roles:${REPO_ROOT}/ansible/roles"
+BASE_INVENTORY="${REPO_ROOT}/ansible/inventory/hosts.yml"
+ANSIBLE_CONFIG_PATH="${REPO_ROOT}/ansible/ansible.cfg"
+MAGICDNS_SUFFIX="${IMMICH_MAGICDNS_SUFFIX:-${KLOKAST_MAGICDNS_SUFFIX:-example.ts.net}}"
+PRIVATE_TAILSCALE_HOSTNAME="${IMMICH_PRIVATE_TAILSCALE_HOSTNAME:-photos}"
+PRIVATE_DOMAIN="${IMMICH_PRIVATE_DOMAIN:-${PRIVATE_TAILSCALE_HOSTNAME}.${MAGICDNS_SUFFIX}}"
+RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+RESOURCE_GRANT_DEFAULT="${KLOKAST_PLATFORM_RESOURCE_GRANT:-}"
+APPROVED_COMMIT_MARKER_DEFAULT="${KLOKAST_APPROVED_COMMIT_MARKER:-${REPO_ROOT}/.klokast-approved-commit}"
+COMMON_ANSIBLE_ARGS=(-vv)
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  apps/immich/bin/immichctl preflight --active-master BOX --passive-backup BOX
+  apps/immich/bin/immichctl preflight-images --boxes BOX[,BOX...]
+  apps/immich/bin/immichctl private-ingress-identity --active-master BOX --passive-backup BOX --resources-registry PATH
+  apps/immich/bin/immichctl resource-grant-check --active-master BOX --passive-backup BOX --resource-grant PATH
+  apps/immich/bin/immichctl install --active-master BOX --passive-backup BOX (--resource-grant PATH | --resources-registry PATH)
+  apps/immich/bin/immichctl verify --active-master BOX --passive-backup BOX (--resource-grant PATH | --resources-registry PATH)
+  apps/immich/bin/immichctl backup-check --active-master BOX --passive-backup BOX
+  apps/immich/bin/immichctl promote --old-active BOX --new-active BOX --resources-registry PATH
+  apps/immich/bin/immichctl failback --active-master BOX --passive-backup BOX --resources-registry PATH
+  apps/immich/bin/immichctl remove --box BOX [--wipe-data]
+  apps/immich/bin/immichctl destroy --active-master BOX --passive-backup BOX --resources-registry PATH --wipe-data --yes [--dry-run-plan]
+
+Required install environment:
+  IMMICH_POSTGRES_PASSWORD
+  IMMICH_RESTIC_PASSWORD
+  IMMICH_RESTIC_REPOSITORY
+
+Platform resources:
+  Prefer --resource-grant from /var/lib/klokast/approved-state/apps/immich/grant.json.
+  Infra/debug fallback: pass --resources-registry, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY.
+USAGE
+}
+
+die() {
+    printf 'immichctl: %s\n' "$*" >&2
+    exit 1
+}
+
+valid_box() {
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    case "$1" in
+    *-bootstrap|*-dom0|*-router|*-bak|*-dmz|*-iot|*-usr|*-ops|*-agent|*-agt|bootstrap|dom0|router|bak|dmz|iot|usr|ops|agent|agt)
+            return 1
+            ;;
+    esac
+}
+
+require_box() {
+    local value=$1 name=$2
+    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+}
+
+render_inventory() {
+    local box=$1 out=$2
+    "${REPO_ROOT}/ansible/bin/render-node-inventory" \
+        --node "$box" \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        --output "$out"
+}
+
+inventory_args() {
+    local tmp=$1
+    shift
+    printf -- '-i\n%s\n' "$BASE_INVENTORY"
+    local box
+    for box in "$@"; do
+        render_inventory "$box" "${tmp}/${box}.yml"
+        printf -- '-i\n%s\n' "${tmp}/${box}.yml"
+    done
+}
+
+limit_for_box_roles() {
+    local roles_csv=$1
+    shift
+    local roles=()
+    IFS=',' read -r -a roles <<< "$roles_csv"
+    local first=true
+    local box role
+    for box in "$@"; do
+        for role in "${roles[@]}"; do
+            if [[ "$first" == true ]]; then
+                first=false
+            else
+                printf ','
+            fi
+            printf '%s-%s' "$box" "$role"
+        done
+    done
+}
+
+run_playbook_extra_for_roles() {
+    local roles_csv=$1 tmp=$2 playbook=$3 extra_vars=$4
+    shift 4
+    local inventory_list="${tmp}/inventory-args.txt"
+    inventory_args "$tmp" "$@" > "$inventory_list"
+    local inv=()
+    while IFS= read -r line; do
+        inv+=("$line")
+    done < "$inventory_list"
+    local limit
+    limit="$(limit_for_box_roles "$roles_csv" "$@")"
+    local extra_args=()
+    if [[ -n "$extra_vars" ]]; then
+        extra_args=(-e "$extra_vars")
+    fi
+    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
+    ANSIBLE_ROLES_PATH="$ROLE_PATH" \
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
+        ansible-playbook "${COMMON_ANSIBLE_ARGS[@]}" "${inv[@]}" "$playbook" --limit "$limit" "${extra_args[@]}"
+}
+
+run_playbook_extra() {
+    local tmp=$1 playbook=$2 extra=$3
+    shift 3
+    run_playbook_extra_for_roles "bak,dmz" "$tmp" "$playbook" "$extra" "$@"
+}
+
+parse_pair() {
+    active_master=
+    passive_backup=
+    resources_registry="$RESOURCES_REGISTRY_DEFAULT"
+    resource_grant="$RESOURCE_GRANT_DEFAULT"
+    local resources_registry_arg=false
+    local resource_grant_arg=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --active-master)
+                active_master=${2:-}; shift 2 ;;
+            --passive-backup)
+                passive_backup=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; resources_registry_arg=true; shift 2 ;;
+            --resource-grant)
+                resource_grant=${2:-}; resource_grant_arg=true; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    if [[ "$resource_grant_arg" == true && "$resources_registry_arg" != true ]]; then
+        resources_registry=
+    fi
+    if [[ "$resources_registry_arg" == true && "$resource_grant_arg" != true ]]; then
+        resource_grant=
+    fi
+    [[ -n "$active_master" ]] || die "--active-master is required"
+    [[ -n "$passive_backup" ]] || die "--passive-backup is required"
+    require_box "$active_master" "--active-master"
+    require_box "$passive_backup" "--passive-backup"
+    [[ "$active_master" != "$passive_backup" ]] || die "active master and passive backup must differ"
+}
+
+check_secret_env() {
+    local missing=()
+    local name
+    for name in \
+        IMMICH_POSTGRES_PASSWORD \
+        IMMICH_RESTIC_PASSWORD \
+        IMMICH_RESTIC_REPOSITORY; do
+        [[ -n "${!name:-}" ]] || missing+=("$name")
+    done
+    [[ ${#missing[@]} -eq 0 ]] || die "missing required environment: ${missing[*]}"
+}
+
+require_resources_registry() {
+    [[ -n "${resources_registry:-}" ]] || die "--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY"
+    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
+}
+
+require_one_resource_source() {
+    if [[ -n "${resources_registry:-}" && -n "${resource_grant:-}" ]]; then
+        die "pass only one of --resource-grant or --resources-registry"
+    fi
+    if [[ -n "${resource_grant:-}" ]]; then
+        [[ -f "$resource_grant" ]] || die "platform resource grant does not exist: $resource_grant"
+        return
+    fi
+    require_resources_registry
+}
+
+load_immich_resource_state() {
+    local resource_json
+    require_one_resource_source
+    if [[ -n "${resource_grant:-}" ]]; then
+        resource_json="$(<"$resource_grant")"
+        RESOURCE_JSON="$resource_json" python3 - "$active_master" "$passive_backup" "$APPROVED_COMMIT_MARKER_DEFAULT" <<'PY' || die "invalid Immich platform resource grant"
+import json
+import os
+import sys
+from pathlib import Path
+
+active, passive, marker_path = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.loads(os.environ["RESOURCE_JSON"])
+if data.get("schema_version") != 1:
+    raise SystemExit("grant must use schema_version: 1")
+if data.get("kind") != "platform-resource-grant":
+    raise SystemExit("grant kind must be platform-resource-grant")
+if data.get("app") != "immich":
+    raise SystemExit("grant app must be immich")
+if data.get("compiler") != "platform-resources":
+    raise SystemExit("grant compiler must be platform-resources")
+if not data.get("enabled"):
+    raise SystemExit("immich must be enabled in the approved platform grant")
+boxes = sorted(data.get("boxes") or [])
+if boxes != sorted([active, passive]):
+    raise SystemExit("immich grant boxes must match --active-master/--passive-backup")
+placement = data.get("placement") or {}
+if placement.get("active_master") != active or placement.get("passive_backup") != passive:
+    raise SystemExit("immich grant placement must match --active-master/--passive-backup")
+resources = set(data.get("resources") or [])
+missing = sorted({"backend-http-upstream"} - resources)
+if missing:
+    raise SystemExit("immich grant is missing resources: " + ", ".join(missing))
+tailnet_resources = data.get("tailnet_resources") or []
+if not any(
+    item.get("id") == "private-ingress" and item.get("tag") == "tag:immich"
+    for item in tailnet_resources
+):
+    raise SystemExit("immich grant is missing the private-ingress tailnet resource")
+marker = Path(marker_path)
+if not marker.is_file():
+    raise SystemExit("approved commit marker is missing: " + str(marker))
+approved_commit = marker.read_text(encoding="utf-8").strip()
+if not approved_commit:
+    raise SystemExit("approved commit marker is empty: " + str(marker))
+if data.get("approved_commit") != approved_commit:
+    raise SystemExit("immich grant approved_commit does not match the app workspace")
+PY
+        return
+    fi
+    resource_json="$("${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app immich \
+        show)"
+    RESOURCE_JSON="$resource_json" python3 - "$active_master" "$passive_backup" <<'PY' || die "invalid Immich platform resources registry state"
+import json
+import os
+import sys
+
+active, passive = sys.argv[1], sys.argv[2]
+data = json.loads(os.environ["RESOURCE_JSON"])
+app = (data.get("apps") or {}).get("immich") or {}
+if not app.get("enabled"):
+    raise SystemExit("immich must be enabled in the platform resources registry")
+boxes = sorted(app.get("boxes") or [])
+if boxes != sorted([active, passive]):
+    raise SystemExit("immich registry boxes must match --active-master/--passive-backup")
+resources = set(app.get("resources") or [])
+required = {"backend-http-upstream"}
+missing = sorted(required - resources)
+if missing:
+    raise SystemExit("immich registry is missing resources: " + ", ".join(missing))
+PY
+}
+
+verify_immich_app_resources() {
+    if [[ -n "${resource_grant:-}" ]]; then
+        return
+    fi
+    require_resources_registry
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app immich \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        verify
+}
+
+json_extra_vars() {
+    python3 - "$@" <<'PY'
+import json
+import sys
+
+data = {}
+for item in sys.argv[1:]:
+    key, value = item.split("=", 1)
+    if value == "true":
+        data[key] = True
+    elif value == "false":
+        data[key] = False
+    else:
+        data[key] = value
+print(json.dumps(data, separators=(",", ":")))
+PY
+}
+
+immich_common_extra() {
+    json_extra_vars \
+        "immich_active_master=${active_master}" \
+        "immich_passive_backup=${passive_backup}" \
+        "immich_magicdns_suffix=${MAGICDNS_SUFFIX}" \
+        "immich_private_domain=${PRIVATE_DOMAIN}" \
+        "immich_private_tailscale_hostname=${PRIVATE_TAILSCALE_HOSTNAME}"
+}
+
+immich_pair_extra() {
+    json_extra_vars \
+        "immich_active_master=${active_master}" \
+        "immich_passive_backup=${passive_backup}"
+}
+
+immich_promote_extra() {
+    json_extra_vars \
+        "immich_old_active=${old_active}" \
+        "immich_new_active=${new_active}" \
+        "immich_active_master=${new_active}" \
+        "immich_passive_backup=${old_active}" \
+        "immich_magicdns_suffix=${MAGICDNS_SUFFIX}" \
+        "immich_private_domain=${PRIVATE_DOMAIN}" \
+        "immich_private_tailscale_hostname=${PRIVATE_TAILSCALE_HOSTNAME}"
+}
+
+immich_remove_extra() {
+    json_extra_vars \
+        "immich_active_master=${active_master:-}" \
+        "immich_passive_backup=${passive_backup:-}" \
+        "immich_wipe_data=${wipe}" \
+        "immich_magicdns_suffix=${MAGICDNS_SUFFIX}" \
+        "immich_private_domain=${PRIVATE_DOMAIN}" \
+        "immich_private_tailscale_hostname=${PRIVATE_TAILSCALE_HOSTNAME}"
+}
+
+load_immich_destroy_registry_state() {
+    require_resources_registry
+    RESOURCE_REGISTRY="$resources_registry" python3 - "$active_master" "$passive_backup" <<'PY' || die "invalid Immich platform resources registry state"
+import os
+import sys
+from pathlib import Path
+
+import yaml
+
+active, passive = sys.argv[1], sys.argv[2]
+path = Path(os.environ["RESOURCE_REGISTRY"])
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+apps = data.get("apps") or {}
+app = apps.get("immich") or {}
+placement = app.get("placement") or {}
+if placement.get("active_master") != active or placement.get("passive_backup") != passive:
+    raise SystemExit("immich registry placement must match --active-master/--passive-backup")
+PY
+}
+
+disable_immich_registry_entry() {
+    local dry_run=$1
+    python3 - "$resources_registry" "$active_master" "$passive_backup" "$dry_run" <<'PY'
+import os
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+active, passive, dry_run = sys.argv[2], sys.argv[3], sys.argv[4] == "true"
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+apps = data.setdefault("apps", {})
+entry = apps.setdefault("immich", {})
+if not isinstance(entry, dict):
+    raise SystemExit("apps.immich must be a mapping")
+entry["enabled"] = False
+entry["placement"] = {"active_master": active, "passive_backup": passive}
+
+if dry_run:
+    print(f"immichctl: dry-run would set apps.immich.enabled=false in {path}")
+    sys.exit(0)
+
+stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+backup = path.with_name(f"{path.name}.{stamp}.bak")
+shutil.copy2(path, backup)
+tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+os.replace(tmp, path)
+print(f"immichctl: registry backup: {backup}")
+PY
+}
+
+cleanup_controller_destroy_state() {
+    local grant_dir="${KLOKAST_APPROVED_STATE_ROOT:-/var/lib/klokast/approved-state}/apps/immich"
+    local secret_root="${KLOKAST_IMMICH_CONTROLLER_SECRET_ROOT:-${HOME}/private/klokast/apps/immich}"
+    local secret_file="${secret_root}/${active_master}-${passive_backup}.env"
+
+    case "$grant_dir" in
+        /*/apps/immich) ;;
+        *) die "refusing unsafe approved-state cleanup path: $grant_dir" ;;
+    esac
+    case "$secret_file" in
+        /*/immich/*.env) ;;
+        *) die "refusing unsafe Immich secret cleanup path: $secret_file" ;;
+    esac
+
+    rm -rf -- "$grant_dir"
+    rm -f -- "$secret_file"
+    rmdir "$secret_root" 2>/dev/null || true
+}
+
+cmd_destroy() {
+    active_master=
+    passive_backup=
+    resources_registry="$RESOURCES_REGISTRY_DEFAULT"
+    wipe=false
+    yes=false
+    dry_run_plan=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --active-master)
+                active_master=${2:-}; shift 2 ;;
+            --passive-backup)
+                passive_backup=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; shift 2 ;;
+            --wipe-data)
+                wipe=true; shift ;;
+            --yes)
+                yes=true; shift ;;
+            --dry-run-plan)
+                dry_run_plan=true; shift ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ "$wipe" == true ]] || die "destroy requires --wipe-data"
+    [[ "$yes" == true ]] || die "destroy requires --yes"
+    [[ -n "$active_master" ]] || die "--active-master is required"
+    [[ -n "$passive_backup" ]] || die "--passive-backup is required"
+    require_box "$active_master" "--active-master"
+    require_box "$passive_backup" "--passive-backup"
+    [[ "$active_master" != "$passive_backup" ]] || die "active master and passive backup must differ"
+    load_immich_destroy_registry_state
+
+    if [[ "$dry_run_plan" == true ]]; then
+        printf 'immichctl: dry-run destroy plan\n'
+        printf '  active_master=%s\n' "$active_master"
+        printf '  passive_backup=%s\n' "$passive_backup"
+        printf '  registry=%s\n' "$resources_registry"
+        printf '  playbook=%s\n' "${PLAYBOOK_DIR}/90-remove.yml"
+        printf '  targets=%s-bak,%s-dmz,%s-bak,%s-dmz\n' "$active_master" "$active_master" "$passive_backup" "$passive_backup"
+        printf '  apps.immich.enabled=false\n'
+        printf '  platform-resources --registry %s --app immich apply\n' "$resources_registry"
+        printf '  cleanup approved-state=%s\n' "${KLOKAST_APPROVED_STATE_ROOT:-/var/lib/klokast/approved-state}/apps/immich"
+        printf '  cleanup controller-secret=%s/%s-%s.env\n' "${KLOKAST_IMMICH_CONTROLLER_SECRET_ROOT:-${HOME}/private/klokast/apps/immich}" "$active_master" "$passive_backup"
+        return
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/90-remove.yml" \
+        "$(immich_remove_extra)" \
+        "$active_master" "$passive_backup"
+    disable_immich_registry_entry false
+    local approved_commit
+    approved_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app immich \
+        --approved-commit "$approved_commit" \
+        apply
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app immich \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        verify
+    cleanup_controller_destroy_state
+    printf 'immichctl: Immich destroyed for active=%s passive=%s\n' "$active_master" "$passive_backup"
+}
+
+ansible_ping_box() {
+    local tmp=$1 box=$2
+    local inventory_path="${tmp}/${box}.yml"
+    render_inventory "$box" "$inventory_path"
+    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
+        ansible -i "$BASE_INVENTORY" -i "$inventory_path" "${box}-bak,${box}-dmz" -m ping -o
+}
+
+cmd_preflight() {
+    parse_pair "$@"
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    ansible_ping_box "$tmp" "$active_master"
+    ansible_ping_box "$tmp" "$passive_backup"
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+        "$(immich_pair_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_preflight_images() {
+    local boxes=
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --boxes)
+                boxes=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$boxes" ]] || die "--boxes is required"
+    IFS=',' read -r -a box_array <<< "$boxes"
+    local box
+    for box in "${box_array[@]}"; do
+        require_box "$box" "--boxes"
+    done
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/05-preflight-images.yml" "" "${box_array[@]}"
+}
+
+cmd_resource_grant_check() {
+    parse_pair "$@"
+    [[ -n "${resource_grant:-}" ]] || die "--resource-grant is required"
+    resources_registry=
+    load_immich_resource_state
+    printf 'immichctl: resource grant ok\n'
+}
+
+cmd_private_ingress_identity() {
+    parse_pair "$@"
+    [[ -z "${resource_grant:-}" ]] || die "private-ingress-identity must use --resources-registry, not --resource-grant"
+    load_immich_resource_state
+    verify_immich_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/15-private-ingress-identity.yml" \
+        "$(immich_common_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+run_install_sequence() {
+    local run_private_identity=$1
+    load_immich_resource_state
+    check_secret_env
+    verify_immich_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+        "$(immich_pair_extra)" \
+        "$active_master" "$passive_backup"
+    if [[ "$run_private_identity" == true ]]; then
+        run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/15-private-ingress-identity.yml" \
+            "$(immich_common_extra)" \
+            "$active_master" "$passive_backup"
+    fi
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/20-install.yml" \
+        "$(immich_common_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_install() {
+    parse_pair "$@"
+    if [[ -n "${resource_grant:-}" ]]; then
+        run_install_sequence false
+    else
+        run_install_sequence true
+    fi
+}
+
+cmd_failback() {
+    parse_pair "$@"
+    [[ -z "${resource_grant:-}" ]] || die "failback must use --resources-registry, not --resource-grant"
+    run_install_sequence true
+}
+
+cmd_verify() {
+    parse_pair "$@"
+    load_immich_resource_state
+    verify_immich_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/40-verify.yml" \
+        "$(immich_common_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_backup_check() {
+    parse_pair "$@"
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/50-backup-check.yml" \
+        "$(immich_pair_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_promote() {
+    old_active=
+    new_active=
+    resources_registry="$RESOURCES_REGISTRY_DEFAULT"
+    resource_grant=
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --old-active)
+                old_active=${2:-}; shift 2 ;;
+            --new-active)
+                new_active=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$old_active" && -n "$new_active" ]] || die "--old-active and --new-active are required"
+    require_box "$old_active" "--old-active"
+    require_box "$new_active" "--new-active"
+    [[ "$old_active" != "$new_active" ]] || die "old and new active boxes must differ"
+    active_master="$new_active"
+    passive_backup="$old_active"
+    load_immich_resource_state
+    verify_immich_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/60-promote.yml" \
+        "$(immich_promote_extra)" \
+        "$old_active" "$new_active"
+}
+
+cmd_remove() {
+    box=
+    wipe=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --box)
+                box=${2:-}; shift 2 ;;
+            --wipe-data)
+                wipe=true; shift ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$box" ]] || die "--box is required"
+    require_box "$box" "--box"
+    local tmp
+    tmp=$(mktemp -d)
+    trap '[[ -z "${tmp:-}" ]] || rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/90-remove.yml" \
+        "$(immich_remove_extra)" \
+        "$box"
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+cmd=$1
+shift
+
+case "$cmd" in
+    preflight) cmd_preflight "$@" ;;
+    preflight-images) cmd_preflight_images "$@" ;;
+    private-ingress-identity) cmd_private_ingress_identity "$@" ;;
+    resource-grant-check) cmd_resource_grant_check "$@" ;;
+    install) cmd_install "$@" ;;
+    verify) cmd_verify "$@" ;;
+    backup-check) cmd_backup_check "$@" ;;
+    promote) cmd_promote "$@" ;;
+    failback) cmd_failback "$@" ;;
+    remove) cmd_remove "$@" ;;
+    destroy) cmd_destroy "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage; die "unknown command: $cmd" ;;
+esac

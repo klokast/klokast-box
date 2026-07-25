@@ -1,0 +1,87 @@
+---
+- name: Promote the passive Immich site
+  hosts: all
+  gather_facts: false
+  vars:
+    immich_service_name: immich
+    immich_private_ingress_service_name: immich-private-ingress
+    immich_private_tailscale_hostname: photos
+    immich_private_tailscale_tag: tag:immich
+    immich_private_tailscale_delete_confirm: delete stale tailscale machine for immich private ingress
+  tasks:
+    - name: Assert selected old and new active boxes
+      ansible.builtin.assert:
+        that:
+          - immich_old_active is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - immich_new_active is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - immich_old_active != immich_new_active
+          - node_name in [immich_old_active, immich_new_active]
+          - node_domain_role in ['backend', 'dmz']
+
+    - name: Stop old active backend
+      ansible.builtin.service:
+        name: "{{ immich_service_name }}"
+        enabled: false
+        state: stopped
+      become: true
+      failed_when: false
+      when:
+        - node_name == immich_old_active
+        - node_domain_role == 'backend'
+
+    - name: Stop old active private ingress service
+      ansible.builtin.service:
+        name: "{{ immich_private_ingress_service_name }}"
+        enabled: false
+        state: stopped
+      become: true
+      failed_when: false
+      when:
+        - node_name == immich_old_active
+        - node_domain_role == 'dmz'
+
+    - name: Allow the stopped private ingress identity to go offline
+      ansible.builtin.pause:
+        seconds: 8
+      run_once: true
+
+    - name: Delete the stale stable private ingress identity
+      ansible.builtin.import_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_expected_hostname: "{{ immich_private_tailscale_hostname }}"
+        tailscale_device_expected_tag: "{{ immich_private_tailscale_tag }}"
+        tailscale_device_apply: true
+        tailscale_device_confirm: "{{ immich_private_tailscale_delete_confirm }}"
+        tailscale_device_expected_confirm: "{{ immich_private_tailscale_delete_confirm }}"
+        tailscale_device_fail_on_online_exact: true
+        tailscale_device_fail_on_online_exact_message: >-
+          Refusing to promote while the private Immich ingress identity
+          {{ immich_private_tailscale_hostname }} is still online.
+      run_once: true
+
+    - name: Start promoted backend
+      ansible.builtin.service:
+        name: "{{ immich_service_name }}"
+        enabled: true
+        state: started
+      become: true
+      when:
+        - node_name == immich_new_active
+        - node_domain_role == 'backend'
+
+    - name: Resolve promoted DMZ ingress image source
+      ansible.builtin.import_role:
+        name: immich-image-preflight
+      vars:
+        immich_image_preflight_keys: alpine
+      when:
+        - node_name == immich_new_active
+        - node_domain_role == 'dmz'
+
+    - name: Reconcile promoted private ingress
+      ansible.builtin.import_role:
+        name: immich-private-ingress
+      when:
+        - node_name == immich_new_active
+        - node_domain_role == 'dmz'

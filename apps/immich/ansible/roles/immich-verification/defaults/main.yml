@@ -1,0 +1,20 @@
+---
+immich_service_name: immich
+immich_pod_name: immich
+immich_http_bind_host: "{{ backend_bootstrap_host }}"
+immich_http_host_port: 2283
+immich_private_tailscale_hostname: photos
+immich_magicdns_suffix: example.ts.net
+immich_private_domain: "{{ immich_private_tailscale_hostname }}.{{ immich_magicdns_suffix }}"
+immich_private_tailscale_tag: tag:immich
+immich_library_volume: klokast-immich-library
+immich_postgres_volume: klokast-immich-postgres
+immich_valkey_volume: klokast-immich-valkey
+immich_model_cache_volume: klokast-immich-model-cache
+immich_ml_dotcache_volume: klokast-immich-ml-dotcache
+immich_ml_config_volume: klokast-immich-ml-config
+immich_backup_volume: klokast-immich-backup
+immich_restore_volume: klokast-immich-restore
+immich_private_ingress_pod_name: immich-private-ingress
+immich_private_ingress_tailscale_container_name: immich-private-ingress-tailscale
+immich_private_ingress_tailscale_state_volume: klokast-immich-ingress-ts-state

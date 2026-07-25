@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PLATFORM_RESOURCES = REPO_ROOT / "ansible" / "bin" / "platform-resources"
+PLATFORM_MAP = REPO_ROOT / "ansible" / "bin" / "platform-map"
+DEFAULT_REGISTRY = Path(
+    os.environ.get("KLOKAST_PLATFORM_RESOURCES_REGISTRY", "~/private/klokast/platform-resources.yml")
+).expanduser()
+APPROVED_STATE_ROOT = Path(os.environ.get("KLOKAST_APPROVED_STATE_ROOT", "/var/lib/klokast/approved-state"))
+SUPPORTED_APPS = {
+    "nextcloud-v2": {
+        "level": "supported",
+        "adapter": "nextcloud-v2",
+        "reason": "active/passive Podman lifecycle adapter",
+    },
+    "torrent": {
+        "level": "status-only",
+        "adapter": "",
+        "reason": "dedicated app VM has status/install/verify wrapper but no stop/remove adapter yet",
+    },
+    "household-vpn": {
+        "level": "status-only",
+        "adapter": "",
+        "reason": "dedicated app VM has status/install/verify wrapper but no stop/remove adapter yet",
+    },
+    "local-ingress": {
+        "level": "status-only",
+        "adapter": "",
+        "reason": "host-service wrapper has status/install/verify but no stop/remove adapter yet",
+    },
+}
+
+
+def die(message):
+    print(f"platform-app: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def run(argv, *, dry_run=False, stdout=None):
+    print("+ " + " ".join(str(part) for part in argv))
+    if dry_run:
+        return subprocess.CompletedProcess(argv, 0, "" if stdout == subprocess.PIPE else None, "")
+    result = subprocess.run(
+        [str(part) for part in argv],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=stdout,
+        stderr=subprocess.PIPE if stdout == subprocess.PIPE else None,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        die(f"command failed ({result.returncode}): {' '.join(str(part) for part in argv)}" + (f": {detail}" if detail else ""))
+    return result
+
+
+def require_active_controller():
+    guard = Path(os.environ.get("KLOKAST_CONTROLLER_GUARD", "/usr/local/sbin/klokast-controller-guard"))
+    if not guard.exists() or not os.access(guard, os.X_OK):
+        return
+    result = subprocess.run([guard, "--require-active"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        die(f"controller is not active: {detail}")
+
+
+def load_registry(path):
+    if not path.exists():
+        die(f"platform resources registry does not exist: {path}")
+    with path.open(encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        die(f"registry root must be a mapping: {path}")
+    apps = data.get("apps")
+    if not isinstance(apps, dict):
+        die("registry apps must be a mapping")
+    return data
+
+
+def save_registry(path, data):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = path.with_name(f"{path.name}.{stamp}.bak")
+    shutil.copy2(path, backup)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(data, handle, sort_keys=False)
+    os.replace(tmp, path)
+    print(f"platform-app: registry backup: {backup}")
+
+
+def manifest_apps():
+    return sorted(path.parent.name for path in (REPO_ROOT / "apps").glob("*/platform-resources.yml"))
+
+
+def app_support(app):
+    if app in SUPPORTED_APPS:
+        return SUPPORTED_APPS[app]
+    if app == "bootstrap-iso-debian":
+        return {"level": "unsupported", "adapter": "", "reason": "ephemeral privileged builder is not a steady app lifecycle target"}
+    return {"level": "unsupported", "adapter": "", "reason": "no lifecycle adapter implemented yet"}
+
+
+def app_entry(registry, app):
+    apps = registry.get("apps") or {}
+    if app not in apps:
+        die(f"registry has no app entry for: {app}")
+    entry = apps[app]
+    if not isinstance(entry, dict):
+        die(f"apps.{app} must be a mapping")
+    return entry
+
+
+def runtime_state(entry):
+    if not entry.get("enabled"):
+        return "stopped"
+    state = entry.get("runtime_state") or "running"
+    if state not in ("running", "stopped"):
+        die("runtime_state must be running or stopped")
+    return state
+
+
+def placement(entry):
+    value = entry.get("placement") or {}
+    if not isinstance(value, dict):
+        die("app placement must be a mapping")
+    return value
+
+
+def app_boxes(entry):
+    place = placement(entry)
+    boxes = []
+    for field in ("active_master", "passive_backup", "builder_box"):
+        value = place.get(field)
+        if value:
+            boxes.append(value)
+    for value in place.get("boxes") or []:
+        if value:
+            boxes.append(value)
+    return sorted(set(boxes))
+
+
+def active_master(entry, app):
+    value = placement(entry).get("active_master") or ""
+    if not value:
+        die(f"apps.{app}.placement.active_master is required")
+    return value
+
+
+def passive_backup(entry, app):
+    value = placement(entry).get("passive_backup") or ""
+    if not value:
+        die(f"apps.{app}.placement.passive_backup is required")
+    return value
+
+
+def grant_path(app):
+    return APPROVED_STATE_ROOT / "apps" / app / "grant.json"
+
+
+def ensure_supported(app):
+    support = app_support(app)
+    if support["level"] != "supported":
+        die(f"{app} lifecycle is {support['level']}: {support['reason']}")
+    return support
+
+
+def mutate_runtime_state(args, state):
+    require_active_controller()
+    registry = load_registry(args.registry)
+    entry = app_entry(registry, args.app)
+    ensure_supported(args.app)
+    if not entry.get("enabled"):
+        die(f"{args.app} is disabled; enable it before changing runtime_state")
+    current = runtime_state(entry)
+    if current == state:
+        print(f"platform-app: {args.app} runtime_state already {state}")
+        return
+    entry["runtime_state"] = state
+    if args.dry_run:
+        print(f"platform-app: dry-run would set apps.{args.app}.runtime_state={state}")
+        return
+    save_registry(args.registry, registry)
+
+
+def app_lifecycle_status(registry_path, app, *, refresh=False, dry_run=False):
+    registry = load_registry(registry_path)
+    entry = app_entry(registry, app)
+    support = app_support(app)
+    print(f"app={app}")
+    print(f"support={support['level']}")
+    print(f"reason={support['reason']}")
+    print(f"enabled={'true' if entry.get('enabled') else 'false'}")
+    print(f"runtime_state={runtime_state(entry)}")
+    boxes = ",".join(app_boxes(entry))
+    print(f"boxes={boxes}")
+    for key, value in sorted(placement(entry).items()):
+        print(f"placement.{key}={value}")
+    if refresh:
+        selected = boxes or ",".join(app_boxes(entry))
+        if selected:
+            run(
+                [
+                    PLATFORM_MAP,
+                    "refresh",
+                    "--boxes",
+                    selected,
+                    "--resources-registry",
+                    registry_path,
+                    "--remote-scope",
+                    "podman",
+                ],
+                dry_run=dry_run,
+            )
+            run([PLATFORM_MAP, "show"], dry_run=dry_run)
+
+
+def cmd_list(args):
+    registry = load_registry(args.registry)
+    apps = registry.get("apps") or {}
+    for app in manifest_apps():
+        entry = apps.get(app) if isinstance(apps.get(app), dict) else {}
+        support = app_support(app)
+        enabled = "true" if entry.get("enabled") else "false"
+        state = runtime_state(entry) if entry else "stopped"
+        boxes = ",".join(app_boxes(entry)) if entry else ""
+        print(f"{app}\tsupport={support['level']}\tenabled={enabled}\truntime_state={state}\tboxes={boxes}\treason={support['reason']}")
+
+
+def cmd_status(args):
+    app_lifecycle_status(args.registry, args.app, refresh=args.refresh, dry_run=args.dry_run)
+
+
+def run_nextcloud_v2(args, operation):
+    registry = load_registry(args.registry)
+    entry = app_entry(registry, "nextcloud-v2")
+    active = active_master(entry, "nextcloud-v2")
+    passive = passive_backup(entry, "nextcloud-v2")
+    ctl = REPO_ROOT / "apps" / "nextcloud-v2" / "bin" / "nextcloud-v2ctl"
+    if operation != "verify":
+        run([ctl, "infra-prepare", "--active-master", active, "--passive-backup", passive, "--resources-registry", args.registry], dry_run=args.dry_run)
+    elif not grant_path("nextcloud-v2").exists() and not args.dry_run:
+        die("nextcloud-v2 grant is missing; run platform-app apply nextcloud-v2 first")
+    state = runtime_state(entry)
+    command = "verify" if operation == "verify" else ("start" if state == "running" else "stop")
+    run([ctl, command, "--active-master", active, "--passive-backup", passive, "--resource-grant", grant_path("nextcloud-v2")], dry_run=args.dry_run)
+
+
+def cmd_apply(args):
+    require_active_controller()
+    ensure_supported(args.app)
+    if args.app == "nextcloud-v2":
+        run_nextcloud_v2(args, "apply")
+    else:
+        die(f"unsupported app: {args.app}")
+
+
+def cmd_verify(args):
+    ensure_supported(args.app)
+    run([PLATFORM_RESOURCES, "--registry", args.registry, "--app", args.app, "verify"], dry_run=args.dry_run)
+    if args.app == "nextcloud-v2":
+        run_nextcloud_v2(args, "verify")
+    else:
+        die(f"unsupported app: {args.app}")
+
+
+def cmd_set_state(args, state):
+    mutate_runtime_state(args, state)
+    if args.dry_run:
+        return
+    cmd_apply(args)
+
+
+def cmd_restart(args):
+    mutate_runtime_state(args, "stopped")
+    if args.dry_run:
+        mutate_runtime_state(args, "running")
+        return
+    cmd_apply(args)
+    mutate_runtime_state(args, "running")
+    cmd_apply(args)
+
+
+def remove_one(args, wipe):
+    require_active_controller()
+    ensure_supported(args.app)
+    registry = load_registry(args.registry)
+    entry = app_entry(registry, args.app)
+    boxes = app_boxes(entry)
+    if args.app == "nextcloud-v2":
+        ctl = REPO_ROOT / "apps" / "nextcloud-v2" / "bin" / "nextcloud-v2ctl"
+        if not grant_path("nextcloud-v2").exists() and not args.dry_run:
+            die("nextcloud-v2 grant is missing; run platform-app apply nextcloud-v2 first")
+        for box in boxes:
+            cmd = [ctl, "remove", "--box", box, "--resource-grant", grant_path("nextcloud-v2")]
+            if wipe:
+                cmd.append("--wipe-data")
+            run(cmd, dry_run=args.dry_run)
+        return
+    die(f"unsupported app: {args.app}")
+
+
+def cmd_remove(args):
+    remove_one(args, False)
+
+
+def cmd_destroy(args):
+    if not args.wipe_data:
+        die("destroy requires --wipe-data")
+    if not args.yes:
+        die("destroy requires --yes")
+    remove_one(args, True)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Manage Klokast app lifecycle on the active controller.")
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    parser.add_argument("--dry-run", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("list")
+
+    status = sub.add_parser("status")
+    status.add_argument("app")
+    status.add_argument("--refresh", action="store_true")
+
+    for name in ("apply", "verify", "start", "stop", "restart", "remove"):
+        item = sub.add_parser(name)
+        item.add_argument("app")
+
+    destroy = sub.add_parser("destroy")
+    destroy.add_argument("app")
+    destroy.add_argument("--wipe-data", action="store_true")
+    destroy.add_argument("--yes", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    args.registry = args.registry.expanduser()
+    if args.command == "list":
+        cmd_list(args)
+    elif args.command == "status":
+        cmd_status(args)
+    elif args.command == "apply":
+        cmd_apply(args)
+    elif args.command == "verify":
+        cmd_verify(args)
+    elif args.command == "start":
+        cmd_set_state(args, "running")
+    elif args.command == "stop":
+        cmd_set_state(args, "stopped")
+    elif args.command == "restart":
+        cmd_restart(args)
+    elif args.command == "remove":
+        cmd_remove(args)
+    elif args.command == "destroy":
+        cmd_destroy(args)
+    else:
+        die(f"unknown command: {args.command}")
+
+
+if __name__ == "__main__":
+    main()

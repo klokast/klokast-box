@@ -1,0 +1,105 @@
+---
+- name: Promote the passive Nextcloud site
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  vars:
+    nextcloud_cloudflare_tunnel_enabled: false
+    nextcloud_private_ingress_service_name: nextcloud-private-ingress
+    nextcloud_private_ingress_state_root: /var/lib/klokast/nextcloud-private-ingress
+    nextcloud_private_tailscale_hostname: next
+    nextcloud_private_tailscale_tag: tag:nextcloud
+    nextcloud_private_tailscale_delete_confirm: delete stale tailscale machine for nextcloud private ingress
+  tasks:
+    - name: Stop the old active backend when reachable
+      ansible.builtin.service:
+        name: nextcloud
+        state: stopped
+      become: true
+      when:
+        - node_name == nextcloud_old_active
+        - node_domain_role == 'backend'
+      failed_when: false
+
+    - name: Stop the old active tunnel when reachable
+      ansible.builtin.service:
+        name: nextcloud-cloudflared
+        state: stopped
+      become: true
+      when:
+        - node_name == nextcloud_old_active
+        - node_domain_role == 'dmz'
+        - nextcloud_cloudflare_tunnel_enabled | bool
+      failed_when: false
+
+    - name: Stop the old active private ingress when reachable
+      ansible.builtin.service:
+        name: "{{ nextcloud_private_ingress_service_name }}"
+        enabled: false
+        state: stopped
+      become: true
+      when:
+        - node_name == nextcloud_old_active
+        - node_domain_role == 'dmz'
+      failed_when: false
+
+    - name: Clear old active private ingress state
+      ansible.builtin.file:
+        path: "{{ nextcloud_private_ingress_state_root }}"
+        state: absent
+      become: true
+      when:
+        - node_name == nextcloud_old_active
+        - node_domain_role == 'dmz'
+
+    - name: Allow the stopped private ingress identity to go offline
+      ansible.builtin.pause:
+        seconds: 8
+      run_once: true
+
+    - name: Delete the stale stable private ingress identity
+      ansible.builtin.import_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_expected_hostname: "{{ nextcloud_private_tailscale_hostname }}"
+        tailscale_device_expected_tag: "{{ nextcloud_private_tailscale_tag }}"
+        tailscale_device_apply: true
+        tailscale_device_confirm: "{{ nextcloud_private_tailscale_delete_confirm }}"
+        tailscale_device_expected_confirm: "{{ nextcloud_private_tailscale_delete_confirm }}"
+        tailscale_device_fail_on_online_exact: true
+        tailscale_device_fail_on_online_exact_message: >-
+          Refusing to promote while the private Nextcloud ingress identity
+          {{ nextcloud_private_tailscale_hostname }} is still online.
+      run_once: true
+
+    - name: Start the promoted backend
+      ansible.builtin.service:
+        name: nextcloud
+        enabled: true
+        state: started
+      become: true
+      when:
+        - node_name == nextcloud_new_active
+        - node_domain_role == 'backend'
+
+    - name: Start the promoted private ingress
+      ansible.builtin.service:
+        name: "{{ nextcloud_private_ingress_service_name }}"
+        enabled: true
+        state: started
+      become: true
+      when:
+        - node_name == nextcloud_new_active
+        - node_domain_role == 'dmz'
+
+    - name: Start the promoted tunnel
+      ansible.builtin.service:
+        name: nextcloud-cloudflared
+        enabled: true
+        state: started
+      become: true
+      when:
+        - node_name == nextcloud_new_active
+        - node_domain_role == 'dmz'
+        - nextcloud_cloudflare_tunnel_enabled | bool

@@ -1,0 +1,62 @@
+- the ops server needs `curl` and `jq` to be installed, so it can handle the tailscale OAuth key wrappers. (see `tailscale/README.md`)
+
+- run the commands in the Firewall section of the runbook
+- make the runbooks read only for the agent
+- use the ops server as an exit point for the Klokast Platform.
+- setup a cron for codex himself to :
+	- review this file and his configuration from time to time
+	- update ubuntu, packages and npm packages
+- `terraform` to spin up the Hetzner machine,
+- CLI commands:
+	- as brew package
+	- interactive mode: `kk ops up` without directives.
+	- or with default parameters:
+		- `~/.klokast/ops.config`
+		- `~/.klokast/klokast.config`
+	- `kk ops up`
+		- notification of how much will cost
+		- `--provider hetzner --login name@example.com`
+		- `--cpu xxxxx` to bypass the defaults from.
+		- `--ui mosh`
+		- `--help`
+		- `-vvv` for verbosity
+		- `--name sam` for name other than `codex`
+		- `--memory "klokast/one"` for cross-repos permanent memory
+		- `--stack python`: the name of a tutorial or a stack on top of codex
+	- `kk node up`
+		- `-n nebula` or `--network nebula` or `-n tailscale`
+		- choosing hostname, users, etc
+	- `kk learn up`
+		- interactively or with config file
+			- remind the user if can point to a config file
+			- summarize what's in the config file and ask to confirm the config:
+				- orga name, repo name, presence of local folder, cost of hetzner instance,
+			- remind must kill the instance to stop costs but then will loose codex contex
+			- next feature: save backup of the context files locally
+				- so can reupload them if stops the instance during one week, and save cost.
+		- setup a github organization, a repo, an ops server in Hetzner, creates the config file for next boot
+		- include a dev stack
+			- e.g. python, mosh, tmux, etc.
+			- .md file to tell codex he can ask to install packages (e.g. go), should not re-invent crypto primitives, etc.
+			- some soul.md
+			- focus to teach
+				- basics of codex CLI
+				- basics of python, compiling, linux, etc
+				- modern devops: gitlab, deploy server, static scanning, etc,
+				- git basics: branches,
+	- `kk buy`
+		- `--item <item_id>` : the Hetzner subscription, hardware, etc.
+		- `-y`
+		- `--vendor <vendor_id>`
+		- `--to <destination.md>`
+		- `--account <money_info.md>`: should be stored as Apple keychain, unlock with MFA
+- codex-archive cli command to  "Archive old codex sessions" (see below)
+	- then tell codex about it, so he can run it when we ask him.
+	- to unclutter the results of `codex resume --all`
+	- the command could also list the archived sessions when we ask.
+- Website:
+	- compare cloud offers: Hetzner, AWS, etc.
+	- open account in one click by any provider including credit card, etc
+		- with clear instructions to learn how not get scammed, e.g. before you click, check the address, hover over, check the s of https, log out from the bank in that other tab, setup MFA, etc
+		- take a 3 EUR one-off commission per registration
+		- offer a coupon linked to account for the first month for free.

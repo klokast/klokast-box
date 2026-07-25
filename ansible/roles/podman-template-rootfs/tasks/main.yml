@@ -1,0 +1,407 @@
+#
+# Summary:
+# - Builds a sealed Alpine VIRT Podman template disk directly on dom0 for
+#   Xen PVH guests. Per-VM identity, network, and Tailscale state are left for
+#   clone personalization.
+#
+---
+- name: Assert the Podman template LV path is supported
+  ansible.builtin.assert:
+    that:
+      - podman_template_lv_path is match('^/dev/[^/]+/[^/]+$')
+    fail_msg: >-
+      Podman template LV path {{ podman_template_lv_path | default('undefined') }}
+      is not a supported /dev/<vg>/<lv> path.
+
+- name: Derive Podman template LV and mapper names
+  ansible.builtin.set_fact:
+    podman_template_vg_name: "{{ podman_template_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1') }}"
+    podman_template_lv_name: "{{ podman_template_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\2') }}"
+    podman_template_mapper_name: "{{ podman_template_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}"
+    podman_template_boot_mapper_path: "/dev/mapper/{{ podman_template_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}1"
+    podman_template_root_mapper_path: "/dev/mapper/{{ podman_template_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}3"
+
+- name: Check whether the Podman template LV already exists
+  ansible.builtin.stat:
+    path: "{{ podman_template_lv_path }}"
+  register: podman_template_lv_stat
+
+- name: Remove the existing Podman template LV when an explicit rebuild is requested
+  community.general.lvol:
+    vg: "{{ podman_template_vg_name }}"
+    lv: "{{ podman_template_lv_name }}"
+    state: absent
+    force: true
+  when:
+    - podman_template_rebuild | bool
+    - podman_template_lv_stat.stat.exists | default(false)
+
+- name: Ensure Podman template build tooling is installed on dom0
+  community.general.apk:
+    name:
+      - e2fsprogs
+      - kpartx
+      - sfdisk
+    state: present
+
+- name: Ensure the Podman template LV exists
+  community.general.lvol:
+    vg: "{{ podman_template_vg_name }}"
+    lv: "{{ podman_template_lv_name }}"
+    size: "{{ podman_template_lv_size }}"
+    state: present
+  register: podman_template_lv_create
+
+- name: Ensure the Podman template root mount path exists
+  ansible.builtin.file:
+    path: "{{ podman_template_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Inspect the current Podman template root filesystem marker
+  block:
+    - name: Remove any stale Podman template partition mappings before inspection
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_template_lv_path }}"
+      register: podman_template_probe_kpartx_cleanup
+      failed_when: false
+      changed_when: podman_template_probe_kpartx_cleanup.rc == 0
+
+    - name: Create Podman template partition mappings for inspection
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ podman_template_lv_path }}"
+      register: podman_template_probe_kpartx_add
+      failed_when: false
+      changed_when: podman_template_probe_kpartx_add.rc == 0
+
+    - name: Mount the Podman template root filesystem when available
+      ansible.builtin.command: "/bin/mount {{ podman_template_root_mapper_path }} {{ podman_template_mount_path }}"
+      register: podman_template_probe_mount
+      failed_when: false
+      changed_when: false
+
+    - name: Check the Podman template build marker when mountable
+      ansible.builtin.stat:
+        path: "{{ podman_template_mount_path }}/etc/klokast-podman-template-built"
+      register: podman_template_probe_marker
+      when: podman_template_probe_mount.rc == 0
+
+  always:
+    - name: Unmount the inspected Podman template root filesystem when mounted
+      ansible.builtin.command: "/bin/umount {{ podman_template_mount_path }}"
+      register: podman_template_probe_unmount
+      failed_when: false
+      changed_when: podman_template_probe_unmount.rc == 0
+
+    - name: Remove inspected Podman template partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_template_lv_path }}"
+      register: podman_template_probe_kpartx_remove
+      failed_when: false
+      changed_when: podman_template_probe_kpartx_remove.rc == 0
+
+- name: Decide whether the Podman template disk must be built
+  ansible.builtin.set_fact:
+    podman_template_needs_build: >-
+      {{
+        (podman_template_lv_create.changed | default(false))
+        or (podman_template_rebuild | bool)
+        or (not (podman_template_probe_marker.stat.exists | default(false)))
+      }}
+
+- name: Build the Podman template Alpine disk
+  when: podman_template_needs_build | bool
+  block:
+    - name: Remove any stale Podman template partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_template_lv_path }}"
+      register: podman_template_kpartx_cleanup
+      failed_when: false
+      changed_when: podman_template_kpartx_cleanup.rc == 0
+
+    - name: Partition the Podman template LV with boot and root partitions
+      ansible.builtin.shell: |
+        set -eu
+        printf '%s\n' \
+          'label: dos' \
+          ',{{ podman_template_boot_size }},83,*' \
+          ',{{ podman_template_reserved_size }},83' \
+          ',,83' |
+          /sbin/sfdisk --wipe always --wipe-partitions always {{ podman_template_lv_path | quote }}
+      args:
+        executable: /bin/sh
+      changed_when: true
+
+    - name: Create Podman template partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ podman_template_lv_path }}"
+      changed_when: true
+
+    - name: Wait for Podman template mapped partitions
+      ansible.builtin.wait_for:
+        path: "{{ item }}"
+        timeout: 15
+      loop:
+        - "{{ podman_template_boot_mapper_path }}"
+        - "{{ podman_template_root_mapper_path }}"
+
+    - name: Format the Podman template boot partition
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ podman_template_boot_mapper_path }}"
+        force: true
+
+    - name: Format the Podman template root partition
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ podman_template_root_mapper_path }}"
+        force: true
+
+    - name: Ensure the Podman template root mount path exists
+      ansible.builtin.file:
+        path: "{{ podman_template_mount_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Mount and populate the Podman template root filesystem
+      block:
+        - name: Mount the Podman template root filesystem
+          ansible.builtin.command: "/bin/mount {{ podman_template_root_mapper_path }} {{ podman_template_mount_path }}"
+
+        - name: Ensure the Podman template boot mount path exists
+          ansible.builtin.file:
+            path: "{{ podman_template_mount_path }}/boot"
+            state: directory
+            mode: "0755"
+
+        - name: Mount the Podman template boot filesystem
+          ansible.builtin.command: "/bin/mount {{ podman_template_boot_mapper_path }} {{ podman_template_mount_path }}/boot"
+
+        - name: Seed APK key directory in the Podman template root
+          ansible.builtin.file:
+            path: "{{ podman_template_mount_path }}/etc/apk/keys"
+            state: directory
+            mode: "0755"
+
+        - name: Copy APK signing keys into the Podman template root
+          ansible.builtin.shell: "cp -a /etc/apk/keys/. {{ podman_template_mount_path | quote }}/etc/apk/keys/"
+          args:
+            executable: /bin/sh
+          changed_when: true
+
+        - name: Configure Podman template APK repositories before package installation
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/apk/repositories"
+            mode: "0644"
+            content: |
+              {% for repo in podman_template_install_repositories %}
+              {{ repo }}
+              {% endfor %}
+
+        - name: Install Alpine Podman template packages into the target root
+          ansible.builtin.command: >-
+            timeout 900
+            /sbin/apk
+            --root {{ podman_template_mount_path }}
+            --initdb
+            --repositories-file {{ podman_template_mount_path }}/etc/apk/repositories
+            --keys-dir {{ podman_template_mount_path }}/etc/apk/keys
+            add
+            --no-cache
+            {{ podman_template_packages | join(' ') }}
+          changed_when: true
+
+        - name: Configure Podman template APK repositories for first boot
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/apk/repositories"
+            mode: "0644"
+            content: |
+              {% for repo in podman_template_repositories %}
+              {{ repo }}
+              {% endfor %}
+
+        - name: Seed Podman template PVH boot artifacts from the Alpine VIRT ISO
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ item.src }}"
+            dest: "{{ podman_template_mount_path }}/boot/{{ item.dest }}"
+            mode: "0644"
+          loop:
+            - src: "{{ xen_shared_installer_kernel_path }}"
+              dest: vmlinuz-virt
+            - src: "{{ xen_shared_installer_initramfs_path }}"
+              dest: initramfs-virt
+
+        - name: Ensure the Podman template modloop mount path exists
+          ansible.builtin.file:
+            path: "{{ podman_template_modloop_mount_path }}"
+            state: directory
+            mode: "0755"
+
+        - name: Seed Podman template kernel modules from the Alpine VIRT modloop
+          block:
+            - name: Unmount any stale Podman template modloop mount
+              ansible.builtin.command: "/bin/umount {{ podman_template_modloop_mount_path }}"
+              register: podman_template_modloop_stale_umount
+              failed_when: false
+              changed_when: podman_template_modloop_stale_umount.rc == 0
+
+            - name: Mount the Alpine VIRT modloop for the Podman template
+              ansible.builtin.command: "/bin/mount -o loop,ro {{ podman_template_modloop_path }} {{ podman_template_modloop_mount_path }}"
+              changed_when: true
+
+            - name: Copy Alpine VIRT kernel modules into the Podman template root
+              ansible.builtin.shell: |
+                set -eu
+                mkdir -p {{ podman_template_mount_path | quote }}/lib/modules {{ podman_template_mount_path | quote }}/lib/firmware
+                for module_dir in {{ podman_template_modloop_mount_path | quote }}/modules/*; do
+                    [ -d "$module_dir" ] || continue
+                    [ "$(basename "$module_dir")" != firmware ] || continue
+                    cp -a "$module_dir" {{ podman_template_mount_path | quote }}/lib/modules/
+                done
+                if [ -d {{ podman_template_modloop_mount_path | quote }}/modules/firmware ]; then
+                    cp -a {{ podman_template_modloop_mount_path | quote }}/modules/firmware/. {{ podman_template_mount_path | quote }}/lib/firmware/
+                fi
+              args:
+                executable: /bin/sh
+              changed_when: true
+
+          always:
+            - name: Unmount the Alpine VIRT modloop if mounted
+              ansible.builtin.command: "/bin/umount {{ podman_template_modloop_mount_path }}"
+              register: podman_template_modloop_umount
+              failed_when: false
+              changed_when: podman_template_modloop_umount.rc == 0
+
+        - name: Ensure the Podman template hostname is generic
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/hostname"
+            content: "{{ podman_template_hostname }}\n"
+            mode: "0644"
+
+        - name: Ensure the Podman template hosts file is generic
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/hosts"
+            mode: "0644"
+            content: |
+              127.0.0.1 localhost localhost.localdomain
+              ::1 localhost localhost.localdomain
+              127.0.1.1 {{ podman_template_hostname }}
+
+        - name: Seed loopback-only networking in the sealed Podman template
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/network/interfaces"
+            mode: "0644"
+            content: |
+              auto lo
+              iface lo inet loopback
+
+        - name: Seed Podman template filesystem table
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/fstab"
+            mode: "0644"
+            content: |
+              /dev/xvda3 / ext4 defaults 0 1
+              /dev/xvda1 /boot ext4 defaults 0 2
+
+        - name: Seed Podman template DNS resolver
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/resolv.conf"
+            mode: "0644"
+            content: |
+              {% for resolver in podman_template_dns_resolvers %}
+              nameserver {{ resolver }}
+              {% endfor %}
+
+        - name: Ensure Podman template OpenSSH policy directory exists
+          ansible.builtin.file:
+            path: "{{ podman_template_mount_path }}/etc/ssh/sshd_config.d"
+            state: directory
+            mode: "0755"
+
+        - name: Seed key-only SSH policy in the Podman template
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf"
+            mode: "0644"
+            content: |
+              PasswordAuthentication no
+              KbdInteractiveAuthentication no
+              PubkeyAuthentication yes
+              PermitRootLogin prohibit-password
+
+        - name: Ensure Podman template OpenRC default runlevel directory exists
+          ansible.builtin.file:
+            path: "{{ podman_template_mount_path }}/etc/runlevels/default"
+            state: directory
+            mode: "0755"
+
+        - name: Enable first-contact Podman template services
+          ansible.builtin.file:
+            src: "/etc/init.d/{{ item }}"
+            dest: "{{ podman_template_mount_path }}/etc/runlevels/default/{{ item }}"
+            state: link
+            force: true
+            follow: false
+          loop: "{{ podman_template_services }}"
+
+        - name: Remove machine identity from the sealed Podman template
+          ansible.builtin.shell: |
+            set -eu
+            rm -f {{ podman_template_mount_path | quote }}/etc/machine-id
+            rm -f {{ podman_template_mount_path | quote }}/var/lib/dbus/machine-id
+            rm -rf {{ podman_template_mount_path | quote }}/var/lib/tailscale
+            mkdir -p {{ podman_template_mount_path | quote }}/var/lib/tailscale
+            rm -f {{ podman_template_mount_path | quote }}/etc/ssh/ssh_host_*
+          args:
+            executable: /bin/sh
+          changed_when: true
+
+        - name: Ensure Podman template boot artifacts were installed
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ podman_template_mount_path }}/boot/vmlinuz-virt"
+            - "{{ podman_template_mount_path }}/boot/initramfs-virt"
+          register: podman_template_boot_files
+
+        - name: Assert Podman template boot artifacts exist in the installed root
+          ansible.builtin.assert:
+            that:
+              - (podman_template_boot_files.results | map(attribute='stat.exists') | list | min)
+            fail_msg: >-
+              Alpine package installation did not create the expected Podman
+              template linux-virt boot artifacts.
+
+        - name: Mark the Podman template root filesystem as built
+          ansible.builtin.copy:
+            dest: "{{ podman_template_mount_path }}/etc/klokast-podman-template-built"
+            mode: "0644"
+            content: |
+              hostname={{ podman_template_hostname }}
+              lv={{ podman_template_lv_path }}
+
+      always:
+        - name: Unmount the Podman template boot filesystem if mounted
+          ansible.builtin.command: "/bin/umount {{ podman_template_mount_path }}/boot"
+          register: podman_template_umount_boot
+          failed_when: false
+          changed_when: podman_template_umount_boot.rc == 0
+
+        - name: Unmount the Podman template root filesystem if mounted
+          ansible.builtin.command: "/bin/umount {{ podman_template_mount_path }}"
+          register: podman_template_umount_root
+          failed_when: false
+          changed_when: podman_template_umount_root.rc == 0
+
+  always:
+    - name: Remove Podman template partition mappings after rootfs build
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_template_lv_path }}"
+      register: podman_template_kpartx_remove
+      failed_when: false
+      changed_when: podman_template_kpartx_remove.rc == 0
+
+- name: Verify the Podman template LV exists
+  ansible.builtin.stat:
+    path: "{{ podman_template_lv_path }}"
+  register: podman_template_lv_verify
+
+- name: Assert the Podman template LV is ready
+  ansible.builtin.assert:
+    that:
+      - podman_template_lv_verify.stat.exists | default(false)
+    fail_msg: "Podman template LV {{ podman_template_lv_path }} does not exist."

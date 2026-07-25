@@ -1,0 +1,58 @@
+#
+# Summary:
+# - Defines the container image, workspace paths, upload settings, and package/tool defaults for the Debian live bootstrap builder workload.
+#
+---
+bootstrap_live_builder_service_name: bootstrap-live-builder
+bootstrap_live_builder_container_name: bootstrap-live-builder
+bootstrap_live_builder_image: localhost/bootstrap-live-builder:trixie
+bootstrap_live_builder_base_image: public.ecr.aws/docker/library/debian:trixie-slim
+bootstrap_live_builder_service_user: "{{ vm_admin_user_name }}"
+
+bootstrap_live_builder_service_root: /etc/klokast/bootstrap-live-builder
+bootstrap_live_builder_image_root: "{{ bootstrap_live_builder_service_root }}/image"
+
+bootstrap_live_builder_workspace_root: /srv/bootstrap-live-builder
+bootstrap_live_builder_repo_checkout_path: "{{ bootstrap_live_builder_workspace_root }}/src/klokast"
+bootstrap_live_builder_output_root: "{{ bootstrap_live_builder_workspace_root }}/output"
+bootstrap_live_builder_home_root: "{{ bootstrap_live_builder_workspace_root }}/home"
+bootstrap_live_builder_work_root: "{{ bootstrap_live_builder_workspace_root }}/work"
+bootstrap_live_builder_tailscale_state_root: "{{ bootstrap_live_builder_workspace_root }}/tailscale"
+bootstrap_live_builder_ssh_root: "{{ bootstrap_live_builder_home_root }}/.ssh"
+bootstrap_live_builder_oob_host: oob
+bootstrap_live_builder_oob_admin_host: "{{ bootstrap_live_builder_oob_host }}"
+bootstrap_live_builder_oob_user: root
+bootstrap_live_builder_oob_dest_dir: /data
+bootstrap_live_builder_oob_ssh_key_path: "{{ bootstrap_live_builder_ssh_root }}/oob_upload_ed25519"
+bootstrap_live_builder_oob_known_hosts_path: "{{ bootstrap_live_builder_ssh_root }}/known_hosts"
+bootstrap_live_builder_oob_ssh_key_comment: "bootstrap-live-builder@{{ node_hostname }}"
+bootstrap_live_builder_verify_oob_upload: true
+bootstrap_live_builder_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-back
+bootstrap_live_builder_tailscale_hostname: "{{ node_hostname }}-bootstrap-live-builder"
+bootstrap_live_builder_tailscale_advertise_tags: tag:back
+bootstrap_live_builder_tailscale_expected_tag: tag:back
+bootstrap_live_builder_tailscale_debian_release: trixie
+bootstrap_live_builder_tailscale_accept_dns: false
+bootstrap_live_builder_container_dns_servers:
+  - 1.1.1.1
+  - 9.9.9.9
+
+bootstrap_live_builder_host_packages:
+  - bash
+  - git
+  - openssh-client-default
+  - rsync
+
+bootstrap_live_builder_packages:
+  - bash
+  - ca-certificates
+  - curl
+  - git
+  - golang-go
+  - openssh-client
+  - python3
+  - live-build
+  - rsync
+  - systemd
+  - tailscale
+  - xorriso

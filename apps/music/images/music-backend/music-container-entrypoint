@@ -1,0 +1,169 @@
+#!/bin/sh
+set -eu
+
+mode="${1:-}"
+[ -n "$mode" ] || {
+    echo "usage: music-container-entrypoint MODE" >&2
+    exit 2
+}
+
+runtime_root=/music/run
+snap_fifo="$runtime_root/snapfifo"
+
+ensure_fifo() {
+    mkdir -p "$runtime_root"
+    chown music:music "$runtime_root"
+    if [ -e "$snap_fifo" ] && [ ! -p "$snap_fifo" ]; then
+        rm -f "$snap_fifo"
+    fi
+    if [ ! -p "$snap_fifo" ]; then
+        mkfifo "$snap_fifo"
+    fi
+    chown music:music "$snap_fifo"
+    chmod 0600 "$snap_fifo"
+}
+
+wait_for_tcp() {
+    host="$1"
+    port="$2"
+    label="$3"
+    for _ in $(seq 1 60); do
+        if nc -z "$host" "$port" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "timeout waiting for $label at $host:$port" >&2
+    exit 1
+}
+
+tailscale_status_ok() {
+    tailscale --socket "$ts_socket" status --json 2>/dev/null | jq -e \
+        --arg hostname "$ts_hostname" \
+        --arg tag "$ts_tag" \
+        '.BackendState == "Running"
+         and .Self.HostName == $hostname
+         and (.Self.Online == true)
+         and ((.Self.Tags // []) | index($tag))
+         and ((((.Health // []) | join(" ")) | contains("logged out")) | not)
+         and ((((.Health // []) | join(" ")) | contains("invalid key")) | not)' >/dev/null
+}
+
+tailscale_ssh_enabled() {
+    tailscale --socket "$ts_socket" debug prefs 2>/dev/null \
+        | jq -e '.RunSSH == true' >/dev/null
+}
+
+run_tailscale_identity() {
+    ts_hostname="${MUSIC_TAILSCALE_HOSTNAME:?MUSIC_TAILSCALE_HOSTNAME is required}"
+    ts_tag="${MUSIC_TAILSCALE_TAG:?MUSIC_TAILSCALE_TAG is required}"
+    ts_authkey_file="${MUSIC_TAILSCALE_AUTHKEY_FILE:-/run/klokast-secrets/tailscale-authkey}"
+    ts_state_dir="${TS_STATE_DIR:-/var/lib/tailscale}"
+    ts_socket_dir="${TS_SOCKET_DIR:-/tmp/tailscale}"
+    ts_socket="${TS_SOCKET:-$ts_socket_dir/tailscaled.sock}"
+    ts_mode="$1"
+
+    mkdir -p "$ts_state_dir" "$ts_socket_dir"
+    /usr/sbin/tailscaled \
+        --statedir="$ts_state_dir" \
+        --socket="$ts_socket" \
+        --tun=userspace-networking \
+        --port=0 &
+    ts_pid="$!"
+    trap 'kill "$ts_pid" >/dev/null 2>&1 || true; wait "$ts_pid" 2>/dev/null || true' INT TERM
+
+    for _ in $(seq 1 30); do
+        [ -S "$ts_socket" ] && break
+        sleep 1
+    done
+    [ -S "$ts_socket" ] || {
+        echo "Tailscale socket is not ready: $ts_socket" >&2
+        exit 1
+    }
+
+    identity_ok=0
+    for _ in $(seq 1 30); do
+        if tailscale_status_ok; then
+            identity_ok=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$identity_ok" -ne 1 ]; then
+        [ -s "$ts_authkey_file" ] || {
+            echo "missing Tailscale auth key file: $ts_authkey_file" >&2
+            exit 1
+        }
+        authkey="$(sed -n '1p' "$ts_authkey_file")"
+        set -- up \
+            --auth-key="$authkey" \
+            --hostname="$ts_hostname" \
+            --advertise-tags="$ts_tag" \
+            --accept-dns=false \
+            --force-reauth \
+            --timeout=30s
+        if [ "$ts_mode" = "ssh" ]; then
+            set -- "$@" --ssh
+        fi
+        tailscale --socket "$ts_socket" "$@"
+    else
+        tailscale --socket "$ts_socket" set --hostname="$ts_hostname" --accept-dns=false
+        if [ "$ts_mode" = "ssh" ] && ! tailscale_ssh_enabled; then
+            tailscale --socket "$ts_socket" up \
+                --hostname="$ts_hostname" \
+                --advertise-tags="$ts_tag" \
+                --accept-dns=false \
+                --ssh \
+                --timeout=30s
+        fi
+    fi
+
+    if [ "$ts_mode" = "serve" ]; then
+        tailscale --socket "$ts_socket" serve reset >/dev/null 2>&1 || true
+        tailscale --socket "$ts_socket" serve --bg --yes --https=443 \
+            http://127.0.0.1:18082 >/dev/null
+    fi
+
+    wait "$ts_pid"
+}
+
+case "$mode" in
+    snapserver)
+        ensure_fifo
+        exec su-exec music /usr/bin/snapserver -c /etc/klokast/music/snapserver.conf
+        ;;
+    mpd)
+        ensure_fifo
+        mkdir -p /music/library /music/playlists /music/mpd
+        chown music:music /music/playlists /music/mpd
+        exec su-exec music /usr/bin/mpd --no-daemon /etc/klokast/music/mpd.conf
+        ;;
+    mympd)
+        wait_for_tcp 127.0.0.1 6600 MPD
+        mkdir -p /music/mympd/state /music/mympd/cache
+        chown -R music:music /music/mympd
+        export MPD_HOST=127.0.0.1
+        export MPD_PORT=6600
+        export MYMPD_HTTP=true
+        export MYMPD_HTTP_HOST="${MYMPD_HTTP_HOST:-127.0.0.1}"
+        export MYMPD_HTTP_PORT=18082
+        export MYMPD_SSL=false
+        export MYMPD_LOGLEVEL=4
+        exec su-exec music /usr/bin/mympd -w /music/mympd/state -a /music/mympd/cache
+        ;;
+    ui-ingress)
+        wait_for_tcp 127.0.0.1 18082 myMPD
+        run_tailscale_identity serve
+        ;;
+    upload-ingress)
+        wait_for_tcp 127.0.0.1 6600 MPD
+        mkdir -p /music/library
+        chown music:music /music/library
+        run_tailscale_identity ssh
+        ;;
+    *)
+        echo "unknown music container mode: $mode" >&2
+        exit 2
+        ;;
+esac

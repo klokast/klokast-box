@@ -1,0 +1,8 @@
+---
+static_site_images:
+  static_web_server:
+    repository: ghcr.io/static-web-server/static-web-server
+    tag: 2-alpine
+    index_digest: sha256:8aa4c9a140a76f18d154656503dbd856effd9d7cd75e6092348d522e73b3ca28
+    amd64_digest: sha256:1a5b9e155d6921968e9bfe5107774a57e3bedf00436675c7d95298c906a057e2
+    pull_ref: ghcr.io/static-web-server/static-web-server@sha256:1a5b9e155d6921968e9bfe5107774a57e3bedf00436675c7d95298c906a057e2

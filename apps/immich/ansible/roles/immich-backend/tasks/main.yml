@@ -1,0 +1,374 @@
+---
+- name: Assert the backend role targets a backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'backend'
+      - node_name in [immich_active_master, immich_passive_backup]
+    fail_msg: >-
+      immich-backend must target one selected backend VM.
+
+- name: Select the backend site mode
+  ansible.builtin.set_fact:
+    immich_site_mode: "{{ 'active' if node_name == immich_active_master else 'passive' }}"
+    immich_postgres_password: "{{ lookup('env', 'IMMICH_POSTGRES_PASSWORD') }}"
+    immich_restic_password: "{{ lookup('env', 'IMMICH_RESTIC_PASSWORD') }}"
+    immich_restic_repository: "{{ lookup('env', 'IMMICH_RESTIC_REPOSITORY') }}"
+  no_log: true
+
+- name: Assert required backend secrets are available
+  ansible.builtin.assert:
+    that:
+      - immich_postgres_password | length > 0
+      - immich_restic_password | length > 0
+      - immich_restic_repository | length > 0
+    fail_msg: >-
+      Export IMMICH_POSTGRES_PASSWORD, IMMICH_RESTIC_PASSWORD, and
+      IMMICH_RESTIC_REPOSITORY before install.
+  no_log: true
+
+- name: Select the default Restic SFTP placement
+  ansible.builtin.set_fact:
+    immich_active_backend_host: "{{ immich_active_master }}-bak"
+    immich_passive_backend_host: "{{ immich_passive_backup }}-bak"
+    immich_active_backend_admin_user: "{{ hostvars[immich_active_master ~ '-bak'].vm_admin_user_name | default(vm_admin_user_name) }}"
+    immich_passive_backend_admin_user: "{{ hostvars[immich_passive_backup ~ '-bak'].vm_admin_user_name | default(vm_admin_user_name) }}"
+    immich_active_backend_dns: "{{ immich_active_master }}-bak.{{ immich_magicdns_suffix }}"
+    immich_passive_backend_dns: "{{ immich_passive_backup }}-bak.{{ immich_magicdns_suffix }}"
+    immich_restic_sftp_repository_path: "{{ immich_restic_sftp_repository_root }}/{{ immich_active_master }}"
+
+- name: Decide whether to manage the default Restic SFTP target
+  ansible.builtin.set_fact:
+    immich_default_restic_repository: >-
+      sftp:{{ immich_passive_backend_admin_user }}@{{ immich_passive_backend_dns }}:{{ immich_restic_sftp_repository_path }}
+    immich_manage_default_restic_sftp: >-
+      {{ immich_restic_repository == ('sftp:' ~ immich_passive_backend_admin_user ~ '@' ~ immich_passive_backend_dns ~ ':' ~ immich_restic_sftp_repository_path) }}
+
+- name: Read the selected image source map
+  ansible.builtin.slurp:
+    src: "{{ immich_service_root }}/image-sources.json"
+  become: true
+  register: immich_backend_image_sources_slurp
+
+- name: Publish backend image source facts
+  ansible.builtin.set_fact:
+    immich_image_sources: "{{ immich_backend_image_sources_slurp.content | b64decode | from_json }}"
+
+- name: Ensure backend directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(vm_admin_user_name) }}"
+    group: "{{ item.group | default('wheel') }}"
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - path: "{{ immich_service_root }}"
+      mode: "0750"
+    - path: "{{ immich_env_root }}"
+      mode: "0750"
+    - path: "{{ immich_script_root }}"
+      mode: "0750"
+
+- name: Ensure active Restic SSH directory exists for the default SFTP target
+  ansible.builtin.file:
+    path: "{{ immich_restic_ssh_root }}"
+    state: directory
+    owner: "{{ immich_active_backend_admin_user }}"
+    group: wheel
+    mode: "0700"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure active Restic SFTP client tools are installed
+  community.general.apk:
+    name: "{{ immich_restic_sftp_client_packages }}"
+    state: present
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure passive Restic SFTP server tools are installed
+  community.general.apk:
+    name: "{{ immich_restic_sftp_server_packages }}"
+    state: present
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Resolve the active backend MagicDNS name for Restic SFTP
+  ansible.builtin.shell: |
+    set -eu
+    getent ahostsv4 {{ immich_active_backend_dns | quote }} |
+      awk 'NR == 1 { print $1; found = 1; exit } END { exit found ? 0 : 1 }'
+  args:
+    executable: /bin/sh
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: immich_active_backend_tailscale_ipv4
+  changed_when: false
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Resolve the passive backend MagicDNS name for Restic SFTP
+  ansible.builtin.shell: |
+    set -eu
+    getent ahostsv4 {{ immich_passive_backend_dns | quote }} |
+      awk 'NR == 1 { print $1; found = 1; exit } END { exit found ? 0 : 1 }'
+  args:
+    executable: /bin/sh
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: immich_passive_backend_tailscale_ipv4
+  changed_when: false
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure passive Restic SFTP sshd config directory exists
+  ansible.builtin.file:
+    path: "{{ immich_restic_sshd_config_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Configure passive Restic SFTP OpenSSH policy
+  ansible.builtin.copy:
+    dest: "{{ immich_restic_sshd_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      ListenAddress {{ immich_passive_backend_tailscale_ipv4.stdout | trim }}:{{ immich_restic_sftp_port }}
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin no
+      AllowUsers {{ immich_passive_backend_admin_user }}
+      AllowTcpForwarding no
+      X11Forwarding no
+      PermitTunnel no
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  register: immich_restic_sshd_policy
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Keep passive Restic SFTP OpenSSH running
+  ansible.builtin.service:
+    name: sshd
+    enabled: true
+    state: "{{ 'restarted' if immich_restic_sshd_policy.changed | default(false) else 'started' }}"
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure active backend resolves the passive Restic SFTP host
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^.*[[:space:]]{{ immich_passive_backend_dns | regex_escape }}([[:space:]]|$).*"
+    line: "{{ immich_passive_backend_tailscale_ipv4.stdout | trim }} {{ immich_passive_backend_dns }} {{ immich_passive_backend_host }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Generate the active Restic SFTP key when missing
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - >-
+        ssh-keygen -t ed25519 -N ''
+        -C {{ ('immich-restic ' ~ immich_active_backend_host ~ ' to ' ~ immich_passive_backend_host) | quote }}
+        -f {{ immich_restic_ssh_key_path | quote }}
+      - "{{ immich_active_backend_admin_user }}"
+    creates: "{{ immich_restic_ssh_key_path }}"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure active Restic SFTP key permissions are strict
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ immich_active_backend_admin_user }}"
+    group: wheel
+    mode: "{{ item.mode }}"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  loop:
+    - path: "{{ immich_restic_ssh_key_path }}"
+      mode: "0600"
+    - path: "{{ immich_restic_ssh_key_path }}.pub"
+      mode: "0644"
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Trust the passive backend SSH host key for Restic SFTP
+  ansible.builtin.shell: |
+    set -eu
+    tmp="$(mktemp)"
+    cleanup() { rm -f "$tmp"; }
+    trap cleanup EXIT
+    ssh-keyscan -p {{ immich_restic_sftp_port | quote }} -T 10 -H {{ immich_passive_backend_dns | quote }} > "$tmp"
+    test -s "$tmp"
+    if [ ! -f {{ immich_restic_known_hosts_path | quote }} ] || ! cmp -s "$tmp" {{ immich_restic_known_hosts_path | quote }}; then
+      install -o {{ immich_active_backend_admin_user | quote }} -g wheel -m 0644 "$tmp" {{ immich_restic_known_hosts_path | quote }}
+      exit 2
+    fi
+  args:
+    executable: /bin/sh
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  register: immich_restic_known_hosts_update
+  changed_when: immich_restic_known_hosts_update.rc == 2
+  failed_when: immich_restic_known_hosts_update.rc not in [0, 2]
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Read the active Restic SFTP public key
+  ansible.builtin.slurp:
+    src: "{{ immich_restic_ssh_key_path }}.pub"
+  become: true
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  register: immich_restic_sftp_public_key
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure the passive Restic SFTP repository directory exists
+  ansible.builtin.file:
+    path: "{{ immich_restic_sftp_repository_path }}"
+    state: directory
+    owner: "{{ immich_passive_backend_admin_user }}"
+    group: "{{ immich_passive_backend_admin_user }}"
+    mode: "0700"
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Authorize active Restic SFTP key on the passive backend
+  ansible.posix.authorized_key:
+    user: "{{ immich_passive_backend_admin_user }}"
+    key: "{{ immich_restic_sftp_public_key.content | b64decode | trim }}"
+    key_options: "from=\"{{ immich_active_backend_tailscale_ipv4.stdout | trim }}\",restrict"
+    state: present
+  become: true
+  delegate_to: "{{ immich_passive_backend_host }}"
+  run_once: true
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Verify the active backend can reach the passive Restic SFTP target
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh
+      - -p
+      - "{{ immich_restic_sftp_port | string }}"
+      - -i
+      - "{{ immich_restic_ssh_key_path }}"
+      - -o
+      - BatchMode=yes
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - UserKnownHostsFile={{ immich_restic_known_hosts_path }}
+      - "{{ immich_passive_backend_admin_user }}@{{ immich_passive_backend_dns }}"
+      - "test -d {{ immich_restic_sftp_repository_path | quote }}"
+  become: true
+  become_user: "{{ immich_active_backend_admin_user }}"
+  delegate_to: "{{ immich_active_backend_host }}"
+  run_once: true
+  changed_when: false
+  when: node_domain_role == 'backend' and (immich_manage_default_restic_sftp | default(false) | bool)
+
+- name: Ensure /usr/local/sbin exists
+  ansible.builtin.file:
+    path: /usr/local/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Render backend environment and config files
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ vm_admin_user_name }}"
+    group: wheel
+    mode: "0640"
+  become: true
+  no_log: true
+  loop:
+    - src: immich-app.env.j2
+      dest: "{{ immich_env_root }}/app.env"
+    - src: immich-postgres.env.j2
+      dest: "{{ immich_env_root }}/postgres.env"
+    - src: immich-restic.env.j2
+      dest: "{{ immich_env_root }}/restic.env"
+    - src: immich-config.json.j2
+      dest: "{{ immich_service_root }}/immich-config.json"
+
+- name: Render backend service files and helpers
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  become: true
+  loop:
+    - src: immich-backend-deploy.sh.j2
+      dest: /usr/local/sbin/immich-backend-deploy
+      mode: "0750"
+    - src: immich-backup-run.sh.j2
+      dest: /usr/local/sbin/immich-backup-run
+      mode: "0750"
+    - src: immich-openrc.init.j2
+      dest: /etc/init.d/immich
+      mode: "0755"
+
+- name: Deploy or refresh backend containers
+  ansible.builtin.command: /usr/local/sbin/immich-backend-deploy
+  become: true
+  register: immich_backend_deploy
+  changed_when: true
+
+- name: Keep active backend service running and passive backend stopped
+  ansible.builtin.service:
+    name: "{{ immich_service_name }}"
+    enabled: "{{ immich_site_mode == 'active' }}"
+    state: "{{ 'started' if immich_site_mode == 'active' else 'stopped' }}"
+  become: true
+
+- name: Install hourly active backup hook
+  ansible.builtin.template:
+    src: immich-periodic-backup.j2
+    dest: /etc/periodic/hourly/immich-backup
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+  when: immich_site_mode == 'active'
+
+- name: Remove passive hourly backup hook
+  ansible.builtin.file:
+    path: /etc/periodic/hourly/immich-backup
+    state: absent
+  become: true
+  when: immich_site_mode == 'passive'

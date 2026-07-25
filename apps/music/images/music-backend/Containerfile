@@ -1,0 +1,22 @@
+ARG ALPINE_IMAGE=docker.io/library/alpine:3.23
+FROM ${ALPINE_IMAGE}
+
+RUN apk add --no-cache \
+    busybox-extras \
+    ca-certificates \
+    jq \
+    mpd \
+    mympd \
+    rsync \
+    shadow \
+    snapcast-server \
+    su-exec \
+    tailscale \
+    tzdata
+
+RUN addgroup -S music && adduser -S -D -h /music -s /bin/sh -G music music
+
+COPY music-container-entrypoint /usr/local/bin/music-container-entrypoint
+RUN chmod 0755 /usr/local/bin/music-container-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/music-container-entrypoint"]

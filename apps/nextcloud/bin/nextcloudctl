@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "${APP_DIR}/../.." && pwd)"
+PLAYBOOK_DIR="${APP_DIR}/ansible/playbooks"
+ROLE_PATH="${APP_DIR}/ansible/roles:${REPO_ROOT}/ansible/roles"
+BASE_INVENTORY="${REPO_ROOT}/ansible/inventory/hosts.yml"
+ANSIBLE_CONFIG_PATH="${REPO_ROOT}/ansible/ansible.cfg"
+MAGICDNS_SUFFIX="${NEXTCLOUD_MAGICDNS_SUFFIX:-example.ts.net}"
+PRIVATE_TAILSCALE_HOSTNAME="${NEXTCLOUD_PRIVATE_TAILSCALE_HOSTNAME:-next}"
+PRIVATE_DOMAIN="${NEXTCLOUD_PRIVATE_DOMAIN:-${PRIVATE_TAILSCALE_HOSTNAME}.${MAGICDNS_SUFFIX}}"
+LOCAL_DOMAIN="${NEXTCLOUD_LOCAL_DOMAIN:-${KLOKAST_HOUSEHOLD_LOCAL_DOMAIN:-}}"
+RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+COMMON_ANSIBLE_ARGS=(-vv)
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  apps/nextcloud/bin/nextcloudctl preflight --active-master BOX --passive-backup BOX --domain HOST [--allow-missing-passive-for-test]
+  apps/nextcloud/bin/nextcloudctl preflight-images --boxes BOX[,BOX...]
+  apps/nextcloud/bin/nextcloudctl remove-legacy --active-master BOX [--passive-backup BOX] [--wipe-legacy-data]
+  apps/nextcloud/bin/nextcloudctl install --active-master BOX --passive-backup BOX --domain HOST --resources-registry PATH
+  apps/nextcloud/bin/nextcloudctl verify --active-master BOX --passive-backup BOX --domain HOST --resources-registry PATH
+  apps/nextcloud/bin/nextcloudctl backup-check --active-master BOX --passive-backup BOX --domain HOST
+  apps/nextcloud/bin/nextcloudctl promote --old-active BOX --new-active BOX --domain HOST --resources-registry PATH
+  apps/nextcloud/bin/nextcloudctl failback --active-master BOX --passive-backup BOX --domain HOST --resources-registry PATH
+  apps/nextcloud/bin/nextcloudctl remove --box BOX [--wipe-data]
+
+Required install environment:
+  NEXTCLOUD_ADMIN_PASSWORD
+  NEXTCLOUD_POSTGRES_PASSWORD
+  NEXTCLOUD_RESTIC_PASSWORD
+  NEXTCLOUD_RESTIC_REPOSITORY
+
+Required only when platform resources enable cloudflare-tunnel-egress:
+  NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE
+  NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE
+
+Platform resources:
+  Pass --resources-registry, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY.
+  KLOKAST_APP_RESOURCES_REGISTRY is still accepted for compatibility.
+USAGE
+}
+
+die() {
+    printf 'nextcloudctl: %s\n' "$*" >&2
+    exit 1
+}
+
+valid_box() {
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    case "$1" in
+    *-bootstrap|*-dom0|*-router|*-bak|*-dmz|*-iot|*-usr|*-ops|*-agent|*-agt|bootstrap|dom0|router|bak|dmz|iot|usr|ops|agent|agt)
+            return 1
+            ;;
+    esac
+}
+
+require_box() {
+    local value=$1 name=$2
+    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+}
+
+render_inventory() {
+    local box=$1 out=$2
+    "${REPO_ROOT}/ansible/bin/render-node-inventory" \
+        --node "$box" \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        --output "$out"
+}
+
+inventory_args() {
+    local tmp=$1
+    shift
+    printf -- '-i\n%s\n' "$BASE_INVENTORY"
+    local box
+    for box in "$@"; do
+        render_inventory "$box" "${tmp}/${box}.yml"
+        printf -- '-i\n%s\n' "${tmp}/${box}.yml"
+    done
+}
+
+limit_for_box_roles() {
+    local roles_csv=$1
+    shift
+    local roles=()
+    IFS=',' read -r -a roles <<< "$roles_csv"
+    local first=true
+    local box role
+    for box in "$@"; do
+        for role in "${roles[@]}"; do
+            if [[ "$first" == true ]]; then
+                first=false
+            else
+                printf ','
+            fi
+            printf '%s-%s' "$box" "$role"
+        done
+    done
+}
+
+limit_for_boxes() {
+    limit_for_box_roles "bak,dmz" "$@"
+}
+
+run_playbook_for_roles() {
+    local roles_csv=$1 tmp=$2 playbook=$3
+    shift 3
+    local inv=()
+    local inv_lines
+    inv_lines="$(inventory_args "$tmp" "$@")"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        inv+=("$line")
+    done <<< "$inv_lines"
+    local limit
+    limit="$(limit_for_box_roles "$roles_csv" "$@")"
+    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
+    ANSIBLE_ROLES_PATH="$ROLE_PATH" \
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
+        ansible-playbook "${COMMON_ANSIBLE_ARGS[@]}" "${inv[@]}" "$playbook" --limit "$limit"
+}
+
+run_playbook() {
+    local tmp=$1 playbook=$2
+    shift 2
+    run_playbook_for_roles "bak,dmz" "$tmp" "$playbook" "$@"
+}
+
+run_playbook_extra_for_roles() {
+    local roles_csv=$1 tmp=$2 playbook=$3 extra_vars=$4
+    shift 4
+    local inv=()
+    local inv_lines
+    inv_lines="$(inventory_args "$tmp" "$@")"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        inv+=("$line")
+    done <<< "$inv_lines"
+    local limit
+    limit="$(limit_for_box_roles "$roles_csv" "$@")"
+    local extra_args=()
+    if [[ -n "$extra_vars" ]]; then
+        extra_args=(-e "$extra_vars")
+    fi
+    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
+    ANSIBLE_ROLES_PATH="$ROLE_PATH" \
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
+        ansible-playbook "${COMMON_ANSIBLE_ARGS[@]}" "${inv[@]}" "$playbook" --limit "$limit" "${extra_args[@]}"
+}
+
+run_playbook_extra() {
+    local tmp=$1 playbook=$2 extra=$3
+    shift 3
+    run_playbook_extra_for_roles "bak,dmz" "$tmp" "$playbook" "$extra" "$@"
+}
+
+parse_pair() {
+    active_master=
+    passive_backup=
+    domain=
+    resources_registry="$RESOURCES_REGISTRY_DEFAULT"
+    allow_missing_passive_for_test=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --active-master)
+                active_master=${2:-}; shift 2 ;;
+            --passive-backup)
+                passive_backup=${2:-}; shift 2 ;;
+            --domain)
+                domain=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; shift 2 ;;
+            --allow-missing-passive-for-test)
+                allow_missing_passive_for_test=true; shift ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$active_master" ]] || die "--active-master is required"
+    [[ -n "$passive_backup" ]] || die "--passive-backup is required"
+    [[ -n "$domain" ]] || die "--domain is required"
+    require_box "$active_master" "--active-master"
+    require_box "$passive_backup" "--passive-backup"
+    [[ "$active_master" != "$passive_backup" ]] || die "active master and passive backup must differ"
+}
+
+check_secret_env() {
+    local cloudflare_enabled=${1:-false}
+    local missing=()
+    local name
+    for name in \
+        NEXTCLOUD_ADMIN_PASSWORD \
+        NEXTCLOUD_POSTGRES_PASSWORD \
+        NEXTCLOUD_RESTIC_PASSWORD \
+        NEXTCLOUD_RESTIC_REPOSITORY; do
+        [[ -n "${!name:-}" ]] || missing+=("$name")
+    done
+    if [[ "$cloudflare_enabled" == true ]]; then
+        for name in \
+            NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE \
+            NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+        done
+    fi
+    [[ ${#missing[@]} -eq 0 ]] || die "missing required environment: ${missing[*]}"
+}
+
+require_resources_registry() {
+    [[ -n "${resources_registry:-}" ]] || die "--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY"
+    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
+}
+
+load_nextcloud_resource_state() {
+    local resource_json
+    require_resources_registry
+    resource_json="$("${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app nextcloud \
+        show)"
+    nextcloud_cloudflare_tunnel_enabled="$(
+        RESOURCE_JSON="$resource_json" python3 - "$active_master" "$passive_backup" <<'PY'
+import json
+import os
+import sys
+
+active, passive = sys.argv[1], sys.argv[2]
+data = json.loads(os.environ["RESOURCE_JSON"])
+app = (data.get("apps") or {}).get("nextcloud") or {}
+if not app.get("enabled"):
+    raise SystemExit("nextcloud must be enabled in the platform resources registry")
+ingress_mode = app.get("ingress_mode") or "tailscale"
+if ingress_mode != "tailscale":
+    raise SystemExit("nextcloud ingress_mode must be tailscale")
+boxes = sorted(app.get("boxes") or [])
+if boxes != sorted([active, passive]):
+    raise SystemExit(
+        "nextcloud registry boxes must match --active-master/--passive-backup"
+    )
+print("true" if "cloudflare-tunnel-egress" in (app.get("resources") or []) else "false")
+PY
+    )" || die "invalid Nextcloud platform resources registry state"
+}
+
+verify_nextcloud_app_resources() {
+    require_resources_registry
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app nextcloud \
+        --magicdns-suffix "$MAGICDNS_SUFFIX" \
+        verify
+}
+
+json_extra_vars() {
+    python3 - "$@" <<'PY'
+import json
+import sys
+
+data = {}
+for item in sys.argv[1:]:
+    key, value = item.split("=", 1)
+    if value == "true":
+        data[key] = True
+    elif value == "false":
+        data[key] = False
+    else:
+        data[key] = value
+print(json.dumps(data, separators=(",", ":")))
+PY
+}
+
+nextcloud_common_extra() {
+    json_extra_vars \
+        "nextcloud_active_master=${active_master}" \
+        "nextcloud_passive_backup=${passive_backup}" \
+        "nextcloud_domain=${domain}" \
+        "nextcloud_cloudflare_tunnel_enabled=${nextcloud_cloudflare_tunnel_enabled}" \
+        "nextcloud_magicdns_suffix=${MAGICDNS_SUFFIX}" \
+        "nextcloud_private_domain=${PRIVATE_DOMAIN}" \
+        "nextcloud_private_tailscale_hostname=${PRIVATE_TAILSCALE_HOSTNAME}" \
+        "nextcloud_local_domain=${LOCAL_DOMAIN}"
+}
+
+nextcloud_promote_extra() {
+    json_extra_vars \
+        "nextcloud_old_active=${old_active}" \
+        "nextcloud_new_active=${new_active}" \
+        "nextcloud_domain=${domain}" \
+        "nextcloud_cloudflare_tunnel_enabled=${nextcloud_cloudflare_tunnel_enabled}" \
+        "nextcloud_magicdns_suffix=${MAGICDNS_SUFFIX}" \
+        "nextcloud_private_domain=${PRIVATE_DOMAIN}" \
+        "nextcloud_private_tailscale_hostname=${PRIVATE_TAILSCALE_HOSTNAME}" \
+        "nextcloud_local_domain=${LOCAL_DOMAIN}"
+}
+
+nextcloud_pair_extra() {
+    json_extra_vars \
+        "nextcloud_active_master=${active_master}" \
+        "nextcloud_passive_backup=${passive_backup}" \
+        "nextcloud_domain=${domain}"
+}
+
+nextcloud_legacy_cleanup_extra() {
+    json_extra_vars "nextcloud_wipe_legacy_data=${wipe}"
+}
+
+nextcloud_remove_extra() {
+    json_extra_vars \
+        "nextcloud_wipe_data=${wipe}" \
+        "nextcloud_magicdns_suffix=${MAGICDNS_SUFFIX}" \
+        "nextcloud_private_domain=${PRIVATE_DOMAIN}" \
+        "nextcloud_private_tailscale_hostname=${PRIVATE_TAILSCALE_HOSTNAME}"
+}
+
+ansible_ping_box() {
+    local tmp=$1 box=$2
+    local inv="${tmp}/${box}.yml"
+    render_inventory "$box" "$inv"
+    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
+        ansible -i "$BASE_INVENTORY" -i "$inv" "${box}-bak,${box}-dmz" -m ping -o
+}
+
+cmd_preflight() {
+    parse_pair "$@"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    ansible_ping_box "$tmp" "$active_master"
+    if ! ansible_ping_box "$tmp" "$passive_backup"; then
+        if [[ "$allow_missing_passive_for_test" == true ]]; then
+            printf 'Passive backup %s is not ready; continuing because test mode was requested.\n' "$passive_backup"
+            run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+                "$(nextcloud_pair_extra)" \
+                "$active_master"
+            return
+        fi
+        die "passive backup ${passive_backup} is not reachable"
+    fi
+
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+        "$(nextcloud_pair_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_preflight_images() {
+    local boxes=
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --boxes)
+                boxes=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$boxes" ]] || die "--boxes is required"
+    IFS=',' read -r -a box_array <<< "$boxes"
+    local box
+    for box in "${box_array[@]}"; do
+        require_box "$box" "--boxes"
+    done
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook "$tmp" "${PLAYBOOK_DIR}/05-preflight-images.yml" "${box_array[@]}"
+}
+
+cmd_remove_legacy() {
+    active_master=
+    passive_backup=
+    wipe=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --active-master)
+                active_master=${2:-}; shift 2 ;;
+            --passive-backup)
+                passive_backup=${2:-}; shift 2 ;;
+            --wipe-legacy-data)
+                wipe=true; shift ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$active_master" ]] || die "--active-master is required"
+    require_box "$active_master" "--active-master"
+    local boxes=("$active_master")
+    if [[ -n "$passive_backup" ]]; then
+        require_box "$passive_backup" "--passive-backup"
+        boxes+=("$passive_backup")
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/10-remove-legacy.yml" \
+        "$(nextcloud_legacy_cleanup_extra)" \
+        "${boxes[@]}"
+}
+
+cmd_install() {
+    parse_pair "$@"
+    load_nextcloud_resource_state
+    check_secret_env "$nextcloud_cloudflare_tunnel_enabled"
+    verify_nextcloud_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+        "$(nextcloud_pair_extra)" \
+        "$active_master" "$passive_backup"
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/15-private-ingress-identity.yml" \
+        "$(nextcloud_common_extra)" \
+        "$active_master" "$passive_backup"
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/20-install.yml" \
+        "$(nextcloud_common_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_verify() {
+    parse_pair "$@"
+    load_nextcloud_resource_state
+    verify_nextcloud_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/40-verify.yml" \
+        "$(nextcloud_common_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_backup_check() {
+    parse_pair "$@"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/50-backup-check.yml" \
+        "$(nextcloud_pair_extra)" \
+        "$active_master" "$passive_backup"
+}
+
+cmd_promote() {
+    old_active=
+    new_active=
+    domain=
+    resources_registry="$RESOURCES_REGISTRY_DEFAULT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --old-active)
+                old_active=${2:-}; shift 2 ;;
+            --new-active)
+                new_active=${2:-}; shift 2 ;;
+            --domain)
+                domain=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$old_active" && -n "$new_active" && -n "$domain" ]] || die "--old-active, --new-active, and --domain are required"
+    require_box "$old_active" "--old-active"
+    require_box "$new_active" "--new-active"
+    [[ "$old_active" != "$new_active" ]] || die "old and new active boxes must differ"
+    active_master="$new_active"
+    passive_backup="$old_active"
+    load_nextcloud_resource_state
+    verify_nextcloud_app_resources
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/60-promote.yml" \
+        "$(nextcloud_promote_extra)" \
+        "$old_active" "$new_active"
+}
+
+cmd_remove() {
+    box=
+    wipe=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --box)
+                box=${2:-}; shift 2 ;;
+            --wipe-data)
+                wipe=true; shift ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$box" ]] || die "--box is required"
+    require_box "$box" "--box"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/90-remove.yml" \
+        "$(nextcloud_remove_extra)" \
+        "$box"
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+cmd=$1
+shift
+
+case "$cmd" in
+    preflight) cmd_preflight "$@" ;;
+    preflight-images) cmd_preflight_images "$@" ;;
+    remove-legacy) cmd_remove_legacy "$@" ;;
+    install) cmd_install "$@" ;;
+    verify) cmd_verify "$@" ;;
+    backup-check) cmd_backup_check "$@" ;;
+    promote) cmd_promote "$@" ;;
+    failback) cmd_install "$@" ;;
+    remove) cmd_remove "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage; die "unknown command: $cmd" ;;
+esac

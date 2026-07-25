@@ -1,0 +1,18 @@
+---
+print_box: ""
+print_printer_ipv4_address: ""
+print_printer_uri: "ipp://{{ print_printer_ipv4_address }}/ipp/print"
+print_queue_name: epson
+
+print_pod_name: klokast-print-server
+print_service_name: klokast-print-server
+print_container_cups_name: print-cups
+print_container_ingress_name: print-ingress
+
+print_cups_etc_volume: klokast-print-cups-etc
+print_cups_spool_volume: klokast-print-cups-spool
+print_cups_cache_volume: klokast-print-cups-cache
+print_tailscale_state_volume: klokast-print-ts-state
+
+print_tailscale_hostname: "{{ print_box }}-print"
+print_tailscale_tag: tag:print

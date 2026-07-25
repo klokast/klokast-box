@@ -1,0 +1,20 @@
+schema_version: 1
+upstream_images:
+  alpine:
+    canonical: docker.io/library/alpine
+    tag: 3.23.4
+    digest: sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+    mirrors:
+    - docker.1ms.run/library/alpine
+    - docker.m.daocloud.io/library/alpine
+    - m.daocloud.io/docker.io/library/alpine
+built_images:
+  print-server:
+    context: images/print-server
+    containerfile: Containerfile
+    image: localhost/klokast/print-server:latest
+    archive: print-server.oci.tar
+    build_args:
+      ALPINE_IMAGE: alpine
+    digest: 89df9914af1ddaae693efa6192f7eb2ade4ac06a82700e574f2f4c3fb4402de8
+    archive_sha256: 1a5fe7a3ffbe489bc5b045052fda7a000433b5504a42813d9eea5c0efe8f8d0c

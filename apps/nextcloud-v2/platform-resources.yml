@@ -1,0 +1,58 @@
+---
+schema_version: 1
+app: nextcloud-v2
+risk_class: private_service
+default_isolation: zone_vm_rootless_podman
+resources:
+  compute:
+    - id: backend
+      type: podman_workload
+      zone: bak
+      privilege: rootless
+      lifecycle: steady
+    - id: private-ingress
+      type: podman_workload
+      zone: dmz
+      privilege: rootless
+      lifecycle: steady
+  network:
+    - id: backend-http-upstream
+      type: interzone_tcp
+      required: true
+      rationale: >-
+        Allows only the DMZ-hosted Nextcloud v2 ingress processes to reach the
+        backend HTTP upstream. Family devices must not reach the backend VM
+        directly.
+      from_zone: dmz
+      to_zone: bak
+      ports:
+        - 8080
+    - id: cloudflare-tunnel-egress
+      type: wan_egress
+      required: false
+      enabled_by_default: false
+      rationale: >-
+        Allows optional outbound Cloudflare Tunnel transport from the DMZ. The
+        private trusted-user ingress uses Tailscale by default.
+      from_zone: dmz
+      tcp_ports:
+        - 7844
+      udp_ports:
+        - 7844
+  tailnet:
+    - id: private-ingress
+      required: true
+      access:
+        intent: private-service-ingress
+        capability: overlay
+      hostname_default: next
+      tag_default: tag:nextcloud
+      grants:
+        - src: group:family
+          ports:
+            - 443
+  artifacts:
+    - id: backend-images
+      type: oci_images
+      lock_file: images.lock.yml
+      require_digest: true

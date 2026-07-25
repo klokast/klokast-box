@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+
+pod_name={{ immich_private_ingress_pod_name | quote }}
+proxy_container={{ immich_private_ingress_proxy_container_name | quote }}
+tailscale_container={{ immich_private_ingress_tailscale_container_name | quote }}
+source_map={{ immich_private_ingress_source_map | quote }}
+proxy_config={{ immich_private_ingress_proxy_config | quote }}
+authkey_file={{ (immich_private_ingress_secret_root ~ '/tailscale-authkey') | quote }}
+volume_ts={{ immich_private_ingress_tailscale_state_volume | quote }}
+legacy_ts_state={{ immich_private_ingress_legacy_state_root | quote }}
+hostname={{ immich_private_tailscale_hostname | quote }}
+tag={{ immich_private_tailscale_tag | quote }}
+site_mode={{ immich_site_mode | quote }}
+proxy_port={{ (immich_private_ingress_proxy_port | string) | quote }}
+
+podman_cmd() {
+    if [ "$(id -un)" = {{ vm_admin_user_name | quote }} ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name | quote }} /usr/bin/podman "$@"
+    fi
+}
+
+image_ref() {
+    /usr/bin/jq -r --arg key "$1" '.images[$key].pull_ref' "$source_map"
+}
+
+ensure_volume() {
+    volume="$1"
+    if ! podman_cmd volume exists "$volume"; then
+        podman_cmd volume create "$volume" >/dev/null
+    fi
+}
+
+migrate_volume_once() {
+    source_path="$1"
+    volume="$2"
+    marker_name="$3"
+    [ -d "$source_path" ] || return 0
+    if ! find "$source_path" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+        return 0
+    fi
+    # shellcheck disable=SC2016
+    podman_cmd run --rm --pull=never \
+        --security-opt no-new-privileges \
+        --cap-drop=NET_RAW \
+        --entrypoint /bin/sh \
+        -v "$source_path:/source:ro" \
+        -v "$volume:/dest" \
+        "$alpine_ref" \
+        -c '
+            set -eu
+            marker="/dest/'"$marker_name"'"
+            if [ -e "$marker" ]; then
+                exit 0
+            fi
+            if find /dest -mindepth 1 ! -name "'"$marker_name"'" -print -quit | grep -q .; then
+                echo "volume $1 already has data; not importing $2" >&2
+                exit 0
+            fi
+            tar -C /source -cf - . | tar -C /dest -xf -
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$marker"
+        ' sh "$volume" "$source_path"
+}
+
+alpine_ref=$(image_ref alpine)
+podman_cmd pull --policy=missing --retry=0 "$alpine_ref" >/dev/null
+ensure_volume "$volume_ts"
+migrate_volume_once "$legacy_ts_state" "$volume_ts" .klokast-migrated-from-host-immich-ingress-state
+
+if podman_cmd pod exists "$pod_name"; then
+    podman_cmd pod rm -f "$pod_name" >/dev/null
+fi
+
+podman_cmd pod create --name "$pod_name" >/dev/null
+
+podman_cmd run -d \
+    --name "$proxy_container" \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -v "$proxy_config:/etc/nginx/nginx.conf:ro" \
+    --pull=never \
+    "$alpine_ref" \
+    /bin/sh -c 'set -eu; apk add --no-cache ca-certificates nginx tzdata >/dev/null; exec nginx -g "daemon off;"' >/dev/null
+
+# shellcheck disable=SC2016
+podman_cmd run -d \
+    --name "$tailscale_container" \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -e "IMMICH_TAILSCALE_HOSTNAME=$hostname" \
+    -e "IMMICH_TAILSCALE_TAG=$tag" \
+    -e "IMMICH_SITE_MODE=$site_mode" \
+    -e "IMMICH_PROXY_PORT=$proxy_port" \
+    -v "$authkey_file:/run/secrets/tailscale-authkey:ro" \
+    -v "$volume_ts:/var/lib/tailscale" \
+    --pull=never \
+    "$alpine_ref" \
+    /bin/sh -c '
+        set -eu
+        apk add --no-cache ca-certificates jq tailscale >/dev/null
+        if [ "${IMMICH_SITE_MODE:-active}" != "active" ]; then
+            while :; do sleep 3600; done
+        fi
+        socket_dir=/tmp/tailscale
+        socket="$socket_dir/tailscaled.sock"
+        state_dir=/var/lib/tailscale
+        authkey_file=/run/secrets/tailscale-authkey
+        mkdir -p "$socket_dir" "$state_dir"
+        /usr/sbin/tailscaled --statedir="$state_dir" --socket="$socket" --tun=userspace-networking --port=0 &
+        ts_pid="$!"
+        trap '\''kill "$ts_pid" >/dev/null 2>&1 || true; wait "$ts_pid" 2>/dev/null || true'\'' INT TERM
+        for _ in $(seq 1 30); do
+            [ -S "$socket" ] && break
+            sleep 1
+        done
+        [ -S "$socket" ] || exit 1
+        if ! tailscale --socket "$socket" status --json 2>/dev/null | jq -e --arg hostname "$IMMICH_TAILSCALE_HOSTNAME" --arg tag "$IMMICH_TAILSCALE_TAG" '\''.BackendState == "Running" and .Self.HostName == $hostname and (.Self.Online == true) and ((.Self.Tags // []) | index($tag))'\'' >/dev/null; then
+            [ -s "$authkey_file" ] || exit 1
+            authkey="$(sed -n "1p" "$authkey_file")"
+            tailscale --socket "$socket" up --auth-key="$authkey" --hostname="$IMMICH_TAILSCALE_HOSTNAME" --advertise-tags="$IMMICH_TAILSCALE_TAG" --accept-dns=false --force-reauth --timeout=30s
+        fi
+        for _ in $(seq 1 60); do
+            nc -z 127.0.0.1 "$IMMICH_PROXY_PORT" >/dev/null 2>&1 && break
+            sleep 1
+        done
+        nc -z 127.0.0.1 "$IMMICH_PROXY_PORT" >/dev/null 2>&1 || exit 1
+        tailscale --socket "$socket" set --hostname="$IMMICH_TAILSCALE_HOSTNAME" --accept-dns=false
+        tailscale --socket "$socket" serve reset >/dev/null 2>&1 || true
+        tailscale --socket "$socket" serve --bg --yes --https=443 "http://127.0.0.1:${IMMICH_PROXY_PORT}" >/dev/null
+        wait "$ts_pid"
+    ' >/dev/null
+
+if [ "$site_mode" != "active" ]; then
+    podman_cmd pod stop -t 60 "$pod_name" >/dev/null
+fi

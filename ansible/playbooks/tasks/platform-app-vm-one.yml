@@ -1,0 +1,197 @@
+---
+- name: Derive desired platform app VM state
+  ansible.builtin.set_fact:
+    platform_app_vm_guest_spec: "{{ app_vm.guest_spec }}"
+    platform_app_vm_offline_guest_spec: >-
+      {{
+        app_vm.guest_spec
+        | dict2items
+        | rejectattr('key', 'in', ['autostart', 'runtime_state'])
+        | items2dict
+      }}
+    platform_app_vm_inventory_host: "{{ app_vm.inventory_hostname }}"
+    platform_app_vm_runtime_state: "{{ app_vm.runtime_state | default('running') }}"
+    platform_app_vm_marker_path: "/etc/klokast/app-vms/{{ app_vm.guest_spec.guest_name }}.json"
+
+- name: Derive platform app VM offline convergence hashes
+  ansible.builtin.set_fact:
+    platform_app_vm_desired_hash: >-
+      {{
+        {
+          'inventory_hostname': app_vm.inventory_hostname,
+          'node_hostname': app_vm.node_hostname,
+          'site_role': app_vm.site_role,
+          'vm_ipv4_address': app_vm.vm_ipv4_address,
+          'advertised_tags': app_vm.advertised_tags,
+          'convergence_schema_version': 5,
+          'guest_spec': platform_app_vm_offline_guest_spec
+        } | to_json | hash('sha256')
+      }}
+    platform_app_vm_accepted_legacy_hashes:
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': true, 'runtime_state': 'running'})
+          } | to_json | hash('sha256')
+        }}
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': false, 'runtime_state': 'stopped'})
+          } | to_json | hash('sha256')
+        }}
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'runtime_state': 'running',
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': true, 'runtime_state': 'running'})
+          } | to_json | hash('sha256')
+        }}
+      - >-
+        {{
+          {
+            'inventory_hostname': app_vm.inventory_hostname,
+            'node_hostname': app_vm.node_hostname,
+            'site_role': app_vm.site_role,
+            'runtime_state': 'stopped',
+            'vm_ipv4_address': app_vm.vm_ipv4_address,
+            'advertised_tags': app_vm.advertised_tags,
+            'convergence_schema_version': 4,
+            'guest_spec': app_vm.guest_spec | combine({'autostart': false, 'runtime_state': 'stopped'})
+          } | to_json | hash('sha256')
+        }}
+    platform_app_vm_guest_os: "{{ app_vm.guest_spec.guest_os | default('debian') }}"
+
+- name: Check platform app VM LV
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_guest_spec.installed.required_lvs | first }}"
+  register: platform_app_vm_lv_stat
+
+- name: Check platform app VM kernel artifact
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_guest_spec.installed.kernel_path }}"
+  register: platform_app_vm_kernel_stat
+
+- name: Check platform app VM initramfs artifact
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_guest_spec.installed.initramfs_path }}"
+  register: platform_app_vm_initramfs_stat
+
+- name: Check platform app VM Xen config
+  ansible.builtin.stat:
+    path: "{{ platform_app_vm_guest_spec.config_path }}"
+  register: platform_app_vm_config_stat
+
+- name: Read the current platform app VM marker hash
+  ansible.builtin.shell: |
+    set -eu
+    marker={{ platform_app_vm_marker_path | quote }}
+    if [ -f "$marker" ]; then
+      awk -F'"' '$2 == "desired_hash" { print $4; exit }' "$marker"
+    fi
+  args:
+    executable: /bin/sh
+  register: platform_app_vm_marker_hash
+  changed_when: false
+
+- name: Decide whether platform app VM offline convergence is needed
+  ansible.builtin.set_fact:
+    platform_app_vm_needs_offline_converge: >-
+      {{
+        (not (platform_app_vm_lv_stat.stat.exists | default(false)))
+        or (not (platform_app_vm_kernel_stat.stat.exists | default(false)))
+        or (not (platform_app_vm_initramfs_stat.stat.exists | default(false)))
+        or (not (platform_app_vm_config_stat.stat.exists | default(false)))
+        or (
+          (platform_app_vm_marker_hash.stdout | default('') | trim) != platform_app_vm_desired_hash
+          and (platform_app_vm_marker_hash.stdout | default('') | trim) not in platform_app_vm_accepted_legacy_hashes
+        )
+      }}
+
+- name: Stop the platform app VM before offline convergence
+  ansible.builtin.include_role:
+    name: xen-guest-instance
+  vars:
+    xen_guest_name: "{{ platform_app_vm_guest_spec.guest_name }}"
+    xen_guest_config_path: "{{ platform_app_vm_guest_spec.config_path }}"
+    xen_guest_runtime_state: stopped
+  when: platform_app_vm_needs_offline_converge | bool
+
+- name: Clone and personalize the platform app VM disk from the Podman template
+  ansible.builtin.include_role:
+    name: podman-guest-clone
+  vars:
+    podman_clone_guest_spec: "{{ platform_app_vm_guest_spec }}"
+    podman_clone_inventory_host: "{{ platform_app_vm_inventory_host }}"
+  when:
+    - platform_app_vm_needs_offline_converge | bool
+    - platform_app_vm_guest_os != 'debian'
+
+- name: Build and personalize the platform app VM Debian rootfs
+  ansible.builtin.include_role:
+    name: debian-app-vm-rootfs
+  when:
+    - platform_app_vm_needs_offline_converge | bool
+    - platform_app_vm_guest_os == 'debian'
+
+- name: Copy the installed platform app VM kernel and initramfs into dom0 shared storage
+  ansible.builtin.include_role:
+    name: xen-guest-artifacts
+  vars:
+    xen_guest_name: "{{ platform_app_vm_guest_spec.guest_name }}"
+    xen_guest_lv_path: "{{ platform_app_vm_guest_spec.installed.required_lvs | first }}"
+    xen_guest_kernel_source_name: vmlinuz-virt
+    xen_guest_initramfs_source_name: initramfs-virt
+    xen_guest_kernel_dest_path: "{{ platform_app_vm_guest_spec.installed.kernel_path }}"
+    xen_guest_initramfs_dest_path: "{{ platform_app_vm_guest_spec.installed.initramfs_path }}"
+  when:
+    - platform_app_vm_needs_offline_converge | bool
+    - platform_app_vm_guest_os != 'debian'
+
+- name: Render the installed-stage platform app VM Xen guest configuration
+  ansible.builtin.include_role:
+    name: xen-guest
+  vars:
+    xen_guest_spec: "{{ platform_app_vm_guest_spec }}"
+
+- name: Persist the platform app VM desired state marker
+  ansible.builtin.copy:
+    dest: "{{ platform_app_vm_marker_path }}"
+    mode: "0644"
+    content: |
+      {{
+        {
+          'schema_version': 1,
+          'convergence_schema_version': 5,
+          'inventory_hostname': app_vm.inventory_hostname,
+          'guest_name': platform_app_vm_guest_spec.guest_name,
+          'node_hostname': app_vm.node_hostname,
+          'desired_hash': platform_app_vm_desired_hash
+        } | to_nice_json
+      }}
+
+- name: Converge the platform app VM runtime state
+  ansible.builtin.include_role:
+    name: xen-guest-instance
+  vars:
+    xen_guest_name: "{{ platform_app_vm_guest_spec.guest_name }}"
+    xen_guest_config_path: "{{ platform_app_vm_guest_spec.config_path }}"
+    xen_guest_runtime_state: "{{ platform_app_vm_runtime_state }}"

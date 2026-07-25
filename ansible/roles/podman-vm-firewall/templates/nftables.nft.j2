@@ -1,0 +1,35 @@
+#!/usr/sbin/nft -f
+destroy table inet klokast_vm_filter
+
+table inet klokast_vm_filter {
+    chain input {
+        type filter hook input priority 100; policy drop;
+
+        ct state invalid drop
+        ct state { established, related } accept
+        iifname "lo" accept
+        iifname "tailscale0" accept comment "tailscale-management-input"
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+        include "/etc/klokast/app-resources/vm-input.nft"
+        include "/etc/klokast/app-resources/vm-input.d/*.nft"
+        {% for rule in podman_vm_firewall_input_tcp_rules | default([]) %}
+        iifname "{{ rule.interface | default('eth0') }}" ip saddr {{ rule.source }} ip daddr {{ rule.destination }} tcp dport {{ rule.port }} accept comment "{{ rule.comment }}"
+        {% endfor %}
+        {% for rule in podman_vm_firewall_input_udp_rules | default([]) %}
+        iifname "{{ rule.interface | default('eth0') }}" ip saddr {{ rule.source }} ip daddr {{ rule.destination }} udp dport {{ rule.port }} accept comment "{{ rule.comment }}"
+        {% endfor %}
+    }
+
+    chain forward {
+        type filter hook forward priority 100; policy drop;
+        {% for interface in podman_vm_firewall_forward_egress_interfaces | default([]) %}
+        iifname "{{ interface }}" accept comment "{{ interface }}-container-egress"
+        oifname "{{ interface }}" ct state { established, related } accept comment "{{ interface }}-container-return"
+        {% endfor %}
+    }
+
+    chain output {
+        type filter hook output priority 100; policy accept;
+    }
+}

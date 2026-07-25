@@ -1,0 +1,157 @@
+#
+# Summary:
+# - Downloads or prepares the Alpine diskless seed source on the bootstrap host and verifies that the required boot artifacts and repository are present.
+#
+---
+- name: Prepare the diskless seed source facts
+  ansible.builtin.set_fact:
+    diskless_seed_source_mode: bootstrap-host-iso
+    diskless_seed_bootstrap_iso_url: "{{ alpine_diskless_seed_iso_url }}"
+    diskless_seed_root_path: "{{ alpine_diskless_seed_remote_directory }}"
+    diskless_seed_apks_directory: "{{ alpine_diskless_seed_remote_directory }}/apks/{{ alpine_diskless_seed_arch }}"
+
+- name: Ensure bootstrap-host ISO extraction tools are installed
+  ansible.builtin.package:
+    name:
+      - curl
+      - xorriso
+    state: present
+
+- name: Ensure the remote diskless seed directory exists
+  ansible.builtin.file:
+    path: "{{ alpine_diskless_seed_remote_directory }}"
+    state: directory
+    mode: "0755"
+
+- name: Download the Alpine standard ISO checksum on the bootstrap host
+  ansible.builtin.shell: |
+    set -eu
+    checksum_path="{{ alpine_diskless_seed_checksum_path }}"
+    tmp_path="${checksum_path}.tmp"
+    curl_common_args='{{ (alpine_diskless_seed_curl_extra_args | default([])) | join(' ') }}'
+    # shellcheck disable=SC2086
+    curl $curl_common_args \
+      --fail \
+      --location \
+      --show-error \
+      --retry {{ alpine_diskless_seed_retry_count }} \
+      --retry-delay {{ alpine_diskless_seed_retry_delay_seconds }} \
+      --connect-timeout {{ alpine_diskless_seed_connect_timeout_seconds }} \
+      --max-time 120 \
+      --output "$tmp_path" \
+      "{{ alpine_diskless_seed_checksum_url }}"
+    if [ -f "$checksum_path" ] && cmp -s "$tmp_path" "$checksum_path"; then
+      rm -f "$tmp_path"
+    else
+      mv "$tmp_path" "$checksum_path"
+      printf 'updated\n'
+    fi
+  args:
+    executable: /bin/sh
+  register: diskless_seed_checksum_download
+  changed_when: "'updated' in diskless_seed_checksum_download.stdout"
+
+- name: Check whether the Alpine standard ISO already matches its checksum
+  ansible.builtin.command: "sha256sum -c {{ alpine_diskless_seed_checksum_path | basename }}"
+  args:
+    chdir: "{{ alpine_diskless_seed_remote_directory }}"
+  register: diskless_seed_existing_iso_checksum
+  failed_when: false
+  changed_when: false
+
+- name: Download or resume the Alpine standard ISO on the bootstrap host
+  ansible.builtin.shell: |
+    set -eu
+    iso_path="{{ alpine_diskless_seed_iso_path }}"
+    tmp_path="{{ alpine_diskless_seed_partial_path }}"
+    if [ -s "$iso_path" ] && [ ! -e "$tmp_path" ]; then
+      mv "$iso_path" "$tmp_path"
+    fi
+    curl_common_args='{{ (alpine_diskless_seed_curl_extra_args | default([])) | join(' ') }}'
+    # shellcheck disable=SC2086
+    curl $curl_common_args \
+      --fail \
+      --location \
+      --show-error \
+      --retry {{ alpine_diskless_seed_retry_count }} \
+      --retry-delay {{ alpine_diskless_seed_retry_delay_seconds }} \
+      --connect-timeout {{ alpine_diskless_seed_connect_timeout_seconds }} \
+      --max-time {{ alpine_diskless_seed_download_timeout_seconds }} \
+      --speed-time {{ alpine_diskless_seed_speed_time_seconds }} \
+      --speed-limit {{ alpine_diskless_seed_speed_limit_bytes }} \
+      --continue-at - \
+      --output "$tmp_path" \
+      "{{ diskless_seed_bootstrap_iso_url }}" || {
+        rm -f "$tmp_path"
+        # shellcheck disable=SC2086
+        curl $curl_common_args \
+          --fail \
+          --location \
+          --show-error \
+          --retry {{ alpine_diskless_seed_retry_count }} \
+          --retry-delay {{ alpine_diskless_seed_retry_delay_seconds }} \
+          --connect-timeout {{ alpine_diskless_seed_connect_timeout_seconds }} \
+          --max-time {{ alpine_diskless_seed_download_timeout_seconds }} \
+          --speed-time {{ alpine_diskless_seed_speed_time_seconds }} \
+          --speed-limit {{ alpine_diskless_seed_speed_limit_bytes }} \
+          --output "$tmp_path" \
+          "{{ diskless_seed_bootstrap_iso_url }}"
+      }
+    test "$(stat -c %s "$tmp_path")" -gt {{ alpine_diskless_seed_minimum_iso_size }}
+    mv "$tmp_path" "$iso_path"
+    chmod 0644 "$iso_path"
+  args:
+    executable: /bin/sh
+  when: diskless_seed_existing_iso_checksum.rc != 0
+  changed_when: true
+
+- name: Verify the Alpine standard ISO checksum
+  ansible.builtin.command: "sha256sum -c {{ alpine_diskless_seed_checksum_path | basename }}"
+  args:
+    chdir: "{{ alpine_diskless_seed_remote_directory }}"
+  changed_when: false
+
+- name: Extract the Alpine diskless seed bundle from the bootstrap-host ISO
+  ansible.builtin.shell: |
+    set -eu
+    iso_path="{{ alpine_diskless_seed_iso_path }}"
+    rm -rf "{{ alpine_diskless_seed_remote_directory }}/boot" "{{ alpine_diskless_seed_remote_directory }}/apks"
+    mkdir -p "{{ alpine_diskless_seed_remote_directory }}/boot" "{{ alpine_diskless_seed_remote_directory }}/apks"
+    xorriso -osirrox on -indev "$iso_path" -extract /boot/vmlinuz-lts "{{ alpine_diskless_seed_remote_directory }}/boot/vmlinuz-lts" >/dev/null 2>&1
+    xorriso -osirrox on -indev "$iso_path" -extract /boot/initramfs-lts "{{ alpine_diskless_seed_remote_directory }}/boot/initramfs-lts" >/dev/null 2>&1
+    xorriso -osirrox on -indev "$iso_path" -extract /boot/modloop-lts "{{ alpine_diskless_seed_remote_directory }}/boot/modloop-lts" >/dev/null 2>&1
+    xorriso -osirrox on -indev "$iso_path" -extract "/apks/{{ alpine_diskless_seed_arch }}" "{{ alpine_diskless_seed_remote_directory }}/apks/{{ alpine_diskless_seed_arch }}" >/dev/null 2>&1
+  args:
+    executable: /bin/sh
+  changed_when: true
+
+- name: Check required Alpine boot files from the selected diskless source
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ diskless_seed_root_path }}/boot/vmlinuz-lts"
+    - "{{ diskless_seed_root_path }}/boot/initramfs-lts"
+    - "{{ diskless_seed_root_path }}/boot/modloop-lts"
+  register: diskless_seed_boot_source_paths
+
+- name: Assert the selected diskless source contains the expected boot files
+  ansible.builtin.assert:
+    that:
+      - "(diskless_seed_boot_source_paths.results | map(attribute='stat.exists') | list | min)"
+    fail_msg: >-
+      The selected diskless source {{ diskless_seed_root_path }} does not contain
+      the expected Alpine boot files. Review the extracted seed directory before
+      copying artifacts to the SSD.
+
+- name: Check the selected Alpine package repository source
+  ansible.builtin.stat:
+    path: "{{ diskless_seed_apks_directory }}"
+  register: diskless_seed_apks_directory_stat
+
+- name: Assert the selected source exposes the expected package repository
+  ansible.builtin.assert:
+    that:
+      - diskless_seed_apks_directory_stat.stat.isdir | default(false)
+    fail_msg: >-
+      The selected diskless source {{ diskless_seed_apks_directory }} does not exist.
+      The first diskless SSD boot needs an Alpine `apks/{{ alpine_diskless_seed_arch }}` tree.

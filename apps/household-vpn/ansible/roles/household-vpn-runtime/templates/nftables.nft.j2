@@ -1,0 +1,43 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet klokast_household_vpn_filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iifname "lo" accept
+    ct state established,related accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+    {% if household_vpn_tailscale_underlay_source | length > 0 and household_vpn_tailscale_underlay_destination | length > 0 %}
+    iifname "{{ household_vpn_tailscale_underlay_interface }}" ip saddr {{ household_vpn_tailscale_underlay_source }} ip daddr {{ household_vpn_tailscale_underlay_destination }} udp dport {{ household_vpn_tailscale_underlay_port }} accept comment "ops-household-vpn-tailscale-underlay-input"
+    {% endif %}
+    iifname "tailscale0" tcp dport 22 accept
+    {% for cidr in household_vpn_client_cidrs %}
+    iifname "{{ household_vpn_tailscale_underlay_interface }}" ip saddr {{ cidr }} ip daddr {{ vm_bootstrap_host }} udp dport 53 accept comment "household-vpn-dns-udp"
+    iifname "{{ household_vpn_tailscale_underlay_interface }}" ip saddr {{ cidr }} ip daddr {{ vm_bootstrap_host }} tcp dport 53 accept comment "household-vpn-dns-tcp"
+    {% endfor %}
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept
+    {% for cidr in household_vpn_client_cidrs %}
+    iifname "{{ household_vpn_tailscale_underlay_interface }}" oifname "{{ household_vpn_mihomo_device }}" ip saddr {{ cidr }} accept comment "household-vpn-client-egress"
+    {% endfor %}
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+  }
+}
+
+table ip klokast_household_vpn_nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    {% for cidr in household_vpn_client_cidrs %}
+    oifname "{{ household_vpn_mihomo_device }}" ip saddr {{ cidr }} masquerade comment "household-vpn-client-masquerade"
+    {% endfor %}
+  }
+}

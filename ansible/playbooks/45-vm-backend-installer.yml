@@ -1,0 +1,28 @@
+---
+- name: Start the backend VM in installer stage for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    backend_installer_spec: >-
+      {{ node_xen_guest_specs.backend | combine({'stage': 'installer'}, recursive=True) }}
+  tasks:
+    - name: Keep the backend Xen config in installer stage before first install
+      ansible.builtin.import_role:
+        name: xen-guest
+      vars:
+        xen_guest_spec: "{{ backend_installer_spec }}"
+
+    - name: Start the backend installer-stage guest
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ backend_installer_spec.guest_name }}"
+        xen_guest_config_path: "{{ backend_installer_spec.config_path }}"
+        xen_guest_runtime_state: running
+
+    - name: Show the next manual installer steps
+      ansible.builtin.debug:
+        msg:
+          - "Use NanoKVM or another local {{ node_name }}-dom0 shell for: doas xl console {{ node_xen_guest_specs.backend.guest_name }}"
+          - "Run setup-alpine in the guest and install onto xvda with a static backnet address."
+          - "Power the guest off from inside Alpine when the install finishes."

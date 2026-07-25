@@ -1,0 +1,26 @@
+auto lo
+iface lo inet loopback
+
+auto {{ dom0_wan_uplink_interface_resolved }}
+iface {{ dom0_wan_uplink_interface_resolved }} inet manual
+
+{% for bridge in dom0_bridges %}
+auto {{ bridge.name }}
+iface {{ bridge.name }} inet {{ bridge.method }}
+{% if bridge.method == 'static' %}
+    address {{ bridge.address }}
+    netmask {{ bridge.netmask }}
+{% endif %}
+{% if bridge.name == dom0_wan_bridge_name %}
+    bridge-ports {{ dom0_wan_uplink_interface_resolved }}
+{% elif bridge.ports | length > 0 %}
+    bridge-ports {{ bridge.ports | join(' ') }}
+{% else %}
+    bridge-ports none
+{% endif %}
+{% for route in bridge.routes | default([]) %}
+    post-up ip route replace {{ route.destination }} via {{ route.via }} dev {{ bridge.name }}
+    pre-down ip route del {{ route.destination }} via {{ route.via }} dev {{ bridge.name }} || true
+{% endfor %}
+
+{% endfor %}

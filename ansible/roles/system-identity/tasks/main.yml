@@ -1,0 +1,87 @@
+#
+# Summary:
+# - Converges the steady-state hostname, local admin users, and doas policy on Alpine hosts.
+#
+---
+- name: Collect the current runtime hostname
+  ansible.builtin.command: hostname
+  register: system_identity_current_hostname
+  changed_when: false
+
+- name: Persist the target hostname
+  ansible.builtin.copy:
+    dest: /etc/hostname
+    content: "{{ node_hostname }}\n"
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Update the runtime hostname immediately
+  ansible.builtin.command: "hostname {{ node_hostname }}"
+  when: system_identity_current_hostname.stdout != node_hostname
+  changed_when: system_identity_current_hostname.stdout != node_hostname
+
+- name: Ensure doas is installed
+  community.general.apk:
+    name:
+      - doas
+    state: present
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Require a private dom0 console password hash
+  ansible.builtin.assert:
+    that:
+      - dom0_admin_password_hash is defined
+      - dom0_admin_password_hash | length > 0
+      - dom0_admin_password_hash is match('^\\$(1|5|6|y)\\$')
+    fail_msg: >-
+      Missing valid dom0_admin_password_hash for {{ node_name }}. Store per-box
+      hashes in controller-private state, for example
+      ~/private/klokast/dom0-console.yml, and load it through the provisioning
+      wrapper. The public repo must not contain dom0 console password hashes.
+
+- name: Ensure managed local users are present
+  # Tailscale SSH is the normal remote path, but dom0 must keep a local `neo`
+  # console password for NanoKVM break-glass recovery.
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: "{{ item.shell }}"
+    groups: "{{ item.groups }}"
+    append: true
+    create_home: true
+    password: "{{ item.password_hash }}"
+    password_lock: false
+    update_password: always
+  loop: "{{ dom0_local_users }}"
+  notify: Commit lbu changes
+
+- name: Read the current root shadow entry
+  ansible.builtin.command: getent shadow root
+  register: system_identity_root_shadow
+  changed_when: false
+
+- name: Lock the root password on dom0
+  ansible.builtin.command: /usr/bin/passwd -l root
+  when:
+    - dom0_lock_root_password | default(true)
+    - system_identity_root_shadow.stdout is not search('^root:[!*]')
+  changed_when: true
+  notify: Commit lbu changes
+
+- name: Ensure managed home directories are tracked by lbu
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "+{{ item | regex_replace('^/', '') }}"
+    create: true
+    mode: "0644"
+  loop: "{{ dom0_home_lbu_include_paths }}"
+  notify: Commit lbu changes
+
+- name: Configure doas for wheel group
+  ansible.builtin.copy:
+    dest: /etc/doas.d/doas.conf
+    mode: "0600"
+    content: |
+      permit nopass :wheel
+  notify: Commit lbu changes

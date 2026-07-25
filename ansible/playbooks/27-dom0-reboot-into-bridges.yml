@@ -1,0 +1,71 @@
+---
+- name: Reboot dom0 into the persisted bridge runtime
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Record the current boot ID before the bridge reboot
+      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
+      register: bridge_reboot_boot_id_before
+      changed_when: false
+      become: false
+
+    - name: Trigger a detached reboot into the persisted bridge config
+      ansible.builtin.shell: >-
+        nohup /bin/sh -c 'sleep 2; doas -n reboot'
+        >/tmp/klokast-dom0-bridge-reboot.log 2>&1 </dev/null &
+      args:
+        executable: /bin/sh
+      changed_when: true
+      become: false
+
+    - name: Wait for the bridge reboot to drop Tailscale SSH
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}"
+        port: 22
+        state: stopped
+        timeout: 120
+        sleep: 2
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for dom0 to come back after the bridge reboot
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 1200
+        sleep: 2
+      become: false
+
+    - name: Record the boot ID after the bridge reboot
+      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
+      register: bridge_reboot_boot_id_after
+      changed_when: false
+      become: false
+
+    - name: Assert the bridge reboot changed the boot ID
+      ansible.builtin.assert:
+        that:
+          - bridge_reboot_boot_id_after.stdout != bridge_reboot_boot_id_before.stdout
+        fail_msg: >-
+          The bridge reboot task returned, but the host boot ID did not change.
+
+    - name: Collect bridge runtime state after reboot
+      ansible.builtin.shell: |
+        set -eu
+        default_iface="$(ip route show default 2>/dev/null | awk 'NR == 1 {print $5}')"
+        wan_ports="$(brctl show {{ dom0_wan_bridge_name | quote }} 2>/dev/null | awk 'NR > 1 && $4 != "" {print $4}')"
+        printf 'default_iface=%s\n' "$default_iface"
+        printf 'wan_ports=%s\n' "$wan_ports"
+      args:
+        executable: /bin/sh
+      register: bridge_reboot_runtime_state
+      changed_when: false
+
+    - name: Assert dom0 is running through the WAN bridge
+      ansible.builtin.assert:
+        that:
+          - "'default_iface=' ~ dom0_wan_bridge_name in bridge_reboot_runtime_state.stdout"
+          - bridge_reboot_runtime_state.stdout is search('wan_ports=\\S+')
+        fail_msg: >-
+          Dom0 did not come back with the WAN uplink attached to
+          {{ dom0_wan_bridge_name }}. Review /etc/network/interfaces and the
+          bridge reboot log before starting router or VM guests.

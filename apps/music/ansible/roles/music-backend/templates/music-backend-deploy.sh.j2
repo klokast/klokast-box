@@ -1,0 +1,183 @@
+#!/bin/sh
+set -eu
+
+pod_name={{ music_pod_name | quote }}
+image_name={{ music_image_name | quote }}
+config_root={{ music_config_root | quote }}
+secret_root={{ music_secret_root | quote }}
+snap_bind_host={{ music_snapserver_host | quote }}
+snap_port={{ (music_snapserver_port | string) | quote }}
+mympd_bind_host={{ music_mympd_bind_host | quote }}
+mympd_port={{ (music_mympd_port | string) | quote }}
+legacy_library={{ music_legacy_library_root | quote }}
+legacy_playlists={{ music_legacy_playlist_root | quote }}
+legacy_ui_ts_state={{ music_legacy_private_ingress_state_root | quote }}
+
+volume_library={{ music_library_volume | quote }}
+volume_playlists={{ music_playlist_volume | quote }}
+volume_mpd={{ music_mpd_state_volume | quote }}
+volume_mympd={{ music_mympd_state_volume | quote }}
+volume_runtime={{ music_runtime_volume | quote }}
+volume_ui_ts={{ music_ui_tailscale_state_volume | quote }}
+volume_upload_ts={{ music_upload_tailscale_state_volume | quote }}
+
+ui_hostname={{ music_private_tailscale_hostname | quote }}
+ui_tag={{ music_private_tailscale_tag | quote }}
+upload_hostname={{ music_upload_tailscale_hostname | quote }}
+upload_tag={{ music_upload_tailscale_tag | quote }}
+
+podman_cmd() {
+    if [ "$(id -un)" = {{ vm_admin_user_name | quote }} ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u {{ vm_admin_user_name | quote }} /usr/bin/podman "$@"
+    fi
+}
+
+if ! podman_cmd image exists "$image_name"; then
+    echo "missing prebuilt image: $image_name; run ansible/bin/platform-image-build --app music --box {{ music_box | quote }} build/load first" >&2
+    exit 1
+fi
+
+ensure_volume() {
+    volume="$1"
+    if ! podman_cmd volume exists "$volume"; then
+        podman_cmd volume create "$volume" >/dev/null
+    fi
+}
+
+migrate_volume_once() {
+    source_path="$1"
+    volume="$2"
+    marker_name="$3"
+    owner="${4:-music}"
+    [ -d "$source_path" ] || return 0
+    if ! find "$source_path" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+        return 0
+    fi
+    podman_cmd run --rm --pull=never \
+        --security-opt no-new-privileges \
+        --cap-drop=NET_RAW \
+        --entrypoint /bin/sh \
+        -v "$source_path:/source:ro" \
+        -v "$volume:/dest" \
+        "$image_name" \
+        -c '
+            set -eu
+            marker="/dest/'"$marker_name"'"
+            if [ -e "$marker" ]; then
+                exit 0
+            fi
+            if find /dest -mindepth 1 ! -name "'"$marker_name"'" -print -quit | grep -q .; then
+                echo "volume $1 already has data; not importing $2" >&2
+                exit 0
+            fi
+            tar -C /source -cf - . | tar -C /dest -xf -
+            case "$3" in
+                music) chown -R music:music /dest ;;
+                root) chown -R root:root /dest ;;
+            esac
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$marker"
+        ' sh "$volume" "$source_path" "$owner"
+}
+
+for volume in \
+    "$volume_library" \
+    "$volume_playlists" \
+    "$volume_mpd" \
+    "$volume_mympd" \
+    "$volume_runtime" \
+    "$volume_ui_ts" \
+    "$volume_upload_ts"
+do
+    ensure_volume "$volume"
+done
+
+migrate_volume_once "$legacy_library" "$volume_library" .klokast-migrated-from-srv-music-library
+migrate_volume_once "$legacy_playlists" "$volume_playlists" .klokast-migrated-from-srv-music-playlists
+migrate_volume_once "$legacy_ui_ts_state" "$volume_ui_ts" .klokast-migrated-from-host-music-ingress-state root
+
+podman_cmd run --rm --pull=never \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    --entrypoint /bin/sh \
+    -v "$volume_library:/music/library" \
+    -v "$volume_playlists:/music/playlists" \
+    "$image_name" \
+    -c 'set -eu; chown music:music /music/library /music/playlists'
+
+if podman_cmd pod exists "$pod_name"; then
+    podman_cmd pod rm -f "$pod_name" >/dev/null
+fi
+
+podman_cmd pod create \
+    --name "$pod_name" \
+    -p "${snap_bind_host}:${snap_port}:${snap_port}" \
+    -p "${mympd_bind_host}:${mympd_port}:${mympd_port}" >/dev/null
+
+podman_cmd run -d \
+    --name {{ music_container_snapserver_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -v "$config_root:/etc/klokast/music:ro" \
+    -v "$volume_runtime:/music/run" \
+    --pull=never \
+    "$image_name" snapserver >/dev/null
+
+podman_cmd run -d \
+    --name {{ music_container_mpd_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -v "$config_root:/etc/klokast/music:ro" \
+    -v "$volume_library:/music/library" \
+    -v "$volume_playlists:/music/playlists" \
+    -v "$volume_mpd:/music/mpd" \
+    -v "$volume_runtime:/music/run" \
+    --pull=never \
+    "$image_name" mpd >/dev/null
+
+podman_cmd run -d \
+    --name {{ music_container_mympd_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -e MYMPD_HTTP_HOST={{ music_mympd_http_host | quote }} \
+    -v "$volume_mympd:/music/mympd" \
+    --pull=never \
+    "$image_name" mympd >/dev/null
+
+{% if music_enable_private_tailscale_ui | bool %}
+podman_cmd run -d \
+    --name {{ music_container_ui_ingress_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -e "MUSIC_TAILSCALE_HOSTNAME=$ui_hostname" \
+    -e "MUSIC_TAILSCALE_TAG=$ui_tag" \
+    -e MUSIC_TAILSCALE_AUTHKEY_FILE=/run/klokast-secrets/tailscale-authkey \
+    -v "$secret_root/ui-tailscale-authkey:/run/klokast-secrets/tailscale-authkey:ro" \
+    -v "$volume_ui_ts:/var/lib/tailscale" \
+    --pull=never \
+    "$image_name" ui-ingress >/dev/null
+{% endif %}
+
+podman_cmd run -d \
+    --name {{ music_container_upload_ingress_name | quote }} \
+    --pod "$pod_name" \
+    --restart=unless-stopped \
+    --security-opt no-new-privileges \
+    --cap-drop=NET_RAW \
+    -e "MUSIC_TAILSCALE_HOSTNAME=$upload_hostname" \
+    -e "MUSIC_TAILSCALE_TAG=$upload_tag" \
+    -e MUSIC_TAILSCALE_AUTHKEY_FILE=/run/klokast-secrets/tailscale-authkey \
+    -v "$secret_root/upload-tailscale-authkey:/run/klokast-secrets/tailscale-authkey:ro" \
+    -v "$volume_upload_ts:/var/lib/tailscale" \
+    -v "$volume_library:/music/library" \
+    --pull=never \
+    "$image_name" upload-ingress >/dev/null

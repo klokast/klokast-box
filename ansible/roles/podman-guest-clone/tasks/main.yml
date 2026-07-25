@@ -1,0 +1,441 @@
+#
+# Summary:
+# - Clones the sealed Podman template LV into a guest LV and personalizes only
+#   guest identity, static networking, and first-contact SSH state.
+#
+---
+- name: Assert Podman guest clone inputs are defined
+  ansible.builtin.assert:
+    that:
+      - podman_clone_guest_spec is mapping
+      - podman_clone_inventory_host | default('') | length > 0
+      - podman_clone_target_lv_path is match('^/dev/[^/]+/[^/]+$')
+      - podman_clone_template_lv_path is match('^/dev/[^/]+/[^/]+$')
+      - podman_clone_network_interfaces | default('') | length > 0
+    fail_msg: >-
+      Podman guest clone inputs are incomplete for
+      {{ podman_clone_guest_spec.guest_name | default('undefined') }}.
+
+- name: Derive Podman guest clone LV and mapper paths
+  ansible.builtin.set_fact:
+    podman_clone_target_vg_name: "{{ podman_clone_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1') }}"
+    podman_clone_target_lv_name: "{{ podman_clone_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\2') }}"
+    podman_clone_target_root_mapper_path: "/dev/mapper/{{ podman_clone_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}3"
+
+- name: Ensure Podman guest clone tooling is installed on dom0
+  community.general.apk:
+    name:
+      - e2fsprogs
+      - kpartx
+    state: present
+
+- name: Verify the sealed Podman template LV exists
+  ansible.builtin.stat:
+    path: "{{ podman_clone_template_lv_path }}"
+  register: podman_clone_template_lv_stat
+
+- name: Assert the sealed Podman template LV exists
+  ansible.builtin.assert:
+    that:
+      - podman_clone_template_lv_stat.stat.exists | default(false)
+    fail_msg: >-
+      Podman template LV {{ podman_clone_template_lv_path }} is missing. Run
+      the golden-image playbook before cloning Podman guests.
+
+- name: Check whether the Podman guest target LV already exists
+  ansible.builtin.stat:
+    path: "{{ podman_clone_target_lv_path }}"
+  register: podman_clone_target_lv_stat_before
+
+- name: Ensure the Podman guest target LV exists
+  community.general.lvol:
+    vg: "{{ podman_clone_target_vg_name }}"
+    lv: "{{ podman_clone_target_lv_name }}"
+    size: "{{ podman_clone_target_lv_size }}"
+    state: present
+  register: podman_clone_target_lv_create
+
+- name: Ensure the Podman guest root mount path exists
+  ansible.builtin.file:
+    path: "{{ podman_clone_mount_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Inspect the current Podman guest root filesystem
+  block:
+    - name: Remove any stale Podman guest partition mappings before inspection
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_clone_target_lv_path }}"
+      register: podman_clone_probe_kpartx_cleanup
+      failed_when: false
+      changed_when: podman_clone_probe_kpartx_cleanup.rc == 0
+
+    - name: Create partition mappings for the Podman guest target LV
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ podman_clone_target_lv_path }}"
+      register: podman_clone_probe_kpartx_add
+      failed_when: false
+      changed_when: podman_clone_probe_kpartx_add.rc == 0
+
+    - name: Mount the Podman guest root filesystem when available
+      ansible.builtin.command: "/bin/mount {{ podman_clone_target_root_mapper_path }} {{ podman_clone_mount_path }}"
+      register: podman_clone_probe_mount
+      failed_when: false
+      changed_when: false
+
+    - name: Check the Podman template marker on the target root
+      ansible.builtin.stat:
+        path: "{{ podman_clone_mount_path }}/etc/klokast-podman-template-built"
+      register: podman_clone_probe_marker
+      when: podman_clone_probe_mount.rc == 0
+
+    - name: Read the current Podman guest hostname when mountable
+      ansible.builtin.command: "/bin/cat {{ podman_clone_mount_path }}/etc/hostname"
+      register: podman_clone_current_hostname
+      changed_when: false
+      failed_when: false
+      when: podman_clone_probe_mount.rc == 0
+
+    - name: Read the current Podman guest network interfaces when mountable
+      ansible.builtin.command: "/bin/cat {{ podman_clone_mount_path }}/etc/network/interfaces"
+      register: podman_clone_current_interfaces
+      changed_when: false
+      failed_when: false
+      when: podman_clone_probe_mount.rc == 0
+
+    - name: Check whether the current Podman guest enables nftables at boot
+      ansible.builtin.stat:
+        path: "{{ podman_clone_mount_path }}/etc/runlevels/default/nftables"
+      register: podman_clone_current_nftables_service
+      when: podman_clone_probe_mount.rc == 0
+
+    - name: Check whether the current Podman guest has the bootstrap SSH firewall policy
+      ansible.builtin.command: >-
+        /bin/grep -q klokast-bootstrap-ssh-input
+        {{ podman_clone_mount_path }}/etc/nftables.nft
+      register: podman_clone_current_bootstrap_firewall
+      changed_when: false
+      failed_when: false
+      when: podman_clone_probe_mount.rc == 0
+
+    - name: Check whether the current Podman guest has a Tailscale machine identity
+      ansible.builtin.stat:
+        path: "{{ podman_clone_mount_path }}/var/lib/tailscale/tailscaled.state"
+      register: podman_clone_current_tailscale_state
+      when: podman_clone_probe_mount.rc == 0
+
+    - name: Check whether the current Podman guest root password is invalid
+      ansible.builtin.shell: |
+        awk -F: '
+          $1 == "root" {
+            found = 1
+            invalid = ($2 ~ /^[!*]/)
+            exit
+          }
+          END {
+            exit !(found && invalid)
+          }
+        ' {{ podman_clone_mount_path }}/etc/shadow
+      args:
+        executable: /bin/sh
+      register: podman_clone_current_root_password_invalid
+      changed_when: false
+      failed_when: false
+      when: podman_clone_probe_mount.rc == 0
+
+  always:
+    - name: Unmount the inspected Podman guest root filesystem when mounted
+      ansible.builtin.command: "/bin/umount {{ podman_clone_mount_path }}"
+      register: podman_clone_probe_unmount
+      failed_when: false
+      changed_when: podman_clone_probe_unmount.rc == 0
+
+    - name: Remove the inspected Podman guest partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_clone_target_lv_path }}"
+      register: podman_clone_probe_kpartx_remove
+      failed_when: false
+      changed_when: podman_clone_probe_kpartx_remove.rc == 0
+
+- name: Decide whether the existing Podman guest LV would need replacement
+  ansible.builtin.set_fact:
+    podman_clone_existing_target_needs_overwrite: >-
+      {{
+        (podman_clone_target_lv_stat_before.stat.exists | default(false))
+        and (not (podman_clone_rebuild | bool))
+        and (
+          (podman_clone_probe_mount.rc | default(1) != 0)
+          or (not (podman_clone_probe_marker.stat.exists | default(false)))
+        )
+      }}
+
+- name: Refuse to overwrite an existing Podman guest LV without explicit rebuild
+  ansible.builtin.assert:
+    that:
+      - not (podman_clone_existing_target_needs_overwrite | bool)
+    fail_msg: >-
+      Refusing to overwrite existing Podman guest LV
+      {{ podman_clone_target_lv_path }} because it is not a template-managed
+      Podman clone. Back up or remove the LV first, or set
+      podman_clone_rebuild=true when replacement is intentional.
+
+- name: Decide whether the Podman guest disk must be cloned
+  ansible.builtin.set_fact:
+    podman_clone_needs_clone: >-
+      {{
+        (podman_clone_rebuild | bool)
+        or (podman_clone_target_lv_create.changed | default(false))
+        or (podman_clone_probe_mount.rc | default(1) != 0)
+        or (not (podman_clone_probe_marker.stat.exists | default(false)))
+      }}
+
+- name: Decide whether the Podman guest disk must be personalized
+  ansible.builtin.set_fact:
+    podman_clone_needs_personalization: >-
+      {{
+        (podman_clone_needs_clone | bool)
+        or (podman_clone_current_hostname.stdout | default('') | trim != podman_clone_hostname)
+        or (podman_clone_bootstrap_host not in (podman_clone_current_interfaces.stdout | default('')))
+        or (podman_clone_current_interfaces.stdout | default('') | trim != podman_clone_network_interfaces | trim)
+        or (
+          not (podman_clone_current_tailscale_state.stat.exists | default(false))
+          and
+          (podman_clone_current_nftables_service.stat.exists | default(false))
+          and (podman_clone_current_bootstrap_firewall.rc | default(1) != 0)
+        )
+        or (podman_clone_current_root_password_invalid.rc | default(1) != 0)
+      }}
+
+- name: Clone the sealed Podman template into the guest target LV
+  when: podman_clone_needs_clone | bool
+  block:
+    - name: Remove any stale Podman guest partition mappings before cloning
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_clone_target_lv_path }}"
+      register: podman_clone_preclone_kpartx_cleanup
+      failed_when: false
+      changed_when: podman_clone_preclone_kpartx_cleanup.rc == 0
+
+    - name: Copy the Podman template disk into the guest target disk
+      ansible.builtin.command: >-
+        /bin/dd if={{ podman_clone_template_lv_path }} of={{ podman_clone_target_lv_path }}
+        bs=16M conv=fsync
+      changed_when: true
+
+- name: Personalize the cloned Podman guest root filesystem
+  when: podman_clone_needs_personalization | bool
+  block:
+    - name: Remove any stale Podman guest partition mappings before personalization
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_clone_target_lv_path }}"
+      register: podman_clone_customize_kpartx_cleanup
+      failed_when: false
+      changed_when: podman_clone_customize_kpartx_cleanup.rc == 0
+
+    - name: Create partition mappings for the cloned Podman guest
+      ansible.builtin.command: "/usr/sbin/kpartx -av {{ podman_clone_target_lv_path }}"
+      changed_when: true
+
+    - name: Wait for the cloned Podman guest root mapper
+      ansible.builtin.wait_for:
+        path: "{{ podman_clone_target_root_mapper_path }}"
+        timeout: 15
+
+    - name: Mount the cloned Podman guest root filesystem
+      ansible.builtin.command: "/bin/mount {{ podman_clone_target_root_mapper_path }} {{ podman_clone_mount_path }}"
+
+    - name: Persist the Podman guest hostname
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/etc/hostname"
+        content: "{{ podman_clone_hostname }}\n"
+        mode: "0644"
+
+    - name: Persist the Podman guest hosts file
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/etc/hosts"
+        mode: "0644"
+        content: |
+          127.0.0.1 localhost localhost.localdomain
+          ::1 localhost localhost.localdomain
+          127.0.1.1 {{ podman_clone_hostname }}
+
+    - name: Persist the Podman guest network interfaces
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/etc/network/interfaces"
+        content: "{{ podman_clone_network_interfaces }}"
+        mode: "0644"
+
+    - name: Persist the Podman guest DNS resolver
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/etc/resolv.conf"
+        mode: "0644"
+        content: |
+          {% for resolver in podman_clone_dns_resolvers %}
+          nameserver {{ resolver }}
+          {% endfor %}
+
+    - name: Clear cloned machine and management identities
+      ansible.builtin.shell: |
+        set -eu
+        rm -f {{ podman_clone_mount_path | quote }}/etc/machine-id
+        rm -f {{ podman_clone_mount_path | quote }}/var/lib/dbus/machine-id
+        rm -rf {{ podman_clone_mount_path | quote }}/var/lib/tailscale
+        mkdir -p {{ podman_clone_mount_path | quote }}/var/lib/tailscale
+        rm -f {{ podman_clone_mount_path | quote }}/etc/ssh/ssh_host_*
+      args:
+        executable: /bin/sh
+      changed_when: true
+
+    - name: Ensure OpenSSH is present on the cloned Podman guest for bootstrap recovery
+      ansible.builtin.command:
+        cmd: >-
+          /sbin/apk --root {{ podman_clone_mount_path }}
+          --repositories-file {{ podman_clone_mount_path }}/etc/apk/repositories
+          add --no-cache openssh
+      args:
+        creates: "{{ podman_clone_mount_path }}/usr/sbin/sshd"
+
+    - name: Ensure the cloned Podman guest OpenSSH policy directory exists
+      ansible.builtin.file:
+        path: "{{ podman_clone_mount_path }}/etc/ssh/sshd_config.d"
+        state: directory
+        mode: "0755"
+
+    - name: Restrict first-contact OpenSSH to the bootstrap address
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf"
+        mode: "0644"
+        content: |
+          ListenAddress {{ podman_clone_bootstrap_host }}
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          PermitRootLogin prohibit-password
+
+    - name: Check whether nftables is installed in the cloned Podman guest
+      ansible.builtin.stat:
+        path: "{{ podman_clone_mount_path }}/etc/init.d/nftables"
+      register: podman_clone_nftables_init
+
+    - name: Seed a first-contact nftables policy for bootstrap SSH
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/etc/nftables.nft"
+        mode: "0644"
+        content: |
+          #!/usr/sbin/nft -f
+          destroy table inet klokast_vm_filter
+
+          table inet klokast_vm_filter {
+              chain input {
+                  type filter hook input priority 100; policy drop;
+
+                  ct state invalid drop
+                  ct state { established, related } accept
+                  iifname "lo" accept
+                  ip protocol icmp accept
+                  ip6 nexthdr icmpv6 accept
+                  iifname "{{ podman_clone_bootstrap_interface }}" ip saddr { {{ podman_clone_bootstrap_ssh_sources | join(', ') }} } ip daddr {{ podman_clone_bootstrap_host }} tcp dport 22 accept comment "klokast-bootstrap-ssh-input"
+              }
+
+              chain forward {
+                  type filter hook forward priority 100; policy drop;
+              }
+
+              chain output {
+                  type filter hook output priority 100; policy accept;
+              }
+          }
+      when: podman_clone_nftables_init.stat.exists | default(false)
+
+    - name: Enable first-contact nftables policy on the cloned Podman guest
+      ansible.builtin.file:
+        src: /etc/init.d/nftables
+        dest: "{{ podman_clone_mount_path }}/etc/runlevels/default/nftables"
+        state: link
+        force: true
+        follow: false
+      when: podman_clone_nftables_init.stat.exists | default(false)
+
+    - name: Ensure the cloned Podman guest OpenRC default runlevel directory exists
+      ansible.builtin.file:
+        path: "{{ podman_clone_mount_path }}/etc/runlevels/default"
+        state: directory
+        mode: "0755"
+
+    - name: Enable first-contact services on the cloned Podman guest
+      ansible.builtin.file:
+        src: "/etc/init.d/{{ item }}"
+        dest: "{{ podman_clone_mount_path }}/etc/runlevels/default/{{ item }}"
+        state: link
+        force: true
+        follow: false
+      loop:
+        - networking
+        - sshd
+
+    - name: Ensure the cloned Podman guest root SSH directory exists
+      ansible.builtin.file:
+        path: "{{ podman_clone_mount_path }}/root/.ssh"
+        state: directory
+        mode: "0700"
+
+    - name: Verify the Podman guest bootstrap SSH key file exists
+      ansible.builtin.stat:
+        path: "{{ podman_clone_bootstrap_authorized_key_file }}"
+      delegate_to: localhost
+      become: false
+      register: podman_clone_bootstrap_key_file
+
+    - name: Assert the Podman guest bootstrap SSH key file exists
+      ansible.builtin.assert:
+        that:
+          - podman_clone_bootstrap_key_file.stat.exists | default(false)
+        fail_msg: >-
+          Guest {{ podman_clone_guest_spec.guest_name }} bootstrap key file
+          {{ podman_clone_bootstrap_authorized_key_file }} does not exist on
+          the controller.
+
+    - name: Seed the cloned Podman guest root bootstrap authorized key
+      ansible.builtin.copy:
+        dest: "{{ podman_clone_mount_path }}/root/.ssh/authorized_keys"
+        content: "{{ lookup('file', podman_clone_bootstrap_authorized_key_file) }}\n"
+        mode: "0600"
+
+    - name: Keep root password login invalid while allowing key-only bootstrap SSH
+      ansible.builtin.lineinfile:
+        path: "{{ podman_clone_mount_path }}/etc/shadow"
+        regexp: '^root:[^:]*:(.*)$'
+        line: 'root:*:\1'
+        backrefs: true
+        mode: "0600"
+
+  always:
+    - name: Unmount the cloned Podman guest root filesystem if mounted
+      ansible.builtin.command: "/bin/umount {{ podman_clone_mount_path }}"
+      register: podman_clone_customize_unmount
+      failed_when: false
+      changed_when: podman_clone_customize_unmount.rc == 0
+
+    - name: Remove the cloned Podman guest partition mappings
+      ansible.builtin.command: "/usr/sbin/kpartx -dv {{ podman_clone_target_lv_path }}"
+      register: podman_clone_customize_kpartx_remove
+      failed_when: false
+      changed_when: podman_clone_customize_kpartx_remove.rc == 0
+
+- name: Remove any stale controller-side known_hosts entry for the Podman guest bootstrap IP
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh-keygen
+      - -f
+      - "{{ podman_clone_bootstrap_known_hosts_file }}"
+      - -R
+      - "{{ podman_clone_bootstrap_host }}"
+  delegate_to: localhost
+  become: false
+  register: podman_clone_known_hosts_cleanup
+  failed_when: false
+  changed_when: podman_clone_known_hosts_cleanup.rc == 0
+  when: podman_clone_needs_personalization | bool
+
+- name: Show the cloned Podman guest state
+  ansible.builtin.debug:
+    msg:
+      - "{{ podman_clone_guest_spec.guest_name }}"
+      - "{{ podman_clone_target_lv_path }}"
+      - "{{ podman_clone_hostname }}"
+      - "{{ podman_clone_bootstrap_host }}"

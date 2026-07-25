@@ -1,0 +1,179 @@
+#
+# Summary:
+# - Converges the common Alpine VM baseline: hostname, packages, admin user, SSH policy, doas, and package removals.
+#
+---
+- name: Collect the current VM hostname
+  ansible.builtin.command: hostname
+  register: vm_base_current_hostname
+  changed_when: false
+
+- name: Persist the VM hostname
+  ansible.builtin.copy:
+    dest: /etc/hostname
+    content: "{{ node_hostname }}\n"
+    mode: "0644"
+
+- name: Update the runtime VM hostname immediately
+  ansible.builtin.command: "hostname {{ node_hostname }}"
+  when: vm_base_current_hostname.stdout != node_hostname
+  changed_when: vm_base_current_hostname.stdout != node_hostname
+
+- name: Ensure the VM MOTD is configured
+  ansible.builtin.copy:
+    dest: /etc/motd
+    mode: "0644"
+    content: "Wake up, Neo...\n"
+
+- name: Ensure Alpine repositories are configured
+  ansible.builtin.copy:
+    dest: /etc/apk/repositories
+    mode: "0644"
+    content: |
+      {% for repo in alpine_repositories %}
+      {{ repo }}
+      {% endfor %}
+
+- name: Decide whether the VM can drop OpenSSH yet
+  ansible.builtin.set_fact:
+    vm_base_can_disable_sshd: >-
+      {{
+        (not (vm_manage_sshd | default(true)))
+        and (tailscale_client_status.BackendState | default('') == 'Running')
+      }}
+
+- name: Select the effective VM package removal set
+  ansible.builtin.set_fact:
+    vm_removed_packages_effective: >-
+      {{
+        (
+          vm_removed_packages | default([])
+          if ((vm_manage_sshd | default(true)) or vm_base_can_disable_sshd)
+          else []
+        )
+      }}
+
+- name: Select the steady-state VM package set
+  ansible.builtin.set_fact:
+    vm_base_effective_packages: >-
+      {{
+        vm_base_packages
+        | reject('in', vm_removed_packages_effective)
+        | list
+      }}
+
+- name: Ensure the base VM packages are installed
+  community.general.apk:
+    name: "{{ vm_base_effective_packages }}"
+    state: present
+
+- name: Ensure managed local VM users are present
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: "{{ item.shell }}"
+    groups: "{{ item.groups }}"
+    append: true
+    create_home: true
+    password: "{{ vm_admin_password_hash }}"
+    update_password: always
+  loop: "{{ vm_local_users }}"
+
+- name: Read the current root shadow entry
+  ansible.builtin.command: getent shadow root
+  register: vm_base_root_shadow
+  changed_when: false
+
+- name: Lock the root password on managed VMs
+  ansible.builtin.command: /usr/bin/passwd -l root
+  when:
+    - vm_lock_root_password | default(true)
+    - vm_base_root_shadow.stdout is not search('^root:[!*]')
+  changed_when: true
+
+- name: Check whether the VM admin authorized key file exists on the controller
+  ansible.builtin.stat:
+    path: "{{ vm_admin_authorized_key_file }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_remote_tmp: "{{ controller_remote_tmp | default(lookup('env', 'HOME') ~ '/.ansible/tmp') }}"
+  register: vm_base_admin_authorized_key_file
+
+- name: Require the VM admin authorized key when OpenSSH is managed
+  ansible.builtin.assert:
+    that:
+      - vm_base_admin_authorized_key_file.stat.exists
+    fail_msg: >-
+      Missing VM admin authorized key file on the controller:
+      {{ vm_admin_authorized_key_file }}.
+  when: vm_manage_sshd | default(true)
+
+- name: Ensure the VM admin authorized key is present
+  ansible.posix.authorized_key:
+    user: "{{ vm_admin_user_name }}"
+    key: "{{ lookup('file', vm_admin_authorized_key_file) }}"
+    state: present
+  when: vm_base_admin_authorized_key_file.stat.exists
+
+- name: Configure doas for the wheel group
+  ansible.builtin.copy:
+    dest: /etc/doas.d/doas.conf
+    mode: "0600"
+    content: |
+      permit nopass :wheel
+
+- name: Check whether the OpenSSH init script exists
+  ansible.builtin.stat:
+    path: /etc/init.d/sshd
+  register: vm_base_sshd_init_script
+
+- name: Enforce key-only SSH for managed VM accounts
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-klokast-key-only.conf
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin prohibit-password
+  register: vm_base_sshd_policy
+  when: vm_manage_sshd | default(true)
+
+- name: Restart OpenSSH when the SSH policy changes
+  ansible.builtin.service:
+    name: sshd
+    enabled: true
+    state: restarted
+  when:
+    - vm_manage_sshd | default(true)
+    - vm_base_sshd_policy.changed
+
+- name: Ensure OpenSSH is enabled and running
+  ansible.builtin.service:
+    name: sshd
+    enabled: true
+    state: started
+  when:
+    - vm_manage_sshd | default(true)
+    - not vm_base_sshd_policy.changed
+
+- name: Stop and disable OpenSSH when the VM should rely on Tailscale SSH only
+  ansible.builtin.service:
+    name: sshd
+    enabled: false
+    state: stopped
+  when:
+    - vm_base_can_disable_sshd
+    - vm_base_sshd_init_script.stat.exists | default(false)
+
+- name: Remove the managed OpenSSH policy drop-in when OpenSSH is disabled
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/10-klokast-key-only.conf
+    state: absent
+  when: vm_base_can_disable_sshd
+
+- name: Remove packages that should not remain on this VM
+  community.general.apk:
+    name: "{{ vm_removed_packages_effective | default([]) }}"
+    state: absent
+  when: (vm_removed_packages_effective | default([])) | length > 0

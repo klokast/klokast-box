@@ -1,0 +1,203 @@
+---
+- name: Verify backend service state
+  when: node_domain_role == 'backend'
+  block:
+    - name: Select backend site mode for verification
+      ansible.builtin.set_fact:
+        immich_site_mode: "{{ 'active' if node_name == immich_active_master else 'passive' }}"
+
+    - name: Collect the Immich pod state
+      ansible.builtin.command:
+        argv:
+          - podman
+          - pod
+          - inspect
+          - --format
+          - "{% raw %}{{.State}}{% endraw %}"
+          - immich
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: immich_verify_pod_state
+      changed_when: false
+
+    - name: Collect the Immich pod port bindings
+      ansible.builtin.command:
+        argv:
+          - podman
+          - pod
+          - inspect
+          - --format
+          - "{% raw %}{{json .InfraConfig.PortBindings}}{% endraw %}"
+          - immich
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: immich_verify_port_bindings
+      changed_when: false
+
+    - name: Parse Immich pod port bindings
+      ansible.builtin.set_fact:
+        immich_verify_port_bindings_json: "{{ immich_verify_port_bindings.stdout | from_json }}"
+
+    - name: Assert backend port exposure is narrow
+      ansible.builtin.assert:
+        that:
+          - (immich_verify_port_bindings_json.keys() | list | sort) == ['2283/tcp']
+          - immich_verify_port_bindings_json['2283/tcp'] | length == 1
+          - immich_verify_port_bindings_json['2283/tcp'][0].HostIp == backend_bootstrap_host
+          - immich_verify_port_bindings_json['2283/tcp'][0].HostPort == '2283'
+        fail_msg: >-
+          Immich backend must expose only the web upstream on the backend zone
+          address.
+
+    - name: Verify active backend HTTP health
+      ansible.builtin.uri:
+        url: "http://{{ backend_bootstrap_host }}:2283/api/server/ping"
+        return_content: true
+        status_code: 200
+      register: immich_verify_status
+      retries: 30
+      delay: 5
+      until:
+        - immich_verify_status.status == 200
+      changed_when: false
+      when: immich_site_mode == 'active'
+
+    - name: Assert passive backend is stopped
+      ansible.builtin.assert:
+        that:
+          - immich_verify_pod_state.stdout != 'Running'
+        fail_msg: >-
+          Passive backup backend must not serve traffic until promoted.
+      when: immich_site_mode == 'passive'
+
+    - name: Collect Immich backend Podman volumes
+      ansible.builtin.command:
+        argv:
+          - podman
+          - volume
+          - ls
+          - "--format={{ '{{' }}.Name{{ '}}' }}"
+      become: true
+      become_user: "{{ vm_admin_user_name }}"
+      register: immich_verify_backend_volumes
+      changed_when: false
+
+    - name: Assert Immich backend volumes exist
+      ansible.builtin.assert:
+        that:
+          - immich_library_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_postgres_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_valkey_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_model_cache_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_ml_dotcache_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_ml_config_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_backup_volume in immich_verify_backend_volumes.stdout_lines
+          - immich_restore_volume in immich_verify_backend_volumes.stdout_lines
+        fail_msg: >-
+          Immich backend Podman volumes are incomplete.
+
+- name: Verify DMZ private Tailscale ingress state
+  when: node_domain_role == 'dmz'
+  block:
+    - name: Select private ingress site mode for verification
+      ansible.builtin.set_fact:
+        immich_site_mode: "{{ 'active' if node_name == immich_active_master else 'passive' }}"
+
+    - name: Collect the private ingress pod state
+      ansible.builtin.command:
+        argv:
+          - doas
+          - -u
+          - "{{ vm_admin_user_name }}"
+          - podman
+          - pod
+          - inspect
+          - "--format={{ '{{' }}.State{{ '}}' }}"
+          - "{{ immich_private_ingress_pod_name }}"
+      become: true
+      register: immich_verify_private_ingress_pod_state
+      changed_when: false
+      failed_when: false
+
+    - name: Assert private ingress runs only on active DMZ
+      ansible.builtin.assert:
+        that:
+          - >-
+            (immich_site_mode == 'active' and immich_verify_private_ingress_pod_state.stdout == 'Running')
+            or
+            (immich_site_mode == 'passive' and immich_verify_private_ingress_pod_state.stdout != 'Running')
+        fail_msg: >-
+          Immich private ingress Podman pod must run only on the active DMZ.
+
+    - name: Collect active private ingress Tailscale status
+      ansible.builtin.command:
+        argv:
+          - doas
+          - -u
+          - "{{ vm_admin_user_name }}"
+          - podman
+          - exec
+          - "{{ immich_private_ingress_tailscale_container_name }}"
+          - tailscale
+          - --socket
+          - /tmp/tailscale/tailscaled.sock
+          - status
+          - --json
+          - --peers=false
+      become: true
+      register: immich_verify_private_ingress_status_json
+      changed_when: false
+      when: immich_site_mode == 'active'
+
+    - name: Parse active private ingress Tailscale status
+      ansible.builtin.set_fact:
+        immich_verify_private_ingress_status: "{{ immich_verify_private_ingress_status_json.stdout | from_json }}"
+      when: immich_site_mode == 'active'
+
+    - name: Assert active private ingress identity
+      ansible.builtin.assert:
+        that:
+          - immich_verify_private_ingress_status.BackendState | default('') == 'Running'
+          - immich_verify_private_ingress_status.Self.HostName | default('') == (immich_private_tailscale_hostname | default('photos'))
+          - ((immich_verify_private_ingress_status.Self.DNSName | default('') | lower | trim('.')).split('.')[0]) == (immich_private_tailscale_hostname | default('photos'))
+          - "'tag:immich' in (immich_verify_private_ingress_status.Self.Tags | default([]))"
+        fail_msg: >-
+          Active private ingress must be enrolled as the stable photos MagicDNS
+          identity with tag:immich.
+      when: immich_site_mode == 'active'
+
+    - name: Verify the active private Immich URL from the controller
+      ansible.builtin.uri:
+        url: "https://{{ immich_private_domain }}/api/server/ping"
+        return_content: true
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      register: immich_verify_private_url
+      retries: 10
+      delay: 3
+      until:
+        - immich_verify_private_url.status == 200
+      changed_when: false
+      when: immich_site_mode == 'active'
+
+    - name: Collect Immich private ingress Podman volumes
+      ansible.builtin.command:
+        argv:
+          - doas
+          - -u
+          - "{{ vm_admin_user_name }}"
+          - podman
+          - volume
+          - ls
+          - "--format={{ '{{' }}.Name{{ '}}' }}"
+      become: true
+      register: immich_verify_private_ingress_volumes
+      changed_when: false
+
+    - name: Assert Immich private ingress volumes exist
+      ansible.builtin.assert:
+        that:
+          - immich_private_ingress_tailscale_state_volume in immich_verify_private_ingress_volumes.stdout_lines
+        fail_msg: >-
+          Immich private ingress Tailscale state volume is missing.

@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+
+SOURCE_DIR=""
+TAG=""
+TITLE=""
+GITHUB_REPO=""
+USED_FOR=()
+MANIFEST_OUT=""
+ISO_BUILT_AT_UTC="unknown"
+SEED_BUILT_AT_UTC="unknown"
+DRY_RUN="false"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/bootstrap-live-iso-release \
+    --source-dir tmp \
+    --tag bootstrap-iso-debian-YYYY-MM-DD \
+    [--used-for k001] \
+    [--manifest-out apps/bootstrap-iso-debian/releases/TAG.json] \
+    [--repo OWNER/REPO] \
+    [--title TITLE] \
+    [--iso-built-at UTC] \
+    [--seed-built-at UTC] \
+    [--dry-run]
+
+Publish a secret-free Debian bootstrap ISO and optional Alpine seed tarball as
+a private GitHub Release asset bundle.
+
+The source directory must contain exactly one:
+  - klokast-bootstrap-debian-*.iso
+  - klokast-bootstrap-debian-*.iso.sha512
+  - alpine-standard-*.tar.gz
+  - alpine-standard-*.tar.gz.sha512
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+single_match() {
+  local pattern="$1"
+  local matches=()
+  shopt -s nullglob
+  matches=($pattern)
+  shopt -u nullglob
+  [ "${#matches[@]}" -eq 1 ] || die "expected exactly one match for ${pattern}, found ${#matches[@]}"
+  printf '%s\n' "${matches[0]}"
+}
+
+hash_field() {
+  awk 'NR == 1 { print $1 }' "$1"
+}
+
+sha256_of() {
+  sha256sum "$1" | awk '{ print $1 }'
+}
+
+sha512_of() {
+  sha512sum "$1" | awk '{ print $1 }'
+}
+
+size_bytes() {
+  wc -c <"$1" | tr -d '[:space:]'
+}
+
+verify_sidecar_sha512() {
+  local artifact="$1"
+  local sidecar="$2"
+  local expected actual
+  expected="$(hash_field "$sidecar")"
+  actual="$(sha512_of "$artifact")"
+  [ -n "$expected" ] || die "empty SHA512 sidecar: $sidecar"
+  [ "$expected" = "$actual" ] || die "SHA512 mismatch for $artifact"
+}
+
+artifact_secret_scan() {
+  local artifact="$1"
+  local name="$2"
+  local output
+
+  output="$(
+    strings -a "$artifact" 2>/dev/null |
+      grep -E 'tskey-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|-----BEGIN (OPENSSH |RSA |EC |DSA |PRIVATE )?PRIVATE KEY-----|AWS_SECRET_ACCESS_KEY=' |
+      head -n 20 || true
+  )"
+  [ -z "$output" ] || {
+    printf 'Possible secret-bearing strings in %s:\n%s\n' "$name" "$output" >&2
+    die "secret scan failed for $name"
+  }
+}
+
+default_github_repo() {
+  local origin
+  origin="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
+  case "$origin" in
+    git@github.com*:*)
+      printf '%s\n' "${origin#*:}" | sed 's/\.git$//'
+      ;;
+    https://github.com/*)
+      printf '%s\n' "${origin#https://github.com/}" | sed 's/\.git$//'
+      ;;
+    *)
+      die "could not infer GitHub repo from origin: $origin"
+      ;;
+  esac
+}
+
+release_notes() {
+  local notes_path="$1"
+  cat >"$notes_path" <<EOF
+Bootstrap ISO artifact bundle.
+
+Purpose:
+- Provides a first-contact Debian Live bootstrap ISO for a blank mini PC when no <box>-bak builder is available yet.
+- Keeps the ISO generic and secret-free: no box name, Tailscale auth key, OAuth material, or inventory secret is embedded.
+- Includes the Alpine seed tarball as an optional offline companion for the diskless Alpine install path.
+
+Artifacts:
+- ${ISO_NAME}
+  - Debian release: ${DEBIAN_RELEASE}
+  - Architecture: ${DEBIAN_ARCH}
+  - Built or first observed complete: ${ISO_BUILT_AT_UTC}
+  - Size: ${ISO_SIZE_BYTES} bytes
+  - SHA512: ${ISO_SHA512}
+- ${SEED_NAME}
+  - Alpine release: ${ALPINE_RELEASE}
+  - Architecture: ${ALPINE_ARCH}
+  - Built or first observed complete: ${SEED_BUILT_AT_UTC}
+  - Size: ${SEED_SIZE_BYTES} bytes
+  - SHA512: ${SEED_SHA512}
+
+Validation:
+- Used for: ${USED_FOR_TEXT}
+- Release generated from repository commit: ${RELEASE_REPOSITORY_COMMIT}
+- Re-run checksum verification after download with: sha512sum -c SHA512SUMS
+EOF
+}
+
+json_list() {
+  local first="true"
+  printf '['
+  for value in "$@"; do
+    if [ "$first" = "true" ]; then
+      first="false"
+    else
+      printf ','
+    fi
+    python3 -c 'import json, sys; print(json.dumps(sys.argv[1]), end="")' "$value"
+  done
+  printf ']'
+}
+
+write_manifest() {
+  local manifest_path="$1"
+  local used_for_json
+  used_for_json="$(json_list "${USED_FOR[@]}")"
+  mkdir -p "$(dirname -- "$manifest_path")"
+  cat >"$manifest_path" <<EOF
+{
+  "schema": "klokast.bootstrap_iso_release.v1",
+  "tag": "${TAG}",
+  "title": "${TITLE}",
+  "created_at_utc": "${CREATED_AT_UTC}",
+  "github_repository": "${GITHUB_REPO}",
+  "source_directory": "${SOURCE_DIR_DISPLAY}",
+  "release_repository_commit": "${RELEASE_REPOSITORY_COMMIT}",
+  "used_for": ${used_for_json},
+  "security": {
+    "secret_free_iso": true,
+    "notes": "The bootstrap ISO must not embed a box name, Tailscale auth key, OAuth material, or inventory secret."
+  },
+  "artifacts": [
+    {
+      "role": "bootstrap_iso",
+      "filename": "${ISO_NAME}",
+      "debian_release": "${DEBIAN_RELEASE}",
+      "architecture": "${DEBIAN_ARCH}",
+      "built_or_first_observed_complete_at_utc": "${ISO_BUILT_AT_UTC}",
+      "size_bytes": ${ISO_SIZE_BYTES},
+      "sha256": "${ISO_SHA256}",
+      "sha512": "${ISO_SHA512}"
+    },
+    {
+      "role": "alpine_seed",
+      "filename": "${SEED_NAME}",
+      "alpine_release": "${ALPINE_RELEASE}",
+      "architecture": "${ALPINE_ARCH}",
+      "built_or_first_observed_complete_at_utc": "${SEED_BUILT_AT_UTC}",
+      "size_bytes": ${SEED_SIZE_BYTES},
+      "sha256": "${SEED_SHA256}",
+      "sha512": "${SEED_SHA512}"
+    }
+  ]
+}
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --source-dir)
+      SOURCE_DIR="${2:?missing value for --source-dir}"
+      shift 2
+      ;;
+    --tag)
+      TAG="${2:?missing value for --tag}"
+      shift 2
+      ;;
+    --title)
+      TITLE="${2:?missing value for --title}"
+      shift 2
+      ;;
+    --repo)
+      GITHUB_REPO="${2:?missing value for --repo}"
+      shift 2
+      ;;
+    --used-for)
+      USED_FOR+=("${2:?missing value for --used-for}")
+      shift 2
+      ;;
+    --manifest-out)
+      MANIFEST_OUT="${2:?missing value for --manifest-out}"
+      shift 2
+      ;;
+    --iso-built-at)
+      ISO_BUILT_AT_UTC="${2:?missing value for --iso-built-at}"
+      shift 2
+      ;;
+    --seed-built-at)
+      SEED_BUILT_AT_UTC="${2:?missing value for --seed-built-at}"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$SOURCE_DIR" ] || die "--source-dir is required"
+[ -n "$TAG" ] || die "--tag is required"
+[ "${#USED_FOR[@]}" -gt 0 ] || USED_FOR=("unknown")
+TITLE="${TITLE:-${TAG}}"
+
+require_cmd awk
+require_cmd gh
+require_cmd git
+require_cmd grep
+require_cmd python3
+require_cmd sha256sum
+require_cmd sha512sum
+require_cmd strings
+require_cmd wc
+
+case "$SOURCE_DIR" in
+  /*) SOURCE_DIR_ABS="$SOURCE_DIR" ;;
+  *) SOURCE_DIR_ABS="$REPO_DIR/$SOURCE_DIR" ;;
+esac
+[ -d "$SOURCE_DIR_ABS" ] || die "source directory not found: $SOURCE_DIR"
+SOURCE_DIR_DISPLAY="${SOURCE_DIR_ABS#$REPO_DIR/}"
+
+GITHUB_REPO="${GITHUB_REPO:-$(default_github_repo)}"
+RELEASE_REPOSITORY_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CREATED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+WORK_DIR="$REPO_DIR/.run/bootstrap-live-iso-release/$TAG"
+ASSET_DIR="$WORK_DIR/assets"
+VERIFY_DIR="$WORK_DIR/verify"
+mkdir -p "$ASSET_DIR" "$VERIFY_DIR"
+
+cd "$SOURCE_DIR_ABS"
+ISO_PATH="$(single_match "klokast-bootstrap-debian-*.iso")"
+SEED_PATH="$(single_match "alpine-standard-*.tar.gz")"
+ISO_NAME="$(basename -- "$ISO_PATH")"
+SEED_NAME="$(basename -- "$SEED_PATH")"
+[ -f "$ISO_NAME.sha512" ] || die "missing $ISO_NAME.sha512"
+[ -f "$SEED_NAME.sha512" ] || die "missing $SEED_NAME.sha512"
+
+verify_sidecar_sha512 "$ISO_NAME" "$ISO_NAME.sha512"
+verify_sidecar_sha512 "$SEED_NAME" "$SEED_NAME.sha512"
+artifact_secret_scan "$ISO_NAME" "$ISO_NAME"
+artifact_secret_scan "$SEED_NAME" "$SEED_NAME"
+
+ISO_SHA256="$(sha256_of "$ISO_NAME")"
+ISO_SHA512="$(sha512_of "$ISO_NAME")"
+SEED_SHA256="$(sha256_of "$SEED_NAME")"
+SEED_SHA512="$(sha512_of "$SEED_NAME")"
+ISO_SIZE_BYTES="$(size_bytes "$ISO_NAME")"
+SEED_SIZE_BYTES="$(size_bytes "$SEED_NAME")"
+
+DEBIAN_RELEASE="$(printf '%s\n' "$ISO_NAME" | sed -n 's/^klokast-bootstrap-debian-\([^-][^-]*\)-\([^-][^-]*\)\.iso$/\1/p')"
+DEBIAN_ARCH="$(printf '%s\n' "$ISO_NAME" | sed -n 's/^klokast-bootstrap-debian-\([^-][^-]*\)-\([^-][^-]*\)\.iso$/\2/p')"
+ALPINE_RELEASE="$(printf '%s\n' "$SEED_NAME" | sed -n 's/^alpine-standard-\([0-9][0-9.]*\)-\([A-Za-z0-9_][A-Za-z0-9_]*\)\.tar\.gz$/\1/p')"
+ALPINE_ARCH="$(printf '%s\n' "$SEED_NAME" | sed -n 's/^alpine-standard-\([0-9][0-9.]*\)-\([A-Za-z0-9_][A-Za-z0-9_]*\)\.tar\.gz$/\2/p')"
+[ -n "$DEBIAN_RELEASE" ] || die "could not parse Debian release from $ISO_NAME"
+[ -n "$DEBIAN_ARCH" ] || die "could not parse Debian architecture from $ISO_NAME"
+[ -n "$ALPINE_RELEASE" ] || die "could not parse Alpine release from $SEED_NAME"
+[ -n "$ALPINE_ARCH" ] || die "could not parse Alpine architecture from $SEED_NAME"
+
+{
+  printf '%s  %s\n' "$ISO_SHA512" "$ISO_NAME"
+  printf '%s  %s\n' "$SEED_SHA512" "$SEED_NAME"
+} >"$ASSET_DIR/SHA512SUMS"
+{
+  printf '%s  %s\n' "$ISO_SHA256" "$ISO_NAME"
+  printf '%s  %s\n' "$SEED_SHA256" "$SEED_NAME"
+} >"$ASSET_DIR/SHA256SUMS"
+printf '%s  %s\n' "$ISO_SHA512" "$ISO_NAME" >"$ASSET_DIR/$ISO_NAME.sha512"
+printf '%s  %s\n' "$SEED_SHA512" "$SEED_NAME" >"$ASSET_DIR/$SEED_NAME.sha512"
+
+USED_FOR_TEXT="$(IFS=', '; printf '%s' "${USED_FOR[*]}")"
+MANIFEST_PATH="${MANIFEST_OUT:-$ASSET_DIR/$TAG.json}"
+case "$MANIFEST_PATH" in
+  /*) ;;
+  *) MANIFEST_PATH="$REPO_DIR/$MANIFEST_PATH" ;;
+esac
+write_manifest "$MANIFEST_PATH"
+release_notes "$ASSET_DIR/release-notes.md"
+
+printf 'Prepared bootstrap release assets under %s\n' "$ASSET_DIR"
+printf 'Manifest: %s\n' "$MANIFEST_PATH"
+
+if [ "$DRY_RUN" = "true" ]; then
+  printf 'Dry run complete; no git tag or GitHub Release was created.\n'
+  exit 0
+fi
+
+cd "$REPO_DIR"
+[ -z "$(git status --porcelain)" ] || die "git worktree must be clean before tagging"
+git fetch --tags origin
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  die "local tag already exists: $TAG"
+fi
+if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+  die "remote tag already exists: $TAG"
+fi
+if gh release view "$TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
+  die "GitHub Release already exists: $TAG"
+fi
+
+git tag -a "$TAG" -m "$TITLE"
+git push origin "refs/tags/$TAG"
+
+gh release create "$TAG" \
+  --repo "$GITHUB_REPO" \
+  --verify-tag \
+  --title "$TITLE" \
+  --notes-file "$ASSET_DIR/release-notes.md" \
+  --latest=false \
+  "$SOURCE_DIR_ABS/$ISO_NAME" \
+  "$SOURCE_DIR_ABS/$SEED_NAME" \
+  "$ASSET_DIR/$ISO_NAME.sha512" \
+  "$ASSET_DIR/$SEED_NAME.sha512" \
+  "$ASSET_DIR/SHA256SUMS" \
+  "$ASSET_DIR/SHA512SUMS" \
+  "$MANIFEST_PATH"
+
+rm -rf "$VERIFY_DIR"
+mkdir -p "$VERIFY_DIR"
+gh release download "$TAG" --repo "$GITHUB_REPO" --dir "$VERIFY_DIR"
+(
+  cd "$VERIFY_DIR"
+  sha512sum -c SHA512SUMS
+)
+
+printf 'Release verified: %s\n' "$TAG"

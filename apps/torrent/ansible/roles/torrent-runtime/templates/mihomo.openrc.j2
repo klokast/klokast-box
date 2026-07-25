@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+description="Klokast torrent Mihomo VPN egress"
+
+command="{{ torrent_mihomo_binary }}"
+command_args="-f {{ torrent_mihomo_config_path }} -d {{ torrent_mihomo_state_dir }}"
+command_background="yes"
+pidfile="/run/mihomo.pid"
+start_stop_daemon_args="--chdir {{ torrent_mihomo_state_dir }}"
+
+depend() {
+    need net
+    after tailscaled
+    before qbittorrent
+}
+
+start_pre() {
+    checkpath -d -o root:root -m 0750 {{ torrent_mihomo_state_dir }}
+}

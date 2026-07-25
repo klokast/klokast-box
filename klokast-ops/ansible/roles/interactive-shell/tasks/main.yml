@@ -1,0 +1,52 @@
+---
+- name: Ensure interactive bash defaults are installed
+  ansible.builtin.blockinfile:
+    path: "/home/{{ item }}/.bashrc"
+    create: true
+    owner: "{{ item }}"
+    group: "{{ item }}"
+    mode: "0644"
+    marker: "# {mark} klokast ops interactive shell"
+    block: |
+      export EDITOR=vi
+      export VISUAL=vi
+      export GIT_EDITOR=vi
+      export IGNOREEOF=999
+
+      if command -v tmux >/dev/null 2>&1 && [ -z "$TMUX" ] && [ -n "$PS1" ]; then
+          if tmux has-session -t main 2>/dev/null; then
+              exec tmux attach-session -t main
+          else
+              exec tmux new-session -s main -c "{{ ops_source_root }}/klokast-box"
+          fi
+      fi
+  loop:
+    - "{{ ops_primary_user }}"
+    - "{{ ops_agent_user }}"
+
+- name: Install tmux defaults
+  ansible.builtin.copy:
+    dest: "/home/{{ item }}/.tmux.conf"
+    owner: "{{ item }}"
+    group: "{{ item }}"
+    mode: "0644"
+    content: |
+      set -g mouse on
+      set -g history-limit 100000
+      set -gw mode-keys vi
+      set -s set-clipboard on
+  loop:
+    - "{{ ops_primary_user }}"
+    - "{{ ops_agent_user }}"
+
+- name: Configure the primary user's Git editor
+  become: true
+  become_user: "{{ ops_primary_user }}"
+  ansible.builtin.command:
+    argv:
+      - git
+      - config
+      - --global
+      - core.editor
+      - vi
+  changed_when: false

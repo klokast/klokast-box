@@ -1,0 +1,46 @@
+---
+static_site_box: ""
+static_site_domain: www.klokast.ai
+
+static_site_web_service_name: static-site-web
+static_site_web_container_name: static-site-web
+static_site_publisher_service_name: static-site-publisher
+static_site_cloudflared_service_name: static-site-cloudflared
+
+static_site_service_root: /etc/klokast/static-site
+static_site_secret_root: "{{ static_site_service_root }}/secrets"
+static_site_config_root: "{{ static_site_service_root }}/config"
+static_site_public_root: /srv/static-site/public
+static_site_incoming_root: /srv/static-site/incoming
+static_site_git_repo_cache_root: /srv/static-site/repo
+static_site_log_root: /var/log/klokast/static-site
+
+static_site_web_image: "{{ static_site_images.static_web_server.pull_ref }}"
+static_site_web_host: 127.0.0.1
+static_site_web_host_port: 18081
+static_site_web_container_port: 8080
+
+static_site_github_owner: klokast
+static_site_github_repo_name: klokast-site
+static_site_github_api_version: "2022-11-28"
+static_site_github_deploy_key_title: "{{ inventory_hostname }} static-site read-only deploy key"
+static_site_github_known_hosts:
+  - github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+  - github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+  - github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+static_site_git_repo: "git@github.com:{{ static_site_github_owner }}/{{ static_site_github_repo_name }}.git"
+static_site_git_branch: main
+static_site_git_source_dir: www
+static_site_git_ssh_key_path: "{{ static_site_secret_root }}/github-deploy-key"
+static_site_git_ssh_public_key_path: "{{ static_site_git_ssh_key_path }}.pub"
+static_site_git_ssh_known_hosts_path: "{{ static_site_config_root }}/known_hosts"
+static_site_git_ssh_config_path: "{{ static_site_config_root }}/ssh_config"
+static_site_publisher_interval_seconds: 60
+static_site_publisher_max_bytes: 2097152
+
+static_site_cloudflared_token: "{{ lookup('env', 'STATIC_SITE_CLOUDFLARED_TOKEN') }}"
+static_site_cloudflared_package: cloudflared=2026.3.0-r1
+static_site_cloudflared_apk_edge_testing_repository: http://dl-cdn.alpinelinux.org/alpine/edge/testing
+static_site_cloudflared_apk_repositories: "{{ (alpine_repositories | default([])) + [static_site_cloudflared_apk_edge_testing_repository] }}"
+static_site_cloudflared_pidfile: /run/static-site-cloudflared.pid
+static_site_publisher_pidfile: /run/static-site-publisher.pid

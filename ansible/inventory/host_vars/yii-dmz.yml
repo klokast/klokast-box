@@ -1,0 +1,9 @@
+---
+node_domain_role: dmz
+node_hostname: yii-dmz
+ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
+
+dmz_bootstrap_host: "{{ platform_zones.dmz.vm_ipv4_address }}"
+dmz_bootstrap_proxyjump: "neo@{{ hostvars['yii-dom0'].ansible_host | default('yii-dom0') }}"
+dmz_bootstrap_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
+dmz_bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap"

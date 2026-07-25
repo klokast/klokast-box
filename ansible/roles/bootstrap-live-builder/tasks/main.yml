@@ -1,0 +1,564 @@
+#
+# Summary:
+# - Converges the Debian live bootstrap builder workload on a backend Podman host, including repo sync, upload credentials, service deployment, and acceptance checks.
+#
+---
+- name: Assert the bootstrap live builder targets a backend VM
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'backend'
+    fail_msg: >-
+      The bootstrap-live-builder role is currently intended for backend VMs only.
+
+- name: Assert Podman is present on the target host
+  ansible.builtin.stat:
+    path: /usr/bin/podman
+  register: bootstrap_live_builder_podman_binary
+
+- name: Fail when Podman is missing
+  ansible.builtin.assert:
+    that:
+      - bootstrap_live_builder_podman_binary.stat.exists
+    fail_msg: >-
+      Podman is required before converging the bootstrap live builder workload on
+      {{ inventory_hostname }}.
+
+- name: Collect controller Tailscale status for the OOB MagicDNS suffix
+  ansible.builtin.command: tailscale status --json
+  delegate_to: localhost
+  become: false
+  register: bootstrap_live_builder_controller_tailscale_status_json
+  changed_when: false
+  when: "'.' not in bootstrap_live_builder_oob_host"
+
+- name: Parse controller Tailscale status for the OOB MagicDNS suffix
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_controller_tailscale_status: "{{ bootstrap_live_builder_controller_tailscale_status_json.stdout | from_json }}"
+  changed_when: false
+  when: "'.' not in bootstrap_live_builder_oob_host"
+
+- name: Build the OOB full MagicDNS transfer hostname
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_oob_connect_host: >-
+      {{
+        bootstrap_live_builder_oob_host
+        if '.' in bootstrap_live_builder_oob_host
+        else bootstrap_live_builder_oob_host ~ '.' ~ bootstrap_live_builder_controller_tailscale_status.MagicDNSSuffix
+      }}
+  changed_when: false
+
+- name: Assert the OOB transfer hostname is fully qualified
+  ansible.builtin.assert:
+    that:
+      - bootstrap_live_builder_oob_connect_host is search('\\.')
+    fail_msg: >-
+      Could not construct a full OOB MagicDNS hostname for
+      {{ bootstrap_live_builder_oob_host }} from controller Tailscale status.
+
+- name: Ensure the builder host helper packages are installed
+  community.general.apk:
+    name: "{{ bootstrap_live_builder_host_packages }}"
+    state: present
+
+- name: Ensure /usr/local/sbin exists for builder helper scripts
+  ansible.builtin.file:
+    path: /usr/local/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure bootstrap live builder host directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ bootstrap_live_builder_service_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0750"
+    - path: "{{ bootstrap_live_builder_image_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0750"
+    - path: "{{ bootstrap_live_builder_workspace_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_workspace_root }}/src"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_repo_checkout_path }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_repo_checkout_path }}/apps"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_repo_checkout_path }}/apps/bootstrap-iso-debian"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_output_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_home_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0700"
+    - path: "{{ bootstrap_live_builder_ssh_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0700"
+    - path: "{{ bootstrap_live_builder_work_root }}"
+      owner: "{{ bootstrap_live_builder_service_user }}"
+      group: wheel
+      mode: "0755"
+    - path: "{{ bootstrap_live_builder_tailscale_state_root }}"
+      owner: root
+      group: root
+      mode: "0700"
+
+- name: Check whether the builder upload SSH key already exists
+  ansible.builtin.stat:
+    path: "{{ bootstrap_live_builder_oob_ssh_key_path }}"
+  register: bootstrap_live_builder_oob_ssh_key
+
+- name: Generate the dedicated builder upload SSH key when missing
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh-keygen
+      - -q
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "{{ bootstrap_live_builder_oob_ssh_key_comment }}"
+      - -f
+      - "{{ bootstrap_live_builder_oob_ssh_key_path }}"
+  become: true
+  become_user: "{{ bootstrap_live_builder_service_user }}"
+  when: not bootstrap_live_builder_oob_ssh_key.stat.exists
+
+- name: Read the builder upload SSH public key
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_live_builder_oob_ssh_key_path }}.pub"
+  register: bootstrap_live_builder_oob_ssh_pubkey
+
+- name: Register the oob delegate host for upload-key authorization
+  ansible.builtin.add_host:
+    name: bootstrap_live_builder_oob_delegate
+    ansible_host: "{{ bootstrap_live_builder_oob_connect_host }}"
+    ansible_user: root
+    ansible_connection: ssh
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+- name: Authorize the builder upload SSH key on the oob host
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ bootstrap_live_builder_oob_ssh_pubkey.content | b64decode | trim }}"
+    state: present
+  delegate_to: bootstrap_live_builder_oob_delegate
+
+- name: Synchronize the Debian-live bootstrap repo subset onto the backend builder host
+  ansible.posix.synchronize:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    archive: true
+    delete: "{{ item.delete | default(false) }}"
+  loop:
+    - src: "{{ playbook_dir }}/../../apps/bootstrap-iso-debian/"
+      dest: "{{ bootstrap_live_builder_repo_checkout_path }}/apps/bootstrap-iso-debian/"
+      delete: true
+  delegate_to: localhost
+
+- name: Render the bootstrap live builder Containerfile
+  ansible.builtin.template:
+    src: bootstrap-live-builder.Containerfile.j2
+    dest: "{{ bootstrap_live_builder_image_root }}/Containerfile"
+    owner: "{{ bootstrap_live_builder_service_user }}"
+    group: wheel
+    mode: "0644"
+  notify: Deploy bootstrap live builder workload
+
+- name: Render the bootstrap live builder entrypoint
+  ansible.builtin.template:
+    src: bootstrap-live-builder-entrypoint.sh.j2
+    dest: "{{ bootstrap_live_builder_image_root }}/entrypoint.sh"
+    owner: "{{ bootstrap_live_builder_service_user }}"
+    group: wheel
+    mode: "0755"
+  notify: Deploy bootstrap live builder workload
+
+- name: Render the bootstrap live builder deploy helper
+  ansible.builtin.template:
+    src: bootstrap-live-builder-deploy.sh.j2
+    dest: /usr/local/sbin/bootstrap-live-builder-deploy
+    mode: "0750"
+  notify: Deploy bootstrap live builder workload
+
+- name: Render the bootstrap live builder build helper
+  ansible.builtin.template:
+    src: bootstrap-live-builder-build.sh.j2
+    dest: /usr/local/sbin/bootstrap-live-builder-build
+    mode: "0750"
+
+- name: Render the bootstrap live builder OpenRC service
+  ansible.builtin.template:
+    src: bootstrap-live-builder-openrc.init.j2
+    dest: "/etc/init.d/{{ bootstrap_live_builder_service_name }}"
+    mode: "0755"
+
+- name: Flush builder deployment handlers before service enablement
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the bootstrap live builder service is enabled and running
+  ansible.builtin.service:
+    name: "{{ bootstrap_live_builder_service_name }}"
+    enabled: true
+    state: started
+
+- name: Wait for the bootstrap live builder container to report a running state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - inspect
+      - --format
+      - "{% raw %}{{.State.Running}}{% endraw %}"
+      - "{{ bootstrap_live_builder_container_name }}"
+  register: bootstrap_live_builder_container_running
+  retries: 20
+  delay: 3
+  until: bootstrap_live_builder_container_running.stdout | trim == 'true'
+  changed_when: false
+  failed_when: false
+
+- name: Check the builder toolchain inside the container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - sh
+      - -lc
+      - >-
+        command -v bash curl go lb python3 scp sha256sum sha512sum ssh tailscale tailscaled tar xorriso >/dev/null &&
+        test -x /src/klokast/apps/bootstrap-iso-debian/build-bootstrap-iso.sh &&
+        test -x /src/klokast/apps/bootstrap-iso-debian/build-alpine-seed.sh &&
+        test -f /src/klokast/apps/bootstrap-iso-debian/portal/go.mod
+  register: bootstrap_live_builder_toolchain_probe
+  changed_when: false
+  failed_when: false
+
+- name: Wait for tailscaled inside the builder container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - sh
+      - -lc
+      - >-
+        for attempt in $(seq 1 30); do
+          test -S /run/tailscale/tailscaled.sock && exit 0;
+          sleep 1;
+        done;
+        exit 1
+  register: bootstrap_live_builder_tailscale_socket
+  changed_when: false
+  failed_when: false
+
+- name: Collect builder container Tailscale runtime status
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - tailscale
+      - status
+      - --json
+  register: bootstrap_live_builder_tailscale_status_json
+  changed_when: false
+  failed_when: false
+  when: bootstrap_live_builder_tailscale_socket.rc == 0
+
+- name: Parse builder container Tailscale runtime status when available
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_tailscale_status: "{{ bootstrap_live_builder_tailscale_status_json.stdout | from_json }}"
+  changed_when: false
+  when:
+    - bootstrap_live_builder_tailscale_status_json.rc | default(1) == 0
+    - bootstrap_live_builder_tailscale_status_json.stdout | default('') | length > 0
+
+- name: Collect builder container Tailscale preference state when available
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - tailscale
+      - debug
+      - prefs
+  register: bootstrap_live_builder_tailscale_prefs_json
+  changed_when: false
+  failed_when: false
+  when:
+    - (bootstrap_live_builder_tailscale_status | default({})).BackendState | default('') == 'Running'
+
+- name: Parse builder container Tailscale preference state when available
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_tailscale_prefs: "{{ bootstrap_live_builder_tailscale_prefs_json.stdout | from_json }}"
+  changed_when: false
+  when:
+    - bootstrap_live_builder_tailscale_prefs_json.rc | default(1) == 0
+    - bootstrap_live_builder_tailscale_prefs_json.stdout | default('') | length > 0
+
+- name: Decide whether builder container Tailscale enrollment is needed
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_tailscale_enrollment_needed: >-
+      {{
+        bootstrap_live_builder_tailscale_socket.rc != 0
+        or ((bootstrap_live_builder_tailscale_status | default({})).BackendState | default('')) != 'Running'
+        or ((bootstrap_live_builder_tailscale_status | default({})).Self.HostName | default('') != bootstrap_live_builder_tailscale_hostname)
+        or (bootstrap_live_builder_tailscale_expected_tag not in ((bootstrap_live_builder_tailscale_status | default({})).Self.Tags | default([])))
+        or (not ((bootstrap_live_builder_tailscale_prefs | default({})).RunSSH | default(false)))
+        or (((bootstrap_live_builder_tailscale_prefs | default({})).CorpDNS | default(true)) != (bootstrap_live_builder_tailscale_accept_dns | bool))
+      }}
+  changed_when: false
+
+- name: Read the backend Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_tailscale_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (bootstrap_live_builder_tailscale_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (bootstrap_live_builder_tailscale_hostname | quote)
+            ~ ' --tags ' ~ (bootstrap_live_builder_tailscale_advertise_tags | quote)
+          ) | trim
+        }}
+  changed_when: false
+  no_log: true
+  when: bootstrap_live_builder_tailscale_enrollment_needed | bool
+
+- name: Assert the backend Tailscale auth key is available
+  ansible.builtin.assert:
+    that:
+      - bootstrap_live_builder_tailscale_authkey.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      The backend Tailscale auth key wrapper
+      {{ bootstrap_live_builder_tailscale_authkey_wrapper }} did not return a
+      usable auth key.
+  when: bootstrap_live_builder_tailscale_enrollment_needed | bool
+
+- name: Enroll the builder container into Tailscale as a backend application identity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - -e
+      - "TS_AUTH_KEY={{ bootstrap_live_builder_tailscale_authkey.stdout | trim }}"
+      - -e
+      - "TS_HOSTNAME={{ bootstrap_live_builder_tailscale_hostname }}"
+      - -e
+      - "TS_TAGS={{ bootstrap_live_builder_tailscale_advertise_tags }}"
+      - -e
+      - "TS_ACCEPT_DNS={{ bootstrap_live_builder_tailscale_accept_dns | ternary('true', 'false') }}"
+      - "{{ bootstrap_live_builder_container_name }}"
+      - sh
+      - -lc
+      - >-
+        tailscale up
+        --auth-key="$TS_AUTH_KEY"
+        --hostname="$TS_HOSTNAME"
+        --advertise-tags="$TS_TAGS"
+        --accept-dns="$TS_ACCEPT_DNS"
+        --ssh
+        --accept-risk=lose-ssh
+        --force-reauth
+        --timeout=30s
+  no_log: true
+  when: bootstrap_live_builder_tailscale_enrollment_needed | bool
+
+- name: Collect builder container Tailscale runtime status after enrollment
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - tailscale
+      - status
+      - --json
+  register: bootstrap_live_builder_tailscale_status_verify_json
+  changed_when: false
+
+- name: Parse builder container Tailscale runtime status after enrollment
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_tailscale_status_verify: "{{ bootstrap_live_builder_tailscale_status_verify_json.stdout | from_json }}"
+  changed_when: false
+
+- name: Collect builder container Tailscale preference state after enrollment
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - tailscale
+      - debug
+      - prefs
+  register: bootstrap_live_builder_tailscale_prefs_verify_json
+  changed_when: false
+
+- name: Parse builder container Tailscale preference state after enrollment
+  ansible.builtin.set_fact:
+    bootstrap_live_builder_tailscale_prefs_verify: "{{ bootstrap_live_builder_tailscale_prefs_verify_json.stdout | from_json }}"
+  changed_when: false
+
+- name: Upload the builder probe file to the oob host
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --interactive
+      - "{{ bootstrap_live_builder_container_name }}"
+      - sh
+      - -s
+      - --
+      - "{{ bootstrap_live_builder_oob_user }}"
+      - "{{ bootstrap_live_builder_oob_connect_host }}"
+      - "{{ bootstrap_live_builder_oob_dest_dir }}"
+    stdin: |
+      set -eu
+      oob_user="$1"
+      oob_host="$2"
+      oob_dest_dir="$3"
+      probe_file=/output/bootstrap-live-builder-upload-probe.txt
+      oob_ssh_key=/root/.ssh/oob_upload_ed25519
+      oob_known_hosts=/root/.ssh/known_hosts
+
+      resolve_tailscale_host() {
+        target="$1"
+        resolved="$(tailscale ip -4 "$target" 2>/dev/null | awk 'NR==1 { print; exit }')"
+        if [ -z "$resolved" ]; then
+          resolved="$(
+            tailscale status --json 2>/dev/null |
+              python3 -c 'import json, sys
+      target = sys.argv[1].rstrip(".").lower()
+      try:
+          data = json.load(sys.stdin)
+      except Exception:
+          sys.exit(0)
+      machines = []
+      self_machine = data.get("Self") or {}
+      if self_machine:
+          machines.append(self_machine)
+      machines.extend((data.get("Peer") or {}).values())
+      for machine in machines:
+          names = {str(machine.get("HostName") or "").rstrip(".").lower(), str(machine.get("DNSName") or "").rstrip(".").lower()}
+          if target in names:
+              for ip in machine.get("TailscaleIPs") or []:
+                  if "." in ip:
+                      print(ip)
+                      sys.exit(0)' "$target" 2>/dev/null || true
+          )"
+        fi
+        if [ -n "$resolved" ]; then
+          printf '%s\n' "$resolved"
+        else
+          printf '%s\n' "$target"
+        fi
+      }
+
+      oob_connect_host="$(resolve_tailscale_host "$oob_host")"
+
+      printf '%s\n' '{{ inventory_hostname }} upload probe' >"$probe_file"
+      ssh \
+        -i "$oob_ssh_key" \
+        -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new \
+        -o UserKnownHostsFile="$oob_known_hosts" \
+        "${oob_user}@${oob_connect_host}" \
+        "mkdir -p '${oob_dest_dir}'"
+      scp \
+        -O \
+        -i "$oob_ssh_key" \
+        -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new \
+        -o UserKnownHostsFile="$oob_known_hosts" \
+        "$probe_file" "${oob_user}@${oob_connect_host}:${oob_dest_dir}/bootstrap-live-builder-upload-probe.txt"
+      rm -f "$probe_file"
+  register: bootstrap_live_builder_upload_probe
+  changed_when: false
+  failed_when: false
+  when: bootstrap_live_builder_verify_oob_upload
+
+- name: Verify the uploaded probe file on the oob host
+  ansible.builtin.command:
+    argv:
+      - /bin/cat
+      - "{{ bootstrap_live_builder_oob_dest_dir }}/bootstrap-live-builder-upload-probe.txt"
+  delegate_to: bootstrap_live_builder_oob_delegate
+  register: bootstrap_live_builder_oob_probe_verify
+  changed_when: false
+  failed_when: false
+  when: bootstrap_live_builder_verify_oob_upload
+
+- name: Remove the local builder upload probe file
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ bootstrap_live_builder_container_name }}"
+      - rm
+      - -f
+      - /output/bootstrap-live-builder-upload-probe.txt
+  changed_when: false
+  failed_when: false
+  when: bootstrap_live_builder_verify_oob_upload
+
+- name: Remove the uploaded builder probe file from the oob host
+  ansible.builtin.file:
+    path: "{{ bootstrap_live_builder_oob_dest_dir }}/bootstrap-live-builder-upload-probe.txt"
+    state: absent
+  delegate_to: bootstrap_live_builder_oob_delegate
+  changed_when: false
+  failed_when: false
+  when: bootstrap_live_builder_verify_oob_upload
+
+- name: Assert the bootstrap live builder acceptance checks passed
+  ansible.builtin.assert:
+    that:
+      - bootstrap_live_builder_container_running.stdout | trim == 'true'
+      - bootstrap_live_builder_toolchain_probe.rc == 0
+      - bootstrap_live_builder_tailscale_socket.rc == 0
+      - (bootstrap_live_builder_tailscale_status_verify | default({})).BackendState | default('') == 'Running'
+      - (bootstrap_live_builder_tailscale_status_verify | default({})).Self.HostName | default('') == bootstrap_live_builder_tailscale_hostname
+      - bootstrap_live_builder_tailscale_expected_tag in ((bootstrap_live_builder_tailscale_status_verify | default({})).Self.Tags | default([]))
+      - (bootstrap_live_builder_tailscale_prefs_verify | default({})).RunSSH | default(false)
+      - ((bootstrap_live_builder_tailscale_prefs_verify | default({})).CorpDNS | default(true)) == (bootstrap_live_builder_tailscale_accept_dns | bool)
+      - not bootstrap_live_builder_verify_oob_upload or bootstrap_live_builder_upload_probe.rc == 0
+      - not bootstrap_live_builder_verify_oob_upload or bootstrap_live_builder_oob_probe_verify.rc == 0
+      - not bootstrap_live_builder_verify_oob_upload or (bootstrap_live_builder_oob_probe_verify.stdout | trim) == (inventory_hostname ~ ' upload probe')
+    fail_msg: >-
+      Bootstrap live builder verification failed on {{ inventory_hostname }}.
+
+- name: Show the converged bootstrap live builder state
+  ansible.builtin.debug:
+    msg:
+      - "Builder container: {{ bootstrap_live_builder_container_name }}"
+      - "Builder runtime: privileged rootful Podman"
+      - "Builder Tailscale hostname: {{ bootstrap_live_builder_tailscale_hostname }}"
+      - "Builder Tailscale tag: {{ bootstrap_live_builder_tailscale_expected_tag }}"
+      - "Workspace owner on host: {{ bootstrap_live_builder_service_user }}"
+      - "Repo checkout path on host: {{ bootstrap_live_builder_repo_checkout_path }}"
+      - "Output path on host: {{ bootstrap_live_builder_output_root }}"
+      - "OOB upload target: {{ bootstrap_live_builder_oob_user }}@{{ bootstrap_live_builder_oob_connect_host }}:{{ bootstrap_live_builder_oob_dest_dir }}"
+      - "Build helper: /usr/local/sbin/bootstrap-live-builder-build"

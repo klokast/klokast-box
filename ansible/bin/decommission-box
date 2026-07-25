@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
+
+BOX=""
+INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+FROM_PHASE="90"
+TO_PHASE="95"
+DRY_RUN=0
+AUTO_CONFIRM=0
+WIPE_SOURCE="dom0"
+FINAL_ACTION="poweroff"
+EXTRA_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/decommission-box --box BOX [options] [-- extra ansible-playbook args]
+
+Removes one live box from the managed platform without editing repo metadata for
+that box. The flow stops all Xen guests, removes stale Tailscale identities,
+wipes the SSD from the diskless dom0 environment, and powers the machine off or
+reboots it.
+
+Options:
+  --box BOX           Box short name, for example `duh`
+  --inventory PATH    Ansible inventory. Default: ansible/inventory/hosts.yml
+  --from PHASE        First phase to run. Default: 90
+  --to PHASE          Last phase to run. Default: 95
+  --wipe-source SRC   SSD wipe source. Only dom0 is supported. Default: dom0
+  --final-action ACT  Action after dom0 SSD wipe: poweroff or reboot. Default: poweroff
+  --dry-run-plan      Print the selected phases and gates, then exit
+  --yes               Bypass typed operator confirmations
+  -h, --help          Show this help
+
+Phases:
+  90  preflight on the ops server and inventory validation
+  91  stop all Xen guests on BOX-dom0
+  92  delete stale/offline non-dom0 Tailscale identities for BOX-*
+  94  wipe the SSD from diskless BOX-dom0 and run the final action
+  95  delete stale/offline final Tailscale identities for BOX-*
+
+Examples:
+  ansible/bin/decommission-box --box duh --dry-run-plan
+  ansible/bin/decommission-box --box duh --to 92 -- -vv
+  ansible/bin/decommission-box --box duh --from 94 -- -vv
+  ansible/bin/decommission-box --box duh --final-action reboot -- -vv
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+info() {
+  printf '%s\n' "$*"
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+json_string() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --box)
+      [ "$#" -ge 2 ] || die "--box requires a value"
+      BOX="$2"
+      shift 2
+      ;;
+    --inventory)
+      [ "$#" -ge 2 ] || die "--inventory requires a value"
+      INVENTORY="$2"
+      shift 2
+      ;;
+    --from)
+      [ "$#" -ge 2 ] || die "--from requires a value"
+      FROM_PHASE="$2"
+      shift 2
+      ;;
+    --to)
+      [ "$#" -ge 2 ] || die "--to requires a value"
+      TO_PHASE="$2"
+      shift 2
+      ;;
+    --wipe-source)
+      [ "$#" -ge 2 ] || die "--wipe-source requires a value"
+      WIPE_SOURCE="$2"
+      shift 2
+      ;;
+    --final-action)
+      [ "$#" -ge 2 ] || die "--final-action requires a value"
+      FINAL_ACTION="$2"
+      shift 2
+      ;;
+    --dry-run-plan)
+      DRY_RUN=1
+      shift
+      ;;
+    --yes)
+      AUTO_CONFIRM=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      EXTRA_ARGS=("$@")
+      break
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$BOX" ] || die "--box is required"
+
+case "$WIPE_SOURCE" in
+  dom0) ;;
+  bootstrap) die "bootstrap decommission is not supported; decommission runs from diskless dom0 only" ;;
+  *) die "unknown --wipe-source: $WIPE_SOURCE" ;;
+esac
+
+case "$FINAL_ACTION" in
+  poweroff|reboot) ;;
+  *) die "unknown --final-action: $FINAL_ACTION" ;;
+esac
+
+case "$INVENTORY" in
+  /*) ;;
+  *) INVENTORY="$PWD/$INVENTORY" ;;
+esac
+
+PHASES=(90 91 92 94 95)
+PLAYBOOKS=(
+  "playbooks/90-box-decommission-preflight.yml"
+  "playbooks/91-box-decommission-stop-guests.yml"
+  "playbooks/92-box-decommission-tailscale-vm-identities.yml"
+  "playbooks/94-box-decommission-dom0-wipe.yml"
+  "playbooks/95-box-decommission-finalize-dom0.yml"
+)
+DESCRIPTIONS=(
+  "preflight on the ops server and inventory validation"
+  "stop all Xen guests on ${BOX}-dom0"
+  "delete stale/offline non-dom0 Tailscale identities for ${BOX}-*"
+  "wipe the SSD from diskless ${BOX}-dom0 and ${FINAL_ACTION}"
+  "remove stale/offline final Tailscale identities for ${BOX}-*"
+)
+
+phase_index() {
+  local wanted="$1"
+  local i
+  for i in "${!PHASES[@]}"; do
+    if [ "${PHASES[$i]}" = "$wanted" ]; then
+      printf '%s\n' "$i"
+      return 0
+    fi
+  done
+  return 1
+}
+
+FROM_INDEX="$(phase_index "$FROM_PHASE")" || die "unknown --from phase: $FROM_PHASE"
+TO_INDEX="$(phase_index "$TO_PHASE")" || die "unknown --to phase: $TO_PHASE"
+[ "$FROM_INDEX" -le "$TO_INDEX" ] || die "--from must be less than or equal to --to"
+
+DOM0_HOST="${BOX}-dom0"
+RUN_DIR="$REPO_DIR/.run/decommission-box-${BOX}"
+LOG_DIR="$RUN_DIR/logs"
+STATE_FILE="$RUN_DIR/state"
+
+write_state() {
+  local key="$1"
+  local phase="$2"
+  mkdir -p "$RUN_DIR"
+  {
+    printf 'box=%s\n' "$BOX"
+    printf 'wipe_source=%s\n' "$WIPE_SOURCE"
+    printf 'final_action=%s\n' "$FINAL_ACTION"
+    printf '%s=%s\n' "$key" "$phase"
+    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$STATE_FILE"
+}
+
+preflight() {
+  command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook not found in PATH"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+  [ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
+  [ -f "$ANSIBLE_CONFIG_PATH" ] || die "ansible config not found: $ANSIBLE_CONFIG_PATH"
+  [ -f "$ANSIBLE_DIR/playbooks/90-box-decommission-preflight.yml" ] || die "cannot locate decommission playbooks under $ANSIBLE_DIR"
+}
+
+confirm_stop_flow() {
+  local expected="decommission ${BOX}"
+  local answer
+
+  [ "$AUTO_CONFIRM" -eq 1 ] && return 0
+
+  info ""
+  info "Destructive gate before phase 91"
+  info "This will stop every Xen guest on ${DOM0_HOST} and begin decommission."
+  info "No repo metadata for ${BOX} will be edited automatically."
+  info ""
+  printf 'Type "%s" to continue: ' "$expected"
+  read -r answer
+  [ "$answer" = "$expected" ] || die "decommission stop gate was not confirmed"
+}
+
+confirm_ssd_wipe() {
+  local expected="wipe ${BOX} ${DOM0_HOST}"
+  local answer
+
+  [ "$AUTO_CONFIRM" -eq 1 ] && return 0
+
+  info ""
+  info "Destructive gate before phase 94"
+  info "This will wipe the SSD from diskless ${DOM0_HOST}, then ${FINAL_ACTION} the box."
+  info "This does not recreate the managed disk layout."
+  info ""
+  printf 'Type "%s" to continue: ' "$expected"
+  read -r answer
+  [ "$answer" = "$expected" ] || die "SSD wipe gate was not confirmed"
+}
+
+run_phase() {
+  local phase="$1"
+  local playbook="$2"
+  local description="$3"
+  local playbook_path="$ANSIBLE_DIR/$playbook"
+  local log_file="$LOG_DIR/${phase}.log"
+  local -a cmd
+  local extra_vars_json
+
+  extra_vars_json="{\"decommission_box_name\":$(json_string "$BOX"),\"decommission_wipe_source\":$(json_string "$WIPE_SOURCE"),\"decommission_final_action\":$(json_string "$FINAL_ACTION")"
+
+  if [ "$phase" = "92" ] || [ "$phase" = "95" ]; then
+    extra_vars_json="${extra_vars_json},\"decommission_tailscale_apply\":true"
+  fi
+  if [ "$phase" = "92" ] || [ "$phase" = "95" ]; then
+    extra_vars_json="${extra_vars_json},\"decommission_tailscale_confirm\":$(json_string "decommission tailscale identities for ${BOX}")"
+  fi
+  extra_vars_json="${extra_vars_json}}"
+
+  cmd=(
+    env
+    "ANSIBLE_CONFIG=$ANSIBLE_CONFIG_PATH"
+    ansible-playbook
+    -i "$INVENTORY"
+    "$playbook_path"
+    -e "$extra_vars_json"
+  )
+
+  if [ "$phase" = "91" ]; then
+    cmd+=(--limit "$BOX")
+  fi
+  if [ "$phase" = "94" ]; then
+    cmd+=(--limit "$BOX")
+  fi
+
+  if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+    cmd+=("${EXTRA_ARGS[@]}")
+  fi
+
+  mkdir -p "$LOG_DIR"
+  info ""
+  info "Phase ${phase}: ${description}"
+  info "Log: ${log_file}"
+  info "$(quote_command "${cmd[@]}")"
+
+  set -o pipefail
+  "${cmd[@]}" 2>&1 | tee "$log_file"
+  set +o pipefail
+
+  write_state "last_completed_phase" "$phase"
+}
+
+print_plan() {
+  local i
+  local selected_91=0
+  local selected_94=0
+  info ""
+  info "Decommission plan for box ${BOX}"
+  info "Wipe source: ${WIPE_SOURCE}"
+  info "Final action: ${FINAL_ACTION}"
+  for i in "${!PHASES[@]}"; do
+    if [ "$i" -lt "$FROM_INDEX" ] || [ "$i" -gt "$TO_INDEX" ]; then
+      continue
+    fi
+    printf '  %s  %s\n' "${PHASES[$i]}" "${DESCRIPTIONS[$i]}"
+    case "${PHASES[$i]}" in
+      91) selected_91=1 ;;
+      94) selected_94=1 ;;
+    esac
+  done
+  info ""
+  info "Gates:"
+  if [ "$selected_91" -eq 1 ]; then
+    info "  before 91: typed confirmation to stop guests and begin decommission"
+  fi
+  if [ "$selected_94" -eq 1 ]; then
+    info "  before 94: typed confirmation to wipe the SSD from diskless dom0"
+  fi
+  info ""
+  info "Run directory: ${RUN_DIR}"
+}
+
+preflight
+print_plan
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  exit 0
+fi
+
+write_state "started_from_phase" "$FROM_PHASE"
+
+for i in "${!PHASES[@]}"; do
+  phase="${PHASES[$i]}"
+  playbook="${PLAYBOOKS[$i]}"
+  description="${DESCRIPTIONS[$i]}"
+
+  if [ "$i" -lt "$FROM_INDEX" ] || [ "$i" -gt "$TO_INDEX" ]; then
+    continue
+  fi
+
+  case "$phase" in
+    91) confirm_stop_flow ;;
+    94) confirm_ssd_wipe ;;
+  esac
+
+  run_phase "$phase" "$playbook" "$description"
+done
+
+info ""
+info "decommission-box completed."

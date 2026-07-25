@@ -1,0 +1,37 @@
+#
+# Summary:
+# - Bootstraps Python on first-contact Alpine guests with raw apk commands so later tasks can use normal Ansible modules.
+#
+---
+- name: Check whether python3 is already available
+  ansible.builtin.raw: "command -v python3"
+  register: bootstrap_python3_check
+  changed_when: false
+  failed_when: false
+
+- name: Detect apk on the Alpine guest
+  ansible.builtin.raw: "command -v apk"
+  register: bootstrap_alpine_apk_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert apk is available when python3 is missing
+  ansible.builtin.assert:
+    that:
+      - bootstrap_alpine_apk_check.rc == 0
+    fail_msg: >-
+      The target does not expose apk, so the Alpine guest Python bootstrap
+      cannot proceed.
+  when: bootstrap_python3_check.rc != 0
+
+- name: Install python3 on the Alpine guest
+  ansible.builtin.raw: "apk add --no-cache python3"
+  when:
+    - bootstrap_python3_check.rc != 0
+    - bootstrap_alpine_apk_check.rc == 0
+  changed_when: true
+
+- name: Verify python3 is available after Alpine bootstrap
+  ansible.builtin.raw: "python3 --version"
+  register: bootstrap_python3_version
+  changed_when: false

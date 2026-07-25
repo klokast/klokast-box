@@ -1,0 +1,72 @@
+---
+ops_hostname: ops
+ops_primary_user: neo
+ops_codex_user: codex
+ops_agent_user: "{{ ops_codex_user }}"
+ops_default_locale: en_GB.UTF-8
+ops_primary_user_password_lock: false
+ops_primary_user_sudo_nopasswd: false
+
+ops_base_packages:
+  - ansible
+  - bubblewrap
+  - ca-certificates
+  - curl
+  - git
+  - golang-go
+  - gpg
+  - jq
+  - locales
+  - mosh
+  - build-essential
+  - nodejs
+  - npm
+  # Outbound GitHub Git-over-SSH only; operator access uses Tailscale SSH.
+  - openssh-client
+  - shellcheck
+  - sudo
+  - tmux
+  - vim
+
+ops_removed_packages:
+  - nano
+
+ops_nvm_version: v0.40.4
+ops_codex_npm_packages:
+  - name: "@openai/codex"
+    install_spec: "@openai/codex"
+ops_agent_npm_packages: "{{ ops_codex_npm_packages }}"
+
+ops_tailscale_tags:
+  - tag:ops
+tailscale_auth_key: ""
+
+ops_source_root: "/home/{{ ops_agent_user }}/src/klokast"
+ops_github_ssh_key_path: "/home/{{ ops_agent_user }}/.ssh/github-klokast-box"
+ops_git_user_name: Codex Agent
+ops_git_user_email: "{{ ops_agent_user }}@{{ ops_hostname }}"
+ops_github_auto_register_deploy_key: false
+ops_github_deploy_key_title: "{{ ops_agent_user }}@{{ ops_hostname }} klokast-box deploy key"
+ops_github_deploy_key_read_only: false
+ops_github_repo_owner: klokast
+ops_github_repo_name: klokast-box
+ops_github_api_version: "2022-11-28"
+
+ops_github_known_hosts:
+  - github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+  - github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+  - github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+
+ops_repositories:
+  - name: klokast-box
+    repo: git@github.com:klokast/klokast-box.git
+    dest: "{{ ops_source_root }}/klokast-box"
+    version: main
+
+ops_codex_allowed_root_commands:
+  - /usr/local/sbin/codex-apt-update
+  - /usr/local/sbin/codex-apt-upgrade
+  - /usr/local/sbin/codex-tailscale-status
+  - /usr/local/sbin/codex-tailscale-prefs
+ops_agent_allowed_root_commands: "{{ ops_codex_allowed_root_commands }}"
+ops_codex_config_path: "/home/{{ ops_agent_user }}/.codex/config.toml"

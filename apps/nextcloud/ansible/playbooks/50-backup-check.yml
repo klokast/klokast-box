@@ -1,0 +1,13 @@
+---
+- name: Check active Nextcloud backup readiness
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../images.lock.yml
+  tasks:
+    - name: Check backup state on the active backend
+      ansible.builtin.import_role:
+        name: nextcloud-backup-check
+      when:
+        - node_name == nextcloud_active_master
+        - node_domain_role == 'backend'

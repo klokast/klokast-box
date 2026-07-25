@@ -1,0 +1,8 @@
+ARG NEXTCLOUD_FPM_IMAGE
+FROM ${NEXTCLOUD_FPM_IMAGE}
+
+RUN set -eu; \
+    apk add --no-cache \
+      imagemagick \
+      postgresql-client \
+      samba-client

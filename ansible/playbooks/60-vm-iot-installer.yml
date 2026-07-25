@@ -1,0 +1,231 @@
+---
+- name: Clone and personalize the iot VM from the dmz reference guest for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    iot_clone_source_name: "{{ node_xen_guest_specs.dmz.guest_name }}"
+    iot_clone_source_lv: /dev/vg0/lv_podman_dmz
+    iot_clone_target_lv: /dev/vg0/lv_podman_iot
+    iot_clone_target_mount_path: /tmp/iot-root
+    iot_clone_bootstrap_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+  tasks:
+    - name: Ensure the iot guest is stopped before any clone work
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ node_xen_guest_specs.iot.guest_name }}"
+        xen_guest_config_path: "{{ node_xen_guest_specs.iot.config_path }}"
+        xen_guest_runtime_state: stopped
+
+    - name: Derive the iot guest mapper paths
+      ansible.builtin.set_fact:
+        iot_clone_mapper_name: >-
+          {{ iot_clone_target_lv | regex_replace('^/dev/([^/]+)/(.+)$', '\1-\2') }}
+        iot_clone_root_mapper_path: >-
+          /dev/mapper/{{ iot_clone_target_lv | regex_replace('^/dev/([^/]+)/(.+)$', '\1-\2') }}3
+
+    - name: Ensure the temporary iot root mount directory exists
+      ansible.builtin.file:
+        path: "{{ iot_clone_target_mount_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Inspect the current iot root filesystem identity
+      block:
+        - name: Remove any stale target guest partition mappings
+          ansible.builtin.command: "/usr/sbin/kpartx -dv {{ iot_clone_target_lv }}"
+          register: iot_clone_probe_kpartx_cleanup
+          failed_when: false
+          changed_when: iot_clone_probe_kpartx_cleanup.rc == 0
+
+        - name: Create partition mappings for the target guest LV
+          ansible.builtin.command: "/usr/sbin/kpartx -av {{ iot_clone_target_lv }}"
+          register: iot_clone_probe_kpartx_add
+          failed_when: false
+          changed_when: iot_clone_probe_kpartx_add.rc == 0
+
+        - name: Mount the target guest root filesystem when available
+          ansible.builtin.command:
+            cmd: "/bin/mount {{ iot_clone_root_mapper_path }} {{ iot_clone_target_mount_path }}"
+          register: iot_clone_probe_mount
+          failed_when: false
+          changed_when: false
+
+        - name: Read the current iot hostname when the target root is mountable
+          ansible.builtin.command: "/bin/cat {{ iot_clone_target_mount_path }}/etc/hostname"
+          register: iot_clone_current_hostname
+          changed_when: false
+          failed_when: false
+          when: iot_clone_probe_mount.rc == 0
+
+        - name: Read the current iot network interfaces when the target root is mountable
+          ansible.builtin.command: "/bin/cat {{ iot_clone_target_mount_path }}/etc/network/interfaces"
+          register: iot_clone_current_interfaces
+          changed_when: false
+          failed_when: false
+          when: iot_clone_probe_mount.rc == 0
+
+        - name: Check whether the cloned root already has sshd installed
+          ansible.builtin.stat:
+            path: "{{ iot_clone_target_mount_path }}/usr/sbin/sshd"
+          register: iot_clone_current_sshd
+          when: iot_clone_probe_mount.rc == 0
+
+      always:
+        - name: Unmount the probed iot root filesystem when mounted
+          ansible.builtin.command: "/bin/umount {{ iot_clone_target_mount_path }}"
+          register: iot_clone_probe_unmount
+          failed_when: false
+          changed_when: iot_clone_probe_unmount.rc == 0
+
+        - name: Remove the probe partition mappings
+          ansible.builtin.command: "/usr/sbin/kpartx -dv {{ iot_clone_target_lv }}"
+          register: iot_clone_probe_kpartx_remove
+          failed_when: false
+          changed_when: iot_clone_probe_kpartx_remove.rc == 0
+
+    - name: Decide whether the iot disk needs to be re-cloned
+      ansible.builtin.set_fact:
+        iot_clone_needs_clone: >-
+          {{
+            (iot_clone_probe_mount.rc | default(1) != 0)
+            or (iot_clone_current_hostname.stdout | default('') | trim != (node_name ~ '-iot'))
+            or ('192.168.150.10' not in (iot_clone_current_interfaces.stdout | default('')))
+          }}
+
+    - name: Decide whether the iot disk needs personalization work
+      ansible.builtin.set_fact:
+        iot_clone_needs_personalization: >-
+          {{
+            (iot_clone_needs_clone | bool)
+            or (not (iot_clone_current_sshd.stat.exists | default(false)))
+          }}
+
+    - name: Clone the dmz reference disk into the iot target disk
+      when: iot_clone_needs_clone
+      block:
+        - name: Stop the dmz reference guest for a consistent disk clone
+          ansible.builtin.import_role:
+            name: xen-guest-instance
+          vars:
+            xen_guest_name: "{{ iot_clone_source_name }}"
+            xen_guest_config_path: "{{ node_xen_guest_specs.dmz.config_path }}"
+            xen_guest_runtime_state: stopped
+
+        - name: Copy the dmz guest disk into the iot guest disk
+          ansible.builtin.command: >-
+            /bin/dd if={{ iot_clone_source_lv }} of={{ iot_clone_target_lv }}
+            bs=16M conv=fsync
+          register: iot_clone_dd
+          changed_when: true
+
+      always:
+        - name: Start the dmz reference guest again after the clone
+          ansible.builtin.import_role:
+            name: xen-guest-instance
+          vars:
+            xen_guest_name: "{{ iot_clone_source_name }}"
+            xen_guest_config_path: "{{ node_xen_guest_specs.dmz.config_path }}"
+            xen_guest_runtime_state: running
+
+    - name: Personalize the cloned iot root filesystem
+      when: iot_clone_needs_personalization
+      block:
+        - name: Remove any stale target guest partition mappings before customization
+          ansible.builtin.command: "/usr/sbin/kpartx -dv {{ iot_clone_target_lv }}"
+          register: iot_clone_customize_kpartx_cleanup
+          failed_when: false
+          changed_when: iot_clone_customize_kpartx_cleanup.rc == 0
+
+        - name: Create partition mappings for the cloned iot guest
+          ansible.builtin.command: "/usr/sbin/kpartx -av {{ iot_clone_target_lv }}"
+          register: iot_clone_customize_kpartx_add
+          changed_when: true
+
+        - name: Mount the cloned iot root filesystem
+          ansible.builtin.command:
+            cmd: "/bin/mount {{ iot_clone_root_mapper_path }} {{ iot_clone_target_mount_path }}"
+
+        - name: Persist the iot hostname on the cloned root filesystem
+          ansible.builtin.copy:
+            dest: "{{ iot_clone_target_mount_path }}/etc/hostname"
+            content: "{{ node_name }}-iot\n"
+            mode: "0644"
+
+        - name: Persist the iot network interfaces on the cloned root filesystem
+          ansible.builtin.copy:
+            dest: "{{ iot_clone_target_mount_path }}/etc/network/interfaces"
+            mode: "0644"
+            content: |
+              auto lo
+              iface lo inet loopback
+
+              auto eth0
+              iface eth0 inet static
+                  address 192.168.150.10/24
+                  gateway 192.168.150.254
+
+        - name: Remove cloned Tailscale runtime state from the iot root filesystem
+          ansible.builtin.shell: >-
+            rm -rf {{ iot_clone_target_mount_path }}/var/lib/tailscale/* &&
+            mkdir -p {{ iot_clone_target_mount_path }}/var/lib/tailscale
+          args:
+            executable: /bin/sh
+          changed_when: true
+
+        - name: Remove cloned SSH host keys from the iot root filesystem
+          ansible.builtin.shell: >-
+            rm -f {{ iot_clone_target_mount_path }}/etc/ssh/ssh_host_* {{ iot_clone_target_mount_path }}/etc/ssh/*.pub
+          args:
+            executable: /bin/sh
+          changed_when: true
+
+        - name: Ensure OpenSSH is present on the cloned iot root filesystem for the temporary bootstrap SSH path
+          ansible.builtin.command:
+            cmd: >-
+              /sbin/apk --root {{ iot_clone_target_mount_path }}
+              --repositories-file {{ iot_clone_target_mount_path }}/etc/apk/repositories
+              add --no-cache openssh
+          args:
+            creates: "{{ iot_clone_target_mount_path }}/usr/sbin/sshd"
+
+      always:
+        - name: Unmount the cloned iot root filesystem if it is mounted
+          ansible.builtin.command: "/bin/umount {{ iot_clone_target_mount_path }}"
+          register: iot_clone_customize_unmount
+          failed_when: false
+          changed_when: iot_clone_customize_unmount.rc == 0
+
+        - name: Remove the cloned iot partition mappings
+          ansible.builtin.command: "/usr/sbin/kpartx -dv {{ iot_clone_target_lv }}"
+          register: iot_clone_customize_kpartx_remove
+          failed_when: false
+          changed_when: iot_clone_customize_kpartx_remove.rc == 0
+
+    - name: Seed the first bootstrap SSH path on the cloned iot guest
+      ansible.builtin.import_role:
+        name: xen-guest-bootstrap
+      vars:
+        xen_guest_name: "{{ node_xen_guest_specs.iot.guest_name }}"
+        xen_guest_lv_path: "{{ iot_clone_target_lv }}"
+        xen_guest_bootstrap_authorized_key_file: "{{ iot_clone_bootstrap_key_file }}"
+
+    - name: Remove any stale controller-side known_hosts entry for the iot bootstrap IP
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/ssh-keygen
+          - -f
+          - "{{ hostvars[node_name ~ '-iot'].iot_bootstrap_known_hosts_file }}"
+          - -R
+          - "{{ hostvars[node_name ~ '-iot'].iot_bootstrap_host }}"
+      delegate_to: localhost
+      become: false
+      register: iot_bootstrap_known_hosts_cleanup
+      failed_when: false
+      changed_when: iot_bootstrap_known_hosts_cleanup.rc == 0
+
+    - name: Show the next iot clone steps
+      ansible.builtin.debug:
+        msg:
+          - "The iot guest disk now comes from the dmz reference VM instead of an interactive console install."
+          - "Run the installed-stage playbook next to extract iot-kernel/iot-initramfs and boot the guest without the ISO."

@@ -1,0 +1,17 @@
+---
+- name: Install local HTTPS ingress
+  hosts: dmz
+  gather_facts: false
+  tasks:
+    - name: Gather local ingress facts
+      ansible.builtin.setup:
+
+    - name: Assert local ingress target shape
+      ansible.builtin.assert:
+        that:
+          - node_domain_role == 'dmz'
+        fail_msg: "Local ingress must target the DMZ VM."
+
+    - name: Install local ingress service
+      ansible.builtin.import_role:
+        name: local-ingress

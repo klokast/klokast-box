@@ -1,0 +1,17 @@
+---
+node_name: yii
+
+ansible_user: neo
+ansible_become: true
+ansible_become_method: doas
+# `yii` hosts are managed with passwordless `doas`; fail fast if that ever
+# regresses instead of hanging on an invisible privilege prompt.
+ansible_become_flags: -n
+# Alpine guests occasionally take longer than the default prompt wait on the
+# first privileged module run; keep the timeout explicit for reliability.
+ansible_become_timeout: 30
+ansible_remote_tmp: /tmp
+
+# High-entropy placeholder hash so VM admin accounts are valid Unix logins for
+# public-key SSH without depending on a human-set password.
+vm_admin_password_hash: "$6$p/2yCFKImcdddTiG$A3hPDhNVKH5UwxY5yVVSHMlOEDmwX.PdoM0Mzp/SFBQ3ydgOCo6iJW2yKxH32qLdvUG.ge4ewCx6NRrzH5ea.1"

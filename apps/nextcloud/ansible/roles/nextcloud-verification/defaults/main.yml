@@ -1,0 +1,7 @@
+---
+nextcloud_cloudflare_tunnel_enabled: false
+nextcloud_magicdns_suffix: example.ts.net
+nextcloud_private_tailscale_hostname: next
+nextcloud_private_domain: "{{ nextcloud_private_tailscale_hostname }}.{{ nextcloud_magicdns_suffix }}"
+nextcloud_local_domain: ""
+nextcloud_local_hostname: "{{ ('nextcloud.' ~ nextcloud_local_domain) if (nextcloud_local_domain | length > 0) else '' }}"

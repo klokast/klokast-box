@@ -1,0 +1,26 @@
+---
+tailscale_devices_list_wrapper: /usr/local/sbin/ts-devices-list
+tailscale_device_delete_stale_wrapper: /usr/local/sbin/ts-device-delete-stale
+
+tailscale_box_device_prefix: "{{ decommission_box_name }}-"
+tailscale_box_device_excluded_hostnames: []
+tailscale_box_device_managed_tags:
+  - tag:dom0
+  - tag:vm
+  - tag:bootstrap
+  - tag:ops
+  - tag:back
+  - tag:dmz
+  - tag:iot
+  - tag:streamer
+  - tag:usr
+
+tailscale_box_device_apply: false
+tailscale_box_device_confirm: ""
+tailscale_box_device_expected_confirm: ""
+tailscale_box_device_fail_on_online: true
+tailscale_box_device_fail_on_unknown: true
+tailscale_box_device_fail_on_unmanaged: true
+tailscale_box_device_wait_for_offline: true
+tailscale_box_device_offline_retries: 30
+tailscale_box_device_offline_delay: 2

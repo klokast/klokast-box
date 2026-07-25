@@ -1,0 +1,153 @@
+---
+- name: Retire a verified airunner candidate
+  hosts: ops
+  gather_facts: false
+  tasks:
+    - name: Ensure Python is available on the ops controller
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+
+    - name: Gather ops controller facts
+      ansible.builtin.setup:
+
+    - name: Select canonical and candidate airunner definitions
+      ansible.builtin.set_fact:
+        ops_airunner_canonical: "{{ ops_airunner_instances.canonical }}"
+        ops_airunner_candidate: "{{ ops_airunner_instances.candidate }}"
+
+    - name: Require the exact candidate retirement confirmation
+      ansible.builtin.assert:
+        that:
+          - ops_airunner_retire_confirm | default('') == 'retire ' ~ ops_airunner_candidate.name ~ ' after canonical mosh verified'
+        fail_msg: Candidate retirement confirmation is missing or incorrect.
+
+    - name: Verify the canonical airunner before candidate retirement
+      ansible.builtin.include_role:
+        name: ops-airunner-verification
+      vars:
+        ops_airunner_verify_name: "{{ ops_airunner_canonical.name }}"
+        ops_airunner_verify_network_name: "{{ ops_airunner_network_name }}"
+        ops_airunner_verify_home: "{{ ops_airunner_home }}"
+        ops_airunner_verify_tailscale_state_dir: "{{ ops_airunner_canonical.state_root }}/tailscale"
+        ops_airunner_verify_expected_tag: "{{ ops_airunner_tailscale_expected_tag }}"
+
+    - name: Check whether the candidate service exists
+      ansible.builtin.stat:
+        path: "{{ ops_airunner_candidate.service_path }}"
+      register: ops_airunner_candidate_service
+
+    - name: Stop and disable the candidate service
+      ansible.builtin.service:
+        name: "{{ ops_airunner_candidate.service_name }}"
+        enabled: false
+        state: stopped
+      when: ops_airunner_candidate_service.stat.exists | default(false)
+
+    - name: Wait until the candidate Tailnet identity is offline
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            import subprocess
+            import sys
+
+            expected = sys.argv[1]
+            status = json.loads(subprocess.check_output(["tailscale", "status", "--json"], text=True))
+            peers = list((status.get("Peer") or {}).values())
+            matching = [
+                peer
+                for peer in peers
+                if expected in {
+                    str(peer.get("HostName") or "").rstrip("."),
+                    str(peer.get("DNSName") or "").rstrip(".").split(".", 1)[0],
+                }
+            ]
+            sys.exit(1 if any(peer.get("Online") is not False for peer in matching) else 0)
+          - "{{ ops_airunner_candidate.name }}"
+      register: ops_airunner_candidate_offline
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: ops_airunner_candidate_offline.rc == 0
+
+    - name: Delete only the exact offline candidate Tailnet identity
+      ansible.builtin.include_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_privilege_command:
+          - doas
+        tailscale_device_expected_hostname: "{{ ops_airunner_candidate.name }}"
+        tailscale_device_expected_tag: tag:airunner
+        tailscale_device_apply: true
+        tailscale_device_confirm: "delete {{ ops_airunner_candidate.name }}"
+        tailscale_device_expected_confirm: "delete {{ ops_airunner_candidate.name }}"
+        tailscale_device_fail_on_online_exact: true
+
+    - name: Verify the candidate Tailnet identity was deleted
+      ansible.builtin.include_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_privilege_command:
+          - doas
+        tailscale_device_expected_hostname: "{{ ops_airunner_candidate.name }}"
+        tailscale_device_expected_tag: tag:airunner
+        tailscale_device_apply: false
+
+    - name: Assert the candidate Tailnet identity is absent
+      ansible.builtin.assert:
+        that:
+          - tailscale_device_candidates.stale_exact | length == 0
+          - tailscale_device_candidates.online_exact | length == 0
+          - tailscale_device_candidates.unknown_exact | length == 0
+        fail_msg: The candidate Tailnet identity still exists after deletion.
+
+    - name: Remove candidate service and access files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ops_airunner_candidate.service_path }}"
+        - "{{ ops_airunner_candidate.shell_wrapper }}"
+        - "{{ ops_airunner_candidate.sudoers_path }}"
+
+    - name: Remove candidate persistent state
+      ansible.builtin.file:
+        path: "{{ ops_airunner_candidate.state_root }}"
+        state: absent
+
+    - name: Remove the candidate image
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - image
+          - rm
+          - "{{ ops_airunner_candidate.image }}"
+      register: ops_airunner_candidate_image_remove
+      changed_when: ops_airunner_candidate_image_remove.rc == 0
+      failed_when:
+        - ops_airunner_candidate_image_remove.rc != 0
+        - "'image not known' not in ops_airunner_candidate_image_remove.stderr"
+
+    - name: Check candidate service path after retirement
+      ansible.builtin.stat:
+        path: "{{ ops_airunner_candidate.service_path }}"
+      register: ops_airunner_candidate_service_after
+
+    - name: Verify candidate runtime artifacts are absent
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - container
+          - exists
+          - "{{ ops_airunner_candidate.name }}"
+      register: ops_airunner_candidate_container_exists
+      changed_when: false
+      failed_when: ops_airunner_candidate_container_exists.rc not in [0, 1]
+
+    - name: Assert the candidate container is absent
+      ansible.builtin.assert:
+        that:
+          - ops_airunner_candidate_container_exists.rc == 1
+          - not (ops_airunner_candidate_service_after.stat.exists | default(false))

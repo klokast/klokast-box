@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish Article"
+  short_description: "Write and publish long-form static articles"
+  default_prompt: "Use $publish-article to write, format, and publish a sourced long-form article."

@@ -1,0 +1,68 @@
+---
+ansible_user: neo
+ansible_become: true
+ansible_become_method: doas
+ansible_python_interpreter: /usr/bin/python3
+
+node_domain_role: backend
+node_hostname: "{{ node_name }}-bak"
+ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
+
+backend_bootstrap_host: "{{ platform_zones.bak.vm_ipv4_address }}"
+backend_bootstrap_proxyjump: "neo@{{ hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0') }}"
+backend_bootstrap_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
+backend_bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap"
+
+vm_bootstrap_host: "{{ backend_bootstrap_host }}"
+vm_bootstrap_proxyjump: "{{ backend_bootstrap_proxyjump }}"
+vm_bootstrap_private_key_file: "{{ backend_bootstrap_private_key_file }}"
+vm_bootstrap_known_hosts_file: "{{ backend_bootstrap_known_hosts_file }}"
+vm_bootstrap_network_interfaces: |
+  auto lo
+  iface lo inet loopback
+
+  auto {{ platform_zones.bak.vm_interface }}
+  iface {{ platform_zones.bak.vm_interface }} inet static
+      address {{ platform_zones.bak.vm_ipv4_address }}/{{ platform_zones.bak.router_ipv4_prefix }}
+      gateway {{ platform_zones.bak.router_ipv4_address }}
+
+vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-vm
+vm_tailscale_authkey_advertise_tags: tag:vm
+vm_tailscale_authkey_expected_tag: tag:vm
+
+podman_vm_firewall_input_tcp_rules: []
+podman_vm_firewall_input_udp_rules:
+  - interface: "{{ platform_zones.bak.vm_interface }}"
+    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
+    destination: "{{ platform_zones.bak.vm_ipv4_address }}"
+    port: 41641
+    comment: ops-backend-tailscale-underlay-input
+
+vm_admin_user_name: neo
+vm_local_users:
+  - name: "{{ vm_admin_user_name }}"
+    shell: /bin/ash
+    groups:
+      - wheel
+
+vm_base_packages:
+  - python3
+  - doas
+  - openssh
+
+vm_admin_authorized_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+tailscale_enable_ssh: true
+
+alpine_repositories:
+  - http://dl-cdn.alpinelinux.org/alpine/v3.23/main
+  - http://dl-cdn.alpinelinux.org/alpine/v3.23/community
+
+# The bootstrap ISO builder script is a host-side Bash wrapper that clones
+# `aports`, so the backend Podman host should keep these operator tools ready.
+podman_host_extra_packages:
+  - bash
+  - git
+
+# Docker Hub may time out from network-restricted boxes; app-level image preflights
+# should choose and verify a suitable source before deployment.
+podman_test_image: quay.io/libpod/alpine:latest

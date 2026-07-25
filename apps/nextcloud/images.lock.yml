@@ -1,0 +1,27 @@
+---
+nextcloud_images:
+  nextcloud_fpm:
+    repository: library/nextcloud
+    canonical: docker.io/library/nextcloud
+    tag: 33.0.3-fpm-alpine
+    digest: sha256:f2f6f40258e613d58db1c746293e382311165feaac293b5e2e8c9d278cea165d
+  nginx:
+    repository: library/nginx
+    canonical: docker.io/library/nginx
+    tag: 1.30.0-alpine3.23
+    digest: sha256:0272e4604ed93c1792f03695a033a6e8546840f86e0de20a884bb17d2c924883
+  postgres:
+    repository: library/postgres
+    canonical: docker.io/library/postgres
+    tag: 17.9-alpine3.23
+    digest: sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
+  redis:
+    repository: library/redis
+    canonical: docker.io/library/redis
+    tag: 8.6.3-alpine3.23
+    digest: sha256:d146f83b1e0f02fc27c26a50cee39338c736674c5959db84363e6ae3cd9e02d2
+  alpine:
+    repository: library/alpine
+    canonical: docker.io/library/alpine
+    tag: 3.23.4
+    digest: sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11

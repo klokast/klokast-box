@@ -1,0 +1,29 @@
+---
+- name: Stage debug variant of the first diskless Alpine boot
+  hosts: bootstrap
+  gather_facts: true
+  vars:
+    diskless_first_boot_debug_mode: true
+    diskless_grub_include_debug_entry: true
+    diskless_grub_default_entry: 1
+    diskless_grub_timeout_seconds: 10
+  tasks:
+    - name: Prepare diskless-install prerequisites
+      ansible.builtin.import_role:
+        name: diskless-prereqs
+
+    - name: Prepare the Alpine diskless seed source context
+      ansible.builtin.import_role:
+        name: diskless-seed-source
+
+    - name: Build the first diskless apkovl archive in debug mode
+      ansible.builtin.import_role:
+        name: diskless-apkovl
+
+    - name: Render the diskless GRUB configuration with a debug entry
+      ansible.builtin.import_role:
+        name: diskless-grub
+
+    - name: Verify the staged diskless debug boot state
+      ansible.builtin.import_role:
+        name: diskless-install-verification

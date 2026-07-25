@@ -1,0 +1,8 @@
+---
+- name: Check ops controller steady-state Platform health
+  hosts: ops
+  gather_facts: false
+  tasks:
+    - name: Verify ops controller steady-state health
+      ansible.builtin.import_role:
+        name: ops-controller-verification

@@ -1,0 +1,195 @@
+#
+# Summary:
+# - Replaces the bootstrap Tailscale identity with the steady-state dom0 identity and asserts the handoff completed cleanly.
+#
+---
+- name: Collect current Tailscale runtime status before steady-state handoff
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_handoff_status_json
+  changed_when: false
+  failed_when: false
+
+- name: Parse current Tailscale runtime status when available
+  ansible.builtin.set_fact:
+    tailscale_handoff_status: "{{ tailscale_handoff_status_json.stdout | from_json }}"
+  when:
+    - tailscale_handoff_status_json.rc == 0
+    - tailscale_handoff_status_json.stdout | length > 0
+
+- name: Decide whether a steady-state Tailscale handoff is needed
+  ansible.builtin.set_fact:
+    tailscale_handoff_needed: >-
+      {{
+        (tailscale_handoff_status.BackendState | default('')) != 'Running'
+        or
+        (tailscale_handoff_expected_tag not in (tailscale_handoff_status.Self.Tags | default([])))
+      }}
+
+- name: Read the steady-state Tailscale auth key from the ops wrapper
+  ansible.builtin.set_fact:
+    tailscale_handoff_authkey:
+      stdout: >-
+        {{
+          lookup(
+            'ansible.builtin.pipe',
+            'sudo -n ' ~ (tailscale_handoff_authkey_wrapper | quote)
+            ~ ' --hostname ' ~ (node_hostname | quote)
+            ~ ' --tags ' ~ (tailscale_handoff_expected_tag | quote)
+          ) | trim
+        }}
+  no_log: true
+  changed_when: false
+  when: tailscale_handoff_needed | bool
+
+- name: Record the steady-state dom0 Tailscale host name
+  ansible.builtin.set_fact:
+    tailscale_handoff_steady_state_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
+  changed_when: false
+  when: tailscale_handoff_needed | bool
+
+- name: Move the bootstrap Tailscale hostname out of the way before steady-state enrollment
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - set
+      - "--hostname={{ bootstrap_tailscale_hostname }}"
+  changed_when: >-
+    (tailscale_handoff_status.Self.HostName | default('')) != bootstrap_tailscale_hostname
+  when:
+    - tailscale_handoff_needed | bool
+    - bootstrap_tailscale_tag in (tailscale_handoff_status.Self.Tags | default([]))
+    - (tailscale_handoff_status.Self.HostName | default('')) == node_hostname
+
+- name: Wait for the bootstrap hostname reservation to clear before steady-state enrollment
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json
+    import subprocess
+    import sys
+    import time
+
+    target_hostname = {{ node_hostname | to_json }}
+    bootstrap_tag = {{ bootstrap_tailscale_tag | to_json }}
+
+    for _ in range(30):
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"]))
+        peers = status.get("Peer") or {}
+        collision = any(
+            peer.get("HostName") == target_hostname
+            and bootstrap_tag in (peer.get("Tags") or [])
+            for peer in peers.values()
+        )
+        if not collision:
+            sys.exit(0)
+        time.sleep(1)
+
+    sys.exit(1)
+    PY
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - tailscale_handoff_needed | bool
+    - bootstrap_tailscale_tag in (tailscale_handoff_status.Self.Tags | default([]))
+    - (tailscale_handoff_status.Self.HostName | default('')) == node_hostname
+
+- name: Detect the runtime EFI mountpoint before removing the staged bootstrap auth key
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $2}' /proc/mounts | tail -n 1
+  register: tailscale_handoff_runtime_efi_mount
+  changed_when: false
+  when: tailscale_handoff_needed | bool
+
+- name: Assert the runtime EFI mountpoint is known during the dom0 handoff
+  ansible.builtin.assert:
+    that:
+      - tailscale_handoff_runtime_efi_mount.stdout | default('') != ''
+    fail_msg: >-
+      Could not determine the runtime EFI mountpoint for {{ efi_partition_device }}
+      before removing the staged bootstrap auth key.
+  when: tailscale_handoff_needed | bool
+
+- name: Render the detached Tailscale handoff script on the host
+  ansible.builtin.copy:
+    dest: /tmp/klokast-tailscale-handoff.sh
+    mode: "0700"
+    content: |
+      #!/bin/sh
+      set -eu
+
+      runtime_efi_mount={{ tailscale_handoff_runtime_efi_mount.stdout | quote }}
+      efi_partition_device={{ efi_partition_device | quote }}
+      staged_authkey_path={{ (tailscale_handoff_runtime_efi_mount.stdout ~ '/' ~ diskless_first_boot_authkey_relative_path) | quote }}
+      steady_state_authkey={{ tailscale_handoff_authkey.stdout | trim | quote }}
+
+      rc-service tailscale stop >/dev/null 2>&1 || true
+      rm -rf /var/lib/tailscale/* /var/lib/tailscale/.[!.]* /var/lib/tailscale/..?* 2>/dev/null || true
+      rc-service tailscale start >/dev/null 2>&1 || rc-service tailscale restart >/dev/null 2>&1
+      for attempt in $(seq 1 30); do
+        if [ -S /run/tailscale/tailscaled.sock ]; then
+          break
+        fi
+        sleep 1
+      done
+      tailscale up \
+        --ssh \
+        --hostname={{ node_hostname | quote }} \
+        --advertise-tags={{ tailscale_handoff_expected_tag | quote }} \
+        --auth-key="$steady_state_authkey" \
+        --accept-risk=lose-ssh \
+        --timeout=30s
+      for attempt in $(seq 1 30); do
+        if tailscale status --json 2>/dev/null | grep -q '"BackendState":"Running"'; then
+          break
+        fi
+        sleep 1
+      done
+      mount_options="$(awk -v runtime_efi_mount="$runtime_efi_mount" '$2 == runtime_efi_mount {print $4; exit}' /proc/mounts)"
+      case ",$mount_options," in
+        *,ro,*) mount -o remount,rw "$efi_partition_device" "$runtime_efi_mount" ;;
+      esac
+      rm -f "$staged_authkey_path"
+      grep -qxF '+var/lib/tailscale' {{ lbu_protected_paths_file | quote }} || printf '%s\n' '+var/lib/tailscale' >>{{ lbu_protected_paths_file | quote }}
+      lbu commit -d
+  when: tailscale_handoff_needed | bool
+  no_log: true
+
+- name: Launch the detached Tailscale handoff script
+  ansible.builtin.shell: >-
+    nohup /bin/sh -c 'sleep 3; /bin/sh /tmp/klokast-tailscale-handoff.sh'
+    >/tmp/klokast-tailscale-handoff.log 2>&1 </dev/null &
+  when: tailscale_handoff_needed | bool
+  no_log: true
+
+- name: Ensure the dom0 known-hosts file exists on the controller before reconnecting
+  ansible.builtin.file:
+    path: "{{ dom0_known_hosts_file }}"
+    state: touch
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: tailscale_handoff_needed | bool
+
+- name: Remove any stale dom0 Tailscale SSH host key before reconnecting after handoff
+  ansible.builtin.shell: >-
+    ssh-keygen -R {{ tailscale_handoff_steady_state_host | quote }} -f {{ dom0_known_hosts_file | quote }}
+    >/dev/null 2>&1 || true
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when: tailscale_handoff_needed | bool
+
+- name: Wait for the host to return over Tailscale SSH as the steady-state dom0 identity
+  ansible.builtin.shell: >-
+    set -eu;
+    for attempt in $(seq 1 60); do
+      if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ dom0_known_hosts_file | quote }} {{ dom0_admin_user_name | quote }}@{{ tailscale_handoff_steady_state_host | quote }} 'hostname' >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done;
+    exit 1
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when: tailscale_handoff_needed | bool

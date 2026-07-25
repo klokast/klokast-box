@@ -1,0 +1,10 @@
+---
+nanokvm_virtual_media_enabled: true
+nanokvm_virtual_media_action: --unload
+nanokvm_virtual_media_image: ""
+nanokvm_virtual_media_verify_sha512_sidecar: false
+nanokvm_virtual_media_bin: "{{ playbook_dir }}/../bin/nanokvm-virtual-media"
+nanokvm_virtual_media_host: oob
+nanokvm_virtual_media_user: root
+nanokvm_virtual_media_dest: /data
+nanokvm_virtual_media_magicdns_suffix: "{{ platform_magicdns_suffix | default('example.ts.net') }}"

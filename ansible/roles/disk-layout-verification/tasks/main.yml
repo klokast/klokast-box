@@ -1,0 +1,54 @@
+#
+# Summary:
+# - Verifies that the target SSD, EFI partition, and LVM layout match the expected bootstrap disk geometry.
+#
+---
+- name: Collect lsblk output for the target disk
+  ansible.builtin.command: >-
+    lsblk --noheadings --paths --output PATH,TYPE,FSTYPE,LABEL {{ target_disk_device }}
+  register: verify_disk_layout_lsblk
+  changed_when: false
+
+- name: Collect blkid output for the EFI partition
+  ansible.builtin.command: "blkid {{ efi_partition_device }}"
+  register: verify_disk_layout_blkid
+  changed_when: false
+
+- name: Collect physical volume state
+  ansible.builtin.command: "pvs --noheadings -o pv_name,vg_name"
+  register: verify_disk_layout_pvs
+  changed_when: false
+
+- name: Collect volume group state
+  ansible.builtin.command: "vgs --noheadings -o vg_name"
+  register: verify_disk_layout_vgs
+  changed_when: false
+
+- name: Collect partition table state
+  ansible.builtin.command: "parted -s {{ target_disk_device }} print"
+  register: verify_disk_layout_parted
+  changed_when: false
+
+- name: Assert the disk layout matches the expected bootstrap state
+  ansible.builtin.assert:
+    that:
+      - "efi_partition_device in verify_disk_layout_lsblk.stdout"
+      - "lvm_partition_device in verify_disk_layout_lsblk.stdout"
+      - "'parted' not in (verify_disk_layout_parted.stderr | lower)"
+      - "efi_partition_label in verify_disk_layout_blkid.stdout"
+      - "'TYPE=\"vfat\"' in verify_disk_layout_blkid.stdout"
+      - "lvm_partition_device in verify_disk_layout_pvs.stdout"
+      - "volume_group_name in verify_disk_layout_pvs.stdout"
+      - "volume_group_name in verify_disk_layout_vgs.stdout"
+    fail_msg: >-
+      Disk layout verification failed. Review lsblk, blkid, pvs, vgs, and parted
+      output before continuing toward boot artifact installation.
+
+- name: Show verified disk layout state
+  ansible.builtin.debug:
+    msg:
+      - "{{ verify_disk_layout_lsblk.stdout_lines }}"
+      - "{{ verify_disk_layout_blkid.stdout }}"
+      - "{{ verify_disk_layout_pvs.stdout_lines }}"
+      - "{{ verify_disk_layout_vgs.stdout_lines }}"
+      - "{{ verify_disk_layout_parted.stdout_lines }}"

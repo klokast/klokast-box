@@ -1,0 +1,14 @@
+set timeout={{ diskless_grub_timeout_seconds | default(3) }}
+set default={{ diskless_grub_default_entry | default(0) }}
+
+menuentry "Alpine Linux (RAM Mode)" {
+    linux /boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage,nvme quiet {{ diskless_modloop_kernel_param | trim }} alpine_dev=LABEL={{ efi_partition_label }}{{ (' ' ~ (diskless_alpine_repo_kernel_param | trim)) if (diskless_alpine_repo_kernel_param | default('') | trim) else '' }}{{ (' ' ~ (diskless_apkovl_kernel_param | trim)) if (diskless_apkovl_kernel_param | default('') | trim) else '' }}
+    initrd /boot/initramfs-lts
+}
+{% if diskless_grub_include_debug_entry | default(false) | bool %}
+
+menuentry "{{ diskless_grub_debug_entry_title | default('Alpine Linux (RAM Mode, Debug)') }}" {
+    linux /boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage,nvme debug_init {{ diskless_modloop_kernel_param | trim }} alpine_dev=LABEL={{ efi_partition_label }}{{ (' ' ~ (diskless_alpine_repo_kernel_param | trim)) if (diskless_alpine_repo_kernel_param | default('') | trim) else '' }}{{ (' ' ~ (diskless_apkovl_kernel_param | trim)) if (diskless_apkovl_kernel_param | default('') | trim) else '' }}{{ (' ' ~ (diskless_grub_debug_kernel_params | trim)) if (diskless_grub_debug_kernel_params | default('') | trim) else '' }}
+    initrd /boot/initramfs-lts
+}
+{% endif %}

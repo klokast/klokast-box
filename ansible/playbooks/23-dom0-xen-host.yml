@@ -1,0 +1,20 @@
+---
+- name: Configure dom0 storage and Xen host
+  hosts: dom0
+  gather_facts: true
+  tasks:
+    - name: Provision persistent dom0 storage
+      ansible.builtin.import_role:
+        name: dom0-storage
+
+    - name: Configure Xen host
+      ansible.builtin.import_role:
+        name: xen-host
+
+    - name: Render managed EFI GRUB loader configurations
+      ansible.builtin.import_role:
+        name: efi-grub-loader
+
+    - name: Verify dom0 Xen boot readiness
+      ansible.builtin.import_role:
+        name: xen-host-verification

@@ -1,0 +1,406 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+
+description="Klokast first diskless boot bootstrap"
+
+DEBUG_LOG_FILE=""
+TAILSCALE_AUTHKEY_FILE='{{ diskless_first_boot_authkey_runtime_path }}'
+
+depend() {
+	need localmount hostname
+	after modules mdev hwdrivers
+	before networking tailscale
+}
+
+has_default_route() {
+	ip route show default 2>/dev/null | grep -q .
+}
+
+list_non_loopback_interfaces() {
+	for net_path in /sys/class/net/*; do
+		[ -e "$net_path" ] || continue
+		iface="${net_path##*/}"
+		[ "$iface" = "lo" ] && continue
+		printf '%s\n' "$iface"
+	done
+}
+
+log_file_line() {
+	[ -n "$DEBUG_LOG_FILE" ] || return 0
+	printf '%s\n' "$1" >>"$DEBUG_LOG_FILE" 2>/dev/null || DEBUG_LOG_FILE=""
+}
+
+log_info() {
+	einfo "$*"
+	log_file_line "$*"
+}
+
+log_error() {
+	eerror "$*"
+	log_file_line "$*"
+}
+
+log_multiline() {
+	prefix="$1"
+	shift
+	while IFS= read -r line; do
+		einfo "$prefix$line"
+		log_file_line "$prefix$line"
+	done
+}
+
+setup_debug_logging() {
+{% if diskless_first_boot_debug_mode | bool %}
+	DEBUG_LOG_FILE='{{ diskless_first_boot_debug_log_path }}'
+	if mkdir -p "${DEBUG_LOG_FILE%/*}" 2>/dev/null && : >"$DEBUG_LOG_FILE" 2>/dev/null; then
+		log_info "Writing first-boot debug log to $DEBUG_LOG_FILE"
+	else
+		DEBUG_LOG_FILE="/run/klokast-first-boot.log"
+		if : >"$DEBUG_LOG_FILE" 2>/dev/null; then
+			ewarn "Cannot write first-boot debug log to {{ diskless_first_boot_debug_log_path }}; falling back to $DEBUG_LOG_FILE"
+			log_info "Writing first-boot debug log to $DEBUG_LOG_FILE"
+		else
+			DEBUG_LOG_FILE=""
+			ewarn "Cannot create a writable first-boot debug log file; continuing with console-only diagnostics"
+		fi
+	fi
+{% else %}
+	:
+{% endif %}
+}
+
+show_module_diagnostics() {
+	log_info "Kernel release:"
+	uname -r 2>&1 | log_multiline "  "
+
+	log_info "Kernel command line:"
+	cat /proc/cmdline 2>&1 | log_multiline "  "
+
+	log_info "Current mount table:"
+	mount 2>&1 | log_multiline "  "
+
+	log_info "Key module paths:"
+	for path in /.modloop /modloop /lib/modules; do
+		if [ -L "$path" ] || [ -e "$path" ]; then
+			ls -ld "$path" 2>&1 | log_multiline "  "
+		else
+			log_info "  missing $path"
+		fi
+	done
+
+	if [ -L /lib/modules ] || [ -e /lib/modules ]; then
+		log_info "Resolved /lib/modules:"
+		readlink -f /lib/modules 2>&1 | log_multiline "  "
+	fi
+
+	if [ -d /.modloop/modules ]; then
+		log_info "Contents of /.modloop/modules:"
+		find /.modloop/modules -maxdepth 2 -mindepth 1 2>&1 | sort | sed -n '1,80p' | log_multiline "  "
+	else
+		log_info "Contents of /.modloop/modules: missing"
+	fi
+
+	if [ -d /lib/modules ]; then
+		log_info "Contents of /lib/modules:"
+		find /lib/modules -maxdepth 2 -mindepth 1 2>&1 | sort | sed -n '1,80p' | log_multiline "  "
+	else
+		log_info "Contents of /lib/modules: missing"
+	fi
+
+	log_info "Relevant kernel log lines:"
+	dmesg 2>&1 | grep -Ei 'modloop|module|firmware|igc|i226|usb|xhci|hid' | tail -n 200 | log_multiline "  "
+}
+
+show_network_diagnostics() {
+	log_info "Current /sys/class/net:"
+	{
+		for net_path in /sys/class/net/*; do
+			[ -e "$net_path" ] || continue
+			iface="${net_path##*/}"
+			operstate="$(cat "$net_path/operstate" 2>/dev/null || echo unknown)"
+			carrier="$(cat "$net_path/carrier" 2>/dev/null || echo unknown)"
+			printf '%s operstate=%s carrier=%s\n' "$iface" "$operstate" "$carrier"
+		done
+	} 2>&1 | log_multiline "  "
+
+	log_info "Current links:"
+	ip link show 2>&1 | log_multiline "  "
+
+	log_info "Current routes:"
+	ip route 2>&1 | log_multiline "  "
+
+	if [ -f /etc/network/interfaces ]; then
+		log_info "Current /etc/network/interfaces:"
+		cat /etc/network/interfaces 2>&1 | log_multiline "  "
+	else
+		log_info "Current /etc/network/interfaces: missing"
+	fi
+
+	log_info "hostname service status:"
+	rc-service hostname status 2>&1 | log_multiline "  "
+
+	log_info "networking service status:"
+	rc-service networking status 2>&1 | log_multiline "  "
+}
+
+ensure_networking_service_started() {
+	if rc-service networking status >/dev/null 2>&1; then
+		log_info "OpenRC networking service is already started"
+		return 0
+	fi
+
+	log_info "Starting OpenRC networking service"
+	networking_output="$(rc-service networking start 2>&1)"
+	networking_rc=$?
+	printf '%s\n' "$networking_output" | log_multiline "networking-start: "
+	if [ "$networking_rc" -eq 0 ]; then
+		return 0
+	fi
+
+	log_info "OpenRC networking service start returned $networking_rc; retrying with restart"
+	networking_output="$(rc-service networking restart 2>&1)"
+	networking_rc=$?
+	printf '%s\n' "$networking_output" | log_multiline "networking-restart: "
+	if [ "$networking_rc" -eq 0 ]; then
+		return 0
+	fi
+
+	log_error "OpenRC networking service is still not started"
+	show_network_diagnostics
+	return 1
+}
+
+wait_for_non_loopback_interfaces() {
+	n=0
+
+	while [ "$n" -lt {{ diskless_first_boot_interface_wait_seconds }} ]; do
+		ifaces="$(list_non_loopback_interfaces)"
+		if [ -n "$ifaces" ]; then
+			log_info "Detected non-loopback interfaces after $n second(s): $(echo "$ifaces" | tr '\n' ' ' | sed 's/ *$//')"
+			return 0
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+
+	log_info "No non-loopback interfaces appeared after {{ diskless_first_boot_interface_wait_seconds }} second(s)"
+	show_module_diagnostics
+	show_network_diagnostics
+	return 1
+}
+
+run_setup_interfaces() {
+	setup_interfaces_path="$(command -v setup-interfaces 2>/dev/null)" || return 1
+	[ -n "$setup_interfaces_path" ] || return 1
+
+	log_info "Running Alpine auto network setup via $setup_interfaces_path"
+	log_info "Using SETUP_INTERFACES_LINK_WAIT_MAX=$SETUP_INTERFACES_LINK_WAIT_MAX"
+
+{% if diskless_first_boot_trace_setup_interfaces | bool %}
+	PS4='[setup-interfaces] '
+	sh -x "$setup_interfaces_path" -a
+{% else %}
+	"$setup_interfaces_path" -a
+{% endif %}
+}
+
+ensure_network() {
+	n=0
+
+	if has_default_route; then
+		log_info "A default route already exists"
+		ensure_networking_service_started || return 1
+		return 0
+	fi
+
+	if ! wait_for_non_loopback_interfaces; then
+		return 1
+	fi
+
+	show_module_diagnostics
+	export SETUP_INTERFACES_LINK_WAIT_MAX={{ diskless_first_boot_link_wait_max }}
+	run_setup_interfaces || true
+	show_network_diagnostics
+
+	log_info "Bringing up configured interfaces with ifup -a"
+	ifup -a 2>&1 | log_multiline "ifup: " || true
+	show_network_diagnostics
+
+	while [ "$n" -lt {{ diskless_first_boot_network_wait_seconds }} ]; do
+		if has_default_route; then
+			log_info "Default route detected after $n second(s)"
+			ensure_networking_service_started || return 1
+			return 0
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+
+	log_info "No default route detected after {{ diskless_first_boot_network_wait_seconds }} second(s)"
+	show_module_diagnostics
+	show_network_diagnostics
+	return 1
+}
+
+ensure_repositories() {
+	cat >/etc/apk/repositories <<'EOF'
+{% for repo in alpine_repositories %}
+{{ repo }}
+{% endfor %}
+EOF
+}
+
+missing_runtime_packages() {
+{% for package_name in diskless_first_boot_runtime_packages %}
+	apk info -e {{ package_name }} >/dev/null 2>&1 || echo {{ package_name }}
+{% endfor %}
+}
+
+ensure_runtime_packages() {
+	missing="$(missing_runtime_packages | tr '\n' ' ' | sed 's/ *$//')"
+	[ -n "$missing" ] || return 0
+	log_info "Installing first-boot runtime packages: $missing"
+	apk add --update-cache $missing
+}
+
+tailscale_backend_state() {
+	tailscale status --json 2>/dev/null | awk -F'"' '/"BackendState"/ {print $4; exit}'
+}
+
+ensure_tailscale_service_started() {
+	rc-update add tailscale default 2>&1 | log_multiline "rc-update: " || true
+
+	log_info "Starting OpenRC Tailscale service"
+	tailscale_service_output="$(rc-service tailscale start 2>&1)"
+	tailscale_service_rc=$?
+	printf '%s\n' "$tailscale_service_output" | log_multiline "tailscale-service: "
+
+	if [ "$tailscale_service_rc" -ne 0 ]; then
+		log_info "OpenRC Tailscale service start returned $tailscale_service_rc; retrying with restart"
+		tailscale_service_output="$(rc-service tailscale restart 2>&1)"
+		tailscale_service_rc=$?
+		printf '%s\n' "$tailscale_service_output" | log_multiline "tailscale-service: "
+	fi
+
+	n=0
+	while [ "$n" -lt 30 ]; do
+		if [ -S /run/tailscale/tailscaled.sock ]; then
+			log_info "Tailscale socket appeared after $n second(s)"
+			return 0
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+
+	log_error "Tailscale socket did not appear after starting the OpenRC service"
+	rc-service tailscale status 2>&1 | log_multiline "tailscale-service: " || true
+	ps 2>&1 | grep '[t]ailscaled' | log_multiline "tailscale-process: " || true
+	return 1
+}
+
+wait_for_tailscale_running() {
+	n=0
+
+	while [ "$n" -lt {{ diskless_first_boot_tailscale_wait_seconds }} ]; do
+		backend_state="$(tailscale_backend_state)"
+		if [ "$backend_state" = "Running" ]; then
+			log_info "Tailscale backend reached Running after $n second(s)"
+			return 0
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+
+	log_info "Tailscale backend did not reach Running after {{ diskless_first_boot_tailscale_wait_seconds }} second(s)"
+	tailscale status 2>&1 | log_multiline "tailscale: " || true
+	return 1
+}
+
+run_tailscale_up() {
+	tailscale_up_output="$(tailscale up --ssh --hostname={{ bootstrap_tailscale_hostname }} --advertise-tags={{ bootstrap_tailscale_tag }} --auth-key="$auth_key" 2>&1)"
+	tailscale_up_rc=$?
+	printf '%s\n' "$tailscale_up_output" | log_multiline "tailscale-up: "
+	return "$tailscale_up_rc"
+}
+
+ensure_tailscale() {
+	attempt=1
+
+	if ! command -v tailscale >/dev/null 2>&1; then
+		log_error "tailscale CLI is not available after package installation"
+		return 1
+	fi
+
+	if ! ensure_tailscale_service_started; then
+		return 1
+	fi
+
+	if [ "$(tailscale_backend_state)" = "Running" ]; then
+		log_info "Tailscale is already running on the first SSD boot"
+		tailscale set --hostname={{ bootstrap_tailscale_hostname }} >/dev/null 2>&1 || true
+		tailscale status 2>&1 | log_multiline "tailscale: "
+		return 0
+	fi
+
+	if [ ! -s "$TAILSCALE_AUTHKEY_FILE" ]; then
+		log_error "Missing staged bootstrap Tailscale auth key at $TAILSCALE_AUTHKEY_FILE"
+		tailscale status 2>&1 | log_multiline "tailscale: " || true
+		return 1
+	fi
+
+	auth_key="$(tr -d '\r\n' <"$TAILSCALE_AUTHKEY_FILE")"
+	if [ -z "$auth_key" ]; then
+		log_error "The staged bootstrap Tailscale auth key is empty"
+		return 1
+	fi
+
+	while [ "$attempt" -le {{ diskless_first_boot_tailscale_up_attempts }} ]; do
+		log_info "Running tailscale up attempt $attempt of {{ diskless_first_boot_tailscale_up_attempts }}"
+		if run_tailscale_up; then
+			break
+		fi
+		sleep 2
+		attempt=$((attempt + 1))
+	done
+
+	if [ "$attempt" -gt {{ diskless_first_boot_tailscale_up_attempts }} ]; then
+		log_error "tailscale up failed on the first SSD boot"
+		tailscale status 2>&1 | log_multiline "tailscale: " || true
+		return 1
+	fi
+
+	if ! wait_for_tailscale_running; then
+		log_error "Tailscale did not become ready after enrollment"
+		return 1
+	fi
+
+	tailscale status 2>&1 | log_multiline "tailscale: "
+	return 0
+}
+
+start() {
+	setup_debug_logging
+	ebegin "Running Klokast first-boot bootstrap"
+
+	if ! ensure_network; then
+		log_error "Failed to acquire DHCP on a physical NIC"
+		eend 1
+		return 1
+	fi
+
+	ensure_repositories
+
+	if ! ensure_runtime_packages; then
+		log_error "Failed to install the first-boot runtime packages"
+		eend 1
+		return 1
+	fi
+
+	if ! ensure_tailscale; then
+		log_error "Failed to enroll the first SSD boot into Tailscale"
+		eend 1
+		return 1
+	fi
+
+	eend 0
+}

@@ -1,0 +1,76 @@
+---
+- name: Clone and boot the iot Podman guest for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    iot_installed_spec: "{{ node_xen_guest_specs.iot | combine({'stage': 'installed'}, recursive=True) }}"
+  tasks:
+    - name: Persist the dom0 bridge configuration
+      ansible.builtin.import_role:
+        name: network-bridges
+
+    - name: Ensure the dom0 runtime bridges exist
+      ansible.builtin.import_role:
+        name: dom0-bridge-runtime
+
+    - name: Ensure the iot guest is stopped before cloning
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ iot_installed_spec.guest_name }}"
+        xen_guest_config_path: "{{ iot_installed_spec.config_path }}"
+        xen_guest_runtime_state: stopped
+
+    - name: Clone and personalize the iot guest disk from the Podman template
+      ansible.builtin.import_role:
+        name: podman-guest-clone
+      vars:
+        podman_clone_guest_spec: "{{ iot_installed_spec }}"
+        podman_clone_inventory_host: "{{ node_name }}-iot"
+
+    - name: Copy the installed iot kernel and initramfs into dom0 shared storage
+      ansible.builtin.import_role:
+        name: xen-guest-artifacts
+      vars:
+        xen_guest_name: "{{ iot_installed_spec.guest_name }}"
+        xen_guest_lv_path: "{{ iot_installed_spec.installed.required_lvs | default(iot_installed_spec.required_lvs) | first }}"
+        xen_guest_kernel_source_name: vmlinuz-virt
+        xen_guest_initramfs_source_name: initramfs-virt
+        xen_guest_kernel_dest_path: "{{ iot_installed_spec.installed.kernel_path }}"
+        xen_guest_initramfs_dest_path: "{{ iot_installed_spec.installed.initramfs_path }}"
+
+    - name: Render the installed-stage iot Xen guest configuration
+      ansible.builtin.import_role:
+        name: xen-guest
+      vars:
+        xen_guest_spec: "{{ iot_installed_spec }}"
+
+    - name: Flush dom0 handlers after iot bridge persistence updates
+      ansible.builtin.meta: flush_handlers
+
+    - name: Start the iot guest
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ iot_installed_spec.guest_name }}"
+        xen_guest_config_path: "{{ iot_installed_spec.config_path }}"
+        xen_guest_runtime_state: running
+
+    - name: Persist iot guest state on the diskless dom0 host
+      ansible.builtin.shell: |
+        set -eu
+        apk cache sync >/dev/null
+        backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+        if [ -n "$backupdir" ]; then
+          mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+          if [ -n "$mount_info" ]; then
+            set -- $mount_info
+            case ",$2," in
+              *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+            esac
+          fi
+        fi
+        lbu commit -d
+      args:
+        executable: /bin/sh
+      changed_when: false

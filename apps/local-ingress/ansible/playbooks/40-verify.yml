@@ -1,0 +1,8 @@
+---
+- name: Verify local HTTPS ingress
+  hosts: dmz
+  gather_facts: false
+  tasks:
+    - name: Verify local ingress service
+      ansible.builtin.import_role:
+        name: local-ingress-verification

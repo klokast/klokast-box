@@ -1,0 +1,384 @@
+---
+- name: Assert torrent VPN config is enabled
+  ansible.builtin.assert:
+    that:
+      - torrent_vpn_config.enabled | default(false) | bool
+      - torrent_vpn_config.schema_version | default(0) | int == 1
+      - torrent_vpn_config.subscription_url | default('') is match('^https?://')
+      - (torrent_vpn_config.mihomo | default({})).download_url | default('') is match('^https?://')
+      - (torrent_vpn_config.mihomo | default({})).sha256 | default('') is match('^[0-9a-fA-F]{64}$')
+      - (torrent_vpn_config.controller | default({})).secret | default('') | length >= 24
+      - torrent_mihomo_archive_format in ['gzip', 'raw']
+      - torrent_mihomo_subscription_controller_artifact_path | length == 0 or torrent_mihomo_subscription_sha256 is match('^[0-9a-fA-F]{64}$')
+    fail_msg: "Torrent VPN private config is incomplete or invalid."
+  no_log: true
+
+- name: Ensure torrent runtime packages are installed
+  community.general.apk:
+    name:
+      - ca-certificates
+      - curl
+      - gzip
+      - iproute2
+      - jq
+      - nftables
+      - py3-yaml
+      - python3
+      - qbittorrent-nox
+      - shadow
+    state: present
+    update_cache: true
+
+- name: Ensure torrent runtime groups exist
+  ansible.builtin.group:
+    name: "{{ item }}"
+    system: true
+  loop:
+    - "{{ torrent_runtime_group }}"
+    - "{{ torrent_share_group }}"
+
+- name: Ensure qBittorrent runtime user exists
+  ansible.builtin.user:
+    name: "{{ torrent_runtime_user }}"
+    group: "{{ torrent_runtime_group }}"
+    groups:
+      - "{{ torrent_share_group }}"
+    append: true
+    home: "{{ torrent_qbittorrent_home }}"
+    shell: /sbin/nologin
+    system: true
+    create_home: true
+
+- name: Ensure torrent export user exists
+  ansible.builtin.user:
+    name: "{{ torrent_export_user }}"
+    group: "{{ torrent_share_group }}"
+    home: "{{ torrent_complete_dir }}"
+    shell: /bin/ash
+    system: true
+    create_home: false
+
+- name: Ensure torrent runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ torrent_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ torrent_complete_dir }}"
+      owner: "{{ torrent_runtime_user }}"
+      group: "{{ torrent_share_group }}"
+      mode: "2750"
+    - path: "{{ torrent_complete_dir }}/music"
+      owner: "{{ torrent_runtime_user }}"
+      group: "{{ torrent_share_group }}"
+      mode: "2750"
+    - path: "{{ torrent_complete_dir }}/movies"
+      owner: "{{ torrent_runtime_user }}"
+      group: "{{ torrent_share_group }}"
+      mode: "2750"
+    - path: "{{ torrent_incomplete_dir }}"
+      owner: "{{ torrent_runtime_user }}"
+      group: "{{ torrent_runtime_group }}"
+      mode: "0700"
+    - path: "{{ torrent_watch_dir }}"
+      owner: "{{ torrent_runtime_user }}"
+      group: "{{ torrent_runtime_group }}"
+      mode: "0750"
+    - path: "{{ torrent_qbittorrent_config_dir }}"
+      owner: "{{ torrent_runtime_user }}"
+      group: "{{ torrent_runtime_group }}"
+      mode: "0750"
+    - path: "{{ torrent_mihomo_private_root }}"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: "{{ torrent_mihomo_config_dir }}"
+      owner: root
+      group: root
+      mode: "0750"
+    - path: "{{ torrent_mihomo_state_dir }}"
+      owner: root
+      group: root
+      mode: "0750"
+    - path: "{{ torrent_mihomo_cache_dir }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ torrent_mihomo_renderer_path | dirname }}"
+      owner: root
+      group: root
+      mode: "0755"
+
+- name: Write torrent VPN private config
+  ansible.builtin.copy:
+    dest: "{{ torrent_mihomo_private_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: "{{ torrent_vpn_config | to_nice_yaml }}"
+  no_log: true
+
+- name: Install torrent VPN renderer
+  ansible.builtin.copy:
+    src: torrent-vpn-render
+    dest: "{{ torrent_mihomo_renderer_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install torrent VPN refresh helper
+  ansible.builtin.copy:
+    src: torrent-vpn-refresh
+    dest: "{{ torrent_mihomo_refresh_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check controller-cached pinned Mihomo artifact
+  ansible.builtin.stat:
+    path: "{{ torrent_mihomo_controller_artifact_path }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: torrent_mihomo_controller_artifact
+  when: torrent_mihomo_controller_artifact_path | length > 0
+
+- name: Assert controller-cached pinned Mihomo artifact checksum
+  ansible.builtin.assert:
+    that:
+      - torrent_mihomo_controller_artifact.stat.checksum == torrent_vpn_config.mihomo.sha256
+    fail_msg: "Controller-cached Mihomo artifact checksum does not match pinned SHA256."
+  when:
+    - torrent_mihomo_controller_artifact.stat.exists | default(false)
+
+- name: Copy controller-cached pinned Mihomo artifact
+  ansible.builtin.copy:
+    src: "{{ torrent_mihomo_controller_artifact_path }}"
+    dest: "{{ torrent_mihomo_download_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: torrent_mihomo_copy_from_controller
+  when:
+    - torrent_mihomo_controller_artifact.stat.exists | default(false)
+
+- name: Download the pinned Mihomo artifact directly on the torrent VM
+  ansible.builtin.get_url:
+    url: "{{ torrent_vpn_config.mihomo.download_url }}"
+    dest: "{{ torrent_mihomo_download_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ torrent_vpn_config.mihomo.sha256 }}"
+    timeout: "{{ torrent_mihomo_download_timeout }}"
+  register: torrent_mihomo_download_from_url
+  when:
+    - not (torrent_mihomo_controller_artifact.stat.exists | default(false))
+
+- name: Record Mihomo artifact fetch result
+  ansible.builtin.set_fact:
+    torrent_mihomo_download: >-
+      {{
+        torrent_mihomo_copy_from_controller
+        if (torrent_mihomo_controller_artifact.stat.exists | default(false))
+        else torrent_mihomo_download_from_url
+      }}
+
+- name: Check installed Mihomo binary
+  ansible.builtin.stat:
+    path: "{{ torrent_mihomo_binary }}"
+  register: torrent_mihomo_binary_stat
+
+- name: Install Mihomo from gzip artifact
+  ansible.builtin.shell: |
+    set -eu
+    tmp="$(mktemp)"
+    gzip -dc {{ torrent_mihomo_download_path | quote }} > "$tmp"
+    install -m 0755 -o root -g root "$tmp" {{ torrent_mihomo_binary | quote }}
+    rm -f "$tmp"
+  args:
+    executable: /bin/sh
+  register: torrent_mihomo_gzip_install
+  changed_when: true
+  when:
+    - torrent_mihomo_archive_format == 'gzip'
+    - torrent_mihomo_download.changed or not (torrent_mihomo_binary_stat.stat.exists | default(false))
+
+- name: Install Mihomo from raw artifact
+  ansible.builtin.copy:
+    src: "{{ torrent_mihomo_download_path }}"
+    dest: "{{ torrent_mihomo_binary }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  register: torrent_mihomo_raw_install
+  when:
+    - torrent_mihomo_archive_format == 'raw'
+    - torrent_mihomo_download.changed or not (torrent_mihomo_binary_stat.stat.exists | default(false))
+
+- name: Verify Mihomo binary is executable
+  ansible.builtin.command:
+    argv:
+      - "{{ torrent_mihomo_binary }}"
+      - -v
+  changed_when: false
+
+- name: Check controller-cached VPN subscription payload
+  ansible.builtin.stat:
+    path: "{{ torrent_mihomo_subscription_controller_artifact_path }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: torrent_subscription_controller_artifact
+  no_log: true
+  when: torrent_mihomo_subscription_controller_artifact_path | length > 0
+
+- name: Assert controller-cached VPN subscription payload checksum
+  ansible.builtin.assert:
+    that:
+      - torrent_subscription_controller_artifact.stat.checksum == torrent_mihomo_subscription_sha256
+    fail_msg: "Controller-cached VPN subscription payload checksum does not match private config."
+  no_log: true
+  when:
+    - torrent_subscription_controller_artifact.stat.exists | default(false)
+
+- name: Copy controller-cached VPN subscription payload
+  ansible.builtin.copy:
+    src: "{{ torrent_mihomo_subscription_controller_artifact_path }}"
+    dest: "{{ torrent_mihomo_subscription_path }}"
+    owner: root
+    group: root
+    mode: "0640"
+  register: torrent_subscription_copy_from_controller
+  no_log: true
+  when:
+    - torrent_subscription_controller_artifact.stat.exists | default(false)
+
+- name: Render initial Mihomo config
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          torrent_mihomo_refresh_path,
+          '--no-restart',
+          '--tun-device',
+          torrent_mihomo_device
+        ]
+        + (
+          ['--use-existing-subscription']
+          if (torrent_subscription_controller_artifact.stat.exists | default(false))
+          else []
+        )
+      }}
+  register: torrent_mihomo_initial_refresh
+  changed_when: "'changed=yes' in torrent_mihomo_initial_refresh.stdout"
+
+- name: Install Mihomo OpenRC service
+  ansible.builtin.template:
+    src: mihomo.openrc.j2
+    dest: "/etc/init.d/{{ torrent_mihomo_service_name }}"
+    owner: root
+    group: root
+    mode: "0755"
+  register: torrent_mihomo_service
+
+- name: Render qBittorrent config
+  ansible.builtin.template:
+    src: qBittorrent.conf.j2
+    dest: "{{ torrent_qbittorrent_config_path }}"
+    owner: "{{ torrent_runtime_user }}"
+    group: "{{ torrent_runtime_group }}"
+    mode: "0640"
+  register: torrent_qbittorrent_config
+
+- name: Install qBittorrent OpenRC service
+  ansible.builtin.template:
+    src: qbittorrent.openrc.j2
+    dest: /etc/init.d/qbittorrent
+    owner: root
+    group: root
+    mode: "0755"
+  register: torrent_qbittorrent_service
+
+- name: Read qBittorrent UID
+  ansible.builtin.command: "id -u {{ torrent_runtime_user }}"
+  register: torrent_qbittorrent_uid_probe
+  changed_when: false
+
+- name: Record qBittorrent UID
+  ansible.builtin.set_fact:
+    torrent_qbittorrent_uid: "{{ torrent_qbittorrent_uid_probe.stdout | trim }}"
+
+- name: Render torrent nftables policy
+  ansible.builtin.template:
+    src: nftables.nft.j2
+    dest: "{{ torrent_nftables_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: torrent_nftables_config
+
+- name: Check torrent nftables policy syntax
+  ansible.builtin.command: "/usr/sbin/nft -c -f {{ torrent_nftables_path }}"
+  changed_when: false
+
+- name: Apply torrent nftables policy
+  ansible.builtin.command: "/usr/sbin/nft -f {{ torrent_nftables_path }}"
+  changed_when: torrent_nftables_config.changed
+
+- name: Enable nftables at boot
+  ansible.builtin.service:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Enable and start Mihomo
+  ansible.builtin.service:
+    name: "{{ torrent_mihomo_service_name }}"
+    enabled: true
+    state: >-
+      {{
+        'restarted'
+        if (
+          (torrent_mihomo_gzip_install.changed | default(false))
+          or (torrent_mihomo_raw_install.changed | default(false))
+          or torrent_mihomo_initial_refresh.changed
+          or torrent_mihomo_service.changed
+        )
+        else 'started'
+      }}
+
+- name: Enable and start qBittorrent
+  ansible.builtin.service:
+    name: qbittorrent
+    enabled: true
+    state: >-
+      {{
+        'restarted'
+        if (torrent_qbittorrent_config.changed or torrent_qbittorrent_service.changed)
+        else 'started'
+      }}
+
+- name: Configure Tailscale Serve for qBittorrent WebUI
+  ansible.builtin.shell: |
+    set -eu
+    tailscale serve reset >/dev/null 2>&1 || true
+    tailscale serve --bg --yes --https=443 http://127.0.0.1:{{ torrent_qbittorrent_webui_port }} >/dev/null
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+- name: Install torrent local operator CLI
+  ansible.builtin.template:
+    src: torrent-local.j2
+    dest: "{{ torrent_local_cli_path }}"
+    owner: root
+    group: root
+    mode: "0755"

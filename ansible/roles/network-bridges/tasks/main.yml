@@ -1,0 +1,79 @@
+---
+- name: Detect the live WAN uplink interface when auto-selection is enabled
+  ansible.builtin.shell: |
+    route_iface="$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')"
+    if [ -n "$route_iface" ] && [ "$route_iface" != "lo" ] && [ "$route_iface" != "tailscale0" ] && [ -d "/sys/class/net/$route_iface/device" ]; then
+      printf '%s\n' "$route_iface"
+      exit 0
+    fi
+
+    for path in /sys/class/net/*; do
+      iface="${path##*/}"
+      [ "$iface" = "lo" ] && continue
+      [ "$iface" = "tailscale0" ] && continue
+      [ -d "$path/device" ] || continue
+      carrier="$(cat "$path/carrier" 2>/dev/null || printf '0')"
+      if [ "$carrier" = "1" ]; then
+        printf '%s\n' "$iface"
+        exit 0
+      fi
+    done
+
+    for path in /sys/class/net/*; do
+      iface="${path##*/}"
+      [ "$iface" = "lo" ] && continue
+      [ "$iface" = "tailscale0" ] && continue
+      [ -d "$path/device" ] || continue
+      printf '%s\n' "$iface"
+      exit 0
+    done
+
+    exit 1
+  args:
+    executable: /bin/sh
+  register: dom0_wan_uplink_interface_detected
+  changed_when: false
+  when: (dom0_wan_uplink_interface | default('auto')) == 'auto'
+
+- name: Record the WAN uplink interface used for bridge rendering
+  ansible.builtin.set_fact:
+    dom0_wan_uplink_interface_resolved: >-
+      {{
+        dom0_wan_uplink_interface_detected.stdout
+        if (dom0_wan_uplink_interface | default('auto')) == 'auto'
+        else dom0_wan_uplink_interface
+      }}
+
+- name: Assert the WAN uplink interface was resolved to a physical NIC
+  ansible.builtin.assert:
+    that:
+      - dom0_wan_uplink_interface_resolved | length > 0
+      - dom0_wan_uplink_interface_resolved not in ['lo', 'tailscale0']
+    fail_msg: >-
+      Could not resolve a physical WAN uplink interface for dom0 bridge
+      rendering. Review the live default route and NIC state before writing the
+      steady-state bridge configuration.
+
+- name: Ensure bridge tooling is installed
+  community.general.apk:
+    name:
+      - bridge-utils
+    state: present
+  notify:
+    - Sync APK cache
+    - Commit lbu changes
+
+- name: Ensure bridge kernel module loads at boot
+  ansible.builtin.lineinfile:
+    path: /etc/modules
+    line: bridge
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Render bridge network interfaces configuration
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+    mode: "0644"
+  notify: Commit lbu changes

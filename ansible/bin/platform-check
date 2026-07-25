@@ -1,0 +1,480 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
+RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
+PLATFORM_MAP="$SCRIPT_DIR/platform-map"
+PLATFORM_RESOURCES="$SCRIPT_DIR/platform-resources"
+
+BOX=""
+TARGET="all"
+INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+TARGET_DISK_DEVICE="/dev/nvme0n1"
+RESOURCES_REGISTRY="auto"
+REMOTE_SCOPE="full"
+STRICT=0
+PROBE_OOB_SSH=0
+EXTRA_ARGS=()
+FAILURES=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/platform-check --box BOX [--target TARGET] [options] [-- extra ansible-playbook args]
+
+Run read-only Platform health checks against steady-state infrastructure.
+
+Options:
+  --box BOX               Box short name, for example k001
+  --target TARGET         Check target. Supported: all, dom0, router, podman,
+                          ops, map, resources. Default: all
+  --inventory PATH        Base Ansible inventory. Default: ansible/inventory/hosts.yml
+  --magicdns-suffix NAME  Tailscale MagicDNS suffix. Default: auto-discovered
+  --target-disk-device DEV
+                          Device used when rendering temporary node inventory.
+                          Default: /dev/nvme0n1
+  --resources-registry auto|none|PATH
+                          Private Platform resource registry for app-VM and
+                          app-resource expectations. Default: auto, which uses
+                          ~/private/klokast/platform-resources.yml when present
+  --remote-scope SCOPE    platform-map remote scope for --target map/all.
+                          Supported: full, dom0, podman, none. Default: full
+  --strict                Make platform-map warning findings fail validation
+  --probe-oob-ssh         Probe online NanoKVM/OOB devices over SSH during map refresh
+  -h, --help              Show this help
+
+Examples:
+  ansible/bin/platform-check --box k001
+  ansible/bin/platform-check --box k001 --target all
+  ansible/bin/platform-check --box k001 --target dom0
+  ansible/bin/platform-check --box k001 --target router
+  ansible/bin/platform-check --box k001 --target podman
+  ansible/bin/platform-check --box k001 --target map --remote-scope dom0
+  ansible/bin/platform-check --box k001 --target dom0 -- -vvv
+
+Extra ansible-playbook args after -- apply to live Ansible assertion targets
+(dom0, router, podman, ops). They are ignored by map/resources targets.
+EOF
+}
+
+die() {
+  printf 'platform-check: %s\n' "$*" >&2
+  exit 1
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+expand_path() {
+  case "$1" in
+    "~")
+      printf '%s\n' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s/%s\n' "$HOME" "${1#~/}"
+      ;;
+    /*)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      printf '%s/%s\n' "$PWD" "$1"
+      ;;
+  esac
+}
+
+validate_box_name() {
+  python3 - "$BOX" <<'PY'
+import re
+import sys
+
+box = sys.argv[1]
+suffixes = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt")
+if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", box):
+    print(
+        "error: --box must be a lowercase DNS label: letters, digits, "
+        "hyphens, and no leading/trailing hyphen",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+for suffix in suffixes:
+    if box == suffix or box.endswith(f"-{suffix}"):
+        print(
+            f"error: --box must be the box name only, not a role hostname ending in -{suffix}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+PY
+}
+
+validate_target() {
+  case "$TARGET" in
+    all|dom0|router|podman|ops|map|resources) ;;
+    *) die "unsupported --target $TARGET; supported targets: all, dom0, router, podman, ops, map, resources" ;;
+  esac
+}
+
+validate_remote_scope() {
+  case "$REMOTE_SCOPE" in
+    full|dom0|podman|none) ;;
+    *) die "unsupported --remote-scope $REMOTE_SCOPE; supported scopes: full, dom0, podman, none" ;;
+  esac
+}
+
+resolve_resources_registry() {
+  local default_path
+  case "$RESOURCES_REGISTRY" in
+    auto)
+      default_path="$HOME/private/klokast/platform-resources.yml"
+      if [ -f "$default_path" ]; then
+        printf '%s\n' "$default_path"
+      fi
+      ;;
+    none)
+      ;;
+    "")
+      die "--resources-registry must not be empty"
+      ;;
+    *)
+      expand_path "$RESOURCES_REGISTRY"
+      ;;
+  esac
+}
+
+target_limit() {
+  case "$1" in
+    dom0) printf '%s\n' "${BOX}-dom0" ;;
+    router) printf '%s\n' "${BOX}-router" ;;
+    podman) printf '%s\n' "${BOX}-bak,${BOX}-dmz,${BOX}-iot" ;;
+    ops) printf '%s\n' "${BOX}-ops" ;;
+    *) die "no Ansible limit configured for target $1" ;;
+  esac
+}
+
+target_playbook() {
+  case "$1" in
+    dom0) printf '%s\n' "$ANSIBLE_DIR/playbooks/72-platform-check-dom0.yml" ;;
+    router) printf '%s\n' "$ANSIBLE_DIR/playbooks/72-platform-check-router.yml" ;;
+    podman) printf '%s\n' "$ANSIBLE_DIR/playbooks/72-platform-check-podman.yml" ;;
+    ops) printf '%s\n' "$ANSIBLE_DIR/playbooks/72-platform-check-ops.yml" ;;
+    *) die "no playbook configured for target $1" ;;
+  esac
+}
+
+local_hostname_matches_ops_target() {
+  local short_hostname
+  local full_hostname
+
+  short_hostname="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
+  full_hostname="$(hostname 2>/dev/null || true)"
+  [ "$short_hostname" = "${BOX}-ops" ] || [ "$full_hostname" = "${BOX}-ops" ]
+}
+
+target_extra_vars() {
+  case "$1" in
+    dom0)
+      printf 'dom0_known_hosts_file=%s\n' "$KNOWN_HOSTS_FILE"
+      ;;
+    ops)
+      if local_hostname_matches_ops_target; then
+        printf '{"ansible_connection":"local","ansible_host":"localhost"}\n'
+      else
+        printf '{}\n'
+      fi
+      ;;
+    *)
+      printf '{}\n'
+      ;;
+  esac
+}
+
+preflight() {
+  command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook not found in PATH"
+  command -v ansible-inventory >/dev/null 2>&1 || die "ansible-inventory not found in PATH"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+  [ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
+  [ -f "$ANSIBLE_CONFIG_PATH" ] || die "ansible config not found: $ANSIBLE_CONFIG_PATH"
+  [ -x "$RENDER_NODE_INVENTORY" ] || die "inventory renderer not executable: $RENDER_NODE_INVENTORY"
+  [ -x "$PLATFORM_MAP" ] || die "platform-map not executable: $PLATFORM_MAP"
+  [ -x "$PLATFORM_RESOURCES" ] || die "platform-resources not executable: $PLATFORM_RESOURCES"
+
+  mkdir -p "$RUN_DIR"
+  touch "$KNOWN_HOSTS_FILE"
+  chmod 0600 "$KNOWN_HOSTS_FILE"
+
+  "$RENDER_NODE_INVENTORY" \
+    --node "$BOX" \
+    --output "$GENERATED_INVENTORY" \
+    --target-disk-device "$TARGET_DISK_DEVICE" \
+    --magicdns-suffix "$MAGICDNS_SUFFIX"
+}
+
+run_direct_check() {
+  local check_target="$1"
+  local playbook
+  local limit
+  local extra_vars
+
+  playbook="$(target_playbook "$check_target")"
+  limit="$(target_limit "$check_target")"
+  extra_vars="$(target_extra_vars "$check_target")"
+  [ -f "$playbook" ] || die "check playbook not found: $playbook"
+
+  env ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" ansible-inventory \
+    -i "$INVENTORY" \
+    -i "$GENERATED_INVENTORY" \
+    --graph \
+    --limit "$limit" >/dev/null
+
+  cmd=(
+    env
+    "ANSIBLE_CONFIG=$ANSIBLE_CONFIG_PATH"
+    ansible-playbook
+    -i "$INVENTORY"
+    -i "$GENERATED_INVENTORY"
+    "$playbook"
+    -vv
+    --limit "$limit"
+    -e "$extra_vars"
+  )
+  cmd+=("${EXTRA_ARGS[@]}")
+
+  printf 'Command: '
+  quote_command "${cmd[@]}"
+  "${cmd[@]}"
+}
+
+warn_extra_args_ignored() {
+  if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+    printf 'platform-check: warning: extra ansible-playbook args are ignored for %s\n' "$1" >&2
+  fi
+}
+
+run_map_check() {
+  local registry
+  local -a refresh_cmd validate_cmd show_cmd
+
+  warn_extra_args_ignored "map"
+  registry="$(resolve_resources_registry)"
+  mkdir -p "$MAP_DIR"
+
+  refresh_cmd=(
+    "$PLATFORM_MAP"
+    refresh
+    --boxes "$BOX"
+    --inventory "$INVENTORY"
+    --magicdns-suffix "$MAGICDNS_SUFFIX"
+    --artifact-dir "$MAP_DIR"
+    --output "$MAP_STATE_FILE"
+    --remote-scope "$REMOTE_SCOPE"
+  )
+  if [ -n "$registry" ]; then
+    refresh_cmd+=(--resources-registry "$registry")
+  fi
+  if [ "$PROBE_OOB_SSH" -eq 1 ]; then
+    refresh_cmd+=(--probe-oob-ssh)
+  fi
+
+  printf 'Command: '
+  quote_command "${refresh_cmd[@]}"
+  "${refresh_cmd[@]}"
+
+  show_cmd=("$PLATFORM_MAP" show --file "$MAP_STATE_FILE")
+  printf 'Command: '
+  quote_command "${show_cmd[@]}"
+  "${show_cmd[@]}"
+
+  validate_cmd=("$PLATFORM_MAP" validate --file "$MAP_STATE_FILE")
+  if [ "$STRICT" -eq 1 ]; then
+    validate_cmd+=(--strict)
+  fi
+  printf 'Command: '
+  quote_command "${validate_cmd[@]}"
+  "${validate_cmd[@]}"
+}
+
+run_resources_check() {
+  local registry
+  local -a resources_cmd
+
+  warn_extra_args_ignored "resources"
+  registry="$(resolve_resources_registry)"
+  if [ -z "$registry" ]; then
+    printf 'platform-check: no resources registry is available; pass --resources-registry PATH or use --resources-registry auto on the controller\n' >&2
+    return 1
+  fi
+  if [ ! -f "$registry" ]; then
+    printf 'platform-check: resources registry not found: %s\n' "$registry" >&2
+    return 1
+  fi
+
+  resources_cmd=(
+    "$PLATFORM_RESOURCES"
+    --registry "$registry"
+    --magicdns-suffix "$MAGICDNS_SUFFIX"
+    verify
+  )
+  printf 'Command: '
+  quote_command "${resources_cmd[@]}"
+  "${resources_cmd[@]}"
+}
+
+ops_expected_from_map() {
+  [ -f "$MAP_STATE_FILE" ] || return 1
+  python3 - "$MAP_STATE_FILE" "$BOX" <<'PY'
+import json
+import sys
+
+path, box = sys.argv[1:3]
+with open(path, encoding="utf-8") as handle:
+    state = json.load(handle)
+machines = ((state.get("boxes") or {}).get(box) or {}).get("machines") or {}
+sys.exit(0 if "ops" in machines else 1)
+PY
+}
+
+run_required_step() {
+  local label="$1"
+  shift
+
+  printf '\n==> %s\n' "$label"
+  if "$@"; then
+    return 0
+  fi
+
+  local rc
+  rc=$?
+  FAILURES+=("$label (rc=$rc)")
+  return 0
+}
+
+summarize_failures() {
+  local failure
+  if [ "${#FAILURES[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  printf '\nplatform-check: failed checks:\n' >&2
+  for failure in "${FAILURES[@]}"; do
+    printf '  - %s\n' "$failure" >&2
+  done
+  return 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --box)
+      [ "$#" -ge 2 ] || die "--box requires a value"
+      BOX="$2"
+      shift 2
+      ;;
+    --target)
+      [ "$#" -ge 2 ] || die "--target requires a value"
+      TARGET="$2"
+      shift 2
+      ;;
+    --inventory)
+      [ "$#" -ge 2 ] || die "--inventory requires a value"
+      INVENTORY="$2"
+      shift 2
+      ;;
+    --magicdns-suffix)
+      [ "$#" -ge 2 ] || die "--magicdns-suffix requires a value"
+      MAGICDNS_SUFFIX="$2"
+      shift 2
+      ;;
+    --target-disk-device)
+      [ "$#" -ge 2 ] || die "--target-disk-device requires a value"
+      TARGET_DISK_DEVICE="$2"
+      shift 2
+      ;;
+    --resources-registry)
+      [ "$#" -ge 2 ] || die "--resources-registry requires a value"
+      RESOURCES_REGISTRY="$2"
+      shift 2
+      ;;
+    --remote-scope)
+      [ "$#" -ge 2 ] || die "--remote-scope requires a value"
+      REMOTE_SCOPE="$2"
+      shift 2
+      ;;
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --probe-oob-ssh)
+      PROBE_OOB_SSH=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      EXTRA_ARGS=("$@")
+      break
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$BOX" ] || die "--box is required"
+validate_box_name
+validate_target
+validate_remote_scope
+
+case "$INVENTORY" in
+  /*) ;;
+  *) INVENTORY="$PWD/$INVENTORY" ;;
+esac
+
+RUN_DIR="$REPO_DIR/.run/platform-check-${BOX}"
+GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
+KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"
+MAP_DIR="$RUN_DIR/platform-map"
+MAP_STATE_FILE="$MAP_DIR/current.json"
+
+preflight
+
+case "$TARGET" in
+  dom0|router|podman|ops)
+    run_required_step "$TARGET" run_direct_check "$TARGET"
+    ;;
+  map)
+    run_required_step "map" run_map_check
+    ;;
+  resources)
+    run_required_step "resources" run_resources_check
+    ;;
+  all)
+    run_required_step "map" run_map_check
+    run_required_step "dom0" run_direct_check dom0
+    run_required_step "router" run_direct_check router
+    run_required_step "podman" run_direct_check podman
+    if [ -n "$(resolve_resources_registry)" ]; then
+      run_required_step "resources" run_resources_check
+    else
+      printf '\n==> resources\n'
+      printf 'platform-check: skipping resources; no registry found for --resources-registry auto\n'
+    fi
+    if ops_expected_from_map; then
+      run_required_step "ops" run_direct_check ops
+    else
+      printf '\n==> ops\n'
+      printf 'platform-check: skipping ops; platform-map did not mark %s-ops present or expected\n' "$BOX"
+    fi
+    ;;
+esac
+
+summarize_failures

@@ -1,0 +1,231 @@
+#
+# Summary:
+# - Installs Docker Engine from Docker's signed Debian apt repository and adds
+#   a DOCKER-USER baseline so published container ports are not broad ingress.
+#
+---
+- name: Assert Debian Docker inputs are valid
+  ansible.builtin.assert:
+    that:
+      - debian_docker_release is match('^[a-z][a-z0-9-]+$')
+      - debian_docker_architecture in ['amd64', 'arm64', 'armhf', 'ppc64el']
+    fail_msg: "Debian Docker inputs are incomplete."
+
+- name: Collect Debian Docker package status
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - -W
+      - "-f=${Status}"
+      - "{{ item }}"
+  register: debian_docker_package_status
+  changed_when: false
+  failed_when: false
+  loop:
+    - ca-certificates
+    - containerd.io
+    - curl
+    - docker-buildx-plugin
+    - docker-ce
+    - docker-ce-cli
+    - docker-compose-plugin
+    - iptables
+
+- name: Derive Debian Docker package installation state
+  ansible.builtin.set_fact:
+    debian_docker_installed_packages: >-
+      {{
+        debian_docker_package_status.results
+        | selectattr('rc', 'equalto', 0)
+        | selectattr('stdout', 'equalto', 'install ok installed')
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Derive missing Debian Docker packages
+  ansible.builtin.set_fact:
+    debian_docker_prerequisites_missing: >-
+      {{ ['ca-certificates', 'curl', 'iptables'] | difference(debian_docker_installed_packages) }}
+    debian_docker_engine_missing: >-
+      {{
+        [
+          'containerd.io',
+          'docker-buildx-plugin',
+          'docker-ce',
+          'docker-ce-cli',
+          'docker-compose-plugin'
+        ] | difference(debian_docker_installed_packages)
+      }}
+
+- name: Ensure Docker apt prerequisites are installed
+  ansible.builtin.apt:
+    name: "{{ debian_docker_prerequisites_missing }}"
+    state: present
+    update_cache: true
+  become: true
+  when: debian_docker_prerequisites_missing | length > 0
+
+- name: Ensure Docker apt keyring directory exists
+  ansible.builtin.file:
+    path: "{{ debian_docker_keyring_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Check the Docker apt signing key
+  ansible.builtin.stat:
+    path: "{{ debian_docker_keyring_path }}"
+  register: debian_docker_apt_signing_key_stat
+
+- name: Install Docker apt signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: "{{ debian_docker_keyring_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 60
+  become: true
+  register: debian_docker_apt_signing_key
+  until: debian_docker_apt_signing_key is succeeded
+  retries: 5
+  delay: 5
+  when: not debian_docker_apt_signing_key_stat.stat.exists
+
+- name: Install Docker apt source
+  ansible.builtin.copy:
+    dest: "{{ debian_docker_sources_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://download.docker.com/linux/debian
+      Suites: {{ debian_docker_release }}
+      Components: stable
+      Architectures: {{ debian_docker_architecture }}
+      Signed-By: {{ debian_docker_keyring_path }}
+  become: true
+
+- name: Remove Debian-conflicting Docker packages
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose
+      - docker-doc
+      - podman-docker
+      - containerd
+      - runc
+    state: absent
+  become: true
+
+- name: Install Docker Engine on Debian
+  ansible.builtin.apt:
+    name: "{{ debian_docker_engine_missing }}"
+    state: present
+    update_cache: true
+  become: true
+  when: debian_docker_engine_missing | length > 0
+
+- name: Ensure Docker daemon config directory exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Configure Docker daemon defaults
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ debian_docker_daemon_config | to_nice_json }}\n"
+  become: true
+  register: debian_docker_daemon_config_write
+
+- name: Ensure Docker is enabled and running
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: "{{ 'restarted' if debian_docker_daemon_config_write.changed else 'started' }}"
+  become: true
+
+- name: Add selected users to the Docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups:
+      - docker
+    append: true
+  become: true
+  loop: "{{ debian_docker_users }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Install Docker ingress guard script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/klokast-docker-user-firewall
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      iptables -N DOCKER-USER 2>/dev/null || true
+      iptables -F DOCKER-USER
+      iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+      iptables -A DOCKER-USER -i docker0 -j RETURN
+      iptables -A DOCKER-USER -o docker0 -s 127.0.0.0/8 -j RETURN
+      iptables -A DOCKER-USER -j DROP
+  become: true
+  register: debian_docker_firewall_script
+
+- name: Install Docker ingress guard systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/klokast-docker-user-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Klokast Docker DOCKER-USER ingress guard
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/klokast-docker-user-firewall
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+  become: true
+  register: debian_docker_firewall_unit
+
+- name: Reload systemd after Docker ingress guard unit changes
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  when: debian_docker_firewall_unit.changed
+
+- name: Enable and apply Docker ingress guard
+  ansible.builtin.systemd:
+    name: klokast-docker-user-firewall
+    enabled: true
+    state: "{{ 'restarted' if (debian_docker_firewall_script.changed or debian_docker_firewall_unit.changed) else 'started' }}"
+  become: true
+
+- name: Verify Docker Engine is responsive
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{{ '{{' }}json .ServerVersion{{ '}}' }}"
+  become: true
+  register: debian_docker_info
+  changed_when: false

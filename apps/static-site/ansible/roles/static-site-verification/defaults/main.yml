@@ -1,0 +1,12 @@
+---
+static_site_box: ""
+static_site_domain: www.klokast.ai
+static_site_web_service_name: static-site-web
+static_site_web_container_name: static-site-web
+static_site_publisher_service_name: static-site-publisher
+static_site_cloudflared_service_name: static-site-cloudflared
+static_site_web_host: 127.0.0.1
+static_site_web_host_port: 18081
+static_site_web_container_port: 8080
+static_site_public_root: /srv/static-site/public
+static_site_git_repo_cache_root: /srv/static-site/repo

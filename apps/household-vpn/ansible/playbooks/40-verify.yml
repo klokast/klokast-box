@@ -1,0 +1,8 @@
+---
+- name: Verify household VPN gateway runtime
+  hosts: household_vpn_app_vms
+  gather_facts: false
+  tasks:
+    - name: Verify household VPN runtime services and policy
+      ansible.builtin.import_role:
+        name: household-vpn-runtime-verification

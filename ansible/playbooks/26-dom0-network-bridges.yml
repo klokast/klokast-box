@@ -1,0 +1,15 @@
+---
+- name: Configure dom0 network bridges
+  hosts: dom0
+  gather_facts: true
+  tasks:
+    - name: Configure network bridges
+      ansible.builtin.import_role:
+        name: network-bridges
+
+    - name: Verify rendered dom0 bridge configuration
+      ansible.builtin.import_role:
+        name: network-bridges-verification
+
+    - name: Flush bridge persistence handlers
+      ansible.builtin.meta: flush_handlers

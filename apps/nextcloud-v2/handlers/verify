@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+app=${KLOKAST_APP:-nextcloud-v2}
+desired=${KLOKAST_DESIRED_PATH:-/var/lib/klokast/desired/${app}.json}
+podman_user=${KLOKAST_PODMAN_USER:-neo}
+
+operation="$(jq -r '.operation' "$desired")"
+site_role="$(jq -r '.site_role' "$desired")"
+runtime_state="$(jq -r '.runtime_state // "running"' "$desired")"
+pod_name="$(jq -r '.runtime.pod_name' "$desired")"
+
+run_podman() {
+    if [ "$(id -un)" = "$podman_user" ]; then
+        /usr/bin/podman "$@"
+    else
+        /usr/bin/doas -u "$podman_user" /usr/bin/podman "$@"
+    fi
+}
+
+state="$(run_podman pod inspect --format '{{.State}}' "$pod_name" 2>/dev/null || true)"
+
+if [ "$operation" = "backup-check" ]; then
+    backup_volume="$(jq -r '.runtime.volumes.backups // empty' "$desired")"
+    [ -n "$backup_volume" ] || exit 20
+    run_podman volume exists "$backup_volume" || exit 20
+fi
+
+jq -r '.runtime.volumes // {} | to_entries[].value' "$desired" |
+while IFS= read -r volume; do
+    if [ -n "$volume" ]; then
+        run_podman volume exists "$volume" || exit 20
+    fi
+done
+
+if [ "$site_role" = "active" ] && [ "$runtime_state" = "running" ]; then
+    [ "$state" = "Running" ] || exit 20
+else
+    [ "$state" != "Running" ] || exit 20
+fi

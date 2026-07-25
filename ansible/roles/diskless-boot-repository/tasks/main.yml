@@ -1,0 +1,60 @@
+#
+# Summary:
+# - Seeds the EFI-backed Alpine boot repository and its markers for the first diskless SSD boot.
+#
+---
+- name: Ensure APK runtime cache directory exists
+  ansible.builtin.file:
+    path: "{{ apk_cache_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure diskless boot repository directory exists
+  ansible.builtin.file:
+    path: "{{ apk_boot_repository_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Reset the diskless boot repository contents before reseeding
+  ansible.builtin.shell: |
+    set -eu
+    find "{{ apk_boot_repository_path }}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  args:
+    executable: /bin/sh
+  changed_when: true
+
+- name: Seed the diskless boot repository from the extracted Alpine source
+  # Keep a separate `apks/<arch>` boot repository on the SSD, matching the
+  # working `yii-dom0` layout.
+  ansible.builtin.shell: |
+    set -eu
+    cp -a "{{ diskless_seed_apks_directory }}/." "{{ apk_boot_repository_path }}/"
+  args:
+    executable: /bin/sh
+
+- name: Restore the signed installer index in the boot repository
+  # Keep a canonical signed `APKINDEX.tar.gz` in the dedicated boot repository.
+  ansible.builtin.copy:
+    src: "{{ diskless_seed_apks_directory }}/APKINDEX.tar.gz"
+    dest: "{{ apk_boot_repository_index }}"
+    remote_src: true
+    mode: "0644"
+
+- name: Remove legacy EFI-root boot repository marker
+  ansible.builtin.file:
+    path: "{{ legacy_apk_root_boot_repository_marker }}"
+    state: absent
+
+- name: Remove legacy cache-root boot repository marker
+  ansible.builtin.file:
+    path: "{{ legacy_apk_cache_boot_repository_marker }}"
+    state: absent
+
+- name: Mark the boot repository directory as bootable
+  # Keep `.boot_repository` only under `apks/`, matching the known-good manual
+  # `yii-dom0` layout. The runtime cache remains separate under `cache/`.
+  ansible.builtin.copy:
+    dest: "{{ apk_boot_repository_marker }}"
+    content: ""
+    force: false
+    mode: "0644"

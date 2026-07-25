@@ -1,0 +1,313 @@
+---
+- name: Converge the dom0-side router prerequisites for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  tasks:
+    - name: Persist the dom0 bridge configuration
+      ansible.builtin.import_role:
+        name: network-bridges
+
+    - name: Ensure the dom0 runtime bridges exist
+      ansible.builtin.import_role:
+        name: dom0-bridge-runtime
+
+    - name: Render the installed-stage router Xen guest configuration
+      ansible.builtin.import_role:
+        name: xen-guest
+      vars:
+        xen_guest_spec: "{{ node_xen_guest_specs.router }}"
+
+    - name: Flush dom0 handlers before live WAN bridge verification and router startup
+      ansible.builtin.meta: flush_handlers
+
+    - name: Collect the live master bridge for the WAN uplink
+      ansible.builtin.shell: |
+        set -eu
+        master_path="/sys/class/net/{{ dom0_wan_uplink_interface_resolved }}/master"
+        if [ -L "$master_path" ]; then
+          basename "$(readlink -f "$master_path")"
+        fi
+      args:
+        executable: /bin/sh
+      register: router_dom0_wan_uplink_master
+      changed_when: false
+
+    - name: Assert the live WAN uplink already sits on br-wan before starting the router
+      ansible.builtin.assert:
+        that:
+          - router_dom0_wan_uplink_master.stdout | trim == dom0_wan_bridge_name
+        fail_msg: >-
+          The live WAN uplink {{ dom0_wan_uplink_interface_resolved }} is not
+          attached to {{ dom0_wan_bridge_name }} yet. The persisted
+          `/etc/network/interfaces` bridge config is ready, but dom0 has not
+          transitioned into that live bridge runtime. Reboot dom0 into the
+          bridge config, then rerun `30-vm-router.yml` before starting the
+          router guest.
+
+    - name: Check whether the router steady-state Tailscale identity is online
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import subprocess
+        import sys
+
+        target_hostname = {{ hostvars[node_name ~ '-router'].node_hostname | to_json }}
+        expected_tag = {{ hostvars[node_name ~ '-router'].router_tailscale_expected_tag | to_json }}
+
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"]))
+        for peer in (status.get("Peer") or {}).values():
+            if (
+                peer.get("HostName") == target_hostname
+                and expected_tag in (peer.get("Tags") or [])
+                and peer.get("Online")
+            ):
+                sys.exit(0)
+        sys.exit(1)
+        PY
+      args:
+        executable: /bin/sh
+      delegate_to: localhost
+      become: false
+      register: router_steady_state_tailscale_check
+      failed_when: false
+      changed_when: false
+
+    - name: Probe the current live router VIF count
+      ansible.builtin.shell: |
+        set -eu
+        xl network-list {{ node_xen_guest_specs.router.guest_name }} 2>/dev/null | tail -n +2 | wc -l
+      args:
+        executable: /bin/sh
+      register: router_live_vif_count
+      failed_when: false
+      changed_when: false
+
+    - name: Record whether the running router VIF set is stale
+      ansible.builtin.set_fact:
+        router_guest_running: "{{ (router_live_vif_count.stdout | default('0') | trim | int) > 0 }}"
+        router_runtime_vif_mismatch: >-
+          {{
+            (router_live_vif_count.stdout | default('0') | trim | int)
+            !=
+            (node_xen_guest_specs.router.vifs | length)
+          }}
+
+    - name: Restart the router guest when its Xen definition changed
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ node_xen_guest_specs.router.guest_name }}"
+        xen_guest_config_path: "{{ node_xen_guest_specs.router.config_path }}"
+        xen_guest_runtime_state: stopped
+      when:
+        - xen_guest_definition_changed | default(false) or router_runtime_vif_mismatch | default(false)
+
+    - name: Seed first-contact router SSH and bootstrap network access when Tailscale is absent
+      ansible.builtin.import_role:
+        name: xen-guest-bootstrap
+      vars:
+        xen_guest_name: "{{ node_xen_guest_specs.router.guest_name }}"
+        xen_guest_lv_path: "{{ node_xen_guest_specs.router.required_lvs | first }}"
+        xen_guest_bootstrap_authorized_key_file: "{{ hostvars[node_name ~ '-router'].vm_admin_authorized_key_file }}"
+        xen_guest_bootstrap_network_interfaces: |
+          auto lo
+          iface lo inet loopback
+
+          auto eth0
+          iface eth0 inet dhcp
+
+          auto eth3
+          iface eth3 inet static
+              address {{ hostvars[node_name ~ '-router'].router_bootstrap_host }}/{{ hostvars[node_name ~ '-router'].router_backend_ipv4_prefix }}
+      when:
+        - hostvars[node_name ~ '-router'].router_bootstrap_seed_access | default(true)
+        - router_steady_state_tailscale_check.rc != 0
+        - >-
+          (not (router_guest_running | default(false)))
+          or (xen_guest_definition_changed | default(false))
+          or (router_runtime_vif_mismatch | default(false))
+
+    - name: Ensure the router guest is running
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ node_xen_guest_specs.router.guest_name }}"
+        xen_guest_config_path: "{{ node_xen_guest_specs.router.config_path }}"
+        xen_guest_runtime_state: running
+
+- name: Enroll the router guest into Tailscale over the dom0 bootstrap SSH path
+  hosts: router
+  gather_facts: false
+  vars:
+    ansible_user: root
+    ansible_become: false
+    ansible_host: "{{ router_bootstrap_host }}"
+    ansible_remote_tmp: /tmp/ansible-remote-root
+    ansible_ssh_timeout: 30
+    ansible_ssh_private_key_file: "{{ router_bootstrap_private_key_file }}"
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ router_bootstrap_known_hosts_file }}
+      -o ProxyCommand="{{ router_bootstrap_proxycommand }}"
+  pre_tasks:
+    - name: Check whether the router steady-state Tailscale identity is online
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import subprocess
+        import sys
+
+        target_hostname = {{ node_hostname | to_json }}
+        expected_tag = {{ router_tailscale_expected_tag | to_json }}
+
+        status = json.loads(subprocess.check_output(["tailscale", "status", "--json"]))
+        for peer in (status.get("Peer") or {}).values():
+            if (
+                peer.get("HostName") == target_hostname
+                and expected_tag in (peer.get("Tags") or [])
+                and peer.get("Online")
+            ):
+                sys.exit(0)
+        sys.exit(1)
+        PY
+      args:
+        executable: /bin/sh
+      delegate_to: localhost
+      become: false
+      register: router_steady_state_tailscale_check
+      failed_when: false
+      changed_when: false
+
+    - name: Ensure the router bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ router_bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      when: router_steady_state_tailscale_check.rc != 0
+
+    - name: Remove any stale router bootstrap SSH host key before first-contact enrollment
+      ansible.builtin.shell: >-
+        ssh-keygen -R {{ router_bootstrap_host | quote }}
+        -f {{ router_bootstrap_known_hosts_file | quote }}
+        >/dev/null 2>&1 || true
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: router_steady_state_tailscale_check.rc != 0
+
+    - name: Wait for router bootstrap SSH over the dom0 bridge path
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - "{{ router_bootstrap_private_key_file }}"
+          - -o
+          - BatchMode=yes
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - UserKnownHostsFile={{ router_bootstrap_known_hosts_file }}
+          - -o
+          - ProxyCommand={{ router_bootstrap_proxycommand }}
+          - "{{ ansible_user }}@{{ router_bootstrap_host }}"
+          - "true"
+      delegate_to: localhost
+      become: false
+      register: router_bootstrap_ssh_probe
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: router_bootstrap_ssh_probe.rc == 0
+      when: router_steady_state_tailscale_check.rc != 0
+
+  tasks:
+    - name: Ensure Python is available over the router bootstrap SSH path
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+      when: router_steady_state_tailscale_check.rc != 0
+
+    - name: Converge the router VM base access model before Tailscale enrollment
+      ansible.builtin.import_role:
+        name: vm-base
+      vars:
+        vm_lock_root_password: false
+      when: router_steady_state_tailscale_check.rc != 0
+
+    - name: Ensure the router Tailscale client is installed and running
+      ansible.builtin.import_role:
+        name: tailscale-client
+      when: router_steady_state_tailscale_check.rc != 0
+
+    - name: Enroll the router VM into Tailscale through the auth-key wrapper
+      ansible.builtin.import_role:
+        name: vm-tailscale-enrollment
+      when: router_steady_state_tailscale_check.rc != 0
+
+- name: Wait for the router guest to be reachable
+  hosts: router
+  gather_facts: false
+  tasks:
+    - name: Wait for router connectivity after any Xen restart
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 120
+
+- name: Bootstrap python on router guests
+  hosts: router
+  gather_facts: false
+  tasks:
+    - name: Ensure Python is available on the Alpine router guest
+      ansible.builtin.import_role:
+        name: bootstrap-python-alpine
+
+- name: Converge router guest configuration
+  hosts: router
+  gather_facts: true
+  tasks:
+    - name: Converge the router VM base access model
+      ansible.builtin.import_role:
+        name: vm-base
+
+    - name: Keep the router Tailscale client converged first
+      ansible.builtin.import_role:
+        name: tailscale-client
+
+    - name: Reset the SSH connection after router Tailscale SSH changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Configure the router guest
+      ansible.builtin.import_role:
+        name: router
+
+    - name: Flush router handlers before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Reset the SSH connection after router service changes
+      ansible.builtin.meta: reset_connection
+
+    - name: Verify router service and network readiness
+      ansible.builtin.import_role:
+        name: router-verification
+
+    - name: Check controller reachability to the router over Tailscale
+      ansible.builtin.command: "tailscale ping --c 1 {{ ansible_host }}"
+      delegate_to: localhost
+      become: false
+      register: verify_router_controller_tailscale_ping
+      changed_when: false
+
+    - name: Assert the controller reaches the router directly over Tailscale
+      ansible.builtin.assert:
+        that:
+          - "'via DERP' not in verify_router_controller_tailscale_ping.stdout"
+        fail_msg: >-
+          Router reachability is still relayed through DERP from the controller.
+          Review WAN IPv6, Tailscale path selection, and downstream route cleanup
+          before moving on to new VM provisioning.
+
+    - name: Show verified controller-to-router Tailscale path
+      ansible.builtin.debug:
+        msg: "{{ verify_router_controller_tailscale_ping.stdout }}"

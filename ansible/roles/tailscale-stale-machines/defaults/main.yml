@@ -1,0 +1,6 @@
+---
+tailscale_devices_list_wrapper: /usr/local/sbin/ts-devices-list
+tailscale_device_delete_stale_wrapper: /usr/local/sbin/ts-device-delete-stale
+tailscale_stale_machine_apply: false
+tailscale_stale_machine_confirm: ""
+tailscale_stale_machine_expected_confirm: "delete stale tailscale machines for {{ node_name }}"

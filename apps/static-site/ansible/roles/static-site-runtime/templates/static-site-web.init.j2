@@ -1,0 +1,39 @@
+#!/sbin/openrc-run
+description="Klokast static-site web container"
+
+depend() {
+    need net
+}
+
+podman_cmd() {
+    /usr/bin/doas -u {{ vm_admin_user_name }} /usr/bin/podman "$@"
+}
+
+start() {
+    ebegin "Starting {{ static_site_web_service_name }}"
+    if podman_cmd container exists {{ static_site_web_container_name | quote }}; then
+        state=$(podman_cmd container inspect --format '{% raw %}{{.State.Status}}{% endraw %}' {{ static_site_web_container_name | quote }})
+        if [ "$state" != "running" ]; then
+            podman_cmd container cleanup {{ static_site_web_container_name | quote }} >/dev/null 2>&1 || true
+            podman_cmd container start {{ static_site_web_container_name | quote }} >/dev/null
+        fi
+    else
+        /usr/local/sbin/static-site-web-deploy >/dev/null
+    fi
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping {{ static_site_web_service_name }}"
+    if podman_cmd container exists {{ static_site_web_container_name | quote }}; then
+        state=$(podman_cmd container inspect --format '{% raw %}{{.State.Status}}{% endraw %}' {{ static_site_web_container_name | quote }})
+        if [ "$state" = "running" ]; then
+            podman_cmd container stop -t 10 {{ static_site_web_container_name | quote }} >/dev/null
+        fi
+    fi
+    eend $?
+}
+
+status() {
+    podman_cmd container inspect --format '{% raw %}{{.State.Status}}{% endraw %}' {{ static_site_web_container_name | quote }} 2>/dev/null | grep -qx running
+}

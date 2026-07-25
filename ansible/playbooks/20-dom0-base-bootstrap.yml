@@ -1,0 +1,83 @@
+---
+- name: Prepare dom0 base state from the bootstrap identity
+  hosts: dom0
+  gather_facts: false
+  vars:
+    ansible_host: "{{ bootstrap_tailscale_hostname }}.{{ platform_magicdns_suffix }}"
+    ansible_user: root
+    ansible_become: false
+    ansible_remote_tmp: /tmp/ansible-remote-root
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ bootstrap_known_hosts_file }}
+  tasks:
+    - name: Ensure the bootstrap known-hosts file exists on the controller
+      ansible.builtin.file:
+        path: "{{ bootstrap_known_hosts_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove any stale bootstrap Tailscale SSH host key before reconnecting for phase 20
+      ansible.builtin.shell: >-
+        ssh-keygen -R {{ ansible_host | quote }} -f {{ bootstrap_known_hosts_file | quote }}
+        >/dev/null 2>&1 || true
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Gather facts from the Alpine bootstrap identity
+      ansible.builtin.setup:
+
+    - name: Check that phase 20 reached the Alpine SSD boot
+      ansible.builtin.stat:
+        path: /etc/alpine-release
+      register: dom0_bootstrap_alpine_release
+
+    - name: Collect the bootstrap Tailscale runtime status
+      ansible.builtin.command: tailscale status --json
+      register: dom0_bootstrap_tailscale_status
+      changed_when: false
+      failed_when: false
+
+    - name: Initialize the parsed bootstrap Tailscale status
+      ansible.builtin.set_fact:
+        dom0_bootstrap_tailscale_parsed: {}
+
+    - name: Parse the bootstrap Tailscale runtime status when available
+      ansible.builtin.set_fact:
+        dom0_bootstrap_tailscale_parsed: "{{ dom0_bootstrap_tailscale_status.stdout | from_json }}"
+      when:
+        - dom0_bootstrap_tailscale_status.rc == 0
+        - dom0_bootstrap_tailscale_status.stdout | length > 0
+
+    - name: Assert phase 20 is running on the Alpine bootstrap identity
+      ansible.builtin.assert:
+        that:
+          - dom0_bootstrap_alpine_release.stat.exists | default(false)
+          - dom0_bootstrap_tailscale_status.rc == 0
+          - dom0_bootstrap_tailscale_parsed.BackendState | default('') == 'Running'
+          - bootstrap_tailscale_tag in (dom0_bootstrap_tailscale_parsed.Self.Tags | default([]))
+          - dom0_bootstrap_tailscale_parsed.Self.HostName | default('') == bootstrap_tailscale_hostname
+        fail_msg: >-
+          Phase 20 did not reconnect to the Alpine bootstrap identity. Confirm
+          the NanoKVM ISO was detached, the first SSD boot finished `tailscale up
+          --ssh`, and the host came back as {{ bootstrap_tailscale_hostname }}
+          with {{ bootstrap_tailscale_tag }} before continuing toward the dom0
+          handoff.
+
+    - name: Apply steady-state hostname, users, and doas policy
+      ansible.builtin.import_role:
+        name: system-identity
+
+    - name: Apply Alpine base configuration
+      ansible.builtin.import_role:
+        name: alpine-base
+
+    - name: Render managed EFI GRUB loader configurations
+      ansible.builtin.import_role:
+        name: efi-grub-loader
+
+    - name: Flush dom0-base handlers before the Tailscale identity handoff
+      ansible.builtin.meta: flush_handlers

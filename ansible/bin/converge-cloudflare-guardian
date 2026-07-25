@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
+RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
+
+BOX=""
+INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+TARGET_DISK_DEVICE="/dev/nvme0n1"
+MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+ACCOUNT_ID=""
+ZONE_ID=""
+DOMAIN="www.klokast.ai"
+SERVICE_URL="http://127.0.0.1:18081"
+DRY_RUN=0
+EXTRA_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ansible/bin/converge-cloudflare-guardian --box BOX --cloudflare-account-id ID --cloudflare-zone-id ID [options] [-- extra ansible-playbook args]
+
+Converge the dom0 Cloudflare guardian for one box. For the current deployment,
+use --box k001 because that is where the physical YubiKey reader is available.
+
+Options:
+  --box BOX                      Guardian box short name, for example k001
+  --cloudflare-account-id ID     Allowed Cloudflare account id
+  --cloudflare-zone-id ID        Allowed Cloudflare zone id
+  --domain HOST                  Static-site hostname. Default: www.klokast.ai
+  --service-url URL              Origin service URL. Default: http://127.0.0.1:18081
+  --inventory PATH               Base Ansible inventory. Default: ansible/inventory/hosts.yml
+  --target-disk-device DEV       Inventory render compatibility. Default: /dev/nvme0n1
+  --magicdns-suffix SUFFIX       Tailscale MagicDNS suffix. Default: auto-discovered
+  --dry-run-plan                 Print command and validate inventory graph only
+  -h, --help                     Show this help
+EOF
+}
+
+die() {
+  printf 'converge-cloudflare-guardian: %s\n' "$*" >&2
+  exit 1
+}
+
+quote_command() {
+  local arg
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+validate_box_name() {
+  python3 - "$BOX" <<'PY'
+import re
+import sys
+
+box = sys.argv[1]
+suffixes = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt")
+if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", box):
+    print("error: --box must be a lowercase DNS label", file=sys.stderr)
+    sys.exit(1)
+for suffix in suffixes:
+    if box == suffix or box.endswith(f"-{suffix}"):
+        print(f"error: --box must be the box name only, not a role hostname ending in -{suffix}", file=sys.stderr)
+        sys.exit(1)
+PY
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --box) [ "$#" -ge 2 ] || die "--box requires a value"; BOX="$2"; shift 2 ;;
+    --cloudflare-account-id) [ "$#" -ge 2 ] || die "--cloudflare-account-id requires a value"; ACCOUNT_ID="$2"; shift 2 ;;
+    --cloudflare-zone-id) [ "$#" -ge 2 ] || die "--cloudflare-zone-id requires a value"; ZONE_ID="$2"; shift 2 ;;
+    --domain) [ "$#" -ge 2 ] || die "--domain requires a value"; DOMAIN="$2"; shift 2 ;;
+    --service-url) [ "$#" -ge 2 ] || die "--service-url requires a value"; SERVICE_URL="$2"; shift 2 ;;
+    --inventory) [ "$#" -ge 2 ] || die "--inventory requires a value"; INVENTORY="$2"; shift 2 ;;
+    --target-disk-device) [ "$#" -ge 2 ] || die "--target-disk-device requires a value"; TARGET_DISK_DEVICE="$2"; shift 2 ;;
+    --magicdns-suffix) [ "$#" -ge 2 ] || die "--magicdns-suffix requires a value"; MAGICDNS_SUFFIX="$2"; shift 2 ;;
+    --dry-run-plan) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; EXTRA_ARGS=("$@"); break ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$BOX" ] || die "--box is required"
+[ -n "$ACCOUNT_ID" ] || die "--cloudflare-account-id is required"
+[ -n "$ZONE_ID" ] || die "--cloudflare-zone-id is required"
+validate_box_name
+
+case "$INVENTORY" in
+  /*) ;;
+  *) INVENTORY="$PWD/$INVENTORY" ;;
+esac
+
+RUN_DIR="$REPO_DIR/.run/converge-cloudflare-guardian-${BOX}"
+LOG_DIR="$RUN_DIR/logs"
+GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
+LOG_FILE="$LOG_DIR/66-cloudflare-guardian.log"
+KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"
+SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS_FILE"
+EXTRA_VARS_JSON="$(
+  python3 -c 'import json, sys; print(json.dumps({
+    "ansible_ssh_common_args": sys.argv[1],
+    "cloudflare_guardian_static_site_box": sys.argv[2],
+    "cloudflare_guardian_static_site_domain": sys.argv[3],
+    "cloudflare_guardian_cloudflare_account_id": sys.argv[4],
+    "cloudflare_guardian_cloudflare_zone_id": sys.argv[5],
+    "cloudflare_guardian_static_site_service_url": sys.argv[6],
+  }))' "$SSH_COMMON_ARGS" "$BOX" "$DOMAIN" "$ACCOUNT_ID" "$ZONE_ID" "$SERVICE_URL"
+)"
+
+command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook not found in PATH"
+command -v ansible-inventory >/dev/null 2>&1 || die "ansible-inventory not found in PATH"
+command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+[ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
+[ -f "$ANSIBLE_CONFIG_PATH" ] || die "ansible config not found: $ANSIBLE_CONFIG_PATH"
+[ -x "$RENDER_NODE_INVENTORY" ] || die "inventory renderer not executable: $RENDER_NODE_INVENTORY"
+
+mkdir -p "$LOG_DIR"
+touch "$KNOWN_HOSTS_FILE"
+chmod 0600 "$KNOWN_HOSTS_FILE"
+"$RENDER_NODE_INVENTORY" \
+  --node "$BOX" \
+  --output "$GENERATED_INVENTORY" \
+  --target-disk-device "$TARGET_DISK_DEVICE" \
+  --magicdns-suffix "$MAGICDNS_SUFFIX"
+
+PLAYBOOK_CMD=(
+  env
+  "ANSIBLE_CONFIG=$ANSIBLE_CONFIG_PATH"
+  ansible-playbook
+  -i "$INVENTORY"
+  -i "$GENERATED_INVENTORY"
+  "$ANSIBLE_DIR/playbooks/66-cloudflare-guardian.yml"
+  -vv
+  --limit "$BOX-dom0"
+  -e "$EXTRA_VARS_JSON"
+  "${EXTRA_ARGS[@]}"
+)
+
+printf 'Guardian box: %s\n' "$BOX"
+printf 'Generated inventory: %s\n' "$GENERATED_INVENTORY"
+printf 'Run directory: %s\n' "$RUN_DIR"
+printf 'Command: '
+quote_command "${PLAYBOOK_CMD[@]}"
+
+env ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" ansible-inventory \
+  -i "$INVENTORY" \
+  -i "$GENERATED_INVENTORY" \
+  --graph --limit "$BOX-dom0" >/dev/null
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  exit 0
+fi
+
+"${PLAYBOOK_CMD[@]}" 2>&1 | tee "$LOG_FILE"
+printf '\nconverge-cloudflare-guardian completed.\n'
+printf 'Log: %s\n' "$LOG_FILE"

@@ -1,0 +1,232 @@
+#
+# Summary:
+# - Verifies steady-state dom0 hostname, persistence paths, boot repository state, and Tailscale readiness after the base handoff.
+#
+---
+- name: Collect runtime hostname
+  ansible.builtin.command: hostname
+  register: verify_dom0_base_hostname
+  changed_when: false
+
+- name: Detect the current EFI mountpoint on the running dom0 host
+  # The staged install path and the live diskless runtime can differ. Resolve
+  # the mounted EFI path here so verification follows the actual runtime mount.
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $2}' /proc/mounts | tail -n 1
+  register: verify_dom0_base_runtime_efi_mount
+  changed_when: false
+
+- name: Assert the EFI partition is mounted on the running dom0 host
+  ansible.builtin.assert:
+    that:
+      - verify_dom0_base_runtime_efi_mount.stdout != ''
+    fail_msg: >-
+      Could not determine the runtime EFI mountpoint for {{ efi_partition_device }}
+      while verifying the dom0 base state.
+
+- name: Override dom0 verification paths to the mounted EFI partition
+  ansible.builtin.set_fact:
+    efi_mount_path: "{{ verify_dom0_base_runtime_efi_mount.stdout }}"
+    efi_boot_directory: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/boot"
+    efi_grub_directory: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/boot/grub"
+    efi_fallback_directory: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/EFI/BOOT"
+    efi_fallback_bootloader_path: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/EFI/BOOT/BOOTX64.EFI"
+    apk_boot_repository_root: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/apks"
+    apk_boot_repository_path: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}"
+    apk_cache_path: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/cache"
+    apk_boot_repository_marker: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/apks/.boot_repository"
+    apk_boot_repository_index: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}/APKINDEX.tar.gz"
+    legacy_apk_root_boot_repository_marker: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/.boot_repository"
+    legacy_apk_cache_boot_repository_marker: "{{ verify_dom0_base_runtime_efi_mount.stdout }}/cache/.boot_repository"
+
+- name: Collect the runtime root directory mode
+  ansible.builtin.stat:
+    path: /
+  register: verify_dom0_base_root_dir
+
+- name: Collect runtime EFI mount state
+  ansible.builtin.shell: >-
+    awk '$1 == "{{ efi_partition_device }}" {print $2, $3}' /proc/mounts | tail -n 1
+  register: verify_dom0_base_efi_mount
+  changed_when: false
+
+- name: Collect APK cache target
+  ansible.builtin.command: "readlink -f /etc/apk/cache"
+  register: verify_dom0_base_apk_cache
+  changed_when: false
+
+- name: Collect lbu backup directory
+  ansible.builtin.command: "grep '^LBU_BACKUPDIR=' /etc/lbu/lbu.conf"
+  register: verify_dom0_base_lbu_backupdir
+  changed_when: false
+
+- name: Collect lbu protected path entries
+  ansible.builtin.command: "cat {{ lbu_protected_paths_file }}"
+  register: verify_dom0_base_lbu_paths
+  changed_when: false
+
+- name: Collect root-level apkovl files on the EFI partition
+  ansible.builtin.shell: >-
+    find {{ efi_mount_path | quote }} -maxdepth 1 -type f -name '*.apkovl*' | sed 's#.*/##' | sort
+  register: verify_dom0_base_apkovl_listing
+  changed_when: false
+
+- name: Check persisted apkovl archive
+  ansible.builtin.stat:
+    path: "{{ apkovl_archive_path }}"
+  register: verify_dom0_base_apkovl_stat
+
+- name: Collect steady-state GRUB configuration
+  ansible.builtin.command: "cat {{ efi_grub_directory }}/grub.cfg"
+  register: verify_dom0_base_grub_cfg
+  changed_when: false
+
+- name: Collect managed EFI GRUB loader configurations
+  ansible.builtin.command: "cat {{ item }}"
+  loop: "{{ efi_grub_loader_config_paths }}"
+  register: verify_dom0_base_efi_grub_loader_cfg
+  changed_when: false
+  failed_when: false
+
+- name: Collect steady-state boot repository artifacts
+  ansible.builtin.shell: >-
+    printf 'boot_repo_marker=%s\n' "$(find {{ apk_boot_repository_root | quote }} -maxdepth 1 -name .boot_repository | wc -l)";
+    printf 'apkindex=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name 'APKINDEX.tar.gz' | wc -l)";
+    printf 'repo_apk=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name '*.apk' | wc -l)";
+    printf 'alpine_base=%s\n' "$(find {{ apk_boot_repository_path | quote }} -maxdepth 1 -name 'alpine-base-*.apk' | wc -l)"
+  register: verify_dom0_base_apk_cache_artifacts
+  changed_when: false
+
+- name: Collect Tailscale runtime status
+  ansible.builtin.command: "tailscale status --json"
+  register: verify_dom0_base_tailscale_status
+  changed_when: false
+
+- name: Collect the python3 executable path
+  ansible.builtin.shell: command -v python3
+  register: verify_dom0_base_python3
+  changed_when: false
+
+- name: Check the persisted Tailscale state file
+  ansible.builtin.stat:
+    path: "{{ bootstrap_tailscale_state_file }}"
+  register: verify_dom0_base_tailscale_state
+
+- name: Check whether the temporary first-boot helper service still exists
+  ansible.builtin.stat:
+    path: /etc/init.d/klokast-diskless-bootstrap
+  register: verify_dom0_base_bootstrap_helper
+
+- name: Collect dom0 admin passwd entry
+  ansible.builtin.command: "getent passwd {{ dom0_admin_user_name }}"
+  register: verify_dom0_base_admin_passwd
+  changed_when: false
+
+- name: Collect dom0 console shadow entries
+  ansible.builtin.command: "getent shadow {{ dom0_admin_user_name }} root"
+  register: verify_dom0_base_console_shadow
+  changed_when: false
+
+- name: Collect dom0 admin groups
+  ansible.builtin.command: "id -nG {{ dom0_admin_user_name }}"
+  register: verify_dom0_base_admin_groups
+  changed_when: false
+
+- name: Collect dom0 doas policy
+  ansible.builtin.command: cat /etc/doas.d/doas.conf
+  register: verify_dom0_base_doas_conf
+  changed_when: false
+
+- name: Parse Tailscale runtime status
+  ansible.builtin.set_fact:
+    verify_dom0_base_tailscale_parsed: "{{ verify_dom0_base_tailscale_status.stdout | from_json }}"
+
+- name: Assert dom0 base persistence and remote-access readiness
+  ansible.builtin.assert:
+    that:
+      - verify_dom0_base_hostname.stdout == node_hostname
+      - verify_dom0_base_root_dir.stat.mode | default('') == '0755'
+      - verify_dom0_base_efi_mount.stdout is search(efi_mount_path)
+      - verify_dom0_base_efi_mount.stdout is search(efi_partition_fs)
+      - verify_dom0_base_apk_cache.stdout == apk_cache_path
+      - verify_dom0_base_lbu_backupdir.stdout == 'LBU_BACKUPDIR=' ~ efi_mount_path
+      - verify_dom0_base_apkovl_stat.stat.exists | default(false)
+      - verify_dom0_base_apkovl_listing.stdout_lines == [apkovl_archive_name]
+      - "'apkvol=' not in verify_dom0_base_grub_cfg.stdout"
+      - verify_dom0_base_apk_cache_artifacts.stdout is search('boot_repo_marker=[1-9]')
+      - verify_dom0_base_apk_cache_artifacts.stdout is search('apkindex=[1-9]')
+      - verify_dom0_base_apk_cache_artifacts.stdout is search('repo_apk=[1-9]')
+      - verify_dom0_base_apk_cache_artifacts.stdout is search('alpine_base=[1-9]')
+      - verify_dom0_base_python3.stdout == '/usr/bin/python3'
+      - verify_dom0_base_tailscale_state.stat.exists | default(false)
+      - not (verify_dom0_base_bootstrap_helper.stat.exists | default(false))
+      - >-
+        verify_dom0_base_admin_passwd.stdout is search('^' ~ dom0_admin_user_name ~ ':')
+      - >-
+        verify_dom0_base_admin_passwd.stdout is search(':/bin/ash$')
+      - >-
+        verify_dom0_base_console_shadow.stdout is search('^' ~ dom0_admin_user_name ~ ':\\$', multiline=True)
+      - verify_dom0_base_console_shadow.stdout is search('^root:[!*]', multiline=True)
+      - not (verify_dom0_base_console_shadow.stdout is search('^root::', multiline=True))
+      - "'wheel' in verify_dom0_base_admin_groups.stdout.split()"
+      - >-
+        verify_dom0_base_doas_conf.stdout is search('^permit nopass :wheel$', multiline=True)
+      - verify_dom0_base_tailscale_parsed.BackendState | default('') == 'Running'
+      - verify_dom0_base_tailscale_parsed.Self.HostName | default('') == node_hostname
+      - >-
+        ((efi_mount_path | regex_replace('^/', ''))
+        not in
+        (verify_dom0_base_lbu_paths.stdout_lines
+        | map('regex_replace', '^[+!]', '')
+        | list))
+      - >-
+        ('+' ~ (dom0_data_mount_path | regex_replace('^/', '')))
+        not in verify_dom0_base_lbu_paths.stdout_lines
+      - >-
+        ('-' ~ (dom0_data_mount_path | regex_replace('^/', '')))
+        in verify_dom0_base_lbu_paths.stdout_lines
+      - >-
+        (((tailscale_persist_paths + dom0_home_lbu_include_paths)
+        | map('regex_replace', '^/', '')
+        | list)
+        | difference((verify_dom0_base_lbu_paths.stdout_lines
+        | map('regex_replace', '^[+!]', '')
+        | list))
+        | length) == 0
+    fail_msg: >-
+      Dom0 base verification failed. Review runtime hostname, apkovl archive naming,
+      GRUB overlay path, Tailscale status, and lbu persistence before attempting a
+      Xen preparation reboot.
+
+- name: Assert managed EFI GRUB loader configurations hand off to the canonical menu
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - >-
+        item.stdout_lines == [
+        'search --no-floppy --label ' ~ efi_partition_label ~ ' --set=root',
+        'set prefix=($root)/boot/grub',
+        'configfile ($root)/boot/grub/grub.cfg'
+        ]
+    fail_msg: >-
+      Managed EFI GRUB loader {{ item.item }} is missing or does not hand off to
+      {{ efi_grub_directory }}/grub.cfg through the {{ efi_partition_label }}
+      filesystem label.
+  loop: "{{ verify_dom0_base_efi_grub_loader_cfg.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Show verified dom0 base state
+  ansible.builtin.debug:
+    msg:
+      - "{{ verify_dom0_base_hostname.stdout }}"
+      - "{{ verify_dom0_base_efi_mount.stdout }}"
+      - "{{ verify_dom0_base_apk_cache.stdout }}"
+      - "{{ verify_dom0_base_apk_cache_artifacts.stdout_lines }}"
+      - "{{ verify_dom0_base_python3.stdout }}"
+      - "{{ verify_dom0_base_tailscale_state.stat.exists | default(false) }}"
+      - "{{ verify_dom0_base_lbu_backupdir.stdout }}"
+      - "{{ verify_dom0_base_apkovl_listing.stdout_lines }}"
+      - "{{ verify_dom0_base_grub_cfg.stdout_lines }}"
+      - "{{ verify_dom0_base_efi_grub_loader_cfg.results | map(attribute='stdout_lines') | list }}"
+      - "{{ verify_dom0_base_tailscale_parsed.Self.DNSName | default('') }}"

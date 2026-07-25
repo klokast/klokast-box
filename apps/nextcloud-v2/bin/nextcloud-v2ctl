@@ -1,0 +1,538 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "${APP_DIR}/../.." && pwd)"
+APP_ID=nextcloud-v2
+MAGICDNS_SUFFIX="${NEXTCLOUD_V2_MAGICDNS_SUFFIX:-${KLOKAST_MAGICDNS_SUFFIX:-example.ts.net}}"
+APPROVED_COMMIT_MARKER_DEFAULT="${KLOKAST_APPROVED_COMMIT_MARKER:-${REPO_ROOT}/.klokast-approved-commit}"
+APPROVED_STATE_ROOT="${KLOKAST_APPROVED_STATE_ROOT:-/var/lib/klokast/approved-state}"
+RESOURCE_GRANT_DEFAULT="${KLOKAST_PLATFORM_RESOURCE_GRANT:-}"
+DRY_RUN="${NEXTCLOUD_V2CTL_DRY_RUN:-false}"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder <box>-ops
+  apps/nextcloud-v2/bin/nextcloud-v2ctl infra-prepare --active-master BOX --passive-backup BOX --resources-registry PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl install --active-master BOX --passive-backup BOX --resource-grant PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl start --active-master BOX --passive-backup BOX --resource-grant PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl stop --active-master BOX --passive-backup BOX --resource-grant PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl verify --active-master BOX --passive-backup BOX --resource-grant PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl backup-check --active-master BOX --passive-backup BOX --resource-grant PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl promote --old-active BOX --new-active BOX --resource-grant PATH
+  apps/nextcloud-v2/bin/nextcloud-v2ctl remove --box BOX [--wipe-data] --resource-grant PATH
+
+Notes:
+  The app consumes an infra-exported platform-resource grant. It must not read
+  the private platform-resource registry except during infra-prepare.
+USAGE
+}
+
+die() {
+    printf 'nextcloud-v2ctl: %s\n' "$*" >&2
+    exit 1
+}
+
+valid_box() {
+    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    case "$1" in
+    *-bootstrap|*-dom0|*-router|*-bak|*-dmz|*-iot|*-usr|*-ops|*-agent|*-agt|bootstrap|dom0|router|bak|dmz|iot|usr|ops|agent|agt)
+        return 1
+        ;;
+    esac
+}
+
+require_box() {
+    local value=$1 name=$2
+    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+}
+
+require_ops_host() {
+    local value=$1
+    [[ "$value" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?-ops$ ]] || die "--builder must be an ops hostname like k001-ops"
+}
+
+parse_pair_grant() {
+    active_master=
+    passive_backup=
+    resource_grant="$RESOURCE_GRANT_DEFAULT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --active-master)
+                active_master=${2:-}; shift 2 ;;
+            --passive-backup)
+                passive_backup=${2:-}; shift 2 ;;
+            --resource-grant)
+                resource_grant=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$active_master" ]] || die "--active-master is required"
+    [[ -n "$passive_backup" ]] || die "--passive-backup is required"
+    [[ -n "$resource_grant" ]] || die "--resource-grant is required"
+    require_box "$active_master" "--active-master"
+    require_box "$passive_backup" "--passive-backup"
+    [[ "$active_master" != "$passive_backup" ]] || die "active master and passive backup must differ"
+    [[ -f "$resource_grant" ]] || die "platform resource grant does not exist: $resource_grant"
+}
+
+validate_grant() {
+    python3 - "$resource_grant" "$active_master" "$passive_backup" "$APPROVED_COMMIT_MARKER_DEFAULT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+grant_path, active, passive, marker_path = sys.argv[1:5]
+data = json.loads(Path(grant_path).read_text(encoding="utf-8"))
+if data.get("schema_version") != 1:
+    raise SystemExit("grant must use schema_version: 1")
+if data.get("kind") != "platform-resource-grant":
+    raise SystemExit("grant kind must be platform-resource-grant")
+if data.get("app") != "nextcloud-v2":
+    raise SystemExit("grant app must be nextcloud-v2")
+if data.get("compiler") != "platform-resources":
+    raise SystemExit("grant compiler must be platform-resources")
+if not data.get("enabled"):
+    raise SystemExit("nextcloud-v2 must be enabled in the approved platform grant")
+if sorted(data.get("boxes") or []) != sorted([active, passive]):
+    raise SystemExit("grant boxes must match selected active/passive boxes")
+placement = data.get("placement") or {}
+if placement.get("active_master") != active or placement.get("passive_backup") != passive:
+    raise SystemExit("grant placement must match selected active/passive boxes")
+resources = set(data.get("resources") or [])
+if "backend-http-upstream" not in resources:
+    raise SystemExit("grant is missing backend-http-upstream")
+tailnet = data.get("tailnet_resources") or []
+if not any(item.get("id") == "private-ingress" and item.get("tag") == "tag:nextcloud" for item in tailnet):
+    raise SystemExit("grant is missing private-ingress tag:nextcloud")
+for forbidden in ("apps", "registry_path", "manifest_paths", "users"):
+    if forbidden in data:
+        raise SystemExit(f"grant exposes forbidden field: {forbidden}")
+marker = Path(marker_path)
+if marker.exists():
+    approved_commit = marker.read_text(encoding="utf-8").strip()
+    if approved_commit and data.get("approved_commit") != approved_commit:
+        raise SystemExit("grant approved_commit does not match the app workspace marker")
+PY
+}
+
+grant_sha256() {
+    python3 - "$resource_grant" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
+grant_runtime_state() {
+    if [[ -z "${resource_grant:-}" || ! -f "$resource_grant" ]]; then
+        printf 'running\n'
+        return
+    fi
+    python3 - "$resource_grant" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+state = data.get("runtime_state") or "running"
+if state not in {"running", "stopped"}:
+    raise SystemExit("grant runtime_state must be running or stopped")
+print(state)
+PY
+}
+
+image_lock_json() {
+    python3 - "$APP_DIR/images.lock.yml" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+lock = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
+for name, item in (lock.get("upstream_images") or {}).items():
+    if item.get("optional") and not item.get("digest"):
+        continue
+    if not digest_re.fullmatch(str(item.get("digest") or "")):
+        raise SystemExit(f"upstream image {name} is not digest-pinned")
+for name, item in (lock.get("built_images") or {}).items():
+    if item.get("optional") and not item.get("digest"):
+        continue
+    if not digest_re.fullmatch(str(item.get("digest") or "")):
+        raise SystemExit(f"built image {name} is missing a digest; run build-images first")
+print(json.dumps(lock, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+desired_bundle() {
+    local operation=$1 box=$2 role=$3 site_role=$4 wipe=${5:-false}
+    local grant_hash
+    grant_hash="$(grant_sha256)"
+    local runtime_state
+    if [[ "$operation" == remove ]]; then
+        runtime_state=stopped
+    else
+        runtime_state="$(grant_runtime_state)"
+    fi
+    local image_lock
+    if [[ "$operation" == remove || "$runtime_state" == stopped ]]; then
+        image_lock='{}'
+    else
+        image_lock="$(image_lock_json)"
+    fi
+    IMAGE_LOCK_JSON="$image_lock" NEXTCLOUD_V2_RUNTIME_STATE="$runtime_state" python3 - \
+        "$operation" "$box" "$role" "$site_role" "$active_master" "$passive_backup" "$grant_hash" "$wipe" <<'PY'
+import json
+import os
+import sys
+
+operation, box, role, site_role, active, passive, grant_hash, wipe = sys.argv[1:9]
+print(json.dumps({
+    "schema_version": 1,
+    "app": "nextcloud-v2",
+    "operation": operation,
+    "runtime_state": os.environ["NEXTCLOUD_V2_RUNTIME_STATE"],
+    "target_box": box,
+    "target_role": role,
+    "site_role": site_role,
+    "placement": {
+        "active_master": active,
+        "passive_backup": passive,
+    },
+    "resource_grant_sha256": grant_hash,
+    "wipe_data": wipe == "true",
+    "images": json.loads(os.environ["IMAGE_LOCK_JSON"]),
+    "runtime": {
+        "pod_name": "nextcloud-v2" if role == "backend" else "nextcloud-v2-dmz",
+        "podman_user": "neo",
+        "backend_http_bind": "192.168.100.10",
+        "backend_http_port": 8080,
+        "dmz_https_port": 8443,
+        "tailscale_hostname": "next",
+        "tailscale_tag": "tag:nextcloud",
+        "tailscale_authkey_file": "/etc/klokast/apps/nextcloud-v2/secrets/tailscale-authkey",
+        "volumes": {
+            "postgres": "klokast-nextcloud-v2-postgres",
+            "redis": "klokast-nextcloud-v2-redis",
+            "html": "klokast-nextcloud-v2-html",
+            "config": "klokast-nextcloud-v2-config",
+            "custom_apps": "klokast-nextcloud-v2-custom-apps",
+            "data": "klokast-nextcloud-v2-data",
+            "backups": "klokast-nextcloud-v2-backups",
+            "tailscale_state": "klokast-nextcloud-v2-ingress-ts-state",
+        },
+    },
+}, sort_keys=True, indent=2))
+PY
+}
+
+target_host() {
+    local box=$1 role=$2
+    case "$role" in
+        backend) printf '%s-bak.%s' "$box" "$MAGICDNS_SUFFIX" ;;
+        dmz) printf '%s-dmz.%s' "$box" "$MAGICDNS_SUFFIX" ;;
+        *) die "unknown target role: $role" ;;
+    esac
+}
+
+mint_private_ingress_authkey() {
+    sudo -n /usr/local/sbin/ts-authkey-nextcloud \
+        --hostname next \
+        --tags tag:nextcloud
+}
+
+install_private_ingress_authkey() {
+    local host=$1 authkey=$2 tmp
+    tmp=$(mktemp)
+    printf '%s\n' "$authkey" >"$tmp"
+    tailscale ssh "neo@${host}" "cat > /tmp/${APP_ID}.tailscale-authkey" <"$tmp"
+    rm -f "$tmp"
+    tailscale ssh "neo@${host}" \
+        "doas install -d -m 0700 -o neo -g wheel /etc/klokast/apps/${APP_ID}/secrets && doas install -m 0600 -o neo -g wheel /tmp/${APP_ID}.tailscale-authkey /etc/klokast/apps/${APP_ID}/secrets/tailscale-authkey && rm -f /tmp/${APP_ID}.tailscale-authkey"
+}
+
+dispatch_target() {
+    local box=$1 role=$2 node_command=$3 desired_json=$4
+    local host
+    host="$(target_host "$box" "$role")"
+    if [[ "$DRY_RUN" == true ]]; then
+        printf 'nextcloud-v2ctl: dry-run %s %s %s\n' "$host" "$node_command" "$desired_json"
+        return
+    fi
+    local tmp
+    tmp=$(mktemp)
+    printf '%s\n' "$desired_json" >"$tmp"
+    tailscale ssh "neo@${host}" "cat > /tmp/${APP_ID}.desired.json" <"$tmp"
+    rm -f "$tmp"
+    if [[ "$role" == dmz && "$node_command" == apply ]]; then
+        local authkey
+        authkey="$(mint_private_ingress_authkey)"
+        [[ -n "$authkey" ]] || die "ts-authkey-nextcloud returned an empty auth key"
+        install_private_ingress_authkey "$host" "$authkey"
+    fi
+    tailscale ssh "neo@${host}" "doas install -D -m 0640 -o root -g wheel /tmp/${APP_ID}.desired.json /var/lib/klokast/desired/${APP_ID}.json && rm -f /tmp/${APP_ID}.desired.json && doas /usr/local/sbin/klokast-node ${node_command} ${APP_ID}"
+}
+
+run_pair() {
+    local operation=$1 node_command=$2
+    local box role site_role desired
+    for box in "$active_master" "$passive_backup"; do
+        site_role=passive
+        [[ "$box" == "$active_master" ]] && site_role=active
+        for role in backend dmz; do
+            desired="$(desired_bundle "$operation" "$box" "$role" "$site_role")"
+            dispatch_target "$box" "$role" "$node_command" "$desired"
+        done
+    done
+}
+
+cmd_build_images() {
+    local builder=
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --builder)
+                builder=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$builder" ]] || die "--builder is required"
+    require_ops_host "$builder"
+    if [[ "$(hostname)" != "$builder" ]]; then
+        die "build-images must run on ${builder} as smith"
+    fi
+    command -v podman >/dev/null 2>&1 || die "podman is required on the builder"
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required on the builder"
+    local build_plan
+    build_plan="$(python3 - "$APP_DIR/images.lock.yml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+lock = yaml.safe_load(path.read_text(encoding="utf-8"))
+digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
+missing = []
+for name, item in (lock.get("upstream_images") or {}).items():
+    if item.get("optional") and not item.get("digest"):
+        continue
+    if not digest_re.fullmatch(str(item.get("digest") or "")):
+        missing.append(f"upstream_images.{name}.digest")
+if missing:
+    raise SystemExit("image lock has unpinned entries: " + ", ".join(missing))
+
+def ref(name):
+    item = lock["upstream_images"][name]
+    return f"{item['canonical']}@{item['digest']}"
+
+for name, args in {
+    "nextcloud-v2-app": {"NEXTCLOUD_FPM_IMAGE": ref("nextcloud_fpm")},
+    "nextcloud-v2-web": {"NGINX_IMAGE": ref("nginx")},
+    "nextcloud-v2-backup": {"ALPINE_IMAGE": ref("alpine")},
+    "nextcloud-v2-dmz-proxy": {"ALPINE_IMAGE": ref("alpine")},
+}.items():
+    item = lock["built_images"][name]
+    arg_text = ",".join(f"{key}={value}" for key, value in args.items())
+    print("|".join([name, item["context"], item["image"], item["archive"], arg_text]))
+PY
+)"
+    local output_dir="${REPO_ROOT}/.run/nextcloud-v2/oci"
+    install -d -m 0750 "$output_dir"
+    local updates=()
+    local name context image archive arg_text archive_path image_id archive_sha
+    while IFS='|' read -r name context image archive arg_text; do
+        [[ -n "$name" ]] || continue
+        local build_args=()
+        IFS=',' read -r -a arg_array <<< "$arg_text"
+        local arg
+        for arg in "${arg_array[@]}"; do
+            build_args+=(--build-arg "$arg")
+            podman pull --policy=missing "${arg#*=}"
+        done
+        podman build --pull=never -t "${image}:nextcloud-v2" \
+            -f "${APP_DIR}/${context}/Containerfile" \
+            "${build_args[@]}" \
+            "${APP_DIR}/${context}"
+        archive_path="${output_dir}/${archive}"
+        podman save --format oci-archive -o "$archive_path" "${image}:nextcloud-v2"
+        image_id="$(podman image inspect --format '{{.Id}}' "${image}:nextcloud-v2")"
+        archive_sha="$(sha256sum "$archive_path" | awk '{print $1}')"
+        updates+=("${name}|${image_id}|${archive_sha}")
+    done <<< "$build_plan"
+    python3 - "$APP_DIR/images.lock.yml" "${updates[@]}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+lock = yaml.safe_load(path.read_text(encoding="utf-8"))
+for item in sys.argv[2:]:
+    name, digest, archive_sha = item.split("|", 2)
+    lock["built_images"][name]["digest"] = digest
+    lock["built_images"][name]["archive_sha256"] = archive_sha
+path.write_text(yaml.safe_dump(lock, sort_keys=False), encoding="utf-8")
+PY
+    printf 'nextcloud-v2ctl: exported OCI archives under %s and updated images.lock.yml\n' "$output_dir"
+}
+
+cmd_infra_prepare() {
+    active_master=
+    passive_backup=
+    resources_registry=
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --active-master)
+                active_master=${2:-}; shift 2 ;;
+            --passive-backup)
+                passive_backup=${2:-}; shift 2 ;;
+            --resources-registry)
+                resources_registry=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$active_master" && -n "$passive_backup" ]] || die "--active-master and --passive-backup are required"
+    [[ -n "$resources_registry" ]] || die "--resources-registry is required"
+    require_box "$active_master" "--active-master"
+    require_box "$passive_backup" "--passive-backup"
+    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
+    local approved_commit grant_dir grant_path
+    approved_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app "$APP_ID" \
+        --approved-commit "$approved_commit" \
+        apply
+    grant_dir="${APPROVED_STATE_ROOT}/apps/${APP_ID}"
+    grant_path="${grant_dir}/grant.json"
+    install -d -m 0750 "$grant_dir"
+    "${REPO_ROOT}/ansible/bin/platform-resources" \
+        --registry "$resources_registry" \
+        --app "$APP_ID" \
+        --approved-commit "$approved_commit" \
+        grant >"$grant_path"
+    chmod 0640 "$grant_path"
+    printf '%s\n' "$approved_commit" >"$APPROVED_COMMIT_MARKER_DEFAULT"
+    printf 'nextcloud-v2ctl: wrote grant %s\n' "$grant_path"
+}
+
+cmd_install() {
+    parse_pair_grant "$@"
+    validate_grant
+    run_pair install apply
+}
+
+cmd_start() {
+    parse_pair_grant "$@"
+    validate_grant
+    [[ "$(grant_runtime_state)" == "running" ]] || die "grant runtime_state must be running for start"
+    run_pair start apply
+}
+
+cmd_stop() {
+    parse_pair_grant "$@"
+    validate_grant
+    [[ "$(grant_runtime_state)" == "stopped" ]] || die "grant runtime_state must be stopped for stop"
+    run_pair stop apply
+}
+
+cmd_verify() {
+    parse_pair_grant "$@"
+    validate_grant
+    run_pair verify verify
+}
+
+cmd_backup_check() {
+    parse_pair_grant "$@"
+    validate_grant
+    run_pair backup-check verify
+}
+
+cmd_resource_grant_check() {
+    parse_pair_grant "$@"
+    validate_grant
+    printf 'nextcloud-v2ctl: resource grant ok\n'
+}
+
+cmd_promote() {
+    old_active=
+    new_active=
+    resource_grant="$RESOURCE_GRANT_DEFAULT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --old-active)
+                old_active=${2:-}; shift 2 ;;
+            --new-active)
+                new_active=${2:-}; shift 2 ;;
+            --resource-grant)
+                resource_grant=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$old_active" && -n "$new_active" ]] || die "--old-active and --new-active are required"
+    active_master="$new_active"
+    passive_backup="$old_active"
+    require_box "$old_active" "--old-active"
+    require_box "$new_active" "--new-active"
+    [[ -f "$resource_grant" ]] || die "platform resource grant does not exist: $resource_grant"
+    validate_grant
+    run_pair promote apply
+}
+
+cmd_remove() {
+    box=
+    wipe=false
+    resource_grant="$RESOURCE_GRANT_DEFAULT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --box)
+                box=${2:-}; shift 2 ;;
+            --wipe-data)
+                wipe=true; shift ;;
+            --resource-grant)
+                resource_grant=${2:-}; shift 2 ;;
+            *)
+                die "unknown argument: $1" ;;
+        esac
+    done
+    [[ -n "$box" ]] || die "--box is required"
+    [[ -n "$resource_grant" ]] || die "--resource-grant is required"
+    require_box "$box" "--box"
+    [[ -f "$resource_grant" ]] || die "platform resource grant does not exist: $resource_grant"
+    active_master="$box"
+    passive_backup="$box"
+    local desired role
+    for role in backend dmz; do
+        desired="$(desired_bundle remove "$box" "$role" removed "$wipe")"
+        dispatch_target "$box" "$role" remove "$desired"
+    done
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+cmd=$1
+shift
+
+case "$cmd" in
+    build-images) cmd_build_images "$@" ;;
+    infra-prepare) cmd_infra_prepare "$@" ;;
+    install) cmd_install "$@" ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
+    verify) cmd_verify "$@" ;;
+    backup-check) cmd_backup_check "$@" ;;
+    resource-grant-check) cmd_resource_grant_check "$@" ;;
+    promote) cmd_promote "$@" ;;
+    remove) cmd_remove "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage; die "unknown command: $cmd" ;;
+esac

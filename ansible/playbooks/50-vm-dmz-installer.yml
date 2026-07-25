@@ -1,0 +1,31 @@
+---
+- name: Start the dmz VM in installer stage for the selected node
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    dmz_installer_spec: >-
+      {{ node_xen_guest_specs.dmz | combine({'stage': 'installer'}, recursive=True) }}
+  tasks:
+    - name: Keep the dmz Xen config in installer stage before first install
+      ansible.builtin.import_role:
+        name: xen-guest
+      vars:
+        xen_guest_spec: "{{ dmz_installer_spec }}"
+
+    - name: Start the dmz installer-stage guest
+      ansible.builtin.import_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: "{{ dmz_installer_spec.guest_name }}"
+        xen_guest_config_path: "{{ dmz_installer_spec.config_path }}"
+        xen_guest_runtime_state: running
+
+    - name: Show the next dmz installer steps
+      ansible.builtin.debug:
+        msg:
+          - "Use NanoKVM or another local {{ node_name }}-dom0 shell for: doas xl console {{ node_xen_guest_specs.dmz.guest_name }}"
+          - "Prepare the live guest, then run setup-disk -m sys /dev/xvda."
+          - "Use eth0 = 192.168.200.10/24 with gateway 192.168.200.1."
+          - "Use eth1 = 192.168.100.20/24 without a second gateway."
+          - "Install openssh, doas, and python3 in the live guest before setup-disk so the first dmz bootstrap stays non-interactive."
+          - "Power the guest off from inside Alpine when the install finishes."

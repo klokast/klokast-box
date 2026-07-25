@@ -1,0 +1,43 @@
+---
+- name: Bootstrap the Hetzner ops server
+  hosts: ops
+  gather_facts: true
+
+  vars_prompt:
+    - name: neo_password
+      prompt: Enter the local password for neo
+      private: true
+      confirm: true
+    - name: tailscale_auth_key
+      prompt: Enter the reusable pre-approved Tailscale auth key for tag:ops (leave blank only if the host is already enrolled)
+      private: true
+      default: ""
+
+  pre_tasks:
+    - name: Assert the target is an Ubuntu host
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+          - ansible_distribution == "Ubuntu"
+        fail_msg: This MVP playbook supports only Ubuntu hosts.
+
+    - name: Assert the bootstrap connection uses root
+      ansible.builtin.assert:
+        that:
+          - ansible_user | default(ansible_user_id) == "root"
+        fail_msg: Run this MVP playbook as root over the Hetzner public IPv4.
+
+    - name: Assert the neo password prompt was not left blank
+      ansible.builtin.assert:
+        that:
+          - neo_password | length > 0
+        fail_msg: The local neo password is required.
+
+  roles:
+    - role: ubuntu-base
+    - role: user-accounts
+    - role: sudo-policy
+    - role: tailscale-client
+    - role: codex-cli
+    - role: source-repositories
+    - role: interactive-shell

@@ -1,0 +1,20 @@
+---
+local_ingress_domain: ""
+local_ingress_tls_cert_source: ""
+local_ingress_tls_key_source: ""
+local_ingress_tls_dir: /etc/klokast/local-ingress/tls
+local_ingress_tls_cert_path: "{{ local_ingress_tls_dir }}/fullchain.pem"
+local_ingress_tls_key_path: "{{ local_ingress_tls_dir }}/privkey.pem"
+local_ingress_nginx_conf_path: /etc/nginx/nginx.conf
+
+local_ingress_backend_ipv4_address: "{{ platform_zones.bak.vm_ipv4_address }}"
+local_ingress_services:
+  - id: music
+    hostname: "music.{{ local_ingress_domain }}"
+    upstream: "http://{{ local_ingress_backend_ipv4_address }}:18082"
+  - id: nextcloud
+    hostname: "nextcloud.{{ local_ingress_domain }}"
+    upstream: "http://{{ local_ingress_backend_ipv4_address }}:8080"
+  - id: immich
+    hostname: "immich.{{ local_ingress_domain }}"
+    upstream: "http://{{ local_ingress_backend_ipv4_address }}:2283"

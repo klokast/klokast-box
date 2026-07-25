@@ -1,0 +1,79 @@
+---
+- name: Ensure local klokast-node build directory exists
+  ansible.builtin.file:
+    path: "{{ klokast_node_build_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  run_once: true
+
+- name: Build klokast-node on the controller
+  ansible.builtin.command:
+    argv:
+      - go
+      - build
+      - -o
+      - "{{ klokast_node_binary }}"
+      - ./cmd/klokast-node
+  args:
+    chdir: "{{ klokast_node_repo_root }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
+- name: Ensure klokast-node target directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  loop:
+    - /usr/local/sbin
+    - /usr/lib/klokast/apps
+    - "{{ klokast_node_handler_target_dir }}"
+    - /var/lib/klokast/desired
+    - /var/lib/klokast/status
+    - /var/lib/klokast/rendered
+    - /etc/periodic/15min
+
+- name: Install klokast-node binary
+  ansible.builtin.copy:
+    src: "{{ klokast_node_binary }}"
+    dest: /usr/local/sbin/klokast-node
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install nextcloud-v2 app handlers
+  ansible.builtin.copy:
+    src: "{{ klokast_node_handler_source_dir }}/{{ item }}"
+    dest: "{{ klokast_node_handler_target_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  loop:
+    - apply
+    - verify
+    - remove
+
+- name: Install nextcloud-v2 verify-only periodic timer
+  ansible.builtin.template:
+    src: nextcloud-v2-verify.j2
+    dest: /etc/periodic/15min/nextcloud-v2-verify
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install nextcloud-v2 OpenRC service wrapper
+  ansible.builtin.template:
+    src: nextcloud-v2.openrc.j2
+    dest: /etc/init.d/nextcloud-v2
+    owner: root
+    group: root
+    mode: "0755"
+  become: true

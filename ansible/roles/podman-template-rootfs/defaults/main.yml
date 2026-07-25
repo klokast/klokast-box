@@ -1,0 +1,26 @@
+---
+podman_template_lv_path: "/dev/{{ volume_group_name | default('vg0') }}/lv_podman_template"
+podman_template_lv_size: 50G
+podman_template_boot_size: 256M
+podman_template_reserved_size: 1M
+podman_template_rebuild: false
+podman_template_mount_path: /tmp/podman-template-root
+podman_template_hostname: klokast-podman-template
+podman_template_repositories: "{{ alpine_repositories }}"
+podman_template_install_repositories: "{{ podman_template_repositories }}"
+podman_template_modloop_path: "{{ dom0_xen_images_path }}/modloop-virt"
+podman_template_modloop_mount_path: /tmp/podman-template-modloop
+podman_template_dns_resolvers:
+  - 1.1.1.1
+  - 1.0.0.1
+podman_template_packages:
+  - alpine-base
+  - ca-certificates
+  - doas
+  - iproute2
+  - openssh
+  - python3
+  - wget
+podman_template_services:
+  - networking
+  - sshd

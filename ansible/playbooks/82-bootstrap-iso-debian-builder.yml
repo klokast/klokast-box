@@ -1,0 +1,32 @@
+---
+- name: Converge the yii backend VM Debian-live bootstrap builder workload
+  hosts: yii_backend
+  gather_facts: false
+  pre_tasks:
+    - name: Gather backend steady-state facts
+      ansible.builtin.setup:
+
+    - name: Assert Podman is already installed on the backend host
+      ansible.builtin.stat:
+        path: /usr/bin/podman
+      register: backend_bootstrap_live_builder_podman_binary
+
+    - name: Fail until the backend Podman host baseline is present
+      ansible.builtin.assert:
+        that:
+          - backend_bootstrap_live_builder_podman_binary.stat.exists
+        fail_msg: >-
+          Podman is not installed on {{ inventory_hostname }} yet.
+          Converge the Podman host slice first, then run this builder playbook.
+
+  tasks:
+    - name: Converge the backend Debian-live bootstrap builder workload
+      ansible.builtin.import_role:
+        name: bootstrap-live-builder
+
+    - name: Show the backend Debian-live bootstrap builder access path
+      ansible.builtin.debug:
+        msg:
+          - "Debian-live bootstrap builder workload is managed on {{ inventory_hostname }}."
+          - "The builder keeps its workspace under {{ vm_admin_user_name }}, but the build container itself runs privileged/rootful because Debian live-build requires mount-capable chroot stages."
+          - "Use /usr/local/sbin/bootstrap-live-builder-build on yii-bak to build and upload the generic portal ISO and optional Alpine seed to {{ bootstrap_live_builder_oob_user }}@{{ bootstrap_live_builder_oob_connect_host }}:{{ bootstrap_live_builder_oob_dest_dir }}."

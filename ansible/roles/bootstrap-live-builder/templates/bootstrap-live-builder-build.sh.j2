@@ -1,0 +1,177 @@
+#!/bin/sh
+# shellcheck shell=sh disable=SC1083,SC2154
+set -eu
+
+container_name={{ bootstrap_live_builder_container_name | quote }}
+repo_root="/src/klokast"
+output_root={{ bootstrap_live_builder_output_root | quote }}
+oob_user={{ bootstrap_live_builder_oob_user | quote }}
+oob_host={{ bootstrap_live_builder_oob_connect_host | default(bootstrap_live_builder_oob_host) | quote }}
+oob_dest_dir={{ bootstrap_live_builder_oob_dest_dir | quote }}
+debian_release=""
+arch=""
+skip_upload="false"
+build_alpine_seed="true"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  bootstrap-live-builder-build [options]
+
+Options:
+  --debian-release RELEASE    Override the Debian live release.
+  --arch ARCH                 Override the target architecture.
+  --no-alpine-seed            Skip building the Alpine diskless seed tarball.
+  --skip-upload               Do not copy resulting artifacts to the NanoKVM host.
+  --help                      Show this help.
+
+Builds the generic Debian live bootstrap ISO inside the privileged
+bootstrap-live-builder Podman container on yii-bak. The ISO carries an HTTP
+onboarding portal; node name and Tailscale auth key are entered at boot and are
+not build inputs.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --auth-key-file|--node|--hostname|--tailscale-hostname)
+            echo "$1 is not supported by the portal-only bootstrap ISO builder." >&2
+            echo "Build the generic ISO here, then enter the node and tskey-auth-* in the booted portal." >&2
+            exit 1
+            ;;
+        --debian-release)
+            debian_release="$2"
+            shift 2
+            ;;
+        --arch)
+            arch="$2"
+            shift 2
+            ;;
+        --no-alpine-seed|--no-seed)
+            build_alpine_seed="false"
+            shift
+            ;;
+        --skip-upload)
+            skip_upload="true"
+            shift
+            ;;
+        --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+if ! /usr/bin/podman container exists "$container_name"; then
+    echo "Builder container does not exist: $container_name" >&2
+    exit 1
+fi
+
+if ! /usr/bin/podman exec "$container_name" test -x "$repo_root/apps/bootstrap-iso-debian/build-bootstrap-iso.sh"; then
+    echo "Missing repo checkout inside the builder container: $repo_root" >&2
+    exit 1
+fi
+
+builder_dir="$repo_root/apps/bootstrap-iso-debian"
+cmd="cd '$builder_dir' && ./build-bootstrap-iso.sh --output-dir /output"
+if [ -n "$debian_release" ]; then
+    cmd="$cmd --debian-release '$debian_release'"
+fi
+if [ -n "$arch" ]; then
+    cmd="$cmd --arch '$arch'"
+fi
+
+/usr/bin/podman exec "$container_name" sh -lc "$cmd"
+
+if [ "$build_alpine_seed" = "true" ]; then
+    seed_cmd="cd '$builder_dir' && ./build-alpine-seed.sh --output-dir /output"
+    if [ -n "$arch" ]; then
+        alpine_arch="$arch"
+        if [ "$alpine_arch" = "amd64" ]; then
+            alpine_arch="x86_64"
+        fi
+        seed_cmd="$seed_cmd --arch '$alpine_arch'"
+    fi
+    /usr/bin/podman exec "$container_name" sh -lc "$seed_cmd"
+fi
+
+if [ "$skip_upload" = "true" ]; then
+    exit 0
+fi
+
+/usr/bin/podman exec -i "$container_name" sh -s -- "$oob_user" "$oob_host" "$oob_dest_dir" <<'CONTAINER'
+set -eu
+
+oob_user="$1"
+oob_host="$2"
+oob_dest_dir="$3"
+output_root=/output
+oob_ssh_key=/root/.ssh/oob_upload_ed25519
+oob_known_hosts=/root/.ssh/known_hosts
+
+[ -r "$oob_ssh_key" ] || {
+    printf 'missing builder upload key: %s\n' "$oob_ssh_key" >&2
+    exit 1
+}
+
+resolve_tailscale_host() {
+    target="$1"
+    resolved="$(tailscale ip -4 "$target" 2>/dev/null | awk 'NR==1 { print; exit }')"
+    if [ -z "$resolved" ]; then
+        resolved="$(
+            tailscale status --json 2>/dev/null |
+                python3 -c 'import json, sys
+target = sys.argv[1].rstrip(".").lower()
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+machines = []
+self_machine = data.get("Self") or {}
+if self_machine:
+    machines.append(self_machine)
+machines.extend((data.get("Peer") or {}).values())
+for machine in machines:
+    names = {str(machine.get("HostName") or "").rstrip(".").lower(), str(machine.get("DNSName") or "").rstrip(".").lower()}
+    if target in names:
+        for ip in machine.get("TailscaleIPs") or []:
+            if "." in ip:
+                print(ip)
+                sys.exit(0)' "$target" 2>/dev/null || true
+        )"
+    fi
+    if [ -n "$resolved" ]; then
+        printf '%s\n' "$resolved"
+    else
+        printf '%s\n' "$target"
+    fi
+}
+
+oob_connect_host="$(resolve_tailscale_host "$oob_host")"
+
+ssh \
+    -i "$oob_ssh_key" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$oob_known_hosts" \
+    "${oob_user}@${oob_connect_host}" \
+    "mkdir -p '${oob_dest_dir}'"
+
+find "$output_root" -maxdepth 1 -type f \
+    \( -name 'klokast-bootstrap-debian-*.iso' -o -name 'klokast-bootstrap-debian-*.iso.sha512' -o -name 'alpine-standard-*.tar.gz' -o -name 'alpine-standard-*.tar.gz.sha256' -o -name 'alpine-standard-*.tar.gz.sha512' \) \
+    | sort \
+    | while read -r artifact; do
+        scp \
+            -O \
+            -i "$oob_ssh_key" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$oob_known_hosts" \
+            "$artifact" "${oob_user}@${oob_connect_host}:${oob_dest_dir}/"
+    done
+CONTAINER
