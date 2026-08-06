@@ -14,6 +14,10 @@ ROUTER_TEMPLATE = (ROLE / "templates" / "nftables.nft.j2").read_text(
 ROUTER_VERIFY = (
     REPO_ROOT / "ansible" / "roles" / "router-verification" / "tasks" / "main.yml"
 ).read_text(encoding="utf-8")
+ROUTER_PLAYBOOK = (
+    REPO_ROOT / "ansible" / "playbooks" / "31-vm-router.yml"
+).read_text(encoding="utf-8")
+ANSIBLE_CONFIG = (REPO_ROOT / "ansible" / "ansible.cfg").read_text(encoding="utf-8")
 
 
 class RouterRoleTest(unittest.TestCase):
@@ -47,6 +51,19 @@ class RouterRoleTest(unittest.TestCase):
         self.assertIn(
             "'\"managed-vm-tailscale-udp41641-egress\" not in verify_router_nft_ruleset.stdout'",
             ROUTER_VERIFY,
+        )
+
+    def test_controller_temp_paths_are_user_scoped(self):
+        self.assertIn("fact_caching_connection = ~/.ansible/facts", ANSIBLE_CONFIG)
+        self.assertIn("local_tmp = ~/.ansible/tmp", ANSIBLE_CONFIG)
+        self.assertNotIn("fact_caching_connection = /tmp/", ANSIBLE_CONFIG)
+        self.assertNotIn("local_tmp = /tmp/", ANSIBLE_CONFIG)
+        self.assertIn("router_controller_ansible_remote_tmp", ROUTER_PLAYBOOK)
+        self.assertEqual(
+            ROUTER_PLAYBOOK.count(
+                'ansible_remote_tmp: "{{ router_controller_ansible_remote_tmp }}"'
+            ),
+            4,
         )
 
 

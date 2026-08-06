@@ -143,6 +143,7 @@
     ansible_become: false
     ansible_host: "{{ router_bootstrap_host }}"
     ansible_remote_tmp: /tmp/ansible-remote-root
+    router_controller_ansible_remote_tmp: "{{ lookup('env', 'HOME') }}/.ansible/tmp"
     ansible_ssh_timeout: 30
     ansible_ssh_private_key_file: "{{ router_bootstrap_private_key_file }}"
     ansible_ssh_common_args: >-
@@ -174,6 +175,8 @@
         executable: /bin/sh
       delegate_to: localhost
       become: false
+      vars:
+        ansible_remote_tmp: "{{ router_controller_ansible_remote_tmp }}"
       register: router_steady_state_tailscale_check
       failed_when: false
       changed_when: false
@@ -185,6 +188,8 @@
         mode: "0600"
       delegate_to: localhost
       become: false
+      vars:
+        ansible_remote_tmp: "{{ router_controller_ansible_remote_tmp }}"
       when: router_steady_state_tailscale_check.rc != 0
 
     - name: Remove any stale router bootstrap SSH host key before first-contact enrollment
@@ -194,6 +199,8 @@
         >/dev/null 2>&1 || true
       delegate_to: localhost
       become: false
+      vars:
+        ansible_remote_tmp: "{{ router_controller_ansible_remote_tmp }}"
       changed_when: false
       when: router_steady_state_tailscale_check.rc != 0
 
@@ -215,6 +222,8 @@
           - "true"
       delegate_to: localhost
       become: false
+      vars:
+        ansible_remote_tmp: "{{ router_controller_ansible_remote_tmp }}"
       register: router_bootstrap_ssh_probe
       changed_when: false
       retries: 60
