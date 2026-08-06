@@ -51,6 +51,7 @@
         ops_airunner_verify_home: "{{ ops_airunner_home }}"
         ops_airunner_verify_tailscale_state_dir: "{{ ops_airunner_instances.candidate.state_root }}/tailscale"
         ops_airunner_verify_expected_tag: "{{ ops_airunner_tailscale_expected_tag }}"
+        ops_airunner_verify_expected_udp_port: "{{ ops_airunner_instances.candidate.tailscale_udp_port }}"
         ops_airunner_verify_workspace_features: false
       when:
         - ops_airunner_enabled | default(false) | bool
@@ -76,6 +77,7 @@
         ops_airunner_shell_wrapper: "{{ ops_airunner_selected.shell_wrapper }}"
         ops_airunner_sudoers_path: "{{ ops_airunner_selected.sudoers_path }}"
         ops_airunner_tailscale_state_dir: "{{ ops_airunner_selected.state_root }}/tailscale"
+        ops_airunner_tailscale_udp_port: "{{ ops_airunner_selected.tailscale_udp_port }}"
         ops_airunner_manage_legacy_service: "{{ ops_airunner_selected.manage_legacy_service }}"
       when: ops_airunner_enabled | default(false) | bool
 
@@ -88,6 +90,7 @@
         ops_airunner_verify_home: "{{ ops_airunner_home }}"
         ops_airunner_verify_tailscale_state_dir: "{{ ops_airunner_selected.state_root }}/tailscale"
         ops_airunner_verify_expected_tag: "{{ ops_airunner_tailscale_expected_tag }}"
+        ops_airunner_verify_expected_udp_port: "{{ ops_airunner_selected.tailscale_udp_port }}"
       when: ops_airunner_enabled | default(false) | bool
 
     - name: Inspect the canonical airunner after candidate convergence

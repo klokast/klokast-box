@@ -59,6 +59,8 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("/usr/sbin/tailscaled", ENTRYPOINT)
         self.assertIn("/run/tailscale/tailscaled.sock", ENTRYPOINT)
         self.assertIn("--tun=tailscale0", ENTRYPOINT)
+        self.assertIn("AIRUNNER_TAILSCALE_UDP_PORT", ENTRYPOINT)
+        self.assertIn('--port="$tailscale_udp_port"', ENTRYPOINT)
         self.assertNotIn("--tun=userspace-networking", ENTRYPOINT)
 
     def test_airunner_image_has_interactive_terminal_tools(self):
@@ -96,10 +98,24 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn('"{{ node_name }}-ops-airunner-candidate"', OPS_VARS)
         self.assertIn("service_name: airunner", OPS_VARS)
         self.assertIn("service_name: airunner-candidate", OPS_VARS)
+        self.assertIn("tailscale_udp_port: 41642", OPS_VARS)
+        self.assertIn("tailscale_udp_port: 41643", OPS_VARS)
         self.assertIn("ops_airunner_legacy_service_name: klokast-airunner", OPS_VARS)
         self.assertIn("ops_airunner_instance in ops_airunner_instances", PLAYBOOK)
         self.assertIn("ops_airunner_instances | dict2items", SECRETS_PLAYBOOK)
         self.assertNotIn('"{{ ops_airunner_name }}"', SECRETS_PLAYBOOK)
+
+    def test_airunner_fixed_udp_port_is_propagated_and_verified(self):
+        self.assertIn("ops_airunner_tailscale_udp_port", TASKS)
+        self.assertIn("AIRUNNER_TAILSCALE_UDP_PORT={{ ops_airunner_tailscale_udp_port }}", SERVICE)
+        self.assertIn(
+            'ops_airunner_tailscale_udp_port: "{{ ops_airunner_selected.tailscale_udp_port }}"',
+            PLAYBOOK,
+        )
+        self.assertIn("ops_airunner_verify_expected_udp_port", VERIFY)
+        self.assertIn("--format=json", VERIFY)
+        self.assertIn("ops_airunner_verify_netcheck", VERIFY)
+        self.assertIn("--port=", VERIFY)
 
     def test_canonical_replacement_requires_candidate_verification(self):
         self.assertIn("ops_airunner_require_candidate_ready", PLAYBOOK)

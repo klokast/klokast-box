@@ -354,24 +354,31 @@ router_tailscale_interzone_udp_rules:
     port: 41641
     comment: usr-ops-tailscale-underlay
 
-# Tailscale direct connectivity is host-scoped and limited to the standard
-# WireGuard port. Other UDP egress stays closed by default.
+# Tailscale direct connectivity needs the node's configured UDP source port to
+# arbitrary peers plus destination port 3478 for STUN discovery. Keep both
+# paths scoped to the exact managed VM source address. The ops VM also NATs
+# the canonical and candidate airunner identities, which use distinct ports.
 router_tailscale_udp_egress_rules:
   - interface: "{{ platform_zones.bak.router_interface }}"
     source: "{{ platform_zones.bak.vm_ipv4_address }}"
-    port: 41641
+    source_ports: [41641]
+    destination_ports: [3478]
   - interface: "{{ platform_zones.dmz.router_interface }}"
     source: "{{ platform_zones.dmz.vm_ipv4_address }}"
-    port: 41641
+    source_ports: [41641]
+    destination_ports: [3478]
   - interface: "{{ platform_zones.iot.router_interface }}"
     source: "{{ platform_zones.iot.vm_ipv4_address }}"
-    port: 41641
+    source_ports: [41641]
+    destination_ports: [3478]
   - interface: "{{ platform_zones.usr.router_interface }}"
     source: "{{ platform_zones.usr.vm_ipv4_address }}"
-    port: 41641
+    source_ports: [41641]
+    destination_ports: [3478]
   - interface: "{{ platform_control_zones.ops.router_interface }}"
     source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    port: 41641
+    source_ports: [41641, 41642, 41643]
+    destination_ports: [3478]
 
 # Start with IPv4-only downstream networks. The old jump-era DHCPv6-PD / RA
 # setup added latency and return-path complexity without helping the current

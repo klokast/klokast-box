@@ -266,7 +266,12 @@
       - '"ops-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
       - '"dom0-iot-bootstrap-ssh" in verify_router_nft_conf.stdout'
       - '"ops-backend-tailscale-underlay" in verify_router_nft_conf.stdout'
-      - '"managed-vm-tailscale-udp41641-egress" in verify_router_nft_conf.stdout'
+      - '"managed-vm-tailscale-source-egress" in verify_router_nft_conf.stdout'
+      - '"managed-vm-tailscale-stun-egress" in verify_router_nft_conf.stdout'
+      - verify_router_nft_conf.stdout is search('udp sport [^\\n]*41641[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
+      - verify_router_nft_conf.stdout is search('udp dport [^\\n]*3478[^\\n]* accept comment "managed-vm-tailscale-stun-egress"')
+      - verify_router_nft_conf.stdout is search('iifname "' ~ router_ops_interface ~ '"[^\\n]*udp sport [^\\n]*41642[^\\n]*41643[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
+      - '"managed-vm-tailscale-udp41641-egress" not in verify_router_nft_conf.stdout'
       - >-
         (router_zone_wan_tcp_egress_exceptions | default([]) | length == 0)
         or ((router_zone_wan_tcp_egress_exceptions | default([]) | map(attribute='comment') | list | first) in verify_router_nft_conf.stdout)
@@ -327,7 +332,12 @@
       - '"ops-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
       - '"dom0-iot-bootstrap-ssh" in verify_router_nft_ruleset.stdout'
       - '"ops-backend-tailscale-underlay" in verify_router_nft_ruleset.stdout'
-      - '"managed-vm-tailscale-udp41641-egress" in verify_router_nft_ruleset.stdout'
+      - '"managed-vm-tailscale-source-egress" in verify_router_nft_ruleset.stdout'
+      - '"managed-vm-tailscale-stun-egress" in verify_router_nft_ruleset.stdout'
+      - verify_router_nft_ruleset.stdout is search('udp sport [^\\n]*41641[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
+      - verify_router_nft_ruleset.stdout is search('udp dport [^\\n]*3478[^\\n]* accept comment "managed-vm-tailscale-stun-egress"')
+      - verify_router_nft_ruleset.stdout is search('iifname "' ~ router_ops_interface ~ '"[^\\n]*udp sport [^\\n]*41642[^\\n]*41643[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
+      - '"managed-vm-tailscale-udp41641-egress" not in verify_router_nft_ruleset.stdout'
       - >-
         (router_zone_wan_tcp_egress_exceptions | default([]) | length == 0)
         or ((router_zone_wan_tcp_egress_exceptions | default([]) | map(attribute='comment') | list | first) in verify_router_nft_ruleset.stdout)

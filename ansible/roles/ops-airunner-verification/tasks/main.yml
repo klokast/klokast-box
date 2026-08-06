@@ -12,6 +12,8 @@
       - ops_airunner_verify_home | default('') is match('^/home/')
       - ops_airunner_verify_tailscale_state_dir | default('') is match('^/')
       - ops_airunner_verify_expected_tag | default('') == 'tag:airunner'
+      - ops_airunner_verify_expected_udp_port | default(0) | int >= 1
+      - ops_airunner_verify_expected_udp_port | default(0) | int <= 65535
 
 - name: Inspect the airunner container
   ansible.builtin.command:
@@ -54,6 +56,44 @@
 - name: Record the airunner Tailnet identity
   ansible.builtin.set_fact:
     ops_airunner_verify_tailscale: "{{ ops_airunner_verify_tailscale_command.stdout | from_json }}"
+
+- name: Collect the airunner tailscaled command line
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ ops_airunner_verify_name }}"
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        for path in /proc/[0-9]*/cmdline; do
+          [ -r "$path" ] || continue
+          first="$(tr '\000' '\n' < "$path" | sed -n '1p')"
+          if [ "$first" = /usr/sbin/tailscaled ]; then
+            tr '\000' ' ' < "$path"
+            exit 0
+          fi
+        done
+        exit 1
+  register: ops_airunner_verify_tailscaled_cmdline
+  changed_when: false
+
+- name: Verify the airunner has working UDP egress
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "{{ ops_airunner_verify_name }}"
+      - tailscale
+      - --socket=/run/tailscale/tailscaled.sock
+      - netcheck
+      - --format=json
+  register: ops_airunner_verify_netcheck
+  changed_when: false
+  retries: "{{ ops_airunner_verify_retries | default(10) }}"
+  delay: "{{ ops_airunner_verify_delay | default(1) }}"
+  until: (ops_airunner_verify_netcheck.stdout | from_json).UDP | default(false) | bool
 
 - name: Check Mosh inside the airunner
   ansible.builtin.command:
@@ -274,6 +314,13 @@
       - ops_airunner_verify_tailscale.BackendState | default('') == 'Running'
       - ops_airunner_verify_tailscale.Self.HostName | default('') == ops_airunner_verify_name
       - ops_airunner_verify_tailscale.Self.Tags | default([]) == [ops_airunner_verify_expected_tag]
+      - >-
+        ('AIRUNNER_TAILSCALE_UDP_PORT=' ~ (ops_airunner_verify_expected_udp_port | string))
+        in (ops_airunner_verify_inspect.Config.Env | default([]))
+      - >-
+        ('--port=' ~ (ops_airunner_verify_expected_udp_port | string))
+        in ops_airunner_verify_tailscaled_cmdline.stdout
+      - (ops_airunner_verify_netcheck.stdout | from_json).UDP | default(false) | bool
       - ops_airunner_verify_mosh.rc == 0
       - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_toolchain.rc == 0
       - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_workspace.rc == 0

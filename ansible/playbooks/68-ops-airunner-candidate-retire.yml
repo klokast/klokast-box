@@ -30,6 +30,7 @@
         ops_airunner_verify_home: "{{ ops_airunner_home }}"
         ops_airunner_verify_tailscale_state_dir: "{{ ops_airunner_canonical.state_root }}/tailscale"
         ops_airunner_verify_expected_tag: "{{ ops_airunner_tailscale_expected_tag }}"
+        ops_airunner_verify_expected_udp_port: "{{ ops_airunner_canonical.tailscale_udp_port }}"
 
     - name: Check whether the candidate service exists
       ansible.builtin.stat:

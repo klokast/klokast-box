@@ -5,6 +5,18 @@ agent_uid="${AIRUNNER_AGENT_UID:?AIRUNNER_AGENT_UID is required}"
 agent_gid="${AIRUNNER_AGENT_GID:?AIRUNNER_AGENT_GID is required}"
 neo_uid="${AIRUNNER_NEO_UID:-1001}"
 neo_gid="${AIRUNNER_NEO_GID:-1001}"
+tailscale_udp_port="${AIRUNNER_TAILSCALE_UDP_PORT:?AIRUNNER_TAILSCALE_UDP_PORT is required}"
+
+case "$tailscale_udp_port" in
+  *[!0-9]*|'')
+    printf 'AIRUNNER_TAILSCALE_UDP_PORT must be an integer between 1 and 65535\n' >&2
+    exit 1
+    ;;
+esac
+if [ "$tailscale_udp_port" -lt 1 ] || [ "$tailscale_udp_port" -gt 65535 ]; then
+  printf 'AIRUNNER_TAILSCALE_UDP_PORT must be between 1 and 65535\n' >&2
+  exit 1
+fi
 
 ensure_group() {
   name="$1"
@@ -54,7 +66,8 @@ install -d -m 0700 /var/lib/tailscale
 /usr/sbin/tailscaled \
   --state=/var/lib/tailscale/tailscaled.state \
   --socket=/run/tailscale/tailscaled.sock \
-  --tun=tailscale0 &
+  --tun=tailscale0 \
+  --port="$tailscale_udp_port" &
 tailscaled_pid="$!"
 
 trap 'kill "$tailscaled_pid" 2>/dev/null || true; wait "$tailscaled_pid" 2>/dev/null || true' INT TERM

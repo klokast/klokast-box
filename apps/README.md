@@ -30,7 +30,9 @@ Specifically, `AGENTS.md` defines:
     needs, while the platform-owned `ansible/bin/platform-resources` workflow
     applies router and VM firewall policy.
     Read `doc/platform-resource-control-plane.md` before planning app firewall
-    ports.
+    ports. A container with its own Tailscale identity must also follow that
+    document's direct UDP underlay contract; keep it disabled until the
+    compiler supports its stable source-port declaration.
   - trust boundaries in `doc/tcb-strategy.md`; app manifests are requests, not
     authority to change Tailnet ownership, raw topology, dom0 state, or
     privileged builder placement.

@@ -50,7 +50,8 @@ table inet filter {
         iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" ip protocol icmp accept comment "{{ rule_comment }}-icmp"
         {% endfor %}
         {% for rule in router_tailscale_udp_egress_rules | default([]) %}
-        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" udp dport {{ rule.port }} accept comment "managed-vm-tailscale-udp{{ rule.port }}-egress"
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" udp sport { {% for port in rule.source_ports %}{{ port }}{% if not loop.last %}, {% endif %}{% endfor %} } accept comment "managed-vm-tailscale-source-egress"
+        iifname "{{ rule.interface }}" ip saddr {{ rule.source }} oifname "{{ router_wan_interface }}" udp dport { {% for port in rule.destination_ports %}{{ port }}{% if not loop.last %}, {% endif %}{% endfor %} } accept comment "managed-vm-tailscale-stun-egress"
         {% endfor %}
     }
 

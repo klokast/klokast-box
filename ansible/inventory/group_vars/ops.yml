@@ -219,6 +219,7 @@ ops_airunner_instances:
     shell_wrapper: /usr/local/bin/airunner-shell
     sudoers_path: "/etc/sudoers.d/30-{{ ops_airunner_user }}-airunner"
     manage_legacy_service: true
+    tailscale_udp_port: 41642
   candidate:
     name: "{{ node_name }}-ops-airunner-candidate"
     service_name: airunner-candidate
@@ -228,6 +229,7 @@ ops_airunner_instances:
     shell_wrapper: /usr/local/bin/airunner-candidate-shell
     sudoers_path: "/etc/sudoers.d/30-{{ ops_airunner_user }}-airunner-candidate"
     manage_legacy_service: false
+    tailscale_udp_port: 41643
 ops_airunner_network_name: airunner
 ops_airunner_network_interface: airunner0
 ops_airunner_network_subnet: 10.89.0.0/29

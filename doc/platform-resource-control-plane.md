@@ -313,6 +313,35 @@ validates the requested hostname and full tag set, such as
 `tag:vm,tag:user-shell-alice`, before issuing a single-use auth key. `tag:vm`
 self-ownership is not part of the target policy.
 
+### Direct UDP underlay for container identities
+
+Most containers inherit their Podman VM's Tailscale identity and need no
+separate underlay declaration. A container that runs its own `tailscaled` must
+not be enabled until its Tailnet resource can declare both its hosting compute
+resource and one stable UDP listen port, conceptually:
+
+```yaml
+underlay:
+  compute: private-ingress-runtime
+  udp_listen_port: 41644
+```
+
+The runtime must start `tailscaled` with that exact nonzero `--port`. The
+Platform firewall must then permit, from the exact hosting VM address and
+interface, that UDP **source** port to WAN peers and UDP **destination** port
+`3478` for STUN. Destination port `41641` is not a substitute for the source
+port rule. The host identity reserves `41641`; the canonical and candidate
+airrunners reserve `41642` and `41643`. App-owned identities behind managed
+hosts use unique ports from `41644` through `41999` so NAT can preserve each
+identity's source port.
+
+This is a required design contract for new or re-enabled app-owned Tailnet
+identities, but the current manifest compiler does not yet accept `underlay`.
+Keep such an application disabled until compiler validation, router rendering,
+runtime propagation, and direct-path verification are implemented together.
+Do not add the illustrative field to a current manifest before that support
+lands because the schema correctly rejects unknown fields.
+
 App-owned Tailnet identities must not use reserved Platform control tags such
 as `tag:infra`, `tag:infra-agent`, `tag:ops`, `tag:dom0`, `tag:router`,
 `tag:bootstrap`, `tag:oob`, or `tag:vm`. Those tags identify controllers,

@@ -30,6 +30,8 @@
       - ops_airunner_tailscale_authkey_wrapper | default('') is match('^/')
       - ops_airunner_tailscale_advertise_tags | default('') == 'tag:airunner'
       - ops_airunner_tailscale_expected_tag | default('') == 'tag:airunner'
+      - ops_airunner_tailscale_udp_port | default(0) | int >= 1
+      - ops_airunner_tailscale_udp_port | default(0) | int <= 65535
     fail_msg: Ops airunner variables are incomplete.
 
 - name: Ensure airunner container runtime packages are installed
