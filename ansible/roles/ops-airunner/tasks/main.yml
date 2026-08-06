@@ -233,6 +233,7 @@
       - "{{ ops_airunner_user }}@{{ node_name }}-ops-airunner klokast-box deploy key"
       - -f
       - "{{ ops_airunner_git_ssh_key_path }}"
+    chdir: "{{ ops_airunner_home }}"
     creates: "{{ ops_airunner_git_ssh_key_path }}"
 
 - name: Enforce strict airunner GitHub deploy-key permissions
@@ -291,6 +292,8 @@
       - --global
       - "{{ item.name }}"
       - "{{ item.value }}"
+  args:
+    chdir: "{{ ops_airunner_home }}"
   loop:
     - name: user.name
       value: "{{ ops_airunner_git_user_name }}"
@@ -335,6 +338,8 @@
       - --single-branch
       - "{{ ops_airunner_repo_url }}"
       - "{{ ops_airunner_repo_dest }}"
+  args:
+    chdir: "{{ ops_airunner_home }}"
   when: not (ops_airunner_repo_path.stat.exists | default(false))
 
 - name: Read the airunner repository origin
@@ -351,6 +356,8 @@
       - remote
       - get-url
       - origin
+  args:
+    chdir: "{{ ops_airunner_home }}"
   register: ops_airunner_repo_origin
   changed_when: false
 
