@@ -264,6 +264,8 @@
       - ls-remote
       - "{{ ops_airunner_repo_url }}"
       - HEAD
+  args:
+    chdir: "{{ ops_airunner_home }}"
   register: ops_airunner_github_access
   changed_when: false
   failed_when: false

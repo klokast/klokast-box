@@ -167,6 +167,16 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("tmux new-session -A -s main", TASKS)
         self.assertIn("history-limit 100000", TASKS)
 
+    def test_github_access_probe_uses_agent_accessible_working_directory(self):
+        probe_start = TASKS.index(
+            "- name: Check whether GitHub accepts the airunner deploy key"
+        )
+        probe_end = TASKS.index(
+            "- name: Require the airunner deploy key to be registered in GitHub"
+        )
+        probe = TASKS[probe_start:probe_end]
+        self.assertIn('chdir: "{{ ops_airunner_home }}"', probe)
+
     def test_image_activation_compares_image_ids(self):
         self.assertIn("Inspect the airunner image before build", TASKS)
         self.assertIn("Inspect the desired airunner image after build", TASKS)
