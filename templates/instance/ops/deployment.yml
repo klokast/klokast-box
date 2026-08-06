@@ -1,0 +1,52 @@
+---
+# Canonical private topology and control-plane placement registry.
+# Validated and consumed by the matching klokast-box revision pinned in
+# klokast.lock.yml
+
+schema_version: 1
+
+instance:
+  name: example-klokast
+
+tailnet:
+  magicdns_suffix: example.ts.net
+
+  groups:
+    operators:
+      - admin@example.com
+
+    family:
+      - family@example.com
+
+sites:
+  site-a:
+    country: XX
+    timezone: Etc/UTC
+    physical_location: Example location
+
+  site-b:
+    country: XX
+    timezone: Etc/UTC
+    physical_location: Example location
+
+boxes:
+  k001:
+    site: site-a
+
+  k002:
+    site: site-b
+
+control_plane:
+  controller:
+    active_box: k001
+
+    # Optional. Omit when the instance has no standby controller.
+    standby_box: k002
+
+  airunners:
+    # At least one airunner is required.
+    #
+    # A box hosting an airunner gets a dedicated <box>-airunner VM.
+    # The airunner is separate from <box>-ops and does not hold
+    # controller-private state or controller credentials.
+    - box: k001

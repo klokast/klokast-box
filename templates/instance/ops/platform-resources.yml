@@ -1,0 +1,41 @@
+---
+schema_version: 1
+
+boxes:
+  k001:
+    access:
+      available_capabilities:
+        - overlay
+
+      enabled_capabilities:
+        - overlay
+
+      prohibited_capabilities:
+        - rg-lan
+        - direct-egress
+        - direct-ingress
+
+      policy:
+        local-presence-control: overlay
+        private-service-ingress: overlay
+        file-upload: overlay
+        household-wan-egress: none
+        public-ingress: none
+
+apps:
+  nextcloud:
+    enabled: false
+    placement:
+      active_master: ""
+      passive_backup: ""
+    ingress_mode: tailscale
+    resources:
+      cloudflare-tunnel-egress: false
+
+  immich:
+    enabled: false
+    placement:
+      active_master: ""
+      passive_backup: ""
+    ingress_mode: tailscale
+    resources: {}

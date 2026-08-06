@@ -1,0 +1,10 @@
+---
+# ref       human-readable upstream release or branch
+# commit    authoritative immutable source revision
+
+schema_version: 1
+
+upstream:
+  repository: https://github.com/klokast/klokast-box
+  ref: main
+  commit: d065d15c793f848decd0713cf0ee1ba0046b26c7
