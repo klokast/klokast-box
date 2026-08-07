@@ -53,7 +53,7 @@
         set -eu
         archive_root="$1"
         test -d "$archive_root"
-        manifest="$(find "$archive_root" -type f -name manifest.json -print -quit)"
+        manifest="$(find "$archive_root" -type d -name '*.incoming' -prune -o -type f -name manifest.json -print -quit)"
         test -n "$manifest"
         test -r "$manifest"
         if touch "$archive_root/.airunner-write-test" 2>/dev/null; then

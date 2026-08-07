@@ -62,6 +62,11 @@ The wrapper pulls into a `.incoming` directory, writes `SHA256SUMS` and
 `manifest.json`, verifies the checksums, atomically publishes the archive, and
 only then deletes the exact source files listed in `source-files.nul`.
 
+Published directories are mode `0755` and files are mode `0644` so airunners
+can consume the dedicated archive bind mount read-only. Host privacy still
+comes from the mode-`0700` `/home/smith/private` parent; do not expose the
+archive root through any other mount or service.
+
 Included by default:
 
 ```text
@@ -92,7 +97,8 @@ On the controller:
 ```sh
 cd /home/smith/private/klokast/codex-archives/codex/<timestamp>
 sha256sum -c SHA256SUMS
-find . -perm /077 -print
+find . -type d ! -perm 0755 -print
+find . -type f ! -perm 0644 -print
 test ! -e codex/auth.json
 test ! -e codex/config.toml
 ```

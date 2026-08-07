@@ -173,7 +173,7 @@ for root, dirs, files in os.walk(codex_dir, topdown=True, followlinks=False):
     for dirname in dirs:
         path = os.path.join(root, dirname)
         if not os.path.islink(path):
-            os.chmod(path, 0o700)
+            os.chmod(path, 0o755)
     for filename in files:
         path = os.path.join(root, filename)
         rel = os.path.relpath(path, archive_dir)
@@ -182,7 +182,7 @@ for root, dirs, files in os.walk(codex_dir, topdown=True, followlinks=False):
             continue
         if not os.path.isfile(path):
             continue
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
         size = os.path.getsize(path)
         byte_count += size
         regular_files.append((rel, path, size))
@@ -241,7 +241,7 @@ with open(manifest_path, "w", encoding="utf-8") as manifest_file:
 
 for path in (sha_path, manifest_path, source_list_path, source_text_path):
     if os.path.exists(path) and not os.path.islink(path):
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o644)
 
 for root, dirs, _files in os.walk(archive_dir, topdown=False, followlinks=False):
     for dirname in dirs:
@@ -251,8 +251,8 @@ for root, dirs, _files in os.walk(archive_dir, topdown=False, followlinks=False)
         except FileNotFoundError:
             continue
         if stat.S_ISDIR(mode) and not stat.S_ISLNK(mode):
-            os.chmod(path, 0o700)
-os.chmod(archive_dir, 0o700)
+            os.chmod(path, 0o755)
+os.chmod(archive_dir, 0o755)
 PY
 }
 
@@ -353,7 +353,7 @@ require_command sha256sum
 
 umask 077
 mkdir -p "$DEST_PARENT"
-chmod 0700 "$ARCHIVE_ROOT" "$DEST_PARENT"
+chmod 0755 "$ARCHIVE_ROOT" "$DEST_PARENT"
 touch "$KNOWN_HOSTS"
 chmod 0600 "$KNOWN_HOSTS"
 

@@ -30,6 +30,9 @@ SECRETS_PLAYBOOK = (
 OPS_CONTROLLER_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "main.yml"
 ).read_text(encoding="utf-8")
+ARCHIVE_WRAPPER = (REPO_ROOT / "ansible" / "bin" / "archive-codex-sessions").read_text(
+    encoding="utf-8"
+)
 
 
 class OpsAirunnerRoleTest(unittest.TestCase):
@@ -177,6 +180,14 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("Make existing Codex archives readable", TASKS)
         self.assertIn("- -xdev", TASKS)
         self.assertNotIn("recurse: true", TASKS)
+
+    def test_archive_wrapper_preserves_read_only_airunner_access(self):
+        self.assertIn('chmod 0755 "$ARCHIVE_ROOT" "$DEST_PARENT"', ARCHIVE_WRAPPER)
+        self.assertNotIn('chmod 0700 "$ARCHIVE_ROOT" "$DEST_PARENT"', ARCHIVE_WRAPPER)
+        self.assertIn("os.chmod(path, 0o755)", ARCHIVE_WRAPPER)
+        self.assertIn("os.chmod(path, 0o644)", ARCHIVE_WRAPPER)
+        self.assertIn("os.chmod(archive_dir, 0o755)", ARCHIVE_WRAPPER)
+        self.assertIn("-name '*.incoming' -prune", VERIFY)
 
     def test_agent_commands_use_agent_accessible_working_directory(self):
         task_names = (
