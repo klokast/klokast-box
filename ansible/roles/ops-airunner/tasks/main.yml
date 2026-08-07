@@ -1,7 +1,8 @@
 #
 # Summary:
 # - Converges a Codex/AI runner container on an ops controller without
-#   mounting controller private state or root-only secrets into the container.
+#   mounting controller secrets into the container. The narrowly scoped Codex
+#   archive root is exposed read-only for handoff and recovery inspection.
 #
 ---
 - name: Assert ops airunner inputs are defined
@@ -15,6 +16,8 @@
       - ops_airunner_repo_url | default('') == 'git@github.com:klokast/klokast-box.git'
       - ops_airunner_repo_version | default('') == 'main'
       - ops_airunner_git_ssh_key_path | default('') is match('^' ~ ops_airunner_home ~ '/.ssh/')
+      - ops_airunner_codex_archive_root | default('') == '/home/' ~ ops_infra_user ~ '/private/klokast/codex-archives'
+      - ops_airunner_codex_archive_mount | default('') == ops_airunner_home ~ '/.codex-archives'
       - ops_airunner_state_root | default('') is match('^/')
       - ops_airunner_image | default('') | length > 0
       - ops_airunner_service_name | default('') is match('^airunner(-candidate)?$')
@@ -180,6 +183,34 @@
       owner: root
       group: root
       mode: "0700"
+
+- name: Ensure the controller-private Codex archive root exists
+  ansible.builtin.file:
+    path: "{{ ops_airunner_codex_archive_root }}"
+    state: directory
+    owner: "{{ ops_infra_user }}"
+    group: "{{ ops_infra_user }}"
+    mode: "0755"
+
+- name: Make existing Codex archives readable through the read-only airunner mount
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/find
+      - "{{ ops_airunner_codex_archive_root }}"
+      - -xdev
+      - -type
+      - "{{ item.type }}"
+      - -exec
+      - /bin/chmod
+      - "{{ item.mode }}"
+      - "{}"
+      - "+"
+  loop:
+    - type: d
+      mode: "0755"
+    - type: f
+      mode: "0644"
+  changed_when: false
 
 - name: Install pinned GitHub host keys for the airunner
   ansible.builtin.known_hosts:

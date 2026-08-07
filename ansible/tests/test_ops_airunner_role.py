@@ -40,6 +40,10 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("--cap-add NET_RAW", SERVICE)
         self.assertIn("--device /dev/net/tun", SERVICE)
         self.assertIn("ops_airunner_tailscale_state_dir", SERVICE)
+        self.assertIn(
+            "-v {{ ops_airunner_codex_archive_root }}:{{ ops_airunner_codex_archive_mount }}:ro",
+            SERVICE,
+        )
         self.assertIn("podman_vm_firewall_forward_egress_interfaces", FIREWALL)
         self.assertIn("map('regex_replace', '^', '--dns=')", TASKS)
         self.assertNotIn("--dns=\\\\1", TASKS)
@@ -144,10 +148,13 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("mosh-server", VERIFY)
         self.assertIn("airunner-verify-", VERIFY)
         self.assertIn("ops_airunner_verify_archive_command.rc == 0", VERIFY)
+        self.assertIn("ops_airunner_verify_codex_archive.rc == 0", VERIFY)
+        self.assertIn("selectattr('RW', 'equalto', false)", VERIFY)
+        self.assertIn(".airunner-write-test", VERIFY)
         self.assertIn("history-limit 100000", VERIFY)
         self.assertIn(".codex/auth.json", VERIFY)
         self.assertIn('"HOME={{ ops_airunner_verify_home }}"', VERIFY)
-        self.assertEqual(VERIFY.count("expand_argument_vars: false"), 3)
+        self.assertEqual(VERIFY.count("expand_argument_vars: false"), 4)
         self.assertIn("/home/smith", VERIFY)
         self.assertIn("git", VERIFY)
 
@@ -166,6 +173,10 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("klokast airunner interactive shell", TASKS)
         self.assertIn("tmux new-session -A -s main", TASKS)
         self.assertIn("history-limit 100000", TASKS)
+        self.assertIn("Ensure the controller-private Codex archive root exists", TASKS)
+        self.assertIn("Make existing Codex archives readable", TASKS)
+        self.assertIn("- -xdev", TASKS)
+        self.assertNotIn("recurse: true", TASKS)
 
     def test_agent_commands_use_agent_accessible_working_directory(self):
         task_names = (

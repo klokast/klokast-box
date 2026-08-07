@@ -208,6 +208,8 @@ ops_airunner_repo_version: main
 ops_airunner_git_ssh_key_path: "{{ ops_airunner_home }}/.ssh/github-klokast-box"
 ops_airunner_git_user_name: Klokast Agent
 ops_airunner_git_user_email: "agent@{{ node_name }}-ops-airunner"
+ops_airunner_codex_archive_root: "{{ ops_infra_private_root }}/codex-archives"
+ops_airunner_codex_archive_mount: "{{ ops_airunner_home }}/.codex-archives"
 ops_airunner_instance: canonical
 ops_airunner_instances:
   canonical:

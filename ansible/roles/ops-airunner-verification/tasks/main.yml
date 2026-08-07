@@ -10,6 +10,8 @@
       - ops_airunner_verify_name | default('') is match('^[a-z0-9][a-z0-9-]{0,62}$')
       - ops_airunner_verify_network_name | default('') == 'airunner'
       - ops_airunner_verify_home | default('') is match('^/home/')
+      - ops_airunner_verify_codex_archive_root | default('') is match('^/home/smith/private/klokast/codex-archives$')
+      - ops_airunner_verify_codex_archive_mount | default('') == ops_airunner_verify_home ~ '/.codex-archives'
       - ops_airunner_verify_tailscale_state_dir | default('') is match('^/')
       - ops_airunner_verify_expected_tag | default('') == 'tag:airunner'
       - ops_airunner_verify_expected_udp_port | default(0) | int >= 1
@@ -36,6 +38,33 @@
         | map(attribute='Source')
         | list
       }}
+
+- name: Check read-only Codex archive access from the airunner
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - --user
+      - "{{ ops_airunner_user }}"
+      - "{{ ops_airunner_verify_name }}"
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        archive_root="$1"
+        test -d "$archive_root"
+        manifest="$(find "$archive_root" -type f -name manifest.json -print -quit)"
+        test -n "$manifest"
+        test -r "$manifest"
+        if touch "$archive_root/.airunner-write-test" 2>/dev/null; then
+          rm -f "$archive_root/.airunner-write-test"
+          exit 1
+        fi
+      - airunner-archive-check
+      - "{{ ops_airunner_verify_codex_archive_mount }}"
+    expand_argument_vars: false
+  register: ops_airunner_verify_codex_archive
+  changed_when: false
 
 - name: Collect the airunner Tailnet identity
   ansible.builtin.command:
@@ -309,7 +338,17 @@
         | selectattr('PathInContainer', 'equalto', '/dev/net/tun')
         | list
         | length == 1
-      - (ops_airunner_verify_mount_sources | sort) == ([ops_airunner_verify_home, ops_airunner_verify_tailscale_state_dir] | sort)
+      - >-
+        (ops_airunner_verify_mount_sources | sort)
+        ==
+        ([ops_airunner_verify_home, ops_airunner_verify_codex_archive_root, ops_airunner_verify_tailscale_state_dir] | sort)
+      - >-
+        ops_airunner_verify_inspect.Mounts
+        | selectattr('Source', 'equalto', ops_airunner_verify_codex_archive_root)
+        | selectattr('Destination', 'equalto', ops_airunner_verify_codex_archive_mount)
+        | selectattr('RW', 'equalto', false)
+        | list
+        | length == 1
       - ops_airunner_verify_tailscale.TUN | default(false) | bool
       - ops_airunner_verify_tailscale.BackendState | default('') == 'Running'
       - ops_airunner_verify_tailscale.Self.HostName | default('') == ops_airunner_verify_name
@@ -322,6 +361,7 @@
         in ops_airunner_verify_tailscaled_cmdline.stdout
       - (ops_airunner_verify_netcheck.stdout | from_json).UDP | default(false) | bool
       - ops_airunner_verify_mosh.rc == 0
+      - ops_airunner_verify_codex_archive.rc == 0
       - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_toolchain.rc == 0
       - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_workspace.rc == 0
       - not (ops_airunner_verify_workspace_features | default(true) | bool) or ops_airunner_verify_tmux.rc == 0

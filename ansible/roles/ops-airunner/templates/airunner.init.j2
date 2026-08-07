@@ -4,7 +4,7 @@ name="{{ ops_airunner_name }}"
 description="Klokast AI runner container"
 supervisor=supervise-daemon
 command=/usr/bin/podman
-command_args="run --rm --replace --name {{ ops_airunner_name }} --hostname {{ ops_airunner_name }} --network {{ ops_airunner_network_name }} --device /dev/net/tun --cap-add NET_ADMIN --cap-add NET_RAW{% for server in ops_airunner_dns_servers %} --dns {{ server }}{% endfor %} --env AIRUNNER_AGENT_UID={{ ops_airunner_uid.stdout }} --env AIRUNNER_AGENT_GID={{ ops_airunner_gid.stdout }} --env AIRUNNER_NEO_UID={{ ops_airunner_neo_uid }} --env AIRUNNER_NEO_GID={{ ops_airunner_neo_gid }} --env AIRUNNER_TAILSCALE_UDP_PORT={{ ops_airunner_tailscale_udp_port }} --env HOME=/home/agent -v {{ ops_airunner_home }}:/home/agent:rw -v {{ ops_airunner_tailscale_state_dir }}:/var/lib/tailscale:rw {{ ops_airunner_image }}"
+command_args="run --rm --replace --name {{ ops_airunner_name }} --hostname {{ ops_airunner_name }} --network {{ ops_airunner_network_name }} --device /dev/net/tun --cap-add NET_ADMIN --cap-add NET_RAW{% for server in ops_airunner_dns_servers %} --dns {{ server }}{% endfor %} --env AIRUNNER_AGENT_UID={{ ops_airunner_uid.stdout }} --env AIRUNNER_AGENT_GID={{ ops_airunner_gid.stdout }} --env AIRUNNER_NEO_UID={{ ops_airunner_neo_uid }} --env AIRUNNER_NEO_GID={{ ops_airunner_neo_gid }} --env AIRUNNER_TAILSCALE_UDP_PORT={{ ops_airunner_tailscale_udp_port }} --env HOME=/home/agent -v {{ ops_airunner_home }}:/home/agent:rw -v {{ ops_airunner_codex_archive_root }}:{{ ops_airunner_codex_archive_mount }}:ro -v {{ ops_airunner_tailscale_state_dir }}:/var/lib/tailscale:rw {{ ops_airunner_image }}"
 command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
 
