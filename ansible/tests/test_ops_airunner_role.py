@@ -212,6 +212,8 @@ class OpsAirunnerRoleTest(unittest.TestCase):
     def test_candidate_retirement_is_guarded_and_scoped(self):
         self.assertIn("after canonical mosh verified", RETIRE_PLAYBOOK)
         self.assertIn("ops_airunner_instances.candidate", RETIRE_PLAYBOOK)
+        self.assertIn("ops_airunner_verify_codex_archive_root", RETIRE_PLAYBOOK)
+        self.assertIn("ops_airunner_verify_codex_archive_mount", RETIRE_PLAYBOOK)
         self.assertIn("tailscale-stale-device", RETIRE_PLAYBOOK)
         self.assertIn("candidate Tailnet identity is absent", RETIRE_PLAYBOOK)
         self.assertNotIn("ops_airunner_canonical.state_root }}\"\n        state: absent", RETIRE_PLAYBOOK)
