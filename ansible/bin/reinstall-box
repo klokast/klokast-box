@@ -179,7 +179,7 @@ RUN_DIR="$REPO_DIR/.run/reinstall-box-${BOX}"
 STATE_FILE="$RUN_DIR/state"
 BOOTSTRAP_HOST="${BOX}-bootstrap"
 BOOTSTRAP_CONNECT_HOST="${BOOTSTRAP_HOST}.${MAGICDNS_SUFFIX}"
-BOOTSTRAP_KNOWN_HOSTS_FILE="/tmp/klokast-bootstrap-known_hosts"
+BOOTSTRAP_KNOWN_HOSTS_FILE="$RUN_DIR/bootstrap_known_hosts"
 
 preflight() {
   command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
@@ -190,6 +190,11 @@ preflight() {
   [ -x "$NANOKVM_VIRTUAL_MEDIA" ] || die "NanoKVM helper not executable: $NANOKVM_VIRTUAL_MEDIA"
   [ -x "$DECOMMISSION_BOX" ] || die "decommission-box not executable: $DECOMMISSION_BOX"
   [ -x "$PROVISION_BOX" ] || die "provision-box not executable: $PROVISION_BOX"
+
+  mkdir -p "$RUN_DIR"
+  chmod 0700 "$RUN_DIR"
+  touch "$BOOTSTRAP_KNOWN_HOSTS_FILE"
+  chmod 0600 "$BOOTSTRAP_KNOWN_HOSTS_FILE"
 }
 
 write_state() {
@@ -365,9 +370,6 @@ wait_for_bootstrap() {
   local last_notice=0
   local now
 
-  mkdir -p "$(dirname "$BOOTSTRAP_KNOWN_HOSTS_FILE")"
-  touch "$BOOTSTRAP_KNOWN_HOSTS_FILE"
-  chmod 0600 "$BOOTSTRAP_KNOWN_HOSTS_FILE"
   ssh-keygen -R "$BOOTSTRAP_CONNECT_HOST" -f "$BOOTSTRAP_KNOWN_HOSTS_FILE" >/dev/null 2>&1 || true
 
   info ""
@@ -424,6 +426,7 @@ print_plan() {
   fi
   info "Bootstrap wait target: root@${BOOTSTRAP_CONNECT_HOST}"
   info "Run directory: ${RUN_DIR}"
+  info "Bootstrap known hosts: ${BOOTSTRAP_KNOWN_HOSTS_FILE}"
   info ""
   info "Selected commands:"
   printf '  '

@@ -130,8 +130,8 @@ vm_admin_password_hash: "$6$p/2yCFKImcdddTiG$A3hPDhNVKH5UwxY5yVVSHMlOEDmwX.PdoM0
 # The Debian live carrier and the first SSD Alpine boot use the temporary
 # bootstrap MagicDNS name. Phase 21 hands off to the steady-state dom0 name.
 bootstrap_tailscale_hostname: "{{ node_name }}-bootstrap"
-bootstrap_known_hosts_file: /tmp/klokast-bootstrap-known_hosts
-dom0_known_hosts_file: /tmp/klokast-dom0-known_hosts
+bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_{{ node_name }}_bootstrap"
+dom0_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_{{ node_name }}_dom0"
 bootstrap_tailscale_tag: tag:bootstrap
 bootstrap_tailscale_tags:
   - "{{ bootstrap_tailscale_tag }}"

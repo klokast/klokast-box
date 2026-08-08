@@ -250,6 +250,9 @@ RUN_DIR="$REPO_DIR/.run/provision-box-${BOX}"
 LOG_DIR="$RUN_DIR/logs"
 STATE_FILE="$RUN_DIR/state"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
+BOOTSTRAP_KNOWN_HOSTS_FILE="$RUN_DIR/bootstrap_known_hosts"
+DOM0_KNOWN_HOSTS_FILE="$RUN_DIR/dom0_known_hosts"
+CONNECTION_VARS_FILE="$RUN_DIR/controller-connection-vars.json"
 TARGET_DISK="$TARGET_DISK_DEVICE"
 
 preflight() {
@@ -259,6 +262,26 @@ preflight() {
   [ -f "$INVENTORY" ] || die "inventory not found: $INVENTORY"
   [ -f "$ANSIBLE_CONFIG_PATH" ] || die "ansible config not found: $ANSIBLE_CONFIG_PATH"
   [ -x "$RENDER_NODE_INVENTORY" ] || die "inventory renderer not executable: $RENDER_NODE_INVENTORY"
+
+  mkdir -p "$RUN_DIR"
+  chmod 0700 "$RUN_DIR"
+  touch "$BOOTSTRAP_KNOWN_HOSTS_FILE" "$DOM0_KNOWN_HOSTS_FILE"
+  chmod 0600 "$BOOTSTRAP_KNOWN_HOSTS_FILE" "$DOM0_KNOWN_HOSTS_FILE"
+  python3 - "$BOOTSTRAP_KNOWN_HOSTS_FILE" "$DOM0_KNOWN_HOSTS_FILE" >"$CONNECTION_VARS_FILE" <<'PY'
+import json
+import sys
+
+bootstrap_path, dom0_path = sys.argv[1:3]
+json.dump(
+    {
+        "bootstrap_known_hosts_file": bootstrap_path,
+        "dom0_known_hosts_file": dom0_path,
+    },
+    sys.stdout,
+)
+sys.stdout.write("\n")
+PY
+  chmod 0600 "$CONNECTION_VARS_FILE"
 
   "$RENDER_NODE_INVENTORY" \
     --node "$BOX" \
@@ -462,6 +485,7 @@ run_phase() {
     -vv
     --limit "$limit"
   )
+  cmd+=(-e "@$CONNECTION_VARS_FILE")
   if [ -n "$extra_vars" ]; then
     cmd+=(-e "$extra_vars")
   fi
@@ -502,6 +526,8 @@ print_plan() {
   info "Base inventory: $INVENTORY"
   info "Generated inventory: $GENERATED_INVENTORY"
   info "Run directory: $RUN_DIR"
+  info "Bootstrap known hosts: $BOOTSTRAP_KNOWN_HOSTS_FILE"
+  info "Dom0 known hosts: $DOM0_KNOWN_HOSTS_FILE"
   info "Selected phases:"
   for ((i = FROM_INDEX; i <= TO_INDEX; i++)); do
     phase="${PHASES[$i]}"
