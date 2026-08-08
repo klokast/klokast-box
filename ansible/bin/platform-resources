@@ -329,6 +329,10 @@ def parse_args():
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("lint", help="Validate manifests and registry only.")
     subparsers.add_parser("show", help="Print the compiled resource plan as JSON.")
+    subparsers.add_parser(
+        "show-box-configs",
+        help="Print compiled per-box infrastructure intent without app resources.",
+    )
     subparsers.add_parser("diff", help="Print desired managed resource comments.")
     subparsers.add_parser("apply", help="Apply compiled platform resources.")
     subparsers.add_parser("verify", help="Verify compiled platform resources.")
@@ -2777,6 +2781,63 @@ def compile_registry(registry_path, app_filter):
     }
 
 
+def compile_box_registry_plan(registry_path):
+    topology = load_topology()
+    registry = load_yaml(registry_path)
+    if registry.get("schema_version") != 1:
+        die(f"{registry_path} must use schema_version: 1")
+    apps = registry.get("apps") or {}
+    if not isinstance(apps, dict):
+        die(f"{registry_path} apps must be a mapping")
+    box_configs = registry_box_configs(registry, topology)
+    for app_name, entry in sorted(apps.items()):
+        validate_id(app_name, "apps key")
+        if not isinstance(entry, dict):
+            die(f"apps.{app_name} must be a mapping")
+        if not entry.get("enabled") or entry.get("runtime_state", "running") == "stopped":
+            continue
+        manifest = app_manifest(app_name)
+        validate_manifest_resources(app_name, manifest, topology)
+        app_boxes = selected_boxes(app_name, manifest, entry)
+        validate_shared_guest_app_compatibility(
+            app_name, manifest, entry, app_boxes, box_configs, topology
+        )
+    platform_map_shared_guests = [
+        {
+            "node": box,
+            "role": role,
+            "hostname": f"{box}-{role}",
+            "guest_name": role,
+            "runtime_state": guest.get("runtime_state", "running"),
+            "autostart": guest.get("runtime_state", "running") == "running",
+        }
+        for box, config in sorted(box_configs.items())
+        for role, guest in sorted((config.get("shared_guests") or {}).items())
+    ]
+    return {
+        "schema_version": 1,
+        "compiler": "platform-resources",
+        "compiler_version": COMPILER_VERSION,
+        "registry_path": str(registry_path),
+        "registry_sha256": sha256_file(registry_path),
+        "apps": {},
+        "box_configs": box_configs,
+        "boxes": sorted(box_configs),
+        "app_vm_specs": [],
+        "managed_iot_devices": [],
+        "tailnet_resources": [],
+        "tailnet_policy_resources": [],
+        "app_resource_claims": [],
+        "app_resource_effective_files": [],
+        "app_resource_cleanup_scopes": [],
+        "platform_map": {
+            "app_vms": [],
+            "shared_guests": platform_map_shared_guests,
+            "managed_iot_devices": [],
+        },
+    }
+
+
 def build_app_grant(compiled, app_name, approved_commit):
     apps = compiled.get("apps") or {}
     if app_name not in apps:
@@ -3707,12 +3768,24 @@ def main():
     args = parse_args()
     assert_command_scope(args)
     registry_path = Path(args.registry)
-    compiled = compile_registry(registry_path, args.app)
+    box_only_commands = {
+        "show-box-configs",
+        "apply-shared-guests",
+        "verify-shared-guests",
+    }
+    compiled = (
+        compile_box_registry_plan(registry_path)
+        if args.command in box_only_commands
+        else compile_registry(registry_path, args.app)
+    )
     requested_apps_present(compiled, args.app)
     if args.command == "lint":
         print("platform-resources: lint ok")
         return
     if args.command == "show":
+        print(json.dumps(compiled, indent=2, sort_keys=True))
+        return
+    if args.command == "show-box-configs":
         print(json.dumps(compiled, indent=2, sort_keys=True))
         return
     if args.command == "diff":

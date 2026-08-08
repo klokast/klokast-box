@@ -15,4 +15,3 @@
     lbu commit -d
   args:
     executable: /bin/sh
-

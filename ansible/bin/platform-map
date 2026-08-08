@@ -835,7 +835,17 @@ def compile_platform_resources_registry(registry: Path, warnings: list[str]) -> 
             "platform-resources registry compile failed: "
             f"{(result.stderr or result.stdout or '').strip()[:240]}"
         )
-        return {}
+        result = run_command(
+            [str(PLATFORM_RESOURCES), "--registry", str(registry), "show-box-configs"],
+            cwd=REPO_DIR,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            warnings.append(
+                "platform-resources box-config compile failed: "
+                f"{(result.stderr or result.stdout or '').strip()[:240]}"
+            )
+            return {}
     compiled = parse_json_text(result.stdout, {})
     if not isinstance(compiled, dict):
         warnings.append(f"platform-resources registry did not compile to JSON: {registry}")

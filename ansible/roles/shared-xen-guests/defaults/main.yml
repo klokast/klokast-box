@@ -9,4 +9,3 @@ platform_shared_guest_role_spec_keys:
   bak: backend
   dmz: dmz
   iot: iot
-

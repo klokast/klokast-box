@@ -235,7 +235,7 @@ preflight() {
   registry="$(resolve_resources_registry)"
   if [ -n "$registry" ]; then
     [ -f "$registry" ] || die "resources registry not found: $registry"
-    "$PLATFORM_RESOURCES" --registry "$registry" show >"$RESOURCE_PLAN_FILE"
+    "$PLATFORM_RESOURCES" --registry "$registry" show-box-configs >"$RESOURCE_PLAN_FILE"
   else
     printf '{}\n' >"$RESOURCE_PLAN_FILE"
   fi

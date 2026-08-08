@@ -68,4 +68,3 @@
     loop_var: platform_shared_guest_role
     label: "{{ node_name }}:{{ platform_shared_guest_role }}"
   when: platform_shared_guest_operation == "verify"
-

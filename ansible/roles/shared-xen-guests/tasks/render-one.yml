@@ -46,4 +46,3 @@
   ansible.builtin.command: /bin/true
   changed_when: xen_guest_definition_changed | bool
   notify: Persist shared Xen guest dom0 state
-

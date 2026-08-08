@@ -16,4 +16,3 @@
     xen_guest_name: "{{ node_xen_guest_specs[platform_shared_guest_spec_key].guest_name }}"
     xen_guest_config_path: "{{ node_xen_guest_specs[platform_shared_guest_spec_key].config_path }}"
     xen_guest_runtime_state: "{{ platform_shared_guest_runtime_state }}"
-

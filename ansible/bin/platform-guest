@@ -95,7 +95,10 @@ def write_candidate(path, data):
 def save_registry(path, data, *, dry_run=False):
     candidate = write_candidate(path, data)
     try:
-        run([PLATFORM_RESOURCES, "--registry", candidate, "lint"], capture=True)
+        run(
+            [PLATFORM_RESOURCES, "--registry", candidate, "show-box-configs"],
+            capture=True,
+        )
         if dry_run:
             print(f"platform-guest: dry-run would update {path}")
             return
@@ -111,7 +114,10 @@ def save_registry(path, data, *, dry_run=False):
 
 
 def compiled_plan(registry):
-    result = run([PLATFORM_RESOURCES, "--registry", registry, "show"], capture=True)
+    result = run(
+        [PLATFORM_RESOURCES, "--registry", registry, "show-box-configs"],
+        capture=True,
+    )
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:

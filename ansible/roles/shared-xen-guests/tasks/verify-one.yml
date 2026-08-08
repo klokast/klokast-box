@@ -42,4 +42,3 @@
     fail_msg: >-
       Shared Xen guest {{ platform_shared_guest_name }} does not match desired
       runtime_state={{ platform_shared_guest_runtime_state }}.
-

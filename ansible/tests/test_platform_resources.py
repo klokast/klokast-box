@@ -315,6 +315,32 @@ class PlatformResourcesTest(unittest.TestCase):
             self.mod.compile_registry(path, [])
         self.assertIn("apps.nextcloud-v2 is running on k001", stderr.getvalue())
 
+    def test_box_config_compile_tolerates_missing_manifest_for_stopped_app(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "apps": {
+                    "private-missing-app": {
+                        "enabled": True,
+                        "runtime_state": "stopped",
+                    }
+                },
+                "boxes": {
+                    "k001": {
+                        "shared_guests": {"iot": {"runtime_state": "stopped"}}
+                    }
+                },
+            }
+        )
+
+        compiled = self.mod.compile_box_registry_plan(path)
+        self.assertEqual(
+            compiled["box_configs"]["k001"]["shared_guests"]["iot"][
+                "runtime_state"
+            ],
+            "stopped",
+        )
+
     def test_duplicate_shareable_claims_create_one_effective_resource_with_two_owners(self):
         path = self.write_registry(
             {
