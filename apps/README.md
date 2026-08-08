@@ -33,7 +33,7 @@ Specifically, `AGENTS.md` defines:
     ports. A container with its own Tailscale identity must also follow that
     document's direct UDP underlay contract; keep it disabled until the
     compiler supports its stable source-port declaration.
-  - trust boundaries in `doc/tcb-strategy.md`; app manifests are requests, not
+  - trust boundaries in `doc/architecture.md`; app manifests are requests, not
     authority to change Tailnet ownership, raw topology, dom0 state, or
     privileged builder placement.
   - cybersecurity recommendations.

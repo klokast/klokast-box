@@ -112,7 +112,7 @@ application inside deterministic, least-privilege control paths. That made the
 platform faster to build without making the model itself part of the permanent
 trusted computing base.
 
-Repository evidence includes `doc/architecture.md`, `doc/tcb-strategy.md`,
+Repository evidence includes `doc/architecture.md`, `doc/secret-authority.md`,
 `ansible/bin/platform-resources`, `ansible/roles/ops-controller`,
 `klokast-ops/tailscale/bin/ts-authkey-mint`,
 `ansible/roles/app-resources/files/reconcile-app-resources.py`, and

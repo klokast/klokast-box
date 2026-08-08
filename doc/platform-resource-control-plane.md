@@ -9,7 +9,7 @@ private registry. The deployment server compiles the result and only
 infra-owned Ansible applies router, VM firewall, Tailnet, and privileged
 workload policy.
 
-The trust classification for this boundary is in `doc/tcb-strategy.md`.
+The trust classification for this boundary is in `doc/architecture.md`.
 App manifests are service-plane requests; the private registry, compiler apply
 path, Tailnet policy tooling, and builder placement decisions are TCB-owned.
 On the target in-platform controller, those TCB-owned actions run as

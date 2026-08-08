@@ -18,7 +18,7 @@ The wrapper uses Ansible for router-side convergence and target-local
 to rely on Tailscale SSH rather than raw OpenSSH after their baseline is
 converged.
 
-The TCB boundary for this flow is defined in `doc/tcb-strategy.md`. App
+The TCB boundary for this flow is defined in `doc/architecture.md`. App
 install playbooks verify and consume applied resources; they do not own raw
 topology, Tailnet ownership, dom0 state, or privileged builder placement.
 

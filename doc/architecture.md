@@ -259,6 +259,11 @@ Only the active controller may mutate the Platform. The active controller is the
 Controller HA is active/standby, not distributed authority: only the active controller may mutate the Platform. Fence the old active controller before promotion, and reseed recreatable provider authority instead of replicating it to standby controllers.
 Tailscale tag: `tag:ops`.
 
+The proposed separation of Platform-wide authorization from constrained
+site-local execution is specified in `doc/site-executor.md`. It does not change
+the current single-controller execution invariant until that document's
+deployment and security gates are implemented and validated.
+
 - `broker` (credentials broker): root-owned, versioned, deterministic wrappers on the active `<box>-ops`. It validates narrow actions, uses provider/app credentials without revealing them, enforces the active-controller guard, and appends audit records.
 
 - `builder` (images builder):

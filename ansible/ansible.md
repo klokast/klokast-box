@@ -1,7 +1,7 @@
 - Follow Ansible best practices.
 - Run playbooks with `-vv` for high verbosity.
 - Avoid nested playbooks and roles
-- Preserve the trust boundary in `doc/tcb-strategy.md`: app playbooks may
+- Preserve the trust boundary in `doc/architecture.md`: app playbooks may
   verify and install services, but TCB-owned playbooks apply topology,
   Tailnet, dom0, router, firewall, and privileged builder changes.
 - Check `klokast-box/runbooks/` for relevant manual procedures that were run during early development and could inform automation
