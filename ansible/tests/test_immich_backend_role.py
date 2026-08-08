@@ -62,25 +62,32 @@ class ImmichBackendRoleTest(unittest.TestCase):
             tasks.index("Verify the active backend can reach the passive Restic SFTP target"),
         )
 
-    def test_deploy_maps_postgres_and_valkey_state_dirs_into_rootless_namespace(self):
+    def test_deploy_owns_postgres_and_valkey_named_volumes(self):
         deploy = DEPLOY_TEMPLATE.read_text(encoding="utf-8")
         postgres_env = POSTGRES_ENV.read_text(encoding="utf-8")
 
         self.assertIn("PGDATA=/var/lib/postgresql/data/pgdata", postgres_env)
-        self.assertIn("podman_cmd unshare cat /proc/self/uid_map >\"$uid_map_file\"", deploy)
-        self.assertIn("podman_cmd unshare cat /proc/self/gid_map >\"$gid_map_file\"", deploy)
+        self.assertIn("ensure_volume_owner() {", deploy)
+        self.assertIn('-v "$volume:/target"', deploy)
+        self.assertIn('-c "chown -R $uid:$gid /target"', deploy)
         self.assertIn("postgres_runtime_uid=$(image_user_id \"$immich_postgres_ref\" postgres u)", deploy)
         self.assertIn("postgres_runtime_gid=$(image_user_id \"$immich_postgres_ref\" postgres g)", deploy)
         self.assertIn("valkey_runtime_uid=$(image_user_id \"$valkey_ref\" valkey u)", deploy)
         self.assertIn("valkey_runtime_gid=$(image_user_id \"$valkey_ref\" valkey g)", deploy)
-        self.assertIn("ensure_rootless_owner \"$postgres_root\" \"$postgres_runtime_uid\" \"$postgres_runtime_gid\"", deploy)
-        self.assertIn("ensure_rootless_owner \"$valkey_root\" \"$valkey_runtime_uid\" \"$valkey_runtime_gid\"", deploy)
+        self.assertIn(
+            'ensure_volume_owner "$volume_postgres" "$postgres_runtime_uid" "$postgres_runtime_gid"',
+            deploy,
+        )
+        self.assertIn(
+            'ensure_volume_owner "$volume_valkey" "$valkey_runtime_uid" "$valkey_runtime_gid"',
+            deploy,
+        )
         self.assertLess(
-            deploy.index("ensure_rootless_owner \"$postgres_root\""),
+            deploy.index('ensure_volume_owner "$volume_postgres"'),
             deploy.index("podman_cmd pod create"),
         )
         self.assertLess(
-            deploy.index("ensure_rootless_owner \"$valkey_root\""),
+            deploy.index('ensure_volume_owner "$volume_valkey"'),
             deploy.index("podman_cmd pod create"),
         )
 
