@@ -737,6 +737,7 @@ def expected_guests_from_fact(fact: dict[str, Any]) -> dict[str, dict[str, Any]]
             "memory_mb": parse_int(spec.get("memory_mb")) or 0,
             "vcpus": parse_int(spec.get("vcpus")) or 0,
             "autostart": bool(spec.get("autostart")),
+            "runtime_state": str(spec.get("runtime_state") or "running"),
         }
     return expected
 
@@ -874,6 +875,26 @@ def expected_tailnet_hostnames_by_box_from_plans(plans: list[dict[str, Any]]) ->
     return by_box
 
 
+def expected_shared_guests_by_box_from_plans(
+    plans: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    by_box: dict[str, dict[str, dict[str, Any]]] = {}
+    for plan in plans:
+        platform_map = plan.get("platform_map") if isinstance(plan.get("platform_map"), dict) else {}
+        for item in platform_map.get("shared_guests") or []:
+            if not isinstance(item, dict):
+                continue
+            node = str(item.get("node") or "")
+            role = str(item.get("role") or "")
+            if not node or role not in {"bak", "dmz", "iot"}:
+                continue
+            by_box.setdefault(node, {})[role] = {
+                "runtime_state": str(item.get("runtime_state") or "running"),
+                "autostart": bool(item.get("autostart")),
+            }
+    return by_box
+
+
 def summarize_storage(storage: dict[str, Any], findings: list[dict[str, Any]], scope: str) -> dict[str, Any]:
     managed_layout = storage.get("managed_layout") or {}
     vg_size = parse_int(managed_layout.get("volume_group_size_bytes"))
@@ -914,7 +935,11 @@ def summarize_memory(
         domain.get("memory_mib") or 0 for domain in domains if domain.get("name") != "Domain-0"
     )
     dom0_memory_mib = next((domain.get("memory_mib") or 0 for domain in domains if domain.get("name") == "Domain-0"), 0)
-    expected_guest_memory_mib = sum(spec.get("memory_mb") or 0 for spec in expected_guests.values())
+    expected_guest_memory_mib = sum(
+        spec.get("memory_mb") or 0
+        for spec in expected_guests.values()
+        if spec.get("runtime_state", "running") == "running"
+    )
     pressure = "unknown"
     if total_mib:
         pressure = "ok"
@@ -1061,11 +1086,13 @@ def summarize_box(
     overrides: dict[str, Any],
     expected_app_vms: dict[str, dict[str, Any]] | None = None,
     expected_tailnet_hostnames: set[str] | None = None,
+    expected_shared_guests: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     expected_app_vms = expected_app_vms or {}
     expected_app_hostnames = set(expected_app_vms)
     expected_tailnet_hostnames = expected_tailnet_hostnames or set()
+    expected_shared_guests = expected_shared_guests or {}
     dom0_fact = remote_facts.get(f"{box}-dom0") or {}
     expected_guests = expected_guests_from_fact(dom0_fact)
     if not expected_guests:
@@ -1073,6 +1100,13 @@ def summarize_box(
             guest: {"role": suffix, "guest_name": guest, "memory_mb": 0, "vcpus": 0, "autostart": True}
             for suffix, guest in EXPECTED_GUEST_BY_SUFFIX.items()
         }
+    for role, state in expected_shared_guests.items():
+        guest_name = EXPECTED_GUEST_BY_SUFFIX.get(role, role)
+        if guest_name in expected_guests:
+            expected_guests[guest_name]["runtime_state"] = state.get(
+                "runtime_state", "running"
+            )
+            expected_guests[guest_name]["autostart"] = bool(state.get("autostart"))
     xen_info = parse_xl_info(((dom0_fact.get("xen") or {}).get("xl_info_stdout") or ""))
     xen_domains = parse_xl_list(((dom0_fact.get("xen") or {}).get("xl_list_stdout") or ""))
     live_guest_names = {domain["name"] for domain in xen_domains if domain.get("name") != "Domain-0"}
@@ -1106,8 +1140,15 @@ def summarize_box(
     for suffix in machine_suffixes:
         hostname = f"{box}-{suffix}"
         peer = peer_for_hostname(tailnet_index, hostname)
+        guest_name = EXPECTED_GUEST_BY_SUFFIX.get(suffix, suffix)
+        runtime_state = (
+            (expected_guests.get(guest_name) or {}).get("runtime_state", "running")
+            if suffix in EXPECTED_GUEST_BY_SUFFIX
+            else "running"
+        )
         machines[suffix] = {
             "hostname": hostname,
+            "runtime_state": runtime_state,
             "tailscale": {
                 "present": peer is not None,
                 "online": bool(peer.get("online")) if peer else False,
@@ -1115,9 +1156,9 @@ def summarize_box(
                 "tags": peer.get("tags", []) if peer else [],
             },
         }
-        if peer is None:
+        if runtime_state == "running" and peer is None:
             findings.append(finding("warning", "missing_tailscale_machine", hostname, "expected machine is absent from Tailscale"))
-        elif not peer.get("online"):
+        elif runtime_state == "running" and not peer.get("online"):
             findings.append(finding("warning", "offline_tailscale_machine", hostname, "expected machine is offline in Tailscale"))
 
     seen_peers: set[str] = set()
@@ -1218,6 +1259,16 @@ def summarize_box(
             if (expected_guests.get(missing_name) or {}).get("runtime_state", "running") == "stopped":
                 continue
             findings.append(finding("warning", "missing_xen_domain", f"{box}-dom0", f"expected Xen domain is not running: {missing_name}"))
+        for running_name in sorted(expected_guest_names & live_guest_names):
+            if (expected_guests.get(running_name) or {}).get("runtime_state") == "stopped":
+                findings.append(
+                    finding(
+                        "warning",
+                        "shared_guest_running_while_stopped",
+                        f"{box}-dom0",
+                        f"shared Xen guest is running while desired runtime_state is stopped: {running_name}",
+                    )
+                )
         guest_by_machine_suffix = {**EXPECTED_GUEST_BY_SUFFIX, **OPTIONAL_GUEST_BY_SUFFIX}
         for suffix in machine_suffixes:
             guest_name = guest_by_machine_suffix.get(suffix, suffix)
@@ -1322,6 +1373,7 @@ def build_summary(
         resource_plans.append(platform_resources_plan)
     expected_app_vms_by_box = expected_app_vms_by_box_from_plans(resource_plans)
     expected_tailnet_hostnames_by_box = expected_tailnet_hostnames_by_box_from_plans(resource_plans)
+    expected_shared_guests_by_box = expected_shared_guests_by_box_from_plans(resource_plans)
     box_summaries = {
         box: summarize_box(
             box,
@@ -1330,6 +1382,7 @@ def build_summary(
             overrides=overrides,
             expected_app_vms=expected_app_vms_by_box.get(box, {}),
             expected_tailnet_hostnames=expected_tailnet_hostnames_by_box.get(box, set()),
+            expected_shared_guests=expected_shared_guests_by_box.get(box, {}),
         )
         for box in boxes
     }
@@ -1360,6 +1413,9 @@ def build_summary(
             "available": bool(resource_plans),
             "source": "registry" if platform_resources_plan else ("remote_desired_json" if resource_plans else ""),
             "app_vm_count": sum(len(app_vms) for app_vms in expected_app_vms_by_box.values()),
+            "shared_guest_count": sum(
+                len(guests) for guests in expected_shared_guests_by_box.values()
+            ),
         },
         "findings": findings,
         "warnings": warnings,
@@ -1475,7 +1531,21 @@ def cmd_show(args: argparse.Namespace) -> int:
         )
     for box, data in (summary.get("boxes") or {}).items():
         machines = data.get("machines") or {}
-        online = sum(1 for item in machines.values() if ((item.get("tailscale") or {}).get("online")))
+        running_machines = [
+            item
+            for item in machines.values()
+            if item.get("runtime_state", "running") == "running"
+        ]
+        stopped_roles = sorted(
+            role
+            for role, item in machines.items()
+            if item.get("runtime_state", "running") == "stopped"
+        )
+        online = sum(
+            1
+            for item in running_machines
+            if ((item.get("tailscale") or {}).get("online"))
+        )
         present = sum(1 for item in machines.values() if ((item.get("tailscale") or {}).get("present")))
         domains = ((data.get("dom0") or {}).get("xen") or {}).get("domains") or []
         expected_guests = ((data.get("dom0") or {}).get("xen") or {}).get("expected_guests") or {}
@@ -1485,7 +1555,8 @@ def cmd_show(args: argparse.Namespace) -> int:
         memory = ((data.get("capacity") or {}).get("memory") or {})
         storage = (((data.get("dom0") or {}).get("storage") or {}).get("managed_layout") or {})
         print(
-            f"Box {box}: tailscale={online}/{len(machines)} online ({present} present) "
+            f"Box {box}: tailscale={online}/{len(running_machines)} desired-running online "
+            f"({present} present) stopped={','.join(stopped_roles) or 'none'} "
             f"xen_guests={live_guests}/{expected_guest_count} app_vms={app_vm_count} "
             f"ram={memory.get('pressure', 'unknown')} free={format_mib(memory.get('xen_free_mib'))} "
             f"vg_free={format_bytes(parse_int(storage.get('volume_group_free_bytes')))}"

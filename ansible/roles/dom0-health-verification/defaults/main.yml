@@ -12,3 +12,5 @@ dom0_health_optional_bridge_names:
   - "{{ platform_control_zones.ops.bridge | default('br-ops') }}"
 
 dom0_health_guest_memory_tolerance_mib: 1
+dom0_health_shared_guest_runtime_states: >-
+  {{ (platform_shared_guest_runtime_states | default({})).get(node_name, {}) }}

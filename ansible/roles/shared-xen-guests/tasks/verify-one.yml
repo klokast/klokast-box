@@ -1,0 +1,45 @@
+---
+- name: Select shared Xen guest verification request
+  ansible.builtin.set_fact:
+    platform_shared_guest_spec_key: "{{ platform_shared_guest_role_spec_keys[platform_shared_guest_role] }}"
+    platform_shared_guest_runtime_state: >-
+      {{
+        platform_shared_guest_runtime_states.get(node_name, {})
+        .get(platform_shared_guest_role, {})
+        .get('runtime_state', 'running')
+      }}
+    platform_shared_guest_name: >-
+      {{ node_xen_guest_specs[platform_shared_guest_role_spec_keys[platform_shared_guest_role]].guest_name }}
+    platform_shared_guest_config_path: >-
+      {{ node_xen_guest_specs[platform_shared_guest_role_spec_keys[platform_shared_guest_role]].config_path }}
+
+- name: Inspect shared Xen guest runtime
+  ansible.builtin.command: "/usr/sbin/xl list {{ platform_shared_guest_name }}"
+  register: platform_shared_guest_runtime_probe
+  failed_when: false
+  changed_when: false
+
+- name: Inspect shared Xen guest autostart link
+  ansible.builtin.stat:
+    path: "/etc/xen/auto/{{ platform_shared_guest_config_path | basename }}"
+  register: platform_shared_guest_autostart_probe
+
+- name: Assert shared Xen guest matches desired runtime
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          platform_shared_guest_runtime_state == 'running'
+          and platform_shared_guest_runtime_probe.rc == 0
+          and platform_shared_guest_autostart_probe.stat.exists
+        )
+        or
+        (
+          platform_shared_guest_runtime_state == 'stopped'
+          and platform_shared_guest_runtime_probe.rc != 0
+          and not platform_shared_guest_autostart_probe.stat.exists
+        )
+    fail_msg: >-
+      Shared Xen guest {{ platform_shared_guest_name }} does not match desired
+      runtime_state={{ platform_shared_guest_runtime_state }}.
+

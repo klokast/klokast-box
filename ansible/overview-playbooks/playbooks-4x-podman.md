@@ -51,6 +51,14 @@ Clone, personalize, render, and boot the IoT Podman VM from the template.
 - `xen-guest-instance`: start `iot`.
 - `(Persist iot guest state on the diskless dom0 host)`.
 
+# 44-vm-podman-guests-runtime.yml
+
+Apply or verify controller-compiled runtime intent for existing shared guests.
+`shared-xen-guests` maps public roles `bak`, `dmz`, and `iot` to their Xen
+definitions, verifies that referenced bridges already exist, persists the
+autostart and desired-state metadata changes with `lbu`, then starts or cleanly
+stops each selected domain. It never renders or restarts dom0 networking.
+
 # 68-vm-tailscale-stale-machines.yml
 Dry-run first cleanup for stale offline Tailscale machine identities that block Podman VM names.
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import subprocess
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -69,6 +71,41 @@ class PlatformCheckWrapperTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("smith@<active-controller>", result.stdout)
+
+    def test_platform_check_preserves_failed_ansible_return_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_bin = Path(tmpdir)
+            for name, body in (
+                ("ansible-inventory", "#!/bin/sh\nexit 0\n"),
+                ("ansible-playbook", "#!/bin/sh\nexit 7\n"),
+            ):
+                path = fake_bin / name
+                path.write_text(body, encoding="utf-8")
+                path.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            result = subprocess.run(
+                [
+                    str(PLATFORM_CHECK),
+                    "--box",
+                    "k001",
+                    "--target",
+                    "dom0",
+                    "--resources-registry",
+                    "none",
+                    "--magicdns-suffix",
+                    "example.ts.net",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("dom0 (rc=7)", result.stderr)
 
 
 if __name__ == "__main__":

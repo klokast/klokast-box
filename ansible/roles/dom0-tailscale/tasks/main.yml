@@ -43,6 +43,15 @@
     state: started
   notify: Commit lbu changes
 
+- name: Prevent udhcpc from overwriting Tailscale-owned DNS
+  ansible.builtin.lineinfile:
+    path: /etc/udhcpc/udhcpc.conf
+    regexp: '^#?RESOLV_CONF='
+    line: 'RESOLV_CONF="no"'
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
 - name: Collect Tailscale runtime status
   ansible.builtin.command: tailscale status --json
   register: tailscale_status_json

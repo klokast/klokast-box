@@ -174,6 +174,53 @@ class PlatformMapTest(unittest.TestCase):
         self.assertNotIn("missing_xen_domain", codes)
         self.assertFalse(summary["app_vms"]["k001-usr-alice"]["xen"]["running"])
 
+    def test_stopped_shared_guest_can_be_offline_and_absent(self):
+        fact = self.dom0_fact(include_app_domain=False)
+        fact["xen"]["xl_list_stdout"] = "\n".join(
+            line
+            for line in fact["xen"]["xl_list_stdout"].splitlines()
+            if not line.startswith("iot ")
+        )
+        index = self.tailnet_index(include_app_vm=False)
+        index = {
+            key: value
+            for key, value in index.items()
+            if "k001-iot" not in key
+        }
+        summary = self.mod.summarize_box(
+            "k001",
+            tailnet_index=index,
+            remote_facts={"k001-dom0": fact},
+            overrides={},
+            expected_app_vms={},
+            expected_tailnet_hostnames=set(),
+            expected_shared_guests={
+                "iot": {"runtime_state": "stopped", "autostart": False}
+            },
+        )
+        codes = [item["code"] for item in summary["findings"]]
+        self.assertNotIn("missing_tailscale_machine", codes)
+        self.assertNotIn("offline_tailscale_machine", codes)
+        self.assertNotIn("missing_xen_domain", codes)
+        self.assertEqual(summary["machines"]["iot"]["runtime_state"], "stopped")
+        self.assertEqual(
+            summary["capacity"]["memory"]["expected_guest_memory_mib"],
+            512 + 1024 + 1024 + 1024 + 4096,
+        )
+
+    def test_running_stopped_shared_guest_is_reported(self):
+        summary = self.mod.summarize_box(
+            "k001",
+            tailnet_index=self.tailnet_index(include_app_vm=False),
+            remote_facts={"k001-dom0": self.dom0_fact(include_app_domain=False)},
+            overrides={},
+            expected_shared_guests={
+                "iot": {"runtime_state": "stopped", "autostart": False}
+            },
+        )
+        codes = [item["code"] for item in summary["findings"]]
+        self.assertIn("shared_guest_running_while_stopped", codes)
+
     def test_platform_map_app_vm_plan_preserves_runtime_state(self):
         plan = {
             "platform_map": {
@@ -279,6 +326,36 @@ class PlatformMapTest(unittest.TestCase):
             if item["code"] == "unexpected_tailscale_machine"
         ]
         self.assertEqual(findings, [])
+
+    def test_expected_shared_guests_load_from_latest_platform_resource_plan(self):
+        plans = [
+            {
+                "platform_map": {
+                    "shared_guests": [
+                        {
+                            "node": "k001",
+                            "role": "iot",
+                            "runtime_state": "running",
+                            "autostart": True,
+                        }
+                    ]
+                }
+            },
+            {
+                "platform_map": {
+                    "shared_guests": [
+                        {
+                            "node": "k001",
+                            "role": "iot",
+                            "runtime_state": "stopped",
+                            "autostart": False,
+                        }
+                    ]
+                }
+            },
+        ]
+        states = self.mod.expected_shared_guests_by_box_from_plans(plans)
+        self.assertEqual(states["k001"]["iot"]["runtime_state"], "stopped")
 
     def test_airunner_runtime_names_are_not_unexpected(self):
         summary = self.summarize(

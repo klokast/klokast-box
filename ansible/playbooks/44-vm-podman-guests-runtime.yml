@@ -1,55 +1,8 @@
 ---
-- name: Ensure selected shared Podman Xen guests are running or stopped
+- name: Converge or verify shared Podman Xen guest runtime intent
   hosts: vm_dom0
   gather_facts: false
-  vars:
-    platform_podman_guest_roles:
-      - backend
-      - dmz
-      - iot
-    platform_podman_guest_runtime_state: running
   tasks:
-    - name: Validate requested shared Podman guest runtime operation
-      ansible.builtin.assert:
-        that:
-          - platform_podman_guest_runtime_state in ["running", "stopped"]
-          - platform_podman_guest_roles | length > 0
-          - platform_podman_guest_role in ["backend", "dmz", "iot"]
-          - node_xen_guest_specs[platform_podman_guest_role] is defined
-          - node_xen_guest_specs[platform_podman_guest_role].guest_name is defined
-          - node_xen_guest_specs[platform_podman_guest_role].config_path is defined
-        fail_msg: "Invalid shared Podman guest role/runtime request: {{ platform_podman_guest_role }}"
-      loop: "{{ platform_podman_guest_roles }}"
-      loop_control:
-        loop_var: platform_podman_guest_role
-
-    - name: Persist the dom0 bridge configuration
+    - name: Apply shared Podman Xen guest runtime intent
       ansible.builtin.import_role:
-        name: network-bridges
-
-    - name: Ensure the dom0 runtime bridges exist
-      ansible.builtin.import_role:
-        name: dom0-bridge-runtime
-
-    - name: Render selected installed-stage shared Podman guest Xen definitions
-      ansible.builtin.include_role:
-        name: xen-guest
-      vars:
-        xen_guest_spec: "{{ node_xen_guest_specs[platform_podman_guest_role] | combine({'stage': 'installed'}, recursive=True) }}"
-      loop: "{{ platform_podman_guest_roles }}"
-      loop_control:
-        loop_var: platform_podman_guest_role
-
-    - name: Flush dom0 handlers after bridge persistence updates
-      ansible.builtin.meta: flush_handlers
-
-    - name: Ensure selected shared Podman Xen guests reach the requested runtime state
-      ansible.builtin.include_role:
-        name: xen-guest-instance
-      vars:
-        xen_guest_name: "{{ node_xen_guest_specs[platform_podman_guest_role].guest_name }}"
-        xen_guest_config_path: "{{ node_xen_guest_specs[platform_podman_guest_role].config_path }}"
-        xen_guest_runtime_state: "{{ platform_podman_guest_runtime_state }}"
-      loop: "{{ platform_podman_guest_roles }}"
-      loop_control:
-        loop_var: platform_podman_guest_role
+        name: shared-xen-guests

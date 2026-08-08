@@ -153,7 +153,23 @@ target_limit() {
   case "$1" in
     dom0) printf '%s\n' "${BOX}-dom0" ;;
     router) printf '%s\n' "${BOX}-router" ;;
-    podman) printf '%s\n' "${BOX}-bak,${BOX}-dmz,${BOX}-iot" ;;
+    podman)
+      python3 - "$SHARED_GUEST_VARS_FILE" "$BOX" <<'PY'
+import json
+import sys
+
+path, box = sys.argv[1:3]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+states = (payload.get("platform_shared_guest_runtime_states") or {}).get(box) or {}
+hosts = [
+    f"{box}-{role}"
+    for role in ("bak", "dmz", "iot")
+    if (states.get(role) or {}).get("runtime_state", "running") == "running"
+]
+print(",".join(hosts))
+PY
+      ;;
     ops) printf '%s\n' "${BOX}-ops" ;;
     *) die "no Ansible limit configured for target $1" ;;
   esac
@@ -215,6 +231,29 @@ preflight() {
     --output "$GENERATED_INVENTORY" \
     --target-disk-device "$TARGET_DISK_DEVICE" \
     --magicdns-suffix "$MAGICDNS_SUFFIX"
+
+  registry="$(resolve_resources_registry)"
+  if [ -n "$registry" ]; then
+    [ -f "$registry" ] || die "resources registry not found: $registry"
+    "$PLATFORM_RESOURCES" --registry "$registry" show >"$RESOURCE_PLAN_FILE"
+  else
+    printf '{}\n' >"$RESOURCE_PLAN_FILE"
+  fi
+  python3 - "$RESOURCE_PLAN_FILE" "$SHARED_GUEST_VARS_FILE" "$BOX" <<'PY'
+import json
+import sys
+
+plan_path, output_path, box = sys.argv[1:4]
+with open(plan_path, encoding="utf-8") as handle:
+    plan = json.load(handle)
+config = (plan.get("box_configs") or {}).get(box) or {}
+states = config.get("shared_guests") or {
+    role: {"runtime_state": "running"} for role in ("bak", "dmz", "iot")
+}
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump({"platform_shared_guest_runtime_states": {box: states}}, handle)
+    handle.write("\n")
+PY
 }
 
 run_direct_check() {
@@ -227,6 +266,10 @@ run_direct_check() {
   limit="$(target_limit "$check_target")"
   extra_vars="$(target_extra_vars "$check_target")"
   [ -f "$playbook" ] || die "check playbook not found: $playbook"
+  if [ -z "$limit" ]; then
+    printf 'platform-check: skipping %s; every selected shared guest is intentionally stopped\n' "$check_target"
+    return 0
+  fi
 
   env ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" ansible-inventory \
     -i "$INVENTORY" \
@@ -244,6 +287,7 @@ run_direct_check() {
     -vv
     --limit "$limit"
     -e "$extra_vars"
+    -e "@$SHARED_GUEST_VARS_FILE"
   )
   cmd+=("${EXTRA_ARGS[@]}")
 
@@ -346,12 +390,12 @@ run_required_step() {
   shift
 
   printf '\n==> %s\n' "$label"
+  local rc
   if "$@"; then
     return 0
+  else
+    rc=$?
   fi
-
-  local rc
-  rc=$?
   FAILURES+=("$label (rc=$rc)")
   return 0
 }
@@ -444,6 +488,8 @@ GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"
 MAP_DIR="$RUN_DIR/platform-map"
 MAP_STATE_FILE="$MAP_DIR/current.json"
+RESOURCE_PLAN_FILE="$RUN_DIR/resources-plan.json"
+SHARED_GUEST_VARS_FILE="$RUN_DIR/shared-guest-vars.json"
 
 preflight
 

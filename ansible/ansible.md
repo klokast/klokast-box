@@ -17,6 +17,7 @@ ansible
 ├── ansible.md
 ├── bin                               # Orchestration scripts to run a flow of playbooks
 │   └── platform-resources            # Compile/apply/verify Git-approved Platform resources
+│   └── platform-guest                # Manage durable shared Xen guest runtime intent
 │   └── platform-map                  # Discover current Platform state and write runtime map artifacts
 │   └── platform-check                # Run read-only live infrastructure health checks across map, dom0, router, Podman, ops, and resources
 │   └── platform-check-remote         # Dispatch Platform health checks from infra-agent hosts to the Ansible controller

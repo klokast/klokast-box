@@ -238,6 +238,10 @@ The `<box>-iot` VM is a standard future workload substrate, but it currently
 hosts no app workloads in this deployment. App-scoped diagnostics should limit
 checks to roles that carry declared resources; an idle or unreachable `iot`
 role is not evidence for unrelated app failures unless that app targets `iot`.
+When private or applied resource state declares a shared guest `stopped`, the
+map records that intent and does not report its absent Xen domain or offline
+Tailnet identity as drift. Controller-private registry intent takes precedence
+over older desired-state metadata collected from a target.
 
 Dom0 storage inspection is read-only. `lsblk` and `findmnt` are optional
 diagnostic inputs; the role falls back to `/proc/mounts`, `blkid`, and LVM

@@ -1,0 +1,49 @@
+---
+- name: Select shared Xen guest desired definition
+  ansible.builtin.set_fact:
+    platform_shared_guest_spec_key: "{{ platform_shared_guest_role_spec_keys[platform_shared_guest_role] }}"
+    platform_shared_guest_runtime_state: >-
+      {{
+        platform_shared_guest_runtime_states.get(node_name, {})
+        .get(platform_shared_guest_role, {})
+        .get('runtime_state', 'running')
+      }}
+
+- name: Build shared Xen guest desired definition
+  ansible.builtin.set_fact:
+    platform_shared_guest_spec: >-
+      {{
+        node_xen_guest_specs[platform_shared_guest_spec_key]
+        | combine(
+            {
+              'stage': 'installed',
+              'runtime_state': platform_shared_guest_runtime_state,
+              'autostart': platform_shared_guest_runtime_state == 'running'
+            },
+            recursive=True
+          )
+      }}
+
+- name: Verify shared Xen guest bridges already exist
+  ansible.builtin.command:
+    argv:
+      - /sbin/ip
+      - link
+      - show
+      - "{{ platform_shared_guest_vif.bridge }}"
+  loop: "{{ platform_shared_guest_spec.vifs }}"
+  loop_control:
+    loop_var: platform_shared_guest_vif
+  changed_when: false
+
+- name: Render shared Xen guest definition
+  ansible.builtin.include_role:
+    name: xen-guest
+  vars:
+    xen_guest_spec: "{{ platform_shared_guest_spec }}"
+
+- name: Schedule persistence when shared Xen guest definition changed
+  ansible.builtin.command: /bin/true
+  changed_when: xen_guest_definition_changed | bool
+  notify: Persist shared Xen guest dom0 state
+

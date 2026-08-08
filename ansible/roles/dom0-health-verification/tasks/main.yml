@@ -242,6 +242,7 @@
     required_guest_keys = json_env("DOM0_HEALTH_REQUIRED_GUEST_KEYS", [])
     optional_guest_keys = json_env("DOM0_HEALTH_OPTIONAL_GUEST_KEYS", [])
     optional_bridge_names = json_env("DOM0_HEALTH_OPTIONAL_BRIDGE_NAMES", [])
+    shared_guest_runtime_states = json_env("DOM0_HEALTH_SHARED_GUEST_RUNTIME_STATES", {})
     guest_memory_tolerance_mib = int(env("DOM0_HEALTH_GUEST_MEMORY_TOLERANCE_MIB", "1"))
     dom0_bridges = json_env("DOM0_HEALTH_DOM0_BRIDGES", [])
     tailscale_persist_paths = json_env("DOM0_HEALTH_TAILSCALE_PERSIST_PATHS", [])
@@ -288,6 +289,7 @@
         for value in (tailscale_persist_paths + dom0_home_lbu_include_paths)
     ]
     lbu_status = capture(["lbu", "status"])
+    udhcpc_conf = read_text("/etc/udhcpc/udhcpc.conf")
 
     root_mode = oct(Path("/").stat().st_mode & 0o777)[2:].zfill(4)
     apk_cache_readlink = os.path.realpath("/etc/apk/cache")
@@ -334,7 +336,12 @@
     expected_guests = []
     for key in required_guest_keys:
         if key in node_xen_guest_specs:
-            expected_guests.append((key, node_xen_guest_specs[key], True))
+            runtime_role = "bak" if key == "backend" else key
+            runtime_state = (
+                (shared_guest_runtime_states.get(runtime_role) or {})
+                .get("runtime_state", "running")
+            )
+            expected_guests.append((key, node_xen_guest_specs[key], True, runtime_state))
     for key in optional_guest_keys:
         spec = node_xen_guest_specs.get(key)
         if not spec:
@@ -349,13 +356,15 @@
             or any(Path(path).exists() for path in lvs)
         )
         if optional_present:
-            expected_guests.append((key, spec, False))
+            expected_guests.append((key, spec, False, "running"))
 
     checked_guest_names = []
-    for key, spec, required in expected_guests:
+    desired_guest_runtime_states = {}
+    for key, spec, required, runtime_state in expected_guests:
         label = f"{key} ({spec.get('guest_name', key)})"
         guest_name = spec.get("guest_name", key)
         checked_guest_names.append(guest_name)
+        desired_guest_runtime_states[guest_name] = runtime_state
         config_path = spec.get("config_path", "")
         active_stage = spec.get("installed") or spec
         lvs = active_stage.get("required_lvs") or spec.get("required_lvs") or []
@@ -382,16 +391,21 @@
                 "builder" not in active_config.lower() and "device_model" not in active_config.lower(),
                 f"Xen config for {label} contains builder/device_model settings",
             )
-        if spec.get("autostart"):
+        if runtime_state == "running" and spec.get("autostart"):
             expect(Path(autostart_path).exists(), f"missing Xen autostart link for {label}: {autostart_path}")
+        if runtime_state == "stopped":
+            expect(not Path(autostart_path).exists(), f"unexpected Xen autostart link for stopped {label}: {autostart_path}")
         for path in lvs:
             expect(Path(path).exists(), f"missing required LV for {label}: {path}")
         for path in required_paths:
             expect(Path(path).exists(), f"missing required boot artifact for {label}: {path}")
 
         domain = domains.get(guest_name)
-        expect(domain is not None, f"expected Xen guest is not running: {guest_name}")
-        if domain is not None:
+        if runtime_state == "running":
+            expect(domain is not None, f"expected Xen guest is not running: {guest_name}")
+        else:
+            expect(domain is None, f"stopped Xen guest is unexpectedly running: {guest_name}")
+        if runtime_state == "running" and domain is not None:
             expect(
                 domain["vcpus"] == int(spec.get("vcpus", domain["vcpus"])),
                 f"Xen guest {guest_name} vCPU mismatch: live={domain['vcpus']} expected={spec.get('vcpus')}",
@@ -454,6 +468,10 @@
     expect(lbu_backupdir == efi_mount_path, f"LBU_BACKUPDIR is {lbu_backupdir}, expected {efi_mount_path}")
     expect(lbu_status["rc"] == 0, f"lbu status failed: {lbu_status['stderr'].strip()}")
     expect(lbu_status["stdout"].strip() == "", f"lbu status is not clean: {lbu_status['stdout'].strip()}")
+    expect(
+        re.search(r'(?m)^RESOLV_CONF=["\']?no["\']?$', udhcpc_conf) is not None,
+        'udhcpc is not configured with RESOLV_CONF="no"',
+    )
     expect(Path(apkovl_archive_path).exists(), f"missing apkovl archive: {apkovl_archive_path}")
     expect(apkovl_listing == [apkovl_archive_name], f"unexpected apkovl files at EFI root: {apkovl_listing}")
     expect("apkvol=" not in grub_cfg, "steady-state GRUB config still contains apkvol=")
@@ -539,6 +557,7 @@
             "dom0_admin_user": dom0_admin_user_name,
             "xen_domains": sorted(domains),
             "checked_guests": sorted(checked_guest_names),
+            "desired_guest_runtime_states": desired_guest_runtime_states,
             "default_iface": default_iface,
             "wan_bridge_ports": wan_ports,
             "lbu_status": lbu_status["stdout"].splitlines(),
@@ -557,6 +576,7 @@
     DOM0_HEALTH_REQUIRED_GUEST_KEYS: "{{ dom0_health_required_guest_keys | to_json }}"
     DOM0_HEALTH_OPTIONAL_GUEST_KEYS: "{{ dom0_health_optional_guest_keys | to_json }}"
     DOM0_HEALTH_OPTIONAL_BRIDGE_NAMES: "{{ dom0_health_optional_bridge_names | to_json }}"
+    DOM0_HEALTH_SHARED_GUEST_RUNTIME_STATES: "{{ dom0_health_shared_guest_runtime_states | to_json }}"
     DOM0_HEALTH_GUEST_MEMORY_TOLERANCE_MIB: "{{ dom0_health_guest_memory_tolerance_mib }}"
     DOM0_HEALTH_EFI_PARTITION_DEVICE: "{{ efi_partition_device }}"
     DOM0_HEALTH_EFI_PARTITION_FS: "{{ efi_partition_fs }}"

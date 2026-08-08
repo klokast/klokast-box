@@ -32,6 +32,7 @@ Source: `ansible/bin/`.
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |
 | `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, sync, promote, demote, run, and reseed. |
 | `platform-app` | active controller | Manages approved app lifecycle through `list`, `status`, `apply`, `verify`, `start`, `stop`, `restart`, `remove`, and `destroy`. |
+| `platform-guest` | active controller | Manages durable `bak`, `dmz`, and `iot` Xen guest runtime intent through `list`, `status`, `apply`, `verify`, `start`, and `stop`. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |

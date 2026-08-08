@@ -1,0 +1,12 @@
+---
+platform_shared_guest_roles:
+  - bak
+  - dmz
+  - iot
+platform_shared_guest_runtime_states: {}
+platform_shared_guest_operation: apply
+platform_shared_guest_role_spec_keys:
+  bak: backend
+  dmz: dmz
+  iot: iot
+

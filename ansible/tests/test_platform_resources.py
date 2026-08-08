@@ -243,6 +243,78 @@ class PlatformResourcesTest(unittest.TestCase):
             ],
         )
 
+    def test_shared_guest_runtime_state_compiles_for_platform_map(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "apps": {},
+                "boxes": {
+                    "k001": {
+                        "shared_guests": {"iot": {"runtime_state": "stopped"}}
+                    }
+                },
+            }
+        )
+        compiled = self.mod.compile_registry(path, [])
+
+        self.assertEqual(
+            compiled["box_configs"]["k001"]["shared_guests"],
+            {
+                "bak": {"runtime_state": "running"},
+                "dmz": {"runtime_state": "running"},
+                "iot": {"runtime_state": "stopped"},
+            },
+        )
+        mapped = {
+            item["role"]: item
+            for item in compiled["platform_map"]["shared_guests"]
+            if item["node"] == "k001"
+        }
+        self.assertEqual(mapped["iot"]["runtime_state"], "stopped")
+        self.assertFalse(mapped["iot"]["autostart"])
+
+    def test_shared_guest_registry_rejects_unknown_role_and_state(self):
+        for shared_guests, expected in (
+            ({"router": {"runtime_state": "stopped"}}, "unsupported role"),
+            ({"iot": {"runtime_state": "paused"}}, "must be one of"),
+            ({"iot": {"runtime_state": "stopped", "extra": True}}, "unsupported field"),
+        ):
+            with self.subTest(shared_guests=shared_guests):
+                path = self.write_registry(
+                    {
+                        "schema_version": 1,
+                        "apps": {},
+                        "boxes": {"k001": {"shared_guests": shared_guests}},
+                    }
+                )
+                with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
+                    self.mod.compile_registry(path, [])
+                self.assertIn(expected, stderr.getvalue())
+
+    def test_running_app_cannot_target_stopped_shared_zone(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "apps": {
+                    "nextcloud-v2": {
+                        "enabled": True,
+                        "placement": {
+                            "active_master": "k001",
+                            "passive_backup": "k002",
+                        },
+                    }
+                },
+                "boxes": {
+                    "k001": {
+                        "shared_guests": {"bak": {"runtime_state": "stopped"}}
+                    }
+                },
+            }
+        )
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
+            self.mod.compile_registry(path, [])
+        self.assertIn("apps.nextcloud-v2 is running on k001", stderr.getvalue())
+
     def test_duplicate_shareable_claims_create_one_effective_resource_with_two_owners(self):
         path = self.write_registry(
             {

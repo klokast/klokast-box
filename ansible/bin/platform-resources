@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 
-COMPILER_VERSION = 22
+COMPILER_VERSION = 23
 TAILSCALE_WIREGUARD_PORT = 41641
 ROLE_SUFFIXES = ("router", "bak", "dmz", "iot")
 CLEANUP_HOST_ROLES = ("router", "backend", "dmz", "iot")
@@ -263,6 +263,15 @@ ACCESS_BOX_FIELDS = {
     "prohibited_capabilities",
     "policy",
 }
+BOX_CONFIG_FIELDS = {
+    "access",
+    "dhcp_reservations",
+    "dom0_bridge_ports",
+    "shared_guests",
+}
+SHARED_GUEST_ROLES = ("bak", "dmz", "iot")
+SHARED_GUEST_STATES = ("running", "stopped")
+SHARED_GUEST_FIELDS = {"runtime_state"}
 APP_RESOURCE_RECONCILE_SOURCE = (
     REPO_ROOT
     / "ansible"
@@ -303,6 +312,19 @@ def parse_args():
         default="",
         help="Write the compiled app-VM Ansible inventory to this path.",
     )
+    parser.add_argument(
+        "--box",
+        action="append",
+        default=[],
+        help="Limit shared-guest operations to one box. May be repeated.",
+    )
+    parser.add_argument(
+        "--shared-guest-role",
+        action="append",
+        default=[],
+        choices=SHARED_GUEST_ROLES,
+        help="Limit shared-guest operations to bak, dmz, or iot. May be repeated.",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("lint", help="Validate manifests and registry only.")
@@ -312,6 +334,14 @@ def parse_args():
     subparsers.add_parser("verify", help="Verify compiled platform resources.")
     subparsers.add_parser("inventory", help="Render compiled app-VM inventory.")
     subparsers.add_parser("grant", help="Print an app-scoped approved grant JSON.")
+    subparsers.add_parser(
+        "apply-shared-guests",
+        help="Apply compiled shared-guest runtime intent on dom0.",
+    )
+    subparsers.add_parser(
+        "verify-shared-guests",
+        help="Verify compiled shared-guest runtime intent on dom0.",
+    )
     return parser.parse_args()
 
 
@@ -739,6 +769,10 @@ def default_box_config():
         "dom0_bridge_ports": {},
         "access": default_box_access(),
         "dhcp_reservations": [],
+        "shared_guests": {
+            role: {"runtime_state": "running"}
+            for role in SHARED_GUEST_ROLES
+        },
     }
 
 
@@ -878,6 +912,12 @@ def registry_box_configs(registry, topology):
             config = {}
         if not isinstance(config, dict):
             die(f"boxes.{box} must be a mapping")
+        unknown = sorted(set(config) - BOX_CONFIG_FIELDS)
+        if unknown:
+            die(
+                f"boxes.{box} contains unsupported field(s): "
+                f"{', '.join(unknown)}"
+            )
         dom0_bridge_ports = config.get("dom0_bridge_ports") or {}
         if not isinstance(dom0_bridge_ports, dict):
             die(f"boxes.{box}.dom0_bridge_ports must be a mapping")
@@ -928,12 +968,69 @@ def registry_box_configs(registry, topology):
                     "ipv4_address": ipv4_address,
                 }
             )
+        shared_guests = config.get("shared_guests") or {}
+        if not isinstance(shared_guests, dict):
+            die(f"boxes.{box}.shared_guests must be a mapping")
+        unknown_roles = sorted(set(shared_guests) - set(SHARED_GUEST_ROLES))
+        if unknown_roles:
+            die(
+                f"boxes.{box}.shared_guests contains unsupported role(s): "
+                f"{', '.join(unknown_roles)}"
+            )
+        normalized_shared_guests = {}
+        for role in SHARED_GUEST_ROLES:
+            guest = shared_guests.get(role) or {}
+            field = f"boxes.{box}.shared_guests.{role}"
+            if not isinstance(guest, dict):
+                die(f"{field} must be a mapping")
+            unknown_guest_fields = sorted(set(guest) - SHARED_GUEST_FIELDS)
+            if unknown_guest_fields:
+                die(
+                    f"{field} contains unsupported field(s): "
+                    f"{', '.join(unknown_guest_fields)}"
+                )
+            runtime_state = guest.get("runtime_state", "running")
+            if runtime_state not in SHARED_GUEST_STATES:
+                die(
+                    f"{field}.runtime_state must be one of: "
+                    f"{', '.join(SHARED_GUEST_STATES)}"
+                )
+            normalized_shared_guests[role] = {"runtime_state": runtime_state}
         normalized[box] = {
             "dom0_bridge_ports": normalized_ports,
             "access": normalize_box_access(config.get("access"), f"boxes.{box}.access"),
             "dhcp_reservations": normalized_reservations,
+            "shared_guests": normalized_shared_guests,
         }
     return normalized
+
+
+def running_podman_workload_zones(manifest, topology):
+    compute = ((manifest.get("resources") or {}).get("compute") or [])
+    return {
+        topology["aliases"].get(
+            str(resource.get("zone") or ""), str(resource.get("zone") or "")
+        )
+        for resource in compute
+        if isinstance(resource, dict) and resource.get("type") == "podman_workload"
+    }
+
+
+def validate_shared_guest_app_compatibility(
+    app_name, manifest, entry, app_boxes, box_configs, topology
+):
+    if not entry.get("enabled") or app_runtime_state(app_name, entry, manifest) != "running":
+        return
+    workload_zones = running_podman_workload_zones(manifest, topology)
+    for box in app_boxes:
+        shared_guests = box_config_for(box_configs, box).get("shared_guests") or {}
+        for role in sorted(workload_zones & set(SHARED_GUEST_ROLES)):
+            state = (shared_guests.get(role) or {}).get("runtime_state", "running")
+            if state == "stopped":
+                die(
+                    f"apps.{app_name} is running on {box} but "
+                    f"boxes.{box}.shared_guests.{role}.runtime_state is stopped"
+                )
 
 
 def resource_comment(app_name, resource_id, suffix):
@@ -2490,6 +2587,9 @@ def compile_registry(registry_path, app_filter):
         validate_manifest_resources(app_name, manifest, topology)
         validate_privileged_runtime(app_name, manifest, entry)
         app_boxes = selected_boxes(app_name, manifest, entry)
+        validate_shared_guest_app_compatibility(
+            app_name, manifest, entry, app_boxes, box_configs, topology
+        )
         app_enabled = bool(entry.get("enabled"))
         app_users = selected_users(app_name, manifest, entry, topology)
         app_box_vms = (
@@ -2633,6 +2733,18 @@ def compile_registry(registry_path, app_filter):
         box: box_config_for(box_configs, box)
         for box in sorted(set(boxes) | set(box_configs))
     }
+    platform_map_shared_guests = [
+        {
+            "node": box,
+            "role": role,
+            "hostname": f"{box}-{role}",
+            "guest_name": role,
+            "runtime_state": guest.get("runtime_state", "running"),
+            "autostart": guest.get("runtime_state", "running") == "running",
+        }
+        for box, config in sorted(effective_box_configs.items())
+        for role, guest in sorted((config.get("shared_guests") or {}).items())
+    ]
 
     return {
         "schema_version": 1,
@@ -2653,6 +2765,7 @@ def compile_registry(registry_path, app_filter):
         ),
         "platform_map": {
             "app_vms": compile_platform_map_app_vms(app_vm_specs),
+            "shared_guests": platform_map_shared_guests,
             "managed_iot_devices": sorted(
                 managed_devices,
                 key=lambda item: (item["node"], item["app"], item["resource"]),
@@ -2969,6 +3082,18 @@ def podman_host_node_role(host):
     return node, role
 
 
+def shared_guest_host_is_running(compiled, host):
+    try:
+        node, suffix = host.rsplit("-", 1)
+    except ValueError:
+        return True
+    if suffix not in SHARED_GUEST_ROLES:
+        return True
+    config = (compiled.get("box_configs") or {}).get(node) or default_box_config()
+    guest = (config.get("shared_guests") or {}).get(suffix) or {}
+    return guest.get("runtime_state", "running") == "running"
+
+
 def router_resource_hosts(compiled, scope_apps=None):
     return [
         host
@@ -2989,7 +3114,7 @@ def podman_resource_hosts(compiled, scope_apps=None):
     return [
         host
         for host in resource_hosts_for_scope(compiled, scope_apps)
-        if is_podman_resource_host(host)
+        if is_podman_resource_host(host) and shared_guest_host_is_running(compiled, host)
     ]
 
 
@@ -3029,6 +3154,89 @@ def write_platform_resources_vars(vars_path, vars_payload, desired_json):
         handle.write("platform_resources_desired_json: !unsafe |-\n")
         for line in desired_json.splitlines():
             handle.write(f"  {line}\n")
+
+
+def selected_shared_guest_boxes(compiled, requested_boxes):
+    available = sorted((compiled.get("box_configs") or {}).keys())
+    if not requested_boxes:
+        return available
+    selected = []
+    for box in requested_boxes:
+        validate_box(box, "--box")
+        if box not in available:
+            die(f"registry has no boxes.{box} configuration")
+        if box not in selected:
+            selected.append(box)
+    return selected
+
+
+def run_shared_guests(
+    command,
+    compiled,
+    magicdns_suffix,
+    approved_commit="",
+    requested_boxes=None,
+    requested_roles=None,
+):
+    boxes = selected_shared_guest_boxes(compiled, requested_boxes or [])
+    roles = list(dict.fromkeys(requested_roles or SHARED_GUEST_ROLES))
+    if not boxes:
+        print("platform-resources: no configured shared guests; nothing to do")
+        return
+
+    run_root = REPO_ROOT / ".run" / "platform-resources"
+    run_root.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=f"shared-guests-{command}-", dir=run_root))
+    desired_json = json.dumps(
+        attach_approved_commit(compiled, approved_commit), indent=2, sort_keys=True
+    )
+    vars_path = tmp / "extra-vars.yml"
+    vars_payload = {
+        "platform_shared_guest_operation": command,
+        "platform_shared_guest_roles": roles,
+        "platform_shared_guest_runtime_states": {
+            box: (compiled["box_configs"][box].get("shared_guests") or {})
+            for box in boxes
+        },
+        "platform_resources_approved_commit": approved_commit,
+        "platform_resources_registry_sha256": compiled["registry_sha256"],
+        "platform_resources_compiler_version": compiled["compiler_version"],
+    }
+    write_platform_resources_vars(vars_path, vars_payload, desired_json)
+
+    inventory_args = ["-i", str(REPO_ROOT / "ansible" / "inventory" / "hosts.yml")]
+    for box in boxes:
+        inventory_path = tmp / f"{box}.yml"
+        render_inventory(
+            box,
+            inventory_path,
+            magicdns_suffix,
+            compiled.get("box_configs"),
+        )
+        inventory_args.extend(["-i", str(inventory_path)])
+
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(REPO_ROOT / "ansible" / "ansible.cfg")
+    env["ANSIBLE_ROLES_PATH"] = str(REPO_ROOT / "ansible" / "roles")
+    env["ANSIBLE_SSH_COMMON_ARGS"] = (
+        "-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
+    )
+    subprocess.run(
+        [
+            "ansible-playbook",
+            "-vv",
+            *inventory_args,
+            str(REPO_ROOT / "ansible" / "playbooks" / "44-vm-podman-guests-runtime.yml"),
+            "--limit",
+            ",".join(f"{box}-dom0" for box in boxes),
+            "-e",
+            f"@{vars_path}",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+    )
 
 
 def router_managed_dhcp_hosts(compiled):
@@ -3419,6 +3627,13 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
 
 
 def show_diff(compiled):
+    print("Shared Xen guests:")
+    for box, config in sorted((compiled.get("box_configs") or {}).items()):
+        for role, guest in sorted((config.get("shared_guests") or {}).items()):
+            print(
+                f"  {box}-{role} runtime_state="
+                f"{guest.get('runtime_state', 'running')}"
+            )
     print("Box access capabilities:")
     for box, config in (compiled.get("box_configs") or {}).items():
         access = config.get("access") or {}
@@ -3513,9 +3728,37 @@ def main():
         grant = build_app_grant(compiled, args.app[0], args.approved_commit)
         print(json.dumps(grant, indent=2, sort_keys=True))
         return
+    if args.command == "apply-shared-guests":
+        assert_approved_commit(args.approved_commit)
+        require_active_controller()
+        run_shared_guests(
+            "apply",
+            compiled,
+            args.magicdns_suffix,
+            args.approved_commit,
+            requested_boxes=args.box,
+            requested_roles=args.shared_guest_role,
+        )
+        return
+    if args.command == "verify-shared-guests":
+        run_shared_guests(
+            "verify",
+            compiled,
+            args.magicdns_suffix,
+            requested_boxes=args.box,
+            requested_roles=args.shared_guest_role,
+        )
+        return
     if args.command == "apply":
         assert_approved_commit(args.approved_commit)
         require_active_controller()
+        if not args.app:
+            run_shared_guests(
+                "apply",
+                compiled,
+                args.magicdns_suffix,
+                args.approved_commit,
+            )
         run_ansible(
             "apply",
             compiled,
@@ -3524,6 +3767,8 @@ def main():
             scope_apps=args.app,
         )
         return
+    if not args.app:
+        run_shared_guests("verify", compiled, args.magicdns_suffix)
     run_ansible("verify", compiled, args.magicdns_suffix, scope_apps=args.app)
 
 

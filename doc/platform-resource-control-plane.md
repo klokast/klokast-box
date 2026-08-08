@@ -529,6 +529,25 @@ ansible/bin/platform-app start nextcloud-v2
 ansible/bin/platform-app verify nextcloud-v2
 ```
 
+## Shared Guest Lifecycle
+
+The private registry also owns durable runtime intent for the shared `bak`,
+`dmz`, and `iot` Xen guests. Omitted roles default to `running`:
+
+```yaml
+boxes:
+  k001:
+    shared_guests:
+      iot:
+        runtime_state: stopped
+```
+
+Use `ansible/bin/platform-guest` on the active controller to list, inspect,
+apply, verify, start, or stop a shared guest. A stopped guest retains its disk,
+Xen definition, boot artifacts, and Tailnet registration, but has no autostart
+link and is not expected to be online. The compiler rejects a running app whose
+Podman workload targets a stopped shared zone.
+
 The MacBook wrapper dispatches the same operations to the active controller as
 `kk app ...`. `status` is a human summary and does not repair. `verify` is a
 strict conformance check and also does not repair. `remove` preserves durable

@@ -1,0 +1,19 @@
+---
+- name: Select shared Xen guest runtime request
+  ansible.builtin.set_fact:
+    platform_shared_guest_spec_key: "{{ platform_shared_guest_role_spec_keys[platform_shared_guest_role] }}"
+    platform_shared_guest_runtime_state: >-
+      {{
+        platform_shared_guest_runtime_states.get(node_name, {})
+        .get(platform_shared_guest_role, {})
+        .get('runtime_state', 'running')
+      }}
+
+- name: Apply shared Xen guest runtime request
+  ansible.builtin.include_role:
+    name: xen-guest-instance
+  vars:
+    xen_guest_name: "{{ node_xen_guest_specs[platform_shared_guest_spec_key].guest_name }}"
+    xen_guest_config_path: "{{ node_xen_guest_specs[platform_shared_guest_spec_key].config_path }}"
+    xen_guest_runtime_state: "{{ platform_shared_guest_runtime_state }}"
+

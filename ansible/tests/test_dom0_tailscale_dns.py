@@ -39,6 +39,22 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("dom0_tailscale_lbu_dirty", text)
         self.assertIn("Persist Tailscale runtime state changes", text)
         self.assertIn("^[AUD] (var/lib/tailscale|etc/resolv\\\\.conf)(/|$)", text)
+        self.assertIn("Prevent udhcpc from overwriting Tailscale-owned DNS", text)
+        self.assertIn("/etc/udhcpc/udhcpc.conf", text)
+        self.assertIn('RESOLV_CONF="no"', text)
+
+    def test_dom0_health_requires_exclusive_tailscale_dns_ownership(self):
+        health = (
+            REPO_ROOT
+            / "ansible"
+            / "roles"
+            / "dom0-health-verification"
+            / "tasks"
+            / "main.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("/etc/udhcpc/udhcpc.conf", health)
+        self.assertIn('udhcpc is not configured with RESOLV_CONF="no"', health)
 
     def test_dom0_overview_mentions_dns_repair(self):
         text = DOM0_PLAYBOOK_OVERVIEW.read_text(encoding="utf-8")

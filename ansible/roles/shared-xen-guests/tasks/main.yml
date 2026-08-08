@@ -1,0 +1,71 @@
+---
+- name: Validate shared Xen guest operation
+  ansible.builtin.assert:
+    that:
+      - platform_shared_guest_operation in ["apply", "verify"]
+      - platform_shared_guest_roles | length > 0
+      - platform_shared_guest_role in ["bak", "dmz", "iot"]
+      - platform_shared_guest_role_spec_keys[platform_shared_guest_role] is defined
+      - node_xen_guest_specs[platform_shared_guest_role_spec_keys[platform_shared_guest_role]] is defined
+      - >-
+        (
+          platform_shared_guest_runtime_states.get(node_name, {})
+          .get(platform_shared_guest_role, {})
+          .get('runtime_state', 'running')
+        ) in ['running', 'stopped']
+    fail_msg: "Invalid shared Xen guest operation for {{ node_name }}:{{ platform_shared_guest_role }}"
+  loop: "{{ platform_shared_guest_roles }}"
+  loop_control:
+    loop_var: platform_shared_guest_role
+
+- name: Render shared Xen guest definitions from desired runtime state
+  ansible.builtin.include_tasks: render-one.yml
+  loop: "{{ platform_shared_guest_roles }}"
+  loop_control:
+    loop_var: platform_shared_guest_role
+    label: "{{ node_name }}:{{ platform_shared_guest_role }}"
+  when: platform_shared_guest_operation == "apply"
+
+- name: Ensure dom0 desired-state metadata directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/platform-resources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - platform_shared_guest_operation == "apply"
+    - platform_resources_desired_json is defined
+
+- name: Persist compiled desired state on dom0
+  ansible.builtin.copy:
+    dest: /etc/klokast/platform-resources/desired.json
+    content: "{{ platform_resources_desired_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Persist shared Xen guest dom0 state
+  when:
+    - platform_shared_guest_operation == "apply"
+    - platform_resources_desired_json is defined
+
+- name: Flush shared Xen guest persistence before runtime changes
+  ansible.builtin.meta: flush_handlers
+  when: platform_shared_guest_operation == "apply"
+
+- name: Converge shared Xen guest runtime state
+  ansible.builtin.include_tasks: apply-one.yml
+  loop: "{{ platform_shared_guest_roles }}"
+  loop_control:
+    loop_var: platform_shared_guest_role
+    label: "{{ node_name }}:{{ platform_shared_guest_role }}"
+  when: platform_shared_guest_operation == "apply"
+
+- name: Verify shared Xen guest runtime state
+  ansible.builtin.include_tasks: verify-one.yml
+  loop: "{{ platform_shared_guest_roles }}"
+  loop_control:
+    loop_var: platform_shared_guest_role
+    label: "{{ node_name }}:{{ platform_shared_guest_role }}"
+  when: platform_shared_guest_operation == "verify"
+
