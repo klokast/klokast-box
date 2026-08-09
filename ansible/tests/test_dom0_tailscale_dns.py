@@ -27,6 +27,8 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("resolv\\\\.conf overwritten|dns-fight", text)
         self.assertIn("tailscale set --accept-dns=false", text)
         self.assertIn("tailscale set --accept-dns=true", text)
+        self.assertIn("Keep Tailscale updates under controller APK policy", text)
+        self.assertIn("--auto-update=false", text)
         self.assertIn("wait_for_connection", text)
         self.assertIn("rc-service tailscale restart", text)
         self.assertIn("async: 120", text)
@@ -96,11 +98,14 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("udhcpc openresolv hook is missing or not executable", health)
         self.assertIn("can't reach (?:the )?configured DNS servers", health)
         self.assertIn("signature mismatch", health)
+        self.assertIn("Tailscale self-update can bypass the controller APK policy", health)
+        self.assertIn('"tailscale_auto_update_apply"', health)
 
     def test_dom0_overview_mentions_dns_repair(self):
         text = DOM0_PLAYBOOK_OVERVIEW.read_text(encoding="utf-8")
 
         self.assertIn("repairs overwritten `/etc/resolv.conf`", text)
+        self.assertIn("disable Tailscale self-update", text)
 
 
 if __name__ == "__main__":

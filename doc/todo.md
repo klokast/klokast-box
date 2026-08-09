@@ -26,7 +26,9 @@ therefore have performed an unreviewed release upgrade.
 The dom0 APK policy now pins repositories to v3.23, refuses to run when the
 live release does not match that branch, and reconciles all installed packages
 to versions available from the branch. Keep the branch update coupled to a
-reviewed Alpine release-upgrade canary. Do not restore `latest-stable`.
+reviewed Alpine release-upgrade canary. The dom0 Tailscale role also disables
+Tailscale self-update so that it cannot bypass this package policy. Do not
+restore `latest-stable` or enable Tailscale self-update on dom0.
 
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 

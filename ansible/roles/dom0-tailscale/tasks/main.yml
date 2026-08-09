@@ -186,6 +186,26 @@
     - tailscale_prefs_json.rc == 0
     - tailscale_prefs_json.stdout | length > 0
 
+- name: Detect whether Tailscale can update outside APK policy
+  ansible.builtin.set_fact:
+    tailscale_self_update_is_enabled: >-
+      {{
+        (tailscale_prefs_parsed.AutoUpdate | default({})).Apply
+        | default(false)
+        | bool
+      }}
+
+- name: Keep Tailscale updates under controller APK policy
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - set
+      - --auto-update=false
+  when:
+    - tailscale_prefs_json.rc | default(1) == 0
+    - tailscale_self_update_is_enabled | bool
+  notify: Commit lbu changes
+
 - name: Detect whether Tailscale DNS is disabled
   ansible.builtin.set_fact:
     tailscale_dns_is_disabled: "{{ (tailscale_prefs_parsed.CorpDNS | default(false)) != true }}"

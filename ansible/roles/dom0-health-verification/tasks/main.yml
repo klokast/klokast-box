@@ -266,6 +266,15 @@
         tailscale = json.loads(tailscale_status["stdout"]) if tailscale_status["rc"] == 0 else {}
     except json.JSONDecodeError:
         tailscale = {}
+    tailscale_prefs_status = capture(["tailscale", "debug", "prefs"])
+    try:
+        tailscale_prefs = (
+            json.loads(tailscale_prefs_status["stdout"])
+            if tailscale_prefs_status["rc"] == 0
+            else {}
+        )
+    except json.JSONDecodeError:
+        tailscale_prefs = {}
     mounts = parse_mounts()
     efi_mount = next((m for m in mounts if m["source"] == efi_partition_device), None)
     efi_mount_path = efi_mount["target"] if efi_mount else ""
@@ -558,6 +567,14 @@
     expect(tailscale.get("BackendState") == "Running", "Tailscale backend is not Running")
     expect((tailscale.get("Self") or {}).get("HostName") == node_hostname, "Tailscale hostname does not match node_hostname")
     expect(
+        tailscale_prefs_status["rc"] == 0,
+        f"tailscale preference query failed: {tailscale_prefs_status['stderr'].strip()}",
+    )
+    expect(
+        not bool((tailscale_prefs.get("AutoUpdate") or {}).get("Apply", False)),
+        "Tailscale self-update can bypass the controller APK policy",
+    )
+    expect(
         tailscale_expected_tag in ((tailscale.get("Self") or {}).get("Tags") or []),
         f"Tailscale identity is missing {tailscale_expected_tag}",
     )
@@ -606,6 +623,9 @@
             "dom0_data_mount": dom0_data_mount_path if dom0_data_mount else "",
             "tailscale_hostname": (tailscale.get("Self") or {}).get("HostName", ""),
             "tailscale_tags": (tailscale.get("Self") or {}).get("Tags", []),
+            "tailscale_auto_update_apply": bool(
+                (tailscale_prefs.get("AutoUpdate") or {}).get("Apply", False)
+            ),
             "dom0_admin_user": dom0_admin_user_name,
             "xen_domains": sorted(domains),
             "checked_guests": sorted(checked_guest_names),
