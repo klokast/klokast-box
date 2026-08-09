@@ -146,6 +146,27 @@ Interpretation:
 - If SSH over Tailscale works but HTTP/HTTPS from `ops` time out, check the Tailscale policy before changing NanoKVM. Current policy can intentionally allow `tag:ops` to reach `tag:oob` only on SSH while allowing `group:operators` to reach `tag:oob` on TCP `80` and `443`.
 - If local HTTPS fails or no `80`/`443` listener exists, restart NanoKVM and re-check `/etc/kvm/server.yaml` and `/etc/init.d/S95nanokvm`.
 
+If the service is healthy but an operator device cannot open the MagicDNS URL,
+reconcile the policy from the active controller. Keep NanoKVM web access
+limited to `group:operators`; do not add `tag:ops`, `tag:airunner`, or workload
+tags to the web grant.
+
+```sh
+cd ~/src/klokast/klokast-box
+git pull --ff-only
+ansible/bin/render-tailscale-policy \
+  --deployment-config ~/private/klokast/deployment.yml \
+  --output ~/private/klokast/tailscale-policy.hujson
+doas -n /usr/local/sbin/ts-policy-validate \
+  /home/smith/private/klokast/tailscale-policy.hujson
+doas -n /usr/local/sbin/ts-policy-apply \
+  /home/smith/private/klokast/tailscale-policy.hujson
+```
+
+After apply, test `https://oob.<tailnet>.ts.net/` from an operator-owned
+device. A request from `tag:ops` or `tag:airunner` is not an equivalent test
+because those machine identities intentionally have no NanoKVM web access.
+
 If the NanoKVM menu works but the target display is blank:
 
 ```sh
