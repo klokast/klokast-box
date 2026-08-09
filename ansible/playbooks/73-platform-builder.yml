@@ -8,10 +8,37 @@
     xen_shared_installer_initramfs_path: "{{ dom0_xen_images_path }}/initramfs-virt"
     builder_manifest_data: "{{ lookup('file', builder_manifest) | from_json }}"
   tasks:
-    - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
-      ansible.builtin.import_role:
-        name: alpine-virt-assets
+    - name: Ensure the bounded builder transfer parent exists
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-builder/transfer
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
 
-    - name: Run the sealed Klokast CLI builder lifecycle
-      ansible.builtin.import_role:
-        name: klokast-cli-builder
+    - name: Create operation-specific Ansible transfer scratch space
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: Move Ansible transfer scratch space off the dom0 system filesystem
+      ansible.builtin.set_fact:
+        ansible_remote_tmp: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"
+
+    - name: Run the builder workflow with bounded persistent transfer scratch
+      block:
+        - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
+          ansible.builtin.import_role:
+            name: alpine-virt-assets
+
+        - name: Run the sealed Klokast CLI builder lifecycle
+          ansible.builtin.import_role:
+            name: klokast-cli-builder
+      always:
+        - name: Remove operation-specific Ansible transfer scratch space
+          ansible.builtin.file:
+            path: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"
+            state: absent

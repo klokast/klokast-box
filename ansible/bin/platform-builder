@@ -22,6 +22,8 @@ BASE_INVENTORY = ANSIBLE_DIR / "inventory" / "hosts.yml"
 RENDER_INVENTORY = ANSIBLE_DIR / "bin" / "render-node-inventory"
 CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 OUTPUT_ROOT = Path("/var/lib/klokast/builds")
+MAX_SOURCE_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_IMAGE_ARCHIVE_BYTES = 1024 * 1024 * 1024
 
 GO_IMAGE_NAME = "docker.io/library/golang"
 GO_IMAGE_TAG = "1.24.13-bookworm"
@@ -117,6 +119,13 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def bounded_size(path, maximum, label):
+    size = path.stat().st_size
+    if size <= 0 or size > maximum:
+        raise BuilderError(f"{label} is empty or exceeds its {maximum}-byte size limit")
+    return size
+
+
 def require_active_controller(box):
     if getpass.getuser() != "smith":
         raise BuilderError("run as smith on the active controller")
@@ -179,7 +188,9 @@ def prepare_source_archive(staging, approved_commit):
             approved_commit,
         ]
     )
-    return archive, sha256_file(archive)
+    return archive, sha256_file(archive), bounded_size(
+        archive, MAX_SOURCE_ARCHIVE_BYTES, "source archive"
+    )
 
 
 def inspect_image_archive(path):
@@ -220,19 +231,33 @@ def prepare_image_archive(staging):
         ]
     )
     inspect_image_archive(archive)
-    return archive, sha256_file(archive)
+    return archive, sha256_file(archive), bounded_size(
+        archive, MAX_IMAGE_ARCHIVE_BYTES, "OCI archive"
+    )
 
 
-def write_manifest(staging, *, box, operation_id, approved_commit, source_sha256, image_sha256):
+def write_manifest(
+    staging,
+    *,
+    box,
+    operation_id,
+    approved_commit,
+    source_sha256,
+    source_size,
+    image_sha256,
+    image_size,
+):
     manifest = {
         "schema_version": 1,
         "operation_id": operation_id,
         "box": box,
         "source_commit": approved_commit,
         "source_archive_sha256": source_sha256,
+        "source_archive_size": source_size,
         "image_reference": GO_IMAGE_REFERENCE,
         "image_manifest_digest": GO_IMAGE_DIGEST,
         "image_archive_sha256": image_sha256,
+        "image_archive_size": image_size,
         "build_target": "./cmd/klokast",
     }
     path = safe_child(staging, "manifest.json")
@@ -360,15 +385,17 @@ def build_klokast_cli(args):
         staging.chmod(0o700)
         result_dir = safe_child(staging, "results")
         result_dir.mkdir(mode=0o700)
-        source, source_sha256 = prepare_source_archive(staging, approved_commit)
-        image, image_sha256 = prepare_image_archive(staging)
+        source, source_sha256, source_size = prepare_source_archive(staging, approved_commit)
+        image, image_sha256, image_size = prepare_image_archive(staging)
         manifest = write_manifest(
             staging,
             box=box,
             operation_id=operation_id,
             approved_commit=approved_commit,
             source_sha256=source_sha256,
+            source_size=source_size,
             image_sha256=image_sha256,
+            image_size=image_size,
         )
         command = ansible_command(
             staging,

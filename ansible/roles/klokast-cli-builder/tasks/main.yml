@@ -9,7 +9,13 @@
       - builder_manifest_data.operation_id == builder_operation_id
       - builder_manifest_data.box == builder_box
       - builder_manifest_data.source_archive_sha256 is match('^[0-9a-f]{64}$')
+      - builder_manifest_data.source_archive_size is integer
+      - builder_manifest_data.source_archive_size > 0
+      - builder_manifest_data.source_archive_size <= 67108864
       - builder_manifest_data.image_archive_sha256 is match('^[0-9a-f]{64}$')
+      - builder_manifest_data.image_archive_size is integer
+      - builder_manifest_data.image_archive_size > 0
+      - builder_manifest_data.image_archive_size <= 1073741824
       - builder_manifest_data.image_manifest_digest is match('^sha256:[0-9a-f]{64}$')
       - builder_controller_result_dir is match('^/')
     fail_msg: Klokast CLI builder inputs are invalid or target the wrong dom0.
@@ -30,6 +36,25 @@
     owner: root
     group: root
     mode: "0700"
+
+- name: Measure free persistent staging capacity
+  ansible.builtin.command:
+    argv:
+      - df
+      - -Pk
+      - /mnt/dom0_data
+  register: builder_staging_capacity
+  changed_when: false
+
+- name: Require bounded free capacity for transfer and stopped-guest staging
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((builder_staging_capacity.stdout_lines[-1].split()[3] | int) * 1024)
+        >=
+        (((builder_manifest_data.source_archive_size | int)
+        + (builder_manifest_data.image_archive_size | int)) * 2 + 536870912)
+    fail_msg: Insufficient /mnt/dom0_data capacity for bounded builder staging.
 
 - name: Refuse a pre-existing operation staging directory
   ansible.builtin.stat:

@@ -116,6 +116,14 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             command = [str(item) for item in run.call_args.args[0]]
             self.assertEqual(command[command.index("--authfile") + 1], str(authfile))
 
+    def test_staged_inputs_have_fixed_size_limits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "input"
+            path.write_bytes(b"x")
+            self.assertEqual(self.mod.bounded_size(path, 1, "input"), 1)
+            with self.assertRaisesRegex(self.mod.BuilderError, "size limit"):
+                self.mod.bounded_size(path, 0, "input")
+
     def write_result(self, directory, *, test_result="success", binary_hash=None):
         binary = directory / "klokast"
         binary.write_bytes(b"verified binary")
@@ -223,6 +231,16 @@ class PlatformBuilderDom0Test(unittest.TestCase):
         tasks = ROLE_TASKS.read_text(encoding="utf-8")
         self.assertLess(tasks.index("Fetch available stopped-guest results"), tasks.index("Remove per-operation staging"))
         self.assertIn("alpine-virt-assets", PLAYBOOK.read_text(encoding="utf-8"))
+
+    def test_large_transfers_use_bounded_dom0_data_scratch(self):
+        playbook = PLAYBOOK.read_text(encoding="utf-8")
+        tasks = ROLE_TASKS.read_text(encoding="utf-8")
+        self.assertIn("/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}", playbook)
+        self.assertIn("ansible_remote_tmp:", playbook)
+        self.assertIn("Remove operation-specific Ansible transfer scratch space", playbook)
+        self.assertIn("source_archive_size <= 67108864", tasks)
+        self.assertIn("image_archive_size <= 1073741824", tasks)
+        self.assertIn("536870912", tasks)
 
     def test_controller_convergence_installs_oci_transport(self):
         controller = CONTROLLER_PLAYBOOK.read_text(encoding="utf-8")
