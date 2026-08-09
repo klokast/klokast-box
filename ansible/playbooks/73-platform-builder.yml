@@ -8,6 +8,14 @@
     xen_shared_installer_initramfs_path: "{{ dom0_xen_images_path }}/initramfs-virt"
     builder_manifest_data: "{{ lookup('file', builder_manifest) | from_json }}"
   tasks:
+    - name: Ensure the traversable builder scratch root exists
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-builder
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
+
     - name: Ensure the bounded builder transfer parent exists
       ansible.builtin.file:
         path: /mnt/dom0_data/klokast-builder/transfer

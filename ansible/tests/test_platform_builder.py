@@ -235,6 +235,8 @@ class PlatformBuilderDom0Test(unittest.TestCase):
     def test_large_transfers_use_bounded_dom0_data_scratch(self):
         playbook = PLAYBOOK.read_text(encoding="utf-8")
         tasks = ROLE_TASKS.read_text(encoding="utf-8")
+        self.assertIn("path: /mnt/dom0_data/klokast-builder\n", playbook)
+        self.assertIn('mode: "0711"', playbook)
         self.assertIn("/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}", playbook)
         self.assertIn("ansible_remote_tmp:", playbook)
         self.assertIn("Remove operation-specific Ansible transfer scratch space", playbook)
