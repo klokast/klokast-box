@@ -1,15 +1,6 @@
 ---
 contract: 1
-# contract: version of the complete repository and directory interface
-# schema_version: version of an individual YAML document, such as `deployment.yml` and `platform-resources.yml`
-# An incompatible change to the repository structure increments `contract`.
-# Adding an optional deployment field may only increment (and may not require incrementing) the individual `schema_version`.
-
-upstream:
-  repository: https://github.com/klokast/klokast-box
 
 paths:
   deployment: ops/deployment.yml
   platform_resources: ops/platform-resources.yml
-  app_configuration: apps
-  extensions: extensions

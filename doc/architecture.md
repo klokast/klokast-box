@@ -390,41 +390,27 @@ Examples of User Services:
 
 # Persistence
 
-Persistence of infrastructure services state is specified in xxxx .
-It can happen through:
-- files replicated inside the Platform: across the boxes, `og`, or `<cloud>-ops`.
-- Git repositories on a git service hosted by a 3rd party service (e.g. Github or Gitlab) or hosted as a User Service of the Platform
-- 3rd party cloud services, such as Google Drive or AWS Glacier.
+Persistence uses separate assets with separate authority:
 
-Persistence of User Services data must be defined by each service.
+- public `klokast-box`: generic implementation, schemas, CLI, public app
+  manifests, automation, and the canonical instance template;
+- one private `klokast-instance`: declared deployment desired state and an
+  immutable engine lock, never a fork of the implementation;
+- `/etc/klokast`: active-controller secrets and credentials outside Git;
+- `/var/lib/klokast`: generated and observed controller state, including
+  inventories, facts, plans, provenance, receipts, and verified build outputs;
+- application storage: persistent user-service data.
 
-The developer works on the Klokast upstream repo.
-Each deployed Platform has its own deployment fork.
-Each deployed Platform also has private deployment state in a private repo.
-Raw secrets live in the `broker` service, not in either code repo.
+Contract v1 contains only `klokast.yml`, `klokast.lock.yml`, the deployment
+document, and the platform-resource document as authoritative inputs. It has no
+private app-configuration, extension, generated-state, inventory, or
+site-executor interface. Site executors require a later deployment schema
+version. See `doc/upstream-instance-target-architecture.md`.
 
-## Klokast upstream Git repo
-- Shall not contain state that is specific to a specific Platform deployment:
-  - `github.com/klokast/klokast-box`: Ansible automation, inventories, facts, and runbooks for provisioning the managed bare-metal and VM fleet.
-  - `github.com/klokast/klokast-dev`
-  - `github.com/klokast/klokast-box/klokast-ops/`: Infrastructure-as-Code for creating and maintaining the remote deployment/control server, including setting up Tailscale.
-- the upstream git repo is cloned to `<box>-ops` on all boxes, to `airunner`.
-
-## Deployment playbooks and wrapper repo
-- `github.com/klokast/Klokast-ops/bin/provision-vultr-ops`
-- `github.com/klokast/klokast-ops/terraform/vultr-ops`
-
-## Deployment fork
-- `github.com/<family>/klokast-box`
-- private fork of Klokast upstream repository
-- Contains configuration and customizations specific to a specific Platform deployment
-- Doesn't contain secrets such as passwords and API keys
-
-## private state Git repo
-- `github.com/<family>/klokast-state`
-- Private repo, possibly encrypted
-- Contains registry, Terraform state backups, inventory overlays, artifacts checksums, and possibly encrypted secrets
-- Doesn't contain unencrypted secrets such as Tailscale API keys
+The active controller is the only Platform mutation locus and secret custodian.
+Airunners may author reviewed upstream or instance Git changes but do not hold
+controller-private state. Deployable `klokast` binaries are built only by the
+active controller through the networkless Xen `platform-builder` profile.
 
 ## files locally stored in the boxes
 - unique to each box:

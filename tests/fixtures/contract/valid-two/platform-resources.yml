@@ -1,0 +1,30 @@
+---
+schema_version: 1
+
+boxes:
+  box-001:
+    access:
+      declared_capabilities: [overlay, direct-ingress]
+      enabled_capabilities: [overlay]
+      prohibited_capabilities: [direct-ingress]
+      policy:
+        private-service-ingress: overlay
+        public-ingress: none
+  box-002:
+    access:
+      declared_capabilities: [overlay, direct-ingress]
+      enabled_capabilities: [overlay]
+      prohibited_capabilities: [direct-ingress]
+      policy:
+        private-service-ingress: overlay
+        public-ingress: none
+
+apps:
+  nextcloud:
+    enabled: false
+    placement:
+      mode: active_passive
+      active_master: box-001
+      passive_backup: box-002
+    resources:
+      cloudflare-tunnel-egress: false

@@ -1,0 +1,12 @@
+.klokast/
+.generated/
+generated/
+runtime/
+state/
+secrets/
+.env
+*.key
+*.pem
+*.p12
+*.tfstate
+*.tfstate.backup

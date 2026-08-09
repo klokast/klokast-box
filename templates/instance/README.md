@@ -1,72 +1,26 @@
-Private instance template for Klokast deployments. 
+# Klokast instance Contract v1 template
 
-klokast-instance is the template repository for a Klokast deployment instance. It contains the private, deployment-specific layer of the Klokast architecture: infrastructure topology, private identities and group membership, deployment-approved access capabilities, application resource bindings, application configuration, and local extensions.
+This directory is the canonical single-box desired-state template bundled with
+the matching `klokast-box` engine revision. It contains no secrets, generated
+state, private application configuration, or local extension interface.
 
-The instance repository is designed to be used together with the public klokast-box repository, which provides the generic platform implementation, automation, and runtime components. Users should create their own private repository from this template and keep deployment-specific data separate from the upstream platform code.
+Contract v1 has four authoritative files:
 
-Don't clone this repository directly. Create your own private repository from this template to define topology, identities, resource bindings, application configuration, and custom extensions on top of the Klokast platform.
+- `klokast.yml`: contract version and the two desired-state paths;
+- `klokast.lock.yml`: generated engine repository, ref, and full commit lock;
+- `ops/deployment.yml`: topology, identities, and controller/airunner placement;
+- `ops/platform-resources.yml`: access capabilities, app enablement, placement,
+  and public-manifest resource bindings.
 
-This repository defines one Klokast instance.
+The source template intentionally has no `klokast.lock.yml`: a generated
+instance must receive a lock for the exact engine commit used by its
+builder-approved `klokast` binary. Instance generation is a later milestone.
 
-It contains:
-- instance topology and control-plane placement
-- private identities and group membership
-- deployment-approved access capabilities
-- application resource bindings and configuration
-- instance-specific extensions
+For now, validate an existing standalone private instance repository with:
 
-It does NOT contain:
-- Klokast implementation code
-- secrets
-- runtime state
-- generated files
+```sh
+klokast check --instance /path/to/klokast-instance
+```
 
-The implementation comes from:
-https://github.com/klokast/klokast-box
-
-# Boundaries
-
-- `deployment.yml`:
-  - What physical boxes and sites constitute this instance?
-  - Where are mandatory control-plane authorities placed?
-
-- `platform-resources.yml`:
-  - Which applications and optional resources are enabled?
-  - Where are they placed?
-  
-- upstream architecture:
-  - What does every standard box contain automatically?
-
-# Instance rules
-
-The deployment schema `deployment.yml` shall follow these rules:
-
-## Instance rules:
-`instance.name`:
-- required
-- lowercase DNS-style identifier preferred
-
-## Site rules: 
-- at least one site must exist
-- every box.site must reference an existing site
-- timezone must be a valid IANA timezone
-- country should be ISO 3166-1 alpha-2
-
-## Box rules: 
-- at least one box must exist
-- box names must be unique
-- box names must be valid lowercase DNS labels
-- box names must not end in reserved role suffixes such as `-dom0`, `-router`, `-bak`, `-dmz`, `-iot`, `-usr`, and `-ops`.
-
-## Controller rules
-- `controller.active_box` is required
-- `controller.active_box` must reference an existing box
-
-- `controller.standby_box` is optional
-- `controller.standby_box` must reference an existing box
-- `controller.standby_box` must differ from active_box
-
-## Airunner rules
-- airunners must contain at least one entry
-- every airrunner.box must reference an existing box
-- the same box should not appear twice
+The check is offline and non-mutating. Only `check` and `version --json` are
+implemented in this milestone.

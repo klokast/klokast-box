@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.klokast.org/instance-contract-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "paths"],
+  "properties": {
+    "contract": {"const": 1},
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployment", "platform_resources"],
+      "properties": {
+        "deployment": {"type": "string", "minLength": 1, "maxLength": 240},
+        "platform_resources": {"type": "string", "minLength": 1, "maxLength": 240}
+      }
+    }
+  }
+}

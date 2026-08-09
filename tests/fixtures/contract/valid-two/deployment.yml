@@ -1,0 +1,39 @@
+---
+schema_version: 1
+
+instance:
+  name: two-box-klokast
+
+tailnet:
+  magicdns_suffix: example.ts.net
+  groups:
+    operators: [admin@example.com]
+    family: [family@example.com]
+
+sites:
+  site-001:
+    country: XX
+    timezone: Etc/UTC
+  site-002:
+    country: YY
+    timezone: Europe/Paris
+
+boxes:
+  box-001:
+    hostname_prefix: k001
+    site: site-001
+  box-002:
+    hostname_prefix: k002
+    site: site-002
+
+control_plane:
+  controller:
+    active_box: box-001
+    standby_box: box-002
+  airunners:
+    - id: airunner-001
+      kind: box
+      box: box-001
+    - id: airunner-cloud-001
+      kind: external
+      hostname: vultr-ops-airunner
