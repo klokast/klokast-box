@@ -27,6 +27,10 @@
         name: dom0-tailscale
         tasks_from: resolver
 
+    - name: Restore Tailscale DNS before APK network access
+      ansible.builtin.import_role:
+        name: dom0-tailscale
+
     - name: Converge the exact steady-state dom0 package policy
       ansible.builtin.import_role:
         name: dom0-apk-policy

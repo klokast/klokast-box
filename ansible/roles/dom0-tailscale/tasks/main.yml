@@ -53,12 +53,30 @@
         )
       }}
 
+- name: Detect Tailscale DNS failure with an available system resolver
+  ansible.builtin.set_fact:
+    tailscale_dns_restart_required: >-
+      {{
+        (
+          tailscale_status_parsed.Health | default([])
+          | select(
+              'search',
+              "can't reach (the )?configured DNS servers|failed to fetch the DNS configuration"
+            )
+          | list
+          | length
+        ) > 0
+        and not (dom0_openresolv_source_was_missing | bool)
+      }}
+
 - name: Detect whether Tailscale must restart outside its SSH session
   ansible.builtin.set_fact:
     tailscale_restart_required: >-
       {{
         (tailscale_daemon_version_mismatch | bool)
         or (dom0_openresolv_repair_was_required | default(false) | bool)
+        or (tailscale_dns_restart_required | bool)
+        or (dom0_apk_release_reconcile.changed | default(false) | bool)
       }}
 
 - name: Launch a detached Tailscale restart when required
@@ -118,6 +136,11 @@
     fail_msg: >-
       Tailscale did not return with a running daemon that matches the installed
       CLI after the detached restart.
+  when: tailscale_restart_required | bool
+
+- name: Clear the completed resolver restart request
+  ansible.builtin.set_fact:
+    dom0_openresolv_repair_was_required: false
   when: tailscale_restart_required | bool
 
 - name: Collect Tailscale preferences

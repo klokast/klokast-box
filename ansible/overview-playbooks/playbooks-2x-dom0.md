@@ -21,6 +21,7 @@ Replace the temporary bootstrap Tailscale identity with the steady-state dom0 id
 # 22-dom0-base-verify.yml
 Verify dom0 base state from the steady-state identity and finalize persisted Tailscale settings.
 - Refresh the controller dom0 known-hosts entry, then gather facts from the steady-state host.
+- `dom0-tailscale` preflight: publish a missing WAN DNS source and, when required, complete a detached Tailscale restart before APK needs network access.
 - `dom0-apk-policy`: converge the pinned release repositories, exact package world, installed dependency closure, and locked APK guard again from the steady-state dom0 identity. This path also repairs existing boxes that no longer have the bootstrap identity.
 - `dom0-tailscale`: feed the WAN DHCP resolver into `openresolv` without allowing `udhcpc` to overwrite Tailscale-owned `/etc/resolv.conf`; keep Tailscale running; when the daemon version differs from the CLI version or the resolver source required repair, launch the restart as an Ansible async job that is detached from the Tailscale SSH session, wait for reconnection, and verify the OpenRC service, backend state, and daemon version; ensure Tailscale accepts Tailnet DNS and repairs overwritten `/etc/resolv.conf`; align the advertised hostname with `node_hostname`; and ensure `tailscale_persist_paths` are tracked by `lbu`.
 - `(flush_handlers)`: run `apk cache sync` and `lbu commit -d` before verification.

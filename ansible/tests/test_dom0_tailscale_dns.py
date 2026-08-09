@@ -60,12 +60,19 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("kill -USR1", resolver_text)
         self.assertIn("dom0_openresolv_repair_was_required", resolver_text)
         self.assertIn("tailscale_restart_required", text)
+        self.assertIn("tailscale_dns_restart_required", text)
+        self.assertIn("dom0_apk_release_reconcile.changed", text)
+        self.assertIn("Clear the completed resolver restart request", text)
 
         playbook = (
             REPO_ROOT / "ansible" / "playbooks" / "22-dom0-base-verify.yml"
         ).read_text(encoding="utf-8")
         self.assertLess(
             playbook.index("Repair the dom0 resolver source before APK network access"),
+            playbook.index("Converge the exact steady-state dom0 package policy"),
+        )
+        self.assertLess(
+            playbook.index("Restore Tailscale DNS before APK network access"),
             playbook.index("Converge the exact steady-state dom0 package policy"),
         )
 
