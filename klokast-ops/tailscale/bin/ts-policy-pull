@@ -22,7 +22,8 @@ run_as_write_user() {
     runuser -u "$WRITE_USER" -- "$@"
     return
   fi
-  su "$WRITE_USER" -s /bin/sh -c 'exec "$@"' sh "$@"
+  # BusyBox su parses option-shaped child arguments unless -- separates them.
+  su "$WRITE_USER" -s /bin/sh -c 'exec "$@"' sh -- "$@"
 }
 
 tmpdir="$(mktemp -d)"
