@@ -59,12 +59,19 @@
         )
       }}
 
-- name: Schedule Tailscale restart when daemon version lags the CLI
+- name: Launch a detached Tailscale restart when daemon version lags the CLI
   ansible.builtin.shell: |
     set -eu
-    ( sleep 1; rc-service tailscale restart ) >/tmp/klokast-tailscale-restart.log 2>&1 &
+    sleep 3
+    rc-service tailscale restart >/tmp/klokast-tailscale-restart.log 2>&1
   args:
     executable: /bin/sh
+  async: 120
+  poll: 0
+  vars:
+    # The async wrapper double-forks away from the Tailscale SSH session. Keep
+    # its result in RAM because the dom0 admin home is persisted by lbu.
+    ansible_async_dir: /tmp/klokast-ansible-async
   changed_when: true
   when: tailscale_daemon_version_mismatch | bool
   notify: Commit lbu changes
@@ -81,6 +88,11 @@
     timeout: 120
   when: tailscale_daemon_version_mismatch | bool
 
+- name: Verify the Tailscale OpenRC service after daemon restart
+  ansible.builtin.command: /sbin/rc-service tailscale status
+  changed_when: false
+  when: tailscale_daemon_version_mismatch | bool
+
 - name: Recollect Tailscale runtime status after daemon restart
   ansible.builtin.command: tailscale status --json
   register: tailscale_status_json_after_restart
@@ -91,6 +103,19 @@
   ansible.builtin.set_fact:
     tailscale_status_json: "{{ tailscale_status_json_after_restart }}"
     tailscale_status_parsed: "{{ tailscale_status_json_after_restart.stdout | from_json }}"
+  when: tailscale_daemon_version_mismatch | bool
+
+- name: Verify the restarted Tailscale daemon
+  ansible.builtin.assert:
+    that:
+      - tailscale_status_parsed.BackendState | default('') == 'Running'
+      - >-
+        (tailscale_status_parsed.Version | default('') | regex_replace('-.*$', ''))
+        ==
+        (tailscale_cli_version.stdout | default('') | trim | regex_replace('-.*$', ''))
+    fail_msg: >-
+      Tailscale did not return with a running daemon that matches the installed
+      CLI after the detached restart.
   when: tailscale_daemon_version_mismatch | bool
 
 - name: Collect Tailscale preferences
