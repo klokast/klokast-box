@@ -1,0 +1,24 @@
+---
+- name: Sync dom0 APK cache
+  ansible.builtin.command: /sbin/apk cache sync
+  changed_when: true
+  listen: Sync dom0 APK cache
+
+- name: Commit dom0 package policy
+  ansible.builtin.shell: |
+    set -eu
+    backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+    if [ -n "$backupdir" ]; then
+      mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+      if [ -n "$mount_info" ]; then
+        set -- $mount_info
+        case ",$2," in
+          *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+        esac
+      fi
+    fi
+    /sbin/lbu commit -d
+  args:
+    executable: /bin/sh
+  changed_when: true
+  listen: Commit dom0 package policy

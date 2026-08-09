@@ -17,6 +17,7 @@ Build the sealed Alpine VIRT Podman template LV directly on dom0 without QEMU/HV
   - leave only generic/template identity: no hostname-specific Tailscale state, no SSH host keys, and loopback-only networking.
   - leave Tailscale and Podman installation to playbook 69, after each clone boots as a normal VM.
 - `(Persist Podman golden-image build state on the diskless dom0 host)`.
+- `dom0-apk-policy`: permit the image tools only in RAM, then remove them and restore the exact world before persistence.
 
 # 41-vm-backend.yml
 Clone, personalize, render, and boot the backend Podman VM from the template.
@@ -28,6 +29,7 @@ Clone, personalize, render, and boot the backend Podman VM from the template.
 - `xen-guest`: render `/etc/xen/bak.cfg` in installed stage.
 - `xen-guest-instance`: start `bak`.
 - `(Persist backend guest state on the diskless dom0 host)`.
+- `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
 
 # 42-vm-dmz.yml
 Clone, personalize, render, and boot the DMZ Podman VM from the template.
@@ -39,6 +41,7 @@ Clone, personalize, render, and boot the DMZ Podman VM from the template.
 - `xen-guest`: render `/etc/xen/dmz.cfg` in installed stage.
 - `xen-guest-instance`: start `dmz`.
 - `(Persist dmz guest state on the diskless dom0 host)`.
+- `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
 
 # 43-vm-iot.yml
 Clone, personalize, render, and boot the IoT Podman VM from the template.
@@ -50,6 +53,7 @@ Clone, personalize, render, and boot the IoT Podman VM from the template.
 - `xen-guest`: render `/etc/xen/iot.cfg` in installed stage.
 - `xen-guest-instance`: start `iot`.
 - `(Persist iot guest state on the diskless dom0 host)`.
+- `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
 
 # 44-vm-podman-guests-runtime.yml
 

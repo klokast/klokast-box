@@ -7,6 +7,50 @@ ansible_become_timeout: 30
 ansible_remote_tmp: /tmp
 ansible_python_interpreter: /usr/bin/python3
 
+# `/etc/apk/world` on every steady-state dom0 must contain exactly this set.
+# Keep only runtime and local recovery requirements here. Image acquisition,
+# partition mapping, and guest image construction use the bounded maintenance
+# set below and must converge back to this list before `lbu commit`.
+dom0_world_packages:
+  - alpine-base
+  - alpine-conf
+  - bridge-utils
+  - busybox-mdev-openrc
+  - doas
+  - e2fsprogs
+  - lvm2
+  - python3
+  - tailscale
+  - tailscale-openrc
+  - xen
+  - xen-hypervisor
+
+# These packages can exist in RAM during a checked-in maintenance workflow.
+# They must never remain in the persisted dom0 APK world.
+dom0_maintenance_package_allowlist:
+  - curl
+  - e2fsprogs-extra
+  - gzip
+  - kpartx
+  - sfdisk
+  - tar
+  - util-linux
+  - xorriso
+dom0_forbidden_steady_state_packages:
+  - curl
+  - e2fsprogs-extra
+  - gzip
+  - kpartx
+  - libcurl
+  - openssl
+  - sfdisk
+  - tar
+  - util-linux
+  - xorriso
+dom0_apk_commit_hook_path: /etc/apk/commit_hooks.d/20-klokast-dom0-world-guard
+dom0_apk_unlock_path: /run/klokast-dom0-apk-unlocked
+dom0_apk_unlock_content: klokast-dom0-apk-maintenance-v1
+
 dom0_bootstrap_ansible_user: root
 dom0_bootstrap_ansible_become: false
 tailscale_handoff_authkey_wrapper: /usr/local/sbin/ts-authkey-dom0

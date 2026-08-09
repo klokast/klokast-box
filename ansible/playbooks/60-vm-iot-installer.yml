@@ -8,6 +8,14 @@
     iot_clone_target_lv: /dev/vg0/lv_podman_iot
     iot_clone_target_mount_path: /tmp/iot-root
     iot_clone_bootstrap_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+  pre_tasks:
+    - name: Unlock reviewed legacy IoT clone maintenance packages in RAM
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
+      vars:
+        dom0_maintenance_packages:
+          - kpartx
   tasks:
     - name: Ensure the iot guest is stopped before any clone work
       ansible.builtin.import_role:
@@ -229,3 +237,8 @@
         msg:
           - "The iot guest disk now comes from the dmz reference VM instead of an interactive console install."
           - "Run the installed-stage playbook next to extract iot-kernel/iot-initramfs and boot the guest without the ISO."
+  post_tasks:
+    - name: Remove legacy IoT clone maintenance packages and lock APK
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-lock.yml

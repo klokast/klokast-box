@@ -22,12 +22,47 @@
     mode: "0755"
   when: platform_app_vm_host_specs | length > 0
 
-- name: Converge platform app VMs on this dom0
-  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/platform-app-vm-one.yml"
-  loop: "{{ platform_app_vm_host_specs }}"
-  loop_control:
-    loop_var: app_vm
-    label: "{{ app_vm.inventory_hostname }}"
+- name: Select transient packages for app VM offline convergence
+  ansible.builtin.set_fact:
+    platform_app_vm_dom0_maintenance_packages: >-
+      {{
+        ['kpartx']
+        + (
+          ['curl', 'e2fsprogs-extra', 'gzip', 'util-linux']
+          if (
+            platform_app_vm_offline_converge_specs
+            | default([])
+            | selectattr('guest_spec.guest_os', 'equalto', 'debian')
+            | list
+            | length
+          ) > 0
+          else []
+        )
+      }}
+  when: platform_app_vm_offline_converge_specs | default([]) | length > 0
+
+- name: Unlock reviewed app VM maintenance packages in RAM
+  ansible.builtin.import_role:
+    name: dom0-apk-policy
+    tasks_from: maintenance-unlock.yml
+  vars:
+    dom0_maintenance_packages: "{{ platform_app_vm_dom0_maintenance_packages }}"
+  when: platform_app_vm_offline_converge_specs | default([]) | length > 0
+
+- name: Converge app VM disks with transient dom0 tooling
+  block:
+    - name: Converge platform app VMs on this dom0
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/platform-app-vm-one.yml"
+      loop: "{{ platform_app_vm_host_specs }}"
+      loop_control:
+        loop_var: app_vm
+        label: "{{ app_vm.inventory_hostname }}"
+  always:
+    - name: Remove app VM maintenance packages and lock APK
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-lock.yml
+      when: platform_app_vm_offline_converge_specs | default([]) | length > 0
 
 - name: Flush dom0 handlers after platform app VM changes
   ansible.builtin.meta: flush_handlers

@@ -21,23 +21,38 @@
         xen_guest_config_path: "{{ dmz_installed_spec.config_path }}"
         xen_guest_runtime_state: stopped
 
-    - name: Clone and personalize the dmz guest disk from the Podman template
+    - name: Unlock reviewed DMZ clone maintenance packages in RAM
       ansible.builtin.import_role:
-        name: podman-guest-clone
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
       vars:
-        podman_clone_guest_spec: "{{ dmz_installed_spec }}"
-        podman_clone_inventory_host: "{{ node_name }}-dmz"
+        dom0_maintenance_packages:
+          - kpartx
 
-    - name: Copy the installed dmz kernel and initramfs into dom0 shared storage
-      ansible.builtin.import_role:
-        name: xen-guest-artifacts
-      vars:
-        xen_guest_name: "{{ dmz_installed_spec.guest_name }}"
-        xen_guest_lv_path: "{{ dmz_installed_spec.installed.required_lvs | default(dmz_installed_spec.required_lvs) | first }}"
-        xen_guest_kernel_source_name: vmlinuz-virt
-        xen_guest_initramfs_source_name: initramfs-virt
-        xen_guest_kernel_dest_path: "{{ dmz_installed_spec.installed.kernel_path }}"
-        xen_guest_initramfs_dest_path: "{{ dmz_installed_spec.installed.initramfs_path }}"
+    - name: Clone the DMZ disk with transient dom0 tooling
+      block:
+        - name: Clone and personalize the DMZ guest disk from the Podman template
+          ansible.builtin.import_role:
+            name: podman-guest-clone
+          vars:
+            podman_clone_guest_spec: "{{ dmz_installed_spec }}"
+            podman_clone_inventory_host: "{{ node_name }}-dmz"
+
+        - name: Copy the installed DMZ kernel and initramfs into dom0 shared storage
+          ansible.builtin.import_role:
+            name: xen-guest-artifacts
+          vars:
+            xen_guest_name: "{{ dmz_installed_spec.guest_name }}"
+            xen_guest_lv_path: "{{ dmz_installed_spec.installed.required_lvs | default(dmz_installed_spec.required_lvs) | first }}"
+            xen_guest_kernel_source_name: vmlinuz-virt
+            xen_guest_initramfs_source_name: initramfs-virt
+            xen_guest_kernel_dest_path: "{{ dmz_installed_spec.installed.kernel_path }}"
+            xen_guest_initramfs_dest_path: "{{ dmz_installed_spec.installed.initramfs_path }}"
+      always:
+        - name: Remove DMZ clone maintenance packages and lock APK
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-lock.yml
 
     - name: Render the installed-stage dmz Xen guest configuration
       ansible.builtin.import_role:

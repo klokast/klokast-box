@@ -20,15 +20,6 @@
       - builder_controller_result_dir is match('^/')
     fail_msg: Klokast CLI builder inputs are invalid or target the wrong dom0.
 
-- name: Install bounded dom0 tooling required by the ephemeral builder
-  community.general.apk:
-    name:
-      - e2fsprogs
-      - kpartx
-      - lvm2
-      - sfdisk
-    state: present
-
 - name: Ensure the persistent builder staging parent exists
   ansible.builtin.file:
     path: /mnt/dom0_data/klokast-builder/staging

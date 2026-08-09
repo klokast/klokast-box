@@ -20,15 +20,6 @@
   when: system_identity_current_hostname.stdout != node_hostname
   changed_when: system_identity_current_hostname.stdout != node_hostname
 
-- name: Ensure doas is installed
-  community.general.apk:
-    name:
-      - doas
-    state: present
-  notify:
-    - Sync APK cache
-    - Commit lbu changes
-
 - name: Require a private dom0 console password hash
   ansible.builtin.assert:
     that:

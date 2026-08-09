@@ -4,13 +4,6 @@
 #   and initramfs used by managed Xen guests.
 #
 ---
-- name: Ensure Alpine VIRT asset tooling is installed
-  community.general.apk:
-    name:
-      - curl
-      - xorriso
-    state: present
-
 - name: Ensure the dom0 Xen image directory exists
   ansible.builtin.file:
     path: "{{ dom0_xen_images_path }}"

@@ -22,6 +22,10 @@
     - name: Gather facts from the steady-state dom0 identity
       ansible.builtin.setup:
 
+    - name: Converge the exact steady-state dom0 package policy
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+
     - name: Converge Tailscale runtime settings
       ansible.builtin.import_role:
         name: dom0-tailscale

@@ -54,15 +54,6 @@
       rendering. Review the live default route and NIC state before writing the
       steady-state bridge configuration.
 
-- name: Ensure bridge tooling is installed
-  community.general.apk:
-    name:
-      - bridge-utils
-    state: present
-  notify:
-    - Sync APK cache
-    - Commit lbu changes
-
 - name: Ensure bridge kernel module loads at boot
   ansible.builtin.lineinfile:
     path: /etc/modules

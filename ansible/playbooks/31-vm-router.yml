@@ -102,23 +102,38 @@
       when:
         - xen_guest_definition_changed | default(false) or router_runtime_vif_mismatch | default(false)
 
-    - name: Seed first-contact router SSH and bootstrap network access when Tailscale is absent
-      ansible.builtin.import_role:
-        name: xen-guest-bootstrap
-      vars:
-        xen_guest_name: "{{ node_xen_guest_specs.router.guest_name }}"
-        xen_guest_lv_path: "{{ node_xen_guest_specs.router.required_lvs | first }}"
-        xen_guest_bootstrap_authorized_key_file: "{{ hostvars[node_name ~ '-router'].vm_admin_authorized_key_file }}"
-        xen_guest_bootstrap_network_interfaces: |
-          auto lo
-          iface lo inet loopback
+    - name: Seed first-contact router state with transient dom0 tooling
+      block:
+        - name: Unlock reviewed router bootstrap maintenance packages in RAM
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-unlock.yml
+          vars:
+            dom0_maintenance_packages:
+              - kpartx
 
-          auto eth0
-          iface eth0 inet dhcp
+        - name: Seed first-contact router SSH and bootstrap network access
+          ansible.builtin.import_role:
+            name: xen-guest-bootstrap
+          vars:
+            xen_guest_name: "{{ node_xen_guest_specs.router.guest_name }}"
+            xen_guest_lv_path: "{{ node_xen_guest_specs.router.required_lvs | first }}"
+            xen_guest_bootstrap_authorized_key_file: "{{ hostvars[node_name ~ '-router'].vm_admin_authorized_key_file }}"
+            xen_guest_bootstrap_network_interfaces: |
+              auto lo
+              iface lo inet loopback
 
-          auto eth3
-          iface eth3 inet static
-              address {{ hostvars[node_name ~ '-router'].router_bootstrap_host }}/{{ hostvars[node_name ~ '-router'].router_backend_ipv4_prefix }}
+              auto eth0
+              iface eth0 inet dhcp
+
+              auto eth3
+              iface eth3 inet static
+                  address {{ hostvars[node_name ~ '-router'].router_bootstrap_host }}/{{ hostvars[node_name ~ '-router'].router_backend_ipv4_prefix }}
+      always:
+        - name: Remove router bootstrap maintenance packages and lock APK
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-lock.yml
       when:
         - hostvars[node_name ~ '-router'].router_bootstrap_seed_access | default(true)
         - router_steady_state_tailscale_check.rc != 0

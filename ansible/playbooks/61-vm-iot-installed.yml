@@ -14,24 +14,39 @@
         xen_guest_config_path: "{{ node_xen_guest_specs.iot.config_path }}"
         xen_guest_runtime_state: stopped
 
-    - name: Copy the installed iot kernel and initramfs into dom0 shared storage
+    - name: Unlock reviewed IoT install maintenance packages in RAM
       ansible.builtin.import_role:
-        name: xen-guest-artifacts
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
       vars:
-        xen_guest_name: "{{ node_xen_guest_specs.iot.guest_name }}"
-        xen_guest_lv_path: "{{ node_xen_guest_specs.iot.required_lvs | first }}"
-        xen_guest_kernel_source_name: vmlinuz-virt
-        xen_guest_initramfs_source_name: initramfs-virt
-        xen_guest_kernel_dest_path: "{{ dom0_xen_images_path }}/iot-kernel"
-        xen_guest_initramfs_dest_path: "{{ dom0_xen_images_path }}/iot-initramfs"
+        dom0_maintenance_packages:
+          - kpartx
 
-    - name: Seed first-boot iot guest access on the installed root filesystem
-      ansible.builtin.import_role:
-        name: xen-guest-bootstrap
-      vars:
-        xen_guest_name: "{{ node_xen_guest_specs.iot.guest_name }}"
-        xen_guest_lv_path: "{{ node_xen_guest_specs.iot.required_lvs | first }}"
-        xen_guest_bootstrap_authorized_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+    - name: Prepare the IoT disk with transient dom0 tooling
+      block:
+        - name: Copy the installed IoT kernel and initramfs into dom0 shared storage
+          ansible.builtin.import_role:
+            name: xen-guest-artifacts
+          vars:
+            xen_guest_name: "{{ node_xen_guest_specs.iot.guest_name }}"
+            xen_guest_lv_path: "{{ node_xen_guest_specs.iot.required_lvs | first }}"
+            xen_guest_kernel_source_name: vmlinuz-virt
+            xen_guest_initramfs_source_name: initramfs-virt
+            xen_guest_kernel_dest_path: "{{ dom0_xen_images_path }}/iot-kernel"
+            xen_guest_initramfs_dest_path: "{{ dom0_xen_images_path }}/iot-initramfs"
+
+        - name: Seed first-boot IoT guest access on the installed root filesystem
+          ansible.builtin.import_role:
+            name: xen-guest-bootstrap
+          vars:
+            xen_guest_name: "{{ node_xen_guest_specs.iot.guest_name }}"
+            xen_guest_lv_path: "{{ node_xen_guest_specs.iot.required_lvs | first }}"
+            xen_guest_bootstrap_authorized_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
+      always:
+        - name: Remove IoT install maintenance packages and lock APK
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-lock.yml
 
     - name: Render the iot Xen config in installed stage
       ansible.builtin.import_role:

@@ -1,0 +1,3 @@
+---
+- name: Converge and lock the steady-state dom0 APK policy
+  ansible.builtin.include_tasks: main.yml

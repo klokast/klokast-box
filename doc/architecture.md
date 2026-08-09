@@ -18,6 +18,11 @@ Each box of the Platform is one mini-PC that implements the same 4-layers archit
   - Xen bridge host
   - local `neo` account for administration and recovery
   - NanoKVM recovery requires local console login as `neo` with a per-box password known to the human operator. Tailscale SSH is the normal remote management path, but it is not sufficient as the only dom0 access path. The `root` password must be locked; blank root console access is forbidden.
+- Package policy:
+  - `/etc/apk/world` is the exact steady-state dom0 package allowlist.
+  - Phase 20 installs the complete runtime and recovery package set together and removes all other world entries.
+  - Image acquisition and guest disk maintenance packages can exist in RAM only during a checked-in maintenance block. The block must restore the exact world and remove the RAM-only APK unlock before any `lbu commit`.
+  - The APK pre-commit hook rejects package transactions unless the reviewed workflow creates the RAM-only unlock. This is a guardrail, not a security boundary, because the controller still has root authority on dom0.
 
 ## Layer 2: Virtual Machines
 - Tailscale tag: `tag:vm`

@@ -3,13 +3,31 @@
   hosts: vm_dom0
   gather_facts: false
   tasks:
-    - name: Prepare shared Alpine VIRT assets on dom0
+    - name: Unlock reviewed Podman image maintenance packages in RAM
       ansible.builtin.import_role:
-        name: alpine-virt-assets
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
+      vars:
+        dom0_maintenance_packages:
+          - curl
+          - kpartx
+          - sfdisk
+          - xorriso
 
-    - name: Build the sealed Alpine Podman template root disk
-      ansible.builtin.import_role:
-        name: podman-template-rootfs
+    - name: Build the Podman image with transient dom0 tooling
+      block:
+        - name: Prepare shared Alpine VIRT assets on dom0
+          ansible.builtin.import_role:
+            name: alpine-virt-assets
+
+        - name: Build the sealed Alpine Podman template root disk
+          ansible.builtin.import_role:
+            name: podman-template-rootfs
+      always:
+        - name: Remove Podman image maintenance packages and lock APK
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-lock.yml
 
     - name: Persist Podman golden-image build state on the diskless dom0 host
       ansible.builtin.shell: |

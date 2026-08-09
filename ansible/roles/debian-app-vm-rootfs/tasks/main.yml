@@ -25,16 +25,6 @@
     debian_app_vm_kernel_dest_path: "{{ platform_app_vm_guest_spec.installed.kernel_path }}"
     debian_app_vm_initramfs_dest_path: "{{ platform_app_vm_guest_spec.installed.initramfs_path }}"
 
-- name: Ensure Debian app VM tooling is installed on dom0
-  community.general.apk:
-    name:
-      - curl
-      - e2fsprogs
-      - e2fsprogs-extra
-      - lvm2
-      - util-linux
-    state: present
-
 - name: Ensure the dom0 Debian app VM work directory exists
   ansible.builtin.file:
     path: "{{ debian_app_vm_work_dir }}"

@@ -1,0 +1,40 @@
+---
+- name: Validate requested dom0 maintenance packages
+  ansible.builtin.assert:
+    that:
+      - dom0_maintenance_packages | default([]) | type_debug == 'list'
+      - dom0_maintenance_packages | length > 0
+      - >-
+        (dom0_maintenance_packages
+        | select('match', '^[a-z0-9][a-z0-9+_.-]*$')
+        | list
+        | length) == (dom0_maintenance_packages | length)
+      - >-
+        (dom0_maintenance_packages
+        | difference(dom0_maintenance_package_allowlist)
+        | length) == 0
+    fail_msg: Dom0 maintenance packages are outside the reviewed allowlist.
+
+- name: Unlock the reviewed dom0 maintenance transaction in RAM
+  ansible.builtin.copy:
+    dest: "{{ dom0_apk_unlock_path }}"
+    content: "{{ dom0_apk_unlock_content }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install reviewed dom0 maintenance packages in RAM
+  block:
+    - name: Add reviewed dom0 maintenance packages
+      community.general.apk:
+        name: "{{ dom0_maintenance_packages }}"
+        state: present
+  rescue:
+    - name: Lock APK after a failed maintenance package transaction
+      ansible.builtin.file:
+        path: "{{ dom0_apk_unlock_path }}"
+        state: absent
+
+    - name: Stop after a failed dom0 maintenance package transaction
+      ansible.builtin.fail:
+        msg: Failed to install reviewed dom0 maintenance packages.

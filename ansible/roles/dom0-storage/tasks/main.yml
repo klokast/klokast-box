@@ -3,16 +3,6 @@
 # - Converges persistent dom0 storage on LVM, mounts the dom0 data volume, and keeps the required persistence paths tracked.
 #
 ---
-- name: Ensure dom0 storage prerequisite packages are installed
-  community.general.apk:
-    name:
-      - e2fsprogs
-      - lvm2
-    state: present
-  notify:
-    - Sync APK cache
-    - Commit lbu changes
-
 - name: Collect the current LVM OpenRC runlevels
   # `lvm` must be available in the `boot` runlevel so `/etc/fstab` mounts can
   # see `/dev/vg0/*` before the later runlevels start. Leaving it only in

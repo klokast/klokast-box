@@ -21,23 +21,38 @@
         xen_guest_config_path: "{{ iot_installed_spec.config_path }}"
         xen_guest_runtime_state: stopped
 
-    - name: Clone and personalize the iot guest disk from the Podman template
+    - name: Unlock reviewed IoT clone maintenance packages in RAM
       ansible.builtin.import_role:
-        name: podman-guest-clone
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
       vars:
-        podman_clone_guest_spec: "{{ iot_installed_spec }}"
-        podman_clone_inventory_host: "{{ node_name }}-iot"
+        dom0_maintenance_packages:
+          - kpartx
 
-    - name: Copy the installed iot kernel and initramfs into dom0 shared storage
-      ansible.builtin.import_role:
-        name: xen-guest-artifacts
-      vars:
-        xen_guest_name: "{{ iot_installed_spec.guest_name }}"
-        xen_guest_lv_path: "{{ iot_installed_spec.installed.required_lvs | default(iot_installed_spec.required_lvs) | first }}"
-        xen_guest_kernel_source_name: vmlinuz-virt
-        xen_guest_initramfs_source_name: initramfs-virt
-        xen_guest_kernel_dest_path: "{{ iot_installed_spec.installed.kernel_path }}"
-        xen_guest_initramfs_dest_path: "{{ iot_installed_spec.installed.initramfs_path }}"
+    - name: Clone the IoT disk with transient dom0 tooling
+      block:
+        - name: Clone and personalize the IoT guest disk from the Podman template
+          ansible.builtin.import_role:
+            name: podman-guest-clone
+          vars:
+            podman_clone_guest_spec: "{{ iot_installed_spec }}"
+            podman_clone_inventory_host: "{{ node_name }}-iot"
+
+        - name: Copy the installed IoT kernel and initramfs into dom0 shared storage
+          ansible.builtin.import_role:
+            name: xen-guest-artifacts
+          vars:
+            xen_guest_name: "{{ iot_installed_spec.guest_name }}"
+            xen_guest_lv_path: "{{ iot_installed_spec.installed.required_lvs | default(iot_installed_spec.required_lvs) | first }}"
+            xen_guest_kernel_source_name: vmlinuz-virt
+            xen_guest_initramfs_source_name: initramfs-virt
+            xen_guest_kernel_dest_path: "{{ iot_installed_spec.installed.kernel_path }}"
+            xen_guest_initramfs_dest_path: "{{ iot_installed_spec.installed.initramfs_path }}"
+      always:
+        - name: Remove IoT clone maintenance packages and lock APK
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-lock.yml
 
     - name: Render the installed-stage iot Xen guest configuration
       ansible.builtin.import_role:

@@ -2,6 +2,28 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-09 - move remaining guest image work out of dom0
+
+The exact dom0 APK policy makes `curl`, `xorriso`, `sfdisk`, `kpartx`,
+`e2fsprogs-extra`, `gzip`, and `util-linux` temporary RAM-only tools. However,
+the router, Podman template, clone personalization, Debian image import, and
+Klokast CLI builder bootstrap paths still execute some image work on dom0.
+
+Move this work into a versioned short-lived builder VM. Resolve the bootstrap
+dependency first: the current sealed builder template is itself first created
+with dom0 partition and filesystem tools. A replacement must start from a
+signed, controller-supplied builder template or another independently verified
+artifact. Dom0 must then only create or clone LVs, attach them, copy approved
+boot artifacts, render Xen configuration, and control guest runtime.
+
+# 2026-08-09 - infra-agent host lacks Ansible CLI
+
+The `vultr-ops` infra-agent checkout has Python and PyYAML but does not have
+`ansible-playbook`. Repository YAML and Python tests can run locally, but
+Ansible syntax checks must run from the active controller after the reviewed
+commit is pushed. Do not install Platform controller tooling or private state
+on the infra-agent host as a workaround.
+
 # 2026-08-09 - k001 ops controller cannot reliably reach GitHub
 
 During the exact APK-world rollout, `k001-ops` repeatedly failed to fetch
@@ -16,7 +38,7 @@ controller checkouts match public upstream history.
 
 # 2026-08-07 - compiler must assign Tailscale ports for containers
 As documented in `doc/platform-resource-control-plane.md:316` and referenced
-from `apps/README.md:24``:
+from `apps/README.md:24`:
 - Dedicated ports are needed only for containers running their own tailscaled
 identity. Containers inheriting the Podman VM’s Tailscale identity need no additional port.
 - Allocation is per independent Tailscale identity, not simply per application.
@@ -40,5 +62,4 @@ underlay:
 It does not yet specify automatic compiler allocation. Architecturally, deterministic
 compiler allocation and uniqueness validation would be preferable, allowing applications
 to request an identity symbolically without choosing infrastructure port numbers themselves.
-
 

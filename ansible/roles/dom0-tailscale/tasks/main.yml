@@ -3,39 +3,6 @@
 # - Converges steady-state dom0 Tailscale installation, runtime settings, and persisted state tracking.
 #
 ---
-- name: Ensure Tailscale package is installed
-  community.general.apk:
-    name:
-      - tailscale
-      - tailscale-openrc
-    state: present
-  register: dom0_tailscale_packages
-  notify:
-    - Sync APK cache
-    - Commit lbu changes
-
-- name: Schedule Tailscale restart after package changes
-  ansible.builtin.shell: |
-    set -eu
-    ( sleep 1; rc-service tailscale restart ) >/tmp/klokast-tailscale-restart.log 2>&1 &
-  args:
-    executable: /bin/sh
-  changed_when: true
-  when: dom0_tailscale_packages.changed | default(false)
-  notify: Commit lbu changes
-
-- name: Wait for Tailscale package-change restart to begin
-  ansible.builtin.pause:
-    seconds: 8
-  when: dom0_tailscale_packages.changed | default(false)
-
-- name: Wait for dom0 after Tailscale package-change restart
-  ansible.builtin.wait_for_connection:
-    connect_timeout: 10
-    sleep: 3
-    timeout: 120
-  when: dom0_tailscale_packages.changed | default(false)
-
 - name: Ensure Tailscale service is enabled and running
   ansible.builtin.service:
     name: tailscale

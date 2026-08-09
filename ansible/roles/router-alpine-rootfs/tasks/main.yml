@@ -35,14 +35,6 @@
     - router_alpine_rebuild | bool
     - router_alpine_lv_stat.stat.exists | default(false)
 
-- name: Ensure router disk build tooling is installed on dom0
-  community.general.apk:
-    name:
-      - e2fsprogs
-      - kpartx
-      - sfdisk
-    state: present
-
 - name: Ensure the router LV exists
   community.general.lvol:
     vg: "{{ router_alpine_vg_name }}"

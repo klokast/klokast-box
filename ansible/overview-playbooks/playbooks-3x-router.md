@@ -14,6 +14,7 @@ Build the Alpine VIRT PVH root filesystem and boot artifacts without QEMU/HVM.
   - seed temporary root SSH plus backend-bridge first-contact networking.
 - `xen-guest-artifacts`: copy `router-kernel` and `router-initramfs` out of the installed router disk for direct PVH boot.
 - `xen-guest` (also in playbook 30): render the installed-stage router Xen definition and autostart symlink, then persist dom0 diskless state.
+- `dom0-apk-policy`: permit `curl`, `xorriso`, `sfdisk`, and `kpartx` only in RAM for the image operation, then remove them and restore the exact world before persistence.
 - (Persist router build state on the diskless dom0 host)
 
 # 31-vm-router.yml

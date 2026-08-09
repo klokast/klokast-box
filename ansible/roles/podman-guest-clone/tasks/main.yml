@@ -22,13 +22,6 @@
     podman_clone_target_lv_name: "{{ podman_clone_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\2') }}"
     podman_clone_target_root_mapper_path: "/dev/mapper/{{ podman_clone_target_lv_path | regex_replace('^/dev/([^/]+)/(.+)$', '\\1-\\2') }}3"
 
-- name: Ensure Podman guest clone tooling is installed on dom0
-  community.general.apk:
-    name:
-      - e2fsprogs
-      - kpartx
-    state: present
-
 - name: Verify the sealed Podman template LV exists
   ansible.builtin.stat:
     path: "{{ podman_clone_template_lv_path }}"

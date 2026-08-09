@@ -248,6 +248,10 @@
     tailscale_persist_paths = json_env("DOM0_HEALTH_TAILSCALE_PERSIST_PATHS", [])
     dom0_home_lbu_include_paths = json_env("DOM0_HEALTH_DOM0_HOME_LBU_INCLUDE_PATHS", [])
     dom0_admin_user_name = env("DOM0_HEALTH_DOM0_ADMIN_USER_NAME")
+    dom0_world_packages = json_env("DOM0_HEALTH_WORLD_PACKAGES", [])
+    dom0_forbidden_packages = json_env("DOM0_HEALTH_FORBIDDEN_PACKAGES", [])
+    dom0_apk_commit_hook_path = env("DOM0_HEALTH_APK_COMMIT_HOOK_PATH")
+    dom0_apk_unlock_path = env("DOM0_HEALTH_APK_UNLOCK_PATH")
 
     hostname = capture(["hostname"])
     os_release_text = read_text("/etc/os-release")
@@ -309,6 +313,13 @@
     dom0_data_mount = next((m for m in mounts if m["target"] == dom0_data_mount_path), None)
 
     apk_info = capture(["apk", "info"])
+    installed_packages = sorted(
+        line.strip() for line in apk_info["stdout"].splitlines() if line.strip()
+    )
+    apk_world = read_text("/etc/apk/world").splitlines()
+    installed_forbidden_packages = sorted(
+        set(installed_packages).intersection(dom0_forbidden_packages)
+    )
     qemu_packages = sorted(
         line.strip()
         for line in apk_info["stdout"].splitlines()
@@ -480,6 +491,17 @@
     expect(repo_apk_count > 0, "APK boot repository contains no APK files")
     expect(alpine_base_count > 0, "APK boot repository contains no alpine-base package")
     expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
+    expect(apk_world == sorted(dom0_world_packages), f"APK world drift: {apk_world}")
+    expect(
+        Path(dom0_apk_commit_hook_path).is_file()
+        and os.access(dom0_apk_commit_hook_path, os.X_OK),
+        f"dom0 APK commit guard is missing or not executable: {dom0_apk_commit_hook_path}",
+    )
+    expect(not Path(dom0_apk_unlock_path).exists(), "dom0 APK maintenance unlock is active")
+    expect(
+        not installed_forbidden_packages,
+        f"maintenance-only APK packages are installed: {installed_forbidden_packages}",
+    )
     expect(Path(tailscale_state_file).exists(), f"missing persisted Tailscale state: {tailscale_state_file}")
     expect(not Path("/etc/init.d/klokast-diskless-bootstrap").exists(), "temporary diskless bootstrap helper still exists")
     if efi_mount_path:
@@ -564,6 +586,8 @@
             "qemu_packages": qemu_packages,
             "qemu_binaries": qemu_bin_matches,
             "qemu_processes": qemu_proc_matches,
+            "apk_world": apk_world,
+            "forbidden_packages": installed_forbidden_packages,
         },
     }
     print(json.dumps(payload, sort_keys=True))
@@ -593,6 +617,10 @@
     DOM0_HEALTH_TAILSCALE_PERSIST_PATHS: "{{ tailscale_persist_paths | default([]) | to_json }}"
     DOM0_HEALTH_DOM0_HOME_LBU_INCLUDE_PATHS: "{{ dom0_home_lbu_include_paths | default([]) | to_json }}"
     DOM0_HEALTH_DOM0_ADMIN_USER_NAME: "{{ dom0_admin_user_name }}"
+    DOM0_HEALTH_WORLD_PACKAGES: "{{ dom0_world_packages | to_json }}"
+    DOM0_HEALTH_FORBIDDEN_PACKAGES: "{{ dom0_forbidden_steady_state_packages | to_json }}"
+    DOM0_HEALTH_APK_COMMIT_HOOK_PATH: "{{ dom0_apk_commit_hook_path }}"
+    DOM0_HEALTH_APK_UNLOCK_PATH: "{{ dom0_apk_unlock_path }}"
   register: dom0_health_result
   changed_when: false
 

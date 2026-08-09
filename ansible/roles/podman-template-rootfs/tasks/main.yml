@@ -36,14 +36,6 @@
     - podman_template_rebuild | bool
     - podman_template_lv_stat.stat.exists | default(false)
 
-- name: Ensure Podman template build tooling is installed on dom0
-  community.general.apk:
-    name:
-      - e2fsprogs
-      - kpartx
-      - sfdisk
-    state: present
-
 - name: Ensure the Podman template LV exists
   community.general.lvol:
     vg: "{{ podman_template_vg_name }}"

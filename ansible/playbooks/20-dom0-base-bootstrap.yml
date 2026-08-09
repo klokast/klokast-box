@@ -67,13 +67,17 @@
           with {{ bootstrap_tailscale_tag }} before continuing toward the dom0
           handoff.
 
-    - name: Apply steady-state hostname, users, and doas policy
-      ansible.builtin.import_role:
-        name: system-identity
-
     - name: Apply Alpine base configuration
       ansible.builtin.import_role:
         name: alpine-base
+
+    - name: Converge the complete steady-state dom0 package policy
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+
+    - name: Apply steady-state hostname, users, and doas policy
+      ansible.builtin.import_role:
+        name: system-identity
 
     - name: Render managed EFI GRUB loader configurations
       ansible.builtin.import_role:

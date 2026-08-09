@@ -194,15 +194,6 @@
     - Sync APK cache
     - Commit lbu changes
 
-- name: Ensure the steady-state Python runtime is installed
-  community.general.apk:
-    name:
-      - python3
-    state: present
-  notify:
-    - Sync APK cache
-    - Commit lbu changes
-
 - name: Remove the temporary first-boot bootstrap helper runlevel link
   ansible.builtin.file:
     path: /etc/runlevels/default/klokast-diskless-bootstrap

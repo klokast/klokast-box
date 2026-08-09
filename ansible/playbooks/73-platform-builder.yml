@@ -36,6 +36,17 @@
       ansible.builtin.set_fact:
         ansible_remote_tmp: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"
 
+    - name: Unlock reviewed builder maintenance packages in RAM
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
+      vars:
+        dom0_maintenance_packages:
+          - curl
+          - kpartx
+          - sfdisk
+          - xorriso
+
     - name: Run the builder workflow with bounded persistent transfer scratch
       block:
         - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
@@ -46,6 +57,11 @@
           ansible.builtin.import_role:
             name: klokast-cli-builder
       always:
+        - name: Remove builder maintenance packages and lock APK
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: maintenance-lock.yml
+
         - name: Remove operation-specific Ansible transfer scratch space
           ansible.builtin.file:
             path: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"

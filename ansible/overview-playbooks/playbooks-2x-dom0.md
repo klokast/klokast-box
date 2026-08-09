@@ -1,8 +1,9 @@
 # 20-dom0-base-bootstrap.yml
 Use the bootstrap `root` Tailscale identity to converge the steady-state dom0 base before the identity handoff.
 - Refresh the controller bootstrap known-hosts entry, then assert phase 20 is really connected to the Alpine SSD boot enrolled as `{{ bootstrap_tailscale_hostname }}` with `{{ bootstrap_tailscale_tag }}`.
-- `system-identity`: set `/etc/hostname` and the live hostname to `node_hostname`, install `doas`, create the managed local admin user from `dom0_local_users` with a per-box console password hash loaded from controller-private state, lock the `root` password, track the admin home path in `lbu`, and write `permit nopass :wheel`.
-- `alpine-base`: detect the live EFI mountpoint, remount it read-write if needed, repoint `/etc/apk/cache` and `LBU_BACKUPDIR`, exclude the EFI and dom0 data mountpoints from `lbu`, repair `/` to mode `0755`, keep only `{{ apkovl_archive_name }}` at the EFI root by moving stale `*.apkovl*` files into `_disabled/`, rewrite the steady-state non-Xen `grub.cfg`, configure Alpine repositories, install `python3`, remove the temporary first-boot bootstrap helper, and configure `/etc/motd`.
+- `alpine-base`: detect the live EFI mountpoint, remount it read-write if needed, repoint `/etc/apk/cache` and `LBU_BACKUPDIR`, exclude the EFI and dom0 data mountpoints from `lbu`, repair `/` to mode `0755`, keep only `{{ apkovl_archive_name }}` at the EFI root by moving stale `*.apkovl*` files into `_disabled/`, rewrite the steady-state non-Xen `grub.cfg`, configure Alpine repositories, remove the temporary first-boot bootstrap helper, and configure `/etc/motd`.
+- `dom0-apk-policy`: install the complete runtime and recovery package set, replace checksum constraints and other drift with the exact `dom0_world_packages` list, remove maintenance-only packages, install the APK transaction guard, and remove the RAM-only unlock.
+- `system-identity`: set `/etc/hostname` and the live hostname to `node_hostname`, create the managed local admin user from `dom0_local_users` with a per-box console password hash loaded from controller-private state, lock the `root` password, track the admin home path in `lbu`, and write `permit nopass :wheel`.
 - `efi-grub-loader`: render managed GRUB loader configs under both the node-specific EFI path and the generic `EFI/BOOT` fallback path, each handing off through `LABEL={{ efi_partition_label }}` to the canonical `boot/grub/grub.cfg`.
 - `(flush_handlers)`: run `apk cache sync` and `lbu commit -d` so the new base state is persisted before phase 21 changes the Tailscale identity.
 
@@ -20,15 +21,16 @@ Replace the temporary bootstrap Tailscale identity with the steady-state dom0 id
 # 22-dom0-base-verify.yml
 Verify dom0 base state from the steady-state identity and finalize persisted Tailscale settings.
 - Refresh the controller dom0 known-hosts entry, then gather facts from the steady-state host.
-- `dom0-tailscale`: install `tailscale` and `tailscale-openrc`, restart Tailscale after package changes so the daemon matches the CLI, prevent `udhcpc` from overwriting Tailscale-owned DNS, ensure Tailscale accepts Tailnet DNS and repairs overwritten `/etc/resolv.conf`, align the advertised hostname with `node_hostname`, and ensure `tailscale_persist_paths` are tracked by `lbu`.
+- `dom0-apk-policy`: converge the exact package world and the locked APK guard again from the steady-state dom0 identity. This path also repairs existing boxes that no longer have the bootstrap identity.
+- `dom0-tailscale`: keep Tailscale running, restart it when the daemon version differs from the CLI version, prevent `udhcpc` from overwriting Tailscale-owned DNS, ensure Tailscale accepts Tailnet DNS and repairs overwritten `/etc/resolv.conf`, align the advertised hostname with `node_hostname`, and ensure `tailscale_persist_paths` are tracked by `lbu`.
 - `(flush_handlers)`: run `apk cache sync` and `lbu commit -d` before verification.
 - `dom0-base-verification`: detect the live EFI mountpoint and assert hostname, `/` mode `0755`, EFI mount and filesystem, `/etc/apk/cache`, `LBU_BACKUPDIR`, the single persisted `{{ apkovl_archive_name }}`, steady-state `grub.cfg`, managed EFI GRUB loader configs, populated `apks/` boot repository, installed `python3`, removed bootstrap helper, persisted Tailscale state, required `lbu` include/exclude paths, and a running Tailscale identity advertising `node_hostname`.
 - `dom0-base-verification`: also assert that `{{ dom0_admin_user_name }}` has a usable local console password hash, belongs to `wheel`, can use the managed `doas` policy, and that the `root` password is locked.
 
 # 23-dom0-xen-host.yml
 Prepare dom0 storage and boot media for the first Xen reboot.
-- `dom0-storage`: install `e2fsprogs` and `lvm2`, enable the `lvm` service, create `{{ dom0_data_lv_name }}` if missing with stale signatures wiped, format it as `ext4`, mount it on `{{ dom0_data_mount_path }}`, keep that mounted persistent volume outside `lbu`, create the persistent dom0 directories under it, and remove the obsolete `+var/log` `lbu` include.
-- `xen-host`: detect the live EFI mountpoint, install `xen` and `xen-hypervisor`, tolerate Alpine's diskless `grub` trigger failure only when the Xen packages are actually present, mount the EFI partition, copy `/boot/xen.gz` to `{{ xen_binary_target_path }}`, render the Xen `grub.cfg`, and enable `xenstored`, `xenconsoled`, and `xendomains`.
+- `dom0-storage`: enable the `lvm` service, create `{{ dom0_data_lv_name }}` if missing with stale signatures wiped, format it as `ext4`, mount it on `{{ dom0_data_mount_path }}`, keep that mounted persistent volume outside `lbu`, create the persistent dom0 directories under it, and remove the obsolete `+var/log` `lbu` include.
+- `xen-host`: detect the live EFI mountpoint, mount the EFI partition, copy `/boot/xen.gz` to `{{ xen_binary_target_path }}`, render the Xen `grub.cfg`, and enable `xenstored`, `xenconsoled`, and `xendomains`. Phase 20 already installed the Xen packages.
 - `efi-grub-loader`: refresh the node-specific and fallback EFI GRUB loader configs after the Xen menu is rendered.
 - `xen-host-verification`: assert `{{ dom0_data_mount_path }}` is mounted as `ext4`, the `apks/` boot repository still contains its marker, index, and packages, `{{ xen_binary_target_path }}` exists, the managed EFI GRUB loader configs are present, and the rendered GRUB contains both the Xen and rescue entries.
 
@@ -60,11 +62,10 @@ should not use a device model.
 After Xen reboot, configure the bridges of `dom0`: detect the live WAN uplink, render the bridge file, verify the rendered result, and persist it.
 - This playbook does not move the live uplink into `br-wan`; WAN-dependent guest start still requires dom0 to boot into that persisted bridge config.
 
-- `network-bridges`: install bridge tooling and renders the steady-state `dom0` bridge interfaces configuration.
+- `network-bridges`: render the steady-state `dom0` bridge interfaces configuration. Phase 20 already installed the bridge tooling.
   - "Detect the live WAN uplink interface when auto-selection is enabled"
   - "Record the WAN uplink interface used for bridge rendering"
   - "Assert the WAN uplink interface was resolved to a physical NIC"
-  - "Ensure bridge tooling is installed"
   - "Ensure bridge kernel module loads at boot"
   - "Render bridge network interfaces configuration"
 - `network-bridges-verification`: verifiy that the rendered `dom0` bridge configuration matches the detected WAN uplink and expected bridge layout.

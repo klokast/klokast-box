@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+	pre-commit)
+		# Diskless Alpine reconstructs the tmpfs root before OpenRC creates its
+		# runtime state. Permit that boot transaction so the persisted package
+		# world can be restored. Steady-state transactions run after this file
+		# exists and require the reviewed RAM-only unlock below.
+		if [ ! -e /run/openrc/softlevel ]; then
+			exit 0
+		fi
+		if [ ! -f {{ dom0_apk_unlock_path | quote }} ]; then
+			echo "Klokast dom0 APK policy: transaction is locked" >&2
+			exit 1
+		fi
+		unlock="$(cat {{ dom0_apk_unlock_path | quote }})"
+		if [ "$unlock" != {{ dom0_apk_unlock_content | quote }} ]; then
+			echo "Klokast dom0 APK policy: invalid maintenance unlock" >&2
+			exit 1
+		fi
+		;;
+	post-commit)
+		;;
+	*)
+		echo "Klokast dom0 APK policy: unsupported hook stage" >&2
+		exit 1
+		;;
+esac

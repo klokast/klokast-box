@@ -30,51 +30,6 @@
     apk_boot_repository_marker: "{{ xen_host_runtime_efi_mount.stdout }}/apks/.boot_repository"
     apk_boot_repository_index: "{{ xen_host_runtime_efi_mount.stdout }}/apks/{{ apk_repository_arch }}/APKINDEX.tar.gz"
 
-- name: Initialize Xen package change tracking
-  ansible.builtin.set_fact:
-    xen_packages_install_changed: false
-
-- name: Ensure Xen packages are installed
-  block:
-    - name: Install Xen packages
-      community.general.apk:
-        name:
-          - xen
-          - xen-hypervisor
-        state: present
-      register: xen_packages_apk
-  rescue:
-    - name: Check whether Xen packages are present after apk failure
-      # Alpine's grub trigger can fail on a diskless tmpfs root even though the
-      # Xen packages themselves were installed successfully.
-      ansible.builtin.command: apk info -e xen xen-hypervisor xen-libs
-      register: xen_packages_after_failed_apk
-      changed_when: false
-
-    - name: Assert the apk failure did not prevent Xen package installation
-      ansible.builtin.assert:
-        that:
-          - xen_packages_after_failed_apk.rc == 0
-        fail_msg: >-
-          Xen package installation failed before the packages were actually present.
-          Review the apk/grub trigger error on the diskless host before continuing.
-
-    - name: Mark Xen package installation as changed after trigger failure
-      ansible.builtin.set_fact:
-        xen_packages_install_changed: true
-
-- name: Record Xen package change state after a clean install
-  ansible.builtin.set_fact:
-    xen_packages_install_changed: "{{ xen_packages_apk.changed }}"
-  when: xen_packages_apk is defined
-
-- name: Queue Xen package persistence handlers when needed
-  ansible.builtin.command: /bin/true
-  changed_when: xen_packages_install_changed
-  notify:
-    - Sync APK cache
-    - Commit lbu changes
-
 - name: Capture the current EFI mount options
   ansible.builtin.shell: >-
     awk '$1 == "{{ efi_partition_device }}" {print $4}' /proc/mounts | tail -n 1
