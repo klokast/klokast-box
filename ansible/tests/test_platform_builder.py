@@ -164,6 +164,26 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.BuilderError, "binary hash"):
                 self.mod.verify_result(directory, expected)
 
+    def test_preserves_only_bounded_failure_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(self.mod, "run") as run:
+            directory = Path(temporary)
+            (directory / "receipt.json").write_text("{}\n", encoding="utf-8")
+            (directory / "build.log").write_text("redacted\n", encoding="utf-8")
+            (directory / "cleanup.json").write_text("{}\n", encoding="utf-8")
+            (directory / "klokast").write_bytes(b"unverified")
+            expected = {"source_commit": "a" * 40, "operation_id": "0123456789ab"}
+            with patch.object(self.mod, "OUTPUT_ROOT", directory / "output"):
+                destination = self.mod.install_failure_diagnostics(directory, expected)
+            self.assertEqual(
+                destination,
+                directory / "output" / "klokast-cli" / ("a" * 40) / "0123456789ab",
+            )
+            commands = [[str(item) for item in call.args[0]] for call in run.call_args_list]
+            installed_names = [command[-2] for command in commands if command[:2] == ["doas", "install"]]
+            self.assertNotIn(str(directory / "klokast"), installed_names)
+            for name in ("receipt.json", "build.log", "cleanup.json"):
+                self.assertIn(str(directory / name), installed_names)
+
 
 class PlatformBuilderDom0Test(unittest.TestCase):
     def setUp(self):

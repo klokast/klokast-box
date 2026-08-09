@@ -364,6 +364,23 @@ def install_results(result_dir, receipt):
     return destination
 
 
+def install_failure_diagnostics(result_dir, expected):
+    available = []
+    for name, maximum in (("receipt.json", 65536), ("build.log", 1048576), ("cleanup.json", 65536)):
+        source = result_dir / name
+        if source.is_file() and not source.is_symlink() and source.stat().st_size <= maximum:
+            available.append(source)
+    if not available:
+        return None
+    destination = OUTPUT_ROOT / "klokast-cli" / expected["source_commit"] / expected["operation_id"]
+    if destination.exists():
+        raise BuilderError(f"refusing to overwrite existing build diagnostics: {destination}")
+    run(["doas", "install", "-d", "-o", "root", "-g", "smith", "-m", "0750", destination])
+    for source in available:
+        run(["doas", "install", "-o", "root", "-g", "smith", "-m", "0640", source, destination / source.name])
+    return destination
+
+
 def print_plan(box, approved_commit, operation_id):
     domain = f"{box}-builder-klokast-cli-{operation_id}"
     print("platform-builder plan")
@@ -429,6 +446,9 @@ def build_klokast_cli(args):
                 cleanup = result_dir / "cleanup.json"
                 if cleanup.is_file():
                     print(cleanup.read_text(encoding="utf-8").strip(), file=sys.stderr)
+            diagnostics = install_failure_diagnostics(result_dir, expected)
+            if diagnostics is not None:
+                print(f"platform-builder: preserved failure diagnostics: {diagnostics}", file=sys.stderr)
             raise
         if completed.returncode != 0:
             raise BuilderError(f"builder playbook failed with exit code {completed.returncode}")
