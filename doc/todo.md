@@ -2,6 +2,18 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-09 - k001 ops controller cannot reliably reach GitHub
+
+During the exact APK-world rollout, `k001-ops` repeatedly failed to fetch
+`https://github.com/klokast/klokast-box.git`; one controller convergence ended
+after 135 seconds with curl error 28. Its clean checkout had to be fast-forwarded
+from an exact Git bundle created on active controller `k002-ops`. The package
+policy had already converged successfully, but the later public-checkout rehome
+task could not finish, and the ops verification upstream probe is expected to
+fail for the same reason. Investigate `k001-ops` DNS, outbound routing, and
+firewall policy, and bound the rehome fetch. Do not weaken the requirement that
+controller checkouts match public upstream history.
+
 # 2026-08-07 - compiler must assign Tailscale ports for containers
 As documented in `doc/platform-resource-control-plane.md:316` and referenced
 from `apps/README.md:24``:
@@ -28,6 +40,5 @@ underlay:
 It does not yet specify automatic compiler allocation. Architecturally, deterministic
 compiler allocation and uniqueness validation would be preferable, allowing applications
 to request an identity symbolically without choosing infrastructure port numbers themselves.
-
 
 

@@ -81,8 +81,16 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         text = CONTROLLER_TASKS.read_text(encoding="utf-8")
         self.assertIn("ops_controller_prune_package_drift", text)
         self.assertIn("['/sbin/apk', 'del', '--simulate']", text)
+        self.assertIn("['/sbin/apk', 'del'] + ops_controller_apk_world_drift", text)
         self.assertIn("ops_controller_apk_world_after_packages", text)
         self.assertIn("[@<>=~].*$", text)
+        absent_package_tasks = [
+            task
+            for task in tasks
+            if "community.general.apk" in task
+            and task["community.general.apk"].get("state") == "absent"
+        ]
+        self.assertEqual(absent_package_tasks, [])
 
     def test_verification_requires_exact_world_and_runtime_tools(self):
         text = VERIFY_TASKS.read_text(encoding="utf-8")

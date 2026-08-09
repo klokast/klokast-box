@@ -111,9 +111,10 @@
     - ops_controller_apk_world_drift | length > 0
 
 - name: Remove reviewed unauthorized APK world entries
-  community.general.apk:
-    name: "{{ ops_controller_apk_world_drift }}"
-    state: absent
+  ansible.builtin.command:
+    argv: "{{ ['/sbin/apk', 'del'] + ops_controller_apk_world_drift }}"
+  register: ops_controller_apk_prune
+  changed_when: true
   when:
     - ops_controller_prune_package_drift | default(false) | bool
     - ops_controller_apk_world_drift | length > 0
