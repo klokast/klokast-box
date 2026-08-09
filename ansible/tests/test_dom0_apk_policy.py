@@ -47,6 +47,7 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertEqual(len(world), len(set(world)))
         self.assertFalse(set(world).intersection(maintenance))
         self.assertIn("lvm2", world)
+        self.assertIn("openssl", world)
         self.assertIn("xen", world)
         self.assertIn("xen-hypervisor", world)
         self.assertIn("python3", world)
@@ -67,6 +68,11 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         # dependency.
         self.assertNotIn("libcurl", world)
         self.assertNotIn("libcurl", forbidden)
+
+        # Alpine's diskless initramfs adds openssl at every boot for modloop
+        # signature verification. The exact persisted world must include it,
+        # or every reboot creates immediate world drift.
+        self.assertNotIn("openssl", forbidden)
 
     def test_policy_renders_and_verifies_exact_world(self):
         text = POLICY_TASKS.read_text(encoding="utf-8")

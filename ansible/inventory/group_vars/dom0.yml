@@ -10,7 +10,9 @@ ansible_python_interpreter: /usr/bin/python3
 # `/etc/apk/world` on every steady-state dom0 must contain exactly this set.
 # Keep only runtime and local recovery requirements here. Image acquisition,
 # partition mapping, and guest image construction use the bounded maintenance
-# set below and must converge back to this list before `lbu commit`.
+# set below and must converge back to this list before `lbu commit`. Alpine's
+# diskless initramfs adds `openssl` to each boot transaction so that `modloop`
+# can verify its signature. It is therefore a required boot package.
 dom0_world_packages:
   - alpine-base
   - alpine-conf
@@ -19,6 +21,7 @@ dom0_world_packages:
   - doas
   - e2fsprogs
   - lvm2
+  - openssl
   - python3
   - tailscale
   - tailscale-openrc
@@ -41,7 +44,6 @@ dom0_forbidden_steady_state_packages:
   - e2fsprogs-extra
   - gzip
   - kpartx
-  - openssl
   - sfdisk
   - tar
   - util-linux

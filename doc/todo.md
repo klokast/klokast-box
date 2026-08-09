@@ -8,8 +8,11 @@ The first k001 dom0 policy canary showed that the live Alpine 3.23 repository
 keeps `libcurl` as a dependency of `xen`. The earlier disposable dependency
 check did not detect this relationship. The steady-state policy now keeps
 `libcurl` out of `/etc/apk/world` but permits APK to install it as a transitive
-runtime dependency. The same canary also found that `lbu` resolves through the
-system path and is not installed at `/sbin/lbu` on the live image.
+runtime dependency. The reboot canary also showed that Alpine's diskless
+initramfs adds `openssl` to the boot transaction for `modloop` signature
+verification. The exact world must therefore include `openssl`. The same
+canary also found that `lbu` resolves through the system path and is not
+installed at `/sbin/lbu` on the live image.
 
 Add a test that resolves the exact dom0 world against the same APK indexes and
 package files that the diskless boot repository uses. Fail the test if a
