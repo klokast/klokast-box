@@ -190,6 +190,11 @@
             | list
           }}.
 
+    - name: Collect pending diskless changes after dom0 APK convergence
+      ansible.builtin.command: /sbin/lbu status
+      register: dom0_apk_lbu_status_after
+      changed_when: false
+
     - name: Queue persistence after dom0 APK convergence
       ansible.builtin.command: /bin/true
       changed_when: >-
@@ -197,6 +202,7 @@
         or (dom0_apk_baseline_add.changed | default(false))
         or (dom0_apk_baseline_trigger_recovered | default(false))
         or (dom0_apk_drift_prune.changed | default(false))
+        or (dom0_apk_lbu_status_after.stdout | trim | length > 0)
       notify:
         - Sync dom0 APK cache
         - Commit dom0 package policy

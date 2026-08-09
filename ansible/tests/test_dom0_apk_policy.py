@@ -73,6 +73,8 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertIn("dom0_world_packages | sort | join", text)
         self.assertIn("Assert the dom0 APK world is the exact allowlist", text)
         self.assertIn("Probe forbidden steady-state dom0 packages", text)
+        self.assertIn("Collect pending diskless changes after dom0 APK convergence", text)
+        self.assertIn("dom0_apk_lbu_status_after.stdout | trim | length > 0", text)
         self.assertIn("always:", text)
         self.assertIn("Lock dom0 APK transactions after convergence", text)
 
