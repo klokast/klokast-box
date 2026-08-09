@@ -2,6 +2,18 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-09 - validate dom0 dependencies against the boot repository
+
+The first k001 dom0 policy canary showed that the live Alpine 3.23 repository
+keeps `libcurl` as a dependency of `xen`. The earlier disposable dependency
+check did not detect this relationship. The steady-state policy now keeps
+`libcurl` out of `/etc/apk/world` but permits APK to install it as a transitive
+runtime dependency.
+
+Add a test that resolves the exact dom0 world against the same APK indexes and
+package files that the diskless boot repository uses. Fail the test if a
+forbidden installed package is in the resolved dependency closure.
+
 # 2026-08-09 - move remaining guest image work out of dom0
 
 The exact dom0 APK policy makes `curl`, `xorriso`, `sfdisk`, `kpartx`,
@@ -62,4 +74,3 @@ underlay:
 It does not yet specify automatic compiler allocation. Architecturally, deterministic
 compiler allocation and uniqueness validation would be preferable, allowing applications
 to request an identity symbolically without choosing infrastructure port numbers themselves.
-

@@ -39,6 +39,7 @@ class Dom0ApkPolicyTest(unittest.TestCase):
     def test_world_is_a_small_exact_runtime_allowlist(self):
         world = self.variables["dom0_world_packages"]
         maintenance = self.variables["dom0_maintenance_package_allowlist"]
+        forbidden = self.variables["dom0_forbidden_steady_state_packages"]
 
         self.assertEqual(len(world), len(set(world)))
         self.assertFalse(set(world).intersection(maintenance))
@@ -57,6 +58,12 @@ class Dom0ApkPolicyTest(unittest.TestCase):
             "xorriso",
         ):
             self.assertNotIn(package, world)
+
+        # Xen needs libcurl on the live Alpine 3.23 repository. Keep it out of
+        # the explicit world while permitting APK to retain it as a runtime
+        # dependency.
+        self.assertNotIn("libcurl", world)
+        self.assertNotIn("libcurl", forbidden)
 
     def test_policy_renders_and_verifies_exact_world(self):
         text = POLICY_TASKS.read_text(encoding="utf-8")

@@ -41,7 +41,6 @@ dom0_forbidden_steady_state_packages:
   - e2fsprogs-extra
   - gzip
   - kpartx
-  - libcurl
   - openssl
   - sfdisk
   - tar
