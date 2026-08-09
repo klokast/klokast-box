@@ -73,12 +73,12 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - power-off instructions (draft) for the Platform are in `doc/power-off.md`
 
-# Documentation
+# Use of natural language for documentation and interactions with the user
 
-- Docs must be concise, token-efficient, non-duplicative, and contradiction-free.
-- Add docs only where future agents will look for that task.
+- Use ASD-STE100 Simplified Technical English when writing documentation and answering the user.
+- Docs must be non-duplicative, contradiction-free, located where future agents will find it easily when working on a relate task.
 - If you find broken links in the documentation, try and repair them.
-- Describe in `doc/todo.md` any difficulties encountered during work, to allow an AI agent to later solve them so that work arounds are not necessary in the future.
+- Describe in `doc/todo.md` any difficulties encountered during work, to allow an AI agent to later fix them and avoid future reliance on work arounds.
 
 # Design Rules For Agents
 
