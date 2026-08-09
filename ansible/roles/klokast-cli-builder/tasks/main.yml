@@ -1,0 +1,135 @@
+---
+- name: Validate Klokast CLI builder inputs
+  ansible.builtin.assert:
+    that:
+      - builder_box is match('^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$')
+      - builder_operation_id is match('^[0-9a-f]{12}$')
+      - inventory_hostname == builder_box ~ '-dom0'
+      - builder_manifest_data.schema_version == 1
+      - builder_manifest_data.operation_id == builder_operation_id
+      - builder_manifest_data.box == builder_box
+      - builder_manifest_data.source_archive_sha256 is match('^[0-9a-f]{64}$')
+      - builder_manifest_data.image_archive_sha256 is match('^[0-9a-f]{64}$')
+      - builder_manifest_data.image_manifest_digest is match('^sha256:[0-9a-f]{64}$')
+      - builder_controller_result_dir is match('^/')
+    fail_msg: Klokast CLI builder inputs are invalid or target the wrong dom0.
+
+- name: Install bounded dom0 tooling required by the ephemeral builder
+  community.general.apk:
+    name:
+      - e2fsprogs
+      - kpartx
+      - lvm2
+      - sfdisk
+    state: present
+
+- name: Ensure the persistent builder staging parent exists
+  ansible.builtin.file:
+    path: /mnt/dom0_data/klokast-builder/staging
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Refuse a pre-existing operation staging directory
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}"
+  register: builder_remote_staging_before
+
+- name: Assert the operation staging directory is unique
+  ansible.builtin.assert:
+    that:
+      - not (builder_remote_staging_before.stat.exists | default(false))
+    fail_msg: >-
+      Builder staging already exists for operation {{ builder_operation_id }};
+      refusing to reuse it.
+
+- name: Stage immutable builder inputs on dom0
+  block:
+    - name: Create the private dom0 operation staging tree
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Copy the approved source archive to stopped-guest staging
+      ansible.builtin.copy:
+        src: "{{ builder_source_archive }}"
+        dest: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}/source.tar"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Copy the pinned OCI archive to stopped-guest staging
+      ansible.builtin.copy:
+        src: "{{ builder_image_archive }}"
+        dest: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}/golang.oci.tar"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Copy the build manifest to stopped-guest staging
+      ansible.builtin.copy:
+        src: "{{ builder_manifest }}"
+        dest: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}/manifest.json"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Create the dom0 result staging directory
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}/result"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Build inside the networkless ephemeral Xen guest
+      ansible.builtin.script:
+        cmd: >-
+          {{ role_path }}/files/klokast-cli-builder-dom0
+          --box {{ builder_box | quote }}
+          --operation-id {{ builder_operation_id | quote }}
+          --source-sha256 {{ builder_manifest_data.source_archive_sha256 | quote }}
+          --image-sha256 {{ builder_manifest_data.image_archive_sha256 | quote }}
+          --image-digest {{ builder_manifest_data.image_manifest_digest | quote }}
+          --kernel-source {{ xen_shared_installer_kernel_path | quote }}
+          --initramfs-source {{ xen_shared_installer_initramfs_path | quote }}
+      register: builder_lifecycle
+      changed_when: true
+      failed_when: false
+
+    - name: Discover extracted stopped-guest results
+      ansible.builtin.stat:
+        path: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}/result/{{ item }}"
+      loop:
+        - klokast
+        - receipt.json
+        - build.log
+        - cleanup.json
+      register: builder_result_files
+
+    - name: Fetch available stopped-guest results to the controller
+      ansible.builtin.fetch:
+        src: "{{ item.stat.path }}"
+        dest: "{{ builder_controller_result_dir }}/{{ item.item }}"
+        flat: true
+      loop: "{{ builder_result_files.results }}"
+      when: item.stat.exists | default(false)
+
+  always:
+    - name: Remove per-operation staging from dom0
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-builder/staging/{{ builder_operation_id }}"
+        state: absent
+
+- name: Require successful build and complete ephemeral cleanup
+  ansible.builtin.assert:
+    that:
+      - builder_lifecycle is defined
+      - builder_lifecycle.rc == 0
+    fail_msg: >-
+      Ephemeral Klokast CLI builder failed. The controller-fetched receipt,
+      redacted log, and cleanup report contain the bounded diagnostic result.

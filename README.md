@@ -30,7 +30,9 @@ Optional cloud-based `airunner`:
 - It enrolls with `tag:infra`.
 - It belongs to the TCB.
 - It must not store Platform private state or Tailscale OAuth material.
-- It includes `go` and `gofmt` for local Codex validation before commits.
+- It does not retain a Go toolchain. Dependency maintenance may use a
+  checksum-pinned temporary toolchain that is removed afterward; deployable
+  `klokast` binaries come only from the controller-owned Xen builder.
 
 # 5. Tailscale
 Create the Tailscale account and install deployment-server wrappers. The secure
@@ -163,8 +165,9 @@ runs `provision-box`.
 
 The `vultr-ops` cloud VPS is an approved Codex/OpenAI runner.
 The in-Platform `<box>-ops` VM is the trusted infrastructure controller for TCB
-automation and private Platform state; it also keeps `go` for controller-local
-`klokast-node` builds.
+automation and private Platform state. It dispatches reviewed `klokast` CLI
+builds to a short-lived networkless Xen builder; it does not run the CLI's Go
+compiler or tests itself.
 
 After the box has dom0, router, and the Alpine VM template, make sure the
 current controller has `/etc/klokast/tailscale-policy.env` and

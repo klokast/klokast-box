@@ -269,6 +269,14 @@ deployment and security gates are implemented and validated.
 - `builder` (images builder):
   - build trusted artifacts, such as container images, VM images, bootstrap iso, and OCI archives.
   - packaged as `<box>-builder-<purpose>-<id>`: short-lived Xen VM, created by `<box>-ops`, narrowly scoped egress, no controller or broker secrets, destroyed after publishing verified artifacts.
+  - The `klokast` Go CLI uses the stricter `platform-builder` profile: a
+    sealed Alpine 3.23 template, a unique writable LVM snapshot, no VIF or
+    Tailnet identity, and rootless Podman with networking disabled. The active
+    controller injects only a Git archive of the synchronized approved commit,
+    vendored modules, and a digest-pinned Go OCI archive while the guest is
+    stopped. The stopped guest is the authoritative build locus; the
+    credential-bearing controller and airunner do not produce deployable CLI
+    binaries.
 
 - `store`: rootless blob-distribution containers in `<box>-bak` on the active- and standby-controller boxes. The store is an untrusted distribution layer, outside the TCB:
   - content-addressed, immutable blobs;

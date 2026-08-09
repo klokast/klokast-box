@@ -85,7 +85,7 @@ What the wrapper does:
 tailscale ssh neo@vultr-ops 'hostnamectl --static && id neo && sudo -l'
 tailscale ssh agent@vultr-ops 'id agent && codex --version'
 tailscale ssh agent@vultr-ops 'ansible --version | head -n 1 && mosh --version | head -n 1 && tmux -V'
-tailscale ssh agent@vultr-ops 'go version && command -v gofmt'
+tailscale ssh agent@vultr-ops 'test ! -e /usr/bin/go && test ! -e /usr/bin/gofmt'
 tailscale ssh agent@vultr-ops 'git -C ~/src/klokast/klokast-box status --short --branch'
 tailscale ssh agent@vultr-ops 'test ! -f /etc/klokast/tailscale-policy.env'
 tailscale ssh agent@vultr-ops 'test ! -d /etc/tailscale-auth'

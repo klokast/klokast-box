@@ -95,7 +95,6 @@ Installed packages include:
 - `ca-certificates`
 - `curl`
 - `git`
-- `golang-go`
 - `jq`
 - `mosh`
 - `nodejs`
@@ -105,9 +104,11 @@ Installed packages include:
 - `tmux`
 - `vim`
 
-`golang-go` provides `go` and `gofmt` so Codex can run local Go tests before
-committing. `nano` is removed. `nvm`, current Node.js LTS, and
-`@openai/codex` are installed under `/home/agent`.
+`golang-go` and `nano` are removed. Deployable Go builds run in the
+controller-owned ephemeral Xen builder. A checksum-pinned temporary Go
+toolchain may be used only for dependency maintenance and is removed after the
+task. `nvm`, current Node.js LTS, and `@openai/codex` are installed under
+`/home/agent`.
 
 For both `neo` and `agent`:
 
@@ -162,7 +163,7 @@ After provisioning:
 ```sh
 tailscale ssh neo@vultr-ops 'hostnamectl --static && sudo -l'
 tailscale ssh agent@vultr-ops 'id && codex --version'
-tailscale ssh agent@vultr-ops 'go version && command -v gofmt'
+tailscale ssh agent@vultr-ops 'test ! -e /usr/bin/go && test ! -e /usr/bin/gofmt'
 tailscale ssh agent@vultr-ops 'git -C ~/src/klokast/klokast-box status --short --branch'
 tailscale ssh agent@vultr-ops 'test ! -f /etc/klokast/tailscale-policy.env'
 ```

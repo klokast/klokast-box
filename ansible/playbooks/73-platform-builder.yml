@@ -1,0 +1,17 @@
+---
+- name: Build reviewed Klokast artifacts in an ephemeral Xen guest
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    xen_shared_installer_iso_path: "{{ dom0_xen_images_path }}/alpine-virt.iso"
+    xen_shared_installer_kernel_path: "{{ dom0_xen_images_path }}/vmlinuz-virt"
+    xen_shared_installer_initramfs_path: "{{ dom0_xen_images_path }}/initramfs-virt"
+    builder_manifest_data: "{{ lookup('file', builder_manifest) | from_json }}"
+  tasks:
+    - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
+      ansible.builtin.import_role:
+        name: alpine-virt-assets
+
+    - name: Run the sealed Klokast CLI builder lifecycle
+      ansible.builtin.import_role:
+        name: klokast-cli-builder

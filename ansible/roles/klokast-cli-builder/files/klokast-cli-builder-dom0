@@ -1,0 +1,827 @@
+#!/usr/bin/env python3
+"""Dom0-side lifecycle for the sealed, ephemeral Klokast CLI builder."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+TEMPLATE_VERSION = 1
+ALPINE_BRANCH = "3.23"
+VG_NAME = "vg0"
+TEMPLATE_LV_NAME = "lv_builder_klokast_cli_template"
+TEMPLATE_LV = Path(f"/dev/{VG_NAME}/{TEMPLATE_LV_NAME}")
+TEMPLATE_SIZE = "16G"
+SNAPSHOT_COW_SIZE = "8G"
+BUILDER_MEMORY_MIB = 2048
+BUILDER_VCPUS = 2
+BUILDER_TIMEOUT_SECONDS = 900
+DATA_ROOT = Path("/mnt/dom0_data/klokast-builder")
+STAGING_ROOT = DATA_ROOT / "staging"
+MOUNT_ROOT = Path("/run/klokast-builder")
+XEN_CONFIG_ROOT = Path("/etc/xen")
+XEN_IMAGE_ROOT = Path("/mnt/dom0_data/xen_images")
+BUILDER_KERNEL = XEN_IMAGE_ROOT / "builder-klokast-cli-kernel"
+BUILDER_INITRAMFS = XEN_IMAGE_ROOT / "builder-klokast-cli-initramfs"
+
+BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
+HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+GUEST_JOB = r'''#!/usr/bin/env python3
+import datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import tarfile
+from pathlib import Path, PurePosixPath
+
+ROOT = Path("/var/lib/klokast-build")
+INPUT = ROOT / "input"
+SOURCE = ROOT / "source"
+OUTPUT = ROOT / "output"
+MAX_LOG_BYTES = 1024 * 1024
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+OPERATION = re.compile(r"^[0-9a-f]{12}$")
+REDACTIONS = (
+    re.compile(rb"(?i)((?:password|passwd|secret|token|api[_-]?key|auth[_-]?key)\s*[:=]\s*)\S+"),
+    re.compile(rb"tskey-[A-Za-z0-9_-]+"),
+    re.compile(rb"gh[pousr]_[A-Za-z0-9_]+"),
+)
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def redact(data):
+    for pattern in REDACTIONS:
+        data = pattern.sub(lambda match: match.group(1) + b"[redacted]" if match.lastindex else b"[redacted]", data)
+    return data[-MAX_LOG_BYTES:]
+
+
+def add_log(log, label, data):
+    log.extend(("\n== " + label + " ==\n").encode())
+    log.extend(redact(data))
+    if len(log) > MAX_LOG_BYTES:
+        del log[:-MAX_LOG_BYTES]
+
+
+def run_logged(log, label, argv, env, timeout):
+    process = subprocess.Popen(
+        argv,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        stdout, _ = process.communicate()
+        add_log(log, label, stdout + b"\n[stage timed out]\n")
+        return 124
+    add_log(log, label, stdout)
+    return process.returncode
+
+
+def safe_extract(archive, destination):
+    with tarfile.open(archive, "r:") as handle:
+        members = handle.getmembers()
+        for member in members:
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts or member.isdev() or member.isfifo():
+                raise ValueError("source archive contains an unsafe member")
+            if member.issym() or member.islnk():
+                target = PurePosixPath(member.linkname)
+                if target.is_absolute():
+                    raise ValueError("source archive link has an absolute target")
+                resolved = (path.parent / target).parts
+                depth = 0
+                for part in resolved:
+                    if part in ("", "."):
+                        continue
+                    if part == "..":
+                        depth -= 1
+                    else:
+                        depth += 1
+                    if depth < 0:
+                        raise ValueError("source archive link escapes the source root")
+        handle.extractall(destination, filter="data")
+
+
+def chown_tree(path, uid, gid):
+    os.lchown(path, uid, gid)
+    for current, directories, files in os.walk(path, followlinks=False):
+        for name in directories + files:
+            os.lchown(Path(current) / name, uid, gid)
+
+
+def rootless(argv):
+    return ["/sbin/su-exec", "builder:builder", *argv]
+
+
+def restricted_run(image_id, source_commit, command):
+    return rootless([
+        "/usr/bin/podman",
+        "--storage-driver=vfs",
+        "run",
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "--pids-limit=512",
+        "--memory=1536m",
+        "--cpus=2",
+        "--tmpfs=/tmp:rw,nosuid,nodev,size=512m",
+        "--volume", f"{SOURCE}:/src:ro",
+        "--volume", f"{OUTPUT}:/out:rw",
+        "--workdir=/src",
+        "--env=HOME=/tmp/home",
+        "--env=GOCACHE=/tmp/go-build",
+        "--env=GOMODCACHE=/tmp/go-mod",
+        "--env=GOTOOLCHAIN=local",
+        "--env=CGO_ENABLED=0",
+        image_id,
+        *command,
+    ])
+
+
+def main():
+    started_at = utc_now()
+    finished_at = started_at
+    log = bytearray()
+    manifest = {}
+    test_result = "not-run"
+    build_result = "not-run"
+    toolchain = "unavailable"
+    toolchain_sha256 = ""
+    binary_sha256 = ""
+    result = 1
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    try:
+        manifest = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
+        required = {
+            "schema_version", "operation_id", "box", "source_commit",
+            "source_archive_sha256", "image_reference", "image_manifest_digest",
+            "image_archive_sha256", "build_target",
+        }
+        if set(manifest) != required or manifest.get("schema_version") != 1:
+            raise ValueError("input manifest shape is invalid")
+        if not OPERATION.fullmatch(manifest["operation_id"]):
+            raise ValueError("operation ID is invalid")
+        if not HEX40.fullmatch(manifest["source_commit"]):
+            raise ValueError("source commit is invalid")
+        if not HEX64.fullmatch(manifest["source_archive_sha256"]):
+            raise ValueError("source archive hash is invalid")
+        if not HEX64.fullmatch(manifest["image_archive_sha256"]):
+            raise ValueError("image archive hash is invalid")
+        if not DIGEST.fullmatch(manifest["image_manifest_digest"]):
+            raise ValueError("image manifest digest is invalid")
+        if manifest["build_target"] != "./cmd/klokast":
+            raise ValueError("build target is invalid")
+
+        source_archive = INPUT / "source.tar"
+        image_archive = INPUT / "golang.oci.tar"
+        if sha256_file(source_archive) != manifest["source_archive_sha256"]:
+            raise ValueError("source archive hash mismatch")
+        if sha256_file(image_archive) != manifest["image_archive_sha256"]:
+            raise ValueError("image archive hash mismatch")
+
+        shutil.rmtree(SOURCE, ignore_errors=True)
+        SOURCE.mkdir(mode=0o750)
+        safe_extract(source_archive, SOURCE)
+        chown_tree(SOURCE, 1000, 1000)
+        chown_tree(OUTPUT, 1000, 1000)
+
+        runtime = Path("/run/user/1000")
+        runtime.mkdir(parents=True, exist_ok=True)
+        os.chown(runtime, 1000, 1000)
+        os.chmod(runtime, 0o700)
+        env = os.environ.copy()
+        env.update({
+            "HOME": "/home/builder",
+            "USER": "builder",
+            "LOGNAME": "builder",
+            "XDG_RUNTIME_DIR": str(runtime),
+        })
+
+        load_rc = run_logged(
+            log,
+            "load pinned toolchain image",
+            rootless(["/usr/bin/podman", "--storage-driver=vfs", "load", "--input", str(image_archive)]),
+            env,
+            180,
+        )
+        if load_rc != 0:
+            raise RuntimeError("rootless image load failed")
+        images = subprocess.run(
+            rootless(["/usr/bin/podman", "--storage-driver=vfs", "images", "--quiet", "--no-trunc"]),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=True,
+        ).stdout.splitlines()
+        images = sorted(set(item.strip() for item in images if item.strip()))
+        if len(images) != 1:
+            raise RuntimeError("loaded archive did not yield exactly one image")
+        image_id = images[0]
+
+        version_command = restricted_run(image_id, manifest["source_commit"], ["go", "version"])
+        version = subprocess.run(
+            version_command,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=60,
+            check=True,
+        ).stdout.strip()
+        if version != "go version go1.24.13 linux/amd64":
+            raise RuntimeError("toolchain version did not match go1.24.13 linux/amd64")
+        toolchain = version
+        toolchain_sha256 = hashlib.sha256(version.encode()).hexdigest()
+
+        test_rc = run_logged(
+            log,
+            "go test",
+            restricted_run(image_id, manifest["source_commit"], ["go", "test", "-mod=vendor", "-buildvcs=false", "./..."]),
+            env,
+            420,
+        )
+        test_result = "success" if test_rc == 0 else "failure"
+        if test_rc != 0:
+            raise RuntimeError("tests failed")
+
+        ldflags = f"-X=main.engineCommit={manifest['source_commit']}"
+        build_rc = run_logged(
+            log,
+            "go build",
+            restricted_run(
+                image_id,
+                manifest["source_commit"],
+                [
+                    "go", "build", "-mod=vendor", "-trimpath", "-buildvcs=false",
+                    f"-ldflags={ldflags}", "-o", "/out/klokast", "./cmd/klokast",
+                ],
+            ),
+            env,
+            420,
+        )
+        build_result = "success" if build_rc == 0 else "failure"
+        binary = OUTPUT / "klokast"
+        if build_rc != 0 or not binary.is_file() or binary.stat().st_size > 64 * 1024 * 1024:
+            raise RuntimeError("binary build failed or produced an unsafe output")
+        binary_sha256 = sha256_file(binary)
+        os.chmod(binary, 0o750)
+        result = 0
+    except Exception as error:
+        add_log(log, "job failure", (type(error).__name__ + ": " + str(error) + "\n").encode())
+    finally:
+        finished_at = utc_now()
+        receipt = {
+            "schema_version": 1,
+            "operation_id": manifest.get("operation_id", "unknown"),
+            "source_commit": manifest.get("source_commit", "unknown"),
+            "source_archive_sha256": manifest.get("source_archive_sha256", ""),
+            "image_manifest_digest": manifest.get("image_manifest_digest", ""),
+            "image_archive_sha256": manifest.get("image_archive_sha256", ""),
+            "toolchain": toolchain,
+            "toolchain_sha256": toolchain_sha256,
+            "test_result": test_result,
+            "build_result": build_result,
+            "binary_sha256": binary_sha256,
+            "started_at": started_at,
+            "finished_at": finished_at,
+        }
+        (OUTPUT / "receipt.json").write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        (OUTPUT / "build.log").write_bytes(redact(bytes(log)))
+        os.chmod(OUTPUT / "receipt.json", 0o640)
+        os.chmod(OUTPUT / "build.log", 0o640)
+    return result
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+GUEST_OPENRC = r'''#!/sbin/openrc-run
+name="klokast-build"
+description="one-shot networkless Klokast build"
+
+depend() {
+    need localmount
+    after cgroups
+}
+
+start() {
+    ebegin "Running sealed Klokast build job"
+    status=0
+    /usr/local/libexec/klokast-build-job || status=$?
+    sync
+    eend "$status"
+    /sbin/poweroff -f
+    return "$status"
+}
+'''
+
+
+class LifecycleError(Exception):
+    pass
+
+
+def run(argv, *, check=True, capture=False, stdin=None, timeout=120):
+    completed = subprocess.run(
+        [str(item) for item in argv],
+        input=stdin,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        timeout=timeout,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise LifecycleError(
+            f"command failed ({completed.returncode}): {' '.join(str(item) for item in argv)}"
+            + (f": {detail}" if detail else "")
+        )
+    return completed
+
+
+def command_output(argv, *, check=True):
+    return run(argv, check=check, capture=True).stdout.strip()
+
+
+def validate_args(args):
+    if os.geteuid() != 0:
+        raise LifecycleError("dom0 builder lifecycle must run as root")
+    if not BOX_RE.fullmatch(args.box or ""):
+        raise LifecycleError("invalid box")
+    if not OPERATION_RE.fullmatch(args.operation_id or ""):
+        raise LifecycleError("invalid operation ID")
+    if not HASH_RE.fullmatch(args.source_sha256 or ""):
+        raise LifecycleError("invalid source hash")
+    if not HASH_RE.fullmatch(args.image_sha256 or ""):
+        raise LifecycleError("invalid image archive hash")
+    if not DIGEST_RE.fullmatch(args.image_digest or ""):
+        raise LifecycleError("invalid image digest")
+    domain = f"{args.box}-builder-klokast-cli-{args.operation_id}"
+    if len(domain) > 63:
+        raise LifecycleError("builder domain name exceeds Xen/DNS limit")
+    staging = (STAGING_ROOT / args.operation_id).resolve()
+    try:
+        staging.relative_to(STAGING_ROOT.resolve())
+    except ValueError as error:
+        raise LifecycleError("staging path escaped the builder root") from error
+    if not staging.is_dir() or staging.is_symlink():
+        raise LifecycleError("operation staging directory is missing or unsafe")
+    return domain, staging
+
+
+def lv_exists(path):
+    return run(["lvs", str(path)], check=False, capture=True).returncode == 0
+
+
+def domain_exists(domain):
+    return run(["xl", "list", domain], check=False, capture=True).returncode == 0
+
+
+def mapper_paths(lv):
+    completed = run(["kpartx", "-av", str(lv)], capture=True)
+    names = []
+    for line in completed.stdout.splitlines():
+        match = re.search(r"add map (\S+)", line)
+        if match:
+            names.append(Path("/dev/mapper") / match.group(1))
+    boot = next((path for path in names if path.name.endswith("1")), None)
+    root = next((path for path in names if path.name.endswith("3")), None)
+    if boot is None or root is None:
+        run(["kpartx", "-dv", str(lv)], check=False)
+        raise LifecycleError(f"could not resolve boot/root mappings for {lv}")
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if boot.exists() and root.exists():
+            return boot, root
+        time.sleep(0.2)
+    raise LifecycleError(f"partition mappings did not appear for {lv}")
+
+
+def unmap(lv):
+    run(["kpartx", "-dv", str(lv)], check=False)
+
+
+def write_file(root, relative, content, mode=0o644):
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def link_service(root, runlevel, service):
+    directory = root / "etc" / "runlevels" / runlevel
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / service
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    target.symlink_to(f"/etc/init.d/{service}")
+
+
+def lock_root_password(root):
+    shadow = root / "etc/shadow"
+    lines = []
+    for line in shadow.read_text(encoding="utf-8").splitlines():
+        fields = line.split(":")
+        if fields[0] == "root":
+            fields[1] = "!"
+        lines.append(":".join(fields))
+    shadow.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    shadow.chmod(0o600)
+
+
+def template_marker():
+    return {
+        "schema_version": 1,
+        "template_version": TEMPLATE_VERSION,
+        "alpine_branch": ALPINE_BRANCH,
+        "purpose": "klokast-cli",
+        "network_services": [],
+        "management_agents": [],
+        "guest_job_sha256": hashlib.sha256(GUEST_JOB.encode()).hexdigest(),
+        "openrc_job_sha256": hashlib.sha256(GUEST_OPENRC.encode()).hexdigest(),
+    }
+
+
+def inspect_template():
+    mount = MOUNT_ROOT / "template-inspect"
+    mount.mkdir(parents=True, exist_ok=True)
+    boot = root = None
+    try:
+        boot, root = mapper_paths(TEMPLATE_LV)
+        run(["mount", "-o", "ro", str(root), str(mount)])
+        marker_path = mount / "etc/klokast-builder-template.json"
+        if not marker_path.is_file():
+            raise LifecycleError("sealed builder template marker is missing")
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        if marker != template_marker():
+            raise LifecycleError("sealed builder template does not match this builder version")
+        forbidden = [
+            mount / "usr/sbin/sshd",
+            mount / "usr/bin/tailscale",
+            mount / "usr/sbin/tailscaled",
+            mount / "etc/runlevels/default/networking",
+        ]
+        if any(path.exists() or path.is_symlink() for path in forbidden):
+            raise LifecycleError("sealed builder template contains a forbidden management or network service")
+    finally:
+        run(["umount", str(mount)], check=False)
+        if boot is not None or root is not None:
+            unmap(TEMPLATE_LV)
+    permissions = command_output(["lvs", "--noheadings", "-o", "lv_permissions", str(TEMPLATE_LV)])
+    if "w" in permissions:
+        raise LifecycleError("builder template LV is writable instead of sealed")
+
+
+def build_template(kernel_source, initramfs_source):
+    if lv_exists(TEMPLATE_LV):
+        inspect_template()
+        return
+    root_mount = MOUNT_ROOT / "template-root"
+    boot_mount = root_mount / "boot"
+    root_mount.mkdir(parents=True, exist_ok=True)
+    created = False
+    boot_mapper = root_mapper = None
+    try:
+        run(["lvcreate", "-L", TEMPLATE_SIZE, "-n", TEMPLATE_LV_NAME, VG_NAME], timeout=300)
+        created = True
+        table = "label: dos\n,256M,83,*\n,1M,83\n,,83\n"
+        run(["sfdisk", "--wipe", "always", "--wipe-partitions", "always", str(TEMPLATE_LV)], stdin=table)
+        boot_mapper, root_mapper = mapper_paths(TEMPLATE_LV)
+        run(["mkfs.ext4", "-F", "-L", "builder-boot", str(boot_mapper)], timeout=300)
+        run(["mkfs.ext4", "-F", "-L", "builder-root", str(root_mapper)], timeout=300)
+        run(["mount", str(root_mapper), str(root_mount)])
+        boot_mount.mkdir(mode=0o755)
+        run(["mount", str(boot_mapper), str(boot_mount)])
+
+        keys = root_mount / "etc/apk/keys"
+        keys.mkdir(parents=True, exist_ok=True)
+        for source in Path("/etc/apk/keys").iterdir():
+            if source.is_file():
+                shutil.copy2(source, keys / source.name)
+        repositories = root_mount / "etc/apk/repositories"
+        repositories.parent.mkdir(parents=True, exist_ok=True)
+        repositories.write_text(
+            f"https://dl-cdn.alpinelinux.org/alpine/v{ALPINE_BRANCH}/main\n"
+            f"https://dl-cdn.alpinelinux.org/alpine/v{ALPINE_BRANCH}/community\n",
+            encoding="utf-8",
+        )
+        run(
+            [
+                "apk", "--root", root_mount, "--initdb",
+                "--repositories-file", repositories,
+                "--keys-dir", keys,
+                "add", "--no-cache",
+                "alpine-base", "ca-certificates", "podman", "python3", "shadow", "su-exec", "tzdata",
+            ],
+            timeout=900,
+        )
+        run(["chroot", root_mount, "/usr/sbin/addgroup", "-g", "1000", "builder"])
+        run([
+            "chroot", root_mount, "/usr/sbin/adduser", "-D", "-H", "-u", "1000",
+            "-G", "builder", "-s", "/sbin/nologin", "builder",
+        ])
+        home = root_mount / "home/builder"
+        (home / ".config/containers").mkdir(parents=True, exist_ok=True)
+        (home / ".local/share/containers/storage").mkdir(parents=True, exist_ok=True)
+        for current, directories, files in os.walk(home):
+            os.chown(current, 1000, 1000)
+            for name in directories + files:
+                os.chown(Path(current) / name, 1000, 1000)
+        write_file(root_mount, "etc/subuid", "builder:100000:65536\n")
+        write_file(root_mount, "etc/subgid", "builder:100000:65536\n")
+        write_file(
+            root_mount,
+            "home/builder/.config/containers/storage.conf",
+            '[storage]\ndriver="vfs"\nrunroot="/run/user/1000/containers"\ngraphroot="/home/builder/.local/share/containers/storage"\n',
+            0o644,
+        )
+        os.chown(root_mount / "home/builder/.config/containers/storage.conf", 1000, 1000)
+
+        shutil.copy2(kernel_source, boot_mount / "vmlinuz-virt")
+        shutil.copy2(initramfs_source, boot_mount / "initramfs-virt")
+        shutil.copy2(kernel_source, BUILDER_KERNEL)
+        shutil.copy2(initramfs_source, BUILDER_INITRAMFS)
+        BUILDER_KERNEL.chmod(0o644)
+        BUILDER_INITRAMFS.chmod(0o644)
+
+        write_file(root_mount, "etc/hostname", "klokast-builder\n")
+        write_file(root_mount, "etc/hosts", "127.0.0.1 localhost\n::1 localhost\n127.0.1.1 klokast-builder\n")
+        write_file(root_mount, "etc/resolv.conf", "# networkless builder\n")
+        write_file(root_mount, "etc/network/interfaces", "auto lo\niface lo inet loopback\n")
+        write_file(root_mount, "etc/fstab", "/dev/xvda3 / ext4 defaults 0 1\n/dev/xvda1 /boot ext4 defaults 0 2\n")
+        write_file(root_mount, "etc/conf.d/clock", 'timezone="UTC"\nclock="UTC"\n')
+        write_file(root_mount, "usr/local/libexec/klokast-build-job", GUEST_JOB, 0o755)
+        write_file(root_mount, "etc/init.d/klokast-build", GUEST_OPENRC, 0o755)
+        write_file(root_mount, "etc/klokast-builder-template.json", json.dumps(template_marker(), sort_keys=True, separators=(",", ":")) + "\n")
+        lock_root_password(root_mount)
+
+        for runlevel, service in (
+            ("sysinit", "devfs"),
+            ("sysinit", "dmesg"),
+            ("sysinit", "mdev"),
+            ("boot", "hostname"),
+            ("boot", "modules"),
+            ("boot", "sysctl"),
+            ("boot", "bootmisc"),
+            ("boot", "cgroups"),
+            ("boot", "localmount"),
+            ("default", "klokast-build"),
+        ):
+            if (root_mount / "etc/init.d" / service).exists():
+                link_service(root_mount, runlevel, service)
+        for runlevel in (root_mount / "etc/runlevels").glob("*"):
+            for forbidden in ("networking", "sshd", "tailscale", "tailscaled", "chronyd"):
+                path = runlevel / forbidden
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+        for forbidden in (
+            root_mount / "usr/sbin/sshd",
+            root_mount / "usr/bin/tailscale",
+            root_mount / "usr/sbin/tailscaled",
+        ):
+            if forbidden.exists():
+                raise LifecycleError(f"forbidden program installed in template: {forbidden.name}")
+    except Exception:
+        raise
+    finally:
+        run(["umount", str(boot_mount)], check=False)
+        run(["umount", str(root_mount)], check=False)
+        if boot_mapper is not None or root_mapper is not None:
+            unmap(TEMPLATE_LV)
+        if created and sys.exc_info()[0] is not None:
+            run(["lvremove", "-f", str(TEMPLATE_LV)], check=False, timeout=300)
+    run(["lvchange", "--permission", "r", str(TEMPLATE_LV)])
+    inspect_template()
+
+
+def render_xen_config(domain, snapshot_lv):
+    return f'''name = "{domain}"
+type = "pvh"
+memory = {BUILDER_MEMORY_MIB}
+vcpus = {BUILDER_VCPUS}
+kernel = "{BUILDER_KERNEL}"
+ramdisk = "{BUILDER_INITRAMFS}"
+extra = "console=hvc0 root=/dev/xvda3 rw modules=ext4 init=/sbin/init"
+disk = [ 'phy:{snapshot_lv},xvda,w' ]
+vif = []
+on_crash = 'destroy'
+on_reboot = 'destroy'
+'''
+
+
+def wait_for_shutdown(domain, timeout_seconds=BUILDER_TIMEOUT_SECONDS):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not domain_exists(domain):
+            return True
+        time.sleep(1)
+    return False
+
+
+def copy_bounded(source, destination, maximum):
+    if not source.is_file() or source.is_symlink():
+        raise LifecycleError(f"guest result is missing or unsafe: {source.name}")
+    if source.stat().st_size > maximum:
+        raise LifecycleError(f"guest result exceeds its size limit: {source.name}")
+    shutil.copy2(source, destination)
+
+
+def remaining_resources(domain, config, snapshot_lv, mount):
+    remaining = []
+    if domain_exists(domain):
+        remaining.append(f"xen-domain:{domain}")
+    if config.exists():
+        remaining.append(f"xen-config:{config}")
+    if lv_exists(snapshot_lv):
+        remaining.append(f"snapshot-lv:{snapshot_lv}")
+    mounts = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+    if f" {mount} " in mounts:
+        remaining.append(f"mount:{mount}")
+    mapper_prefix = f"{VG_NAME}-{snapshot_lv.name}"
+    for path in Path("/dev/mapper").glob(mapper_prefix + "*"):
+        remaining.append(f"mapper:{path}")
+    return sorted(remaining)
+
+
+def cleanup(domain, config, snapshot_lv, mount):
+    if domain_exists(domain):
+        run(["xl", "destroy", domain], check=False, timeout=60)
+    run(["umount", str(mount / "boot")], check=False)
+    run(["umount", str(mount)], check=False)
+    unmap(snapshot_lv)
+    if config.exists() or config.is_symlink():
+        try:
+            config.unlink()
+        except OSError:
+            pass
+    if lv_exists(snapshot_lv):
+        run(["lvremove", "-f", str(snapshot_lv)], check=False, timeout=300)
+    return remaining_resources(domain, config, snapshot_lv, mount)
+
+
+def build(args):
+    domain, staging = validate_args(args)
+    result_dir = staging / "result"
+    result_dir.mkdir(mode=0o700, exist_ok=True)
+    snapshot_name = f"lv_builder_klokast_cli_{args.operation_id}"
+    snapshot_lv = Path(f"/dev/{VG_NAME}/{snapshot_name}")
+    config = XEN_CONFIG_ROOT / f"{domain}.cfg"
+    mount = MOUNT_ROOT / args.operation_id
+    mount.mkdir(parents=True, exist_ok=True)
+    build_error = None
+    root_mapper = None
+    try:
+        build_template(Path(args.kernel_source), Path(args.initramfs_source))
+        for path in (snapshot_lv, config):
+            if path.exists() or path.is_symlink():
+                raise LifecycleError(f"refusing to reuse pre-existing ephemeral resource: {path}")
+        if domain_exists(domain):
+            raise LifecycleError(f"refusing to reuse pre-existing Xen domain: {domain}")
+        run([
+            "lvcreate", "--snapshot", "--size", SNAPSHOT_COW_SIZE,
+            "--name", snapshot_name, str(TEMPLATE_LV),
+        ], timeout=300)
+        run(["lvchange", "--permission", "rw", str(snapshot_lv)])
+        _boot_mapper, root_mapper = mapper_paths(snapshot_lv)
+        run(["mount", str(root_mapper), str(mount)])
+        input_dir = mount / "var/lib/klokast-build/input"
+        output_dir = mount / "var/lib/klokast-build/output"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_file(mount, "usr/local/libexec/klokast-build-job", GUEST_JOB, 0o755)
+        write_file(mount, "etc/init.d/klokast-build", GUEST_OPENRC, 0o755)
+        shutil.copy2(staging / "source.tar", input_dir / "source.tar")
+        shutil.copy2(staging / "golang.oci.tar", input_dir / "golang.oci.tar")
+        shutil.copy2(staging / "manifest.json", input_dir / "manifest.json")
+        if hashlib_sha256(input_dir / "source.tar") != args.source_sha256:
+            raise LifecycleError("dom0 source injection hash mismatch")
+        if hashlib_sha256(input_dir / "golang.oci.tar") != args.image_sha256:
+            raise LifecycleError("dom0 image injection hash mismatch")
+        for path in input_dir.iterdir():
+            path.chmod(0o640)
+            os.chown(path, 1000, 1000)
+        os.chown(input_dir, 1000, 1000)
+        os.chown(output_dir, 1000, 1000)
+        run(["sync"])
+        run(["umount", str(mount)])
+        unmap(snapshot_lv)
+        root_mapper = None
+
+        config.write_text(render_xen_config(domain, snapshot_lv), encoding="utf-8")
+        config.chmod(0o600)
+        run(["xl", "create", str(config)], timeout=60)
+        if not wait_for_shutdown(domain):
+            run(["xl", "destroy", domain], check=False, timeout=60)
+            raise LifecycleError(f"builder timed out after {BUILDER_TIMEOUT_SECONDS} seconds")
+
+        _boot_mapper, root_mapper = mapper_paths(snapshot_lv)
+        run(["mount", "-o", "ro", str(root_mapper), str(mount)])
+        guest_output = mount / "var/lib/klokast-build/output"
+        copy_bounded(guest_output / "receipt.json", result_dir / "receipt.json", 65536)
+        copy_bounded(guest_output / "build.log", result_dir / "build.log", 1024 * 1024)
+        receipt = json.loads((result_dir / "receipt.json").read_text(encoding="utf-8"))
+        expected = {
+            "schema_version": 1,
+            "operation_id": args.operation_id,
+            "source_archive_sha256": args.source_sha256,
+            "image_archive_sha256": args.image_sha256,
+            "image_manifest_digest": args.image_digest,
+        }
+        for field, value in expected.items():
+            if receipt.get(field) != value:
+                raise LifecycleError(f"guest receipt mismatch: {field}")
+        if receipt.get("test_result") != "success" or receipt.get("build_result") != "success":
+            raise LifecycleError("guest reported failed tests or build")
+        copy_bounded(guest_output / "klokast", result_dir / "klokast", 64 * 1024 * 1024)
+        if hashlib_sha256(result_dir / "klokast") != receipt.get("binary_sha256"):
+            raise LifecycleError("guest binary hash mismatch")
+    except Exception as error:
+        build_error = error
+    finally:
+        remaining = cleanup(domain, config, snapshot_lv, mount)
+        cleanup_receipt = {
+            "schema_version": 1,
+            "operation_id": args.operation_id,
+            "complete": not remaining,
+            "remaining_resources": remaining,
+        }
+        (result_dir / "cleanup.json").write_text(
+            json.dumps(cleanup_receipt, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        if remaining:
+            raise LifecycleError("cleanup incomplete; remaining resources: " + ", ".join(remaining))
+    if build_error is not None:
+        raise build_error
+
+
+def hashlib_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--box", required=True)
+    parser.add_argument("--operation-id", required=True)
+    parser.add_argument("--source-sha256", required=True)
+    parser.add_argument("--image-sha256", required=True)
+    parser.add_argument("--image-digest", required=True)
+    parser.add_argument("--kernel-source", required=True)
+    parser.add_argument("--initramfs-source", required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    try:
+        build(parse_args(argv))
+        return 0
+    except (LifecycleError, OSError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        print(f"klokast-cli-builder-dom0: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

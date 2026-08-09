@@ -22,6 +22,7 @@ ansible
 │   └── platform-check                # Run read-only live infrastructure health checks across map, dom0, router, Podman, ops, and resources
 │   └── platform-check-remote         # Dispatch Platform health checks from infra-agent hosts to the Ansible controller
 │   └── platform-image-build          # Build app OCI images on the active ops controller and load them onto target VMs
+│   └── platform-builder              # Build the Klokast CLI in a short-lived networkless Xen guest
 │   └── archive-codex-sessions        # Pull retiring Codex host conversation records into controller-private state
 │   └── bootstrap-dom0                # Bootstrap a blank host into diskless dom0
 │   └── decommission-box              # Decommission one box and wipe its SSD

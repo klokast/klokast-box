@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Build reviewed Klokast artifacts in a short-lived, networkless Xen guest."""
+
+import argparse
+import getpass
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve()
+REPO_ROOT = SCRIPT.parents[2]
+ANSIBLE_DIR = REPO_ROOT / "ansible"
+PLAYBOOK = ANSIBLE_DIR / "playbooks" / "73-platform-builder.yml"
+BASE_INVENTORY = ANSIBLE_DIR / "inventory" / "hosts.yml"
+RENDER_INVENTORY = ANSIBLE_DIR / "bin" / "render-node-inventory"
+CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+OUTPUT_ROOT = Path("/var/lib/klokast/builds")
+
+GO_IMAGE_NAME = "docker.io/library/golang"
+GO_IMAGE_TAG = "1.24.13-bookworm"
+GO_IMAGE_DIGEST = "sha256:98d673f18a1aac43da744209873cb79323e11706f909251bcfb131828b95559d"
+GO_IMAGE_REFERENCE = f"{GO_IMAGE_NAME}@{GO_IMAGE_DIGEST}"
+
+BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+RESERVED_BOX_SUFFIXES = (
+    "bootstrap",
+    "dom0",
+    "router",
+    "bak",
+    "dmz",
+    "iot",
+    "usr",
+    "ops",
+    "airunner",
+    "builder",
+)
+
+
+class BuilderError(Exception):
+    """Expected fail-closed builder error."""
+
+
+def die(message):
+    print(f"platform-builder: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def run(argv, *, cwd=REPO_ROOT, capture=False, check=True, stdin=None):
+    completed = subprocess.run(
+        [str(item) for item in argv],
+        cwd=cwd,
+        input=stdin,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise BuilderError(
+            f"command failed ({completed.returncode}): {' '.join(str(item) for item in argv)}"
+            + (f": {detail}" if detail else "")
+        )
+    return completed
+
+
+def output(argv, *, cwd=REPO_ROOT):
+    return run(argv, cwd=cwd, capture=True).stdout.strip()
+
+
+def validate_box(value):
+    if not BOX_RE.fullmatch(value or ""):
+        raise BuilderError("--box must be a lowercase box name of at most 32 characters")
+    for suffix in RESERVED_BOX_SUFFIXES:
+        if value == suffix or value.endswith(f"-{suffix}"):
+            raise BuilderError("--box must name a box, not a managed role or guest")
+    return value
+
+
+def validate_commit(value):
+    if not COMMIT_RE.fullmatch(value or ""):
+        raise BuilderError("--approved-commit must be a full lowercase 40-hex Git commit")
+    return value
+
+
+def validate_operation_id(value):
+    if not OPERATION_RE.fullmatch(value or ""):
+        raise BuilderError("operation ID must contain exactly 12 lowercase hex characters")
+    return value
+
+
+def safe_child(root, *parts):
+    root = root.resolve()
+    candidate = root.joinpath(*parts).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as error:
+        raise BuilderError(f"path escaped its approved root: {candidate}") from error
+    return candidate
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def require_active_controller(box):
+    if getpass.getuser() != "smith":
+        raise BuilderError("run as smith on the active controller")
+    if not CONTROLLER_GUARD.is_file() or not os.access(CONTROLLER_GUARD, os.X_OK):
+        raise BuilderError("active-controller guard is missing or not executable")
+    completed = run(
+        [CONTROLLER_GUARD, "--status", "--json", "--require-active"],
+        capture=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise BuilderError("controller guard rejected this inactive controller")
+    try:
+        status = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise BuilderError("controller guard returned invalid JSON") from error
+    if not status.get("configured") or not status.get("active"):
+        raise BuilderError("builder requires an explicitly configured active controller")
+    if status.get("box") != box or status.get("active_box") != box:
+        raise BuilderError(f"--box must be the active controller box ({status.get('active_box', 'unknown')})")
+
+
+def verify_repository(approved_commit):
+    inside = output(["git", "rev-parse", "--is-inside-work-tree"])
+    top = Path(output(["git", "rev-parse", "--show-toplevel"])).resolve()
+    if inside != "true" or top != REPO_ROOT.resolve():
+        raise BuilderError("builder source must be the standalone klokast-box repository")
+    head = output(["git", "rev-parse", "HEAD"])
+    if head != approved_commit:
+        raise BuilderError(f"approved commit does not match checkout HEAD ({head})")
+    dirty = output(["git", "status", "--porcelain=v1", "--untracked-files=all"])
+    if dirty:
+        raise BuilderError("source checkout is dirty; refusing to archive unreviewed files")
+    run(["git", "fetch", "--quiet", "origin"])
+    upstream = output(["git", "rev-parse", "@{upstream}"])
+    if upstream != approved_commit:
+        raise BuilderError("checkout HEAD is not synchronized with its configured upstream")
+    resolved = output(["git", "rev-parse", f"{approved_commit}^{{commit}}"])
+    if resolved != approved_commit:
+        raise BuilderError("approved commit did not resolve to the requested commit object")
+
+
+def require_tools(*, dry_run):
+    required = ["git", "python3"]
+    if not dry_run:
+        required.extend(["ansible-playbook", "ansible-inventory", "skopeo", "doas"])
+    missing = [name for name in required if shutil.which(name) is None]
+    if missing:
+        raise BuilderError("missing required tool(s): " + ", ".join(missing))
+
+
+def prepare_source_archive(staging, approved_commit):
+    archive = safe_child(staging, "source.tar")
+    run(
+        [
+            "git",
+            "archive",
+            "--format=tar",
+            f"--output={archive}",
+            approved_commit,
+        ]
+    )
+    return archive, sha256_file(archive)
+
+
+def inspect_image_archive(path):
+    completed = run(
+        ["skopeo", "inspect", f"oci-archive:{path}"],
+        capture=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise BuilderError("cannot inspect the staged Go OCI archive")
+    try:
+        metadata = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise BuilderError("skopeo returned invalid OCI inspection JSON") from error
+    digest = metadata.get("Digest")
+    if digest != GO_IMAGE_DIGEST:
+        raise BuilderError(f"Go image digest mismatch: expected {GO_IMAGE_DIGEST}, got {digest}")
+    return digest
+
+
+def prepare_image_archive(staging):
+    archive = safe_child(staging, "golang-1.24.13-bookworm.oci.tar")
+    run(
+        [
+            "skopeo",
+            "copy",
+            "--override-os",
+            "linux",
+            "--override-arch",
+            "amd64",
+            f"docker://{GO_IMAGE_REFERENCE}",
+            f"oci-archive:{archive}:{GO_IMAGE_TAG}",
+        ]
+    )
+    inspect_image_archive(archive)
+    return archive, sha256_file(archive)
+
+
+def write_manifest(staging, *, box, operation_id, approved_commit, source_sha256, image_sha256):
+    manifest = {
+        "schema_version": 1,
+        "operation_id": operation_id,
+        "box": box,
+        "source_commit": approved_commit,
+        "source_archive_sha256": source_sha256,
+        "image_reference": GO_IMAGE_REFERENCE,
+        "image_manifest_digest": GO_IMAGE_DIGEST,
+        "image_archive_sha256": image_sha256,
+        "build_target": "./cmd/klokast",
+    }
+    path = safe_child(staging, "manifest.json")
+    path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def render_inventory(staging, box):
+    generated = safe_child(staging, "inventory.yml")
+    run([RENDER_INVENTORY, "--node", box, "--output", generated])
+    return generated
+
+
+def ansible_command(staging, *, box, operation_id, source, image, manifest, result_dir):
+    inventory = render_inventory(staging, box)
+    local_tmp = safe_child(staging, "ansible-local")
+    facts = safe_child(staging, "facts")
+    local_tmp.mkdir(mode=0o700)
+    facts.mkdir(mode=0o700)
+    extra = {
+        "builder_box": box,
+        "builder_operation_id": operation_id,
+        "builder_source_archive": str(source),
+        "builder_image_archive": str(image),
+        "builder_manifest": str(manifest),
+        "builder_controller_result_dir": str(result_dir),
+    }
+    return [
+        "env",
+        f"ANSIBLE_CONFIG={ANSIBLE_DIR / 'ansible.cfg'}",
+        f"ANSIBLE_LOCAL_TEMP={local_tmp}",
+        f"ANSIBLE_CACHE_PLUGIN_CONNECTION={facts}",
+        "ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no",
+        "ansible-playbook",
+        "-i",
+        BASE_INVENTORY,
+        "-i",
+        inventory,
+        PLAYBOOK,
+        "--limit",
+        f"{box}-dom0",
+        "-e",
+        json.dumps(extra, sort_keys=True, separators=(",", ":")),
+        "-vv",
+    ]
+
+
+def verify_result(result_dir, expected):
+    receipt_path = result_dir / "receipt.json"
+    log_path = result_dir / "build.log"
+    binary_path = result_dir / "klokast"
+    for path, maximum in ((receipt_path, 65536), (log_path, 1048576), (binary_path, 67108864)):
+        if not path.is_file():
+            raise BuilderError(f"builder result is missing {path.name}")
+        if path.is_symlink() or path.stat().st_size > maximum:
+            raise BuilderError(f"builder result {path.name} is unsafe or exceeds its size limit")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BuilderError("builder receipt is not valid JSON") from error
+    exact = {
+        "schema_version": 1,
+        "operation_id": expected["operation_id"],
+        "source_commit": expected["source_commit"],
+        "source_archive_sha256": expected["source_archive_sha256"],
+        "image_manifest_digest": GO_IMAGE_DIGEST,
+        "image_archive_sha256": expected["image_archive_sha256"],
+    }
+    for field, value in exact.items():
+        if receipt.get(field) != value:
+            raise BuilderError(f"builder receipt field {field} did not match the controller input")
+    if receipt.get("test_result") != "success" or receipt.get("build_result") != "success":
+        raise BuilderError("builder receipt reports failed tests or build")
+    for field in ("started_at", "finished_at", "toolchain", "toolchain_sha256", "binary_sha256"):
+        if not isinstance(receipt.get(field), str) or not receipt[field]:
+            raise BuilderError(f"builder receipt field {field} is missing")
+    if not re.fullmatch(r"[0-9a-f]{64}", receipt["toolchain_sha256"]):
+        raise BuilderError("builder receipt toolchain hash is invalid")
+    binary_sha256 = sha256_file(binary_path)
+    if receipt["binary_sha256"] != binary_sha256:
+        raise BuilderError("builder binary hash does not match its receipt")
+    return receipt
+
+
+def install_results(result_dir, receipt):
+    destination = OUTPUT_ROOT / "klokast-cli" / receipt["source_commit"] / receipt["operation_id"]
+    if destination.exists():
+        raise BuilderError(f"refusing to overwrite existing build output: {destination}")
+    run(["doas", "install", "-d", "-o", "root", "-g", "smith", "-m", "0750", destination])
+    for name, mode in (("klokast", "0750"), ("receipt.json", "0640"), ("build.log", "0640"), ("cleanup.json", "0640")):
+        source = result_dir / name
+        if source.exists():
+            run(["doas", "install", "-o", "root", "-g", "smith", "-m", mode, source, destination / name])
+    return destination
+
+
+def print_plan(box, approved_commit, operation_id):
+    domain = f"{box}-builder-klokast-cli-{operation_id}"
+    print("platform-builder plan")
+    print(f"  box: {box}")
+    print(f"  approved commit: {approved_commit}")
+    print(f"  domain: {domain}")
+    print("  template LV: /dev/vg0/lv_builder_klokast_cli_template")
+    print(f"  snapshot LV: /dev/vg0/lv_builder_klokast_cli_{operation_id}")
+    print("  Xen: PVH, 2 vCPU, 2048 MiB RAM, 8 GiB snapshot COW, vif=[]")
+    print("  guest: rootless Podman, --network=none, read-only source, bounded resources")
+    print(f"  image: {GO_IMAGE_REFERENCE}")
+    print("  timeout: 900 seconds")
+
+
+def build_klokast_cli(args):
+    box = validate_box(args.box)
+    approved_commit = validate_commit(args.approved_commit)
+    operation_id = validate_operation_id(args.operation_id or os.urandom(6).hex())
+    require_tools(dry_run=args.dry_run_plan)
+    require_active_controller(box)
+    verify_repository(approved_commit)
+    print_plan(box, approved_commit, operation_id)
+    if args.dry_run_plan:
+        return 0
+
+    with tempfile.TemporaryDirectory(prefix=f"klokast-builder-{operation_id}-") as temporary:
+        staging = Path(temporary)
+        staging.chmod(0o700)
+        result_dir = safe_child(staging, "results")
+        result_dir.mkdir(mode=0o700)
+        source, source_sha256 = prepare_source_archive(staging, approved_commit)
+        image, image_sha256 = prepare_image_archive(staging)
+        manifest = write_manifest(
+            staging,
+            box=box,
+            operation_id=operation_id,
+            approved_commit=approved_commit,
+            source_sha256=source_sha256,
+            image_sha256=image_sha256,
+        )
+        command = ansible_command(
+            staging,
+            box=box,
+            operation_id=operation_id,
+            source=source,
+            image=image,
+            manifest=manifest,
+            result_dir=result_dir,
+        )
+        completed = run(command, check=False)
+        expected = {
+            "operation_id": operation_id,
+            "source_commit": approved_commit,
+            "source_archive_sha256": source_sha256,
+            "image_archive_sha256": image_sha256,
+        }
+        try:
+            receipt = verify_result(result_dir, expected)
+        except BuilderError:
+            if completed.returncode != 0:
+                cleanup = result_dir / "cleanup.json"
+                if cleanup.is_file():
+                    print(cleanup.read_text(encoding="utf-8").strip(), file=sys.stderr)
+            raise
+        if completed.returncode != 0:
+            raise BuilderError(f"builder playbook failed with exit code {completed.returncode}")
+        destination = install_results(result_dir, receipt)
+    print(f"platform-builder: verified output: {destination / 'klokast'}")
+    print(f"platform-builder: receipt: {destination / 'receipt.json'}")
+    return 0
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    build = subparsers.add_parser("build-klokast-cli", help="build cmd/klokast in the sealed Xen builder")
+    build.add_argument("--box", required=True)
+    build.add_argument("--approved-commit", required=True)
+    build.add_argument("--dry-run-plan", action="store_true")
+    build.add_argument("--operation-id", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        if args.command == "build-klokast-cli":
+            return build_klokast_cli(args)
+        raise BuilderError(f"unsupported command: {args.command}")
+    except BuilderError as error:
+        die(str(error))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -13,7 +13,6 @@ ops_base_packages:
   - ca-certificates
   - curl
   - git
-  - golang-go
   - gpg
   - jq
   - locales
@@ -29,6 +28,7 @@ ops_base_packages:
   - vim
 
 ops_removed_packages:
+  - golang-go
   - nano
 
 ops_nvm_version: v0.40.4

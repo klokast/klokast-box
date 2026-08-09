@@ -19,13 +19,15 @@ Automation lives here:
   `klokast-ops/bin/provision-vultr-coder-guest`; they must not receive
   Platform private state, controller credentials, or another user's Codex auth.
 - access: Tailscale SSH plus mosh and tmux
-- Codex toolchain on `vultr-ops`: `git`, `bubblewrap`, Node LTS,
-  `@openai/codex`, `go`, and `gofmt`.
+- Codex toolchain on `vultr-ops`: `git`, `bubblewrap`, Node LTS, and
+  `@openai/codex`. Deployable Go artifacts are built by the controller-owned
+  ephemeral builder. A dependency-maintenance task may unpack a
+  checksum-pinned Go toolchain below the airunner's temporary directory, but
+  must remove it afterward and must not publish binaries built there.
 - `vultr-ops` packages are declared in
   `klokast-ops/ansible/inventory/group_vars/all.yml`.
 - `<box>-ops` controller packages are declared in
-  `ansible/inventory/group_vars/ops.yml`; keep `go` there because the
-  controller builds `klokast-node`.
+  `ansible/inventory/group_vars/ops.yml`.
 - deployment toolchain on `ops`: Ansible, not Terraform
 
 For reference, the older manual runbook:
