@@ -44,7 +44,8 @@ curl -fsS \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/hujson" \
   --data-binary @"$POLICY_FILE" \
-  "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/acl"
+  "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/acl" \
+  >/dev/null
 
 echo
 echo "Policy applied."
