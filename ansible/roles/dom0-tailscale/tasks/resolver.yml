@@ -122,3 +122,7 @@
     - dom0_openresolv_sources_after_renew.rc == 0
     - dom0_openresolv_sources_after_renew.stdout is search('(?m)^nameserver[ ]+')
   when: dom0_openresolv_source_was_missing | bool
+
+- name: Refresh the openresolv-generated resolver configuration
+  ansible.builtin.command: /usr/sbin/resolvconf -u
+  changed_when: false

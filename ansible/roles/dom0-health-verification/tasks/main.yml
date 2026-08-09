@@ -565,7 +565,7 @@
     tailscale_dns_health = [
         entry for entry in tailscale_health
         if re.search(
-            r"resolv\.conf overwritten|dns-fight|can't reach (?:the )?configured DNS servers|failed to fetch the DNS configuration",
+            r"resolv\.conf overwritten|dns-fight|can't reach (?:the )?configured DNS servers|failed to (?:fetch|set) the DNS configuration|signature mismatch",
             entry,
             re.IGNORECASE,
         )

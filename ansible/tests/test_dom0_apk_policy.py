@@ -124,6 +124,14 @@ class Dom0ApkPolicyTest(unittest.TestCase):
 
         self.assertLess(text.index("name: dom0-apk-policy"), text.index("name: system-identity"))
 
+    def test_dom0_uses_release_pinned_https_mirrors(self):
+        repositories = self.variables["alpine_repositories"]
+
+        self.assertEqual(len(repositories), 2)
+        self.assertTrue(all(value.startswith("https://") for value in repositories))
+        self.assertTrue(all("{{ alpine_release_branch }}" in value for value in repositories))
+        self.assertTrue(all("latest-stable" not in value for value in repositories))
+
     def test_phase_22_repairs_existing_steady_state_dom0(self):
         text = PHASE_22.read_text(encoding="utf-8")
 

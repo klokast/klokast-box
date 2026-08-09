@@ -58,11 +58,15 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn('/usr/sbin/resolvconf -a "udhcpc.$interface"', resolver_text)
         self.assertIn("Request a DHCP renewal to publish the WAN resolver source", resolver_text)
         self.assertIn("kill -USR1", resolver_text)
+        self.assertIn("Refresh the openresolv-generated resolver configuration", resolver_text)
+        self.assertIn("/usr/sbin/resolvconf -u", resolver_text)
         self.assertIn("dom0_openresolv_repair_was_required", resolver_text)
         self.assertIn("tailscale_restart_required", text)
         self.assertIn("tailscale_dns_restart_required", text)
         self.assertIn("dom0_apk_release_reconcile.changed", text)
         self.assertIn("Clear the completed resolver restart request", text)
+        self.assertIn("signature mismatch", text)
+        self.assertIn("retries: 10", text)
 
         playbook = (
             REPO_ROOT / "ansible" / "playbooks" / "22-dom0-base-verify.yml"
@@ -91,6 +95,7 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("openresolv has no WAN DNS source", health)
         self.assertIn("udhcpc openresolv hook is missing or not executable", health)
         self.assertIn("can't reach (?:the )?configured DNS servers", health)
+        self.assertIn("signature mismatch", health)
 
     def test_dom0_overview_mentions_dns_repair(self):
         text = DOM0_PLAYBOOK_OVERVIEW.read_text(encoding="utf-8")

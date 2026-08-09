@@ -7,6 +7,13 @@ ansible_become_timeout: 30
 ansible_remote_tmp: /tmp
 ansible_python_interpreter: /usr/bin/python3
 
+# Use a release-pinned mirror that is reachable from both current household
+# networks. APK still verifies the signed Alpine repository indexes and
+# packages. Do not use latest-stable here.
+alpine_repositories:
+  - "https://mirrors.hust.edu.cn/alpine/{{ alpine_release_branch }}/main"
+  - "https://mirrors.hust.edu.cn/alpine/{{ alpine_release_branch }}/community"
+
 # `/etc/apk/world` on every steady-state dom0 must contain exactly this set.
 # Keep only runtime and local recovery requirements here. Image acquisition,
 # partition mapping, and guest image construction use the bounded maintenance

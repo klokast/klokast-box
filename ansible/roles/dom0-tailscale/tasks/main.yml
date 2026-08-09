@@ -61,7 +61,7 @@
           tailscale_status_parsed.Health | default([])
           | select(
               'search',
-              "can't reach (the )?configured DNS servers|failed to fetch the DNS configuration"
+              "can't reach (the )?configured DNS servers|failed to (fetch|set) the DNS configuration|signature mismatch"
             )
           | list
           | length
@@ -117,6 +117,20 @@
   ansible.builtin.command: tailscale status --json
   register: tailscale_status_json_after_restart
   changed_when: false
+  retries: 10
+  delay: 2
+  until:
+    - tailscale_status_json_after_restart.rc == 0
+    - >-
+      (
+        (tailscale_status_json_after_restart.stdout | from_json).Health | default([])
+        | select(
+            'search',
+            "resolv\\.conf overwritten|dns-fight|can't reach (the )?configured DNS servers|failed to (fetch|set) the DNS configuration|signature mismatch"
+          )
+        | list
+        | length
+      ) == 0
   when: tailscale_restart_required | bool
 
 - name: Parse Tailscale runtime status after daemon restart
@@ -133,6 +147,16 @@
         (tailscale_status_parsed.Version | default('') | regex_replace('-.*$', ''))
         ==
         (tailscale_cli_version.stdout | default('') | trim | regex_replace('-.*$', ''))
+      - >-
+        (
+          tailscale_status_parsed.Health | default([])
+          | select(
+              'search',
+              "resolv\\.conf overwritten|dns-fight|can't reach (the )?configured DNS servers|failed to (fetch|set) the DNS configuration|signature mismatch"
+            )
+          | list
+          | length
+        ) == 0
     fail_msg: >-
       Tailscale did not return with a running daemon that matches the installed
       CLI after the detached restart.
