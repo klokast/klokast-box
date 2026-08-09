@@ -34,18 +34,120 @@
       - ops_secret_authority_audit_log | default('') is match('^/')
       - ops_account_migration_enabled | default(true) | type_debug == 'bool'
       - ops_account_cleanup_enabled | default(false) | type_debug == 'bool'
+      - ops_controller_packages | default([]) | type_debug == 'list'
+      - ops_controller_packages | default([]) | length > 0
+      - (ops_controller_packages | unique | list | length) == (ops_controller_packages | length)
+      - ops_controller_prune_package_drift | default(false) | type_debug == 'bool'
     fail_msg: Ops controller variables are incomplete.
+
+- name: Read the ops controller APK world before package changes
+  ansible.builtin.slurp:
+    src: /etc/apk/world
+  register: ops_controller_apk_world_before
+
+- name: Normalize the ops controller APK world before package changes
+  ansible.builtin.set_fact:
+    ops_controller_apk_world_before_packages: >-
+      {{
+        (
+          ops_controller_apk_world_before.content
+          | b64decode
+        ).splitlines()
+        | reject('equalto', '')
+        | map('regex_replace', '[@<>=~].*$', '')
+        | unique
+        | sort
+        | list
+      }}
+
+- name: Select unauthorized ops controller APK world entries
+  ansible.builtin.set_fact:
+    ops_controller_apk_world_drift: >-
+      {{
+        ops_controller_apk_world_before_packages
+        | difference(ops_controller_packages)
+        | sort
+        | list
+      }}
+
+- name: Report unauthorized ops controller APK world entries
+  ansible.builtin.debug:
+    msg: >-
+      Unauthorized APK world entries on {{ inventory_hostname }}:
+      {{ ops_controller_apk_world_drift | join(', ') }}
+  when: ops_controller_apk_world_drift | length > 0
+
+- name: Require explicit approval before pruning APK world drift
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ops_controller_apk_world_drift | length == 0)
+        or (ops_controller_prune_package_drift | default(false) | bool)
+    fail_msg: >-
+      Refusing to remove unauthorized APK world entries on {{ inventory_hostname }}:
+      {{ ops_controller_apk_world_drift | join(', ') }}.
+      Investigate their origin, add justified packages to ops_controller_packages,
+      or rerun converge-ops-controller with --prune-package-drift.
 
 - name: Ensure ops controller packages are installed
   community.general.apk:
     name: "{{ ops_controller_packages }}"
     state: present
 
-- name: Ensure Secret Authority Python dependencies are installed
+- name: Simulate removal of reviewed unauthorized APK world entries
+  ansible.builtin.command:
+    argv: "{{ ['/sbin/apk', 'del', '--simulate'] + ops_controller_apk_world_drift }}"
+  register: ops_controller_apk_prune_simulation
+  changed_when: false
+  when:
+    - ops_controller_prune_package_drift | default(false) | bool
+    - ops_controller_apk_world_drift | length > 0
+
+- name: Show the reviewed APK world prune transaction
+  ansible.builtin.debug:
+    var: ops_controller_apk_prune_simulation.stdout_lines
+  when:
+    - ops_controller_prune_package_drift | default(false) | bool
+    - ops_controller_apk_world_drift | length > 0
+
+- name: Remove reviewed unauthorized APK world entries
   community.general.apk:
-    name:
-      - py3-pygithub
-    state: present
+    name: "{{ ops_controller_apk_world_drift }}"
+    state: absent
+  when:
+    - ops_controller_prune_package_drift | default(false) | bool
+    - ops_controller_apk_world_drift | length > 0
+
+- name: Read the converged ops controller APK world
+  ansible.builtin.slurp:
+    src: /etc/apk/world
+  register: ops_controller_apk_world_after
+
+- name: Normalize the converged ops controller APK world
+  ansible.builtin.set_fact:
+    ops_controller_apk_world_after_packages: >-
+      {{
+        (
+          ops_controller_apk_world_after.content
+          | b64decode
+        ).splitlines()
+        | reject('equalto', '')
+        | map('regex_replace', '[@<>=~].*$', '')
+        | unique
+        | sort
+        | list
+      }}
+
+- name: Assert the ops controller APK world matches authorized policy
+  ansible.builtin.assert:
+    that:
+      - >-
+        ops_controller_apk_world_after_packages
+        == (ops_controller_packages | unique | sort | list)
+    fail_msg: >-
+      APK world policy did not converge on {{ inventory_hostname }}.
+      Expected {{ ops_controller_packages | unique | sort | list }},
+      got {{ ops_controller_apk_world_after_packages }}.
 
 - name: Verify Secret Authority GitHub dependency is importable
   ansible.builtin.command:

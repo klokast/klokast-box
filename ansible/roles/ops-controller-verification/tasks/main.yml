@@ -20,8 +20,53 @@
       - doas
       - git
       - jq
+      - openssl
+      - podman
       - python3
+      - skopeo
       - tailscale
+
+- name: Read the ops controller APK world
+  ansible.builtin.slurp:
+    src: /etc/apk/world
+  register: ops_controller_check_apk_world
+
+- name: Normalize the ops controller APK world
+  ansible.builtin.set_fact:
+    ops_controller_check_apk_world_packages: >-
+      {{
+        (
+          ops_controller_check_apk_world.content
+          | b64decode
+        ).splitlines()
+        | reject('equalto', '')
+        | map('regex_replace', '[@<>=~].*$', '')
+        | unique
+        | sort
+        | list
+      }}
+
+- name: Check authorized ops controller APK packages
+  ansible.builtin.command:
+    argv:
+      - /sbin/apk
+      - info
+      - -e
+      - "{{ item }}"
+  loop: "{{ ops_controller_packages }}"
+  register: ops_controller_check_packages
+  changed_when: false
+  failed_when: false
+
+- name: Verify NanoKVM Python dependency is importable
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - import bcrypt
+  register: ops_controller_check_bcrypt
+  changed_when: false
+  failed_when: false
 
 - name: Collect ops controller runtime hostname
   ansible.builtin.command: hostname
@@ -181,6 +226,11 @@
       - vm_tailscale_authkey_expected_tag in (ops_controller_check_tailscale_json.Self.Tags | default([]))
       - (ops_controller_check_users.results | map(attribute='rc') | list | max) == 0
       - (ops_controller_check_commands.results | map(attribute='rc') | list | max) == 0
+      - (ops_controller_check_packages.results | map(attribute='rc') | list | max) == 0
+      - ops_controller_check_bcrypt.rc == 0
+      - >-
+        ops_controller_check_apk_world_packages
+        == (ops_controller_packages | unique | sort | list)
       - ops_controller_check_repo_stat.stat.isdir | default(false)
       - ops_controller_check_repo_git_stat.stat.isdir | default(false)
       - ops_controller_check_repo_state.rc | default(1) == 0
@@ -258,6 +308,7 @@
       - "{{ ops_controller_check_tailscale_json.Self.DNSName | default('') | regex_replace('\\.$', '') }}"
       - "repo={{ ops_controller_check_repo_path }}"
       - "users={{ ops_controller_check_required_users }}"
+      - "apk_world={{ ops_controller_check_apk_world_packages }}"
       - "wrappers={{ ops_controller_tailscale_wrappers | default([]) | length }}"
       - "secret_authority_wrappers={{ ops_controller_secret_authority_wrappers | default([]) | length }}"
       - "secret_files={{ ops_controller_root_secret_files | default([]) | length }}"

@@ -27,7 +27,7 @@ Source: `ansible/bin/`.
 | `bootstrap-live-iso-release` | controller/laptop | Validates and publishes a secret-free bootstrap ISO and Alpine seed bundle as GitHub Release assets. |
 | `converge-cloudflare-guardian` | controller | Installs or refreshes the dom0 Cloudflare guardian for the static-site tunnel authority flow. |
 | `converge-ops-airunner` | controller | Converges the canonical or blue-green candidate AI runner on an existing `<box>-ops`. |
-| `converge-ops-controller` | controller | Reapplies the baseline role to an existing `<box>-ops` controller VM. |
+| `converge-ops-controller` | controller | Reapplies the baseline to an existing `<box>-ops`; unauthorized APK world entries fail closed unless reviewed pruning is explicit. |
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |
 | `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, sync, promote, demote, run, and reseed. |

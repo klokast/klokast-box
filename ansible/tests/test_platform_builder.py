@@ -20,7 +20,6 @@ DOM0 = (
     / "klokast-cli-builder-dom0"
 )
 PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "73-platform-builder.yml"
-CONTROLLER_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "67-ops-controller-converge.yml"
 ROLE_TASKS = REPO_ROOT / "ansible" / "roles" / "klokast-cli-builder" / "tasks" / "main.yml"
 
 
@@ -268,11 +267,6 @@ class PlatformBuilderDom0Test(unittest.TestCase):
         lifecycle = DOM0.read_text(encoding="utf-8")
         self.assertIn('"lvcreate", "--snapshot", "--ignoremonitoring"', lifecycle)
         self.assertNotIn('"lvchange", "--permission", "rw", str(snapshot_lv)', lifecycle)
-
-    def test_controller_convergence_installs_oci_transport(self):
-        controller = CONTROLLER_PLAYBOOK.read_text(encoding="utf-8")
-        self.assertRegex(controller, r"(?m)^\s+- skopeo$")
-
 
 if __name__ == "__main__":
     unittest.main()

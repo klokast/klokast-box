@@ -148,24 +148,33 @@ ops_repositories:
     version: main
 
 ops_controller_packages:
+  - alpine-base
   - ansible
   - bash
-  - buildah
   - ca-certificates
   - curl
+  - doas
   - git
-  - go
+  - iproute2
   - jq
+  - nftables
+  - openssh
   - openssh-client-default
+  - openssl
   - podman
+  - py3-bcrypt
   - py3-cryptography
-  - py3-pygithub
   - py3-jinja2
+  - py3-pygithub
   - py3-yaml
+  - python3
   - rsync
   - skopeo
   - sudo
+  - tailscale
+  - tailscale-openrc
   - tmux
+  - wget
 
 ops_controller_tailscale_wrapper_source_root: "{{ playbook_dir }}/../../klokast-ops/tailscale/bin"
 ops_controller_tailscale_wrappers:

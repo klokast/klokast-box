@@ -4,22 +4,6 @@
   gather_facts: false
   vars:
     vm_manage_sshd: false
-    ops_controller_packages:
-      - ansible
-      - bash
-      - ca-certificates
-      - curl
-      - git
-      - jq
-      - openssh-client-default
-      - py3-cryptography
-      - py3-pygithub
-      - py3-jinja2
-      - py3-yaml
-      - rsync
-      - skopeo
-      - sudo
-      - tmux
   tasks:
     - name: Ensure Python is available on the existing ops controller
       ansible.builtin.import_role:

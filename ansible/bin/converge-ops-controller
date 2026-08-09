@@ -12,6 +12,7 @@ INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
 MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
 DRY_RUN=0
+PRUNE_PACKAGE_DRIFT=0
 CONNECTION_USER=auto
 EXTRA_ARGS=()
 
@@ -29,6 +30,7 @@ Options:
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered
   --dry-run-plan           Print the selected command and inventory graph, then exit
+  --prune-package-drift    Remove reviewed entries outside the authorized APK world
   --connection-user USER   SSH user for the ops VM. Default: auto
   -h, --help               Show this help
 EOF
@@ -97,6 +99,10 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
+    --prune-package-drift)
+      PRUNE_PACKAGE_DRIFT=1
+      shift
+      ;;
     --connection-user)
       [ "$#" -ge 2 ] || die "--connection-user requires a value"
       CONNECTION_USER="$2"
@@ -143,7 +149,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
 [ -x "$RENDER_NODE_INVENTORY" ] || die "inventory renderer not executable: $RENDER_NODE_INVENTORY"
 
 if [ "$LOCAL_HOSTNAME" = "$BOX-ops" ]; then
-  EXTRA_VARS_JSON="$(python3 -c 'import json; print(json.dumps({"ansible_connection": "local", "ansible_host": "localhost", "ansible_python_interpreter": "/usr/bin/python3"}))')"
+  EXTRA_VARS_JSON="$(python3 -c 'import json, sys; print(json.dumps({"ansible_connection": "local", "ansible_host": "localhost", "ansible_python_interpreter": "/usr/bin/python3", "ops_controller_prune_package_drift": sys.argv[1] == "1"}))' "$PRUNE_PACKAGE_DRIFT")"
 else
   if [ "$CONNECTION_USER" = auto ]; then
     CONNECTION_USER=smith
@@ -153,7 +159,7 @@ else
       fi
     fi
   fi
-  EXTRA_VARS_JSON="$(python3 -c 'import json, sys; print(json.dumps({"ansible_ssh_common_args": sys.argv[1], "ops_connection_user": sys.argv[2], "ansible_ssh_transfer_method": "piped"}))' "$SSH_COMMON_ARGS" "$CONNECTION_USER")"
+  EXTRA_VARS_JSON="$(python3 -c 'import json, sys; print(json.dumps({"ansible_ssh_common_args": sys.argv[1], "ops_connection_user": sys.argv[2], "ansible_ssh_transfer_method": "piped", "ops_controller_prune_package_drift": sys.argv[3] == "1"}))' "$SSH_COMMON_ARGS" "$CONNECTION_USER" "$PRUNE_PACKAGE_DRIFT")"
 fi
 
 mkdir -p "$LOG_DIR"
@@ -189,6 +195,7 @@ printf 'Box: %s\n' "$BOX"
 printf 'Base inventory: %s\n' "$INVENTORY"
 printf 'Generated inventory: %s\n' "$GENERATED_INVENTORY"
 printf 'Run directory: %s\n' "$RUN_DIR"
+printf 'Prune package drift: %s\n' "$PRUNE_PACKAGE_DRIFT"
 if [ "$LOCAL_HOSTNAME" = "$BOX-ops" ]; then
   printf 'Connection: local controller\n'
 else

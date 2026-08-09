@@ -104,5 +104,10 @@ Run through:
 ansible/bin/converge-ops-controller --box k002
 ```
 
+The controller APK world is an exact allowlist. Unexpected world entries stop
+normal convergence so their origin can be reviewed. Add justified packages to
+the allowlist, or rerun with `--prune-package-drift` to remove the reviewed
+drift and orphaned dependencies.
+
 Use `65-vm-ops.yml` only for creating or rebuilding the ops VM. Use this
 playbook when the controller already exists and should stay live.
