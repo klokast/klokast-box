@@ -202,10 +202,15 @@ def inspect_image_archive(path):
 
 def prepare_image_archive(staging):
     archive = safe_child(staging, "golang-1.24.13-bookworm.oci.tar")
+    authfile = safe_child(staging, "registry-auth.json")
+    authfile.write_text('{"auths":{}}\n', encoding="utf-8")
+    authfile.chmod(0o600)
     run(
         [
             "skopeo",
             "copy",
+            "--authfile",
+            authfile,
             "--override-os",
             "linux",
             "--override-arch",

@@ -99,6 +99,23 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.BuilderError, "digest mismatch"):
                 self.mod.inspect_image_archive(Path("image.oci.tar"))
 
+    def test_image_download_uses_an_empty_private_authfile(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            self.mod, "run"
+        ) as run, patch.object(
+            self.mod, "inspect_image_archive", return_value=self.mod.GO_IMAGE_DIGEST
+        ):
+            staging = Path(temporary)
+            archive = staging / "golang-1.24.13-bookworm.oci.tar"
+            archive.write_bytes(b"oci archive")
+            self.mod.prepare_image_archive(staging)
+
+            authfile = staging / "registry-auth.json"
+            self.assertEqual(json.loads(authfile.read_text(encoding="utf-8")), {"auths": {}})
+            self.assertEqual(authfile.stat().st_mode & 0o777, 0o600)
+            command = [str(item) for item in run.call_args.args[0]]
+            self.assertEqual(command[command.index("--authfile") + 1], str(authfile))
+
     def write_result(self, directory, *, test_result="success", binary_hash=None):
         binary = directory / "klokast"
         binary.write_bytes(b"verified binary")
