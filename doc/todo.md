@@ -2,6 +2,19 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-09 - keep dom0 package resolution on its Alpine release branch
+
+The k001 and k002 package-name comparison found `nghttp3` only on k002. Its
+older `libcurl` package required it, while the newer `libcurl` on k001 did not.
+The common dom0 repository setting used `latest-stable`, which had moved from
+Alpine 3.23 to Alpine 3.24 during the rollout. An unrestricted upgrade would
+therefore have performed an unreviewed release upgrade.
+
+The dom0 APK policy now pins repositories to v3.23, refuses to run when the
+live release does not match that branch, and reconciles all installed packages
+to versions available from the branch. Keep the branch update coupled to a
+reviewed Alpine release-upgrade canary. Do not restore `latest-stable`.
+
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 
 The first k001 dom0 policy canary showed that the live Alpine 3.23 repository

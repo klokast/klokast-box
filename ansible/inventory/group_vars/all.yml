@@ -141,9 +141,13 @@ bootstrap_tailscale_user: root
 tailscale_persist_paths:
   - /var/lib/tailscale
 
+# Keep a running Alpine system on its declared release branch. Using
+# `latest-stable` can move an existing host to a new Alpine release without a
+# reviewed release-upgrade canary.
+alpine_release_branch: v3.23
 alpine_repositories:
-  - http://dl-cdn.alpinelinux.org/alpine/latest-stable/main
-  - http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
+  - "http://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/main"
+  - "http://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/community"
 
 # Managed Podman hosts on restricted networks should prefer a reachable Docker Hub mirror
 # instead of direct `docker.io` pulls.

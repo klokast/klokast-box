@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOM0_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "dom0.yml"
+ALL_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
 POLICY_TASKS = REPO_ROOT / "ansible" / "roles" / "dom0-apk-policy" / "tasks" / "main.yml"
 POLICY_HANDLERS = (
     REPO_ROOT / "ansible" / "roles" / "dom0-apk-policy" / "handlers" / "main.yml"
@@ -38,6 +39,7 @@ APP_VM_DOM0 = REPO_ROOT / "ansible" / "playbooks" / "tasks" / "platform-app-vm-d
 class Dom0ApkPolicyTest(unittest.TestCase):
     def setUp(self):
         self.variables = yaml.safe_load(DOM0_VARS.read_text(encoding="utf-8"))
+        self.all_variables = yaml.safe_load(ALL_VARS.read_text(encoding="utf-8"))
 
     def test_world_is_a_small_exact_runtime_allowlist(self):
         world = self.variables["dom0_world_packages"]
@@ -81,6 +83,10 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertIn("dest: /etc/apk/world", text)
         self.assertIn("dom0_world_packages | sort | join", text)
         self.assertIn("Assert the dom0 APK world is the exact allowlist", text)
+        self.assertIn("Assert dom0 runs the managed Alpine release branch", text)
+        self.assertIn("Pin dom0 APK repositories to the managed Alpine release branch", text)
+        self.assertIn("Reconcile installed packages to the managed Alpine release branch", text)
+        self.assertIn("--available", text)
         self.assertIn("Probe forbidden steady-state dom0 packages", text)
         self.assertIn("Collect pending diskless changes after dom0 APK convergence", text)
         self.assertIn("ansible.builtin.command: lbu status", text)
@@ -91,6 +97,15 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         handlers = POLICY_HANDLERS.read_text(encoding="utf-8")
         self.assertIn("lbu commit -d", handlers)
         self.assertNotIn("/sbin/lbu", handlers)
+
+    def test_dom0_repository_branch_is_fixed(self):
+        branch = self.all_variables["alpine_release_branch"]
+        repositories = self.all_variables["alpine_repositories"]
+
+        self.assertEqual(branch, "v3.23")
+        self.assertTrue(repositories)
+        self.assertTrue(all("latest-stable" not in item for item in repositories))
+        self.assertTrue(all("{{ alpine_release_branch }}" in item for item in repositories))
 
     def test_guard_fails_closed_without_ram_unlock(self):
         guard = GUARD_TEMPLATE.read_text(encoding="utf-8")

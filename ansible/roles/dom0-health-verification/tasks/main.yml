@@ -250,6 +250,7 @@
     dom0_admin_user_name = env("DOM0_HEALTH_DOM0_ADMIN_USER_NAME")
     dom0_world_packages = json_env("DOM0_HEALTH_WORLD_PACKAGES", [])
     dom0_forbidden_packages = json_env("DOM0_HEALTH_FORBIDDEN_PACKAGES", [])
+    alpine_repositories = json_env("DOM0_HEALTH_ALPINE_REPOSITORIES", [])
     dom0_apk_commit_hook_path = env("DOM0_HEALTH_APK_COMMIT_HOOK_PATH")
     dom0_apk_unlock_path = env("DOM0_HEALTH_APK_UNLOCK_PATH")
 
@@ -317,6 +318,11 @@
         line.strip() for line in apk_info["stdout"].splitlines() if line.strip()
     )
     apk_world = read_text("/etc/apk/world").splitlines()
+    apk_repositories = [
+        line.strip()
+        for line in read_text("/etc/apk/repositories").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
     installed_forbidden_packages = sorted(
         set(installed_packages).intersection(dom0_forbidden_packages)
     )
@@ -493,6 +499,10 @@
     expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
     expect(apk_world == sorted(dom0_world_packages), f"APK world drift: {apk_world}")
     expect(
+        apk_repositories == alpine_repositories,
+        f"APK repository drift: {apk_repositories}",
+    )
+    expect(
         Path(dom0_apk_commit_hook_path).is_file()
         and os.access(dom0_apk_commit_hook_path, os.X_OK),
         f"dom0 APK commit guard is missing or not executable: {dom0_apk_commit_hook_path}",
@@ -587,6 +597,7 @@
             "qemu_binaries": qemu_bin_matches,
             "qemu_processes": qemu_proc_matches,
             "apk_world": apk_world,
+            "apk_repositories": apk_repositories,
             "forbidden_packages": installed_forbidden_packages,
         },
     }
@@ -619,6 +630,7 @@
     DOM0_HEALTH_DOM0_ADMIN_USER_NAME: "{{ dom0_admin_user_name }}"
     DOM0_HEALTH_WORLD_PACKAGES: "{{ dom0_world_packages | to_json }}"
     DOM0_HEALTH_FORBIDDEN_PACKAGES: "{{ dom0_forbidden_steady_state_packages | to_json }}"
+    DOM0_HEALTH_ALPINE_REPOSITORIES: "{{ alpine_repositories | to_json }}"
     DOM0_HEALTH_APK_COMMIT_HOOK_PATH: "{{ dom0_apk_commit_hook_path }}"
     DOM0_HEALTH_APK_UNLOCK_PATH: "{{ dom0_apk_unlock_path }}"
   register: dom0_health_result

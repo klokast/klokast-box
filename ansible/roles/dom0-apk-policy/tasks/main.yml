@@ -9,6 +9,19 @@
     that:
       - dom0_world_packages | default([]) | type_debug == 'list'
       - dom0_world_packages | length > 0
+      - alpine_release_branch is match('^v[0-9]+\.[0-9]+$')
+      - alpine_repositories | default([]) | type_debug == 'list'
+      - alpine_repositories | length > 0
+      - >-
+        (alpine_repositories
+        | reject('search', '/latest-stable/')
+        | list
+        | length) == (alpine_repositories | length)
+      - >-
+        (alpine_repositories
+        | select('search', '/alpine/' ~ alpine_release_branch ~ '/')
+        | list
+        | length) == (alpine_repositories | length)
       - (dom0_world_packages | unique | list | length) == (dom0_world_packages | length)
       - >-
         (dom0_world_packages
@@ -23,6 +36,33 @@
       - dom0_apk_unlock_path is match('^/run/[a-z0-9-]+$')
       - dom0_apk_unlock_content is match('^[a-z0-9-]+$')
     fail_msg: Dom0 APK policy variables are incomplete or unsafe.
+
+- name: Read the running Alpine release
+  ansible.builtin.slurp:
+    src: /etc/alpine-release
+  register: dom0_apk_alpine_release
+
+- name: Assert dom0 runs the managed Alpine release branch
+  ansible.builtin.assert:
+    that:
+      - >-
+        (dom0_apk_alpine_release.content | b64decode | trim)
+        is match('^' ~ (alpine_release_branch | regex_replace('^v', '')) ~ '(\.|$)')
+    fail_msg: >-
+      Refusing an APK transaction on {{ inventory_hostname }} because its
+      running Alpine release does not match {{ alpine_release_branch }}.
+
+- name: Pin dom0 APK repositories to the managed Alpine release branch
+  ansible.builtin.copy:
+    dest: /etc/apk/repositories
+    content: "{{ (alpine_repositories | join('\n')) ~ '\n' }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: dom0_apk_repositories_render
+  notify:
+    - Sync dom0 APK cache
+    - Commit dom0 package policy
 
 - name: Ensure the APK commit hook directory exists
   ansible.builtin.file:
@@ -134,6 +174,18 @@
         mode: "0644"
       register: dom0_apk_world_render
 
+    - name: Reconcile installed packages to the managed Alpine release branch
+      ansible.builtin.command:
+        argv:
+          - /sbin/apk
+          - --update-cache
+          - upgrade
+          - --available
+      register: dom0_apk_release_reconcile
+      changed_when: >-
+        dom0_apk_release_reconcile.stdout
+        is search('(?m)^(\([ 0-9]+/[ 0-9]+\) )?(Installing|Upgrading|Downgrading|Purging) ')
+
     - name: Apply the exact dom0 APK world
       ansible.builtin.command:
         argv:
@@ -145,6 +197,7 @@
         or (dom0_apk_baseline_add.changed | default(false))
         or (dom0_apk_baseline_trigger_recovered | default(false))
         or (dom0_apk_drift_prune.changed | default(false))
+        or (dom0_apk_release_reconcile.changed | default(false))
 
     - name: Read the converged dom0 APK world
       ansible.builtin.slurp:
@@ -199,9 +252,11 @@
       ansible.builtin.command: /bin/true
       changed_when: >-
         dom0_apk_world_render.changed
+        or dom0_apk_repositories_render.changed
         or (dom0_apk_baseline_add.changed | default(false))
         or (dom0_apk_baseline_trigger_recovered | default(false))
         or (dom0_apk_drift_prune.changed | default(false))
+        or (dom0_apk_release_reconcile.changed | default(false))
         or (dom0_apk_lbu_status_after.stdout | trim | length > 0)
       notify:
         - Sync dom0 APK cache
