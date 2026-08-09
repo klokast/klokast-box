@@ -240,9 +240,14 @@ class PlatformBuilderDom0Test(unittest.TestCase):
         self.assertIn("/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}", playbook)
         self.assertIn("ansible_remote_tmp:", playbook)
         self.assertIn("Remove operation-specific Ansible transfer scratch space", playbook)
-        self.assertIn("source_archive_size <= 67108864", tasks)
-        self.assertIn("image_archive_size <= 1073741824", tasks)
+        self.assertIn("builder_source_archive_size <= 67108864", tasks)
+        self.assertIn("builder_image_archive_size <= 1073741824", tasks)
         self.assertIn("536870912", tasks)
+
+    def test_snapshot_is_created_writable_without_mutating_the_sealed_origin(self):
+        lifecycle = DOM0.read_text(encoding="utf-8")
+        self.assertIn('"lvcreate", "--snapshot", "--ignoremonitoring"', lifecycle)
+        self.assertNotIn('"lvchange", "--permission", "rw", str(snapshot_lv)', lifecycle)
 
     def test_controller_convergence_installs_oci_transport(self):
         controller = CONTROLLER_PLAYBOOK.read_text(encoding="utf-8")

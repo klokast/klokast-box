@@ -243,9 +243,7 @@ def write_manifest(
     operation_id,
     approved_commit,
     source_sha256,
-    source_size,
     image_sha256,
-    image_size,
 ):
     manifest = {
         "schema_version": 1,
@@ -253,11 +251,9 @@ def write_manifest(
         "box": box,
         "source_commit": approved_commit,
         "source_archive_sha256": source_sha256,
-        "source_archive_size": source_size,
         "image_reference": GO_IMAGE_REFERENCE,
         "image_manifest_digest": GO_IMAGE_DIGEST,
         "image_archive_sha256": image_sha256,
-        "image_archive_size": image_size,
         "build_target": "./cmd/klokast",
     }
     path = safe_child(staging, "manifest.json")
@@ -272,7 +268,18 @@ def render_inventory(staging, box):
     return generated
 
 
-def ansible_command(staging, *, box, operation_id, source, image, manifest, result_dir):
+def ansible_command(
+    staging,
+    *,
+    box,
+    operation_id,
+    source,
+    source_size,
+    image,
+    image_size,
+    manifest,
+    result_dir,
+):
     inventory = render_inventory(staging, box)
     local_tmp = safe_child(staging, "ansible-local")
     facts = safe_child(staging, "facts")
@@ -282,7 +289,9 @@ def ansible_command(staging, *, box, operation_id, source, image, manifest, resu
         "builder_box": box,
         "builder_operation_id": operation_id,
         "builder_source_archive": str(source),
+        "builder_source_archive_size": source_size,
         "builder_image_archive": str(image),
+        "builder_image_archive_size": image_size,
         "builder_manifest": str(manifest),
         "builder_controller_result_dir": str(result_dir),
     }
@@ -393,16 +402,16 @@ def build_klokast_cli(args):
             operation_id=operation_id,
             approved_commit=approved_commit,
             source_sha256=source_sha256,
-            source_size=source_size,
             image_sha256=image_sha256,
-            image_size=image_size,
         )
         command = ansible_command(
             staging,
             box=box,
             operation_id=operation_id,
             source=source,
+            source_size=source_size,
             image=image,
+            image_size=image_size,
             manifest=manifest,
             result_dir=result_dir,
         )

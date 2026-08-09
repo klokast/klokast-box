@@ -717,10 +717,9 @@ def build(args):
         if domain_exists(domain):
             raise LifecycleError(f"refusing to reuse pre-existing Xen domain: {domain}")
         run([
-            "lvcreate", "--snapshot", "--size", SNAPSHOT_COW_SIZE,
+            "lvcreate", "--snapshot", "--ignoremonitoring", "--size", SNAPSHOT_COW_SIZE,
             "--name", snapshot_name, str(TEMPLATE_LV),
         ], timeout=300)
-        run(["lvchange", "--permission", "rw", str(snapshot_lv)])
         _boot_mapper, root_mapper = mapper_paths(snapshot_lv)
         run(["mount", str(root_mapper), str(mount)])
         input_dir = mount / "var/lib/klokast-build/input"
