@@ -49,10 +49,21 @@ def load_deployment(path):
         if any(not isinstance(item, str) or not LOGIN_RE.fullmatch(item) for item in members):
             die(f"tailnet.groups.{name} contains an invalid login")
         normalized[name] = list(dict.fromkeys(members))
+    operator_test_login = next(
+        (login for login in normalized["operators"] if login in normalized["family"]),
+        None,
+    )
+    if operator_test_login is None:
+        die("one operator must also be a family member for combined policy tests")
     boxes = data.get("boxes", {})
     if not isinstance(boxes, dict):
         die("boxes must be a mapping")
-    return {"magicdns_suffix": suffix, "groups": normalized, "boxes": boxes}
+    return {
+        "magicdns_suffix": suffix,
+        "groups": normalized,
+        "operator_test_login": operator_test_login,
+        "boxes": boxes,
+    }
 
 
 def render(template_path, deployment):
@@ -61,12 +72,22 @@ def render(template_path, deployment):
     except OSError as error:
         die(f"cannot read policy template: {error}")
     replacements = {
-        "{{ operators_json }}": json.dumps(deployment["groups"]["operators"]),
-        "{{ family_json }}": json.dumps(deployment["groups"]["family"]),
+        "{{ operators_json }}": (
+            json.dumps(deployment["groups"]["operators"]),
+            1,
+        ),
+        "{{ family_json }}": (json.dumps(deployment["groups"]["family"]), 1),
+        "{{ operator_test_login_json }}": (
+            json.dumps(deployment["operator_test_login"]),
+            9,
+        ),
     }
-    for marker, value in replacements.items():
-        if content.count(marker) != 1:
-            die(f"policy template must contain exactly one {marker} marker")
+    for marker, (value, expected_count) in replacements.items():
+        if content.count(marker) != expected_count:
+            die(
+                f"policy template must contain exactly {expected_count} "
+                f"{marker} marker(s)"
+            )
         content = content.replace(marker, value)
     if "{{" in content or "}}" in content:
         die("policy template contains an unresolved marker")

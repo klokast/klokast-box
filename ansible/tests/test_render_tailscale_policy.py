@@ -28,7 +28,7 @@ class RenderTailscalePolicyTest(unittest.TestCase):
                         "magicdns_suffix": "example.ts.net",
                         "groups": {
                             "operators": ["admin@example.com"],
-                            "family": ["family@example.com"],
+                            "family": ["admin@example.com", "family@example.com"],
                         },
                     },
                     "boxes": {"k001": {"site": "site-a"}},
@@ -45,8 +45,25 @@ class RenderTailscalePolicyTest(unittest.TestCase):
             rendered = MODULE.render(MODULE.DEFAULT_TEMPLATE, deployment)
 
         self.assertIn('"group:operators": ["admin@example.com"]', rendered)
-        self.assertIn('"group:family": ["family@example.com"]', rendered)
+        self.assertIn(
+            '"group:family": ["admin@example.com", "family@example.com"]',
+            rendered,
+        )
+        self.assertEqual(rendered.count('"src":    "admin@example.com"'), 3)
+        self.assertEqual(rendered.count('"src":   "admin@example.com"'), 4)
+        self.assertEqual(rendered.count('"src": "admin@example.com"'), 2)
         self.assertNotIn("{{", rendered)
+
+    def test_rejects_groups_without_an_operator_family_test_login(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self.deployment(root)
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            data["tailnet"]["groups"]["family"] = ["family@example.com"]
+            path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                MODULE.load_deployment(path)
 
     def test_oob_web_access_is_operator_only(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -731,7 +731,7 @@
 			],
 		},
 		{
-			"src":    "group:operators",
+			"src":    {{ operator_test_login_json }},
 			"accept": ["tag:nextcloud:443", "tag:immich:443", "tag:music:443", "tag:music-upload:22", "tag:print:631", "tag:streamer:22", "tag:torrent:443"],
 
 			"deny": [
@@ -765,7 +765,7 @@
 
 	"sshTests": [
 		{
-			"src":   "group:operators",
+			"src":   {{ operator_test_login_json }},
 			"dst":   ["tag:oob"],
 			"check": ["root"],
 
@@ -777,7 +777,7 @@
 			],
 		},
 		{
-			"src": "group:operators",
+			"src": {{ operator_test_login_json }},
 			"dst": ["tag:ops"],
 
 			"check": [
@@ -792,7 +792,7 @@
 			"deny": ["root", "xiaoju", "one"],
 		},
 		{
-			"src":   "group:operators",
+			"src":   {{ operator_test_login_json }},
 			"dst":   ["tag:infra", "tag:infra-agent"],
 			"check": ["neo", "codex", "agent", "ml-agent"],
 
@@ -807,7 +807,7 @@
 			],
 		},
 		{
-			"src":   "group:operators",
+			"src":   {{ operator_test_login_json }},
 			"dst":   ["tag:airunner"],
 			"check": ["neo", "agent"],
 
@@ -824,7 +824,7 @@
 			],
 		},
 		{
-			"src":   "group:operators",
+			"src":   {{ operator_test_login_json }},
 			"dst":   ["tag:bootstrap"],
 			"check": ["root"],
 
@@ -836,7 +836,7 @@
 			],
 		},
 		{
-			"src": "group:operators",
+			"src": {{ operator_test_login_json }},
 
 			"dst": [
 				"tag:dom0",
@@ -862,7 +862,7 @@
 			],
 		},
 		{
-			"src":    "group:operators",
+			"src":    {{ operator_test_login_json }},
 			"dst":    ["tag:music-upload"],
 			"accept": ["music"],
 
@@ -875,7 +875,7 @@
 			],
 		},
 		{
-			"src":    "group:operators",
+			"src":    {{ operator_test_login_json }},
 			"dst":    ["tag:streamer"],
 			"accept": ["streamer-power"],
 
