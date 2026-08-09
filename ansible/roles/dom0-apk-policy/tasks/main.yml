@@ -178,6 +178,12 @@
       ansible.builtin.command:
         argv:
           - /sbin/apk
+          # Fetch the complete transaction before package scripts or file
+          # replacement starts. A stalled mirror must not leave dom0 halfway
+          # through a release reconciliation.
+          - --cache-predownload
+          - --timeout
+          - "30"
           - --update-cache
           - upgrade
           - --available

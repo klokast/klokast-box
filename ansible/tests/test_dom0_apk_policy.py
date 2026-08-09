@@ -86,6 +86,8 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertIn("Assert dom0 runs the managed Alpine release branch", text)
         self.assertIn("Pin dom0 APK repositories to the managed Alpine release branch", text)
         self.assertIn("Reconcile installed packages to the managed Alpine release branch", text)
+        self.assertIn("--cache-predownload", text)
+        self.assertIn("--timeout", text)
         self.assertIn("--available", text)
         self.assertIn("Probe forbidden steady-state dom0 packages", text)
         self.assertIn("Collect pending diskless changes after dom0 APK convergence", text)
