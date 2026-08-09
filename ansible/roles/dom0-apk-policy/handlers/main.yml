@@ -17,7 +17,7 @@
         esac
       fi
     fi
-    /sbin/lbu commit -d
+    lbu commit -d
   args:
     executable: /bin/sh
   changed_when: true

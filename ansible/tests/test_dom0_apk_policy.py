@@ -8,6 +8,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOM0_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "dom0.yml"
 POLICY_TASKS = REPO_ROOT / "ansible" / "roles" / "dom0-apk-policy" / "tasks" / "main.yml"
+POLICY_HANDLERS = (
+    REPO_ROOT / "ansible" / "roles" / "dom0-apk-policy" / "handlers" / "main.yml"
+)
 UNLOCK_TASKS = (
     REPO_ROOT
     / "ansible"
@@ -74,9 +77,14 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertIn("Assert the dom0 APK world is the exact allowlist", text)
         self.assertIn("Probe forbidden steady-state dom0 packages", text)
         self.assertIn("Collect pending diskless changes after dom0 APK convergence", text)
+        self.assertIn("ansible.builtin.command: lbu status", text)
         self.assertIn("dom0_apk_lbu_status_after.stdout | trim | length > 0", text)
         self.assertIn("always:", text)
         self.assertIn("Lock dom0 APK transactions after convergence", text)
+
+        handlers = POLICY_HANDLERS.read_text(encoding="utf-8")
+        self.assertIn("lbu commit -d", handlers)
+        self.assertNotIn("/sbin/lbu", handlers)
 
     def test_guard_fails_closed_without_ram_unlock(self):
         guard = GUARD_TEMPLATE.read_text(encoding="utf-8")

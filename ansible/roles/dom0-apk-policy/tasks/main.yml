@@ -191,7 +191,7 @@
           }}.
 
     - name: Collect pending diskless changes after dom0 APK convergence
-      ansible.builtin.command: /sbin/lbu status
+      ansible.builtin.command: lbu status
       register: dom0_apk_lbu_status_after
       changed_when: false
 
