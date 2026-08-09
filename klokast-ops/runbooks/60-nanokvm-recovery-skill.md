@@ -167,6 +167,50 @@ After apply, test `https://oob.<tailnet>.ts.net/` from an operator-owned
 device. A request from `tag:ops` or `tag:airunner` is not an equivalent test
 because those machine identities intentionally have no NanoKVM web access.
 
+If TCP 443 connects and `curl -k` returns the NanoKVM page, but the browser
+still refuses the page, inspect the certificate:
+
+```sh
+curl -vk https://oob.<tailnet>.ts.net/
+```
+
+The NanoKVM default certificate has `CN=localhost` and is self-signed. It is
+not valid for the MagicDNS name. Configure Tailscale Serve on NanoKVM to
+terminate TLS with an automatically managed certificate and proxy to the
+device-local HTTPS listener:
+
+```sh
+tailscale ssh root@oob tailscale serve \
+  --bg --yes --https=443 https+insecure://localhost:443
+tailscale ssh root@oob tailscale serve status
+```
+
+Expected status:
+
+```text
+https://oob.<tailnet>.ts.net (tailnet only)
+|-- / proxy https+insecure://localhost:443
+```
+
+Use the full MagicDNS URL. A request to the Tailscale IP can bypass Serve and
+still receive the NanoKVM self-signed certificate.
+
+Verify from an operator-owned device without `-k`:
+
+```sh
+curl -v https://oob.<tailnet>.ts.net/
+```
+
+To roll back the proxy:
+
+```sh
+tailscale ssh root@oob tailscale serve --https=443 off
+```
+
+Tailscale stores the Serve configuration in its existing state. This does not
+add a daemon. Recheck `tailscale serve status` after a NanoKVM firmware update,
+factory reset, or Tailscale state replacement.
+
 If the NanoKVM menu works but the target display is blank:
 
 ```sh

@@ -2,6 +2,22 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-09 - NanoKVM Tailscale Serve is runbook-managed
+
+The NanoKVM HTTPS listener presents a self-signed certificate with
+`CN=localhost`. Tailscale connectivity and the operator grant can both work
+while a browser rejects `https://oob.<tailnet>.ts.net/`. The active `oob`
+device now uses a persistent Tailscale Serve configuration on TCP 443 that
+proxies to `https+insecure://localhost:443` and supplies a valid certificate.
+
+No Platform automation currently converges or verifies this Serve state after
+a NanoKVM firmware update, factory reset, or Tailscale state replacement. Add
+a narrow controller-owned reconciliation and verification path. Do not grant
+`tag:ops` or `tag:airunner` direct web access as a test workaround. The device
+also reported a Tailscale CLI version newer than the running daemon. Do not
+restart Tailscale synchronously over Tailscale SSH; use a console-safe or
+detached restart workflow.
+
 # 2026-08-09 - remote Tailscale restarts must outlive Tailscale SSH
 
 A synchronous `rc-service tailscale restart` on k001 stopped the daemon and
