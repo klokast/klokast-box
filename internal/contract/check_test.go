@@ -187,6 +187,7 @@ func TestSecretAndGeneratedStateDetectionDoesNotEchoValues(t *testing.T) {
 		writeTestFile(t, filepath.Join(root, "notes.yml"), "token: "+secret+"\n")
 		writeTestFile(t, filepath.Join(root, ".klokast/plan.json"), "{}\n")
 	})
+	runGit(t, root, "add", "-f", ".klokast/plan.json")
 	report, err := Check(root, testCommit)
 	if err != nil {
 		t.Fatal(err)
