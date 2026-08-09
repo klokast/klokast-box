@@ -17,6 +17,7 @@
       - py3-jinja2
       - py3-yaml
       - rsync
+      - skopeo
       - sudo
       - tmux
   tasks:

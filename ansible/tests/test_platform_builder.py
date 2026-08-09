@@ -20,6 +20,7 @@ DOM0 = (
     / "klokast-cli-builder-dom0"
 )
 PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "73-platform-builder.yml"
+CONTROLLER_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "67-ops-controller-converge.yml"
 ROLE_TASKS = REPO_ROOT / "ansible" / "roles" / "klokast-cli-builder" / "tasks" / "main.yml"
 
 
@@ -205,6 +206,10 @@ class PlatformBuilderDom0Test(unittest.TestCase):
         tasks = ROLE_TASKS.read_text(encoding="utf-8")
         self.assertLess(tasks.index("Fetch available stopped-guest results"), tasks.index("Remove per-operation staging"))
         self.assertIn("alpine-virt-assets", PLAYBOOK.read_text(encoding="utf-8"))
+
+    def test_controller_convergence_installs_oci_transport(self):
+        controller = CONTROLLER_PLAYBOOK.read_text(encoding="utf-8")
+        self.assertRegex(controller, r"(?m)^\s+- skopeo$")
 
 
 if __name__ == "__main__":
