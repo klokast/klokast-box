@@ -295,6 +295,12 @@
     ]
     lbu_status = capture(["lbu", "status"])
     udhcpc_conf = read_text("/etc/udhcpc/udhcpc.conf")
+    openresolv_sources = capture(["/usr/sbin/resolvconf", "-l"])
+    resolver_hook_paths = [
+        "/etc/udhcpc/post-bound/20-klokast-resolvconf",
+        "/etc/udhcpc/post-renew/20-klokast-resolvconf",
+        "/etc/udhcpc/pre-deconfig/20-klokast-resolvconf",
+    ]
 
     root_mode = oct(Path("/").stat().st_mode & 0o777)[2:].zfill(4)
     apk_cache_readlink = os.path.realpath("/etc/apk/cache")
@@ -489,6 +495,16 @@
         re.search(r'(?m)^RESOLV_CONF=["\']?no["\']?$', udhcpc_conf) is not None,
         'udhcpc is not configured with RESOLV_CONF="no"',
     )
+    for resolver_hook_path in resolver_hook_paths:
+        expect(
+            Path(resolver_hook_path).is_file() and os.access(resolver_hook_path, os.X_OK),
+            f"udhcpc openresolv hook is missing or not executable: {resolver_hook_path}",
+        )
+    expect(
+        openresolv_sources["rc"] == 0
+        and re.search(r"(?m)^nameserver[ ]+", openresolv_sources["stdout"]) is not None,
+        "openresolv has no WAN DNS source",
+    )
     expect(Path(apkovl_archive_path).exists(), f"missing apkovl archive: {apkovl_archive_path}")
     expect(apkovl_listing == [apkovl_archive_name], f"unexpected apkovl files at EFI root: {apkovl_listing}")
     expect("apkvol=" not in grub_cfg, "steady-state GRUB config still contains apkvol=")
@@ -548,7 +564,11 @@
     tailscale_health = tailscale.get("Health") or []
     tailscale_dns_health = [
         entry for entry in tailscale_health
-        if re.search(r"resolv\.conf overwritten|dns-fight", entry)
+        if re.search(
+            r"resolv\.conf overwritten|dns-fight|can't reach (?:the )?configured DNS servers|failed to fetch the DNS configuration",
+            entry,
+            re.IGNORECASE,
+        )
     ]
     expect(not tailscale_dns_health, f"Tailscale DNS health entries: {tailscale_dns_health}")
     tailscale_other_health = [

@@ -128,7 +128,7 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         text = PHASE_22.read_text(encoding="utf-8")
 
         self.assertIn("Converge the exact steady-state dom0 package policy", text)
-        self.assertLess(text.index("name: dom0-apk-policy"), text.index("name: dom0-tailscale"))
+        self.assertLess(text.index("name: dom0-apk-policy"), text.rindex("name: dom0-tailscale"))
 
     def test_debian_rootfs_tools_are_transient_and_include_gzip(self):
         role = DEBIAN_ROOTFS.read_text(encoding="utf-8")

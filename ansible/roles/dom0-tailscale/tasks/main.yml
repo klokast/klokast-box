@@ -3,20 +3,14 @@
 # - Converges steady-state dom0 Tailscale installation, runtime settings, and persisted state tracking.
 #
 ---
+- name: Converge the WAN resolver source before Tailscale
+  ansible.builtin.import_tasks: resolver.yml
+
 - name: Ensure Tailscale service is enabled and running
   ansible.builtin.service:
     name: tailscale
     enabled: true
     state: started
-  notify: Commit lbu changes
-
-- name: Prevent udhcpc from overwriting Tailscale-owned DNS
-  ansible.builtin.lineinfile:
-    path: /etc/udhcpc/udhcpc.conf
-    regexp: '^#?RESOLV_CONF='
-    line: 'RESOLV_CONF="no"'
-    create: true
-    mode: "0644"
   notify: Commit lbu changes
 
 - name: Collect Tailscale runtime status
@@ -59,7 +53,15 @@
         )
       }}
 
-- name: Launch a detached Tailscale restart when daemon version lags the CLI
+- name: Detect whether Tailscale must restart outside its SSH session
+  ansible.builtin.set_fact:
+    tailscale_restart_required: >-
+      {{
+        (tailscale_daemon_version_mismatch | bool)
+        or (dom0_openresolv_repair_was_required | default(false) | bool)
+      }}
+
+- name: Launch a detached Tailscale restart when required
   ansible.builtin.shell: |
     set -eu
     sleep 3
@@ -73,37 +75,37 @@
     # its result in RAM because the dom0 admin home is persisted by lbu.
     ansible_async_dir: /tmp/klokast-ansible-async
   changed_when: true
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
   notify: Commit lbu changes
 
-- name: Wait for stale Tailscale daemon restart to begin
+- name: Wait for the detached Tailscale restart to begin
   ansible.builtin.pause:
     seconds: 8
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
 
-- name: Wait for dom0 after stale Tailscale daemon restart
+- name: Wait for dom0 after detached Tailscale daemon restart
   ansible.builtin.wait_for_connection:
     connect_timeout: 10
     sleep: 3
     timeout: 120
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
 
 - name: Verify the Tailscale OpenRC service after daemon restart
   ansible.builtin.command: /sbin/rc-service tailscale status
   changed_when: false
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
 
 - name: Recollect Tailscale runtime status after daemon restart
   ansible.builtin.command: tailscale status --json
   register: tailscale_status_json_after_restart
   changed_when: false
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
 
 - name: Parse Tailscale runtime status after daemon restart
   ansible.builtin.set_fact:
     tailscale_status_json: "{{ tailscale_status_json_after_restart }}"
     tailscale_status_parsed: "{{ tailscale_status_json_after_restart.stdout | from_json }}"
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
 
 - name: Verify the restarted Tailscale daemon
   ansible.builtin.assert:
@@ -116,7 +118,7 @@
     fail_msg: >-
       Tailscale did not return with a running daemon that matches the installed
       CLI after the detached restart.
-  when: tailscale_daemon_version_mismatch | bool
+  when: tailscale_restart_required | bool
 
 - name: Collect Tailscale preferences
   ansible.builtin.command: tailscale debug prefs

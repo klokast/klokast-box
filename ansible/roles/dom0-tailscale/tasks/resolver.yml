@@ -1,0 +1,124 @@
+#
+# Summary:
+# - Publishes the WAN DHCP resolver to openresolv without allowing DHCP to replace Tailscale-owned resolv.conf.
+#
+---
+- name: Ensure udhcpc resolver hook directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/udhcpc/post-bound
+    - /etc/udhcpc/post-renew
+    - /etc/udhcpc/pre-deconfig
+  notify: Commit lbu changes
+
+- name: Feed WAN DHCP resolvers to openresolv without replacing resolv.conf
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+
+      expected_interface={{ dom0_wan_bridge_name | quote }}
+      [ "${interface:-}" = "$expected_interface" ] || exit 0
+
+      valid_dns=
+      for server in ${dns:-}; do
+          case "$server" in
+              *[!0-9A-Fa-f:.]*) continue ;;
+          esac
+          valid_dns="$valid_dns $server"
+      done
+      [ -n "$valid_dns" ] || exit 0
+
+      {
+          case "${domain:-}" in
+              ""|*[!0-9A-Za-z._-]*) ;;
+              *) printf 'search %s\n' "$domain" ;;
+          esac
+          for server in $valid_dns; do
+              printf 'nameserver %s\n' "$server"
+          done
+      } | /usr/sbin/resolvconf -a "udhcpc.$interface"
+  loop:
+    - /etc/udhcpc/post-bound/20-klokast-resolvconf
+    - /etc/udhcpc/post-renew/20-klokast-resolvconf
+  notify: Commit lbu changes
+
+- name: Remove the openresolv WAN source before DHCP deconfiguration
+  ansible.builtin.copy:
+    dest: /etc/udhcpc/pre-deconfig/20-klokast-resolvconf
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+
+      expected_interface={{ dom0_wan_bridge_name | quote }}
+      [ "${interface:-}" = "$expected_interface" ] || exit 0
+      /usr/sbin/resolvconf -d "udhcpc.$interface" || true
+  notify: Commit lbu changes
+
+- name: Prevent udhcpc from overwriting Tailscale-owned DNS
+  ansible.builtin.lineinfile:
+    path: /etc/udhcpc/udhcpc.conf
+    regexp: '^#?RESOLV_CONF='
+    line: 'RESOLV_CONF="no"'
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
+- name: Collect openresolv resolver sources
+  ansible.builtin.command: /usr/sbin/resolvconf -l
+  register: dom0_openresolv_sources_before_renew
+  changed_when: false
+  failed_when: false
+
+- name: Detect a missing WAN resolver source
+  ansible.builtin.set_fact:
+    dom0_openresolv_source_was_missing: >-
+      {{
+        dom0_openresolv_sources_before_renew.rc != 0
+        or not (dom0_openresolv_sources_before_renew.stdout is search('(?m)^nameserver[ ]+'))
+      }}
+
+- name: Record resolver repair for a later detached Tailscale restart
+  ansible.builtin.set_fact:
+    dom0_openresolv_repair_was_required: >-
+      {{
+        (dom0_openresolv_repair_was_required | default(false) | bool)
+        or (dom0_openresolv_source_was_missing | bool)
+      }}
+
+- name: Request a DHCP renewal to publish the WAN resolver source
+  ansible.builtin.shell: |
+    set -eu
+    pid_file=/run/udhcpc.{{ dom0_wan_bridge_name | quote }}.pid
+    pid=$(cat "$pid_file")
+    case "$pid" in
+      ""|*[!0-9]*) exit 1 ;;
+    esac
+    kill -USR1 "$pid"
+  args:
+    executable: /bin/sh
+  changed_when: true
+  when: dom0_openresolv_source_was_missing | bool
+
+- name: Wait for the WAN resolver source
+  ansible.builtin.command: /usr/sbin/resolvconf -l
+  register: dom0_openresolv_sources_after_renew
+  changed_when: false
+  retries: 10
+  delay: 1
+  until:
+    - dom0_openresolv_sources_after_renew.rc == 0
+    - dom0_openresolv_sources_after_renew.stdout is search('(?m)^nameserver[ ]+')
+  when: dom0_openresolv_source_was_missing | bool

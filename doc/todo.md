@@ -2,6 +2,19 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-09 - remote Tailscale restarts must outlive Tailscale SSH
+
+A synchronous `rc-service tailscale restart` on k001 stopped the daemon and
+therefore stopped its own Tailscale SSH transport before the remote shell could
+run the start action. The local console was required to start the service.
+
+The dom0 Tailscale role now launches restarts as detached Ansible async jobs,
+waits for reconnection, and verifies OpenRC, the backend state, and the daemon
+version. Do not run synchronous Tailscale stop or restart commands through
+Tailscale SSH. The incident also exposed a missing system DNS source. Managed
+`udhcpc` hooks now publish WAN DHCP resolvers to `openresolv` without replacing
+Tailscale-owned `/etc/resolv.conf`.
+
 # 2026-08-09 - keep dom0 package resolution on its Alpine release branch
 
 The k001 and k002 package-name comparison found `nghttp3` only on k002. Its
