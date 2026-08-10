@@ -58,6 +58,8 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 OPERATION = re.compile(r"^[0-9a-f]{12}$")
+SOURCE_REF = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9])?$")
+ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
 REDACTIONS = (
     re.compile(rb"(?i)((?:password|passwd|secret|token|api[_-]?key|auth[_-]?key)\s*[:=]\s*)\S+"),
     re.compile(rb"tskey-[A-Za-z0-9_-]+"),
@@ -187,7 +189,8 @@ def main():
     try:
         manifest = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
         required = {
-            "schema_version", "operation_id", "box", "source_commit",
+            "schema_version", "operation_id", "box", "source_repository",
+            "source_ref", "source_commit",
             "source_archive_sha256", "image_reference", "image_manifest_digest",
             "image_archive_sha256", "build_target",
         }
@@ -197,6 +200,16 @@ def main():
             raise ValueError("operation ID is invalid")
         if not HEX40.fullmatch(manifest["source_commit"]):
             raise ValueError("source commit is invalid")
+        if manifest["source_repository"] != ENGINE_REPOSITORY:
+            raise ValueError("source repository is invalid")
+        if (
+            not SOURCE_REF.fullmatch(manifest["source_ref"])
+            or "//" in manifest["source_ref"]
+            or ".." in manifest["source_ref"]
+            or "@{" in manifest["source_ref"]
+            or any(part.endswith(".lock") for part in manifest["source_ref"].split("/"))
+        ):
+            raise ValueError("source ref is invalid")
         if not HEX64.fullmatch(manifest["source_archive_sha256"]):
             raise ValueError("source archive hash is invalid")
         if not HEX64.fullmatch(manifest["image_archive_sha256"]):
@@ -280,7 +293,11 @@ def main():
         if test_rc != 0:
             raise RuntimeError("tests failed")
 
-        ldflags = f"-X=main.engineCommit={manifest['source_commit']}"
+        ldflags = " ".join([
+            f"-X=main.engineRepository={manifest['source_repository']}",
+            f"-X=main.engineRef={manifest['source_ref']}",
+            f"-X=main.engineCommit={manifest['source_commit']}",
+        ])
         build_rc = run_logged(
             log,
             "go build",
@@ -309,6 +326,8 @@ def main():
         receipt = {
             "schema_version": 1,
             "operation_id": manifest.get("operation_id", "unknown"),
+            "source_repository": manifest.get("source_repository", "unknown"),
+            "source_ref": manifest.get("source_ref", "unknown"),
             "source_commit": manifest.get("source_commit", "unknown"),
             "source_archive_sha256": manifest.get("source_archive_sha256", ""),
             "image_manifest_digest": manifest.get("image_manifest_digest", ""),

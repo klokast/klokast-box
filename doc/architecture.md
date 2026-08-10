@@ -282,7 +282,9 @@ deployment and security gates are implemented and validated.
     vendored modules, and a digest-pinned Go OCI archive while the guest is
     stopped. The stopped guest is the authoritative build locus; the
     credential-bearing controller and airunner do not produce deployable CLI
-    binaries.
+    binaries. The controller also verifies the canonical repository and safe
+    upstream branch. The guest binds that repository, ref, and commit into the
+    binary and its receipt, and the controller verifies the receipt values.
 
 - `store`: rootless blob-distribution containers in `<box>-bak` on the active- and standby-controller boxes. The store is an untrusted distribution layer, outside the TCB:
   - content-addressed, immutable blobs;

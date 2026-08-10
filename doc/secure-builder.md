@@ -9,9 +9,11 @@ ansible/bin/platform-builder build-klokast-cli \
   --approved-commit 0123456789abcdef0123456789abcdef01234567
 ```
 
-The command requires a clean checkout whose `HEAD` and configured upstream
-both equal the full approved commit. `--dry-run-plan` performs those authority
-and source checks without downloading or creating build resources.
+The command requires a clean checkout of the canonical
+`klokast/klokast-box` repository. The current safe branch must track its
+matching `origin` branch, and `HEAD` and that upstream must both equal the
+full approved commit. `--dry-run-plan` performs those authority and source
+checks without downloading or creating build resources.
 
 The controller exports the commit with `git archive` and obtains
 `golang:1.24.13-bookworm` by its pinned linux/amd64 manifest digest. Ansible
@@ -29,6 +31,11 @@ the image as an unprivileged user and runs rootless Podman with
 `no-new-privileges`, and fixed memory, CPU, PID, log, disk-COW, stage, and
 guest time limits. It runs vendored tests before building `cmd/klokast` with
 CGO disabled, path trimming, and VCS probing disabled.
+
+The controller gives the guest the normalized engine repository, verified
+branch ref, and approved commit. The guest binds all three values into the
+binary. It also writes them to the receipt. The controller checks the receipt
+values against its own inputs before it accepts the binary.
 
 Dom0 reads results only after the guest stops. The controller independently
 checks the input and binary hashes in the JSON receipt before installing the

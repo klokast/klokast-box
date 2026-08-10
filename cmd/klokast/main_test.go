@@ -16,7 +16,8 @@ func TestVersionJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.EngineCommit != engineCommit || result.Name != "klokast" {
+	if result.EngineRepository != engineRepository || result.EngineRef != engineRef ||
+		result.EngineCommit != engineCommit || result.Name != "klokast" {
 		t.Fatalf("unexpected version result: %#v", result)
 	}
 }

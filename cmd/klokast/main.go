@@ -10,12 +10,18 @@ import (
 	"klokast-box/internal/contract"
 )
 
-var engineCommit = "0000000000000000000000000000000000000000"
+var (
+	engineRepository = "unverified"
+	engineRef        = "unverified"
+	engineCommit     = "0000000000000000000000000000000000000000"
+)
 
 type versionResult struct {
-	Name         string `json:"name"`
-	Version      string `json:"version"`
-	EngineCommit string `json:"engine_commit"`
+	Name             string `json:"name"`
+	Version          string `json:"version"`
+	EngineRepository string `json:"engine_repository"`
+	EngineRef        string `json:"engine_ref"`
+	EngineCommit     string `json:"engine_commit"`
 }
 
 type operationalResult struct {
@@ -29,7 +35,13 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 2 && args[0] == "version" && args[1] == "--json" {
-		result := versionResult{Name: "klokast", Version: "0.1.0-dev", EngineCommit: engineCommit}
+		result := versionResult{
+			Name:             "klokast",
+			Version:          "0.1.0-dev",
+			EngineRepository: engineRepository,
+			EngineRef:        engineRef,
+			EngineCommit:     engineCommit,
+		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			fmt.Fprintln(stderr, "klokast: cannot write version result")
 			return 1
@@ -52,7 +64,11 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: klokast check --instance PATH [--json]")
 		return 2
 	}
-	report, err := contract.Check(*instance, engineCommit)
+	report, err := contract.Check(*instance, contract.Engine{
+		Repository: engineRepository,
+		Ref:        engineRef,
+		Commit:     engineCommit,
+	})
 	if err != nil {
 		if *jsonOutput {
 			if encodeErr := json.NewEncoder(stdout).Encode(operationalResult{Valid: false, OperationalError: err.Error()}); encodeErr != nil {

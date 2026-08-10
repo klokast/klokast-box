@@ -14,11 +14,17 @@ import (
 
 const testCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+var testEngine = Engine{
+	Repository: "https://github.com/klokast/klokast-box",
+	Ref:        "main",
+	Commit:     testCommit,
+}
+
 func TestCanonicalSingleBoxAndTwoBoxFixtures(t *testing.T) {
 	for _, fixture := range []string{"single", "two"} {
 		t.Run(fixture, func(t *testing.T) {
 			root := prepareInstance(t, fixture, nil)
-			report, err := Check(root, testCommit)
+			report, err := Check(root, testEngine)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +38,7 @@ func TestCanonicalSingleBoxAndTwoBoxFixtures(t *testing.T) {
 func TestDirtyWorktreeIsAccepted(t *testing.T) {
 	root := prepareInstance(t, "single", nil)
 	writeTestFile(t, filepath.Join(root, "README.md"), "dirty but permitted\n")
-	report, err := Check(root, testCommit)
+	report, err := Check(root, testEngine)
 	if err != nil || !report.Valid {
 		t.Fatalf("dirty worktree rejected: err=%v diagnostics=%#v", err, report.Diagnostics)
 	}
@@ -50,6 +56,18 @@ func TestInvalidLockAndAuthoritativeTracking(t *testing.T) {
 			replaceInFile(t, filepath.Join(root, lockPath), testCommit, "abc123")
 		})
 		requireCode(t, root, testCommit, "schema.invalid")
+	})
+	t.Run("repository", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, lockPath), "https://github.com/klokast/klokast-box", "https://github.com/example/fork")
+		})
+		requireCode(t, root, testCommit, "engine.repository")
+	})
+	t.Run("ref", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, lockPath), "ref: main", "ref: other")
+		})
+		requireCode(t, root, testCommit, "engine.ref")
 	})
 	t.Run("untracked", func(t *testing.T) {
 		root := prepareInstance(t, "single", nil)
@@ -135,7 +153,7 @@ func TestSafePathsAndStandaloneRepository(t *testing.T) {
 		if err := os.Mkdir(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		report, err := Check(root, testCommit)
+		report, err := Check(root, testEngine)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,7 +206,7 @@ func TestSecretAndGeneratedStateDetectionDoesNotEchoValues(t *testing.T) {
 		writeTestFile(t, filepath.Join(root, ".klokast/plan.json"), "{}\n")
 	})
 	runGit(t, root, "add", "-f", ".klokast/plan.json")
-	report, err := Check(root, testCommit)
+	report, err := Check(root, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +221,7 @@ func TestSecretAndGeneratedStateDetectionDoesNotEchoValues(t *testing.T) {
 }
 
 func TestOperationalFailureForMissingInstance(t *testing.T) {
-	if _, err := Check(filepath.Join(t.TempDir(), "missing"), testCommit); err == nil {
+	if _, err := Check(filepath.Join(t.TempDir(), "missing"), testEngine); err == nil {
 		t.Fatal("missing instance did not produce operational failure")
 	}
 }
@@ -263,7 +281,9 @@ func repositoryRoot(t *testing.T) string {
 
 func requireCode(t *testing.T, root, commit, code string) {
 	t.Helper()
-	report, err := Check(root, commit)
+	engine := testEngine
+	engine.Commit = commit
+	report, err := Check(root, engine)
 	if err != nil {
 		t.Fatal(err)
 	}

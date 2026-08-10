@@ -42,6 +42,9 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
         for value in ("abc123", "A" * 40, "0" * 39, "0" * 41):
             with self.subTest(commit=value), self.assertRaises(self.mod.BuilderError):
                 self.mod.validate_commit(value)
+        for value in ("", "feature branch", "../main", "main.lock", "feature//test"):
+            with self.subTest(source_ref=value), self.assertRaises(self.mod.BuilderError):
+                self.mod.validate_source_ref(value)
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(self.mod.BuilderError):
                 self.mod.safe_child(Path(temporary), "..", "escaped")
@@ -84,13 +87,54 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
                 return str(REPO_ROOT)
             if "status --porcelain" in command:
                 return ""
-            if "@{upstream}" in command:
+            if "remote get-url origin" in command:
+                return "git@github.com:klokast/klokast-box.git"
+            if "symbolic-ref --quiet --short HEAD" in command:
+                return "main"
+            if "--abbrev-ref --symbolic-full-name" in command:
+                return "origin/main"
+            if "rev-parse @{upstream}" in command:
                 return "b" * 40
             return commit
 
         with patch.object(self.mod, "output", side_effect=stale_output), patch.object(self.mod, "run"):
             with self.assertRaisesRegex(self.mod.BuilderError, "synchronized"):
                 self.mod.verify_repository(commit)
+
+    def test_verifies_and_normalizes_source_metadata(self):
+        commit = "a" * 40
+
+        def synchronized_output(argv, **_kwargs):
+            command = " ".join(str(item) for item in argv)
+            if "--is-inside-work-tree" in command:
+                return "true"
+            if "--show-toplevel" in command:
+                return str(REPO_ROOT)
+            if "status --porcelain" in command:
+                return ""
+            if "remote get-url origin" in command:
+                return "git@github.com:klokast/klokast-box.git"
+            if "symbolic-ref --quiet --short HEAD" in command:
+                return "feature/contract-v1"
+            if "--abbrev-ref --symbolic-full-name" in command:
+                return "origin/feature/contract-v1"
+            return commit
+
+        with patch.object(self.mod, "output", side_effect=synchronized_output), patch.object(
+            self.mod, "run"
+        ):
+            metadata = self.mod.verify_repository(commit)
+        self.assertEqual(
+            metadata,
+            {
+                "repository": "https://github.com/klokast/klokast-box",
+                "ref": "feature/contract-v1",
+                "commit": commit,
+            },
+        )
+
+        with self.assertRaisesRegex(self.mod.BuilderError, "canonical"):
+            self.mod.normalize_repository("git@github.com:attacker/klokast-box.git")
 
     def test_rejects_image_digest_mismatch(self):
         completed = Mock(returncode=0, stdout=json.dumps({"Digest": "sha256:" + "0" * 64}), stderr="")
@@ -130,6 +174,8 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
         receipt = {
             "schema_version": 1,
             "operation_id": "0123456789ab",
+            "source_repository": self.mod.ENGINE_REPOSITORY,
+            "source_ref": "main",
             "source_commit": "a" * 40,
             "source_archive_sha256": "b" * 64,
             "image_manifest_digest": self.mod.GO_IMAGE_DIGEST,
@@ -146,6 +192,8 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
         (directory / "build.log").write_text("redacted\n", encoding="utf-8")
         return {
             "operation_id": receipt["operation_id"],
+            "source_repository": receipt["source_repository"],
+            "source_ref": receipt["source_ref"],
             "source_commit": receipt["source_commit"],
             "source_archive_sha256": receipt["source_archive_sha256"],
             "image_archive_sha256": receipt["image_archive_sha256"],
@@ -161,6 +209,17 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             directory = Path(temporary)
             expected = self.write_result(directory, binary_hash="0" * 64)
             with self.assertRaisesRegex(self.mod.BuilderError, "binary hash"):
+                self.mod.verify_result(directory, expected)
+
+    def test_rejects_source_metadata_receipt_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            expected = self.write_result(directory)
+            receipt_path = directory / "receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["source_ref"] = "other"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(self.mod.BuilderError, "source_ref"):
                 self.mod.verify_result(directory, expected)
 
     def test_preserves_only_bounded_failure_diagnostics(self):
@@ -217,6 +276,10 @@ class PlatformBuilderDom0Test(unittest.TestCase):
             '"--env=CGO_ENABLED=0"',
             '"go", "test", "-mod=vendor", "-buildvcs=false", "./..."',
             '"go", "build", "-mod=vendor", "-trimpath", "-buildvcs=false"',
+            "main.engineRepository",
+            "main.engineRef",
+            '"source_repository": manifest.get',
+            '"source_ref": manifest.get',
         ):
             self.assertIn(required, job)
 

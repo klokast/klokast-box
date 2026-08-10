@@ -29,11 +29,21 @@ GO_IMAGE_NAME = "docker.io/library/golang"
 GO_IMAGE_TAG = "1.24.13-bookworm"
 GO_IMAGE_DIGEST = "sha256:98d673f18a1aac43da744209873cb79323e11706f909251bcfb131828b95559d"
 GO_IMAGE_REFERENCE = f"{GO_IMAGE_NAME}@{GO_IMAGE_DIGEST}"
+ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
+CANONICAL_REMOTE_URLS = {
+    ENGINE_REPOSITORY,
+    f"{ENGINE_REPOSITORY}.git",
+    "git@github.com:klokast/klokast-box",
+    "git@github.com:klokast/klokast-box.git",
+    "ssh://git@github.com/klokast/klokast-box",
+    "ssh://git@github.com/klokast/klokast-box.git",
+}
 
 BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+SOURCE_REF_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9])?$")
 RESERVED_BOX_SUFFIXES = (
     "bootstrap",
     "dom0",
@@ -101,6 +111,22 @@ def validate_operation_id(value):
     return value
 
 
+def validate_source_ref(value):
+    if not SOURCE_REF_RE.fullmatch(value or ""):
+        raise BuilderError("source branch is not safe build metadata")
+    if "//" in value or ".." in value or "@{" in value:
+        raise BuilderError("source branch is not safe build metadata")
+    if any(part.endswith(".lock") for part in value.split("/")):
+        raise BuilderError("source branch is not safe build metadata")
+    return value
+
+
+def normalize_repository(value):
+    if value not in CANONICAL_REMOTE_URLS:
+        raise BuilderError("origin must be the canonical klokast/klokast-box repository")
+    return ENGINE_REPOSITORY
+
+
 def safe_child(root, *parts):
     root = root.resolve()
     candidate = root.joinpath(*parts).resolve()
@@ -159,6 +185,13 @@ def verify_repository(approved_commit):
     dirty = output(["git", "status", "--porcelain=v1", "--untracked-files=all"])
     if dirty:
         raise BuilderError("source checkout is dirty; refusing to archive unreviewed files")
+    repository = normalize_repository(output(["git", "remote", "get-url", "origin"]))
+    branch = validate_source_ref(output(["git", "symbolic-ref", "--quiet", "--short", "HEAD"]))
+    upstream_name = output(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]
+    )
+    if upstream_name != f"origin/{branch}":
+        raise BuilderError("source branch must track its matching origin branch")
     run(["git", "fetch", "--quiet", "origin"])
     upstream = output(["git", "rev-parse", "@{upstream}"])
     if upstream != approved_commit:
@@ -166,6 +199,7 @@ def verify_repository(approved_commit):
     resolved = output(["git", "rev-parse", f"{approved_commit}^{{commit}}"])
     if resolved != approved_commit:
         raise BuilderError("approved commit did not resolve to the requested commit object")
+    return {"repository": repository, "ref": branch, "commit": approved_commit}
 
 
 def require_tools(*, dry_run):
@@ -242,6 +276,8 @@ def write_manifest(
     box,
     operation_id,
     approved_commit,
+    source_repository,
+    source_ref,
     source_sha256,
     image_sha256,
 ):
@@ -249,6 +285,8 @@ def write_manifest(
         "schema_version": 1,
         "operation_id": operation_id,
         "box": box,
+        "source_repository": source_repository,
+        "source_ref": source_ref,
         "source_commit": approved_commit,
         "source_archive_sha256": source_sha256,
         "image_reference": GO_IMAGE_REFERENCE,
@@ -331,6 +369,8 @@ def verify_result(result_dir, expected):
     exact = {
         "schema_version": 1,
         "operation_id": expected["operation_id"],
+        "source_repository": expected["source_repository"],
+        "source_ref": expected["source_ref"],
         "source_commit": expected["source_commit"],
         "source_archive_sha256": expected["source_archive_sha256"],
         "image_manifest_digest": GO_IMAGE_DIGEST,
@@ -381,11 +421,13 @@ def install_failure_diagnostics(result_dir, expected):
     return destination
 
 
-def print_plan(box, approved_commit, operation_id):
+def print_plan(box, source, operation_id):
     domain = f"{box}-builder-klokast-cli-{operation_id}"
     print("platform-builder plan")
     print(f"  box: {box}")
-    print(f"  approved commit: {approved_commit}")
+    print(f"  source repository: {source['repository']}")
+    print(f"  source ref: {source['ref']}")
+    print(f"  approved commit: {source['commit']}")
     print(f"  domain: {domain}")
     print("  template LV: /dev/vg0/lv_builder_klokast_cli_template")
     print(f"  snapshot LV: /dev/vg0/lv_builder_klokast_cli_{operation_id}")
@@ -401,8 +443,8 @@ def build_klokast_cli(args):
     operation_id = validate_operation_id(args.operation_id or os.urandom(6).hex())
     require_tools(dry_run=args.dry_run_plan)
     require_active_controller(box)
-    verify_repository(approved_commit)
-    print_plan(box, approved_commit, operation_id)
+    source_metadata = verify_repository(approved_commit)
+    print_plan(box, source_metadata, operation_id)
     if args.dry_run_plan:
         return 0
 
@@ -418,6 +460,8 @@ def build_klokast_cli(args):
             box=box,
             operation_id=operation_id,
             approved_commit=approved_commit,
+            source_repository=source_metadata["repository"],
+            source_ref=source_metadata["ref"],
             source_sha256=source_sha256,
             image_sha256=image_sha256,
         )
@@ -435,6 +479,8 @@ def build_klokast_cli(args):
         completed = run(command, check=False)
         expected = {
             "operation_id": operation_id,
+            "source_repository": source_metadata["repository"],
+            "source_ref": source_metadata["ref"],
             "source_commit": approved_commit,
             "source_archive_sha256": source_sha256,
             "image_archive_sha256": image_sha256,

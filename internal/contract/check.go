@@ -55,6 +55,12 @@ type Report struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+type Engine struct {
+	Repository string
+	Ref        string
+	Commit     string
+}
+
 type rootDocument struct {
 	Contract int `yaml:"contract"`
 	Paths    struct {
@@ -135,12 +141,12 @@ type appManifest struct {
 
 type checker struct {
 	root        string
-	engine      string
+	engine      Engine
 	diagnostics []Diagnostic
 	tracked     map[string]bool
 }
 
-func Check(instancePath, engineCommit string) (Report, error) {
+func Check(instancePath string, engine Engine) (Report, error) {
 	root, err := filepath.Abs(instancePath)
 	if err != nil {
 		return Report{}, fmt.Errorf("resolve instance path: %w", err)
@@ -160,7 +166,7 @@ func Check(instancePath, engineCommit string) (Report, error) {
 		return Report{}, fmt.Errorf("git is required: %w", err)
 	}
 
-	c := &checker{root: root, engine: engineCommit, tracked: map[string]bool{}}
+	c := &checker{root: root, engine: engine, tracked: map[string]bool{}}
 	if !c.inspectRepository() {
 		return c.report(), nil
 	}
@@ -372,11 +378,20 @@ func (c *checker) safeAuthoritativePath(path string) (string, string, bool) {
 }
 
 func (c *checker) validateLock(lock lockDocument) {
-	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.engine) {
+	if c.engine.Repository != "https://github.com/klokast/klokast-box" || c.engine.Ref == "" ||
+		!regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9])?$`).MatchString(c.engine.Ref) ||
+		strings.Contains(c.engine.Ref, "//") || strings.Contains(c.engine.Ref, "..") ||
+		strings.Contains(c.engine.Ref, "@{") || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.engine.Commit) {
 		c.add(lockPath, "engine.binary", "running binary does not identify a full engine commit")
 		return
 	}
-	if lock.Engine.Commit != c.engine {
+	if lock.Engine.Repository != c.engine.Repository {
+		c.add(lockPath, "engine.repository", "engine lock repository does not match the running builder-approved engine")
+	}
+	if lock.Engine.Ref != c.engine.Ref {
+		c.add(lockPath, "engine.ref", "engine lock ref does not match the running builder-approved engine")
+	}
+	if lock.Engine.Commit != c.engine.Commit {
 		c.add(lockPath, "engine.mismatch", "engine lock commit does not match the running builder-approved engine commit")
 	}
 }

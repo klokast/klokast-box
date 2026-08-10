@@ -112,8 +112,10 @@ engine:
   commit: 0123456789abcdef0123456789abcdef01234567
 ```
 
-`ref` is human-readable. The full 40-hex `commit` is authoritative and must
-match the commit injected into the builder-approved `klokast` binary.
+`ref` is human-readable. The builder verifies the canonical repository and
+the synchronized upstream branch before it injects the repository, ref, and
+commit into `klokast`. The full 40-hex `commit` is authoritative. All three
+lock values must match the running builder-approved binary.
 
 ## Stable identity and control plane
 
