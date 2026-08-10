@@ -500,6 +500,19 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 		} else {
 			add("apps."+id, "compatibility_only", "app.unrepresented", "the disabled legacy app is not represented by Contract v1")
 		}
+		for _, field := range sortedKeys(legacyApp) {
+			class := "compatibility_only"
+			code := "app.unrepresented-field"
+			message := "the unrepresented legacy app field must remain under compatibility authority"
+			if field == "enabled" {
+				if enabled, ok := legacyApp[field].(bool); !ok {
+					class, code, message = "unsupported", "app.enabled-type", "the unrepresented legacy enabled field must be a boolean"
+				} else if enabled {
+					class, code, message = "conflict", "app.enabled", "the enabled legacy app has no Contract v1 representation"
+				}
+			}
+			add("apps."+id+"."+field, class, code, message)
+		}
 	}
 
 	sort.Slice(findings, func(i, j int) bool {

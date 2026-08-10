@@ -131,6 +131,30 @@ func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
 	}
 }
 
+func TestUnrepresentedAppFieldsAreNotSilentlyOmitted(t *testing.T) {
+	root := prepareInstance(t, nil)
+	legacy := canonicalRegistry() + `  legacy-example:
+    enabled: false
+    runtime_state: stopped
+    users: [person-example]
+    devices: {device-example: {}}
+    app_vms: {vm-example: {}}
+    ingress_mode: overlay
+    ephemeral: {privileged_approval: false, cleanup_required: true}
+    placement: {active_master: ""}
+    resources: {}
+`
+	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"enabled", "runtime_state", "users", "devices", "app_vms", "ingress_mode", "ephemeral", "placement", "resources"} {
+		if !hasFinding(result, "apps.legacy-example."+field, "compatibility_only") {
+			t.Errorf("unrepresented app field was omitted: %s", field)
+		}
+	}
+}
+
 func TestConflictsAndUnsupportedFieldsFailCompatibility(t *testing.T) {
 	tests := []struct {
 		name     string
