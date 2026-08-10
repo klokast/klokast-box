@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ RUN_DIR = REPO_DIR / ".run" / "platform-map"
 DEFAULT_STATE_FILE = RUN_DIR / "current.json"
 DEFAULT_OVERRIDES_FILE = RUN_DIR / "overrides.yml"
 DEFAULT_BASE_INVENTORY = ANSIBLE_DIR / "inventory" / "hosts.yml"
+MAXIMUM_SOURCE_MAP_FILE = 16 * 1024 * 1024
 PLATFORM_MAP_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "70-platform-map.yml"
 RENDER_NODE_INVENTORY = SCRIPT_DIR / "render-node-inventory"
 PLATFORM_RESOURCES = SCRIPT_DIR / "platform-resources"
@@ -1350,6 +1352,7 @@ def summarize_box(
                 "domains": xen_domains,
                 "expected_guests": expected_guests,
                 "config_files": ((dom0_fact.get("xen") or {}).get("config_files_stdout") or "").splitlines(),
+                "autostart_files": ((dom0_fact.get("xen") or {}).get("autostart_files_stdout") or "").splitlines(),
             },
         },
         "capacity": {
@@ -1459,6 +1462,167 @@ def load_state(path: Path) -> dict[str, Any]:
         die(f"state file not found: {path}. Run `ansible/bin/platform-map refresh` first.")
     except json.JSONDecodeError as exc:
         die(f"state file is not valid JSON: {path}: {exc}")
+
+
+def observation_error(message: str) -> None:
+    die(f"cannot export Observation v1: {message}")
+
+
+def strict_string_list(value: Any, path: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        observation_error(f"{path} must be a list of non-empty strings")
+    if len(value) != len(set(value)):
+        observation_error(f"{path} contains a duplicate value")
+    return sorted(value)
+
+
+def normalized_observation_hostname(value: Any, path: str) -> str:
+    if not isinstance(value, str):
+        observation_error(f"{path} must be a hostname")
+    hostname = value.rstrip(".").lower().split(".", 1)[0]
+    if hostname != value.rstrip(".").lower() or not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", hostname
+    ):
+        observation_error(f"{path} must be one normalized DNS label")
+    return hostname
+
+
+def xen_guest_names(value: Any, path: str, directory: str) -> list[str]:
+    entries = strict_string_list(value, path)
+    result: list[str] = []
+    prefix = directory.rstrip("/") + "/"
+    for entry in entries:
+        if not entry.startswith(prefix) or "/" in entry[len(prefix):] or not entry.endswith(".cfg"):
+            observation_error(f"{path} contains a path outside {directory}")
+        guest = entry[len(prefix):-4]
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", guest):
+            observation_error(f"{path} contains an invalid Xen guest name")
+        result.append(guest)
+    if len(result) != len(set(result)):
+        observation_error(f"{path} contains a duplicate Xen guest identity")
+    return sorted(result)
+
+
+def canonical_observation_hash(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def export_observation(path: Path) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        observation_error(f"cannot inspect source map: {exc}")
+    if path.is_symlink() or not path.is_file():
+        observation_error("source map must be a regular, non-symlink file")
+    if info.st_size <= 0 or info.st_size > MAXIMUM_SOURCE_MAP_FILE:
+        observation_error("source map must be non-empty and no larger than 16 MiB")
+    try:
+        source_bytes = path.read_bytes()
+    except OSError as exc:
+        observation_error(f"cannot read source map: {exc}")
+    try:
+        source = json.loads(source_bytes)
+    except json.JSONDecodeError as exc:
+        observation_error(f"source map is not valid JSON: {exc}")
+    if not isinstance(source, dict) or source.get("schema_version") != 1:
+        observation_error("source map must be one schema_version 1 object")
+
+    observed_at = source.get("generated_at")
+    if not isinstance(observed_at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", observed_at):
+        observation_error("generated_at must be a whole-second UTC timestamp")
+    try:
+        dt.datetime.strptime(observed_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        observation_error("generated_at is not a valid UTC timestamp")
+
+    source_controller = normalized_observation_hostname(source.get("source_host"), "source_host")
+    deployment = source.get("deployment_server")
+    if not isinstance(deployment, dict):
+        observation_error("deployment_server must be an object")
+    deployment_hostname = normalized_observation_hostname(deployment.get("hostname"), "deployment_server.hostname")
+    if deployment_hostname != source_controller:
+        observation_error("source controller hostnames are ambiguous")
+
+    tailnet = source.get("tailnet")
+    if not isinstance(tailnet, dict) or tailnet.get("available") is not True:
+        observation_error("tailnet must contain available mapper facts")
+    peers = tailnet.get("peers")
+    if not isinstance(peers, list):
+        observation_error("tailnet.peers must be a list")
+    machines: list[dict[str, Any]] = []
+    seen_machines: set[str] = set()
+    for index, peer in enumerate(peers):
+        if not isinstance(peer, dict) or not isinstance(peer.get("online"), bool):
+            observation_error(f"tailnet.peers[{index}] is malformed")
+        hostname = normalized_observation_hostname(peer.get("name"), f"tailnet.peers[{index}].name")
+        if hostname in seen_machines:
+            observation_error("tailnet peers contain a duplicate normalized hostname")
+        seen_machines.add(hostname)
+        tags = strict_string_list(peer.get("tags"), f"tailnet.peers[{index}].tags")
+        if any(not re.fullmatch(r"tag:[a-z0-9](?:[a-z0-9-]{0,62})", tag) for tag in tags):
+            observation_error(f"tailnet.peers[{index}].tags contains an invalid role tag")
+        machines.append({"hostname": hostname, "online": peer["online"], "tags": tags})
+    machines.sort(key=lambda item: item["hostname"])
+
+    source_boxes = source.get("boxes")
+    if not isinstance(source_boxes, dict):
+        observation_error("boxes must be an object")
+    boxes: list[dict[str, Any]] = []
+    for prefix, box in source_boxes.items():
+        if not isinstance(prefix, str) or not valid_box_name(prefix) or not isinstance(box, dict):
+            observation_error("boxes contains an invalid box entry")
+        if box.get("name") != prefix:
+            observation_error(f"boxes.{prefix}.name does not match its box key")
+        dom0 = box.get("dom0")
+        if not isinstance(dom0, dict) or not isinstance(dom0.get("reachable"), bool):
+            observation_error(f"boxes.{prefix}.dom0 is malformed")
+        xen = dom0.get("xen")
+        if not isinstance(xen, dict) or not isinstance(xen.get("available"), bool):
+            observation_error(f"boxes.{prefix}.dom0.xen is malformed")
+        domains = xen.get("domains")
+        if not isinstance(domains, list):
+            observation_error(f"boxes.{prefix}.dom0.xen.domains must be a list")
+        running: list[str] = []
+        for index, domain in enumerate(domains):
+            if not isinstance(domain, dict) or set(domain) - {"name", "id", "memory_mib", "vcpus", "state", "time_s"}:
+                observation_error(f"boxes.{prefix}.dom0.xen.domains[{index}] is malformed")
+            name = domain.get("name")
+            if name == "Domain-0":
+                continue
+            running.append(normalized_observation_hostname(name, f"boxes.{prefix}.dom0.xen.domains[{index}].name"))
+        if len(running) != len(set(running)):
+            observation_error(f"boxes.{prefix} has duplicate running Xen guest identities")
+        configs = xen_guest_names(xen.get("config_files"), f"boxes.{prefix}.dom0.xen.config_files", "/etc/xen")
+        autostart = xen_guest_names(xen.get("autostart_files"), f"boxes.{prefix}.dom0.xen.autostart_files", "/etc/xen/auto")
+        boxes.append(
+            {
+                "hostname_prefix": prefix,
+                "dom0_reachable": dom0["reachable"],
+                "xen_available": xen["available"],
+                "running_guests": sorted(running),
+                "configured_guests": configs,
+                "autostart_guests": autostart,
+            }
+        )
+    boxes.sort(key=lambda item: item["hostname_prefix"])
+
+    observation = {
+        "schema_version": 1,
+        "observed_at": observed_at,
+        "source_controller": source_controller,
+        "source_map_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "tailnet_machines": machines,
+        "boxes": boxes,
+    }
+    observation["generation_sha256"] = canonical_observation_hash(observation)
+    return observation
+
+
+def cmd_export_observation(args: argparse.Namespace) -> int:
+    observation = export_observation(args.file)
+    print(json.dumps(observation, indent=2, sort_keys=True))
+    return 0
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
@@ -1722,6 +1886,10 @@ def build_parser() -> argparse.ArgumentParser:
     inventory.add_argument("--list", action="store_true", help="Ansible dynamic inventory compatibility")
     inventory.add_argument("--host", default=None, help="Ansible dynamic inventory host query")
     inventory.set_defaults(func=cmd_inventory)
+
+    observation = subcommands.add_parser("export-observation", help="export a redacted Observation v1 JSON document")
+    observation.add_argument("--file", type=Path, required=True, help="existing mapper summary JSON file")
+    observation.set_defaults(func=cmd_export_observation)
     return parser
 
 

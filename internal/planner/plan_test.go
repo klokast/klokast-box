@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -83,6 +84,50 @@ func TestCompatibilityOnlyFieldsRemainVisible(t *testing.T) {
 	}
 	if !hasFinding(result, "boxes.k001.dom0_bridge_ports", "compatibility_only") {
 		t.Fatalf("compatibility-only field path is absent: %#v", result.Compatibility.Findings)
+	}
+}
+
+func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
+	root := prepareInstance(t, nil)
+	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), "tests/fixtures/compatibility/registry-field-classes.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, string(content))}, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]string{
+		"schema_version": "matched",
+		"boxes.k001": "derived",
+		"boxes.k001.shared_guests": "compatibility_only",
+		"boxes.k001.dom0_bridge_ports": "compatibility_only",
+		"boxes.k001.dhcp_reservations": "compatibility_only",
+		"apps.nextcloud.runtime_state": "compatibility_only",
+		"apps.nextcloud.isolation": "compatibility_only",
+		"apps.nextcloud.users": "compatibility_only",
+		"apps.nextcloud.devices": "compatibility_only",
+		"apps.nextcloud.app_vms": "compatibility_only",
+		"apps.nextcloud.ingress_mode": "compatibility_only",
+		"apps.nextcloud.ephemeral": "compatibility_only",
+		"apps.nextcloud.resources": "conflict",
+		"compatibility_marker": "unsupported",
+	}
+	for path, class := range expected {
+		if !hasFinding(result, path, class) {
+			t.Errorf("missing classification %s=%s", path, class)
+		}
+	}
+	if result.Compatibility.Summary.Matched == 0 || result.Compatibility.Summary.Derived == 0 ||
+		result.Compatibility.Summary.CompatibilityOnly == 0 || result.Compatibility.Summary.Conflict == 0 ||
+		result.Compatibility.Summary.Unsupported == 0 {
+		t.Fatalf("fixture does not exercise every classification: %#v", result.Compatibility.Summary)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, scalar := range []string{"person-example", "device-example", "192.0.2.10", "2099-01-01T00:00:00Z"} {
+		if strings.Contains(string(encoded), scalar) {
+			t.Fatalf("compatibility report disclosed a sanitized scalar: %s", scalar)
+		}
 	}
 }
 

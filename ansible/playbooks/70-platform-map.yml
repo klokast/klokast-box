@@ -63,13 +63,22 @@
     - name: Collect Xen configuration file names
       ansible.builtin.shell: |
         set -eu
-        for dir in /etc/xen /etc/xen/auto; do
-          [ -d "$dir" ] || continue
-          find "$dir" -maxdepth 1 -type f -name '*.cfg' -print
-        done | sort -u
+        [ -d /etc/xen ] || exit 0
+        find /etc/xen -maxdepth 1 -type f -name '*.cfg' -print | sort -u
       args:
         executable: /bin/sh
       register: platform_map_xen_config_files
+      changed_when: false
+      failed_when: false
+
+    - name: Collect Xen autostart entry names
+      ansible.builtin.shell: |
+        set -eu
+        [ -d /etc/xen/auto ] || exit 0
+        find /etc/xen/auto -maxdepth 1 \( -type f -o -type l \) -name '*.cfg' -print | sort -u
+      args:
+        executable: /bin/sh
+      register: platform_map_xen_autostart_files
       changed_when: false
       failed_when: false
 
@@ -113,6 +122,7 @@
             xl_list_stdout: "{{ platform_map_xl_list.stdout | default('') }}"
             xl_list_stderr: "{{ platform_map_xl_list.stderr | default('') }}"
             config_files_stdout: "{{ platform_map_xen_config_files.stdout | default('') }}"
+            autostart_files_stdout: "{{ platform_map_xen_autostart_files.stdout | default('') }}"
           platform_resources:
             desired_json_rc: "{{ platform_map_platform_resources_desired.rc | default(999) }}"
             desired_json_stdout: "{{ platform_map_platform_resources_desired.stdout | default('') }}"

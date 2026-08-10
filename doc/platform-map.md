@@ -24,6 +24,8 @@ ansible/bin/platform-map refresh \
   --remote-scope dom0
 ansible/bin/platform-map show
 ansible/bin/platform-map validate
+ansible/bin/platform-map export-observation \
+  --file .run/platform-map/current.json >~/private/klokast/observation.json
 ansible-inventory -i ansible/bin/platform-map --list
 ```
 
@@ -36,6 +38,24 @@ Subcommands:
   Use `--strict` when warnings should return a nonzero exit code.
 - `inventory`: emit Ansible dynamic inventory JSON. The script also accepts
   Ansible's direct `--list` and `--host <name>` calls.
+- `export-observation`: read an existing mapper summary and write the narrow,
+  redacted Observation v1 JSON document to standard output. It does not refresh
+  facts or change state.
+
+Create observation files with an owner-only umask because hostnames and
+runtime status are private operational data:
+
+```sh
+umask 077
+observation_file="$(mktemp ~/private/klokast/observation.XXXXXX)"
+ansible/bin/platform-map export-observation \
+  --file .run/platform-map/current.json >"$observation_file"
+chmod 0600 "$observation_file"
+```
+
+Remove the temporary file after its read-only use. All mapper and observation
+timestamps are UTC. The Platform timezone stays `Etc/UTC`; do not add a
+timezone option to this interface.
 
 Important options:
 
@@ -182,6 +202,8 @@ Each `boxes.<box>` object contains:
   runtime.
 - `expected_guests`: expected VM memory by role.
 - `config_files`: Xen guest config files found on dom0.
+- `autostart_files`: Xen guest autostart files or links found separately on
+  dom0.
 
 `boxes.<box>.app_vms.<hostname>` contains:
 

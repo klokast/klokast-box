@@ -204,12 +204,11 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 		return result, nil
 	}
 
-	projection := resolve(snapshot)
-	projectionJSON, err := json.Marshal(projection)
+	projection := Resolve(snapshot)
+	projectionHash, err := ProjectionHash(projection)
 	if err != nil {
-		return Result{}, fmt.Errorf("encode deterministic projection: %w", err)
+		return Result{}, err
 	}
-	projectionDigest := sha256.Sum256(projectionJSON)
 	manifests, err := loadManifests()
 	if err != nil {
 		return Result{}, fmt.Errorf("load embedded application manifests: %w", err)
@@ -242,12 +241,14 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 	result.AuthorityReady = result.Compatible && result.Deployable && compatibility.Summary.CompatibilityOnly == 0
 	result.Inputs = inputDigests(snapshot.Inputs)
 	result.Projection = &projection
-	result.ProjectionHash = fmt.Sprintf("%x", projectionDigest[:])
+	result.ProjectionHash = projectionHash
 	result.Compatibility = &compatibility
 	return result, nil
 }
 
-func resolve(snapshot contract.Snapshot) Projection {
+// Resolve produces the deterministic Contract v1 projection. Plan and all
+// offline observers use this resolver so runtime identities cannot diverge.
+func Resolve(snapshot contract.Snapshot) Projection {
 	result := Projection{
 		SchemaVersion: 1,
 		Engine: Engine{
@@ -317,6 +318,16 @@ func resolve(snapshot contract.Snapshot) Projection {
 	return result
 }
 
+// ProjectionHash returns the SHA-256 hash of the deterministic JSON projection.
+func ProjectionHash(projection Projection) (string, error) {
+	content, err := json.Marshal(projection)
+	if err != nil {
+		return "", fmt.Errorf("encode deterministic projection: %w", err)
+	}
+	digest := sha256.Sum256(content)
+	return fmt.Sprintf("%x", digest[:]), nil
+}
+
 func resolvePlacement(value contract.PlacementDocument, boxes map[string]contract.BoxDocument) Placement {
 	result := Placement{Mode: value.Mode}
 	switch value.Mode {
@@ -342,6 +353,7 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 	add := func(path, class, code, message string) {
 		findings = append(findings, Finding{Path: path, Class: class, Code: code, Message: message})
 	}
+	add("schema_version", "matched", "registry.schema", "the legacy registry uses the supported compatibility schema")
 	for _, field := range sortedKeys(legacy.root) {
 		if field != "schema_version" && field != "boxes" && field != "apps" {
 			add(field, "unsupported", "registry.field", "the legacy registry root field has no Contract v1 mapping")

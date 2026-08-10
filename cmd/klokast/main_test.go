@@ -100,6 +100,16 @@ func TestPlanUsageIsValidationFailure(t *testing.T) {
 	}
 }
 
+func TestDoctorUsageIsValidationFailure(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"doctor"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(doctor) = %d, want 2", got)
+	}
+	if !strings.Contains(stderr.String(), "--observation") {
+		t.Fatalf("usage omits observation file: %q", stderr.String())
+	}
+}
+
 func TestPlanJSONIsReadOnlyAndReportsUnbornRepository(t *testing.T) {
 	priorRepository, priorRef, priorCommit := engineRepository, engineRef, engineCommit
 	engineRepository = "https://github.com/klokast/klokast-box"

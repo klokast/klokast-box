@@ -1,0 +1,47 @@
+---
+schema_version: 1
+compatibility_marker: fictitious
+boxes:
+  k001:
+    access:
+      available_capabilities: [overlay]
+      enabled_capabilities: [overlay]
+      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
+      policy:
+        local-presence-control: overlay
+        private-service-ingress: overlay
+        file-upload: overlay
+        household-wan-egress: none
+        public-ingress: none
+    dom0_bridge_ports:
+      lan: [eth-example]
+    dhcp_reservations:
+      - hostname: device-example
+        mac: "02:00:00:00:00:01"
+        ipv4_address: "192.0.2.10"
+    shared_guests:
+      iot:
+        runtime_state: stopped
+        autostart: false
+apps:
+  nextcloud:
+    enabled: false
+    runtime_state: stopped
+    isolation: zone-example
+    users: [person-example]
+    devices:
+      device-example:
+        hostname: device-example
+    app_vms:
+      vm-example:
+        runtime_state: stopped
+    ingress_mode: overlay-example
+    ephemeral:
+      privileged_approval: false
+      expires_at: "2099-01-01T00:00:00Z"
+      cleanup_required: true
+    placement:
+      active_master: ""
+      passive_backup: ""
+    resources:
+      cloudflare-tunnel-egress: true

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+import hashlib
+import json
 import os
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -32,6 +35,99 @@ class PlatformMapTest(unittest.TestCase):
             "tags": sorted(tags or []),
             "tailscale_ips": [],
         }
+
+    def observation_source(self):
+        peers = [
+            self.peer("k001-router", ["tag:vm"]),
+            self.peer("k001-dom0", ["tag:dom0"]),
+        ]
+        return {
+            "schema_version": 1,
+            "generated_at": "2026-08-10T12:00:00Z",
+            "source_host": "k001-ops",
+            "deployment_server": {
+                "hostname": "k001-ops",
+                "user": "private-user",
+                "provider": {"public_ipv4": "192.0.2.10", "location": {"city": "Private"}},
+            },
+            "tailnet": {
+                "available": True,
+                "magicdns_suffix": "private.example.ts.net",
+                "peers": peers,
+            },
+            "boxes": {
+                "k001": {
+                    "name": "k001",
+                    "overrides": {"site": "private-site"},
+                    "podman": {"bak": {"containers": [{"name": "private-container"}]}},
+                    "dom0": {
+                        "reachable": True,
+                        "storage": {"logical_volumes": [{"name": "private-volume"}]},
+                        "xen": {
+                            "available": True,
+                            "domains": [
+                                {"name": "Domain-0", "id": 0, "memory_mib": 1024, "vcpus": 2, "state": "r-----", "time_s": "1.0"},
+                                {"name": "router", "id": 1, "memory_mib": 512, "vcpus": 1, "state": "-b----", "time_s": "1.0"},
+                            ],
+                            "config_files": ["/etc/xen/router.cfg", "/etc/xen/bak.cfg"],
+                            "autostart_files": ["/etc/xen/auto/router.cfg"],
+                            "expected_guests": {"router": {"private": "desired-state"}},
+                        },
+                    },
+                    "findings": [{"message": "private log-like detail"}],
+                }
+            },
+            "findings": [],
+            "warnings": ["private warning"],
+            "artifact_dir": "/private/path",
+        }
+
+    def write_source(self, value):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory))
+        path = directory / "current.json"
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return path
+
+    def test_observation_export_is_deterministic_redacted_and_separates_xen_state(self):
+        source = self.observation_source()
+        path = self.write_source(source)
+        first = self.mod.export_observation(path)
+        second = self.mod.export_observation(path)
+        self.assertEqual(first, second)
+        self.assertEqual(first["source_map_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(first["boxes"][0]["configured_guests"], ["bak", "router"])
+        self.assertEqual(first["boxes"][0]["autostart_guests"], ["router"])
+        self.assertEqual(first["boxes"][0]["running_guests"], ["router"])
+        encoded = json.dumps(first, sort_keys=True)
+        for sensitive in ("private-user", "192.0.2.10", "Private", "private-container", "private-volume", "desired-state", "/private/path"):
+            self.assertNotIn(sensitive, encoded)
+        unhashed = dict(first)
+        generation = unhashed.pop("generation_sha256")
+        self.assertEqual(generation, self.mod.canonical_observation_hash(unhashed))
+
+    def test_observation_export_rejects_duplicate_tailnet_identity(self):
+        source = self.observation_source()
+        source["tailnet"]["peers"].append(self.peer("k001-router", ["tag:vm"]))
+        with self.assertRaises(SystemExit):
+            self.mod.export_observation(self.write_source(source))
+
+    def test_observation_export_rejects_ambiguous_controller_and_bad_xen_path(self):
+        source = self.observation_source()
+        source["deployment_server"]["hostname"] = "k002-ops"
+        with self.assertRaises(SystemExit):
+            self.mod.export_observation(self.write_source(source))
+        source = self.observation_source()
+        source["boxes"]["k001"]["dom0"]["xen"]["autostart_files"] = ["/etc/xen/router.cfg"]
+        with self.assertRaises(SystemExit):
+            self.mod.export_observation(self.write_source(source))
+
+    def test_observation_export_rejects_source_symlink(self):
+        target = self.write_source(self.observation_source())
+        link = target.parent / "link.json"
+        link.symlink_to(target)
+        with self.assertRaises(SystemExit):
+            self.mod.export_observation(link)
 
     def tailnet_index(
         self,

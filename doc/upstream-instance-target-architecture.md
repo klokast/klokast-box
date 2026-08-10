@@ -156,6 +156,10 @@ airunners:
 A runner must satisfy exactly one variant. Box references and external runtime
 identities must resolve without duplication or collision.
 
+The target box runner identity is always `<box>-airunner`. Transitional
+`<box>-ops-airunner` and `<box>-ops-airunner-candidate` identities are legacy
+resources. They are not equivalent to the target identity.
+
 ## Canonical starter
 
 The canonical template is a coherent single-box instance:
@@ -251,6 +255,56 @@ Exit status is `0` when the inputs are valid and compatible, including a
 read-only non-deployable report. It is `2` for invalid input, a conflict, or an
 unsupported field, and `1` for an operational failure.
 
+## Observation v1 and offline doctor
+
+`platform-map export-observation --file PATH` reads one existing mapper
+snapshot. It does not collect facts. It writes Observation v1 JSON to standard
+output and does not change Platform state.
+
+Observation v1 has this closed data model:
+
+- `schema_version`, `observed_at`, `source_controller`, `source_map_sha256`,
+  and `generation_sha256`;
+- `tailnet_machines`, with only a normalized hostname, online state, and
+  sorted tags for each machine;
+- `boxes`, with only the hostname prefix, dom0 reachability, Xen availability,
+  and separate sorted sets of running, configured, and autostart guests.
+
+The source map hash covers the exact mapper snapshot bytes. The generation
+hash covers canonical JSON for all Observation v1 fields except the generation
+hash itself. The exporter rejects malformed or ambiguous source identities.
+It excludes addresses, users, locations, provider facts, private desired
+state, containers, volumes, logs, mapper findings, and all other mapper data.
+All timestamps are UTC and use `Z`. Observation v1 has no timezone input.
+
+`klokast doctor --instance PATH --observation FILE [--json]` is offline,
+read-only, and non-mutating. It uses the same deterministic Contract resolver
+as `plan`. It does not invoke `platform-map`, use the network, or read the
+compatibility registry. It accepts only a bounded regular non-symlink
+Observation v1 file, rejects unknown fields and duplicate identities, and
+verifies the generation hash. An observation is invalid when it is more than
+30 minutes old or more than five minutes in the future.
+
+`doctor` requires the observation source to equal the declared active
+controller. For each Contract box, it checks the dom0, router, bak, dmz, and
+iot Tailnet identities and their role tags. It also checks dom0 reachability,
+Xen availability, and the running, configured, and autostart state of each
+standard guest. It applies the same checks to active and standby controller
+guests and to declared box-kind airunners. It checks external airunners only
+as Tailnet identities. The expected box-kind guest and Tailnet identity are
+`<box>-airunner`.
+
+The standard box checks also prove the shared-zone substrate for enabled app
+placement boxes. `doctor` does not claim app-container, managed-device, or
+compatibility-only resource health. Extra legacy guests and Tailnet machines
+do not influence the authority decision. Legacy authority remains active.
+
+The JSON result has `schema_version`, `valid`, `healthy`, engine and exact
+input provenance, the projection hash, the observation generation hash, a
+redacted finding summary, findings, and diagnostics. Exit status is `0` when
+the inputs are valid and observed state is healthy, `2` for invalid input or
+observed drift, and `1` for an operational failure.
+
 ## Schemas and offline checking
 
 The engine embeds Draft 2020-12 schemas for:
@@ -271,6 +325,7 @@ klokast version --json
 klokast init --instance PATH --profile single-box --values FILE [--json]
 klokast check --instance PATH [--json]
 klokast plan --instance PATH --compatibility-registry FILE [--json]
+klokast doctor --instance PATH --observation FILE [--json]
 ```
 
 `init` accepts one strict JSON values document. The input contains an instance
@@ -353,23 +408,21 @@ deployable binaries locally.
 
 ## Deferred milestones
 
-After the read-only compatibility projection, separate reviewed milestones may
+After the read-only doctor milestone, separate reviewed milestones may
 implement, in this order:
 
-1. parity fixtures for the real private registry and an observed-state
-   `doctor` that has no mutation authority;
-2. a provenance-aware, deployable `plan` that records the exact clean instance
+1. a provenance-aware, deployable `plan` that records the exact clean instance
    commit, engine commit, content hashes, and observed-state generation;
-3. private repository creation and remote registration;
-4. a separately authorized `apply` with fencing, revalidation, rollback, and
+2. private repository creation and remote registration;
+3. a separately authorized `apply` with fencing, revalidation, rollback, and
    live verification;
-5. private-instance migration while all compatibility-only fields remain under
+4. private-instance migration while all compatibility-only fields remain under
    their current authority;
-6. removal of legacy inventory and registry authority only after parity,
+5. removal of legacy inventory and registry authority only after parity,
    rollback tests, and an explicit observation period succeed;
-7. application-specific configuration schemas;
-8. site executors under a later deployment schema version;
-9. retirement of the separate public template repository.
+6. application-specific configuration schemas;
+7. site executors under a later deployment schema version;
+8. retirement of the separate public template repository.
 
 The current milestone does not install `klokast` on the controller, create or
 modify a private repository, migrate an instance, alter existing deployment

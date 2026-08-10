@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"klokast-box/internal/contract"
+	"klokast-box/internal/doctor"
 	"klokast-box/internal/instance"
 	"klokast-box/internal/planner"
 )
@@ -66,8 +67,56 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "plan" {
 		return runPlan(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-registry FILE [--json]")
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(args[1:], stdout, stderr)
+	}
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-registry FILE [--json] | klokast doctor --instance PATH --observation FILE [--json]")
 	return 2
+}
+
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	instancePath := flags.String("instance", "", "path to a standalone instance repository")
+	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
+	jsonOutput := flags.Bool("json", false, "write machine-readable output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *observationPath == "" {
+		fmt.Fprintln(stderr, "usage: klokast doctor --instance PATH --observation FILE [--json]")
+		return 2
+	}
+	result, err := doctor.Doctor(doctor.Options{
+		InstancePath: *instancePath, ObservationPath: *observationPath,
+	}, contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit})
+	if err != nil {
+		if *jsonOutput {
+			if encodeErr := json.NewEncoder(stdout).Encode(operationalResult{Valid: false, OperationalError: err.Error()}); encodeErr != nil {
+				fmt.Fprintln(stderr, "klokast: cannot write doctor result")
+			}
+		} else {
+			fmt.Fprintf(stderr, "klokast doctor: operational failure: %v\n", err)
+		}
+		return 1
+	}
+	if *jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintln(stderr, "klokast: cannot write doctor result")
+			return 1
+		}
+	} else if !result.Valid {
+		for _, diagnostic := range result.Diagnostics {
+			fmt.Fprintf(stderr, "%s: %s: %s\n", diagnostic.Path, diagnostic.Code, diagnostic.Message)
+		}
+	} else if !result.Healthy {
+		for _, finding := range result.Findings {
+			fmt.Fprintf(stderr, "%s: %s: %s\n", finding.Path, finding.Code, finding.Message)
+		}
+	} else {
+		fmt.Fprintln(stdout, "klokast doctor: healthy")
+	}
+	if !result.Valid || !result.Healthy {
+		return 2
+	}
+	return 0
 }
 
 func runPlan(args []string, stdout, stderr io.Writer) int {
