@@ -716,6 +716,8 @@ def remaining_resources(domain, config, snapshot_lv, mount):
     mapper_prefix = f"{VG_NAME}-{snapshot_lv.name}"
     for path in Path("/dev/mapper").glob(mapper_prefix + "*"):
         remaining.append(f"mapper:{path}")
+    if mount.exists() or mount.is_symlink():
+        remaining.append(f"mount-path:{mount}")
     return sorted(remaining)
 
 
@@ -732,6 +734,11 @@ def cleanup(domain, config, snapshot_lv, mount):
             pass
     if lv_exists(snapshot_lv):
         run(["lvremove", "-f", str(snapshot_lv)], check=False, timeout=300)
+    if mount.exists() or mount.is_symlink():
+        try:
+            mount.rmdir()
+        except OSError:
+            pass
     return remaining_resources(domain, config, snapshot_lv, mount)
 
 

@@ -308,6 +308,7 @@ class PlatformBuilderDom0Test(unittest.TestCase):
             config.write_text("vif = []\n", encoding="utf-8")
             snapshot = Path("/dev/vg0/lv_builder_klokast_cli_0123456789ab")
             mount = Path(temporary) / "mount"
+            mount.mkdir()
             with patch.object(self.mod, "domain_exists", return_value=True), patch.object(
                 self.mod, "lv_exists", return_value=True
             ), patch.object(self.mod, "run") as run, patch.object(
@@ -317,10 +318,24 @@ class PlatformBuilderDom0Test(unittest.TestCase):
             ):
                 self.assertEqual(self.mod.cleanup("builder", config, snapshot, mount), [])
             self.assertFalse(config.exists())
+            self.assertFalse(mount.exists())
             unmap.assert_called_once_with(snapshot)
             commands = [[str(item) for item in call.args[0]] for call in run.call_args_list]
             self.assertIn(["xl", "destroy", "builder"], commands)
             self.assertIn(["lvremove", "-f", str(snapshot)], commands)
+
+    def test_cleanup_reports_a_mount_path_that_cannot_be_removed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            mount = Path(temporary) / "mount"
+            mount.mkdir()
+            (mount / "residue").write_text("unexpected\n", encoding="utf-8")
+            config = Path(temporary) / "builder.cfg"
+            snapshot = Path("/dev/vg0/lv_builder_klokast_cli_0123456789ab")
+            with patch.object(self.mod, "domain_exists", return_value=False), patch.object(
+                self.mod, "lv_exists", return_value=False
+            ), patch.object(self.mod, "run"), patch.object(self.mod, "unmap"):
+                remaining = self.mod.cleanup("builder", config, snapshot, mount)
+            self.assertIn(f"mount-path:{mount}", remaining)
 
     def test_playbook_fetches_before_removing_staging(self):
         tasks = ROLE_TASKS.read_text(encoding="utf-8")
