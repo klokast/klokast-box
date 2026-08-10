@@ -16,7 +16,7 @@ sites:
     timezone: Etc/UTC
   site-002:
     country: YY
-    timezone: Europe/Paris
+    timezone: Etc/UTC
 
 boxes:
   box-001:
