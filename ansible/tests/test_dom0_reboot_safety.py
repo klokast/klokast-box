@@ -30,6 +30,13 @@ class Dom0RebootSafetyTest(unittest.TestCase):
         self.assertIn("resolv\\.conf overwritten|dns-fight", text)
         self.assertIn("Tailscale DNS health entries", text)
 
+    def test_dom0_health_requires_tailscale_openrc_boot_enablement(self):
+        text = DOM0_HEALTH_TASKS.read_text(encoding="utf-8")
+
+        self.assertIn('Path("/etc/runlevels/default/tailscale")', text)
+        self.assertIn('os.path.realpath(tailscale_openrc_path)', text)
+        self.assertIn("Tailscale is not enabled in the OpenRC default runlevel", text)
+
     def test_xen_guest_configs_stay_pvh_without_device_model(self):
         text = XEN_GUEST_TEMPLATE.read_text(encoding="utf-8")
 

@@ -310,6 +310,11 @@
         "/etc/udhcpc/post-renew/20-klokast-resolvconf",
         "/etc/udhcpc/pre-deconfig/20-klokast-resolvconf",
     ]
+    tailscale_openrc_path = Path("/etc/runlevels/default/tailscale")
+    tailscale_openrc_enabled = (
+        tailscale_openrc_path.is_symlink()
+        and os.path.realpath(tailscale_openrc_path) == "/etc/init.d/tailscale"
+    )
 
     root_mode = oct(Path("/").stat().st_mode & 0o777)[2:].zfill(4)
     apk_cache_readlink = os.path.realpath("/etc/apk/cache")
@@ -565,6 +570,10 @@
 
     expect(tailscale_status["rc"] == 0, f"tailscale status failed: {tailscale_status['stderr'].strip()}")
     expect(tailscale.get("BackendState") == "Running", "Tailscale backend is not Running")
+    expect(
+        tailscale_openrc_enabled,
+        "Tailscale is not enabled in the OpenRC default runlevel",
+    )
     expect((tailscale.get("Self") or {}).get("HostName") == node_hostname, "Tailscale hostname does not match node_hostname")
     expect(
         tailscale_prefs_status["rc"] == 0,
@@ -623,6 +632,7 @@
             "dom0_data_mount": dom0_data_mount_path if dom0_data_mount else "",
             "tailscale_hostname": (tailscale.get("Self") or {}).get("HostName", ""),
             "tailscale_tags": (tailscale.get("Self") or {}).get("Tags", []),
+            "tailscale_openrc_enabled": tailscale_openrc_enabled,
             "tailscale_auto_update_apply": bool(
                 (tailscale_prefs.get("AutoUpdate") or {}).get("Apply", False)
             ),
