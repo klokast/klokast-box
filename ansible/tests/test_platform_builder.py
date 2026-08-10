@@ -262,6 +262,19 @@ class PlatformBuilderDom0Test(unittest.TestCase):
         self.assertEqual(self.mod.SNAPSHOT_COW_SIZE, "8G")
         self.assertEqual(self.mod.BUILDER_TIMEOUT_SECONDS, 900)
 
+    def test_sealed_template_allows_reviewed_snapshot_job_refresh(self):
+        marker = self.mod.template_marker()
+        marker["guest_job_sha256"] = "0" * 64
+        marker["openrc_job_sha256"] = "1" * 64
+        self.mod.validate_template_marker(marker)
+        marker["purpose"] = "other"
+        with self.assertRaisesRegex(self.mod.LifecycleError, "does not match"):
+            self.mod.validate_template_marker(marker)
+
+        lifecycle = DOM0.read_text(encoding="utf-8")
+        self.assertIn('write_file(mount, "usr/local/libexec/klokast-build-job", GUEST_JOB', lifecycle)
+        self.assertIn('write_file(mount, "etc/init.d/klokast-build", GUEST_OPENRC', lifecycle)
+
     def test_guest_job_uses_rootless_networkless_bounded_build(self):
         job = self.mod.GUEST_JOB
         for required in (

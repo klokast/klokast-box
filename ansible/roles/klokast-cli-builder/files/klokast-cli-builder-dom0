@@ -500,6 +500,25 @@ def template_marker():
     }
 
 
+def validate_template_marker(marker):
+    expected = template_marker()
+    if set(marker) != set(expected):
+        raise LifecycleError("sealed builder template marker shape is invalid")
+    for field in (
+        "schema_version",
+        "template_version",
+        "alpine_branch",
+        "purpose",
+        "network_services",
+        "management_agents",
+    ):
+        if marker.get(field) != expected[field]:
+            raise LifecycleError("sealed builder template does not match this builder version")
+    for field in ("guest_job_sha256", "openrc_job_sha256"):
+        if not HASH_RE.fullmatch(marker.get(field, "")):
+            raise LifecycleError("sealed builder template job marker is invalid")
+
+
 def inspect_template():
     mount = MOUNT_ROOT / "template-inspect"
     mount.mkdir(parents=True, exist_ok=True)
@@ -511,8 +530,7 @@ def inspect_template():
         if not marker_path.is_file():
             raise LifecycleError("sealed builder template marker is missing")
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        if marker != template_marker():
-            raise LifecycleError("sealed builder template does not match this builder version")
+        validate_template_marker(marker)
         forbidden = [
             mount / "usr/sbin/sshd",
             mount / "usr/bin/tailscale",

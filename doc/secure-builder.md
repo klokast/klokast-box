@@ -37,6 +37,13 @@ branch ref, and approved commit. The guest binds all three values into the
 binary. It also writes them to the receipt. The controller checks the receipt
 values against its own inputs before it accepts the binary.
 
+The sealed template marker identifies the Alpine base, purpose, and absence of
+network or management services. It also records the job hashes that created
+the template. A build does not require those historical job hashes to equal
+the current reviewed job. Dom0 writes the current job and OpenRC helper only
+to the new writable snapshot while that guest is stopped. The sealed template
+stays read-only.
+
 Dom0 reads results only after the guest stops. The controller independently
 checks the input and binary hashes in the JSON receipt before installing the
 root-owned binary, receipt, and redacted bounded log below:
