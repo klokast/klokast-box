@@ -62,6 +62,9 @@
             name: dom0-apk-policy
             tasks_from: maintenance-lock.yml
 
+        - name: Persist the restored dom0 package policy before scratch cleanup
+          ansible.builtin.meta: flush_handlers
+
         - name: Remove operation-specific Ansible transfer scratch space
           ansible.builtin.file:
             path: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"

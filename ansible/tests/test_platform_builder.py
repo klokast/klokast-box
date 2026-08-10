@@ -324,8 +324,14 @@ class PlatformBuilderDom0Test(unittest.TestCase):
 
     def test_playbook_fetches_before_removing_staging(self):
         tasks = ROLE_TASKS.read_text(encoding="utf-8")
+        playbook = PLAYBOOK.read_text(encoding="utf-8")
         self.assertLess(tasks.index("Fetch available stopped-guest results"), tasks.index("Remove per-operation staging"))
-        self.assertIn("alpine-virt-assets", PLAYBOOK.read_text(encoding="utf-8"))
+        self.assertIn("alpine-virt-assets", playbook)
+        self.assertLess(
+            playbook.index("Persist the restored dom0 package policy before scratch cleanup"),
+            playbook.index("Remove operation-specific Ansible transfer scratch space"),
+        )
+        self.assertIn("ansible.builtin.meta: flush_handlers", playbook)
 
     def test_large_transfers_use_bounded_dom0_data_scratch(self):
         playbook = PLAYBOOK.read_text(encoding="utf-8")
