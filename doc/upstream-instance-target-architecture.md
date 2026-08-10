@@ -4,8 +4,9 @@
 
 Klokast separates public implementation, private desired state, secrets,
 generated controller state, and application data. Contract v1 establishes the
-smallest useful desired-state interface and an offline validator. It does not
-yet establish deployment or migration workflows.
+smallest useful desired-state interface, an offline generator and validator,
+and a deterministic read-only compatibility plan. It does not yet establish a
+deployment or migration workflow.
 
 ```text
 effective desired state
@@ -129,9 +130,12 @@ boxes:
 ```
 
 This derives `k001-dom0`, `k001-router`, `k001-bak`, `k001-dmz`, `k001-iot`,
-and placed control-plane names. Logical IDs and hostname prefixes must be
-unique. Prefixes must not collide with reserved role suffixes or produce names
-longer than a DNS label.
+and `k001-ops`. A controller placed on the box uses `k001-ops`. A box-kind
+airunner uses the dedicated `k001-airunner` guest and its own Tailnet identity;
+it does not run in the controller guest. An external airunner keeps its
+declared hostname. Logical IDs, hostname prefixes, airunner IDs, and all
+resolved runtime names must be unique. Prefixes must not collide with reserved
+role suffixes or produce names longer than a DNS label.
 
 Every standard box implicitly includes the upstream-defined standard substrate;
 Contract v1 has no free-form role list. The control plane declares exactly one
@@ -183,6 +187,70 @@ placement must use a closed `single_box`, `active_passive`, or `multi_box`
 variant and reference declared boxes. App resource bindings must name public
 manifest resource IDs. Contract v1 contains no private app configuration.
 
+## Deterministic projection and compatibility planning
+
+The internal Contract v1 resolver has no host discovery, network access,
+environment-dependent defaults, or current-state input. It sorts unordered
+maps and sets before it emits the projection. The same checked input bytes and
+engine identity therefore produce the same projection hash.
+
+The projection contains stable logical IDs and the exact runtime mapping for
+sites, boxes, controllers, airunners, access, app placement, and public
+resource bindings. For the transitional compiler, it derives:
+
+- legacy box keys and placement targets from `hostname_prefix`;
+- `available_capabilities` as `declared_capabilities` minus
+  `prohibited_capabilities`;
+- controller and box-kind airunner hostnames from the runtime rules above.
+
+The full declared capability set stays in the projection and provenance. The
+adapter does not discard capabilities that are physically possible but
+prohibited.
+
+`klokast plan --instance PATH --compatibility-registry FILE [--json]` is an
+offline, read-only parity check. It does not render inventory, write a plan,
+contact a host, or change the compatibility registry. The registry must be one
+regular, bounded, safe YAML document and must not contain an obvious raw
+secret. The report gives each transitional field one of these classes:
+
+- `matched`: Contract intent equals the legacy value;
+- `derived`: the deterministic adapter supplies the value;
+- `compatibility_only`: Contract v1 cannot express the field, so a later
+  migration must retain or replace it explicitly;
+- `conflict`: Contract intent and legacy intent differ;
+- `unsupported`: the adapter cannot safely interpret the field.
+
+The plan is compatible only when it has no conflict or unsupported field. It
+is authority-ready only when it is also deployable and has no
+compatibility-only field. Thus fields such as `dom0_bridge_ports`,
+`dhcp_reservations`, `shared_guests`, app `runtime_state`, app VM definitions,
+device bindings, ingress mode, and ephemeral approvals cannot disappear during
+migration. They remain compatibility-only until a later schema or an explicit
+replacement owns them.
+
+An enabled app must use the placement mode that the current public manifest
+supports. A disabled Contract app keeps its preselection in the projection;
+the compatibility adapter does not turn that preselection into a legacy
+cleanup target.
+
+The JSON report has `schema_version: 1`. It records the engine identity, exact
+SHA-256 hashes of the four authoritative input files, the projection hash, the
+compatibility-registry hash, repository state, and redacted findings. It does
+not print suspected secret values.
+
+Git state has separate gates:
+
+- `check` accepts dirty tracked content;
+- read-only `plan` accepts a dirty or unborn repository, hashes the exact
+  worktree inputs, and reports `deployable: false`;
+- a future deployable plan will require a clean committed instance;
+- a future apply will require the exact instance commit, engine commit, plan
+  hash, and observed-state generation recorded by its plan.
+
+Exit status is `0` when the inputs are valid and compatible, including a
+read-only non-deployable report. It is `2` for invalid input, a conflict, or an
+unsupported field, and `1` for an operational failure.
+
 ## Schemas and offline checking
 
 The engine embeds Draft 2020-12 schemas for:
@@ -202,6 +270,7 @@ Implemented commands are:
 klokast version --json
 klokast init --instance PATH --profile single-box --values FILE [--json]
 klokast check --instance PATH [--json]
+klokast plan --instance PATH --compatibility-registry FILE [--json]
 ```
 
 `init` accepts one strict JSON values document. The input contains an instance
@@ -231,8 +300,9 @@ embedded template to an owner-only sibling staging directory, writes the exact
 engine lock, creates an independent local Git repository on branch `main`, and
 stages all inputs. It does not make a commit, add a remote, use the network, or
 copy the values document into the instance. It runs `check` before an atomic
-no-replace publication. Failure removes the staging directory. The destination
-must not exist and must not be inside another Git worktree.
+no-replace publication. Failure removes the staging directory or reports its
+exact remaining path if removal fails. The destination must not exist and must
+not be inside another Git worktree.
 
 `check` is read-only and validates:
 
@@ -249,6 +319,10 @@ must not exist and must not be inside another Git worktree.
 Diagnostics never print suspected values. A dirty instance worktree is allowed;
 authoritative inputs still must be tracked. Exit status is `0` for valid, `2`
 for validation failure, and `1` for operational failure.
+
+The current generator uses a Linux `renameat2` no-replace publication and the
+builder currently produces Linux/amd64 binaries. Other operating systems and
+architectures are not supported by this implementation milestone.
 
 ## Filesystem and authority boundaries
 
@@ -279,16 +353,25 @@ deployable binaries locally.
 
 ## Deferred milestones
 
-After local Contract v1 generation, separate reviewed milestones may implement:
+After the read-only compatibility projection, separate reviewed milestones may
+implement, in this order:
 
-1. private repository creation and remote registration;
-2. a compatibility resolver and logical-to-runtime compiler projection;
-3. provenance-aware `doctor`, `plan`, `apply`, and live checking;
-4. private-instance migration and removal of legacy inventory authority;
-5. application-specific configuration schemas;
-6. site executors under a later deployment schema version;
-7. retirement of the separate public template repository.
+1. parity fixtures for the real private registry and an observed-state
+   `doctor` that has no mutation authority;
+2. a provenance-aware, deployable `plan` that records the exact clean instance
+   commit, engine commit, content hashes, and observed-state generation;
+3. private repository creation and remote registration;
+4. a separately authorized `apply` with fencing, revalidation, rollback, and
+   live verification;
+5. private-instance migration while all compatibility-only fields remain under
+   their current authority;
+6. removal of legacy inventory and registry authority only after parity,
+   rollback tests, and an explicit observation period succeed;
+7. application-specific configuration schemas;
+8. site executors under a later deployment schema version;
+9. retirement of the separate public template repository.
 
-This milestone does not install `klokast` on the controller, migrate a private
-instance, alter existing deployment inventory/platform-resource inputs, add
-lifecycle commands, or modify external repositories.
+The current milestone does not install `klokast` on the controller, create or
+modify a private repository, migrate an instance, alter existing deployment
+inventory or platform-resource inputs, apply a plan, or modify an external
+repository.

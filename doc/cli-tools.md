@@ -25,6 +25,7 @@ Source: `cmd/klokast/`. A deployable binary must come from the active-controller
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline single-box Contract v1 repository from a strict JSON values file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Contract v1 repository. |
+| `klokast plan` | trusted local host | Resolves Contract v1 intent and performs an offline, read-only comparison with a transitional platform-resources registry. It does not write a deployable plan or apply changes. |
 
 ## Platform And Controller Wrappers
 

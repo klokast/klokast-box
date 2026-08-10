@@ -10,6 +10,7 @@ import (
 
 	"klokast-box/internal/contract"
 	"klokast-box/internal/instance"
+	"klokast-box/internal/planner"
 )
 
 var (
@@ -62,8 +63,63 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "init" {
 		return runInit(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json]")
+	if len(args) > 0 && args[0] == "plan" {
+		return runPlan(args[1:], stdout, stderr)
+	}
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-registry FILE [--json]")
 	return 2
+}
+
+func runPlan(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	instancePath := flags.String("instance", "", "path to a standalone instance repository")
+	registryPath := flags.String("compatibility-registry", "", "path to the transitional platform-resources registry")
+	jsonOutput := flags.Bool("json", false, "write machine-readable output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *registryPath == "" {
+		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-registry FILE [--json]")
+		return 2
+	}
+	result, err := planner.Plan(planner.Options{
+		InstancePath:          *instancePath,
+		CompatibilityRegistry: *registryPath,
+	}, contract.Engine{
+		Repository: engineRepository,
+		Ref:        engineRef,
+		Commit:     engineCommit,
+	})
+	if err != nil {
+		if *jsonOutput {
+			if encodeErr := json.NewEncoder(stdout).Encode(operationalResult{Valid: false, OperationalError: err.Error()}); encodeErr != nil {
+				fmt.Fprintln(stderr, "klokast: cannot write plan result")
+			}
+		} else {
+			fmt.Fprintf(stderr, "klokast plan: operational failure: %v\n", err)
+		}
+		return 1
+	}
+	if *jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintln(stderr, "klokast: cannot write plan result")
+			return 1
+		}
+	} else if !result.Valid {
+		for _, diagnostic := range result.Diagnostics {
+			fmt.Fprintf(stderr, "%s: %s: %s\n", diagnostic.Path, diagnostic.Code, diagnostic.Message)
+		}
+	} else if !result.Compatible {
+		for _, finding := range result.Compatibility.Findings {
+			if finding.Class == "conflict" || finding.Class == "unsupported" {
+				fmt.Fprintf(stderr, "%s: %s: %s\n", finding.Path, finding.Code, finding.Message)
+			}
+		}
+	} else {
+		fmt.Fprintf(stdout, "klokast plan: compatible; deployable=%t; authority-ready=%t\n", result.Deployable, result.AuthorityReady)
+	}
+	if !result.Valid || !result.Compatible {
+		return 2
+	}
+	return 0
 }
 
 func runInit(args []string, stdout, stderr io.Writer) int {

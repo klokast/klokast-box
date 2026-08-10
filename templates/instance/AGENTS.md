@@ -13,5 +13,8 @@
   public app manifests.
 - Use `Etc/UTC` for every site. Platform inputs do not select a timezone.
 - Validate with `klokast check --instance PATH` before review.
+- Use `klokast plan --instance PATH --compatibility-registry FILE` only for an
+  offline, read-only compatibility report. It does not authorize migration or
+  apply changes.
 - Do not add private `apps/`, `extensions/`, site executors, generated
   inventories, or policy override interfaces to Contract v1.

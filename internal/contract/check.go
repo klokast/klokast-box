@@ -59,77 +59,10 @@ type Engine struct {
 	Commit     string
 }
 
-type rootDocument struct {
-	Contract int `yaml:"contract"`
-	Paths    struct {
-		Deployment        string `yaml:"deployment"`
-		PlatformResources string `yaml:"platform_resources"`
-	} `yaml:"paths"`
-}
-
-type lockDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
-	Engine        struct {
-		Repository string `yaml:"repository"`
-		Ref        string `yaml:"ref"`
-		Commit     string `yaml:"commit"`
-	} `yaml:"engine"`
-}
-
-type deploymentDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
-	Instance      struct {
-		Name string `yaml:"name"`
-	} `yaml:"instance"`
-	Tailnet struct {
-		MagicDNSSuffix string              `yaml:"magicdns_suffix"`
-		Groups         map[string][]string `yaml:"groups"`
-	} `yaml:"tailnet"`
-	Sites map[string]struct {
-		Country          string `yaml:"country"`
-		Timezone         string `yaml:"timezone"`
-		PhysicalLocation string `yaml:"physical_location"`
-	} `yaml:"sites"`
-	Boxes map[string]struct {
-		HostnamePrefix string `yaml:"hostname_prefix"`
-		Site           string `yaml:"site"`
-	} `yaml:"boxes"`
-	ControlPlane struct {
-		Controller struct {
-			ActiveBox  string `yaml:"active_box"`
-			StandbyBox string `yaml:"standby_box"`
-		} `yaml:"controller"`
-		Airunners []struct {
-			ID       string `yaml:"id"`
-			Kind     string `yaml:"kind"`
-			Box      string `yaml:"box"`
-			Hostname string `yaml:"hostname"`
-		} `yaml:"airunners"`
-	} `yaml:"control_plane"`
-}
-
-type platformDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
-	Boxes         map[string]struct {
-		Access struct {
-			Declared   []string          `yaml:"declared_capabilities"`
-			Enabled    []string          `yaml:"enabled_capabilities"`
-			Prohibited []string          `yaml:"prohibited_capabilities"`
-			Policy     map[string]string `yaml:"policy"`
-		} `yaml:"access"`
-	} `yaml:"boxes"`
-	Apps map[string]struct {
-		Enabled   bool `yaml:"enabled"`
-		Placement struct {
-			Mode          string   `yaml:"mode"`
-			Box           string   `yaml:"box"`
-			ActiveMaster  string   `yaml:"active_master"`
-			PassiveBackup string   `yaml:"passive_backup"`
-			Boxes         []string `yaml:"boxes"`
-		} `yaml:"placement"`
-		Resources map[string]any `yaml:"resources"`
-	} `yaml:"apps"`
-}
+type rootDocument = RootDocument
+type lockDocument = LockDocument
+type deploymentDocument = DeploymentDocument
+type platformDocument = PlatformDocument
 
 type appManifest struct {
 	PlacementMode string

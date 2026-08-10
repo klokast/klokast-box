@@ -38,3 +38,15 @@ klokast check --instance /path/to/klokast-instance
 ```
 
 Both commands are offline. `check` is non-mutating.
+
+Before a later migration, compare the instance with a transitional private
+platform-resources registry:
+
+```sh
+klokast plan \
+  --instance /path/to/klokast-instance \
+  --compatibility-registry /path/to/platform-resources.yml
+```
+
+This command is also offline and read-only. It classifies fields that Contract
+v1 cannot yet own. It does not write or apply a deployable plan.
