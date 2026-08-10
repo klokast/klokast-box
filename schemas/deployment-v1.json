@@ -15,7 +15,7 @@
       "required": ["country", "timezone"],
       "properties": {
         "country": {"type": "string", "pattern": "^[A-Z]{2}$"},
-        "timezone": {"type": "string", "minLength": 1, "maxLength": 255},
+        "timezone": {"const": "Etc/UTC"},
         "physical_location": {"type": "string", "minLength": 1, "maxLength": 500}
       }
     },

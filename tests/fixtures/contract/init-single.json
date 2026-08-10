@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "instance": {
+    "name": "family-klokast"
+  },
+  "tailnet": {
+    "magicdns_suffix": "example.ts.net",
+    "groups": {
+      "operators": ["admin@example.com"],
+      "family": ["family@example.com"]
+    }
+  },
+  "site": {
+    "country": "FR",
+    "physical_location": "Example home"
+  },
+  "box": {
+    "hostname_prefix": "k001"
+  }
+}

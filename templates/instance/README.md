@@ -12,15 +12,29 @@ Contract v1 has four authoritative files:
 - `ops/platform-resources.yml`: access capabilities, app enablement, placement,
   and public-manifest resource bindings.
 
-The source template intentionally has no `klokast.lock.yml`: a generated
-instance must receive a lock for the exact engine commit used by its
-builder-approved `klokast` binary. Instance generation is a later milestone.
+The source template intentionally has no `klokast.lock.yml`. Generate a new
+standalone instance with the builder-approved binary:
 
-For now, validate an existing standalone private instance repository with:
+```sh
+klokast init \
+  --instance /path/to/new-klokast-instance \
+  --profile single-box \
+  --values /path/to/init-values.json
+```
+
+The strict JSON values file supplies the private instance name, Tailnet groups,
+site country, optional physical location, and hostname prefix. It has no
+timezone field. Platform time is always `Etc/UTC` (GMT).
+
+`init` writes the lock for the exact engine commit, creates a local Git
+repository on branch `main`, and stages the generated inputs. It does not make
+a commit, add a remote, or copy the values file. The destination must not exist
+and must not be inside another Git worktree.
+
+Validate a standalone private instance repository with:
 
 ```sh
 klokast check --instance /path/to/klokast-instance
 ```
 
-The check is offline and non-mutating. Only `check` and `version --json` are
-implemented in this milestone.
+Both commands are offline. `check` is non-mutating.

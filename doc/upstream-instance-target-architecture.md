@@ -64,8 +64,7 @@ templates/instance/
     └── platform-resources.yml
 ```
 
-The source template has no self-referential lock. A future instance generator
-will add:
+The source template has no self-referential lock. `klokast init` adds:
 
 ```text
 klokast.lock.yml
@@ -188,20 +187,52 @@ manifest resource IDs. Contract v1 contains no private app configuration.
 
 The engine embeds Draft 2020-12 schemas for:
 
+- the single-box init values;
 - the root contract;
 - the engine lock;
 - deployment;
 - platform resources.
 
 Schemas reject unknown fields. `klokast` also embeds the canonical template and
-public app manifests, so checking requires no network access.
+public app manifests, so generation and checking require no network access.
 
-Implemented commands are limited to:
+Implemented commands are:
 
 ```text
 klokast version --json
+klokast init --instance PATH --profile single-box --values FILE [--json]
 klokast check --instance PATH [--json]
 ```
+
+`init` accepts one strict JSON values document. The input contains an instance
+name, Tailnet suffix and groups, a two-letter country, an optional physical
+location, and one hostname prefix. The input has no timezone field. Platform
+time is always `Etc/UTC` (GMT), and the generator writes that value to the
+deployment document.
+
+```json
+{
+  "schema_version": 1,
+  "instance": {"name": "family-klokast"},
+  "tailnet": {
+    "magicdns_suffix": "example.ts.net",
+    "groups": {
+      "operators": ["admin@example.com"],
+      "family": ["family@example.com"]
+    }
+  },
+  "site": {"country": "FR", "physical_location": "Example home"},
+  "box": {"hostname_prefix": "k001"}
+}
+```
+
+The generator requires a builder-approved engine identity. It copies the
+embedded template to an owner-only sibling staging directory, writes the exact
+engine lock, creates an independent local Git repository on branch `main`, and
+stages all inputs. It does not make a commit, add a remote, use the network, or
+copy the values document into the instance. It runs `check` before an atomic
+no-replace publication. Failure removes the staging directory. The destination
+must not exist and must not be inside another Git worktree.
 
 `check` is read-only and validates:
 
@@ -248,9 +279,9 @@ deployable binaries locally.
 
 ## Deferred milestones
 
-After Contract v1, separate reviewed milestones may implement:
+After local Contract v1 generation, separate reviewed milestones may implement:
 
-1. private repository generation and `klokast init`;
+1. private repository creation and remote registration;
 2. a compatibility resolver and logical-to-runtime compiler projection;
 3. provenance-aware `doctor`, `plan`, `apply`, and live checking;
 4. private-instance migration and removal of legacy inventory authority;

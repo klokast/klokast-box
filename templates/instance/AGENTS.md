@@ -11,6 +11,7 @@
   must be disjoint; declared and prohibited capabilities may overlap.
 - Bind only applications and resource IDs declared by the engine's embedded
   public app manifests.
+- Use `Etc/UTC` for every site. Platform inputs do not select a timezone.
 - Validate with `klokast check --instance PATH` before review.
 - Do not add private `apps/`, `extensions/`, site executors, generated
   inventories, or policy override interfaces to Contract v1.

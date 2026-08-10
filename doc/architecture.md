@@ -419,6 +419,10 @@ The active controller is the only Platform mutation locus and secret custodian.
 Airunners may author reviewed upstream or instance Git changes but do not hold
 controller-private state. Deployable `klokast` binaries are built only by the
 active controller through the networkless Xen `platform-builder` profile.
+The builder-approved binary can create a staged local Contract v1 repository
+with `klokast init`. It does not create a remote repository, install Platform
+state, or receive secrets. Platform site time is always `Etc/UTC` (GMT), so init
+inputs do not contain a timezone.
 
 ## files locally stored in the boxes
 - unique to each box:

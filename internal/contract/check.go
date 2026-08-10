@@ -13,8 +13,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
-	_ "time/tzdata"
 
 	klokastbox "klokast-box"
 
@@ -230,7 +228,7 @@ func Check(instancePath string, engine Engine) (Report, error) {
 }
 
 func (c *checker) inspectRepository() bool {
-	command := exec.Command("git", "-C", c.root, "rev-parse", "--show-toplevel")
+	command := isolatedGitCommand(c.root, "rev-parse", "--show-toplevel")
 	output, err := command.Output()
 	if err != nil {
 		c.add(".", "git.repository", "instance must be a standalone Git repository")
@@ -241,11 +239,11 @@ func (c *checker) inspectRepository() bool {
 		c.add(".", "git.repository", "instance must be the root of a standalone Git repository")
 		return false
 	}
-	super, err := exec.Command("git", "-C", c.root, "rev-parse", "--show-superproject-working-tree").Output()
+	super, err := isolatedGitCommand(c.root, "rev-parse", "--show-superproject-working-tree").Output()
 	if err == nil && strings.TrimSpace(string(super)) != "" {
 		c.add(".", "git.repository", "instance must not be embedded as a Git submodule")
 	}
-	tracked, err := exec.Command("git", "-C", c.root, "ls-files", "-z").Output()
+	tracked, err := isolatedGitCommand(c.root, "ls-files", "-z").Output()
 	if err != nil {
 		c.add(".", "git.tracked", "cannot enumerate tracked instance inputs")
 		return false
@@ -399,11 +397,6 @@ func (c *checker) validateLock(lock lockDocument) {
 func (c *checker) validateDeployment(path string, deployment deploymentDocument) {
 	prefixes := map[string]string{}
 	generated := map[string]string{}
-	for site, value := range deployment.Sites {
-		if _, err := time.LoadLocation(value.Timezone); err != nil {
-			c.add(path+"$.sites."+site+".timezone", "timezone.invalid", "timezone is not in the embedded IANA database")
-		}
-	}
 	for box, value := range deployment.Boxes {
 		if _, ok := deployment.Sites[value.Site]; !ok {
 			c.add(path+"$.boxes."+box+".site", "reference.site", "box references an unknown site")
@@ -760,6 +753,20 @@ func stringSet(values []string) map[string]bool {
 		result[value] = true
 	}
 	return result
+}
+
+func isolatedGitCommand(root string, arguments ...string) *exec.Cmd {
+	command := exec.Command("git", append([]string{"-C", root}, arguments...)...)
+	environment := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	command.Env = append(environment, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	return command
 }
 
 func uniqueStrings(values []string) []string {

@@ -15,6 +15,17 @@ Locus terms:
 - `root wrapper`: installed root-owned copy under `/usr/local/sbin`; do not run
   the source copy with `sudo` directly from the repo.
 
+## Klokast Contract CLI
+
+Source: `cmd/klokast/`. A deployable binary must come from the active-controller
+`platform-builder` output. This milestone does not install it on the controller.
+
+| Tool | Locus | What it does |
+| --- | --- | --- |
+| `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
+| `klokast init` | trusted local host | Creates and stages a new offline single-box Contract v1 repository from a strict JSON values file. It does not create a commit or remote. |
+| `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Contract v1 repository. |
+
 ## Platform And Controller Wrappers
 
 Source: `ansible/bin/`.

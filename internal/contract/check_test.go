@@ -44,6 +44,16 @@ func TestDirtyWorktreeIsAccepted(t *testing.T) {
 	}
 }
 
+func TestAmbientGitVariablesDoNotChangeRepositoryInspection(t *testing.T) {
+	root := prepareInstance(t, "single", nil)
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "attacker-git-dir"))
+	t.Setenv("GIT_WORK_TREE", t.TempDir())
+	report, err := Check(root, testEngine)
+	if err != nil || !report.Valid {
+		t.Fatalf("ambient Git variables affected check: err=%v diagnostics=%#v", err, report.Diagnostics)
+	}
+}
+
 func TestInvalidLockAndAuthoritativeTracking(t *testing.T) {
 	t.Run("mismatch", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
@@ -100,6 +110,12 @@ func TestIdentityReferencesAndCardinality(t *testing.T) {
 }
 
 func TestRunnerUnionUnknownFieldsAndYAMLSafety(t *testing.T) {
+	t.Run("platform-timezone", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), "timezone: Etc/UTC", "timezone: Europe/Paris")
+		})
+		requireCode(t, root, testCommit, "schema.invalid")
+	})
 	t.Run("runner-union", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
 			replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), "      box: box-001", "      box: box-001\n      hostname: forbidden.example")

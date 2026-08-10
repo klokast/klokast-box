@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 
 	"klokast-box/internal/contract"
+	"klokast-box/internal/instance"
 )
 
 var (
@@ -27,6 +29,12 @@ type versionResult struct {
 type operationalResult struct {
 	Valid            bool   `json:"valid"`
 	OperationalError string `json:"operational_error"`
+}
+
+type initFailureResult struct {
+	Created          bool                  `json:"created"`
+	Diagnostics      []contract.Diagnostic `json:"diagnostics,omitempty"`
+	OperationalError string                `json:"operational_error,omitempty"`
 }
 
 func main() {
@@ -51,8 +59,66 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "check" {
 		return runCheck(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast check --instance PATH [--json]")
+	if len(args) > 0 && args[0] == "init" {
+		return runInit(args[1:], stdout, stderr)
+	}
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json]")
 	return 2
+}
+
+func runInit(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("init", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	instancePath := flags.String("instance", "", "path for the new standalone instance repository")
+	profile := flags.String("profile", "", "instance profile")
+	valuesPath := flags.String("values", "", "path to the init values JSON document")
+	jsonOutput := flags.Bool("json", false, "write machine-readable output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *profile == "" || *valuesPath == "" {
+		fmt.Fprintln(stderr, "usage: klokast init --instance PATH --profile single-box --values FILE [--json]")
+		return 2
+	}
+	result, err := instance.Init(instance.Options{
+		InstancePath: *instancePath,
+		Profile:      *profile,
+		ValuesPath:   *valuesPath,
+	}, contract.Engine{
+		Repository: engineRepository,
+		Ref:        engineRef,
+		Commit:     engineCommit,
+	})
+	if err != nil {
+		var validationError *instance.ValidationError
+		if errors.As(err, &validationError) {
+			if *jsonOutput {
+				if encodeErr := json.NewEncoder(stdout).Encode(initFailureResult{Created: false, Diagnostics: validationError.Diagnostics}); encodeErr != nil {
+					fmt.Fprintln(stderr, "klokast: cannot write init result")
+					return 1
+				}
+			} else {
+				for _, diagnostic := range validationError.Diagnostics {
+					fmt.Fprintf(stderr, "%s: %s: %s\n", diagnostic.Path, diagnostic.Code, diagnostic.Message)
+				}
+			}
+			return 2
+		}
+		if *jsonOutput {
+			if encodeErr := json.NewEncoder(stdout).Encode(initFailureResult{Created: false, OperationalError: err.Error()}); encodeErr != nil {
+				fmt.Fprintln(stderr, "klokast: cannot write init result")
+			}
+		} else {
+			fmt.Fprintf(stderr, "klokast init: operational failure: %v\n", err)
+		}
+		return 1
+	}
+	if *jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintln(stderr, "klokast: cannot write init result")
+			return 1
+		}
+	} else {
+		fmt.Fprintf(stdout, "klokast init: created %s\n", result.InstancePath)
+	}
+	return 0
 }
 
 func runCheck(args []string, stdout, stderr io.Writer) int {
