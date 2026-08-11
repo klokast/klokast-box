@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-auto}"
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 --pem PATH --app-id ID --installation-id ID [--controller HOST]
+
+Installs the temporary private-instance bootstrap GitHub App credential into
+root-only storage on the active Klokast controller.
+
+The App must have Repository Administration write and Metadata read only. It
+must not have Contents access. Remove this repository from the App installation
+after the controller registers its read-only deploy key.
+EOF
+}
+
+die() {
+  printf 'install-instance-github-app: %s\n' "$*" >&2
+  exit 2
+}
+
+valid_integer() {
+  case "$1" in ""|*[!0-9]*) return 1;; *) return 0;; esac
+}
+
+valid_controller() {
+  case "$1" in ""|*[!A-Za-z0-9.-]*) return 1;; *) return 0;; esac
+}
+
+expand_path() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    ~[/]*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+resolve_controller() {
+  if [ "$1" = auto ]; then
+    repo_root="${KLOKAST_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd -P)}"
+    "$repo_root/ansible/bin/ops-controller-ha" resolve-active
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+pem=""
+app_id=""
+installation_id=""
+controller="$DEFAULT_CONTROLLER"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pem) [ "$#" -ge 2 ] || die "--pem needs a path"; pem="$2"; shift 2 ;;
+    --app-id) [ "$#" -ge 2 ] || die "--app-id needs an integer"; app_id="$2"; shift 2 ;;
+    --installation-id) [ "$#" -ge 2 ] || die "--installation-id needs an integer"; installation_id="$2"; shift 2 ;;
+    --controller) [ "$#" -ge 2 ] || die "--controller needs a host"; controller="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$pem" ] || die "--pem is required"
+valid_integer "$app_id" || die "--app-id must be an integer"
+valid_integer "$installation_id" || die "--installation-id must be an integer"
+valid_controller "$controller" || die "--controller contains unsafe characters"
+controller="$(resolve_controller "$controller")"
+valid_controller "$controller" || die "resolved controller contains unsafe characters"
+pem="$(expand_path "$pem")"
+[ -r "$pem" ] || die "PEM is not readable: $pem"
+grep -Eq 'BEGIN .*PRIVATE KEY' "$pem" || die "PEM does not look like a private key"
+command -v tailscale >/dev/null 2>&1 || die "tailscale not found"
+command -v base64 >/dev/null 2>&1 || die "base64 not found"
+
+ssh_target="smith@${controller}"
+printf 'Installing temporary GitHub App IDs on %s...\n' "$controller"
+tailscale ssh "$ssh_target" sh -s -- "$app_id" "$installation_id" <<'SH'
+set -eu
+app_id=$1
+installation_id=$2
+case "$app_id" in ''|*[!0-9]*) echo "invalid App ID" >&2; exit 2;; esac
+case "$installation_id" in ''|*[!0-9]*) echo "invalid installation ID" >&2; exit 2;; esac
+directory=/etc/klokast/secret-authority/instance-bootstrap
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+umask 077
+{
+  printf 'GITHUB_APP_ID=%s\n' "$app_id"
+  printf 'GITHUB_APP_INSTALLATION_ID=%s\n' "$installation_id"
+} > "$tmp"
+doas install -d -m 0700 -o root -g root "$directory"
+doas install -m 0600 -o root -g root "$tmp" "$directory/github-app.env"
+SH
+
+printf 'Installing the temporary GitHub App private key on %s...\n' "$controller"
+# The quoted variables below expand only in the remote root shell.
+# shellcheck disable=SC2016
+base64 < "$pem" | tailscale ssh "$ssh_target" 'doas sh -c '"'"'
+set -eu
+directory=/etc/klokast/secret-authority/instance-bootstrap
+tmp=$(mktemp)
+trap "rm -f \"\$tmp\"" EXIT HUP INT TERM
+umask 077
+base64 -d > "$tmp"
+grep -q "BEGIN .*PRIVATE KEY" "$tmp" || {
+  echo "decoded PEM is not a private key" >&2
+  exit 2
+}
+install -d -m 0700 -o root -g root "$directory"
+install -m 0600 -o root -g root "$tmp" "$directory/github-app.pem"
+'"'"''
+
+printf 'Checking the bounded GitHub App token and redacted status...\n'
+tailscale ssh "$ssh_target" 'doas python3 -' <<'PY'
+import shlex
+from pathlib import Path
+from github import Auth, GithubIntegration
+
+root = Path("/etc/klokast/secret-authority/instance-bootstrap")
+values = {}
+for line in (root / "github-app.env").read_text(encoding="utf-8").splitlines():
+    item = shlex.split(line, comments=True, posix=True)
+    if item:
+        key, value = item[0].split("=", 1)
+        values[key] = value
+private_key = (root / "github-app.pem").read_text(encoding="utf-8")
+token = GithubIntegration(
+    auth=Auth.AppAuth(int(values["GITHUB_APP_ID"]), private_key)
+).get_access_token(
+    int(values["GITHUB_APP_INSTALLATION_ID"]),
+    {"administration": "write", "metadata": "read"},
+)
+if not getattr(token, "token", ""):
+    raise SystemExit("GitHub App token mint failed")
+print("bounded instance bootstrap token mint ok")
+PY
+status="$(tailscale ssh "$ssh_target" 'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority instance status --redacted')"
+printf '%s\n' "$status"
+printf '%s\n' "$status" | grep -q '"github_app_configured":true' || die "redacted status did not confirm the App credential"
+printf 'Temporary private-instance GitHub App credential installed on %s.\n' "$controller"

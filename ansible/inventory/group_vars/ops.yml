@@ -206,6 +206,7 @@ ops_controller_secret_authority_wrapper_source_root: "{{ playbook_dir }}/../../k
 ops_controller_secret_authority_wrappers:
   - ksa-static-site
   - ksa-cloudflare
+  - ksa-instance
 
 ops_airunner_enabled: false
 ops_airunner_user: agent

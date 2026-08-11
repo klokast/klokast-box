@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Prepare, seed, synchronize, and report the private instance source."""
+
+import argparse
+import getpass
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve()
+REPO_ROOT = SCRIPT.parents[2]
+PLATFORM_PLAN = SCRIPT.with_name("platform-plan")
+INSTALLED_AUTHORITY = Path("/usr/local/sbin/ksa-instance")
+PRIVATE_ROOT = Path("/home/smith/private/klokast")
+DEPLOYMENT_CHECKOUT = PRIVATE_ROOT / "instance"
+
+
+class InstanceError(Exception):
+    """Expected fail-closed private-instance error."""
+
+
+def die(message):
+    print(f"platform-instance: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def run(argv, *, capture=False, check=True):
+    completed = subprocess.run(
+        [str(item) for item in argv],
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise InstanceError(
+            f"command failed ({completed.returncode}): {argv[0]}"
+            + (f": {detail}" if detail else "")
+        )
+    return completed
+
+
+def load_plan_wrapper():
+    loader = SourceFileLoader("klokast_platform_plan", str(PLATFORM_PLAN))
+    spec = importlib.util.spec_from_loader("klokast_platform_plan", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def require_controller_user():
+    if getpass.getuser() != "smith":
+        raise InstanceError("run as smith on the active controller")
+
+
+def resolve_private_destination(value):
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise InstanceError("--destination must be an absolute controller path")
+    try:
+        private_root = PRIVATE_ROOT.resolve(strict=True)
+        parent = supplied.parent.resolve(strict=True)
+        parent.relative_to(private_root)
+    except (OSError, ValueError) as error:
+        raise InstanceError("--destination must have an existing parent below the private root") from error
+    if supplied == DEPLOYMENT_CHECKOUT or supplied.exists() or supplied.is_symlink():
+        raise InstanceError("--destination must be a new path separate from the deployment checkout")
+    if supplied.parent != parent:
+        raise InstanceError("--destination must not contain symbolic links or path aliases")
+    return supplied
+
+
+def seed(args):
+    require_controller_user()
+    plan = load_plan_wrapper()
+    try:
+        plan.require_active_controller()
+        directory, commit = plan.resolve_build_directory(args.build_dir)
+        receipt, binary = plan.verify_build_directory(directory, commit)
+        plan.verify_binary_version(binary, receipt)
+    except plan.PlanError as error:
+        raise InstanceError(str(error)) from error
+    supplied_values = Path(args.values)
+    if not supplied_values.is_absolute() or supplied_values.is_symlink() or not supplied_values.is_file():
+        raise InstanceError("--values must be one absolute regular non-symlink file on the controller")
+    try:
+        private_root = PRIVATE_ROOT.resolve(strict=True)
+        values = supplied_values.resolve(strict=True)
+        values.relative_to(private_root)
+    except (OSError, ValueError) as error:
+        raise InstanceError("--values must be below the controller private root") from error
+    if values != supplied_values:
+        raise InstanceError("--values must not contain symbolic links or path aliases")
+    if values.stat().st_size <= 0 or values.stat().st_size > 64 * 1024:
+        raise InstanceError("--values must be non-empty and no larger than 64 KiB")
+    destination = resolve_private_destination(args.destination)
+    completed = run([
+        binary,
+        "init",
+        "--instance",
+        destination,
+        "--profile",
+        "single-box",
+        "--values",
+        values,
+        "--json",
+    ], capture=True)
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise InstanceError("builder-approved klokast returned invalid init JSON") from error
+    if result.get("created") is not True or Path(result.get("instance_path", "")) != destination:
+        raise InstanceError("builder-approved klokast did not create the requested staged instance")
+    print(json.dumps({
+        "schema_version": 1,
+        "seeded": True,
+        "engine_commit": commit,
+        "destination": str(destination),
+    }, sort_keys=True))
+
+
+def authority(args):
+    require_controller_user()
+    if not INSTALLED_AUTHORITY.is_file() or not os.access(INSTALLED_AUTHORITY, os.X_OK):
+        raise InstanceError("installed instance Secret Authority wrapper is missing")
+    command = ["sudo", "-n", INSTALLED_AUTHORITY, "--repo-root", REPO_ROOT, "source", args.action]
+    if args.action in {"prepare", "sync"}:
+        command.extend(["--repo-owner", args.repo_owner, "--repo-name", args.repo_name])
+    else:
+        command.append("--redacted")
+    completed = run(command, check=False)
+    if completed.returncode != 0:
+        raise InstanceError("instance Secret Authority action failed")
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="action", required=True)
+    seed_parser = commands.add_parser("seed")
+    seed_parser.add_argument("--build-dir", required=True)
+    seed_parser.add_argument("--values", required=True)
+    seed_parser.add_argument("--destination", required=True)
+    for action in ("prepare", "sync"):
+        source = commands.add_parser(action)
+        source.add_argument("--repo-owner", required=True)
+        source.add_argument("--repo-name", required=True)
+    commands.add_parser("status")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        if args.action == "seed":
+            seed(args)
+        else:
+            authority(args)
+    except InstanceError as error:
+        die(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

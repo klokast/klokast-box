@@ -26,7 +26,7 @@ an ambient controller command.
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline single-box Contract v1 repository from a strict JSON values file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Contract v1 repository. |
-| `klokast plan` | trusted local host | Compares Contract v1 with all legacy desired-state inputs. With a fresh Observation v1 input, it emits a hashed, provenance-aware Plan v1 artifact. It does not apply changes. |
+| `klokast plan` | trusted local host | Compares Contract v1 with all legacy desired-state inputs. With a fresh Observation v1 input and Instance Source Receipt v1, it emits a hashed, provenance-aware Plan v1 artifact. It does not apply changes. |
 
 ## Platform And Controller Wrappers
 
@@ -49,9 +49,10 @@ Source: `ansible/bin/`.
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
+| `platform-instance` | active controller | Seeds a private Contract v1 repository with a sealed-builder binary and prepares, synchronizes, or reports the root-custodied read-only deployment source. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
-| `platform-plan` | active controller | Verifies one sealed-builder CLI receipt, creates Plan v1 from controller-private inputs, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
+| `platform-plan` | active controller | Verifies one sealed-builder CLI receipt and one root-owned instance source receipt, creates Plan v1 from controller-private inputs, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |
@@ -97,6 +98,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | --- | --- | --- | --- |
 | `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles static-site Secret Authority intents and approved actions for GitHub App and Cloudflare token storage. |
 | `ksa-cloudflare` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles Cloudflare Secret Authority intents and approved tunnel authority actions. |
+| `ksa-instance` | `klokast-ops/secret-authority/bin/` | root wrapper | Creates the private repository, registers its read-only deploy key, retires the temporary GitHub App, and synchronizes root-custodied instance source evidence. |
 | `cloudflare-guardian` | `klokast-ops/cloudflare-guardian/bin/` | guardian target | Uses sealed authority and human approval to create or inspect the static-site Cloudflare tunnel. |
 | `klokast-controller-guard` | `ansible/roles/ops-controller/files/` | controller target | Checks the controller HA marker and exits nonzero unless the local controller is active. |
 
@@ -109,6 +111,7 @@ Source: `klokast-dev/bin/`.
 | `kk` | laptop | Mac-side convenience CLI for doctor checks, remote `platform-app`, music upload, streamer poweroff, and torrent open/status. |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
+| `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses a YubiKey/FIDO SSH signer and installs its public key as an allowed Secret Authority signer. |
 | `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent, sends the token over stdin to the controller, and verifies redacted status. |
 | `install-cloudflare-authority` | laptop | Installs encrypted Cloudflare guardian material and policy on the guardian dom0; never accepts plaintext tokens. |

@@ -162,6 +162,8 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("Remove root-only provider credentials from a standby controller", PRIVATE_STATE_TRANSFER)
         self.assertIn("Assert standby controller has no root-only provider credentials", OPS_CONTROLLER_VERIFY)
         self.assertIn("ops_controller_check_ha.active", OPS_CONTROLLER_VERIFY)
+        self.assertIn("/etc/klokast/secret-authority/instance-bootstrap/github-app.pem", HA_SOURCE)
+        self.assertIn("/etc/klokast/private-instance/github-readonly", HA_SOURCE)
 
 
 if __name__ == "__main__":

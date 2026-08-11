@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -194,12 +195,14 @@ controllers:
 		t.Fatal(err)
 	}
 	observation := writeMainObservation(t, parent)
+	sourceReceipt := writeMainSourceReceipt(t, parent, instancePath)
 	arguments := []string{
 		"plan", "--instance", instancePath,
 		"--compatibility-deployment", deployment,
 		"--compatibility-registry", registry,
 		"--compatibility-controller-ha", controller,
-		"--observation", observation, "--json",
+		"--observation", observation,
+		"--instance-source-receipt", sourceReceipt, "--json",
 	}
 	if got := run(arguments, &stdout, &stderr); got != 2 {
 		t.Fatalf("run(plan) = %d, want non-deployable status 2; stderr=%q, stdout=%q", got, stderr.String(), stdout.String())
@@ -223,6 +226,48 @@ controllers:
 	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
+}
+
+func writeMainSourceReceipt(t *testing.T, directory, instancePath string) string {
+	t.Helper()
+	command := exec.Command("git", "-C", instancePath, "rev-parse", "HEAD")
+	output, err := command.Output()
+	commit := strings.TrimSpace(string(output))
+	if err != nil {
+		// An unborn repository still needs a syntactically valid receipt. Its
+		// commit cannot match, so the plan remains non-deployable.
+		commit = strings.Repeat("c", 40)
+	}
+	repository := "family/klokast"
+	repositoryDigest := sha256.Sum256([]byte(repository))
+	value := map[string]any{
+		"schema_version": 1,
+		"kind": "klokast.instance-source.v1",
+		"repository": repository,
+		"repository_sha256": fmt.Sprintf("%x", repositoryDigest[:]),
+		"repository_id": 123456,
+		"remote_ref": "refs/heads/main",
+		"commit": commit,
+		"fetched_at": time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+		"deploy_key_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGH123456",
+		"anonymous_readable": false,
+		"authenticated_readable": true,
+	}
+	canonical, marshalErr := json.Marshal(value)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	digest := sha256.Sum256(canonical)
+	value["receipt_sha256"] = fmt.Sprintf("%x", digest[:])
+	content, marshalErr := json.Marshal(value)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	path := filepath.Join(directory, "instance-source.json")
+	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func writeMainObservation(t *testing.T, directory string) string {

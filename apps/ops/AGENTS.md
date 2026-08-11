@@ -1,7 +1,7 @@
 The `ops` controller is the trusted infrastructure automation environment.
-Current bootstrap still starts from the Hetzner `ops` server, hostname `codex`,
-user `codex`, because Codex needs stable OpenAI connectivity. The target
-in-Platform controller is one Alpine VIRT VM named `<box>-ops`.
+The active controller is one Alpine VIRT VM named `<box>-ops`. A separate
+cloud or in-Platform airunner can open the approved remote terminal to it, but
+that runner is not the controller or the private-state custodian.
 
 # Conditions
 
@@ -10,8 +10,9 @@ in-Platform controller is one Alpine VIRT VM named `<box>-ops`.
 - `<box>-ops` is for TCB automation and private state. The current transitional
   runner container on the same VM must not mount `/home/smith`, `/etc/klokast`,
   `/var/lib/klokast`, deploy keys, private registries, OAuth files, and broker
-  state. It remains a persistent Control TCB authority; the target boundary is
-  a dedicated `<box>-airunner` VM.
+  state. It remains a persistent Control TCB authority. The
+  `<box>-ops-airunner` container is a supported steady-state placement. A
+  dedicated `<box>-airunner` VM is optional stronger isolation.
 
 # Deployment model
 
@@ -23,7 +24,8 @@ in-Platform controller is one Alpine VIRT VM named `<box>-ops`.
     authority.
   - `minion`: runs app installs and `platform-resources show`/`verify`,
     without access to infra credentials.
-- failsafe: Hetzner `ops` remains bootstrap and break-glass authority until
+- failsafe: the approved cloud infra-agent remains bootstrap and break-glass
+  access until
   `<box>-ops` is reproducibly recoverable from Git plus private state.
 
 # Implementation
@@ -39,7 +41,6 @@ in-Platform controller is one Alpine VIRT VM named `<box>-ops`.
 - `ansible/playbooks/68-ops-airunner.yml`
 - `ansible/roles/ops-controller`
 - `ansible/roles/ops-airunner`
-- `ops-controller` generates the `smith` GitHub deploy key on
-  `<box>-ops`, prints its public key if GitHub does not accept it yet, and
-  clones `klokast/klokast-box` into
-  `/home/smith/src/klokast/klokast-box`.
+- `ops-controller` clones the public `klokast/klokast-box` repository over
+  HTTPS into `/home/smith/src/klokast/klokast-box`. It does not give `smith`
+  a write credential for that public repository.

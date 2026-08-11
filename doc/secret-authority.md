@@ -104,6 +104,127 @@ ansible/bin/secret-authority static-site status --redacted
 Do not store root provider credentials or app tunnel tokens on `vultr-ops`.
 That host is an authoritative AI runner, not the Platform credential custodian.
 
+## Private Instance Bootstrap
+
+Private-instance bootstrap uses a separate, temporary GitHub App. Do not reuse
+the static-site App. Configure the temporary App with these repository
+permissions only:
+
+- Administration: read and write;
+- Metadata: read;
+- Contents: no access.
+
+Install the App on the organization that will own the private instance
+repository. From the trusted workstation, install its credential on the active
+controller:
+
+```sh
+klokast-dev/bin/install-instance-github-app \
+  --pem /path/to/private-key.pem \
+  --app-id 123456 \
+  --installation-id 12345678 \
+  --controller auto
+```
+
+The installer sends the PEM through standard input. It stores the credential
+under `/etc/klokast/secret-authority/instance-bootstrap/`. It does not put a
+token or PEM on the command line.
+
+Prepare the controller read key as `smith` on the active controller:
+
+```sh
+ansible/bin/platform-instance prepare \
+  --repo-owner FAMILY \
+  --repo-name klokast
+```
+
+The command prints a redacted repository hash and the public-key fingerprint.
+It keeps the private key root-only under `/etc/klokast/private-instance/`.
+
+Create and sign one intent for each high-authority action. This example creates
+the exact empty private repository:
+
+```sh
+ansible/bin/secret-authority intent instance create-repository \
+  --repo-owner FAMILY \
+  --repo-name klokast \
+  > create-repository.intent.json
+
+ssh-keygen -Y sign -f ~/.ssh/klokast-approval-sk \
+  -n klokast-secret-authority create-repository.intent.json
+
+ansible/bin/secret-authority instance create-repository \
+  --repo-owner FAMILY \
+  --repo-name klokast \
+  --approval-intent create-repository.intent.json \
+  --approval-signature create-repository.intent.json.sig \
+  --signer-id human
+```
+
+Sign on the trusted workstation. Move the intent and signature through the
+approved controller terminal path. Do not copy a signing private key to the
+controller or an airunner.
+
+Use `register-read-key` with the fingerprint returned by `prepare`. The action
+registers a GitHub deploy key only when GitHub confirms `read_only: true`:
+
+```sh
+ansible/bin/secret-authority intent instance register-read-key \
+  --repo-owner FAMILY \
+  --repo-name klokast \
+  --key-fingerprint SHA256:FINGERPRINT \
+  > register-read-key.intent.json
+
+ansible/bin/secret-authority instance register-read-key \
+  --repo-owner FAMILY \
+  --repo-name klokast \
+  --key-fingerprint SHA256:FINGERPRINT \
+  --approval-intent register-read-key.intent.json \
+  --approval-signature register-read-key.intent.json.sig \
+  --signer-id human
+```
+
+Generate the initial files on the controller with one verified sealed-builder
+output. The values file and destination must be below the controller private
+root. The command makes a staged Git repository but does not commit or push:
+
+```sh
+ansible/bin/platform-instance seed \
+  --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION \
+  --values /home/smith/private/klokast/init-values.json \
+  --destination /home/smith/private/klokast/instance-seed
+```
+
+Transfer `instance-seed` to the trusted workstation. Review it, commit it, add
+the private remote, and push `main` with the human private-repository identity.
+Do not commit or push it from an airunner. Do not use the temporary GitHub App
+to push content.
+
+After the first push, use the GitHub web interface to remove this repository
+from the temporary App installation. Then sign and run `retire-bootstrap` with
+the same repository and key fingerprint. Retirement fails unless the App can
+no longer list the repository, the anonymous Git read fails, and the deploy key
+can still read `refs/heads/main`. On success, it deletes the temporary App PEM
+and IDs from the controller. The human can delete the dedicated GitHub App
+later through the GitHub web interface.
+
+Synchronize the deployment checkout and create a fresh source receipt:
+
+```sh
+ansible/bin/platform-instance sync \
+  --repo-owner FAMILY \
+  --repo-name klokast
+```
+
+The checkout is `/home/smith/private/klokast/instance`. Its push URL is
+disabled. The receipt is below `/var/lib/klokast/instance-sources/` and is valid
+for 30 minutes. Pass its exact path to `ansible/bin/platform-plan` with
+`--instance-source-receipt`. Redacted status is:
+
+```sh
+ansible/bin/platform-instance status
+```
+
 ## Cloudflare Guardian Target
 
 The Cloudflare target is stronger than the current manual static-site token

@@ -51,5 +51,7 @@ klokast plan \
 ```
 
 This form is offline and read-only. It classifies fields that Contract v1
-cannot yet own. Add `--observation /path/to/observation.json` to create a
-provenance-aware Plan v1 artifact. It still does not apply changes.
+cannot yet own. Add both `--observation /path/to/observation.json` and
+`--instance-source-receipt /path/to/receipt.json` to create a provenance-aware
+Plan v1 artifact. The receipt must prove the exact private remote commit in
+this checkout. Plan v1 still does not apply changes.

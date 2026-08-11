@@ -71,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
 	return 2
 }
 
@@ -128,17 +128,26 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	registryPath := flags.String("compatibility-registry", "", "path to the transitional platform-resources registry")
 	controllerPath := flags.String("compatibility-controller-ha", "", "path to the transitional controller HA document")
 	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
+	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
-		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE] [--json]")
+		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json]")
 		return 2
 	}
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
 	if *observationPath == "" {
+		if *instanceSourceReceipt != "" {
+			fmt.Fprintln(stderr, "klokast plan: --instance-source-receipt requires --observation")
+			return 2
+		}
 		return runCompatibilityPlan(planner.Options{
 			InstancePath: *instancePath, CompatibilityDeployment: *deploymentPath,
 			CompatibilityRegistry: *registryPath, CompatibilityControllerHA: *controllerPath,
 		}, engine, *jsonOutput, stdout, stderr)
+	}
+	if *instanceSourceReceipt == "" {
+		fmt.Fprintln(stderr, "klokast plan: --instance-source-receipt is required with --observation")
+		return 2
 	}
 	result, err := deploymentplan.Build(deploymentplan.Options{
 		InstancePath: *instancePath,
@@ -146,6 +155,7 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 		CompatibilityRegistry: *registryPath,
 		CompatibilityControllerHA: *controllerPath,
 		ObservationPath: *observationPath,
+		InstanceSourceReceipt: *instanceSourceReceipt,
 	}, engine)
 	if err != nil {
 		if *jsonOutput {

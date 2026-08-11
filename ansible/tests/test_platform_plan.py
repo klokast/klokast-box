@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -78,6 +79,42 @@ class PlatformPlanTest(unittest.TestCase):
             (directory / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
             with self.assertRaisesRegex(self.mod.PlanError, "binary hash"):
                 self.mod.verify_build_directory(directory, "a" * 40)
+
+    def test_instance_source_receipt_path_is_root_owned_and_content_addressed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commit = "a" * 40
+            digest = "b" * 64
+            directory = root / commit
+            directory.mkdir(mode=0o750)
+            receipt = directory / f"{digest}.json"
+            receipt.write_text(json.dumps({
+                "commit": commit,
+                "receipt_sha256": digest,
+            }), encoding="utf-8")
+            receipt.chmod(0o440)
+            real_stat = Path.stat
+
+            def root_stat(path, *args, **kwargs):
+                value = real_stat(path, *args, **kwargs)
+                fields = list(value)
+                if Path(path) == receipt:
+                    fields[4] = 0
+                    fields[5] = os.getgid()
+                if Path(path) == directory:
+                    fields[4] = 0
+                    fields[5] = os.getgid()
+                return os.stat_result(fields)
+
+            account = Mock(pw_gid=os.getgid())
+            with patch.object(self.mod, "INSTANCE_SOURCE_ROOT", root), patch.object(
+                self.mod.Path, "stat", autospec=True, side_effect=root_stat
+            ), patch.object(self.mod.pwd, "getpwnam", return_value=account):
+                self.assertEqual(self.mod.resolve_instance_source_receipt(str(receipt)), receipt)
+                alias = root / "alias.json"
+                alias.symlink_to(receipt)
+                with self.assertRaises(self.mod.PlanError):
+                    self.mod.resolve_instance_source_receipt(str(alias))
 
     def test_plan_hash_is_canonical_and_tamper_evident(self):
         plan = {

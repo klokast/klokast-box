@@ -9,9 +9,11 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"klokast-box/internal/contract"
 	"klokast-box/internal/doctor"
+	"klokast-box/internal/instancesource"
 	"klokast-box/internal/planner"
 )
 
@@ -21,6 +23,7 @@ type Options struct {
 	CompatibilityRegistry    string
 	CompatibilityControllerHA string
 	ObservationPath           string
+	InstanceSourceReceipt     string
 }
 
 type Artifact struct {
@@ -35,6 +38,7 @@ type Artifact struct {
 	HealthScope         string                       `json:"health_scope"`
 	Engine              planner.Engine               `json:"engine"`
 	Instance            InstanceIdentity             `json:"instance"`
+	InstanceSource      instancesource.Reference      `json:"instance_source"`
 	Inputs              []planner.InputDigest        `json:"inputs"`
 	CompatibilityInputs []planner.CompatibilityInput `json:"compatibility_inputs"`
 	Projection          *planner.Projection          `json:"projection,omitempty"`
@@ -123,6 +127,16 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	artifact.Compatibility = report.Compatibility
 	artifact.CompatibilityInputs = report.Compatibility.Inputs
 	artifact.Compatible = report.Compatible
+	receipt, sourceDiagnostics, err := instancesource.Load(options.InstanceSourceReceipt, time.Now().UTC())
+	if err != nil {
+		return Artifact{}, err
+	}
+	if len(sourceDiagnostics) != 0 {
+		artifact.Diagnostics = sourceDiagnostics
+		return artifact, nil
+	}
+	artifact.InstanceSource = receipt.Reference()
+	sourceMatchesRepository := receipt.Commit == report.Repository.HeadCommit && receipt.RemoteRef == "refs/heads/"+report.Repository.Branch
 
 	health, err := doctor.Doctor(doctor.Options{InstancePath: options.InstancePath, ObservationPath: options.ObservationPath}, engine)
 	if err != nil {
@@ -178,6 +192,12 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	for _, reason := range report.Repository.Reasons {
 		artifact.Refusals = append(artifact.Refusals, refusal(reason, "instance.repository", "the instance repository is not a clean committed deployment input"))
 	}
+	if !sourceMatchesRepository {
+		artifact.Refusals = append(artifact.Refusals, refusal(
+			"instance-source.mismatch", "instance.repository",
+			"the instance source receipt does not match the checked instance branch and commit",
+		))
+	}
 	artifact.Actions = append(artifact.Actions, Action{
 		ID: "verify-standard-substrate", Operation: "verify_substrate", Scope: "standard_substrate_v1",
 		AuthorityBefore: "observation_v1", AuthorityAfter: "observation_v1", Executor: "read_only_doctor",
@@ -193,7 +213,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	})
 
 	artifact.Valid = true
-	artifact.Deployable = report.Repository.Clean && report.Repository.HeadCommit != "" && artifact.Compatible && artifact.SubstrateHealthy && len(artifact.Refusals) == 0
+	artifact.Deployable = report.Repository.Clean && report.Repository.HeadCommit != "" && artifact.InstanceSource.ReceiptSHA256 != "" && artifact.Compatible && artifact.SubstrateHealthy && len(artifact.Refusals) == 0
 	artifact.AuthorityReady = artifact.Deployable && everyScopeAssigned(artifact)
 	artifact.LegacyRemovalReady = artifact.AuthorityReady && artifact.Compatibility.Summary.CompatibilityOnly == 0
 	artifact.PlanSHA256, err = Hash(artifact)

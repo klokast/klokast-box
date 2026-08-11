@@ -37,6 +37,9 @@ Each deployment will have one independent private instance repository. It does
 not fork or shadow `klokast-box`. Contract v1 contains topology, private group
 membership, stable identities, controller/airunner placement, approved access
 capabilities, app placement/resource bindings, and an immutable engine lock.
+The human-only authoring rule applies to this private repository. Approved
+airunners remain commit and push authorities for reviewed changes to the public
+`klokast/klokast-box` repository.
 
 `templates/instance/` in `klokast-box` is the only public instance template.
 Each real instance is a separate private repository. No other public template
@@ -230,7 +233,7 @@ klokast plan \
   --compatibility-deployment FILE \
   --compatibility-registry FILE \
   --compatibility-controller-ha FILE \
-  [--observation FILE] [--json]
+  [--observation FILE --instance-source-receipt FILE] [--json]
 ```
 
 The command is offline and read-only. It does not render inventory, contact a
@@ -266,6 +269,8 @@ observation must pass the same freshness, source-controller, generation-hash,
 and `standard_substrate_v1` checks as `doctor`. The Plan v1 artifact records:
 
 - the exact clean instance branch and commit;
+- the fresh controller source-receipt hash, repository hash and numeric ID,
+  remote ref, fetched commit, fetch time, and read-only deploy-key fingerprint;
 - the exact builder-approved engine repository, ref, and commit;
 - SHA-256 hashes of the four Contract inputs and all three compatibility
   inputs;
@@ -288,7 +293,8 @@ Plan gates have distinct meanings:
 - `substrate_healthy`: `doctor` reports no drift in
   `standard_substrate_v1`;
 - `deployable`: the instance is a clean commit, every finding has a proposed
-  action or named continuing authority, and there is no refusal;
+  action or named continuing authority, its source receipt matches that commit,
+  and there is no refusal;
 - `authority_ready`: every scope has exactly one proposed or continuing
   authority;
 - `legacy_removal_ready`: no field still uses a retained legacy authority.
@@ -308,8 +314,9 @@ input or a refusal. Exit status `1` means an operational failure.
 
 On the active controller, `ansible/bin/platform-plan` verifies the selected
 sealed-builder receipt, binary hash, and binary version. It runs Plan v1 as
-`smith`, verifies `plan_sha256`, and stores the canonical artifact without
-replacement at:
+`smith`. It also requires the instance source receipt to be a root-owned,
+content-addressed file below `/var/lib/klokast/instance-sources/`. It verifies
+`plan_sha256` and stores the canonical artifact without replacement at:
 
 ```text
 /var/lib/klokast/plans/<instance-commit>/<plan-sha256>.json
@@ -388,7 +395,7 @@ Implemented commands are:
 klokast version --json
 klokast init --instance PATH --profile single-box --values FILE [--json]
 klokast check --instance PATH [--json]
-klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE] [--json]
+klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json]
 klokast doctor --instance PATH --observation FILE [--json]
 ```
 
@@ -454,6 +461,9 @@ private instance Git repository
 /etc/klokast
     controller-owned secrets and credentials
 
+/etc/klokast/private-instance
+    root-owned private-instance read-only deploy key and pinned Git host keys
+
 /var/lib/klokast
     generated inventories, facts, plans, receipts, provenance, and build outputs
 
@@ -469,29 +479,73 @@ application storage
 
 The active controller is the credential custodian and only mutation authority.
 Standby controllers do not automatically receive active secrets. The human
-authors private instance changes from a trusted workstation. The active
-controller has a clean deployment checkout with a read-only remote. Airunners
-can author reviewed public implementation changes, but they do not clone the
-private instance repository, hold private registries or controller credentials,
-or receive the controller Podman socket. A future automated instance edit must
-be a narrow, validated proposal action on the controller. Airunners do not
-produce deployable binaries locally.
+authors and pushes private instance changes from a trusted workstation. This
+restriction does not apply to the public implementation repository. The active
+controller has a clean deployment checkout with a disabled push URL and a
+root-held read-only deploy key. Airunners can author and push reviewed public
+implementation changes, but they do not clone the private instance repository,
+hold private registries or controller credentials, or receive the controller
+Podman socket. A future automated private-instance edit must be a narrow,
+validated proposal action on the controller. Airunners do not produce
+deployable binaries locally.
+
+## Private repository bootstrap and source custody
+
+`ansible/bin/platform-instance` and the installed root wrapper `ksa-instance`
+implement the private-source custody boundary. The workflow uses one dedicated,
+temporary GitHub App. The App has Repository Administration write and Metadata
+read only. It has no Contents permission. Three remote changes require a fresh,
+human-signed intent that is bound to the reviewed public engine commit:
+
+- create one exact empty private repository;
+- register the controller public key as a read-only deploy key;
+- retire the temporary App credential after the human removes that repository
+  from the App installation.
+
+The human initializes the instance with a sealed-builder `klokast` binary,
+transfers the staged repository to the trusted workstation, reviews it, commits
+it, and pushes it with a human-owned private-repository identity. The GitHub App
+does not push content. The controller deploy key cannot push content. The
+airunner does not receive the repository or any bootstrap credential.
+
+After the initial `main` push, the human removes the repository from the App
+installation. The retirement action confirms that the App can no longer list
+the repository and that the read-only deploy key can still fetch `main`. It then
+removes the temporary App ID, installation ID, and private key from the
+controller. The human can delete the dedicated App later in the GitHub web
+interface.
+
+`platform-instance sync` authenticates with the root-held deploy key, refuses
+an anonymously readable repository, accepts only a fast-forward of `main`, and
+keeps the checkout push-disabled. It writes an immutable, root-owned Instance
+Source Receipt v1 below:
+
+```text
+/var/lib/klokast/instance-sources/<commit>/<receipt-sha256>.json
+```
+
+The receipt records the private repository name only in root-controlled
+controller evidence. Plan v1 copies only its repository hash and numeric ID,
+not the private repository name or local path. A receipt is invalid after 30
+minutes. Plan v1 refuses a receipt that does not match the checked instance
+branch and commit.
 
 ## Deferred milestones
 
-After Plan v1, separate reviewed milestones may implement, in this order:
+After the private-source and Plan v1 milestone, separate reviewed milestones
+may implement, in this order:
 
-1. private repository creation and remote registration after its custody
-   workflow is explicit;
-2. a separately authorized `apply` with fencing, revalidation, rollback, and
+1. a separately authorized `apply` with fencing, revalidation, rollback, and
    live verification;
-3. private-instance migration while all compatibility-only fields remain under
+2. private-instance migration while all compatibility-only fields remain under
    their current authority;
-4. removal of legacy inventory and registry authority only after parity,
+3. removal of legacy inventory and registry authority only after parity,
    rollback tests, and an explicit observation period succeed;
-5. application-specific configuration schemas;
-6. site executors under a later deployment schema version.
+4. application-specific configuration schemas;
+5. site executors under a later deployment schema version.
 
-The current milestone does not install `klokast` on the controller, create or
-modify a private repository, migrate an instance, alter existing deployment
-inventory or platform-resource inputs, or apply a plan.
+The current milestone does not install `klokast` as an ambient controller
+command, author or push a private commit, migrate an instance, alter existing
+deployment inventory or platform-resource inputs, or apply a plan. Repository
+creation and deploy-key registration occur only when the human supplies the
+separate signed intents described above.

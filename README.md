@@ -16,6 +16,12 @@ pilot stores that app private key root-only on `<box>-ops` and mints short-lived
 installation tokens only inside checked action wrappers. See
 `doc/secret-authority.md`.
 
+The private instance repository uses a different, temporary GitHub App with
+Administration permission and no Contents permission. The human authors and
+pushes that private repository from a trusted workstation. Approved airunners
+continue to author and push the public `klokast/klokast-box` repository. See
+the private-instance bootstrap procedure in `doc/secret-authority.md`.
+
 # 3. Hetzner
 1. Create a Hetzner account.
 2. Generate one API key.

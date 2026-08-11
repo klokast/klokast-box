@@ -422,16 +422,26 @@ site-executor interface. Site executors require a later deployment schema
 version. See `doc/upstream-instance-target-architecture.md`.
 
 The active controller is the only Platform mutation locus and secret custodian.
-The human authors private instance changes from a trusted workstation. The
-controller has a clean deployment checkout with a read-only remote. Airunners
-may author reviewed public implementation changes, but they do not clone the
-private instance repository or hold controller-private state. Deployable
-`klokast` binaries are built only by the
-active controller through the networkless Xen `platform-builder` profile.
+The human authors and pushes private instance changes from a trusted
+workstation. This human-only rule applies to the private instance repository,
+not to the public implementation repository. The controller has a clean
+deployment checkout with a root-held read-only deploy key and a disabled push
+URL. Airunners may author and push reviewed public implementation changes, but
+they do not clone the private instance repository or hold controller-private
+state. Deployable `klokast` binaries are built only by the active controller through the
+networkless Xen `platform-builder` profile.
 The builder-approved binary can create a staged local Contract v1 repository
 with `klokast init`. It does not create a remote repository, install Platform
 state, or receive secrets. Platform site time is always `Etc/UTC` (GMT), so init
 inputs do not contain a timezone.
+
+Private repository creation and read-key registration use a dedicated,
+temporary GitHub App with no Contents permission. Human-signed intents bind
+each action to the reviewed public engine commit. After the human removes the
+private repository from the App installation, the controller verifies the
+read-only deploy key and deletes the App credential. Controller fetches create
+fresh, content-addressed source receipts for Plan v1. See
+`doc/upstream-instance-target-architecture.md` for the complete boundary.
 
 ## files locally stored in the boxes
 - unique to each box:

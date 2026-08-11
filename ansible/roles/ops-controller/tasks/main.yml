@@ -226,6 +226,14 @@
       owner: root
       group: root
       mode: "0700"
+    - path: "{{ ops_secret_authority_root }}/instance-bootstrap"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: /etc/klokast/private-instance
+      owner: root
+      group: root
+      mode: "0700"
     - path: /etc/tailscale-auth
       owner: root
       group: root
@@ -234,6 +242,14 @@
       owner: root
       group: root
       mode: "0700"
+    - path: "{{ ops_secret_authority_state_root }}/instance"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: /var/lib/klokast/instance-sources
+      owner: root
+      group: "{{ ops_infra_user }}"
+      mode: "0750"
     - path: "{{ ops_secret_authority_audit_log | dirname }}"
       owner: root
       group: root

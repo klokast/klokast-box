@@ -2,10 +2,11 @@
 
 `<box>-ops` is the optional in-Platform infrastructure controller VM. It moves
 trusted infrastructure automation and private state into the Platform TCB. It
-currently supports a transitional Codex/OpenAI runner container. Controller
+supports a Codex/OpenAI runner container. Controller
 private state is not mounted into the container, but the runner remains a
 persistent Control TCB authority because it can connect as `smith`. The target
-architecture uses a dedicated `<box>-airunner` VM.
+architecture supports this `<box>-ops-airunner` container as a steady-state
+placement. A dedicated `<box>-airunner` VM is optional stronger isolation.
 
 ## Provision
 
@@ -128,7 +129,7 @@ sandboxes.
 
 ## AI Runner
 
-`vultr-ops` and transitional `<box>-ops-airunner` containers can coexist as
+`vultr-ops` and `<box>-ops-airunner` containers can coexist as
 approved Codex/OpenAI runners. Replace an in-Platform runner blue-green:
 
 ```sh

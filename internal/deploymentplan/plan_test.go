@@ -53,6 +53,13 @@ func TestBuildProducesStableDeployablePlanWithRetainedAuthority(t *testing.T) {
 	if len(first.CompatibilityInputs) != 3 || first.HealthScope != "standard_substrate_v1" {
 		t.Fatalf("provenance or health scope is incomplete: %#v", first)
 	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.InstanceSource.Commit != first.Instance.Commit || first.InstanceSource.ReceiptSHA256 == "" || strings.Contains(string(encoded), "family/klokast") {
+		t.Fatalf("instance source provenance is incomplete or disclosed its repository name: %#v", first.InstanceSource)
+	}
 	for _, finding := range first.Compatibility.Findings {
 		if finding.Class == "compatibility_only" && finding.Authority == "" {
 			t.Fatalf("compatibility-only finding has no authority: %#v", finding)
@@ -126,7 +133,39 @@ controllers:
 		InstancePath: instance, CompatibilityDeployment: deployment,
 		CompatibilityRegistry: registry, CompatibilityControllerHA: controller,
 		ObservationPath: writeObservation(t, directory),
+		InstanceSourceReceipt: writeSourceReceipt(t, directory, instance),
 	}
+}
+
+func writeSourceReceipt(t *testing.T, directory, instance string) string {
+	t.Helper()
+	commit := gitOutput(t, instance, "rev-parse", "HEAD")
+	repository := "family/klokast"
+	repositoryDigest := sha256.Sum256([]byte(repository))
+	value := map[string]any{
+		"schema_version": 1,
+		"kind": "klokast.instance-source.v1",
+		"repository": repository,
+		"repository_sha256": fmt.Sprintf("%x", repositoryDigest[:]),
+		"repository_id": 123456,
+		"remote_ref": "refs/heads/main",
+		"commit": commit,
+		"fetched_at": time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+		"deploy_key_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGH123456",
+		"anonymous_readable": false,
+		"authenticated_readable": true,
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(canonical)
+	value["receipt_sha256"] = fmt.Sprintf("%x", digest[:])
+	content, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeFile(t, directory, "instance-source.json", string(content)+"\n")
 }
 
 func prepareInstance(t *testing.T) string {
@@ -237,6 +276,16 @@ func runGit(t *testing.T, root string, arguments ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", arguments, err, output)
 	}
+}
+
+func gitOutput(t *testing.T, root string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, arguments...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", arguments, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func hasOperation(artifact Artifact, operation string) bool {
