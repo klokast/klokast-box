@@ -97,7 +97,7 @@ func TestObservedDriftIsRedacted(t *testing.T) {
 
 func TestExtraLegacyResourcesDoNotAffectAuthorityDecision(t *testing.T) {
 	observation := singleBoxObservation()
-	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "k001-ops-airunner", Online: true, Tags: []string{"tag:airunner"}})
+	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "k001-airunner", Online: true, Tags: []string{"tag:airunner"}})
 	sortObservation(&observation)
 	observation.Boxes[0].RunningGuests = append(observation.Boxes[0].RunningGuests, "legacy")
 	observation.Boxes[0].ConfiguredGuests = append(observation.Boxes[0].ConfiguredGuests, "legacy")
@@ -194,7 +194,11 @@ func singleBoxObservation() Observation {
 
 func twoBoxObservation() Observation {
 	observation := singleBoxObservation()
+	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "k001-airunner", Online: true, Tags: []string{"tag:airunner"}})
 	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "vultr-ops-airunner", Online: true, Tags: []string{"tag:airunner"}})
+	observation.Boxes[0].RunningGuests = append(observation.Boxes[0].RunningGuests, "airunner")
+	observation.Boxes[0].ConfiguredGuests = append(observation.Boxes[0].ConfiguredGuests, "airunner")
+	observation.Boxes[0].AutostartGuests = append(observation.Boxes[0].AutostartGuests, "airunner")
 	for _, role := range []string{"bak", "dmz", "dom0", "iot", "ops", "router"} {
 		tag := "tag:vm"
 		if role == "dom0" { tag = "tag:dom0" }

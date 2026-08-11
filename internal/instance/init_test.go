@@ -103,7 +103,7 @@ func TestInitOmitsOptionalPhysicalLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	deployment := readTestFile(t, filepath.Join(result.InstancePath, "ops/deployment.yml"))
-	if strings.Contains(deployment, "physical_location") || !strings.Contains(deployment, "family:\n    - admin@example.com") {
+	if strings.Contains(deployment, "physical_location") || !strings.Contains(deployment, "- admin@example.com") {
 		t.Fatalf("unexpected optional fields:\n%s", deployment)
 	}
 }
@@ -222,9 +222,10 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 	})
 	t.Run("secret-like-content", func(t *testing.T) {
 		parent := t.TempDir()
-		secret := "ghp_1234567890abcdef"
+		secret := "ghp_1234567890abcdef@example.com"
 		values := validValues()
 		values["tailnet"].(map[string]any)["groups"].(map[string]any)["operators"] = []string{secret}
+		values["tailnet"].(map[string]any)["groups"].(map[string]any)["family"] = []string{secret}
 		_, err := Init(Options{
 			InstancePath: filepath.Join(parent, "instance"),
 			Profile:      ProfileSingleBox,

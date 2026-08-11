@@ -152,7 +152,7 @@ func TestDeploymentContractMatchesTailnetAndRunnerConsumers(t *testing.T) {
 		{"magicdns-suffix", "magicdns_suffix: example.ts.net", "magicdns_suffix: example.com", "schema.invalid"},
 		{"unknown-group", "    family: [admin@example.com, family@example.com]", "    family: [admin@example.com, family@example.com]\n    guests: [guest@example.com]", "schema.invalid"},
 		{"empty-family", "family: [admin@example.com, family@example.com]", "family: []", "schema.invalid"},
-		{"invalid-login", "admin@example.com", "not-a-login", "schema.invalid"},
+		{"invalid-login", "family@example.com", "not-a-login", "schema.invalid"},
 		{"no-operator-family-overlap", "family: [admin@example.com, family@example.com]", "family: [family@example.com]", "tailnet.operator-family"},
 		{"external-fqdn", "hostname: vultr-ops-airunner", "hostname: vultr-ops-airunner.example.com", "schema.invalid"},
 	}
