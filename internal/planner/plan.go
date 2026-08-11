@@ -1,5 +1,5 @@
 // Package planner resolves Contract v1 logical intent and compares the result
-// with the transitional platform-resources registry. It is read-only.
+// with transitional desired-state inputs. It is read-only.
 package planner
 
 import (
@@ -23,8 +23,10 @@ import (
 const maximumRegistryFile = 1024 * 1024
 
 type Options struct {
-	InstancePath          string
-	CompatibilityRegistry string
+	InstancePath               string
+	CompatibilityDeployment    string
+	CompatibilityRegistry      string
+	CompatibilityControllerHA  string
 }
 
 type Result struct {
@@ -64,10 +66,21 @@ type Projection struct {
 	SchemaVersion int          `json:"schema_version"`
 	Engine        Engine       `json:"engine"`
 	InstanceID    string       `json:"instance_id"`
+	Tailnet       Tailnet      `json:"tailnet"`
 	Sites         []Site       `json:"sites"`
 	Boxes         []Box        `json:"boxes"`
 	ControlPlane  ControlPlane `json:"control_plane"`
 	Apps          []App        `json:"apps"`
+}
+
+type Tailnet struct {
+	MagicDNSSuffix string         `json:"magicdns_suffix"`
+	Groups         []TailnetGroup `json:"groups"`
+}
+
+type TailnetGroup struct {
+	Name    string   `json:"name"`
+	Members []string `json:"members"`
 }
 
 type Site struct {
@@ -150,9 +163,15 @@ type ResourceBinding struct {
 }
 
 type Compatibility struct {
-	RegistrySHA256 string         `json:"registry_sha256"`
-	Summary        FindingSummary `json:"summary"`
-	Findings       []Finding      `json:"findings"`
+	RegistrySHA256 string               `json:"registry_sha256"`
+	Inputs         []CompatibilityInput `json:"inputs"`
+	Summary        FindingSummary       `json:"summary"`
+	Findings       []Finding            `json:"findings"`
+}
+
+type CompatibilityInput struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
 }
 
 type FindingSummary struct {
@@ -164,10 +183,11 @@ type FindingSummary struct {
 }
 
 type Finding struct {
-	Path    string `json:"path"`
-	Class   string `json:"class"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Path      string `json:"path"`
+	Class     string `json:"class"`
+	Code      string `json:"code"`
+	Authority string `json:"authority,omitempty"`
+	Message   string `json:"message"`
 }
 
 type manifest struct {
@@ -203,6 +223,27 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 		result.Diagnostics = diagnostics
 		return result, nil
 	}
+	var legacyDeployment, legacyController compatibilityDocument
+	if options.CompatibilityDeployment != "" {
+		legacyDeployment, diagnostics, err = loadCompatibilityDocument(options.CompatibilityDeployment, "compatibility-deployment")
+		if err != nil {
+			return Result{}, err
+		}
+		if len(diagnostics) != 0 {
+			result.Diagnostics = diagnostics
+			return result, nil
+		}
+	}
+	if options.CompatibilityControllerHA != "" {
+		legacyController, diagnostics, err = loadCompatibilityDocument(options.CompatibilityControllerHA, "compatibility-controller-ha")
+		if err != nil {
+			return Result{}, err
+		}
+		if len(diagnostics) != 0 {
+			result.Diagnostics = diagnostics
+			return result, nil
+		}
+	}
 
 	projection := Resolve(snapshot)
 	projectionHash, err := ProjectionHash(projection)
@@ -214,6 +255,17 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 		return Result{}, fmt.Errorf("load embedded application manifests: %w", err)
 	}
 	compatibility := compare(snapshot, projection, legacy, manifests)
+	compatibility.Inputs = []CompatibilityInput{{Name: "legacy_platform_resources", SHA256: legacy.digest}}
+	if options.CompatibilityDeployment != "" {
+		mergeCompatibility(&compatibility, compareDeployment(projection, legacyDeployment))
+		compatibility.Inputs = append(compatibility.Inputs, CompatibilityInput{Name: "legacy_deployment", SHA256: legacyDeployment.digest})
+	}
+	if options.CompatibilityControllerHA != "" {
+		mergeCompatibility(&compatibility, compareControllerHA(projection, legacyController))
+		compatibility.Inputs = append(compatibility.Inputs, CompatibilityInput{Name: "legacy_controller_ha", SHA256: legacyController.digest})
+	}
+	sort.Slice(compatibility.Inputs, func(i, j int) bool { return compatibility.Inputs[i].Name < compatibility.Inputs[j].Name })
+	sortCompatibility(&compatibility)
 
 	second, secondReport, err := contract.Load(options.InstancePath, engine)
 	if err != nil {
@@ -228,6 +280,24 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 	}
 	if len(secondDiagnostics) != 0 || secondLegacy.digest != legacy.digest {
 		return Result{}, fmt.Errorf("compatibility registry changed during planning")
+	}
+	if options.CompatibilityDeployment != "" {
+		secondDeployment, secondDiagnostics, loadErr := loadCompatibilityDocument(options.CompatibilityDeployment, "compatibility-deployment")
+		if loadErr != nil {
+			return Result{}, loadErr
+		}
+		if len(secondDiagnostics) != 0 || secondDeployment.digest != legacyDeployment.digest {
+			return Result{}, fmt.Errorf("compatibility deployment changed during planning")
+		}
+	}
+	if options.CompatibilityControllerHA != "" {
+		secondController, secondDiagnostics, loadErr := loadCompatibilityDocument(options.CompatibilityControllerHA, "compatibility-controller-ha")
+		if loadErr != nil {
+			return Result{}, loadErr
+		}
+		if len(secondDiagnostics) != 0 || secondController.digest != legacyController.digest {
+			return Result{}, fmt.Errorf("compatibility controller HA input changed during planning")
+		}
 	}
 	repository, err := inspectRepository(snapshot.Root)
 	if err != nil {
@@ -257,12 +327,19 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			Commit:     snapshot.Lock.Engine.Commit,
 		},
 		InstanceID: snapshot.Deployment.Instance.Name,
+		Tailnet: Tailnet{
+			MagicDNSSuffix: snapshot.Deployment.Tailnet.MagicDNSSuffix,
+			Groups:         []TailnetGroup{},
+		},
 		Sites:      []Site{},
 		Boxes:      []Box{},
 		ControlPlane: ControlPlane{
 			Airunners: []Airunner{},
 		},
 		Apps: []App{},
+	}
+	for _, name := range sortedKeys(snapshot.Deployment.Tailnet.Groups) {
+		result.Tailnet.Groups = append(result.Tailnet.Groups, TailnetGroup{Name: name, Members: sortedCopy(snapshot.Deployment.Tailnet.Groups[name])})
 	}
 	siteIDs := sortedKeys(snapshot.Deployment.Sites)
 	for _, id := range siteIDs {
@@ -355,7 +432,11 @@ func resolvePlacement(value contract.PlacementDocument, boxes map[string]contrac
 func compare(snapshot contract.Snapshot, projection Projection, legacy registry, manifests map[string]manifest) Compatibility {
 	findings := []Finding{}
 	add := func(path, class, code, message string) {
-		findings = append(findings, Finding{Path: path, Class: class, Code: code, Message: message})
+		authority := ""
+		if class == "compatibility_only" {
+			authority = "legacy_platform_resources"
+		}
+		findings = append(findings, Finding{Path: path, Class: class, Code: code, Authority: authority, Message: message})
 	}
 	add("schema_version", "matched", "registry.schema", "the legacy registry uses the supported compatibility schema")
 	for _, field := range sortedKeys(legacy.root) {
@@ -519,30 +600,8 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 		}
 	}
 
-	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].Path != findings[j].Path {
-			return findings[i].Path < findings[j].Path
-		}
-		if findings[i].Class != findings[j].Class {
-			return findings[i].Class < findings[j].Class
-		}
-		return findings[i].Code < findings[j].Code
-	})
 	result := Compatibility{RegistrySHA256: legacy.digest, Findings: findings}
-	for _, finding := range findings {
-		switch finding.Class {
-		case "matched":
-			result.Summary.Matched++
-		case "derived":
-			result.Summary.Derived++
-		case "compatibility_only":
-			result.Summary.CompatibilityOnly++
-		case "conflict":
-			result.Summary.Conflict++
-		case "unsupported":
-			result.Summary.Unsupported++
-		}
-	}
+	sortCompatibility(&result)
 	return result
 }
 

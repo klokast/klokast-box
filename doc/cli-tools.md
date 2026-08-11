@@ -18,14 +18,15 @@ Locus terms:
 ## Klokast Contract CLI
 
 Source: `cmd/klokast/`. A deployable binary must come from the active-controller
-`platform-builder` output. This milestone does not install it on the controller.
+`platform-builder` output. Use it through `platform-plan`; do not install it as
+an ambient controller command.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline single-box Contract v1 repository from a strict JSON values file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Contract v1 repository. |
-| `klokast plan` | trusted local host | Resolves Contract v1 intent and performs an offline, read-only comparison with a transitional platform-resources registry. It does not write a deployable plan or apply changes. |
+| `klokast plan` | trusted local host | Compares Contract v1 with all legacy desired-state inputs. With a fresh Observation v1 input, it emits a hashed, provenance-aware Plan v1 artifact. It does not apply changes. |
 
 ## Platform And Controller Wrappers
 
@@ -50,6 +51,7 @@ Source: `ansible/bin/`.
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
+| `platform-plan` | active controller | Verifies one sealed-builder CLI receipt, creates Plan v1 from controller-private inputs, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |

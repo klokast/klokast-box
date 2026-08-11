@@ -36,9 +36,12 @@ type Result struct {
 	SchemaVersion         int                   `json:"schema_version"`
 	Valid                 bool                  `json:"valid"`
 	Healthy               bool                  `json:"healthy"`
+	HealthScope           string                `json:"health_scope"`
 	Engine                planner.Engine        `json:"engine"`
 	Inputs                []planner.InputDigest `json:"inputs"`
 	ProjectionHash        string                `json:"projection_sha256,omitempty"`
+	ObservationSource     string                `json:"observation_source,omitempty"`
+	ObservedAt            string                `json:"observed_at,omitempty"`
 	ObservationGeneration string               `json:"observation_generation_sha256,omitempty"`
 	Summary               FindingSummary        `json:"summary"`
 	Findings              []Finding             `json:"findings"`
@@ -85,6 +88,7 @@ type ObservedBox struct {
 func Doctor(options Options, engine contract.Engine) (Result, error) {
 	result := Result{
 		SchemaVersion: 1,
+		HealthScope:   "standard_substrate_v1",
 		Engine: planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
 		Inputs: []planner.InputDigest{}, Findings: []Finding{}, Diagnostics: []contract.Diagnostic{},
 	}
@@ -118,6 +122,8 @@ func Doctor(options Options, engine contract.Engine) (Result, error) {
 		return result, nil
 	}
 	result.Valid = true
+	result.ObservationSource = observation.SourceController
+	result.ObservedAt = observation.ObservedAt
 	result.ObservationGeneration = observation.GenerationSHA256
 	checkProjection(&result, projection, observation)
 	sort.Slice(result.Findings, func(i, j int) bool {

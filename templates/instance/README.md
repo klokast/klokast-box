@@ -39,14 +39,17 @@ klokast check --instance /path/to/klokast-instance
 
 Both commands are offline. `check` is non-mutating.
 
-Before a later migration, compare the instance with a transitional private
-platform-resources registry:
+Before a later migration, compare the instance with all transitional
+desired-state inputs:
 
 ```sh
 klokast plan \
   --instance /path/to/klokast-instance \
-  --compatibility-registry /path/to/platform-resources.yml
+  --compatibility-deployment /path/to/deployment.yml \
+  --compatibility-registry /path/to/platform-resources.yml \
+  --compatibility-controller-ha /path/to/controller-ha.yml
 ```
 
-This command is also offline and read-only. It classifies fields that Contract
-v1 cannot yet own. It does not write or apply a deployable plan.
+This form is offline and read-only. It classifies fields that Contract v1
+cannot yet own. Add `--observation /path/to/observation.json` to create a
+provenance-aware Plan v1 artifact. It still does not apply changes.

@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Create and store one read-only Plan v1 artifact on the active controller."""
+
+import argparse
+import getpass
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+BUILD_ROOT = Path("/var/lib/klokast/builds/klokast-cli")
+PLAN_ROOT = Path("/var/lib/klokast/plans")
+ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_RECEIPT_BYTES = 64 * 1024
+MAX_BINARY_BYTES = 64 * 1024 * 1024
+MAX_PLAN_BYTES = 16 * 1024 * 1024
+
+
+class PlanError(Exception):
+    """Expected fail-closed plan error."""
+
+
+def die(message):
+    print(f"platform-plan: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def run(argv, *, capture=False, check=True):
+    completed = subprocess.run(
+        [str(item) for item in argv],
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise PlanError(
+            f"command failed ({completed.returncode}): "
+            + " ".join(str(item) for item in argv)
+            + (f": {detail}" if detail else "")
+        )
+    return completed
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_bounded_regular(path, maximum, label):
+    if path.is_symlink():
+        raise PlanError(f"{label} must not be a symbolic link")
+    try:
+        stat = path.stat()
+    except OSError as error:
+        raise PlanError(f"cannot inspect {label}") from error
+    if not path.is_file() or stat.st_size <= 0 or stat.st_size > maximum:
+        raise PlanError(f"{label} must be a non-empty bounded regular file")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise PlanError(f"cannot read {label}") from error
+
+
+def require_active_controller():
+    if getpass.getuser() != "smith":
+        raise PlanError("run as smith on the active controller")
+    if not CONTROLLER_GUARD.is_file() or not os.access(CONTROLLER_GUARD, os.X_OK):
+        raise PlanError("active-controller guard is missing or not executable")
+    completed = run(
+        [CONTROLLER_GUARD, "--status", "--json", "--require-active"],
+        capture=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise PlanError("controller guard rejected this inactive controller")
+    try:
+        status = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise PlanError("controller guard returned invalid JSON") from error
+    if not status.get("configured") or not status.get("active"):
+        raise PlanError("plan requires an explicitly configured active controller")
+    return status
+
+
+def resolve_build_directory(value):
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise PlanError("--build-dir must be an absolute path")
+    try:
+        build_root = BUILD_ROOT.resolve(strict=True)
+        resolved = supplied.resolve(strict=True)
+        relative = resolved.relative_to(build_root)
+    except (OSError, ValueError) as error:
+        raise PlanError("--build-dir must be under the verified klokast-cli build root") from error
+    if len(relative.parts) != 2:
+        raise PlanError("--build-dir must identify one commit and operation directory")
+    if supplied != resolved:
+        raise PlanError("--build-dir must not contain symbolic links or path aliases")
+    commit, operation = relative.parts
+    if not COMMIT_RE.fullmatch(commit) or not OPERATION_RE.fullmatch(operation):
+        raise PlanError("--build-dir has an invalid commit or operation identity")
+    current = build_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise PlanError("--build-dir must not contain symbolic links")
+    return resolved, commit
+
+
+def verify_build_directory(directory, expected_commit):
+    receipt_path = directory / "receipt.json"
+    binary_path = directory / "klokast"
+    receipt_content = read_bounded_regular(receipt_path, MAX_RECEIPT_BYTES, "builder receipt")
+    read_bounded_regular(binary_path, MAX_BINARY_BYTES, "builder-approved klokast binary")
+    try:
+        receipt = json.loads(receipt_content)
+    except json.JSONDecodeError as error:
+        raise PlanError("builder receipt is not valid JSON") from error
+    required = {
+        "schema_version": 1,
+        "source_repository": ENGINE_REPOSITORY,
+        "source_commit": expected_commit,
+        "test_result": "success",
+        "build_result": "success",
+    }
+    for field, wanted in required.items():
+        if receipt.get(field) != wanted:
+            raise PlanError(f"builder receipt {field} does not match the required value")
+    if not isinstance(receipt.get("source_ref"), str) or not receipt["source_ref"]:
+        raise PlanError("builder receipt source_ref is invalid")
+    binary_digest = receipt.get("binary_sha256")
+    if not isinstance(binary_digest, str) or not DIGEST_RE.fullmatch(binary_digest):
+        raise PlanError("builder receipt binary_sha256 is invalid")
+    if sha256_file(binary_path) != binary_digest:
+        raise PlanError("builder-approved binary hash does not match its receipt")
+    if not os.access(binary_path, os.X_OK):
+        raise PlanError("builder-approved klokast binary is not executable")
+    return receipt, binary_path
+
+
+def verify_binary_version(binary_path, receipt):
+    completed = run([binary_path, "version", "--json"], capture=True)
+    try:
+        version = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise PlanError("builder-approved binary returned invalid version JSON") from error
+    expected = {
+        "engine_repository": receipt["source_repository"],
+        "engine_ref": receipt["source_ref"],
+        "engine_commit": receipt["source_commit"],
+    }
+    for field, wanted in expected.items():
+        if version.get(field) != wanted:
+            raise PlanError(f"binary version {field} does not match the builder receipt")
+
+
+def canonical_plan(plan):
+    return json.dumps(
+        plan,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def verify_plan(content):
+    if len(content) <= 0 or len(content) > MAX_PLAN_BYTES:
+        raise PlanError("Plan v1 output is empty or exceeds its size limit")
+    try:
+        plan = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise PlanError("klokast returned invalid Plan v1 JSON") from error
+    if plan.get("schema_version") != 1 or plan.get("kind") != "klokast.plan.v1":
+        raise PlanError("klokast returned an unsupported plan artifact")
+    if not plan.get("valid"):
+        raise PlanError("klokast did not produce a valid plan artifact")
+    supplied_hash = plan.pop("plan_sha256", None)
+    if not isinstance(supplied_hash, str) or not DIGEST_RE.fullmatch(supplied_hash):
+        raise PlanError("Plan v1 plan_sha256 is invalid")
+    actual_hash = hashlib.sha256(canonical_plan(plan)).hexdigest()
+    if actual_hash != supplied_hash:
+        raise PlanError("Plan v1 hash does not match its canonical content")
+    plan["plan_sha256"] = supplied_hash
+    return plan, canonical_plan(plan) + b"\n"
+
+
+def create_plan(binary_path, arguments):
+    completed = run([binary_path, "plan", *arguments, "--json"], capture=True, check=False)
+    if completed.returncode not in (0, 2):
+        raise PlanError("klokast plan failed operationally")
+    return verify_plan(completed.stdout)
+
+
+def install_plan(plan, content):
+    commit = plan.get("instance", {}).get("commit")
+    digest = plan.get("plan_sha256")
+    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        raise PlanError("Plan v1 does not contain an exact instance commit")
+    destination_directory = PLAN_ROOT / commit
+    destination = destination_directory / f"{digest}.json"
+    if destination.exists():
+        if read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v1") != content:
+            raise PlanError("the immutable plan path already contains different content")
+        return destination
+    with tempfile.NamedTemporaryFile(prefix="klokast-plan-", delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(content)
+    temporary.chmod(0o600)
+    target_temporary = destination_directory / f".{digest}.{os.getpid()}.tmp"
+    try:
+        run(["doas", "install", "-d", "-o", "root", "-g", "smith", "-m", "0750", destination_directory])
+        run(["doas", "install", "-o", "root", "-g", "smith", "-m", "0440", temporary, target_temporary])
+        linked = run(["doas", "ln", target_temporary, destination], check=False)
+        if linked.returncode != 0:
+            if not destination.exists() or read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v1") != content:
+                raise PlanError("cannot create the immutable Plan v1 path")
+        return destination
+    finally:
+        run(["doas", "rm", "-f", target_temporary], check=False)
+        temporary.unlink(missing_ok=True)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-dir", required=True)
+    parser.add_argument("--instance", required=True)
+    parser.add_argument("--compatibility-deployment", required=True)
+    parser.add_argument("--compatibility-registry", required=True)
+    parser.add_argument("--compatibility-controller-ha", required=True)
+    parser.add_argument("--observation", required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        status = require_active_controller()
+        directory, commit = resolve_build_directory(args.build_dir)
+        receipt, binary = verify_build_directory(directory, commit)
+        verify_binary_version(binary, receipt)
+        plan_arguments = [
+            "--instance", args.instance,
+            "--compatibility-deployment", args.compatibility_deployment,
+            "--compatibility-registry", args.compatibility_registry,
+            "--compatibility-controller-ha", args.compatibility_controller_ha,
+            "--observation", args.observation,
+        ]
+        plan, content = create_plan(binary, plan_arguments)
+        if plan.get("observation", {}).get("source_controller") != status.get("hostname"):
+            raise PlanError("Plan v1 observation did not come from this active controller")
+        destination = install_plan(plan, content)
+    except PlanError as error:
+        die(str(error))
+    print(json.dumps({
+        "schema_version": 1,
+        "valid": True,
+        "deployable": bool(plan.get("deployable")),
+        "plan_sha256": plan["plan_sha256"],
+        "path": str(destination),
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

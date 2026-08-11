@@ -5,8 +5,8 @@
 Klokast separates public implementation, private desired state, secrets,
 generated controller state, and application data. Contract v1 establishes the
 smallest useful desired-state interface, an offline generator and validator,
-and a deterministic read-only compatibility plan. It does not yet establish a
-deployment or migration workflow.
+and a deterministic read-only Plan v1 artifact. It does not yet establish an
+authorized apply or migration workflow.
 
 ```text
 effective desired state
@@ -222,11 +222,23 @@ The full declared capability set stays in the projection and provenance. The
 adapter does not discard capabilities that are physically possible but
 prohibited.
 
-`klokast plan --instance PATH --compatibility-registry FILE [--json]` is an
-offline, read-only parity check. It does not render inventory, write a plan,
-contact a host, or change the compatibility registry. The registry must be one
-regular, bounded, safe YAML document and must not contain an obvious raw
-secret. The report gives each transitional field one of these classes:
+The expanded command is:
+
+```text
+klokast plan \
+  --instance PATH \
+  --compatibility-deployment FILE \
+  --compatibility-registry FILE \
+  --compatibility-controller-ha FILE \
+  [--observation FILE] [--json]
+```
+
+The command is offline and read-only. It does not render inventory, contact a
+host, or change an input. Each compatibility input must be one regular,
+bounded, safe YAML document and must not contain an obvious raw secret. The
+comparison covers the legacy deployment topology and Tailnet groups, the
+controller set, the platform-resource registry, and engine-owned execution
+inventory. It gives each transitional field one of these classes:
 
 - `matched`: Contract intent equals the legacy value;
 - `derived`: the deterministic adapter supplies the value;
@@ -235,9 +247,9 @@ secret. The report gives each transitional field one of these classes:
 - `conflict`: Contract intent and legacy intent differ;
 - `unsupported`: the adapter cannot safely interpret the field.
 
-The plan is compatible only when it has no conflict or unsupported field. It
-is authority-ready only when it is also deployable and has no
-compatibility-only field. Thus fields such as `dom0_bridge_ports`,
+The result is compatible only when it has no conflict or unsupported field.
+Every compatibility-only field names its continuing legacy authority. Thus
+fields such as `dom0_bridge_ports`,
 `dhcp_reservations`, `shared_guests`, app `runtime_state`, app VM definitions,
 device bindings, ingress mode, and ephemeral approvals cannot disappear during
 migration. They remain compatibility-only until a later schema or an explicit
@@ -248,23 +260,63 @@ supports. A disabled Contract app keeps its preselection in the projection;
 the compatibility adapter does not turn that preselection into a legacy
 cleanup target.
 
-The JSON report has `schema_version: 1`. It records the engine identity, exact
-SHA-256 hashes of the four authoritative input files, the projection hash, the
-compatibility-registry hash, repository state, and redacted findings. It does
-not print suspected secret values.
+Without `--observation`, the command emits the expanded compatibility report.
+With `--observation`, it emits a complete `klokast.plan.v1` artifact. The
+observation must pass the same freshness, source-controller, generation-hash,
+and `standard_substrate_v1` checks as `doctor`. The Plan v1 artifact records:
+
+- the exact clean instance branch and commit;
+- the exact builder-approved engine repository, ref, and commit;
+- SHA-256 hashes of the four Contract inputs and all three compatibility
+  inputs;
+- the full deterministic projection and its hash;
+- the observation source, timestamp, and generation hash;
+- the explicit `standard_substrate_v1` health scope;
+- all compatibility findings and named authority assignments;
+- sorted proposed actions, retained legacy actions, rollback metadata, and
+  refusal conditions;
+- a canonical `plan_sha256` over every other artifact field.
+
+The artifact never contains the local input paths or suspected secret values.
+The supported `controller_container` runner becomes Contract-owned when its
+`<box>-ops-airunner` Tailnet identity is online and has `tag:airunner`. It does
+not retain a separate legacy runner authority.
+
+Plan gates have distinct meanings:
+
+- `compatible`: there is no conflict or unsupported field;
+- `substrate_healthy`: `doctor` reports no drift in
+  `standard_substrate_v1`;
+- `deployable`: the instance is a clean commit, every finding has a proposed
+  action or named continuing authority, and there is no refusal;
+- `authority_ready`: every scope has exactly one proposed or continuing
+  authority;
+- `legacy_removal_ready`: no field still uses a retained legacy authority.
 
 Git state has separate gates:
 
 - `check` accepts dirty tracked content;
-- read-only `plan` accepts a dirty or unborn repository, hashes the exact
-  worktree inputs, and reports `deployable: false`;
-- a future deployable plan will require a clean committed instance;
+- the compatibility report accepts a dirty or unborn repository, hashes the
+  exact worktree inputs, and reports repository deployability separately;
+- Plan v1 records a refusal unless the instance is clean and committed;
 - a future apply will require the exact instance commit, engine commit, plan
   hash, and observed-state generation recorded by its plan.
 
-Exit status is `0` when the inputs are valid and compatible, including a
-read-only non-deployable report. It is `2` for invalid input, a conflict, or an
-unsupported field, and `1` for an operational failure.
+The compatibility report exits `0` when its inputs are valid and compatible.
+Plan v1 exits `0` only when it is deployable. Exit status `2` means invalid
+input or a refusal. Exit status `1` means an operational failure.
+
+On the active controller, `ansible/bin/platform-plan` verifies the selected
+sealed-builder receipt, binary hash, and binary version. It runs Plan v1 as
+`smith`, verifies `plan_sha256`, and stores the canonical artifact without
+replacement at:
+
+```text
+/var/lib/klokast/plans/<instance-commit>/<plan-sha256>.json
+```
+
+This wrapper only creates controller evidence. It does not collect facts or
+change Platform resources. It can store a valid refused plan for audit.
 
 ## Observation v1 and offline doctor
 
@@ -336,7 +388,7 @@ Implemented commands are:
 klokast version --json
 klokast init --instance PATH --profile single-box --values FILE [--json]
 klokast check --instance PATH [--json]
-klokast plan --instance PATH --compatibility-registry FILE [--json]
+klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE] [--json]
 klokast doctor --instance PATH --observation FILE [--json]
 ```
 
@@ -427,20 +479,18 @@ produce deployable binaries locally.
 
 ## Deferred milestones
 
-After the read-only doctor milestone, separate reviewed milestones may
-implement, in this order:
+After Plan v1, separate reviewed milestones may implement, in this order:
 
-1. a provenance-aware, deployable `plan` that records the exact clean instance
-   commit, engine commit, content hashes, and observed-state generation;
-2. private repository creation and remote registration;
-3. a separately authorized `apply` with fencing, revalidation, rollback, and
+1. private repository creation and remote registration after its custody
+   workflow is explicit;
+2. a separately authorized `apply` with fencing, revalidation, rollback, and
    live verification;
-4. private-instance migration while all compatibility-only fields remain under
+3. private-instance migration while all compatibility-only fields remain under
    their current authority;
-5. removal of legacy inventory and registry authority only after parity,
+4. removal of legacy inventory and registry authority only after parity,
    rollback tests, and an explicit observation period succeed;
-6. application-specific configuration schemas;
-7. site executors under a later deployment schema version.
+5. application-specific configuration schemas;
+6. site executors under a later deployment schema version.
 
 The current milestone does not install `klokast` on the controller, create or
 modify a private repository, migrate an instance, alter existing deployment

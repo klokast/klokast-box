@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersionJSON(t *testing.T) {
@@ -167,13 +170,45 @@ apps:
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if got := run([]string{"plan", "--instance", instancePath, "--compatibility-registry", registry, "--json"}, &stdout, &stderr); got != 0 {
-		t.Fatalf("run(plan) = %d, stderr=%q, stdout=%q", got, stderr.String(), stdout.String())
+	deployment := filepath.Join(parent, "deployment.yml")
+	if err := os.WriteFile(deployment, []byte(`---
+schema_version: 1
+tailnet:
+  magicdns_suffix: example.ts.net
+  groups:
+    operators: [admin@example.com]
+    family: [admin@example.com]
+boxes:
+  k001:
+    site: site-001
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller := filepath.Join(parent, "controller-ha.yml")
+	if err := os.WriteFile(controller, []byte(`---
+schema_version: 1
+controllers:
+  - box: k001
+    hostname: k001-ops
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation := writeMainObservation(t, parent)
+	arguments := []string{
+		"plan", "--instance", instancePath,
+		"--compatibility-deployment", deployment,
+		"--compatibility-registry", registry,
+		"--compatibility-controller-ha", controller,
+		"--observation", observation, "--json",
+	}
+	if got := run(arguments, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(plan) = %d, want non-deployable status 2; stderr=%q, stdout=%q", got, stderr.String(), stdout.String())
 	}
 	var result struct {
 		Valid      bool `json:"valid"`
 		Compatible bool `json:"compatible"`
 		Deployable bool `json:"deployable"`
+		PlanSHA256 string `json:"plan_sha256"`
 		Projection struct {
 			ControlPlane struct {
 				Airunners []struct {
@@ -185,7 +220,46 @@ apps:
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Compatible || result.Deployable || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-ops-airunner" {
+	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
+}
+
+func writeMainObservation(t *testing.T, directory string) string {
+	t.Helper()
+	guests := []any{"bak", "dmz", "iot", "ops", "router"}
+	value := map[string]any{
+		"schema_version": 1,
+		"observed_at": time.Now().UTC().Format(time.RFC3339),
+		"source_controller": "k001-ops",
+		"source_map_sha256": strings.Repeat("b", 64),
+		"tailnet_machines": []any{
+			map[string]any{"hostname": "k001-bak", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "k001-dmz", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "k001-dom0", "online": true, "tags": []any{"tag:dom0"}},
+			map[string]any{"hostname": "k001-iot", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "k001-ops", "online": true, "tags": []any{"tag:ops"}},
+			map[string]any{"hostname": "k001-ops-airunner", "online": true, "tags": []any{"tag:airunner"}},
+			map[string]any{"hostname": "k001-router", "online": true, "tags": []any{"tag:vm"}},
+		},
+		"boxes": []any{map[string]any{
+			"hostname_prefix": "k001", "dom0_reachable": true, "xen_available": true,
+			"running_guests": guests, "configured_guests": guests, "autostart_guests": guests,
+		}},
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(canonical)
+	value["generation_sha256"] = fmt.Sprintf("%x", digest[:])
+	content, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "observation.json")
+	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
