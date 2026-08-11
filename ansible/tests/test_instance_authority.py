@@ -205,6 +205,8 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn("  - ksa-instance", variables)
         self.assertIn("- path: /etc/klokast/private-instance", tasks)
         self.assertIn("- path: /var/lib/klokast/instance-sources", tasks)
+        self.assertIn("Cmnd_Alias KLOKAST_INFRA_SECRET_AUTHORITY_WRAPPERS", tasks)
+        self.assertIn("Cmnd_Alias KLOKAST_INFRA_TAILSCALE_WRAPPERS", tasks)
 
     def test_workstation_installer_sends_pem_only_through_standard_input(self):
         source = INSTALLER.read_text(encoding="utf-8")

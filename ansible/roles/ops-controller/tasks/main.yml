@@ -572,8 +572,8 @@
     validate: /usr/sbin/visudo -cf %s
     content: |
       Defaults:{{ ops_infra_user }} !requiretty
-      Cmnd_Alias KLOKAST_TAILSCALE_WRAPPERS = {{ ops_controller_tailscale_wrappers | map('regex_replace', '^(.*)$', '/usr/local/sbin/\1') | join(', ') }}
-      {{ ops_infra_user }} ALL=(root) NOPASSWD: KLOKAST_TAILSCALE_WRAPPERS
+      Cmnd_Alias KLOKAST_INFRA_TAILSCALE_WRAPPERS = {{ ops_controller_tailscale_wrappers | map('regex_replace', '^(.*)$', '/usr/local/sbin/\1') | join(', ') }}
+      {{ ops_infra_user }} ALL=(root) NOPASSWD: KLOKAST_INFRA_TAILSCALE_WRAPPERS
 
 - name: Permit the infra account to call the narrow Secret Authority wrappers through sudo
   ansible.builtin.copy:
@@ -584,8 +584,8 @@
     validate: /usr/sbin/visudo -cf %s
     content: |
       Defaults:{{ ops_infra_user }} !requiretty
-      Cmnd_Alias KLOKAST_SECRET_AUTHORITY_WRAPPERS = {{ ops_controller_secret_authority_wrappers | map('regex_replace', '^(.*)$', '/usr/local/sbin/\1 *') | join(', ') }}
-      {{ ops_infra_user }} ALL=(root) NOPASSWD: KLOKAST_SECRET_AUTHORITY_WRAPPERS
+      Cmnd_Alias KLOKAST_INFRA_SECRET_AUTHORITY_WRAPPERS = {{ ops_controller_secret_authority_wrappers | map('regex_replace', '^(.*)$', '/usr/local/sbin/\1 *') | join(', ') }}
+      {{ ops_infra_user }} ALL=(root) NOPASSWD: KLOKAST_INFRA_SECRET_AUTHORITY_WRAPPERS
 
 - name: Permit the app account to mint only the Immich private ingress key
   ansible.builtin.copy:
