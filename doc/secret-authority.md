@@ -41,7 +41,8 @@ push.
 Approval signers use OpenSSH allowed-signers format:
 
 ```text
-human sk-ssh-ed25519@openssh.com AAAA...
+human namespaces="klokast-secret-authority" ecdsa-sha2-nistp256 AAAA...
+human-fido namespaces="klokast-secret-authority" sk-ssh-ed25519@openssh.com AAAA...
 ```
 
 Install the file as:
@@ -150,7 +151,8 @@ ansible/bin/secret-authority intent instance create-repository \
   --repo-name klokast \
   > create-repository.intent.json
 
-ssh-keygen -Y sign -f ~/.ssh/klokast-approval-sk \
+SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh" \
+  ssh-keygen -Y sign -U -f /path/from/Secretive/public-key.pub \
   -n klokast-secret-authority create-repository.intent.json
 
 ansible/bin/secret-authority instance create-repository \
@@ -161,9 +163,12 @@ ansible/bin/secret-authority instance create-repository \
   --signer-id human
 ```
 
-Sign on the trusted workstation. Move the intent and signature through the
-approved controller terminal path. Do not copy a signing private key to the
-controller or an airunner.
+For private-instance actions, use a dedicated Mac Secure Enclave SSH key that
+Secretive exposes through its SSH agent. Configure the key to require Touch ID
+for every use. A passkey cannot sign an OpenSSH intent file. Sign on the
+trusted workstation. Move the intent and signature through the approved
+controller terminal path. Do not copy a signing private key to the controller
+or an airunner.
 
 Use `register-read-key` with the fingerprint returned by `prepare`. The action
 registers a GitHub deploy key only when GitHub confirms `read_only: true`:

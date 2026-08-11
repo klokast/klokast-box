@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KSA_TOOL_NAME="prepare-private-instance-bootstrap"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
+DEFAULT_REPO_NAME="klokast"
+DEFAULT_SIGNER_ID="${KLOKAST_INSTANCE_APPROVAL_SIGNER_ID:-xiaoju-og-touchid}"
+DEFAULT_APPROVAL_PUBLIC_KEY="${KLOKAST_APPROVAL_PUBLIC_KEY:-}"
+DEFAULT_AGENT_SOCKET="${KLOKAST_SECRETIVE_AGENT_SOCKET:-$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh}"
+DEFAULT_WORK_DIR="$HOME/.local/share/klokast/private-instance-bootstrap"
+ENGINE_COMMIT="95194542acc4720698189859a024c8d1a9ab6eb9"
+BUILD_OPERATION="4ee7539ded88"
+
+show_prerequisites() {
+  cat <<'EOF'
+Private instance bootstrap prerequisites
+
+Prepare these items before you continue:
+
+1. A trusted MacBook with this klokast-box checkout.
+2. The name of a GitHub organization that you control.
+3. GitHub organization-owner access. A later step creates a temporary
+   GitHub App and a private repository.
+4. The active controller name. The current default is k002-ops.
+5. Touch ID configured on this MacBook.
+6. Secretive installed from https://github.com/maxgoedjen/secretive. In
+   Secretive, create one dedicated P-256 Secure Enclave key named "Klokast
+   Secret Authority approval" and require authentication for every use.
+7. The Public Key Path shown for that key in Secretive. This is a public file.
+8. Secretive agent setup completed from Secretive -> Help -> Setup Secretive.
+9. A working Tailscale connection from this MacBook to the controller.
+
+The Secure Enclave key cannot be backed up or moved to another Mac. If this Mac
+is replaced, create a new key and install its public signer from the new trusted
+Mac before you revoke the old signer.
+
+This helper does not ask for a GitHub App PEM or private deployment values.
+Do not paste those values into this helper or into chat.
+
+Do not create a passkey for this step. A passkey signs in to a compatible app
+or website. This workflow needs a Secure Enclave SSH key to sign an exact
+intent file. Secretive exposes that key to OpenSSH and asks for Touch ID.
+EOF
+}
+
+show_actions() {
+  cat <<'EOF'
+
+What this helper will do
+
+- Ask for the non-secret names and local paths used by the runbook.
+- Require a clean checkout and update it with a fast-forward Git pull.
+- Check the MacBook tools and the active controller connection.
+- Verify the Secure Enclave public key and ask before it installs the public
+  signer on the controller.
+- Save the non-secret settings in an owner-only local session file.
+
+It will not create the private repository, create the GitHub App, or ask for
+private instance values. If you approve signer setup, it sends only the public
+signing key and a test signature to the controller. The private key cannot be
+exported from the Mac Secure Enclave. Touch ID approves the test signature.
+EOF
+}
+
+usage() {
+  cat <<EOF
+
+Usage: $0
+
+Run this helper in an interactive terminal on the trusted MacBook. It prepares
+Step 1 of klokast-dev/runbooks/40-private-instance-bootstrap.md.
+EOF
+}
+
+confirm_no() {
+  local prompt="$1"
+  local answer=""
+
+  printf '%s [y/N] ' "$prompt" >&2
+  IFS= read -r answer || ksa_die "input ended before confirmation"
+  case "$answer" in
+    y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+confirm_yes() {
+  local prompt="$1"
+  local answer=""
+
+  printf '%s [Y/n] ' "$prompt" >&2
+  IFS= read -r answer || ksa_die "input ended before confirmation"
+  case "$answer" in
+    ""|y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prompt_default() {
+  local prompt="$1"
+  local default_value="$2"
+  local answer=""
+
+  printf '%s [%s]: ' "$prompt" "$default_value" >&2
+  IFS= read -r answer || ksa_die "input ended while reading $prompt"
+  if [ -z "$answer" ]; then
+    answer="$default_value"
+  fi
+  printf '%s\n' "$answer"
+}
+
+prompt_required() {
+  local prompt="$1"
+  local answer=""
+
+  while [ -z "$answer" ]; do
+    printf '%s: ' "$prompt" >&2
+    IFS= read -r answer || ksa_die "input ended while reading $prompt"
+    if [ -z "$answer" ]; then
+      printf 'A value is required.\n' >&2
+    fi
+  done
+  printf '%s\n' "$answer"
+}
+
+require_clean_checkout() {
+  local changes=""
+
+  changes="$(git -C "$REPO_ROOT" status --porcelain)"
+  if [ -n "$changes" ]; then
+    printf '%s\n' "$changes" >&2
+    ksa_die "the klokast-box checkout has changes; commit or preserve them before you continue"
+  fi
+}
+
+check_macbook() {
+  ksa_need_command git
+
+  if [ "$(uname -s)" != "Darwin" ]; then
+    ksa_die "run this helper on the trusted MacBook"
+  fi
+
+  printf '\nChecking the klokast-box checkout...\n'
+  require_clean_checkout
+  git -C "$REPO_ROOT" pull --ff-only
+  require_clean_checkout
+  printf 'klokast-box checkout ok\n'
+
+  printf '\nChecking MacBook tools...\n'
+  if ! "$SCRIPT_DIR/kk" doctor; then
+    printf '\nSome required MacBook tools or settings are missing.\n' >&2
+    if ! confirm_no "Run kk doctor --install now?"; then
+      ksa_die "MacBook prerequisites are incomplete; run klokast-dev/bin/kk doctor --install and rerun this helper"
+    fi
+    "$SCRIPT_DIR/kk" doctor --install
+  fi
+  ksa_need_command ssh-add
+
+  if [ ! -d /Applications/Secretive.app ] && \
+      [ ! -d "$HOME/Applications/Secretive.app" ]; then
+    ksa_die "Secretive is not installed; install it with 'brew install secretive', create the dedicated Secure Enclave key, and rerun this helper"
+  fi
+}
+
+check_controller() {
+  local controller="$1"
+  local ssh_target="smith@$controller"
+
+  printf '\nChecking %s through Tailscale...\n' "$controller"
+  tailscale ssh "$ssh_target" sh -s -- "$ENGINE_COMMIT" <<'SH'
+set -eu
+expected_commit=$1
+repo="$HOME/src/klokast/klokast-box"
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
+test -d "$repo/.git"
+test -z "$(git -C "$repo" status --porcelain)"
+actual_commit=$(git -C "$repo" rev-parse HEAD)
+if [ "$actual_commit" != "$expected_commit" ]; then
+  echo "controller engine is $actual_commit; expected $expected_commit" >&2
+  exit 2
+fi
+SH
+  printf 'Active controller and approved engine ok\n'
+}
+
+prepare_signer() {
+  local controller="$1"
+  local signer_id="$2"
+  local approval_public_key="$3"
+  local agent_socket="$4"
+
+  [ -f "$approval_public_key" ] || \
+    ksa_die "Secretive public key not found: $approval_public_key"
+  [ -S "$agent_socket" ] || \
+    ksa_die "Secretive agent socket not found: $agent_socket; open Secretive and run Help -> Setup Secretive"
+
+  printf '\nTouch ID approval signer\n'
+  printf 'Public key: %s\n' "$approval_public_key"
+  printf 'Signer ID:  %s\n' "$signer_id"
+  if ! confirm_yes "Verify this key with Touch ID and install its public signer on the controller now?"; then
+    ksa_die "the approval signer must be ready before the private-instance bootstrap can continue"
+  fi
+
+  "$SCRIPT_DIR/install-secret-authority-approval-signer" \
+    --controller "$controller" \
+    --signer-id "$signer_id" \
+    --agent-key "$approval_public_key" \
+    --agent-socket "$agent_socket"
+}
+
+write_session() {
+  local controller="$1"
+  local owner="$2"
+  local repo="$3"
+  local signer_id="$4"
+  local approval_public_key="$5"
+  local agent_socket="$6"
+  local work_dir="$7"
+  local session_file="$work_dir/session.sh"
+  local session_tmp="$work_dir/.session.sh.$$"
+
+  umask 077
+  install -d -m 0700 "$work_dir"
+  {
+    printf '# Generated by klokast-dev/bin/prepare-private-instance-bootstrap.\n'
+    printf '# This file contains identifiers and local paths, not deployment secrets.\n'
+    printf 'CONTROLLER=%q\n' "$controller"
+    printf 'SSH_TARGET=%q\n' "smith@$controller"
+    printf 'INSTANCE_OWNER=%q\n' "$owner"
+    printf 'INSTANCE_REPO=%q\n' "$repo"
+    printf 'SIGNER_ID=%q\n' "$signer_id"
+    printf 'APPROVAL_PUBLIC_KEY=%q\n' "$approval_public_key"
+    printf 'APPROVAL_AGENT_SOCKET=%q\n' "$agent_socket"
+    printf 'ENGINE_COMMIT=%q\n' "$ENGINE_COMMIT"
+    printf 'BUILD_OPERATION=%q\n' "$BUILD_OPERATION"
+    printf 'BOOTSTRAP_WORK=%q\n' "$work_dir"
+  } > "$session_tmp"
+  chmod 0600 "$session_tmp"
+  mv -f "$session_tmp" "$session_file"
+
+  printf '\nStep 1 is complete.\n'
+  printf 'The owner-only session file is:\n  %s\n' "$session_file"
+  printf '\nLoad it in this terminal before you continue:\n'
+  printf '  source %q\n' "$session_file"
+}
+
+show_prerequisites
+
+case "${1:-}" in
+  -h|--help)
+    [ "$#" -eq 1 ] || ksa_die "--help does not accept other arguments"
+    show_actions
+    usage
+    exit 0
+    ;;
+  "")
+    [ "$#" -eq 0 ] || ksa_die "this helper does not accept arguments"
+    ;;
+  *)
+    usage >&2
+    ksa_die "this helper does not accept arguments"
+    ;;
+esac
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  ksa_die "run this helper in an interactive terminal on the trusted MacBook"
+fi
+
+show_actions
+printf '\n'
+confirm_no "Continue with Step 1?" || {
+  printf 'No changes were made.\n'
+  exit 0
+}
+
+controller=""
+while :; do
+  controller="$(prompt_default "Active controller" "$DEFAULT_CONTROLLER")"
+  if ksa_valid_controller "$controller"; then
+    break
+  fi
+  printf 'Use only letters, digits, dots, and hyphens.\n' >&2
+done
+
+owner=""
+while :; do
+  owner="$(prompt_required "Private GitHub organization")"
+  if ksa_valid_github_owner "$owner" && [ "${#owner}" -le 39 ]; then
+    break
+  fi
+  printf 'Use a GitHub owner name of 1 to 39 letters, digits, or hyphens. It must start with a letter or digit.\n' >&2
+done
+
+repo=""
+while :; do
+  repo="$(prompt_default "Private repository name" "$DEFAULT_REPO_NAME")"
+  if ksa_valid_github_repo "$repo" && [ "${#repo}" -le 100 ]; then
+    break
+  fi
+  printf 'Use 1 to 100 letters, digits, dots, underscores, or hyphens.\n' >&2
+done
+
+signer_id=""
+while :; do
+  signer_id="$(prompt_default "Approval signer ID" "$DEFAULT_SIGNER_ID")"
+  if ksa_valid_signer_id "$signer_id"; then
+    break
+  fi
+  printf 'Use only letters, digits, dots, underscores, at signs, plus signs, or hyphens.\n' >&2
+done
+
+if [ -n "$DEFAULT_APPROVAL_PUBLIC_KEY" ]; then
+  approval_public_key="$(prompt_default "Secretive Public Key Path" "$DEFAULT_APPROVAL_PUBLIC_KEY")"
+else
+  approval_public_key="$(prompt_required "Secretive Public Key Path")"
+fi
+approval_public_key="$(ksa_expand_path "$approval_public_key")"
+case "$approval_public_key" in
+  /*) ;;
+  *) ksa_die "Secretive public-key path must be absolute or start with ~/" ;;
+esac
+
+agent_socket="$(prompt_default "Secretive agent socket" "$DEFAULT_AGENT_SOCKET")"
+agent_socket="$(ksa_expand_path "$agent_socket")"
+case "$agent_socket" in
+  "$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/"*) ;;
+  *) ksa_die "use the Secretive agent socket below the Secretive container Data directory" ;;
+esac
+
+work_dir="$DEFAULT_WORK_DIR"
+
+printf '\nSettings to prepare\n'
+printf 'Controller:       %s\n' "$controller"
+printf 'GitHub target:    %s/%s (private)\n' "$owner" "$repo"
+printf 'Approval signer:  %s\n' "$signer_id"
+printf 'Approval key:     %s (public path)\n' "$approval_public_key"
+printf 'Secretive agent:  %s\n' "$agent_socket"
+printf 'Local work area:  %s\n' "$work_dir"
+printf 'Approved engine:  %s\n' "$ENGINE_COMMIT"
+printf '\nNo PEM or private deployment values are included.\n'
+
+confirm_no "Use these settings?" || {
+  printf 'No changes were made. Run the helper again to enter different settings.\n'
+  exit 0
+}
+
+check_macbook
+check_controller "$controller"
+prepare_signer "$controller" "$signer_id" "$approval_public_key" "$agent_socket"
+write_session "$controller" "$owner" "$repo" "$signer_id" \
+  "$approval_public_key" "$agent_socket" "$work_dir"

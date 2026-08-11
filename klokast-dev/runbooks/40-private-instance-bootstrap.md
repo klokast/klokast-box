@@ -10,9 +10,9 @@ commit: 95194542acc4720698189859a024c8d1a9ab6eb9
 build:  /var/lib/klokast/builds/klokast-cli/95194542acc4720698189859a024c8d1a9ab6eb9/4ee7539ded88
 ```
 
-Do not paste the GitHub App PEM, private deployment values, approval key,
-signed intents, or private repository contents into chat. Do not run this
-procedure from an airunner. Run the human steps from the trusted MacBook.
+Do not paste the GitHub App PEM, private deployment values, signed intents,
+approval signatures, or private repository contents into chat. Do not run
+this procedure from an airunner. Run the human steps from the trusted MacBook.
 
 The temporary GitHub App has no Contents permission. It creates the empty
 repository and registers one read-only deploy key. The human, not the App or
@@ -20,52 +20,39 @@ an airunner, authors and pushes the first private commit.
 
 ## 1. Prepare the MacBook
 
-Use a current checkout of `klokast-box` on the MacBook:
+Use the interactive helper from the `klokast-box` checkout on the MacBook:
 
 ```sh
 cd /path/to/klokast-box
-git pull --ff-only
-git status --short --branch
-klokast-dev/bin/kk doctor --install
+klokast-dev/bin/prepare-private-instance-bootstrap
 ```
 
-The Git status must be clean. Set these values in the same terminal:
+The helper first lists the information, access, and hardware that you must
+prepare. It explains each action before it makes a change. It then:
+
+- collects the non-secret bootstrap settings;
+- checks and updates the public checkout;
+- checks the MacBook tools and active controller;
+- verifies the Secure Enclave approval key and asks before it installs the
+  public signer on the controller;
+- saves an owner-only session file for the remaining steps.
+
+The helper does not ask for a GitHub App PEM or private deployment values.
+
+When it completes, load the settings into the same terminal:
 
 ```sh
-CONTROLLER="k002-ops"
-SSH_TARGET="smith@$CONTROLLER"
-INSTANCE_OWNER="REPLACE_WITH_PRIVATE_GITHUB_ORGANIZATION"
-INSTANCE_REPO="klokast"
-SIGNER_ID="xiaoju-og"
-APPROVAL_KEY="$HOME/.ssh/klokast-approval-sk"
-ENGINE_COMMIT="95194542acc4720698189859a024c8d1a9ab6eb9"
-BUILD_OPERATION="4ee7539ded88"
-BOOTSTRAP_WORK="$HOME/.local/share/klokast/private-instance-bootstrap"
-
-umask 077
-install -d -m 0700 "$BOOTSTRAP_WORK"
+source "$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
 ```
 
-`INSTANCE_OWNER` must be an existing GitHub organization that the human
-controls. Keep the repository name as `klokast`.
+`INSTANCE_OWNER` is an existing GitHub organization that the human controls.
+Keep the repository name as `klokast` unless the architecture changes.
 
-Check that the hardware-backed approval signer exists:
-
-```sh
-test -r "$APPROVAL_KEY" || {
-  echo "missing approval key handle: $APPROVAL_KEY" >&2
-  exit 1
-}
-```
-
-If it is missing, install it before you continue:
-
-```sh
-klokast-dev/bin/install-secret-authority-approval-signer \
-  --controller "$CONTROLLER" \
-  --signer-id "$SIGNER_ID" \
-  --key "$APPROVAL_KEY"
-```
+The approval key is a Secure Enclave SSH key that Secretive exposes through
+its SSH agent. Secretive must require Touch ID for every use of this key. The
+private key is not exportable. An Apple passkey cannot replace it because a
+passkey is bound to a compatible app or website and cannot sign the bootstrap
+intent file.
 
 ## 2. Create the temporary GitHub App
 
@@ -326,13 +313,14 @@ SSH_KEYGEN="$(command -v /opt/homebrew/bin/ssh-keygen 2>/dev/null || \
   command -v /usr/local/bin/ssh-keygen 2>/dev/null || \
   command -v ssh-keygen)"
 
-"$SSH_KEYGEN" -Y sign \
-  -f "$APPROVAL_KEY" \
+SSH_AUTH_SOCK="$APPROVAL_AGENT_SOCKET" "$SSH_KEYGEN" -Y sign -U \
+  -f "$APPROVAL_PUBLIC_KEY" \
   -n klokast-secret-authority \
   "$LOCAL_INTENT"
 ```
 
-Enter the FIDO2 PIN and touch the YubiKey when it asks.
+Use Touch ID when Secretive asks you to approve the signature. Check that the
+Secretive prompt names the dedicated Klokast approval key.
 
 Upload only the intent and signature to the controller:
 
@@ -622,8 +610,9 @@ and registry authority stays active. No apply action is part of this runbook.
 - **The nonce was already used:** generate and sign a new intent.
 - **The intent has another engine commit:** stop. Pulling or changing the
   public controller checkout during bootstrap changes the approval boundary.
-- **The YubiKey is not found:** insert it, check for a FIDO2 PIN prompt, and
-  retry with Homebrew OpenSSH.
+- **Secretive does not ask for Touch ID:** stop. Confirm that Secretive is open,
+  the session uses its agent socket, and the dedicated key requires
+  authentication for every use. Do not continue with an unapproved signature.
 - **The repository already exists:** stop. Do not reuse, import, rename, or
   delete a repository until the agent checks the state.
 - **The staged destination exists:** stop. Do not overwrite it.
@@ -637,6 +626,7 @@ and registry authority stays active. No apply action is part of this runbook.
 
 - [Private-instance Secret Authority](../../doc/secret-authority.md#private-instance-bootstrap)
 - [Upstream/instance target architecture](../../doc/upstream-instance-target-architecture.md)
+- [Secretive: Secure Enclave SSH keys](https://github.com/maxgoedjen/secretive)
 - [GitHub: install your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
 - [GitHub: create an organization repository](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository)
 - [GitHub: review an installed GitHub App](https://docs.github.com/en/apps/using-github-apps/reviewing-and-modifying-installed-github-apps)

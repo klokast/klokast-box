@@ -112,7 +112,8 @@ Source: `klokast-dev/bin/`.
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
-| `install-secret-authority-approval-signer` | laptop | Creates or reuses a YubiKey/FIDO SSH signer and installs its public key as an allowed Secret Authority signer. |
+| `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
+| `install-secret-authority-approval-signer` | laptop | Creates or reuses a FIDO SSH signer, or uses a Secure Enclave key from an SSH agent, and installs its public key as an allowed Secret Authority signer. |
 | `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent, sends the token over stdin to the controller, and verifies redacted status. |
 | `install-cloudflare-authority` | laptop | Installs encrypted Cloudflare guardian material and policy on the guardian dom0; never accepts plaintext tokens. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |
