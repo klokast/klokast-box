@@ -142,6 +142,39 @@ func TestRunnerUnionUnknownFieldsAndYAMLSafety(t *testing.T) {
 	})
 }
 
+func TestDeploymentContractMatchesTailnetAndRunnerConsumers(t *testing.T) {
+	tests := []struct {
+		name string
+		old  string
+		new  string
+		code string
+	}{
+		{"magicdns-suffix", "magicdns_suffix: example.ts.net", "magicdns_suffix: example.com", "schema.invalid"},
+		{"unknown-group", "    family: [admin@example.com, family@example.com]", "    family: [admin@example.com, family@example.com]\n    guests: [guest@example.com]", "schema.invalid"},
+		{"empty-family", "family: [admin@example.com, family@example.com]", "family: []", "schema.invalid"},
+		{"invalid-login", "admin@example.com", "not-a-login", "schema.invalid"},
+		{"no-operator-family-overlap", "family: [admin@example.com, family@example.com]", "family: [family@example.com]", "tailnet.operator-family"},
+		{"external-fqdn", "hostname: vultr-ops-airunner", "hostname: vultr-ops-airunner.example.com", "schema.invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := prepareInstance(t, "two", func(root string) {
+				replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), test.old, test.new)
+			})
+			requireCode(t, root, testCommit, test.code)
+		})
+	}
+
+	t.Run("controller-container-needs-controller-box", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			deployment := filepath.Join(root, "ops/deployment.yml")
+			replaceInFile(t, deployment, "    standby_box: box-002\n", "")
+			replaceInFile(t, deployment, "      kind: box\n      box: box-001", "      kind: controller_container\n      box: box-002")
+		})
+		requireCode(t, root, testCommit, "reference.controller")
+	})
+}
+
 func TestSafePathsAndStandaloneRepository(t *testing.T) {
 	t.Run("traversal", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
@@ -180,6 +213,12 @@ func TestSafePathsAndStandaloneRepository(t *testing.T) {
 }
 
 func TestCapabilityAndPlacementRules(t *testing.T) {
+	t.Run("resource-binding-type", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "cloudflare-tunnel-egress: false", "cloudflare-tunnel-egress: enabled")
+		})
+		requireCode(t, root, testCommit, "schema.invalid")
+	})
 	t.Run("enabled-undeclared", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
 			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "enabled_capabilities:\n        - overlay", "enabled_capabilities:\n        - overlay\n        - local-lan")

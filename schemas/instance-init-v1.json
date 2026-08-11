@@ -6,13 +6,19 @@
       "type": "string",
       "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     },
-    "hostname": {
+    "magicdns_suffix": {
       "type": "string",
-      "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$"
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*\\.)+ts\\.net$"
+    },
+    "login": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "maxLength": 320
     },
     "members": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1, "maxLength": 320},
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/login"},
       "uniqueItems": true
     }
   },
@@ -34,18 +40,13 @@
       "additionalProperties": false,
       "required": ["magicdns_suffix", "groups"],
       "properties": {
-        "magicdns_suffix": {"$ref": "#/$defs/hostname"},
+        "magicdns_suffix": {"$ref": "#/$defs/magicdns_suffix"},
         "groups": {
           "type": "object",
           "additionalProperties": false,
           "required": ["operators", "family"],
           "properties": {
-            "operators": {
-              "allOf": [
-                {"$ref": "#/$defs/members"},
-                {"minItems": 1}
-              ]
-            },
+            "operators": {"$ref": "#/$defs/members"},
             "family": {"$ref": "#/$defs/members"}
           }
         }

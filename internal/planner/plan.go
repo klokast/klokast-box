@@ -296,10 +296,14 @@ func Resolve(snapshot contract.Snapshot) Projection {
 	}
 	for _, runner := range snapshot.Deployment.ControlPlane.Airunners {
 		resolved := Airunner{ID: runner.ID, Kind: runner.Kind}
-		if runner.Kind == "box" {
+		if runner.Kind == "box" || runner.Kind == "controller_container" {
 			prefix := snapshot.Deployment.Boxes[runner.Box].HostnamePrefix
 			resolved.BoxID = runner.Box
-			resolved.RuntimeHostname = prefix + "-airunner"
+			if runner.Kind == "controller_container" {
+				resolved.RuntimeHostname = prefix + "-ops-airunner"
+			} else {
+				resolved.RuntimeHostname = prefix + "-airunner"
+			}
 		} else {
 			resolved.RuntimeHostname = runner.Hostname
 		}

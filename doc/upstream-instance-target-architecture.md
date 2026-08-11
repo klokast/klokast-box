@@ -38,10 +38,9 @@ not fork or shadow `klokast-box`. Contract v1 contains topology, private group
 membership, stable identities, controller/airunner placement, approved access
 capabilities, app placement/resource bindings, and an immutable engine lock.
 
-The existing public `klokast/klokast-instance` repository is transitional. The
-canonical source is `templates/instance/` in `klokast-box`; the separate public
-template repository will eventually be retired. It must not become a second
-synchronized source of truth. This milestone does not modify or delete it.
+`templates/instance/` in `klokast-box` is the only public instance template.
+Each real instance is a separate private repository. No other public template
+repository is part of this architecture.
 
 Deployable Go binaries must be produced by the active controller through
 `platform-builder build-klokast-cli`. The authoritative build runs in a
@@ -130,12 +129,14 @@ boxes:
 ```
 
 This derives `k001-dom0`, `k001-router`, `k001-bak`, `k001-dmz`, `k001-iot`,
-and `k001-ops`. A controller placed on the box uses `k001-ops`. A box-kind
-airunner uses the dedicated `k001-airunner` guest and its own Tailnet identity;
-it does not run in the controller guest. An external airunner keeps its
-declared hostname. Logical IDs, hostname prefixes, airunner IDs, and all
-resolved runtime names must be unique. Prefixes must not collide with reserved
-role suffixes or produce names longer than a DNS label.
+and `k001-ops`. A controller placed on the box uses `k001-ops`. A
+controller-container airunner uses `k001-ops-airunner`. It runs as a root-managed
+Podman container in the controller guest and has its own Tailnet identity. A
+box-kind airunner uses the optional hardened `k001-airunner` Xen guest. An
+external airunner keeps its declared single-label hostname. Logical IDs,
+hostname prefixes, airunner IDs, and all resolved runtime names must be unique.
+Prefixes must not collide with reserved role suffixes or produce names longer
+than a DNS label.
 
 Every standard box implicitly includes the upstream-defined standard substrate;
 Contract v1 has no free-form role list. The control plane declares exactly one
@@ -145,20 +146,28 @@ airunner. Airunners have stable IDs and a closed variant:
 ```yaml
 airunners:
   - id: airunner-001
-    kind: box
+    kind: controller_container
     box: box-001
+
+  - id: airunner-hardened-001
+    kind: box
+    box: box-002
 
   - id: airunner-cloud-001
     kind: external
     hostname: vultr-ops-airunner
 ```
 
-A runner must satisfy exactly one variant. Box references and external runtime
+A runner must satisfy exactly one variant. A `controller_container` runner must
+use the active or standby controller box. Box references and external runtime
 identities must resolve without duplication or collision.
 
-The target box runner identity is always `<box>-airunner`. Transitional
-`<box>-ops-airunner` and `<box>-ops-airunner-candidate` identities are legacy
-resources. They are not equivalent to the target identity.
+`<box>-ops-airunner` is a supported steady-state placement. It shares the
+controller kernel and compromise domain, but it does not receive controller
+private state, controller credentials, or the Podman control socket. A
+`<box>-airunner` Xen VM is an optional stronger isolation boundary. It is not a
+required migration target. `<box>-ops-airunner-candidate` is only an ephemeral
+blue-green replacement identity. It is never declared as desired state.
 
 ## Canonical starter
 
@@ -167,7 +176,7 @@ The canonical template is a coherent single-box instance:
 - stable box ID `box-001` with `hostname_prefix: k001`;
 - one site;
 - `box-001` as the explicit active controller;
-- one box-kind airunner with stable ID `airunner-001`;
+- one controller-container airunner with stable ID `airunner-001`;
 - Nextcloud disabled but preselected on `box-001` in `single_box` placement;
 - no empty passive placement.
 
@@ -189,7 +198,9 @@ Contract v1 uses `declared_capabilities`, never `available_capabilities`:
 Applications must exist in the public manifests embedded in `klokast`. Their
 placement must use a closed `single_box`, `active_passive`, or `multi_box`
 variant and reference declared boxes. App resource bindings must name public
-manifest resource IDs. Contract v1 contains no private app configuration.
+manifest resource IDs. Each Contract v1 resource binding is Boolean. A later
+contract version must define a resource-specific schema before it accepts a
+different value type. Contract v1 contains no private app configuration.
 
 ## Deterministic projection and compatibility planning
 
@@ -205,7 +216,7 @@ resource bindings. For the transitional compiler, it derives:
 - legacy box keys and placement targets from `hostname_prefix`;
 - `available_capabilities` as `declared_capabilities` minus
   `prohibited_capabilities`;
-- controller and box-kind airunner hostnames from the runtime rules above.
+- controller and airunner hostnames from the runtime rules above.
 
 The full declared capability set stays in the projection and provenance. The
 adapter does not discard capabilities that are physically possible but
@@ -290,9 +301,10 @@ controller. For each Contract box, it checks the dom0, router, bak, dmz, and
 iot Tailnet identities and their role tags. It also checks dom0 reachability,
 Xen availability, and the running, configured, and autostart state of each
 standard guest. It applies the same checks to active and standby controller
-guests and to declared box-kind airunners. It checks external airunners only
-as Tailnet identities. The expected box-kind guest and Tailnet identity are
-`<box>-airunner`.
+guests and to declared box-kind airunners. It checks controller-container and
+external airunners only as Tailnet identities. The controller guest checks
+already prove the host substrate for its airunner container. A
+controller-container runner does not add an `airunner` Xen guest check.
 
 The standard box checks also prove the shared-zone substrate for enabled app
 placement boxes. `doctor` does not claim app-container, managed-device, or
@@ -329,8 +341,10 @@ klokast doctor --instance PATH --observation FILE [--json]
 ```
 
 `init` accepts one strict JSON values document. The input contains an instance
-name, Tailnet suffix and groups, a two-letter country, an optional physical
-location, and one hostname prefix. The input has no timezone field. Platform
+name, a `*.ts.net` MagicDNS suffix, the exact `operators` and `family` groups, a
+two-letter country, an optional physical location, and one hostname prefix.
+Both groups are non-empty, all members are valid logins, and at least one
+operator is also a family member. The input has no timezone field. Platform
 time is always `Etc/UTC` (GMT), and the generator writes that value to the
 deployment document.
 
@@ -342,7 +356,7 @@ deployment document.
     "magicdns_suffix": "example.ts.net",
     "groups": {
       "operators": ["admin@example.com"],
-      "family": ["family@example.com"]
+      "family": ["admin@example.com", "family@example.com"]
     }
   },
   "site": {"country": "FR", "physical_location": "Example home"},
@@ -402,9 +416,14 @@ application storage
 ```
 
 The active controller is the credential custodian and only mutation authority.
-Standby controllers do not automatically receive active secrets. Airunners may
-author reviewed Git changes but do not hold Platform private state or produce
-deployable binaries locally.
+Standby controllers do not automatically receive active secrets. The human
+authors private instance changes from a trusted workstation. The active
+controller has a clean deployment checkout with a read-only remote. Airunners
+can author reviewed public implementation changes, but they do not clone the
+private instance repository, hold private registries or controller credentials,
+or receive the controller Podman socket. A future automated instance edit must
+be a narrow, validated proposal action on the controller. Airunners do not
+produce deployable binaries locally.
 
 ## Deferred milestones
 
@@ -421,10 +440,8 @@ implement, in this order:
 5. removal of legacy inventory and registry authority only after parity,
    rollback tests, and an explicit observation period succeed;
 6. application-specific configuration schemas;
-7. site executors under a later deployment schema version;
-8. retirement of the separate public template repository.
+7. site executors under a later deployment schema version.
 
 The current milestone does not install `klokast` on the controller, create or
 modify a private repository, migrate an instance, alter existing deployment
-inventory or platform-resource inputs, apply a plan, or modify an external
-repository.
+inventory or platform-resource inputs, or apply a plan.

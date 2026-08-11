@@ -36,7 +36,7 @@ func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
 		t.Fatalf("unexpected controller projection: %#v", result.Projection.ControlPlane)
 	}
 	runner := result.Projection.ControlPlane.Airunners[0]
-	if runner.RuntimeHostname != "k001-airunner" || runner.BoxID != "box-001" {
+	if runner.Kind != "controller_container" || runner.RuntimeHostname != "k001-ops-airunner" || runner.BoxID != "box-001" {
 		t.Fatalf("unexpected airunner projection: %#v", runner)
 	}
 	box := result.Projection.Boxes[0]

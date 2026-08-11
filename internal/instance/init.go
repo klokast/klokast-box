@@ -482,7 +482,7 @@ func writeGeneratedDocuments(root string, values valuesDocument, engine contract
 		"box-001": {HostnamePrefix: values.Box.HostnamePrefix, Site: "site-001"},
 	}
 	deployment.ControlPlane.Controller.ActiveBox = "box-001"
-	deployment.ControlPlane.Airunners = []airunnerDocument{{ID: "airunner-001", Kind: "box", Box: "box-001"}}
+	deployment.ControlPlane.Airunners = []airunnerDocument{{ID: "airunner-001", Kind: "controller_container", Box: "box-001"}}
 
 	var lock lockDocument
 	lock.SchemaVersion = 1

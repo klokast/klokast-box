@@ -25,11 +25,11 @@ From a Macbook:
 1. install `brew`
 2. `brew install klokast` : this should create and provision the deployment server (using terraform and Ansible). The `kk` package must include Homebrew `openssh`, because Secret Authority approval signing uses OpenSSH FIDO/YubiKey support that may be missing from Apple’s bundled `ssh-keygen`.
 
-Optional cloud-based `airunner`:
-- `klokast-ops/bin/provision-vultr-ops` creates a cloud-based host named `<cloud>-ops` (where `<cloud>` stands for example for `vultr` or `hetzner`) for running Codex CLI as user `agent`.
-- It enrolls with `tag:infra`.
-- It belongs to the TCB.
-- It must not store Platform private state or Tailscale OAuth material.
+Optional cloud bootstrap host or cloud-based `airunner`:
+- `klokast-ops/bin/provision-vultr-ops` creates a cloud-based host named `<cloud>-ops` (where `<cloud>` is, for example, `vultr` or `hetzner`).
+- During initial bootstrap, the host can run both the coding agent and the controller. It then has `tag:ops` and holds controller-private state.
+- After the controller moves to `<box>-ops`, fence its former controller authority. A retained cloud coding runner uses `tag:infra` and must not store Platform private state or Tailscale OAuth material.
+- The cloud host belongs to the TCB while it exists. No `<cloud>-ops` host is running in the current deployment.
 - It does not retain a Go toolchain. Dependency maintenance may use a
   checksum-pinned temporary toolchain that is removed afterward; deployable
   `klokast` binaries come only from the controller-owned Xen builder.
@@ -203,8 +203,8 @@ The resulting VM has two local automation accounts:
 - `minion`: app installation and verification without infrastructure
   credentials.
 
-The current transitional in-Platform runner is an `agent`-owned container on
-`k002-ops`:
+The current in-Platform runner is an `agent`-owned container on `k002-ops`.
+This controller-container placement is a supported steady state:
 
 ```sh
 ansible/bin/converge-ops-airunner --box k002 --instance candidate
@@ -215,14 +215,14 @@ ansible/bin/converge-ops-airunner \
 ansible/bin/retire-ops-airunner-candidate --box k002
 ```
 
-Keep `vultr-ops` available until Codex auth, GitHub access,
-`smith@k002-ops` remote-terminal access, session archiving, and negative
-secret-read checks pass from `k002-ops-airunner`. Multiple runners may be
-approved at once, but keep the set small because each runner is a persistent
-Control TCB authority. The target architecture replaces this same-kernel
-container with a dedicated `<box>-airunner` VM. During blue-green replacement,
-the candidate is `<box>-ops-airunner-candidate`; both containers temporarily
-share `/home/agent`, so do not mutate Git or Codex state from both at once.
+Codex auth, GitHub access, `smith@k002-ops` remote-terminal access, session
+archiving, and negative secret-read checks must pass from
+`k002-ops-airunner`. Multiple runners can be approved at once, but keep the set
+small because each runner is a persistent Control TCB authority. A dedicated
+`<box>-airunner` Xen VM is optional hardening. It is not a required migration
+target. During blue-green container replacement, the candidate is
+`<box>-ops-airunner-candidate`; both containers temporarily share `/home/agent`,
+so do not mutate Git or Codex state from both at once.
 The shared home persists the managed Git checkout, runner-owned GitHub key,
 Codex state, and tmux configuration across container replacement; these files
 are not baked into the image. Existing checkouts are validated but never

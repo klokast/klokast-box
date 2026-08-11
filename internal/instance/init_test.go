@@ -49,7 +49,7 @@ func TestInitCreatesCheckedStandaloneSingleBoxInstance(t *testing.T) {
 	for _, expected := range []string{
 		"name: family-klokast", "magicdns_suffix: example.ts.net", "timezone: Etc/UTC",
 		"physical_location: Example home", "hostname_prefix: k001", "active_box: box-001",
-		"id: airunner-001", "kind: box",
+		"id: airunner-001", "kind: controller_container",
 	} {
 		if !strings.Contains(deployment, expected) {
 			t.Fatalf("deployment omits %q:\n%s", expected, deployment)
@@ -103,7 +103,7 @@ func TestInitOmitsOptionalPhysicalLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	deployment := readTestFile(t, filepath.Join(result.InstancePath, "ops/deployment.yml"))
-	if strings.Contains(deployment, "physical_location") || !strings.Contains(deployment, "family: []") {
+	if strings.Contains(deployment, "physical_location") || !strings.Contains(deployment, "family:\n    - admin@example.com") {
 		t.Fatalf("unexpected optional fields:\n%s", deployment)
 	}
 }
@@ -306,7 +306,7 @@ func validValues() map[string]any {
 			"magicdns_suffix": "example.ts.net",
 			"groups": map[string]any{
 				"operators": []string{"admin@example.com"},
-				"family":    []string{},
+				"family":    []string{"admin@example.com"},
 			},
 		},
 		"site": map[string]any{

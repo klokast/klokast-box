@@ -174,7 +174,7 @@ func TestObservationHashUnknownFieldsSymlinkAndSize(t *testing.T) {
 
 func singleBoxObservation() Observation {
 	machines := []TailnetMachine{
-		{Hostname: "k001-airunner", Online: true, Tags: []string{"tag:airunner"}},
+		{Hostname: "k001-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
 		{Hostname: "k001-bak", Online: true, Tags: []string{"tag:vm"}},
 		{Hostname: "k001-dmz", Online: true, Tags: []string{"tag:vm"}},
 		{Hostname: "k001-dom0", Online: true, Tags: []string{"tag:dom0"}},
@@ -182,7 +182,7 @@ func singleBoxObservation() Observation {
 		{Hostname: "k001-ops", Online: true, Tags: []string{"tag:ops"}},
 		{Hostname: "k001-router", Online: true, Tags: []string{"tag:vm"}},
 	}
-	guests := []string{"airunner", "bak", "dmz", "iot", "ops", "router"}
+	guests := []string{"bak", "dmz", "iot", "ops", "router"}
 	observation := Observation{
 		SchemaVersion: 1, ObservedAt: "2026-08-10T12:00:00Z", SourceController: "k001-ops",
 		SourceMapSHA256: strings.Repeat("b", 64), TailnetMachines: machines,

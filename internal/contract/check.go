@@ -344,7 +344,7 @@ func (c *checker) validateDeployment(path string, deployment deploymentDocument)
 				break
 			}
 		}
-		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "airunner"} {
+		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "airunner", "ops-airunner"} {
 			name := value.HostnamePrefix + "-" + suffix
 			if len(name) > 63 || !identifierPattern.MatchString(name) {
 				c.add(path+"$.boxes."+box+".hostname_prefix", "identity.runtime", "hostname prefix cannot produce safe runtime names")
@@ -367,6 +367,17 @@ func (c *checker) validateDeployment(path string, deployment deploymentDocument)
 			c.add(path+"$.control_plane.controller.standby_box", "cardinality.controller", "active and standby controllers must use different boxes")
 		}
 	}
+	operators := stringSet(deployment.Tailnet.Groups["operators"])
+	hasFamilyOperator := false
+	for _, login := range deployment.Tailnet.Groups["family"] {
+		if operators[login] {
+			hasFamilyOperator = true
+			break
+		}
+	}
+	if !hasFamilyOperator {
+		c.add(path+"$.tailnet.groups", "tailnet.operator-family", "one operator must also be a family member for combined policy tests")
+	}
 	runnerIDs := map[string]bool{}
 	runnerBoxes := map[string]bool{}
 	externalHosts := map[string]bool{}
@@ -377,9 +388,12 @@ func (c *checker) validateDeployment(path string, deployment deploymentDocument)
 		}
 		runnerIDs[runner.ID] = true
 		switch runner.Kind {
-		case "box":
+		case "box", "controller_container":
 			if _, ok := deployment.Boxes[runner.Box]; !ok {
 				c.add(location+".box", "reference.box", "airunner references an unknown box")
+			}
+			if runner.Kind == "controller_container" && runner.Box != controller.ActiveBox && runner.Box != controller.StandbyBox {
+				c.add(location+".box", "reference.controller", "controller-container airunner must use the active or standby controller box")
 			}
 			if runnerBoxes[runner.Box] {
 				c.add(location+".box", "cardinality.airunner", "a box may host only one declared airunner")

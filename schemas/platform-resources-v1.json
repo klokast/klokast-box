@@ -75,7 +75,7 @@
         "resources": {
           "type": "object",
           "propertyNames": {"$ref": "#/$defs/id"},
-          "additionalProperties": {"type": ["boolean", "integer", "string"]}
+          "additionalProperties": {"type": "boolean"}
         }
       }
     }

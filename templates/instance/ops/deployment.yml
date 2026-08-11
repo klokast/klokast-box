@@ -10,6 +10,7 @@ tailnet:
     operators:
       - admin@example.com
     family:
+      - admin@example.com
       - family@example.com
 
 sites:
@@ -28,5 +29,5 @@ control_plane:
     active_box: box-001
   airunners:
     - id: airunner-001
-      kind: box
+      kind: controller_container
       box: box-001

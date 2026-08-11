@@ -166,7 +166,7 @@ listed explicitly as prohibited capabilities.
 - New rootless containers inherit the VM zone policy from their shared zone VMs.
 - App data, app daemons, and Host-level app services must not run on VMs directly. They must run in containers.
 - The service VMs `bak`, `dmz`, `iot` and `usr` are service substrate, not credential-bearing Control TCB.
-- `<cloud>-ops` and `<box>-ops` are only for infrastructure and control plane roles. App manifests cannot select it for placement of their service workloads.
+- `<cloud>-ops` and `<box>-ops` are only for infrastructure and control plane roles. App manifests cannot select them for placement of their service workloads.
 
 - App manifests select placement for the services, among the support resources:
 
@@ -189,11 +189,11 @@ listed explicitly as prohibited capabilities.
 ### Linux accounts
 
 - `neo`, controlled by the human:
-  - on `<cloud>-ops`, `<box>-airunner`, and `<box>-ops`: privileged (via `doas` or `sudo`) to manage runner and controller account access, and for recovery.
+  - on an active `<cloud>-ops`, `<box>-airunner`, and `<box>-ops`: privileged (via `doas` or `sudo`) to manage runner and controller account access, and for recovery.
   - on dom0 and service VMs: standard administration and recovery account as defined by each machine role.
 
 - `agent`:
-  - on `<cloud>-ops` or `<box>-airunner`: runs the AI coding agent and owns its working repository, runner credentials, sessions, and tools. It is a persistent Control TCB authority because it can modify Platform code and execute it as `smith`. It must not store Platform private state, infrastructure-provider credentials, controller deploy keys, broker secrets, or private registries.
+  - on `<cloud>-ops`, `<box>-airunner`, or the `<box>-ops-airunner` container: runs the AI coding agent and owns its public implementation repository, runner credentials, sessions, and tools. It is a persistent Control TCB authority because it can modify Platform code and use the approved remote-terminal path to `smith`. It must not clone the private instance repository or store Platform private state, infrastructure-provider credentials, controller deploy keys, broker secrets, or private registries.
 
 - `smith`:
   - on `<box>-ops`: privileged via `doas` or `sudo`; this is the main Control TCB Unix account, reached by `agent` through the approved remote-terminal path:
@@ -215,14 +215,18 @@ listed explicitly as prohibited capabilities.
 
 ### Infrastructure Services
 
-Infrastructure services manage the Platform. During bootstrap, controller-side services run on `<cloud>-ops`; their target placement is defined below.
+Infrastructure services manage the Platform. During bootstrap, the controller
+and coding runner can first run on `<cloud>-ops`. After the first box is ready,
+the controller moves to `<box>-ops` and the runner can move to
+`<box>-ops-airunner` or `<box>-airunner`. No `<cloud>-ops` machine is part of the
+current deployment.
 One box only is the "Active Controller".
 
 - `airunner`:
   - AI coding agent remote terminal (CLI interface) to the coding agent (e.g. OpenAI Codex CLI), coding agent api key, archived discussions, wrappers.
   - It is a persistent controller authority, part of the TCB.
   - Users are `neo` and `agent`. Tailnet policy allows approved runner identities to connect to `<box>-ops` as `smith`.
-  - Runs in `<cloud>-ops` or a dedicated `<box>-airunner` VM with its own Tailnet identity, independent patching, and no controller mounts or private state.
+  - Runs in `<box>-ops-airunner`, an optional dedicated `<box>-airunner` VM, or a temporary `<cloud>-ops`. Each placement has its own Tailnet identity and no controller-private mounts or private state. The controller-container placement shares the `<box>-ops` kernel and compromise domain. The dedicated VM is optional hardening, not a required migration target.
   - More than one runner can be active, but the approved set should stay small because each runner can modify the Git repository and control the Platform.
   - Ideally, `airunner` and active `controller` are located on the same box to reduce latency. However, this might not be practical, for example if the active controller is located in a country where the connection to the LLM server is not stable.
   - Required packages: codex, npm, mosh, git
@@ -258,7 +262,7 @@ One box only is the "Active Controller".
   - read-only CLI tooling under the unprivileged `oracle` account in `<box>-ops`.
   - `mapper` (platform mapper, see `ansible/bin/platform-resources`): build inventory of the services, including location (which box or <cloud> machine) with their status: active, passive, installed, etc.
   - `verifier` (platform fact checker): gather health indicators from the platform, such as CPU and RAM usage, and service health.
-  - output: `/home/codex/private/klokast/platform-resources.yml`
+  - output: generated, redacted observation state under `/var/lib/klokast/observations/`; this output is never a private desired-state registry.
 
 - `controller` (Ansible controller): versioned CLI tooling in `<box>-ops`.
 Only the active controller may mutate the Platform. The active controller is the state-changing execution locus: it runs infrastructure playbooks as user `smith` and scoped application workflows as user `minion`. It is also the credential custodian.
@@ -330,9 +334,9 @@ Examples of User Services:
 
 - Here the Tailscale ACL tags in use:
   - `group:operators`: deployment laptop.
-  - `tag:ops`: cloud-based server, especially mandatory during the bootstrap of the Platform.
+  - `tag:ops`: the active and standby controller identities. A cloud bootstrap host has this tag only while it has a controller role.
   - `tag:bootstrap`: the miniPC Linux host during bootstrap phase.
-  - `tag:infra`: the Infrastructure Services.
+  - `tag:infra`: infrastructure services and approved coding runners that do not have controller authority.
   - `tag:dom0`: the Linux Xen dom0 host on each box.
   - `tag:oob`: out of band access.
   - `tag:vm`: the virtual machines.
@@ -350,18 +354,20 @@ Examples of User Services:
 - For low-level guest recovery and installer work, the operator can still reach Xen consoles from `<box>-dom0`.
 
 ## 2. `<cloud>-ops`
-- Cloud-based instance provisioned as per `klokast-ops/`, for example: `vultr-ops`, `hetzner-ops`.
-- The target trusted infrastructure controller is one reproducible `<box>-ops` Alpine VIRT VM on the selected master box, allowing `cloud-ops` to be powered off after successfull migration.
-- Tailscale tag: `tag:ops`
-- When starting the deployment from scrap, `<cloud>-ops` operates following roles:
-    - the server that runs the Ansible playbooks to provision the boxes.
-- As soon as the Platform is up and running, the services fulfilled by `<cloud>-ops` can optionally be migrated to boxes, as per `klokast-box/apps/ops/`. After all services on `<cloud>-ops` have been migrated to boxes, the VPC of `<cloud>-ops` can be destroyed, so as to remove the external dependency that is the cloud provider.
-
-- Services that can run on `<cloud>-ops`:
-    - `runner` (coding agent runner): CLI interface to the coding agent, coding agent api key, archived discussions, wrappers ???,
-    - `controller` (Ansible controller)
-    - `broker` (credentials broker)
-    - `compiler` (resources compiler)
+- This is a temporary cloud-based bootstrap host provisioned by
+  `klokast-ops/`, for example `hetzner-ops` or `vultr-ops`.
+- During initial bootstrap, it can run both the coding agent and the Ansible
+  controller. It then has `tag:ops`, controller credentials, and controller
+  private state because it is the active controller.
+- After the controller moves to `<box>-ops`, fence and remove the old controller
+  authority. If the cloud host stays temporarily as a coding runner, re-enroll
+  it with `tag:infra` and remove all Platform private state, OAuth material,
+  controller credentials, broker state, and compiler authority.
+- The machine tag follows the active role. A cloud host must not keep
+  `tag:ops` after it stops being the controller.
+- After the coding runner also moves to `<box>-ops-airunner` or the optional
+  `<box>-airunner` VM, destroy the cloud host and its VPC.
+- No `<cloud>-ops` machine is running in the current deployment.
 
 ## 3. Out of Band access
 - `oob` is the remote keyboard/video/mouse device used for pre-boot recovery, BIOS changes, and ISO bootstrapping.
@@ -402,7 +408,7 @@ Persistence uses separate assets with separate authority:
 
 - public `klokast-box`: generic implementation, schemas, CLI, public app
   manifests, automation, and the canonical instance template;
-- one private `klokast-instance`: declared deployment desired state and an
+- one private instance repository: declared deployment desired state and an
   immutable engine lock, never a fork of the implementation;
 - `/etc/klokast`: active-controller secrets and credentials outside Git;
 - `/var/lib/klokast`: generated and observed controller state, including
@@ -416,8 +422,11 @@ site-executor interface. Site executors require a later deployment schema
 version. See `doc/upstream-instance-target-architecture.md`.
 
 The active controller is the only Platform mutation locus and secret custodian.
-Airunners may author reviewed upstream or instance Git changes but do not hold
-controller-private state. Deployable `klokast` binaries are built only by the
+The human authors private instance changes from a trusted workstation. The
+controller has a clean deployment checkout with a read-only remote. Airunners
+may author reviewed public implementation changes, but they do not clone the
+private instance repository or hold controller-private state. Deployable
+`klokast` binaries are built only by the
 active controller through the networkless Xen `platform-builder` profile.
 The builder-approved binary can create a staged local Contract v1 repository
 with `klokast init`. It does not create a remote repository, install Platform

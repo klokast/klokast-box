@@ -49,7 +49,7 @@ func TestInitJSONAndExistingDestination(t *testing.T) {
   "instance": {"name": "family-klokast"},
   "tailnet": {
     "magicdns_suffix": "example.ts.net",
-    "groups": {"operators": ["admin@example.com"], "family": []}
+    "groups": {"operators": ["admin@example.com"], "family": ["admin@example.com"]}
   },
   "site": {"country": "FR"},
   "box": {"hostname_prefix": "k001"}
@@ -125,7 +125,7 @@ func TestPlanJSONIsReadOnlyAndReportsUnbornRepository(t *testing.T) {
   "instance": {"name": "family-klokast"},
   "tailnet": {
     "magicdns_suffix": "example.ts.net",
-    "groups": {"operators": ["admin@example.com"], "family": []}
+    "groups": {"operators": ["admin@example.com"], "family": ["admin@example.com"]}
   },
   "site": {"country": "FR"},
   "box": {"hostname_prefix": "k001"}
@@ -185,7 +185,7 @@ apps:
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Compatible || result.Deployable || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-airunner" {
+	if !result.Valid || !result.Compatible || result.Deployable || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
 }

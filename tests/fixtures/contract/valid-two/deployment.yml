@@ -8,7 +8,7 @@ tailnet:
   magicdns_suffix: example.ts.net
   groups:
     operators: [admin@example.com]
-    family: [family@example.com]
+    family: [admin@example.com, family@example.com]
 
 sites:
   site-001:
