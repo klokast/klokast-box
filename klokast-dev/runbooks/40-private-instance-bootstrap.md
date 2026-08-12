@@ -6,8 +6,8 @@ active controller read-only access to it.
 The current active controller is `k002-ops`. The current approved engine is:
 
 ```text
-commit: e2f028f94ea99ab80e47e29553aa83dfdd6ff40a
-build:  /var/lib/klokast/builds/klokast-cli/e2f028f94ea99ab80e47e29553aa83dfdd6ff40a/6e806db4a4fc
+commit: e87c9b0e0641c4318e8e501c37f3a1fa4ab865e6
+build:  /var/lib/klokast/builds/klokast-cli/e87c9b0e0641c4318e8e501c37f3a1fa4ab865e6/2658c86fa5ec
 ```
 
 Do not paste the GitHub App PEM, private deployment values, signed intents,
