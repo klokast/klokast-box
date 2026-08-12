@@ -265,10 +265,6 @@ fi
 
 show_actions
 printf '\n'
-confirm_no "Continue with Step 1?" || {
-  printf 'No changes were made.\n'
-  exit 0
-}
 
 controller=""
 while :; do
