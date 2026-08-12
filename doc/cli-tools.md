@@ -38,7 +38,6 @@ Source: `ansible/bin/`.
 | `bootstrap-dom0` | controller | Runs phased blank-SSD bootstrap from Debian live ISO to verified Alpine dom0. |
 | `bootstrap-live-iso` | controller | Converges the bootstrap ISO builder, builds the generic Debian live ISO, transfers it to NanoKVM, and cleans up. |
 | `bootstrap-live-iso-release` | controller/laptop | Validates and publishes a secret-free bootstrap ISO and Alpine seed bundle as GitHub Release assets. |
-| `converge-cloudflare-guardian` | controller | Installs or refreshes the dom0 Cloudflare guardian for the static-site tunnel authority flow. |
 | `converge-ops-airunner` | controller | Converges the canonical or blue-green candidate AI runner on an existing `<box>-ops`. |
 | `converge-ops-controller` | controller | Reapplies the baseline to an existing `<box>-ops`; unauthorized APK world entries fail closed unless reviewed pruning is explicit. |
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
@@ -92,14 +91,12 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | `ts-devices-list` | root wrapper | Lists Tailnet devices through the scoped devices OAuth client. |
 | `ts-device-delete-stale` | active-controller root wrapper | Deletes one stale offline Tailnet device only after re-fetching and matching id, hostname, tag, and offline status. |
 
-## Secret Authority And Guardian Wrappers
+## Secret Authority Wrappers
 
 | Tool | Source | Locus | What it does |
 | --- | --- | --- | --- |
 | `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles static-site Secret Authority intents and approved actions for GitHub App and Cloudflare token storage. |
-| `ksa-cloudflare` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles Cloudflare Secret Authority intents and approved tunnel authority actions. |
 | `ksa-instance` | `klokast-ops/secret-authority/bin/` | root wrapper | Creates the private repository, registers its read-only deploy key, retires the temporary GitHub App, and synchronizes root-custodied instance source evidence. |
-| `cloudflare-guardian` | `klokast-ops/cloudflare-guardian/bin/` | guardian target | Uses sealed authority and human approval to create or inspect the static-site Cloudflare tunnel. |
 | `klokast-controller-guard` | `ansible/roles/ops-controller/files/` | controller target | Checks the controller HA marker and exits nonzero unless the local controller is active. |
 
 ## Laptop And Developer Convenience Tools
@@ -113,9 +110,8 @@ Source: `klokast-dev/bin/`.
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
-| `install-secret-authority-approval-signer` | laptop | Creates or reuses a FIDO SSH signer, or uses a Secure Enclave key from an SSH agent, and installs its public key as an allowed Secret Authority signer. |
-| `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent, sends the token over stdin to the controller, and verifies redacted status. |
-| `install-cloudflare-authority` | laptop | Installs encrypted Cloudflare guardian material and policy on the guardian dom0; never accepts plaintext tokens. |
+| `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
+| `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent with the static-site Touch ID identity, sends the token over stdin, and verifies redacted status. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |
 
 ## Cloud Infra-Agent Provisioning

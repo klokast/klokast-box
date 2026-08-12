@@ -163,6 +163,8 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("Assert standby controller has no root-only provider credentials", OPS_CONTROLLER_VERIFY)
         self.assertIn("ops_controller_check_ha.active", OPS_CONTROLLER_VERIFY)
         self.assertIn("/etc/klokast/secret-authority/instance-bootstrap/github-app.pem", HA_SOURCE)
+        self.assertIn("/etc/klokast/secret-authority/allowed-signers-private-instance", HA_SOURCE)
+        self.assertIn("/etc/klokast/secret-authority/allowed-signers-static-site", HA_SOURCE)
         self.assertIn("/etc/klokast/private-instance/github-readonly", HA_SOURCE)
 
 

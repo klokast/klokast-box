@@ -2,6 +2,22 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-12 - validate native Touch ID signing on the MacBook
+
+The infra-agent host is Linux. It cannot execute Apple's `sc_auth`, access the
+Mac Secure Enclave, or load `/usr/lib/ssh-keychain.dylib`. Deterministic tests
+cover identity selection, profile custody, provider filtering, and OpenSSH
+command construction, but they cannot prove the real biometric prompt or the
+resident-key handle format of the current Mac.
+
+The infra-agent also has no Go toolchain. Run Go tests and the exact build in
+the networkless controller-managed sealed builder after the commit is pushed.
+
+Before the old approval signer is retired, run both purpose-specific signer
+setups and their controller verification round trips from `og`. Do not weaken
+the native capability checks or adopt an identity that has no matching Klokast
+profile metadata as a workaround.
+
 # 2026-08-09 - NanoKVM Tailscale Serve is runbook-managed
 
 The NanoKVM HTTPS listener presents a self-signed certificate with

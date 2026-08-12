@@ -8,9 +8,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
 DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
 DEFAULT_REPO_NAME="klokast"
-DEFAULT_SIGNER_ID="${KLOKAST_INSTANCE_APPROVAL_SIGNER_ID:-xiaoju-og-touchid}"
-DEFAULT_APPROVAL_PUBLIC_KEY="${KLOKAST_APPROVAL_PUBLIC_KEY:-}"
-DEFAULT_AGENT_SOCKET="${KLOKAST_SECRETIVE_AGENT_SOCKET:-$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh}"
 DEFAULT_WORK_DIR="$HOME/.local/share/klokast/private-instance-bootstrap"
 ENGINE_COMMIT="95194542acc4720698189859a024c8d1a9ab6eb9"
 BUILD_OPERATION="4ee7539ded88"
@@ -27,12 +24,11 @@ Prepare these items before you continue:
    GitHub App and a private repository.
 4. The active controller name. The current default is k002-ops.
 5. Touch ID configured on this MacBook.
-6. Secretive installed from https://github.com/maxgoedjen/secretive. In
-   Secretive, create one dedicated P-256 Secure Enclave key named "Klokast
-   Secret Authority approval" and require authentication for every use.
-7. The Public Key Path shown for that key in Secretive. This is a public file.
-8. Secretive agent setup completed from Secretive -> Help -> Setup Secretive.
-9. A working Tailscale connection from this MacBook to the controller.
+6. A current macOS release with Apple's CryptoTokenKit identity commands and
+   OpenSSH provider.
+7. The two-signer migration in
+   klokast-dev/runbooks/15-touchid-secret-authority.md completed.
+8. A working Tailscale connection from this MacBook to the controller.
 
 The Secure Enclave key cannot be backed up or moved to another Mac. If this Mac
 is replaced, create a new key and install its public signer from the new trusted
@@ -43,7 +39,8 @@ Do not paste those values into this helper or into chat.
 
 Do not create a passkey for this step. A passkey signs in to a compatible app
 or website. This workflow needs a Secure Enclave SSH key to sign an exact
-intent file. Secretive exposes that key to OpenSSH and asks for Touch ID.
+intent file. Apple CryptoTokenKit keeps the key non-exportable and asks for
+Touch ID.
 EOF
 }
 
@@ -55,8 +52,8 @@ What this helper will do
 - Ask for the non-secret names and local paths used by the runbook.
 - Require a clean checkout and update it with a fast-forward Git pull.
 - Check the MacBook tools and the active controller connection.
-- Verify the Secure Enclave public key and ask before it installs the public
-  signer on the controller.
+- Ask before it creates or reuses the dedicated private-instance Secure
+  Enclave identity and installs its public signer on the controller.
 - Save the non-secret settings in an owner-only local session file.
 
 It will not create the private repository, create the GitHub App, or ask for
@@ -158,12 +155,7 @@ check_macbook() {
     fi
     "$SCRIPT_DIR/kk" doctor --install
   fi
-  ksa_need_command ssh-add
-
-  if [ ! -d /Applications/Secretive.app ] && \
-      [ ! -d "$HOME/Applications/Secretive.app" ]; then
-    ksa_die "Secretive is not installed; install it with 'brew install secretive', create the dedicated Secure Enclave key, and rerun this helper"
-  fi
+  ksa_require_native_touchid
 }
 
 check_controller() {
@@ -190,27 +182,26 @@ SH
 
 prepare_signer() {
   local controller="$1"
-  local signer_id="$2"
-  local approval_public_key="$3"
-  local agent_socket="$4"
-
-  [ -f "$approval_public_key" ] || \
-    ksa_die "Secretive public key not found: $approval_public_key"
-  [ -S "$agent_socket" ] || \
-    ksa_die "Secretive agent socket not found: $agent_socket; open Secretive and run Help -> Setup Secretive"
+  local status=""
 
   printf '\nTouch ID approval signer\n'
-  printf 'Public key: %s\n' "$approval_public_key"
-  printf 'Signer ID:  %s\n' "$signer_id"
-  if ! confirm_yes "Verify this key with Touch ID and install its public signer on the controller now?"; then
+  printf 'Purpose:   private-instance\n'
+  printf 'Signer ID: human-private-instance\n'
+  if ! confirm_yes "Create or reuse this key and install its public signer on the controller now?"; then
     ksa_die "the approval signer must be ready before the private-instance bootstrap can continue"
   fi
 
   "$SCRIPT_DIR/install-secret-authority-approval-signer" \
     --controller "$controller" \
-    --signer-id "$signer_id" \
-    --agent-key "$approval_public_key" \
-    --agent-socket "$agent_socket"
+    --purpose private-instance
+  ksa_load_touchid_profile private-instance
+
+  status="$(tailscale ssh "smith@$controller" \
+    'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority instance status --redacted')"
+  printf '%s\n' "$status" | grep -q '"approval_signer":"human-private-instance"' || \
+    ksa_die "controller does not enforce the private-instance Touch ID signer; complete runbooks/15-touchid-secret-authority.md"
+  printf '%s\n' "$status" | grep -q '"allowed_signers_configured":true' || \
+    ksa_die "controller does not have the private-instance public signer"
 }
 
 write_session() {
@@ -218,8 +209,8 @@ write_session() {
   local owner="$2"
   local repo="$3"
   local signer_id="$4"
-  local approval_public_key="$5"
-  local agent_socket="$6"
+  local approval_key="$5"
+  local approval_ctk_hash="$6"
   local work_dir="$7"
   local session_file="$work_dir/session.sh"
   local session_tmp="$work_dir/.session.sh.$$"
@@ -234,8 +225,10 @@ write_session() {
     printf 'INSTANCE_OWNER=%q\n' "$owner"
     printf 'INSTANCE_REPO=%q\n' "$repo"
     printf 'SIGNER_ID=%q\n' "$signer_id"
-    printf 'APPROVAL_PUBLIC_KEY=%q\n' "$approval_public_key"
-    printf 'APPROVAL_AGENT_SOCKET=%q\n' "$agent_socket"
+    printf 'APPROVAL_KEY=%q\n' "$approval_key"
+    printf 'APPROVAL_CTK_HASH=%q\n' "$approval_ctk_hash"
+    printf 'APPROVAL_SSH_KEYGEN=%q\n' "$KSA_CTK_SSH_KEYGEN"
+    printf 'APPROVAL_SK_PROVIDER=%q\n' "$KSA_CTK_PROVIDER"
     printf 'ENGINE_COMMIT=%q\n' "$ENGINE_COMMIT"
     printf 'BUILD_OPERATION=%q\n' "$BUILD_OPERATION"
     printf 'BOOTSTRAP_WORK=%q\n' "$work_dir"
@@ -305,41 +298,15 @@ while :; do
   printf 'Use 1 to 100 letters, digits, dots, underscores, or hyphens.\n' >&2
 done
 
-signer_id=""
-while :; do
-  signer_id="$(prompt_default "Approval signer ID" "$DEFAULT_SIGNER_ID")"
-  if ksa_valid_signer_id "$signer_id"; then
-    break
-  fi
-  printf 'Use only letters, digits, dots, underscores, at signs, plus signs, or hyphens.\n' >&2
-done
-
-if [ -n "$DEFAULT_APPROVAL_PUBLIC_KEY" ]; then
-  approval_public_key="$(prompt_default "Secretive Public Key Path" "$DEFAULT_APPROVAL_PUBLIC_KEY")"
-else
-  approval_public_key="$(prompt_required "Secretive Public Key Path")"
-fi
-approval_public_key="$(ksa_expand_path "$approval_public_key")"
-case "$approval_public_key" in
-  /*) ;;
-  *) ksa_die "Secretive public-key path must be absolute or start with ~/" ;;
-esac
-
-agent_socket="$(prompt_default "Secretive agent socket" "$DEFAULT_AGENT_SOCKET")"
-agent_socket="$(ksa_expand_path "$agent_socket")"
-case "$agent_socket" in
-  "$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/"*) ;;
-  *) ksa_die "use the Secretive agent socket below the Secretive container Data directory" ;;
-esac
-
 work_dir="$DEFAULT_WORK_DIR"
+ksa_select_touchid_profile private-instance
 
 printf '\nSettings to prepare\n'
 printf 'Controller:       %s\n' "$controller"
 printf 'GitHub target:    %s/%s (private)\n' "$owner" "$repo"
 printf 'Approval signer:  %s\n' "$signer_id"
-printf 'Approval key:     %s (public path)\n' "$approval_public_key"
-printf 'Secretive agent:  %s\n' "$agent_socket"
+printf 'Approval identity:%s\n' " $ctk_label"
+printf 'Approval key dir: %s\n' "$profile_dir"
 printf 'Local work area:  %s\n' "$work_dir"
 printf 'Approved engine:  %s\n' "$ENGINE_COMMIT"
 printf '\nNo PEM or private deployment values are included.\n'
@@ -351,6 +318,6 @@ confirm_no "Use these settings?" || {
 
 check_macbook
 check_controller "$controller"
-prepare_signer "$controller" "$signer_id" "$approval_public_key" "$agent_socket"
+prepare_signer "$controller"
 write_session "$controller" "$owner" "$repo" "$signer_id" \
-  "$approval_public_key" "$agent_socket" "$work_dir"
+  "$key_path" "$ctk_hash" "$work_dir"

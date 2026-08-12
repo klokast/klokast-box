@@ -352,6 +352,10 @@ Examples of User Services:
 - Tailscale tag: [`group:operators`]
 - Preferred access path is direct over Tailscale to the managed host: `og` or `codex` -> Tailscale -> `<box>-dom0` / `<box>-router` / `<box>-bak` / `<box>-dmz` / `<box>-iot` / `<box>-ops` / per-user app VMs such as `<box>-usr-admin`
 - For low-level guest recovery and installer work, the operator can still reach Xen consoles from `<box>-dom0`.
+- For high-authority workflows from `og`, prefer separate Apple-native,
+  non-exportable Secure Enclave keys protected by Touch ID. Use one identity
+  for each authority scope. These are OpenSSH file-signing keys, not passkeys;
+  private key material does not leave the Mac.
 
 ## 2. `<cloud>-ops`
 - This is a temporary cloud-based bootstrap host provisioned by

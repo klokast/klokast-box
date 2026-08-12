@@ -1,8 +1,0 @@
----
-- name: Converge the Cloudflare guardian on the selected dom0
-  hosts: dom0
-  gather_facts: false
-  tasks:
-    - name: Converge Cloudflare guardian
-      ansible.builtin.import_role:
-        name: cloudflare-guardian

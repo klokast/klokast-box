@@ -23,9 +23,9 @@ klokast/
 ```
 
 `homebrew-klokast` should contain the install formula, not the main CLI logic.
-That formula must depend on Homebrew `openssh`, because Secret Authority
-approval signing uses OpenSSH FIDO/YubiKey key types and macOS' bundled
-`ssh-keygen` may not provide the required FIDO provider.
+Secret Authority approval signing uses Apple system OpenSSH with native
+CryptoTokenKit identities protected by Touch ID. The formula does not need a
+separate OpenSSH dependency for approval signing.
 
 ## Vocabulary
 

@@ -148,6 +148,18 @@ class SecretAuthorityTest(unittest.TestCase):
             with self.assertRaises(self.mod.SecretAuthorityError):
                 self.mod.consume_nonce(args, intent)
 
+    def test_static_site_rejects_the_private_instance_signer(self):
+        args = mock.Mock(
+            approval_intent="intent.json",
+            approval_signature="intent.json.sig",
+            signer_id="human-private-instance",
+        )
+        with self.assertRaisesRegex(
+            self.mod.SecretAuthorityError,
+            "static-site approvals require signer ID human-static-site",
+        ):
+            self.mod.require_approval(args, "install", REPO_ROOT)
+
     def test_github_app_mints_installation_token_with_integration(self):
         calls = {}
 

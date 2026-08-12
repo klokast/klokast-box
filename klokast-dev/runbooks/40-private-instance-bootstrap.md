@@ -18,6 +18,10 @@ The temporary GitHub App has no Contents permission. It creates the empty
 repository and registers one read-only deploy key. The human, not the App or
 an airunner, authors and pushes the first private commit.
 
+Complete `klokast-dev/runbooks/15-touchid-secret-authority.md` before Step 1.
+That migration installs the separate private-instance and static-site signers
+and deploys their scope enforcement to the active controller.
+
 ## 1. Prepare the MacBook
 
 Use the interactive helper from the `klokast-box` checkout on the MacBook:
@@ -33,8 +37,8 @@ prepare. It explains each action before it makes a change. It then:
 - collects the non-secret bootstrap settings;
 - checks and updates the public checkout;
 - checks the MacBook tools and active controller;
-- verifies the Secure Enclave approval key and asks before it installs the
-  public signer on the controller;
+- creates or reuses the private-instance Secure Enclave approval key and asks
+  before it installs the public signer on the controller;
 - saves an owner-only session file for the remaining steps.
 
 The helper does not ask for a GitHub App PEM or private deployment values.
@@ -48,11 +52,12 @@ source "$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
 `INSTANCE_OWNER` is an existing GitHub organization that the human controls.
 Keep the repository name as `klokast` unless the architecture changes.
 
-The approval key is a Secure Enclave SSH key that Secretive exposes through
-its SSH agent. Secretive must require Touch ID for every use of this key. The
-private key is not exportable. An Apple passkey cannot replace it because a
-passkey is bound to a compatible app or website and cannot sign the bootstrap
-intent file.
+The approval key is an Apple-native CryptoTokenKit identity protected by Touch
+ID. The private key is not exportable. The local OpenSSH file is only a key
+handle. An Apple passkey cannot replace it because a passkey is bound to a
+compatible app or website and cannot sign the bootstrap intent file. See
+`klokast-dev/runbooks/15-touchid-secret-authority.md` for the shared signer
+design and recovery procedure.
 
 ## 2. Create the temporary GitHub App
 
@@ -309,18 +314,15 @@ repository, key fingerprint when present, engine commit, and expiry time.
 Sign with the hardware-backed key:
 
 ```sh
-SSH_KEYGEN="$(command -v /opt/homebrew/bin/ssh-keygen 2>/dev/null || \
-  command -v /usr/local/bin/ssh-keygen 2>/dev/null || \
-  command -v ssh-keygen)"
-
-SSH_AUTH_SOCK="$APPROVAL_AGENT_SOCKET" "$SSH_KEYGEN" -Y sign -U \
-  -f "$APPROVAL_PUBLIC_KEY" \
+KEYCHAIN_CERTIFICATES="$APPROVAL_CTK_HASH" \
+  "$APPROVAL_SSH_KEYGEN" -w "$APPROVAL_SK_PROVIDER" -Y sign \
+  -f "$APPROVAL_KEY" \
   -n klokast-secret-authority \
   "$LOCAL_INTENT"
 ```
 
-Use Touch ID when Secretive asks you to approve the signature. Check that the
-Secretive prompt names the dedicated Klokast approval key.
+Use Touch ID when macOS asks you to approve the signature. Confirm that the
+prompt is for the dedicated private-instance approval identity.
 
 Upload only the intent and signature to the controller:
 
@@ -610,9 +612,10 @@ and registry authority stays active. No apply action is part of this runbook.
 - **The nonce was already used:** generate and sign a new intent.
 - **The intent has another engine commit:** stop. Pulling or changing the
   public controller checkout during bootstrap changes the approval boundary.
-- **Secretive does not ask for Touch ID:** stop. Confirm that Secretive is open,
-  the session uses its agent socket, and the dedicated key requires
-  authentication for every use. Do not continue with an unapproved signature.
+- **macOS does not ask for Touch ID:** stop. Confirm that the session names the
+  private-instance profile and that Touch ID is configured for the current Mac
+  user. Rerun the signer self-test. Do not continue with an unapproved
+  signature.
 - **The repository already exists:** stop. Do not reuse, import, rename, or
   delete a repository until the agent checks the state.
 - **The staged destination exists:** stop. Do not overwrite it.
@@ -626,7 +629,7 @@ and registry authority stays active. No apply action is part of this runbook.
 
 - [Private-instance Secret Authority](../../doc/secret-authority.md#private-instance-bootstrap)
 - [Upstream/instance target architecture](../../doc/upstream-instance-target-architecture.md)
-- [Secretive: Secure Enclave SSH keys](https://github.com/maxgoedjen/secretive)
+- [Apple `sc_auth` manual](https://keith.github.io/xcode-man-pages/sc_auth.8.html)
 - [GitHub: install your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
 - [GitHub: create an organization repository](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository)
 - [GitHub: review an installed GitHub App](https://docs.github.com/en/apps/using-github-apps/reviewing-and-modifying-installed-github-apps)

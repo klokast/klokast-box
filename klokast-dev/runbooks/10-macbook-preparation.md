@@ -26,30 +26,11 @@ From a checkout of this repo on the MacBook:
 klokast-dev/bin/kk doctor --install
 ```
 
-This installs Homebrew OpenSSH when it is missing. The Secret Authority approval
-signer needs a recent OpenSSH build with FIDO/YubiKey support; Apple’s bundled
-`ssh-keygen` may not include the FIDO provider needed for `ed25519-sk` or
-`ecdsa-sk` approval keys.
+The Secret Authority signer uses Apple's native CryptoTokenKit identity
+commands, system OpenSSH, and `/usr/lib/ssh-keychain.dylib`. The check fails if
+this macOS release does not provide the required `sc_auth` or `ssh-keygen`
+features. It does not install another OpenSSH build.
 
-If Git starts failing with this error after Homebrew OpenSSH is installed:
-
-```text
-Bad configuration option: usekeychain
-```
-
-the Git install is not broken. Git is finding Homebrew `ssh`, and Homebrew
-OpenSSH does not recognize Apple's `UseKeychain` option unless the SSH config
-explicitly says to ignore that option when unknown.
-
-Fix it with:
-
-```sh
-klokast-dev/bin/kk doctor --fix-ssh-config
-```
-
-The command adds this line before the existing config and writes a timestamped
-backup next to `~/.ssh/config`:
-
-```sshconfig
-IgnoreUnknown UseKeychain
-```
+Configure Touch ID for the current Mac user. Then follow
+`klokast-dev/runbooks/15-touchid-secret-authority.md` to create the separate
+private-instance and static-site approval identities.

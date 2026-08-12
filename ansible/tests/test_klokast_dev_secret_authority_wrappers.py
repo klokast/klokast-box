@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -24,6 +25,8 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
     def make_env(self, root, *, intent_domain="www.klokast.ai", final_status_true=True):
         fake_bin = root / "bin"
         fake_bin.mkdir()
+        fake_provider = root / "ssh-keychain.dylib"
+        fake_provider.write_text("provider", encoding="utf-8")
         fake_ssh_keygen_log = root / "ssh-keygen.log"
         fake_token_log = root / "token.log"
         fake_remote_root = root / "remote"
@@ -34,6 +37,10 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
             """\
             #!/bin/sh
             printf '%s\\n' "$*" >> "$FAKE_SSH_KEYGEN_LOG"
+            case " $* " in
+              *" -? "*) printf 'usage: ssh-keygen -K -Y -w provider\\n' >&2; exit 1 ;;
+              *" -E sha256 -lf "*) printf '256 SHA256:fakefingerprint test (ECDSA-SK)\\n'; exit 0 ;;
+            esac
             last=''
             for arg in "$@"; do
               last="$arg"
@@ -47,6 +54,20 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
             exit 2
             """,
         )
+        self.write_executable(
+            fake_bin / "sc_auth",
+            """\
+            #!/bin/sh
+            case "${1:-}" in
+              '') printf 'create-ctk-identity\\nlist-ctk-identities\\n';;
+              identities)
+                printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\tKlokast static-site approval\\n'
+                ;;
+              *) exit 2;;
+            esac
+            """,
+        )
+        self.write_executable(fake_bin / "uname", "#!/bin/sh\nprintf 'Darwin\\n'\n")
         self.write_executable(
             fake_bin / "tailscale",
             """\
@@ -101,9 +122,9 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
                 ;;
               *"status --redacted"*)
                 if [ "${FAKE_FINAL_STATUS_TRUE:-1}" = 1 ]; then
-                  printf '{"allowed_signers_configured":true,"app":"static-site","audit_log":"/var/log/klokast/secret-authority.jsonl","authority":"klokast-secret-authority","cloudflare_token_configured":true,"github_app_configured":true,"schema_version":1,"state_root":"/var/lib/klokast/secret-authority"}\\n'
+                  printf '{"allowed_signers_configured":true,"approval_signer":"human-static-site","app":"static-site","audit_log":"/var/log/klokast/secret-authority.jsonl","authority":"klokast-secret-authority","cloudflare_token_configured":true,"github_app_configured":true,"schema_version":1,"state_root":"/var/lib/klokast/secret-authority"}\\n'
                 else
-                  printf '{"allowed_signers_configured":true,"app":"static-site","audit_log":"/var/log/klokast/secret-authority.jsonl","authority":"klokast-secret-authority","cloudflare_token_configured":false,"github_app_configured":true,"schema_version":1,"state_root":"/var/lib/klokast/secret-authority"}\\n'
+                  printf '{"allowed_signers_configured":true,"approval_signer":"human-static-site","app":"static-site","audit_log":"/var/log/klokast/secret-authority.jsonl","authority":"klokast-secret-authority","cloudflare_token_configured":false,"github_app_configured":true,"schema_version":1,"state_root":"/var/lib/klokast/secret-authority"}\\n'
                 fi
                 exit 0
                 ;;
@@ -118,10 +139,57 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
             """,
         )
 
+        home = root / "home"
+        profile = home / ".local" / "share" / "klokast" / "approval-signers" / "static-site"
+        profile.mkdir(parents=True)
+        key_path = profile / "id_ecdsa_sk_rk"
+        key_path.write_text("fake key handle\n", encoding="utf-8")
+        (profile / "id_ecdsa_sk_rk.pub").write_text(
+            "sk-ecdsa-sha2-nistp256@openssh.com AAAAfake static-site\n",
+            encoding="utf-8",
+        )
+
+        tool_root = root / "tool"
+        tool_bin = tool_root / "bin"
+        tool_lib = tool_root / "lib"
+        tool_bin.mkdir(parents=True)
+        tool_lib.mkdir()
+        wrapper = tool_bin / WRAPPER.name
+        shutil.copy2(WRAPPER, wrapper)
+        common_source = (REPO_ROOT / "klokast-dev" / "lib" / "approval-common.sh").read_text(
+            encoding="utf-8"
+        )
+        common_source = common_source.replace(
+            "KSA_CTK_SC_AUTH=/usr/sbin/sc_auth", f"KSA_CTK_SC_AUTH={fake_bin / 'sc_auth'}"
+        ).replace(
+            "KSA_CTK_SSH_KEYGEN=/usr/bin/ssh-keygen",
+            f"KSA_CTK_SSH_KEYGEN={fake_bin / 'ssh-keygen'}",
+        ).replace(
+            "KSA_CTK_PROVIDER=/usr/lib/ssh-keychain.dylib",
+            f"KSA_CTK_PROVIDER={fake_provider}",
+        )
+        (tool_lib / "approval-common.sh").write_text(common_source, encoding="utf-8")
+
+        (profile / "profile").write_text(
+            "schema_version=1\n"
+            "purpose=static-site\n"
+            "signer_id=human-static-site\n"
+            "ctk_label=Klokast static-site approval\n"
+            "ctk_hash=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+            "key_fingerprint=SHA256:fakefingerprint\n"
+            "key_type=p-256-ne\n"
+            "protection=bio\n"
+            f"key_path={key_path}\n"
+            f"ssh_keygen={fake_bin / 'ssh-keygen'}\n"
+            f"sk_provider={fake_provider}\n",
+            encoding="utf-8",
+        )
+
         env = os.environ.copy()
         env.update(
             {
                 "PATH": f"{fake_bin}:{env.get('PATH', '')}",
+                "HOME": str(home),
                 "FAKE_SSH_KEYGEN_LOG": str(fake_ssh_keygen_log),
                 "FAKE_TOKEN_LOG": str(fake_token_log),
                 "FAKE_REMOTE_ROOT": str(fake_remote_root),
@@ -129,25 +197,18 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
                 "FAKE_FINAL_STATUS_TRUE": "1" if final_status_true else "0",
             }
         )
-        return env, fake_ssh_keygen_log, fake_token_log
+        return env, fake_ssh_keygen_log, fake_token_log, wrapper
 
-    def run_wrapper(self, env, input_text, key_path):
+    def run_wrapper(self, wrapper, env, input_text):
         return subprocess.run(
             [
-                str(WRAPPER),
+                str(wrapper),
                 "--controller",
                 "k002-ops",
                 "--box",
                 "k001",
                 "--domain",
                 "www.klokast.ai",
-                "--signer-id",
-                "xiaoju-og",
-                "--key",
-                str(key_path),
-                "--ssh-keygen",
-                "ssh-keygen",
-                "--skip-yubikey-gate",
             ],
             input=input_text,
             text=True,
@@ -161,11 +222,9 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
         token = self.fake_cloudflare_token()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            env, ssh_keygen_log, token_log = self.make_env(root)
-            key_path = root / "fake-approval-key"
-            key_path.write_text("fake", encoding="utf-8")
+            env, ssh_keygen_log, token_log, wrapper = self.make_env(root)
 
-            result = self.run_wrapper(env, f"approve static-site www.klokast.ai\n{token}\n", key_path)
+            result = self.run_wrapper(wrapper, env, f"approve static-site www.klokast.ai\n{token}\n")
 
             self.assertEqual(result.returncode, 0, result.stderr)
             output = json.loads(result.stdout)
@@ -182,41 +241,39 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
         token = self.fake_cloudflare_token()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            env, ssh_keygen_log, token_log = self.make_env(root)
-            key_path = root / "fake-approval-key"
-            key_path.write_text("fake", encoding="utf-8")
+            env, ssh_keygen_log, token_log, wrapper = self.make_env(root)
 
-            result = self.run_wrapper(env, f"wrong phrase\n{token}\n", key_path)
+            result = self.run_wrapper(wrapper, env, f"wrong phrase\n{token}\n")
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("approval phrase mismatch", result.stderr)
-            self.assertFalse(ssh_keygen_log.exists())
+            self.assertNotIn("-Y sign", ssh_keygen_log.read_text(encoding="utf-8"))
             self.assertFalse(token_log.exists())
 
     def test_mismatched_intent_domain_aborts_before_signing(self):
         token = self.fake_cloudflare_token()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            env, ssh_keygen_log, token_log = self.make_env(root, intent_domain="evil.example")
-            key_path = root / "fake-approval-key"
-            key_path.write_text("fake", encoding="utf-8")
+            env, ssh_keygen_log, token_log, wrapper = self.make_env(
+                root, intent_domain="evil.example"
+            )
 
-            result = self.run_wrapper(env, f"approve static-site www.klokast.ai\n{token}\n", key_path)
+            result = self.run_wrapper(wrapper, env, f"approve static-site www.klokast.ai\n{token}\n")
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("intent domain mismatch", result.stderr)
-            self.assertFalse(ssh_keygen_log.exists())
+            self.assertNotIn("-Y sign", ssh_keygen_log.read_text(encoding="utf-8"))
             self.assertFalse(token_log.exists())
 
     def test_final_status_must_report_cloudflare_token_configured(self):
         token = self.fake_cloudflare_token()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            env, _ssh_keygen_log, _token_log = self.make_env(root, final_status_true=False)
-            key_path = root / "fake-approval-key"
-            key_path.write_text("fake", encoding="utf-8")
+            env, _ssh_keygen_log, _token_log, wrapper = self.make_env(
+                root, final_status_true=False
+            )
 
-            result = self.run_wrapper(env, f"approve static-site www.klokast.ai\n{token}\n", key_path)
+            result = self.run_wrapper(wrapper, env, f"approve static-site www.klokast.ai\n{token}\n")
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("cloudflare_token_configured=true", result.stderr)

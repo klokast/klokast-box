@@ -30,6 +30,8 @@ DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority/instance"
 DEFAULT_RECEIPT_ROOT = "/var/lib/klokast/instance-sources"
 DEFAULT_CHECKOUT = "/home/smith/private/klokast/instance"
 DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
+DEFAULT_ALLOWED_SIGNERS = "/etc/klokast/secret-authority/allowed-signers-private-instance"
+EXPECTED_SIGNER_ID = "human-private-instance"
 DEFAULT_TTL_SECONDS = 600
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
@@ -366,6 +368,10 @@ def consume_nonce(args, intent):
 def require_approval(args):
     if not args.approval_intent or not args.approval_signature or not args.signer_id:
         raise InstanceAuthorityError("missing approval intent, signature, or signer ID")
+    if args.signer_id != EXPECTED_SIGNER_ID:
+        raise InstanceAuthorityError(
+            f"private-instance approvals require signer ID {EXPECTED_SIGNER_ID}"
+        )
     intent = load_intent(args.approval_intent)
     if parse_utc(intent["expires_at"], "expires_at") <= now_utc():
         raise InstanceAuthorityError("approval intent is expired")
@@ -745,6 +751,8 @@ def cmd_status(args):
     paths = source_paths(args)
     result = {
         "schema_version": 1,
+        "allowed_signers_configured": Path(args.allowed_signers).is_file(),
+        "approval_signer": EXPECTED_SIGNER_ID,
         "github_app_configured": (Path(args.config_root) / "github-app.env").is_file()
         and (Path(args.config_root) / "github-app.pem").is_file(),
         "source_prepared": paths["config"].is_file() and paths["key"].is_file() and paths["public"].is_file(),
@@ -805,8 +813,6 @@ def build_parser():
     parser.add_argument("--receipt-root", default=os.environ.get("KSA_INSTANCE_RECEIPT_ROOT", DEFAULT_RECEIPT_ROOT))
     parser.add_argument("--checkout", default=os.environ.get("KSA_INSTANCE_CHECKOUT", DEFAULT_CHECKOUT))
     parser.add_argument("--audit-log", default=os.environ.get("KSA_AUDIT_LOG", DEFAULT_AUDIT_LOG))
-    parser.add_argument("--allowed-signers", default=os.environ.get("KSA_ALLOWED_SIGNERS",
-                        "/etc/klokast/secret-authority/allowed-signers"))
     commands = parser.add_subparsers(dest="command", required=True)
     intent = commands.add_parser("intent")
     add_instance_actions(intent.add_subparsers(dest="intent_target", required=True), for_intent=True)
@@ -823,6 +829,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    args.allowed_signers = DEFAULT_ALLOWED_SIGNERS
     try:
         if args.command == "intent":
             print(canonical_json(build_intent(args)), end="")

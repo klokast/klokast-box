@@ -6,7 +6,6 @@ import pwd
 import stat
 import subprocess
 import tempfile
-import time
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -205,10 +204,28 @@ class InstanceAuthorityTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("  - ksa-instance", variables)
+        self.assertNotIn("  - ksa-cloudflare", variables)
+        self.assertIn("Remove retired Cloudflare guardian controller wrapper", tasks)
         self.assertIn("- path: /etc/klokast/private-instance", tasks)
         self.assertIn("- path: /var/lib/klokast/instance-sources", tasks)
         self.assertIn("Cmnd_Alias KLOKAST_INFRA_SECRET_AUTHORITY_WRAPPERS", tasks)
         self.assertIn("Cmnd_Alias KLOKAST_INFRA_TAILSCALE_WRAPPERS", tasks)
+
+    def test_retired_cloudflare_guardian_is_not_exposed(self):
+        self.assertFalse((REPO_ROOT / "ansible" / "bin" / "converge-cloudflare-guardian").exists())
+        self.assertFalse((REPO_ROOT / "klokast-dev" / "bin" / "install-cloudflare-authority").exists())
+        self.assertFalse(
+            (REPO_ROOT / "klokast-ops" / "secret-authority" / "bin" / "ksa-cloudflare").exists()
+        )
+        completed = subprocess.run(
+            [str(REPO_ROOT / "ansible" / "bin" / "secret-authority"), "--help"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("cloudflare ACTION", completed.stdout)
 
     def test_workstation_installer_sends_pem_only_through_standard_input(self):
         source = INSTALLER.read_text(encoding="utf-8")
@@ -234,19 +251,20 @@ class InstanceAuthorityTest(unittest.TestCase):
             completed.stdout.index("What this helper will do"),
         )
         self.assertIn("Touch ID configured on this MacBook", completed.stdout)
-        self.assertIn("Public Key Path shown for that key in Secretive", completed.stdout)
+        self.assertIn("Apple CryptoTokenKit keeps the key non-exportable", completed.stdout)
         self.assertIn("Do not create a passkey for this step", completed.stdout)
         self.assertIn("does not ask for a GitHub App PEM", completed.stdout)
-        self.assertNotIn("YubiKey", completed.stdout)
 
     def test_private_instance_prepare_helper_preserves_authority_boundaries(self):
         source = PREPARE_HELPER.read_text(encoding="utf-8")
         self.assertIn('chmod 0600 "$session_tmp"', source)
         self.assertIn('--controller "$controller"', source)
-        self.assertIn('--signer-id "$signer_id"', source)
-        self.assertIn('--agent-key "$approval_public_key"', source)
-        self.assertIn('--agent-socket "$agent_socket"', source)
-        self.assertIn('printf \'APPROVAL_AGENT_SOCKET=%q\\n\'', source)
+        self.assertIn("--purpose private-instance", source)
+        self.assertIn('"approval_signer":"human-private-instance"', source)
+        self.assertIn('"allowed_signers_configured":true', source)
+        self.assertIn('printf \'APPROVAL_KEY=%q\\n\'', source)
+        self.assertIn('printf \'APPROVAL_CTK_HASH=%q\\n\'', source)
+        self.assertIn('printf \'APPROVAL_SK_PROVIDER=%q\\n\'', source)
         self.assertNotIn("GITHUB_APP_PRIVATE_KEY", source)
         self.assertNotIn("init-values.json", source)
         completed = subprocess.run(
@@ -255,115 +273,50 @@ class InstanceAuthorityTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_approval_installer_supports_touch_id_agent_signing(self):
+    def test_approval_installer_uses_native_scoped_touch_id_signing(self):
         installer = (
             REPO_ROOT / "klokast-dev" / "bin" /
             "install-secret-authority-approval-signer"
         )
+        common = (
+            REPO_ROOT / "klokast-dev" / "lib" / "approval-common.sh"
+        ).read_text(encoding="utf-8")
         source = installer.read_text(encoding="utf-8")
-        self.assertIn("--agent-key PUBLIC_KEY", source)
-        self.assertIn('SSH_AUTH_SOCK="$agent_socket" ssh-add -L', source)
-        self.assertIn('"$ssh_keygen" -q -Y sign -U', source)
-        self.assertIn("must be a P-256 Secure Enclave SSH public key", source)
+        self.assertIn("--purpose private-instance|static-site", source)
+        self.assertIn("--finalize-migration", source)
+        self.assertIn("allowed-signers-private-instance", source)
+        self.assertIn("allowed-signers-static-site", source)
+        self.assertIn("KSA_CTK_SC_AUTH=/usr/sbin/sc_auth", common)
+        self.assertIn("KSA_CTK_SSH_KEYGEN=/usr/bin/ssh-keygen", common)
+        self.assertIn("KSA_CTK_PROVIDER=/usr/lib/ssh-keychain.dylib", common)
+        self.assertIn("-l \"$ctk_label\" -k p-256-ne -t bio", common)
+        self.assertIn('KEYCHAIN_CERTIFICATES="$ctk_hash"', common)
+        self.assertIn('"$KSA_CTK_SSH_KEYGEN" -q -w "$KSA_CTK_PROVIDER" -Y sign', common)
+        self.assertLess(
+            source.index('doas ssh-keygen -Y verify'),
+            source.index('doas install -m 0600 -o root -g root "$candidate" "$staged"'),
+        )
+        self.assertLess(
+            source.index('verify_installed_purpose private-instance'),
+            source.index('doas rm -f /etc/klokast/secret-authority/allowed-signers'),
+        )
         completed = subprocess.run(
             ["bash", "-n", str(installer)],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_approval_installer_signs_through_selected_ssh_agent(self):
-        installer = (
-            REPO_ROOT / "klokast-dev" / "bin" /
-            "install-secret-authority-approval-signer"
+    def test_private_instance_rejects_the_static_site_signer(self):
+        args = mock.Mock(
+            approval_intent="intent.json",
+            approval_signature="intent.json.sig",
+            signer_id="human-static-site",
         )
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            key = root / "approval"
-            generated = subprocess.run(
-                ["ssh-keygen", "-q", "-t", "ecdsa", "-b", "256", "-N", "", "-f", str(key)],
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            self.assertEqual(generated.returncode, 0, generated.stderr)
-
-            socket = root / "agent.sock"
-            agent = subprocess.Popen(
-                ["ssh-agent", "-D", "-a", str(socket)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
-                for _ in range(100):
-                    if socket.exists():
-                        break
-                    time.sleep(0.01)
-                self.assertTrue(socket.exists(), "ssh-agent socket was not created")
-
-                env = os.environ.copy()
-                env["SSH_AUTH_SOCK"] = str(socket)
-                added = subprocess.run(
-                    ["ssh-add", str(key)], env=env, text=True,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                )
-                self.assertEqual(added.returncode, 0, added.stderr)
-
-                fake_bin = root / "bin"
-                fake_bin.mkdir()
-                tailscale = fake_bin / "tailscale"
-                tailscale.write_text(
-                    """#!/bin/sh
-set -eu
-[ "${1:-}" = ssh ] || exit 2
-shift
-target=$1
-shift
-command="$*"
-case "$command" in
-  "mktemp /tmp/ksa-allowed-signer.XXXXXX")
-    printf '/tmp/ksa-allowed-signer.fake\\n'
-    ;;
-  "mktemp -d /tmp/ksa-approval-signer.XXXXXX")
-    printf '/tmp/ksa-approval-signer.fake\\n'
-    ;;
-  *"status --redacted"*)
-    printf '{"allowed_signers_configured":true}\\n'
-    ;;
-  sh\ -s\ --*)
-    cat >/dev/null
-    ;;
-  cat\ \>*)
-    cat >/dev/null
-    ;;
-  *)
-    printf 'unexpected tailscale command for %s: %s\\n' "$target" "$command" >&2
-    exit 2
-    ;;
-esac
-""",
-                    encoding="utf-8",
-                )
-                tailscale.chmod(0o755)
-                env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
-                env["TMPDIR"] = str(root)
-
-                completed = subprocess.run(
-                    [
-                        str(installer), "--controller", "k002-ops",
-                        "--signer-id", "human", "--agent-key", f"{key}.pub",
-                        "--agent-socket", str(socket), "--ssh-keygen", "ssh-keygen",
-                    ],
-                    env=env, text=True, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, check=False,
-                )
-                self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertIn('"allowed_signers_configured":true', completed.stdout)
-                self.assertIn("Approve the test signature with Touch ID", completed.stderr)
-                self.assertIn("Approval signer signature check ok", completed.stderr)
-            finally:
-                agent.terminate()
-                agent.wait(timeout=5)
-                if agent.stderr is not None:
-                    agent.stderr.close()
+        with self.assertRaisesRegex(
+            self.mod.InstanceAuthorityError,
+            "private-instance approvals require signer ID human-private-instance",
+        ):
+            self.mod.require_approval(args)
 
     def test_private_instance_runbook_uses_prepare_helper_session(self):
         runbook = (

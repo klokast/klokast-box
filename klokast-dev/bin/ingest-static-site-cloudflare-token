@@ -8,24 +8,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
 DEFAULT_BOX="${KLOKAST_STATIC_SITE_BOX:-k001}"
 DEFAULT_DOMAIN="${KLOKAST_STATIC_SITE_DOMAIN:-www.klokast.ai}"
-DEFAULT_SIGNER_ID="${KLOKAST_APPROVAL_SIGNER_ID:-xiaoju-og}"
-DEFAULT_KEY="$HOME/.ssh/minionroval-sk"
-DEFAULT_SSH_KEYGEN="${KLOKAST_SSH_KEYGEN:-}"
-DEFAULT_SK_PROVIDER="${KLOKAST_SK_PROVIDER:-}"
 DEFAULT_REPO_OWNER="${KLOKAST_STATIC_SITE_REPO_OWNER:-klokast}"
 DEFAULT_REPO_NAME="${KLOKAST_STATIC_SITE_REPO_NAME:-klokast-site}"
 DEFAULT_BRANCH="${KLOKAST_STATIC_SITE_BRANCH:-main}"
 DEFAULT_SOURCE_DIR="${KLOKAST_STATIC_SITE_SOURCE_DIR:-www}"
 DEFAULT_TTL_SECONDS="${KLOKAST_APPROVAL_TTL_SECONDS:-600}"
-DEFAULT_YUBIKEY_WAIT_SECONDS="${KLOKAST_YUBIKEY_WAIT_SECONDS:-60}"
-DEFAULT_SIGNATURE_ATTEMPTS="${KLOKAST_APPROVAL_SIGNATURE_ATTEMPTS:-3}"
 SIGNATURE_NAMESPACE="klokast-secret-authority"
 
 usage() {
   cat <<EOF
 Usage:
-  $0 [--controller HOST] [--box BOX] [--domain HOST] [--signer-id ID]
-     [--key PATH] [--ssh-keygen PATH] [--sk-provider PATH]
+  $0 [--controller HOST] [--box BOX] [--domain HOST]
 
 Generates and signs a static-site Cloudflare token-ingestion intent, prompts for
 the Cloudflare Tunnel token, ingests it into the root-only Secret Authority on
@@ -35,26 +28,15 @@ Options:
   --controller HOST   Controller host. Default: ${DEFAULT_CONTROLLER}
   --box BOX           Static-site placement box. Default: ${DEFAULT_BOX}
   --domain HOST       Static-site public hostname. Default: ${DEFAULT_DOMAIN}
-  --signer-id ID      Allowed-signers identity. Default: ${DEFAULT_SIGNER_ID}
-  --key PATH          Local approval signing key. Default: ${DEFAULT_KEY}
-  --ssh-keygen PATH   ssh-keygen binary. Default: Homebrew OpenSSH on macOS if
-                      present, otherwise ssh-keygen from PATH.
-  --sk-provider PATH  Optional external OpenSSH FIDO provider library.
   --repo-owner NAME   GitHub repo owner. Default: ${DEFAULT_REPO_OWNER}
   --repo-name NAME    GitHub repo name. Default: ${DEFAULT_REPO_NAME}
   --branch REF        Static-site Git branch. Default: ${DEFAULT_BRANCH}
   --source-dir DIR    Static-site source dir in repo. Default: ${DEFAULT_SOURCE_DIR}
   --ttl-seconds N     Intent TTL in seconds. Default: ${DEFAULT_TTL_SECONDS}
-  --yubikey-wait-seconds N
-                      Seconds to wait for USB YubiKey detection. Default:
-                      ${DEFAULT_YUBIKEY_WAIT_SECONDS}
-  --signature-attempts N
-                      Local approval signature attempts. Default:
-                      ${DEFAULT_SIGNATURE_ATTEMPTS}
-  --skip-yubikey-gate Do not prompt/wait before local YubiKey signing.
 
 Stdout contains only the final redacted JSON result. Prompts and progress go to
-stderr. Never paste the Cloudflare token into chat.
+stderr. The exact intent is signed with the static-site Secure Enclave identity
+after Touch ID approval. Never paste the Cloudflare token into chat.
 EOF
 }
 
@@ -159,7 +141,7 @@ print("This approval does not mint GitHub tokens, change GitHub repos, install t
 print("static-site app, change Cloudflare routes, or expose the token in output.", file=sys.stderr)
 print("", file=sys.stderr)
 print("Security boundary:", file=sys.stderr)
-print("  The YubiKey signs this intent JSON through OpenSSH. It does not independently", file=sys.stderr)
+print("  The Mac Secure Enclave signs this intent JSON after Touch ID. It does not", file=sys.stderr)
 print("  verify what the MacBook displays. This protects against confusion and", file=sys.stderr)
 print("  accidental approval, but not against a compromised MacBook lying about the", file=sys.stderr)
 print("  intent it asks you to sign.", file=sys.stderr)
@@ -222,19 +204,11 @@ PY
 controller="$DEFAULT_CONTROLLER"
 box="$DEFAULT_BOX"
 domain="$DEFAULT_DOMAIN"
-signer_id="$DEFAULT_SIGNER_ID"
-key_path="$DEFAULT_KEY"
-ssh_keygen="$DEFAULT_SSH_KEYGEN"
-sk_provider="$DEFAULT_SK_PROVIDER"
 repo_owner="$DEFAULT_REPO_OWNER"
 repo_name="$DEFAULT_REPO_NAME"
 branch="$DEFAULT_BRANCH"
 source_dir="$DEFAULT_SOURCE_DIR"
 ttl_seconds="$DEFAULT_TTL_SECONDS"
-yubikey_wait_seconds="$DEFAULT_YUBIKEY_WAIT_SECONDS"
-signature_attempts="$DEFAULT_SIGNATURE_ATTEMPTS"
-skip_yubikey_gate=false
-yubikey_gate_done=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -251,26 +225,6 @@ while [ "$#" -gt 0 ]; do
     --domain)
       [ "$#" -ge 2 ] || ksa_die "--domain needs a hostname"
       domain="$2"
-      shift 2
-      ;;
-    --signer-id)
-      [ "$#" -ge 2 ] || ksa_die "--signer-id needs an identity"
-      signer_id="$2"
-      shift 2
-      ;;
-    --key)
-      [ "$#" -ge 2 ] || ksa_die "--key needs a path"
-      key_path="$2"
-      shift 2
-      ;;
-    --ssh-keygen)
-      [ "$#" -ge 2 ] || ksa_die "--ssh-keygen needs a path"
-      ssh_keygen="$2"
-      shift 2
-      ;;
-    --sk-provider)
-      [ "$#" -ge 2 ] || ksa_die "--sk-provider needs a path"
-      sk_provider="$2"
       shift 2
       ;;
     --repo-owner)
@@ -298,20 +252,6 @@ while [ "$#" -gt 0 ]; do
       ttl_seconds="$2"
       shift 2
       ;;
-    --yubikey-wait-seconds)
-      [ "$#" -ge 2 ] || ksa_die "--yubikey-wait-seconds needs a number"
-      yubikey_wait_seconds="$2"
-      shift 2
-      ;;
-    --signature-attempts)
-      [ "$#" -ge 2 ] || ksa_die "--signature-attempts needs a positive integer"
-      signature_attempts="$2"
-      shift 2
-      ;;
-    --skip-yubikey-gate)
-      skip_yubikey_gate=true
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -327,29 +267,25 @@ controller="$(ksa_resolve_controller "$controller")"
 ksa_valid_controller "$controller" || ksa_die "resolved controller contains unsafe characters"
 ksa_valid_box "$box" || ksa_die "--box must be a box name like k001, not a VM hostname"
 ksa_valid_domain "$domain" || ksa_die "--domain must be a hostname"
-ksa_valid_signer_id "$signer_id" || ksa_die "--signer-id may contain only letters, digits, dot, underscore, at, plus, and hyphen"
 ksa_valid_github_owner "$repo_owner" || ksa_die "--repo-owner must be a GitHub organization/user name"
 ksa_valid_github_repo "$repo_name" || ksa_die "--repo-name must be a GitHub repository name"
 ksa_valid_git_ref "$branch" || ksa_die "--branch must be a simple Git ref"
 ksa_valid_git_ref "$source_dir" || ksa_die "--source-dir must be a simple relative path"
 ksa_valid_positive_integer "$ttl_seconds" || ksa_die "--ttl-seconds must be a positive integer"
-ksa_valid_wait_seconds "$yubikey_wait_seconds" || ksa_die "--yubikey-wait-seconds must be a non-negative integer"
-ksa_valid_positive_integer "$signature_attempts" || ksa_die "--signature-attempts must be a positive integer"
 
 ksa_need_command tailscale
 ksa_need_command mktemp
 ksa_need_command python3
-
-key_path="$(ksa_expand_path "$key_path")"
-[ -r "$key_path" ] || ksa_die "approval signing key is not readable: $key_path"
-ssh_keygen="$(ksa_choose_ssh_keygen "$ssh_keygen")"
+ksa_require_native_touchid
+ksa_load_touchid_profile static-site
 ssh_target="smith@${controller}"
 
-if [ -n "$sk_provider" ]; then
-  sk_provider="$(ksa_expand_path "$sk_provider")"
-  [ -f "$sk_provider" ] || ksa_die "--sk-provider does not exist: $sk_provider"
-  export SSH_SK_PROVIDER="$sk_provider"
-fi
+authority_status="$(tailscale ssh "$ssh_target" \
+  'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted')"
+printf '%s\n' "$authority_status" | grep -q '"approval_signer":"human-static-site"' || \
+  ksa_die "controller does not enforce the static-site Touch ID signer; complete runbooks/15-touchid-secret-authority.md"
+printf '%s\n' "$authority_status" | grep -q '"allowed_signers_configured":true' || \
+  ksa_die "controller does not have the static-site public signer"
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/ksa-static-site.XXXXXX")"
 remote_dir=""
@@ -407,9 +343,8 @@ if [ "$typed_approval" != "$approval_phrase" ]; then
   ksa_die "approval phrase mismatch; refusing to sign"
 fi
 
-ksa_wait_for_yubikey "Cloudflare token-ingestion approval"
-if ! ksa_sign_message_with_retries "$intent"; then
-  ksa_die "ssh-keygen failed to sign the approval intent after ${signature_attempts} attempts"
+if ! ksa_sign_touchid_message "$intent"; then
+  ksa_die "Touch ID did not approve the static-site intent signature"
 fi
 signature="${intent}.sig"
 

@@ -25,6 +25,8 @@ PROVIDER_SECRET_PATHS = [
     "/etc/klokast/secret-authority/apps/static-site/cloudflared-token",
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.env",
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.pem",
+    "/etc/klokast/secret-authority/allowed-signers-private-instance",
+    "/etc/klokast/secret-authority/allowed-signers-static-site",
     "/etc/klokast/private-instance/github-readonly",
 ]
 
@@ -339,7 +341,9 @@ for path in \
   var/lib/klokast/approved-state \
   var/lib/klokast/secret-authority \
   var/log/klokast/secret-authority.jsonl \
-  etc/klokast/secret-authority/allowed-signers
+  etc/klokast/secret-authority/allowed-signers \
+  etc/klokast/secret-authority/allowed-signers-private-instance \
+  etc/klokast/secret-authority/allowed-signers-static-site
 do
   [ ! -e "/$path" ] || set -- "$@" "$path"
 done
@@ -443,6 +447,9 @@ doas rm -f \
   /etc/klokast/secret-authority/apps/static-site/cloudflared-token \
   /etc/klokast/secret-authority/instance-bootstrap/github-app.env \
   /etc/klokast/secret-authority/instance-bootstrap/github-app.pem \
+  /etc/klokast/secret-authority/allowed-signers \
+  /etc/klokast/secret-authority/allowed-signers-private-instance \
+  /etc/klokast/secret-authority/allowed-signers-static-site \
   /etc/klokast/private-instance/github-readonly
 '''
     controller_sh(config, args.box, script)
@@ -489,7 +496,8 @@ exec "$@"
 def reseed(args):
     print(f"Reseed provider/API authority on {args.controller} from the MacBook:")
     print(f"  klokast-dev/bin/install-tailscale-oauth --controller {args.controller} --policy-env PATH --devices-env PATH")
-    print(f"  klokast-dev/bin/install-secret-authority-approval-signer --controller {args.controller}")
+    print(f"  klokast-dev/bin/install-secret-authority-approval-signer --controller {args.controller} --purpose private-instance")
+    print(f"  klokast-dev/bin/install-secret-authority-approval-signer --controller {args.controller} --purpose static-site")
     print(f"  klokast-dev/bin/install-static-site-github-app --controller {args.controller} --pem PATH --app-id ID --installation-id ID")
     print(f"  klokast-dev/bin/ingest-static-site-cloudflare-token --controller {args.controller} --box BOX --domain DOMAIN")
 

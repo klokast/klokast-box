@@ -434,6 +434,11 @@
     mode: "0755"
   loop: "{{ ops_controller_secret_authority_wrappers }}"
 
+- name: Remove retired Cloudflare guardian controller wrapper
+  ansible.builtin.file:
+    path: /usr/local/sbin/ksa-cloudflare
+    state: absent
+
 - name: Remove obsolete controller GitHub deploy-key material
   ansible.builtin.file:
     path: "{{ item }}"

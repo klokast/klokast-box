@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<EOF
 Usage:
-  kk doctor [--install] [--fix-ssh-config]
+  kk doctor [--install]
   kk app list [--controller HOST] [--no-pull]
   kk app status <app> [--controller HOST] [--no-pull]
   kk app start|stop|restart|apply|verify|remove <app> [--controller HOST] [--no-pull]
@@ -118,49 +118,6 @@ exec ansible/bin/platform-app "$@"
 REMOTE_SCRIPT
 }
 
-homebrew_ssh_keygen() {
-  local candidate=""
-  for candidate in /opt/homebrew/bin/ssh-keygen /usr/local/bin/ssh-keygen; do
-    if [ -x "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  return 1
-}
-
-ssh_config_needs_usekeychain_ignore() {
-  local ssh_config="$1"
-
-  [ -f "$ssh_config" ] || return 1
-  grep -Eiq '^[[:space:]]*UseKeychain[[:space:]]+' "$ssh_config" || return 1
-  if grep -Eiq '^[[:space:]]*IgnoreUnknown[[:space:]].*UseKeychain' "$ssh_config"; then
-    return 1
-  fi
-  return 0
-}
-
-fix_ssh_config_usekeychain_ignore() {
-  local ssh_config="$1"
-  local backup=""
-  local tmp=""
-
-  [ -f "$ssh_config" ] || return 0
-  ssh_config_needs_usekeychain_ignore "$ssh_config" || return 0
-
-  backup="${ssh_config}.klokast-backup-$(date +%Y%m%d%H%M%S)"
-  tmp="${ssh_config}.klokast-tmp.$$"
-  cp -p "$ssh_config" "$backup"
-  {
-    printf 'IgnoreUnknown UseKeychain\n'
-    cat "$backup"
-  } > "$tmp"
-  chmod 0600 "$tmp"
-  mv "$tmp" "$ssh_config"
-  printf 'fixed: added IgnoreUnknown UseKeychain to %s\n' "$ssh_config"
-  printf 'backup: %s\n' "$backup"
-}
-
 expand_path() {
   case "$1" in
     "~") printf '%s\n' "$HOME" ;;
@@ -176,19 +133,14 @@ valid_box() {
 
 doctor() {
   local install_missing=false
-  local fix_ssh_config=false
   local missing=false
-  local found=""
-  local ssh_config="${HOME}/.ssh/config"
+  local sc_auth_help=""
+  local ssh_keygen_help=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --install)
         install_missing=true
-        shift
-        ;;
-      --fix-ssh-config)
-        fix_ssh_config=true
         shift
         ;;
       -h|--help)
@@ -238,16 +190,39 @@ doctor() {
   fi
 
   if [ "$(uname -s)" = "Darwin" ]; then
-    if found="$(homebrew_ssh_keygen)"; then
-      printf 'ok: Homebrew OpenSSH ssh-keygen found at %s\n' "$found"
-    elif [ "$install_missing" = true ]; then
-      need_command brew
-      printf 'Installing Homebrew OpenSSH for YubiKey/FIDO-backed approval keys...\n'
-      brew install openssh
-      found="$(homebrew_ssh_keygen)" || die "brew install openssh completed, but Homebrew ssh-keygen was not found"
-      printf 'ok: Homebrew OpenSSH ssh-keygen found at %s\n' "$found"
+    if [ -x /usr/sbin/sc_auth ]; then
+      sc_auth_help="$(/usr/sbin/sc_auth 2>&1 || true)"
+      if printf '%s\n' "$sc_auth_help" | grep -q 'create-ctk-identity' && \
+          printf '%s\n' "$sc_auth_help" | grep -q 'list-ctk-identities'; then
+        printf 'ok: Apple CryptoTokenKit identity commands found\n'
+      else
+        printf 'missing: this macOS release does not provide the required sc_auth CTK identity commands.\n' >&2
+        missing=true
+      fi
     else
-      printf 'missing: Homebrew OpenSSH. Run `kk doctor --install` or `brew install openssh` for YubiKey/FIDO-backed approval keys.\n' >&2
+      printf 'missing: /usr/sbin/sc_auth\n' >&2
+      missing=true
+    fi
+
+    if [ -x /usr/bin/ssh-keygen ]; then
+      ssh_keygen_help="$(/usr/bin/ssh-keygen -? 2>&1 || true)"
+      if printf '%s\n' "$ssh_keygen_help" | grep -q -- '-K' && \
+          printf '%s\n' "$ssh_keygen_help" | grep -q -- '-Y' && \
+          printf '%s\n' "$ssh_keygen_help" | grep -q -- '-w'; then
+        printf 'ok: Apple OpenSSH supports resident keys, file signing, and providers\n'
+      else
+        printf 'missing: Apple ssh-keygen does not provide -K, -Y, and -w support.\n' >&2
+        missing=true
+      fi
+    else
+      printf 'missing: /usr/bin/ssh-keygen\n' >&2
+      missing=true
+    fi
+
+    if [ -f /usr/lib/ssh-keychain.dylib ]; then
+      printf 'ok: Apple CryptoTokenKit OpenSSH provider found\n'
+    else
+      printf 'missing: /usr/lib/ssh-keychain.dylib\n' >&2
       missing=true
     fi
   elif command -v ssh-keygen >/dev/null 2>&1; then
@@ -255,19 +230,6 @@ doctor() {
   else
     printf 'missing: ssh-keygen\n' >&2
     missing=true
-  fi
-
-  if [ "$(uname -s)" = "Darwin" ]; then
-    if ssh_config_needs_usekeychain_ignore "$ssh_config"; then
-      if [ "$install_missing" = true ] || [ "$fix_ssh_config" = true ]; then
-        fix_ssh_config_usekeychain_ignore "$ssh_config"
-      else
-        printf 'missing: %s contains Apple-only UseKeychain without IgnoreUnknown; Homebrew OpenSSH and Git may fail. Run `kk doctor --fix-ssh-config`.\n' "$ssh_config" >&2
-        missing=true
-      fi
-    elif [ -f "$ssh_config" ]; then
-      printf 'ok: ssh config is compatible with Homebrew OpenSSH UseKeychain handling\n'
-    fi
   fi
 
   if [ "$missing" = true ]; then

@@ -26,6 +26,8 @@ DEFAULT_REPO_ROOT = "/home/smith/src/klokast/klokast-box"
 DEFAULT_CONFIG_ROOT = "/etc/klokast/secret-authority"
 DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority"
 DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
+DEFAULT_ALLOWED_SIGNERS = "/etc/klokast/secret-authority/allowed-signers-static-site"
+EXPECTED_SIGNER_ID = "human-static-site"
 DEFAULT_TTL_SECONDS = 600
 HIGH_AUTHORITY_ACTIONS = {
     "bootstrap-repo",
@@ -372,6 +374,8 @@ def require_approval(args, action, repo_root):
         return None
     if not args.approval_intent or not args.approval_signature or not args.signer_id:
         raise SecretAuthorityError("missing --approval-intent, --approval-signature, or --signer-id")
+    if args.signer_id != EXPECTED_SIGNER_ID:
+        raise SecretAuthorityError(f"static-site approvals require signer ID {EXPECTED_SIGNER_ID}")
     intent = load_intent(args.approval_intent)
     if intent["action"] != action:
         raise SecretAuthorityError("approval intent action does not match command")
@@ -606,6 +610,7 @@ def cmd_status(args):
         "github_app_configured": (config_root / "github-app.env").is_file()
         and (config_root / "github-app.pem").is_file(),
         "allowed_signers_configured": Path(args.allowed_signers).is_file(),
+        "approval_signer": EXPECTED_SIGNER_ID,
         "cloudflare_token_configured": (config_root / "apps" / APP / "cloudflared-token").is_file(),
         "audit_log": str(args.audit_log),
         "state_root": str(args.state_root),
@@ -726,7 +731,6 @@ def build_parser():
     parser.add_argument("--config-root", default=os.environ.get("KSA_CONFIG_ROOT", DEFAULT_CONFIG_ROOT))
     parser.add_argument("--state-root", default=os.environ.get("KSA_STATE_ROOT", DEFAULT_STATE_ROOT))
     parser.add_argument("--audit-log", default=os.environ.get("KSA_AUDIT_LOG", DEFAULT_AUDIT_LOG))
-    parser.add_argument("--allowed-signers", default=os.environ.get("KSA_ALLOWED_SIGNERS"))
     parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
     intent = commands.add_parser("intent")
@@ -748,8 +752,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    if not args.allowed_signers:
-        args.allowed_signers = str(Path(args.config_root) / "allowed-signers")
+    args.allowed_signers = DEFAULT_ALLOWED_SIGNERS
     try:
         if args.command == "intent":
             cmd_intent(args)

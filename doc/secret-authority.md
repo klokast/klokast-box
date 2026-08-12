@@ -14,7 +14,7 @@ The v0 pilot is `apps/static-site`.
 - `smith` may call only the checked root wrapper
   `/usr/local/sbin/ksa-static-site` through sudo.
 - High-authority actions require a signed canonical intent verified with
-  `ssh-keygen -Y verify` and the root-owned `allowed-signers` file.
+  `ssh-keygen -Y verify` and the root-owned, scope-specific signer file.
 - Cloudflare tunnel tokens are ingested once from stdin and stored root-only as
   app state. The token is released only into the child install process.
 - GitHub installation tokens are minted only inside the wrapper and are passed
@@ -38,18 +38,22 @@ permissions needed by the static-site pilot: repository administration write for
 repo creation/deploy keys and contents write for the initial `bootstrap-repo`
 push.
 
-Approval signers use OpenSSH allowed-signers format:
+The MacBook uses two separate Apple-native Secure Enclave identities. The
+static-site signer file contains only:
 
 ```text
-human namespaces="klokast-secret-authority" ecdsa-sha2-nistp256 AAAA...
-human-fido namespaces="klokast-secret-authority" sk-ssh-ed25519@openssh.com AAAA...
+human-static-site namespaces="klokast-secret-authority" sk-ecdsa-sha2-nistp256@openssh.com AAAA...
 ```
 
-Install the file as:
+The private-instance signer is stored separately as `human-private-instance`.
+Use `klokast-dev/runbooks/15-touchid-secret-authority.md` to create and install
+both signers. Do not write either signer file by hand.
 
-```sh
-sudo install -m 0600 -o root -g root allowed-signers \
-  /etc/klokast/secret-authority/allowed-signers
+The controller paths are:
+
+```text
+/etc/klokast/secret-authority/allowed-signers-static-site
+/etc/klokast/secret-authority/allowed-signers-private-instance
 ```
 
 Generate an approval intent from the controller checkout:
@@ -62,11 +66,15 @@ ansible/bin/secret-authority intent static-site install \
   > intent.json
 ```
 
-The human signs `intent.json` from a trusted client with a YubiKey-backed
-SSH/FIDO signing key:
+The human signs `intent.json` on the trusted MacBook with the static-site
+Secure Enclave key:
 
 ```sh
-ssh-keygen -Y sign -f ~/.ssh/klokast-approval-sk \
+STATIC_PROFILE="$HOME/.local/share/klokast/approval-signers/static-site"
+STATIC_CTK_HASH="$(sed -n 's/^ctk_hash=//p' "$STATIC_PROFILE/profile")"
+KEYCHAIN_CERTIFICATES="$STATIC_CTK_HASH" \
+  /usr/bin/ssh-keygen -w /usr/lib/ssh-keychain.dylib -Y sign \
+  -f "$STATIC_PROFILE/id_ecdsa_sk_rk" \
   -n klokast-secret-authority intent.json
 ```
 
@@ -79,21 +87,19 @@ ansible/bin/secret-authority static-site install \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --approval-intent intent.json \
   --approval-signature intent.json.sig \
-  --signer-id human
+  --signer-id human-static-site
 ```
 
 To ingest the static-site tunnel token, use the MacBook-side wrapper. It
 generates the controller intent, displays the approval review, signs with the
-YubiKey-backed OpenSSH key, prompts for the token with echo disabled, sends the
-token only through stdin, and verifies redacted status:
+static-site Secure Enclave key after Touch ID, prompts for the token with echo
+disabled, sends the token only through stdin, and verifies redacted status:
 
 ```sh
 klokast-dev/bin/ingest-static-site-cloudflare-token \
   --controller k002-ops \
   --box k001 \
-  --domain www.klokast.ai \
-  --signer-id human \
-  --key ~/.ssh/klokast-approval-sk
+  --domain www.klokast.ai
 ```
 
 Redacted status is safe to inspect:
@@ -151,8 +157,11 @@ ansible/bin/secret-authority intent instance create-repository \
   --repo-name klokast \
   > create-repository.intent.json
 
-SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh" \
-  ssh-keygen -Y sign -U -f /path/from/Secretive/public-key.pub \
+INSTANCE_PROFILE="$HOME/.local/share/klokast/approval-signers/private-instance"
+INSTANCE_CTK_HASH="$(sed -n 's/^ctk_hash=//p' "$INSTANCE_PROFILE/profile")"
+KEYCHAIN_CERTIFICATES="$INSTANCE_CTK_HASH" \
+  /usr/bin/ssh-keygen -w /usr/lib/ssh-keychain.dylib -Y sign \
+  -f "$INSTANCE_PROFILE/id_ecdsa_sk_rk" \
   -n klokast-secret-authority create-repository.intent.json
 
 ansible/bin/secret-authority instance create-repository \
@@ -160,15 +169,14 @@ ansible/bin/secret-authority instance create-repository \
   --repo-name klokast \
   --approval-intent create-repository.intent.json \
   --approval-signature create-repository.intent.json.sig \
-  --signer-id human
+  --signer-id human-private-instance
 ```
 
-For private-instance actions, use a dedicated Mac Secure Enclave SSH key that
-Secretive exposes through its SSH agent. Configure the key to require Touch ID
-for every use. A passkey cannot sign an OpenSSH intent file. Sign on the
-trusted workstation. Move the intent and signature through the approved
-controller terminal path. Do not copy a signing private key to the controller
-or an airunner.
+For private-instance actions, use the dedicated Apple CryptoTokenKit identity
+with a non-exportable Secure Enclave key and biometric protection. A passkey
+cannot sign an OpenSSH intent file. Sign on the trusted workstation. Move the
+intent and signature through the approved controller terminal path. Do not
+copy the local key handle to the controller or an airunner.
 
 Use `register-read-key` with the fingerprint returned by `prepare`. The action
 registers a GitHub deploy key only when GitHub confirms `read_only: true`:
@@ -186,7 +194,7 @@ ansible/bin/secret-authority instance register-read-key \
   --key-fingerprint SHA256:FINGERPRINT \
   --approval-intent register-read-key.intent.json \
   --approval-signature register-read-key.intent.json.sig \
-  --signer-id human
+  --signer-id human-private-instance
 ```
 
 Generate the initial files on the controller with one verified sealed-builder
@@ -229,66 +237,3 @@ for 30 minutes. Pass its exact path to `ansible/bin/platform-plan` with
 ```sh
 ansible/bin/platform-instance status
 ```
-
-## Cloudflare Guardian Target
-
-The Cloudflare target is stronger than the current manual static-site token
-ingestion path. The active controller remains `k002-ops`, while the hardware
-guardian is `k001-dom0` because the YubiKey is physically visible there.
-
-The long-lived Cloudflare authority token must not be stored plaintext on
-`k002-ops`, app VMs, `vultr-ops`, in chat, or in Git. It is installed as an
-encrypted blob under `/etc/klokast/cloudflare-guardian/` on `k001-dom0`. A
-root-owned external unseal command, also on `k001-dom0`, must perform the
-YubiKey-backed decrypt/unseal operation. The repo deliberately does not
-implement custom cryptography.
-
-The controller dispatcher is:
-
-```sh
-ansible/bin/secret-authority intent cloudflare static-site-tunnel \
-  --guardian k001-dom0 \
-  --box k001 \
-  --domain www.klokast.ai \
-  --cloudflare-account-id ACCOUNT \
-  --cloudflare-zone-id ZONE \
-  > intent.json
-
-ansible/bin/secret-authority cloudflare static-site-tunnel \
-  --guardian k001-dom0 \
-  --box k001 \
-  --domain www.klokast.ai \
-  --cloudflare-account-id ACCOUNT \
-  --cloudflare-zone-id ZONE \
-  --approval-intent intent.json \
-  --approval-signature intent.json.sig \
-  --signer-id xiaoju-og
-```
-
-The dom0 guardian verifies the same human signature and its own replay log
-before unsealing. It reconciles only the policy-pinned static-site Cloudflare
-tunnel and DNS record, then returns the tunnel connector token to the
-controller Secret Authority for static-site install use.
-
-Converge the guardian policy and executable from the controller:
-
-```sh
-ansible/bin/converge-cloudflare-guardian \
-  --box k001 \
-  --cloudflare-account-id ACCOUNT \
-  --cloudflare-zone-id ZONE
-```
-
-Install encrypted authority material from the MacBook:
-
-```sh
-klokast-dev/bin/install-cloudflare-authority \
-  --guardian k001-dom0 \
-  --ciphertext cloudflare-authority.enc \
-  --policy policy.json \
-  --allowed-signers allowed-signers \
-  --unseal-command unseal-cloudflare-authority
-```
-
-`install-cloudflare-authority` refuses plaintext tokens. The unseal command is
-deployment-private and must require the physical YubiKey touch/PIN.
