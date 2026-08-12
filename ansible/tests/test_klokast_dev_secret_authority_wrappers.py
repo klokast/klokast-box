@@ -79,7 +79,7 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
             """\
             #!/bin/sh
             case " $* " in
-              *" -? "*) printf 'usage: ssh-add -K -S provider\\n' >&2; exit 1 ;;
+              *" -? "*) printf 'usage: ssh-add [-cDdKkLlqvXx] [-S provider]\\n' >&2; exit 1 ;;
               *) exit 2 ;;
             esac
             """,

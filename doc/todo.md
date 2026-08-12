@@ -18,6 +18,10 @@ fingerprint from `sc_auth`, and stops the agent after the operation. Validate
 this revised path with both real identities on `og`. Do not accept an
 overwrite prompt as an identity-selection mechanism.
 
+The first revised run also found that Apple `ssh-add -?` groups short options
+as `[-cDdKkLlqvXx]`. Capability checks must recognize `K` inside this group;
+they must not require the separate text `-K` in the usage output.
+
 The infra-agent also has no Go toolchain. Run Go tests and the exact build in
 the networkless controller-managed sealed builder after the commit is pushed.
 

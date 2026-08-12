@@ -122,7 +122,7 @@ class TouchIDApprovalTest(unittest.TestCase):
             set -eu
             printf 'ssh-add %s\\n' "$*" >> "$FAKE_CALLS"
             case " $* " in
-              *" -? "*) printf 'usage: ssh-add -K -S provider\\n' >&2; exit 1 ;;
+              *" -? "*) printf 'usage: ssh-add [-cDdKkLlqvXx] [-S provider]\\n' >&2; exit 1 ;;
               *" -L "*)
                 if [ -f "$FAKE_STATE" ] && { [ ! -s "$FAKE_STATE" ] || grep -qx private-instance "$FAKE_STATE"; }; then
                   printf 'sk-ecdsa-sha2-nistp256@openssh.com AAAAprivate private-instance\\n'

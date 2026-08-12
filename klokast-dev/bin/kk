@@ -221,7 +221,7 @@ doctor() {
 
     if [ -x /usr/bin/ssh-agent ] && [ -x /usr/bin/ssh-add ]; then
       ssh_add_help="$(/usr/bin/ssh-add -? 2>&1 || true)"
-      if printf '%s\n' "$ssh_add_help" | grep -q -- '-K' && \
+      if printf '%s\n' "$ssh_add_help" | grep -Eq -- '(-K|\[[^]]*K[^]]*\])' && \
           printf '%s\n' "$ssh_add_help" | grep -q -- '-S'; then
         printf 'ok: Apple OpenSSH supports a short-lived resident-key agent\n'
       else

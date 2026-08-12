@@ -144,7 +144,7 @@ ksa_require_native_touchid() {
     ksa_die "Apple ssh-keygen does not support an external SecurityKeyProvider (-w)"
 
   ssh_add_help="$($KSA_CTK_SSH_ADD -? 2>&1 || true)"
-  printf '%s\n' "$ssh_add_help" | grep -q -- '-K' || \
+  printf '%s\n' "$ssh_add_help" | grep -Eq -- '(-K|\[[^]]*K[^]]*\])' || \
     ksa_die "Apple ssh-add does not support resident-key loading (-K)"
   printf '%s\n' "$ssh_add_help" | grep -q -- '-S' || \
     ksa_die "Apple ssh-add does not support an external SecurityKeyProvider (-S)"
