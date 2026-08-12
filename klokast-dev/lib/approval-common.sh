@@ -275,6 +275,7 @@ ksa_with_ephemeral_touchid_agent() (
       ;;
     sign)
       ksa_log "Approve the ${approval_purpose} signature with Touch ID."
+      ksa_log "After Touch ID confirms, Apple OpenSSH can take a short time. Wait for the next Klokast status message."
       rm -f "${message_path}.sig"
       "$KSA_CTK_SSH_KEYGEN" -q -Y sign \
         -f "$agent_dir/matched.pub" -n "$SIGNATURE_NAMESPACE" "$message_path" || \
@@ -473,6 +474,7 @@ ksa_sign_touchid_message() {
   rm -f "${message_path}.sig"
   if [ "$profile_schema" = 1 ]; then
     ksa_log "Approve the ${approval_purpose} signature with Touch ID."
+    ksa_log "After Touch ID confirms, Apple OpenSSH can take a short time. Wait for the next Klokast status message."
     KEYCHAIN_CERTIFICATES="$ctk_hash" \
       "$KSA_CTK_SSH_KEYGEN" -q -w "$KSA_CTK_PROVIDER" -Y sign \
         -f "$key_path" -n "$SIGNATURE_NAMESPACE" "$message_path" || \
