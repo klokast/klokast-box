@@ -27,9 +27,11 @@ klokast-dev/bin/kk doctor --install
 ```
 
 The Secret Authority signer uses Apple's native CryptoTokenKit identity
-commands, system OpenSSH, and `/usr/lib/ssh-keychain.dylib`. The check fails if
-this macOS release does not provide the required `sc_auth` or `ssh-keygen`
-features. It does not install another OpenSSH build.
+commands, system OpenSSH, and `/usr/lib/ssh-keychain.dylib`. It uses a private
+Apple `ssh-agent` only for one signing operation. The check fails if this macOS
+release does not provide the required `sc_auth`, `ssh-keygen`, `ssh-agent`, or
+`ssh-add` features. It does not install another OpenSSH build or configure an
+ambient agent.
 
 Configure Touch ID for the current Mac user. Then follow
 `klokast-dev/runbooks/15-touchid-secret-authority.md` to create the separate

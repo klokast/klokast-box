@@ -53,9 +53,11 @@ source "$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
 Keep the repository name as `klokast` unless the architecture changes.
 
 The approval key is an Apple-native CryptoTokenKit identity protected by Touch
-ID. The private key is not exportable. The local OpenSSH file is only a key
-handle. An Apple passkey cannot replace it because a passkey is bound to a
-compatible app or website and cannot sign the bootstrap intent file. See
+ID. The private key is not exportable. The local profile contains its public
+key. A private, short-lived Apple `ssh-agent` obtains the matching Secure
+Enclave identity only while a signature is made. An Apple passkey cannot
+replace it because a passkey is bound to a compatible app or website and
+cannot sign the bootstrap intent file. See
 `klokast-dev/runbooks/15-touchid-secret-authority.md` for the shared signer
 design and recovery procedure.
 
@@ -311,14 +313,12 @@ PY
 Confirm all fields on the screen. In particular, check the action, owner,
 repository, key fingerprint when present, engine commit, and expiry time.
 
-Sign with the hardware-backed key:
+Sign with the hardware-backed key from the `klokast-box` checkout:
 
 ```sh
-KEYCHAIN_CERTIFICATES="$APPROVAL_CTK_HASH" \
-  "$APPROVAL_SSH_KEYGEN" -w "$APPROVAL_SK_PROVIDER" -Y sign \
-  -f "$APPROVAL_KEY" \
-  -n klokast-secret-authority \
-  "$LOCAL_INTENT"
+klokast-dev/bin/sign-secret-authority-intent \
+  --purpose private-instance \
+  --intent "$LOCAL_INTENT"
 ```
 
 Use Touch ID when macOS asks you to approve the signature. Confirm that the

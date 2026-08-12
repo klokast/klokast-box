@@ -32,15 +32,41 @@ class TouchIDApprovalTest(unittest.TestCase):
             #!/bin/sh
             set -eu
             printf 'sc_auth %s\\n' "$*" >> "$FAKE_CALLS"
+            has_private() {
+              [ -f "$FAKE_STATE" ] && { [ ! -s "$FAKE_STATE" ] || grep -qx private-instance "$FAKE_STATE"; }
+            }
+            has_static() {
+              [ -s "$FAKE_STATE" ] && grep -qx static-site "$FAKE_STATE"
+            }
             case "${1:-}" in
               '') printf 'create-ctk-identity\\nlist-ctk-identities\\n' ;;
               identities)
-                if [ -f "$FAKE_STATE" ]; then
+                if has_private; then
                   printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\tKlokast private-instance approval\\n'
+                fi
+                if has_static; then
+                  printf 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\\tKlokast static-site approval\\n'
+                fi
+                ;;
+              list-ctk-identities)
+                if has_private; then
+                  printf 'p-256-ne SHA256:privatefingerprint bio Klokast private-instance approval human-private-instance 2099 YES\\n'
+                fi
+                if has_static; then
+                  printf 'p-256-ne SHA256:staticfingerprint bio Klokast static-site approval human-static-site 2099 YES\\n'
                 fi
                 ;;
               create-ctk-identity)
-                : > "$FAKE_STATE"
+                label=''
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = -l ]; then label=$2; break; fi
+                  shift
+                done
+                case "$label" in
+                  'Klokast private-instance approval') printf 'private-instance\\n' >> "$FAKE_STATE" ;;
+                  'Klokast static-site approval') printf 'static-site\\n' >> "$FAKE_STATE" ;;
+                  *) exit 2 ;;
+                esac
                 ;;
               *) exit 2 ;;
             esac
@@ -54,13 +80,14 @@ class TouchIDApprovalTest(unittest.TestCase):
             printf 'ssh-keygen cert=%s %s\\n' "${KEYCHAIN_CERTIFICATES:-}" "$*" >> "$FAKE_CALLS"
             case " $* " in
               *" -? "*) printf 'usage: ssh-keygen -K -Y -w provider\\n' >&2; exit 1 ;;
-              *" -K "*)
-                printf 'handle\\n' > id_ecdsa_sk_rk
-                printf 'sk-ecdsa-sha2-nistp256@openssh.com AAAAfake private-instance\\n' > id_ecdsa_sk_rk.pub
-                exit 0
-                ;;
               *" -E sha256 -lf "*)
-                printf '256 SHA256:testfingerprint test (ECDSA-SK)\\n'
+                last=''
+                for arg in "$@"; do last="$arg"; done
+                if grep -q 'AAAAstatic' "$last"; then
+                  printf '256 SHA256:staticfingerprint test (ECDSA-SK)\\n'
+                else
+                  printf '256 SHA256:privatefingerprint test (ECDSA-SK)\\n'
+                fi
                 exit 0
                 ;;
               *" -Y sign "*)
@@ -71,6 +98,42 @@ class TouchIDApprovalTest(unittest.TestCase):
                 ;;
             esac
             exit 2
+            """,
+        )
+        self.write_executable(
+            fake_bin / "ssh-agent",
+            """\
+            #!/bin/sh
+            set -eu
+            printf 'ssh-agent %s\\n' "$*" >> "$FAKE_CALLS"
+            case " $* " in
+              *" -k "*) exit 0 ;;
+              *)
+                printf 'SSH_AUTH_SOCK=%s; export SSH_AUTH_SOCK;\\n' "$2"
+                printf 'SSH_AGENT_PID=4242; export SSH_AGENT_PID;\\n'
+                ;;
+            esac
+            """,
+        )
+        self.write_executable(
+            fake_bin / "ssh-add",
+            """\
+            #!/bin/sh
+            set -eu
+            printf 'ssh-add %s\\n' "$*" >> "$FAKE_CALLS"
+            case " $* " in
+              *" -? "*) printf 'usage: ssh-add -K -S provider\\n' >&2; exit 1 ;;
+              *" -L "*)
+                if [ -f "$FAKE_STATE" ] && { [ ! -s "$FAKE_STATE" ] || grep -qx private-instance "$FAKE_STATE"; }; then
+                  printf 'sk-ecdsa-sha2-nistp256@openssh.com AAAAprivate private-instance\\n'
+                fi
+                if [ -s "$FAKE_STATE" ] && grep -qx static-site "$FAKE_STATE"; then
+                  printf 'sk-ecdsa-sha2-nistp256@openssh.com AAAAstatic static-site\\n'
+                fi
+                ;;
+              *" -K "*) cat >/dev/null ;;
+              *) exit 2 ;;
+            esac
             """,
         )
         return fake_bin, state, calls, provider
@@ -92,6 +155,8 @@ set -eu
 KSA_TOOL_NAME=test-touchid
 KSA_CTK_SC_AUTH={fake_bin / 'sc_auth'}
 KSA_CTK_SSH_KEYGEN={fake_bin / 'ssh-keygen'}
+KSA_CTK_SSH_AGENT={fake_bin / 'ssh-agent'}
+KSA_CTK_SSH_ADD={fake_bin / 'ssh-add'}
 KSA_CTK_PROVIDER={provider}
 KSA_APPROVAL_PROFILE_ROOT={root / 'profiles'}
 SIGNATURE_NAMESPACE=klokast-secret-authority
@@ -129,14 +194,18 @@ ksa_sign_touchid_message "$tmpdir/intent"
             profile = root / "profiles" / "private-instance"
             manifest = (profile / "profile").read_text(encoding="utf-8")
             self.assertIn("signer_id=human-private-instance", manifest)
+            self.assertIn("schema_version=2", manifest)
+            self.assertIn("signing_mode=ephemeral-apple-agent", manifest)
             self.assertIn("key_type=p-256-ne", manifest)
             self.assertIn("protection=bio", manifest)
             self.assertEqual(stat.S_IMODE((profile / "profile").stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE((profile / "id_ecdsa_sk_rk").stat().st_mode), 0o600)
+            self.assertFalse((profile / "id_ecdsa_sk_rk").exists())
+            self.assertEqual(
+                stat.S_IMODE((profile / "id_ecdsa_sk_rk.pub").stat().st_mode), 0o600
+            )
             call_text = calls.read_text(encoding="utf-8")
             self.assertEqual(call_text.count("create-ctk-identity"), 1)
-            self.assertEqual(call_text.count(" -K "), 1)
-            self.assertIn("cert=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", call_text)
+            self.assertEqual(call_text.count("ssh-add -q -K -S"), 2)
             self.assertIn(" -Y sign ", call_text)
 
     def test_duplicate_exact_labels_fail_closed(self):
@@ -173,17 +242,69 @@ ksa_exact_identity_hash
             self.assertEqual(completed.returncode, 2)
             self.assertIn("more than one CryptoTokenKit identity", completed.stderr)
 
-    def test_untracked_existing_identity_is_not_adopted(self):
+    def test_untracked_existing_identity_needs_explicit_recovery_approval(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "identity-created").touch()
             completed, _calls = self.run_common(
                 root,
                 "ksa_ensure_touchid_profile private-instance \"$tmpdir\"",
+                "n\n",
             )
 
             self.assertEqual(completed.returncode, 2)
-            self.assertIn("identity exists without Klokast profile metadata", completed.stderr)
+            self.assertIn("local Klokast profile is incomplete", completed.stderr)
+            self.assertIn("profile recovery was not approved", completed.stderr)
+
+    def test_interrupted_identity_setup_can_recover_public_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "identity-created").touch()
+            completed, calls = self.run_common(
+                root,
+                'ksa_ensure_touchid_profile private-instance "$tmpdir"',
+                "y\n",
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            profile = root / "profiles" / "private-instance"
+            self.assertTrue((profile / "id_ecdsa_sk_rk.pub").is_file())
+            self.assertIn(
+                "signing_mode=ephemeral-apple-agent",
+                (profile / "profile").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "create-ctk-identity -l", calls.read_text(encoding="utf-8")
+            )
+
+    def test_two_purpose_profiles_select_different_loaded_identities(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            completed, calls = self.run_common(
+                root,
+                """
+ksa_ensure_touchid_profile private-instance "$tmpdir"
+ksa_ensure_touchid_profile static-site "$tmpdir"
+printf 'intent\n' > "$tmpdir/intent"
+ksa_sign_touchid_message "$tmpdir/intent"
+""",
+                "y\ny\n",
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            profiles = root / "profiles"
+            private_key = (
+                profiles / "private-instance" / "id_ecdsa_sk_rk.pub"
+            ).read_text(encoding="utf-8")
+            static_key = (
+                profiles / "static-site" / "id_ecdsa_sk_rk.pub"
+            ).read_text(encoding="utf-8")
+            self.assertIn("AAAAprivate", private_key)
+            self.assertIn("AAAAstatic", static_key)
+            self.assertNotEqual(private_key, static_key)
+            self.assertEqual(
+                calls.read_text(encoding="utf-8").count("ssh-add -q -K -S"), 3
+            )
 
     def test_profile_fingerprint_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -197,7 +318,7 @@ ksa_exact_identity_hash
             manifest = root / "profiles" / "private-instance" / "profile"
             manifest.write_text(
                 manifest.read_text(encoding="utf-8").replace(
-                    "key_fingerprint=SHA256:testfingerprint",
+                    "key_fingerprint=SHA256:privatefingerprint",
                     "key_fingerprint=SHA256:different",
                 ),
                 encoding="utf-8",

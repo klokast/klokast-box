@@ -355,7 +355,10 @@ Examples of User Services:
 - For high-authority workflows from `og`, prefer separate Apple-native,
   non-exportable Secure Enclave keys protected by Touch ID. Use one identity
   for each authority scope. These are OpenSSH file-signing keys, not passkeys;
-  private key material does not leave the Mac.
+  private key material does not leave the Mac. A private Apple `ssh-agent` can
+  run only for one bounded signing operation when native OpenSSH must select
+  one of several CryptoTokenKit identities. Do not use an ambient agent for
+  these approval keys.
 
 ## 2. `<cloud>-ops`
 - This is a temporary cloud-based bootstrap host provisioned by

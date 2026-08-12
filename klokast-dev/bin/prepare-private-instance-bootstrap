@@ -209,7 +209,7 @@ write_session() {
   local owner="$2"
   local repo="$3"
   local signer_id="$4"
-  local approval_key="$5"
+  local approval_public_key="$5"
   local approval_ctk_hash="$6"
   local work_dir="$7"
   local session_file="$work_dir/session.sh"
@@ -225,10 +225,9 @@ write_session() {
     printf 'INSTANCE_OWNER=%q\n' "$owner"
     printf 'INSTANCE_REPO=%q\n' "$repo"
     printf 'SIGNER_ID=%q\n' "$signer_id"
-    printf 'APPROVAL_KEY=%q\n' "$approval_key"
+    printf 'APPROVAL_PURPOSE=%q\n' private-instance
+    printf 'APPROVAL_PUBLIC_KEY=%q\n' "$approval_public_key"
     printf 'APPROVAL_CTK_HASH=%q\n' "$approval_ctk_hash"
-    printf 'APPROVAL_SSH_KEYGEN=%q\n' "$KSA_CTK_SSH_KEYGEN"
-    printf 'APPROVAL_SK_PROVIDER=%q\n' "$KSA_CTK_PROVIDER"
     printf 'ENGINE_COMMIT=%q\n' "$ENGINE_COMMIT"
     printf 'BUILD_OPERATION=%q\n' "$BUILD_OPERATION"
     printf 'BOOTSTRAP_WORK=%q\n' "$work_dir"
@@ -320,4 +319,4 @@ check_macbook
 check_controller "$controller"
 prepare_signer "$controller"
 write_session "$controller" "$owner" "$repo" "$signer_id" \
-  "$key_path" "$ctk_hash" "$work_dir"
+  "$pub_path" "$ctk_hash" "$work_dir"

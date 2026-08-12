@@ -63,7 +63,24 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
               identities)
                 printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\tKlokast static-site approval\\n'
                 ;;
+              list-ctk-identities)
+                printf 'p-256-ne SHA256:fakefingerprint bio Klokast static-site approval human-static-site 2099 YES\\n'
+                ;;
               *) exit 2;;
+            esac
+            """,
+        )
+        self.write_executable(
+            fake_bin / "ssh-agent",
+            "#!/bin/sh\nprintf 'SSH_AGENT_PID=4242; export SSH_AGENT_PID;\\n'\n",
+        )
+        self.write_executable(
+            fake_bin / "ssh-add",
+            """\
+            #!/bin/sh
+            case " $* " in
+              *" -? "*) printf 'usage: ssh-add -K -S provider\\n' >&2; exit 1 ;;
+              *) exit 2 ;;
             esac
             """,
         )
@@ -164,6 +181,12 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
         ).replace(
             "KSA_CTK_SSH_KEYGEN=/usr/bin/ssh-keygen",
             f"KSA_CTK_SSH_KEYGEN={fake_bin / 'ssh-keygen'}",
+        ).replace(
+            "KSA_CTK_SSH_AGENT=/usr/bin/ssh-agent",
+            f"KSA_CTK_SSH_AGENT={fake_bin / 'ssh-agent'}",
+        ).replace(
+            "KSA_CTK_SSH_ADD=/usr/bin/ssh-add",
+            f"KSA_CTK_SSH_ADD={fake_bin / 'ssh-add'}",
         ).replace(
             "KSA_CTK_PROVIDER=/usr/lib/ssh-keychain.dylib",
             f"KSA_CTK_PROVIDER={fake_provider}",

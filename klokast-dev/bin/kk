@@ -136,6 +136,7 @@ doctor() {
   local missing=false
   local sc_auth_help=""
   local ssh_keygen_help=""
+  local ssh_add_help=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -206,16 +207,29 @@ doctor() {
 
     if [ -x /usr/bin/ssh-keygen ]; then
       ssh_keygen_help="$(/usr/bin/ssh-keygen -? 2>&1 || true)"
-      if printf '%s\n' "$ssh_keygen_help" | grep -q -- '-K' && \
-          printf '%s\n' "$ssh_keygen_help" | grep -q -- '-Y' && \
+      if printf '%s\n' "$ssh_keygen_help" | grep -q -- '-Y' && \
           printf '%s\n' "$ssh_keygen_help" | grep -q -- '-w'; then
-        printf 'ok: Apple OpenSSH supports resident keys, file signing, and providers\n'
+        printf 'ok: Apple OpenSSH supports file signing and providers\n'
       else
-        printf 'missing: Apple ssh-keygen does not provide -K, -Y, and -w support.\n' >&2
+        printf 'missing: Apple ssh-keygen does not provide -Y and -w support.\n' >&2
         missing=true
       fi
     else
       printf 'missing: /usr/bin/ssh-keygen\n' >&2
+      missing=true
+    fi
+
+    if [ -x /usr/bin/ssh-agent ] && [ -x /usr/bin/ssh-add ]; then
+      ssh_add_help="$(/usr/bin/ssh-add -? 2>&1 || true)"
+      if printf '%s\n' "$ssh_add_help" | grep -q -- '-K' && \
+          printf '%s\n' "$ssh_add_help" | grep -q -- '-S'; then
+        printf 'ok: Apple OpenSSH supports a short-lived resident-key agent\n'
+      else
+        printf 'missing: Apple ssh-add does not provide -K and -S support.\n' >&2
+        missing=true
+      fi
+    else
+      printf 'missing: Apple /usr/bin/ssh-agent or /usr/bin/ssh-add\n' >&2
       missing=true
     fi
 

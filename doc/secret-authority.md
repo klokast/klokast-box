@@ -70,12 +70,9 @@ The human signs `intent.json` on the trusted MacBook with the static-site
 Secure Enclave key:
 
 ```sh
-STATIC_PROFILE="$HOME/.local/share/klokast/approval-signers/static-site"
-STATIC_CTK_HASH="$(sed -n 's/^ctk_hash=//p' "$STATIC_PROFILE/profile")"
-KEYCHAIN_CERTIFICATES="$STATIC_CTK_HASH" \
-  /usr/bin/ssh-keygen -w /usr/lib/ssh-keychain.dylib -Y sign \
-  -f "$STATIC_PROFILE/id_ecdsa_sk_rk" \
-  -n klokast-secret-authority intent.json
+klokast-dev/bin/sign-secret-authority-intent \
+  --purpose static-site \
+  --intent intent.json
 ```
 
 Run the approved action from `<box>-ops` as `smith`:
@@ -157,12 +154,9 @@ ansible/bin/secret-authority intent instance create-repository \
   --repo-name klokast \
   > create-repository.intent.json
 
-INSTANCE_PROFILE="$HOME/.local/share/klokast/approval-signers/private-instance"
-INSTANCE_CTK_HASH="$(sed -n 's/^ctk_hash=//p' "$INSTANCE_PROFILE/profile")"
-KEYCHAIN_CERTIFICATES="$INSTANCE_CTK_HASH" \
-  /usr/bin/ssh-keygen -w /usr/lib/ssh-keychain.dylib -Y sign \
-  -f "$INSTANCE_PROFILE/id_ecdsa_sk_rk" \
-  -n klokast-secret-authority create-repository.intent.json
+klokast-dev/bin/sign-secret-authority-intent \
+  --purpose private-instance \
+  --intent create-repository.intent.json
 
 ansible/bin/secret-authority instance create-repository \
   --repo-owner FAMILY \
@@ -176,7 +170,8 @@ For private-instance actions, use the dedicated Apple CryptoTokenKit identity
 with a non-exportable Secure Enclave key and biometric protection. A passkey
 cannot sign an OpenSSH intent file. Sign on the trusted workstation. Move the
 intent and signature through the approved controller terminal path. Do not
-copy the local key handle to the controller or an airunner.
+copy the local approval profile to the controller or an airunner. The signing
+helper uses a private Apple agent only for the duration of one operation.
 
 Use `register-read-key` with the fingerprint returned by `prepare`. The action
 registers a GitHub deploy key only when GitHub confirms `read_only: true`:

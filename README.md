@@ -29,7 +29,7 @@ the private-instance bootstrap procedure in `doc/secret-authority.md`.
 # 4. Build the deployment server
 From a Macbook:
 1. install `brew`
-2. `brew install klokast` : this should create and provision the deployment server (using terraform and Ansible). Secret Authority approval on the trusted Mac uses Apple system OpenSSH with a native, Touch ID-protected CryptoTokenKit identity. The package must not replace this signer path with an SSH agent or another OpenSSH build.
+2. `brew install klokast` : this should create and provision the deployment server (using terraform and Ansible). Secret Authority approval on the trusted Mac uses Apple system OpenSSH with a native, Touch ID-protected CryptoTokenKit identity. The package must not replace this signer path with an ambient or long-running SSH agent or another OpenSSH build. A private Apple agent can run only for the duration of one identity-selection and signing operation.
 
 Optional cloud bootstrap host or cloud-based `airunner`:
 - `klokast-ops/bin/provision-vultr-ops` creates a cloud-based host named `<cloud>-ops` (where `<cloud>` is, for example, `vultr` or `hetzner`).

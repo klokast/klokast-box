@@ -115,8 +115,12 @@ cloudflare_token_configured=true
 
 - `Touch ID approval profile is missing`: complete
   `klokast-dev/runbooks/15-touchid-secret-authority.md`.
-- `identity exists without Klokast profile metadata`: stop. Confirm the exact
-  identity hash before you delete or replace anything.
+- `local Klokast profile is incomplete`: compare the displayed hash and SSH
+  fingerprint with `sc_auth list-ctk-identities`. Approve recovery only if the
+  interrupted Klokast setup created that exact identity.
+- `id_ecdsa_sk_rk already exists`: update the checkout and rerun the signer
+  installer. The current helper uses a short-lived Apple agent and does not ask
+  OpenSSH to write two keys to the same filename.
 - `approval intent is expired`: rerun the ingestion wrapper so it generates a
   fresh intent and signature.
 - `approval intent nonce was already used`: rerun the ingestion wrapper so it

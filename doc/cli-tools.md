@@ -111,6 +111,7 @@ Source: `klokast-dev/bin/`.
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
+| `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |
 | `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent with the static-site Touch ID identity, sends the token over stdin, and verifies redacted status. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |
 

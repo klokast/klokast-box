@@ -6,9 +6,17 @@ Format of the first line: `# yyyy-mm-dd - title`
 
 The infra-agent host is Linux. It cannot execute Apple's `sc_auth`, access the
 Mac Secure Enclave, or load `/usr/lib/ssh-keychain.dylib`. Deterministic tests
-cover identity selection, profile custody, provider filtering, and OpenSSH
-command construction, but they cannot prove the real biometric prompt or the
-resident-key handle format of the current Mac.
+cover identity selection, profile custody, and OpenSSH command construction,
+but they cannot prove the real biometric prompt on the current Mac.
+
+The first real two-identity test found that Apple OpenSSH assigns
+`id_ecdsa_sk_rk` to both P-256 identities during `ssh-keygen -K`. The second
+key then asks to overwrite the first key handle. The current helper does not
+use resident-key file download for a new profile. It loads all identities into
+a private, short-lived Apple `ssh-agent`, selects the exact key by the SSH
+fingerprint from `sc_auth`, and stops the agent after the operation. Validate
+this revised path with both real identities on `og`. Do not accept an
+overwrite prompt as an identity-selection mechanism.
 
 The infra-agent also has no Go toolchain. Run Go tests and the exact build in
 the networkless controller-managed sealed builder after the commit is pushed.

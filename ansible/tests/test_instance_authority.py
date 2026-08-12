@@ -17,6 +17,7 @@ SCRIPT = REPO_ROOT / "klokast-ops" / "secret-authority" / "bin" / "ksa-instance"
 PLATFORM_INSTANCE = REPO_ROOT / "ansible" / "bin" / "platform-instance"
 INSTALLER = REPO_ROOT / "klokast-dev" / "bin" / "install-instance-github-app"
 PREPARE_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "prepare-private-instance-bootstrap"
+SIGN_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "sign-secret-authority-intent"
 
 
 def load(path, name):
@@ -262,9 +263,9 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn("--purpose private-instance", source)
         self.assertIn('"approval_signer":"human-private-instance"', source)
         self.assertIn('"allowed_signers_configured":true', source)
-        self.assertIn('printf \'APPROVAL_KEY=%q\\n\'', source)
+        self.assertIn('printf \'APPROVAL_PURPOSE=%q\\n\'', source)
+        self.assertIn('printf \'APPROVAL_PUBLIC_KEY=%q\\n\'', source)
         self.assertIn('printf \'APPROVAL_CTK_HASH=%q\\n\'', source)
-        self.assertIn('printf \'APPROVAL_SK_PROVIDER=%q\\n\'', source)
         self.assertNotIn("GITHUB_APP_PRIVATE_KEY", source)
         self.assertNotIn("init-values.json", source)
         completed = subprocess.run(
@@ -286,10 +287,15 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn("--finalize-migration", source)
         self.assertIn("allowed-signers-private-instance", source)
         self.assertIn("allowed-signers-static-site", source)
+        self.assertIn("Touch ID approved. Sending the public signer check", source)
         self.assertIn("KSA_CTK_SC_AUTH=/usr/sbin/sc_auth", common)
         self.assertIn("KSA_CTK_SSH_KEYGEN=/usr/bin/ssh-keygen", common)
+        self.assertIn("KSA_CTK_SSH_AGENT=/usr/bin/ssh-agent", common)
+        self.assertIn("KSA_CTK_SSH_ADD=/usr/bin/ssh-add", common)
         self.assertIn("KSA_CTK_PROVIDER=/usr/lib/ssh-keychain.dylib", common)
         self.assertIn("-l \"$ctk_label\" -k p-256-ne -t bio", common)
+        self.assertIn("ephemeral-apple-agent", common)
+        self.assertIn('candidate_fingerprint="$(', common)
         self.assertIn('KEYCHAIN_CERTIFICATES="$ctk_hash"', common)
         self.assertIn('"$KSA_CTK_SSH_KEYGEN" -q -w "$KSA_CTK_PROVIDER" -Y sign', common)
         self.assertLess(
@@ -302,6 +308,16 @@ class InstanceAuthorityTest(unittest.TestCase):
         )
         completed = subprocess.run(
             ["bash", "-n", str(installer)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        sign_source = SIGN_HELPER.read_text(encoding="utf-8")
+        self.assertIn("--purpose private-instance|static-site", sign_source)
+        self.assertIn('ksa_load_touchid_profile "$purpose"', sign_source)
+        self.assertIn('ksa_sign_touchid_message "$intent"', sign_source)
+        completed = subprocess.run(
+            ["bash", "-n", str(SIGN_HELPER)],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
