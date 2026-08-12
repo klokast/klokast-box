@@ -310,7 +310,7 @@ printf 'Local work area:  %s\n' "$work_dir"
 printf 'Approved engine:  %s\n' "$ENGINE_COMMIT"
 printf '\nNo PEM or private deployment values are included.\n'
 
-confirm_no "Use these settings?" || {
+confirm_yes "Use these settings?" || {
   printf 'No changes were made. Run the helper again to enter different settings.\n'
   exit 0
 }

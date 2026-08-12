@@ -266,6 +266,8 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn('printf \'APPROVAL_PURPOSE=%q\\n\'', source)
         self.assertIn('printf \'APPROVAL_PUBLIC_KEY=%q\\n\'', source)
         self.assertIn('printf \'APPROVAL_CTK_HASH=%q\\n\'', source)
+        self.assertIn('confirm_yes "Use these settings?"', source)
+        self.assertIn('confirm_no "Continue with Step 1?"', source)
         self.assertNotIn("GITHUB_APP_PRIVATE_KEY", source)
         self.assertNotIn("init-values.json", source)
         completed = subprocess.run(
