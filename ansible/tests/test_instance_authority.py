@@ -18,6 +18,7 @@ PLATFORM_INSTANCE = REPO_ROOT / "ansible" / "bin" / "platform-instance"
 INSTALLER = REPO_ROOT / "klokast-dev" / "bin" / "install-instance-github-app"
 PREPARE_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "prepare-private-instance-bootstrap"
 SIGN_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "sign-secret-authority-intent"
+ACTION_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "run-private-instance-action"
 
 
 def load(path, name):
@@ -457,9 +458,47 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn("The repository name is `klokast-instance`", runbook)
         self.assertIn("Create the exact empty private repository", runbook)
         self.assertIn("Select only `klokast-instance`", runbook)
-        self.assertIn('ACTION="register-repository"', runbook)
+        self.assertIn(
+            "klokast-dev/bin/run-private-instance-action register-repository",
+            runbook,
+        )
+        self.assertIn(
+            "klokast-dev/bin/run-private-instance-action register-read-key",
+            runbook,
+        )
+        self.assertIn(
+            "klokast-dev/bin/run-private-instance-action retire-bootstrap",
+            runbook,
+        )
         self.assertNotIn("create-repository", runbook)
         self.assertNotIn("Leave the repository selection empty", runbook)
+
+    def test_private_instance_action_helper_keeps_human_approval_boundary(self):
+        source = ACTION_HELPER.read_text(encoding="utf-8")
+        self.assertIn(
+            "register-repository|register-read-key|retire-bootstrap",
+            source,
+        )
+        self.assertIn("Sign and run this exact action? [y/N]", source)
+        self.assertIn('"$SCRIPT_DIR/sign-secret-authority-intent"', source)
+        self.assertIn("intent fields do not match the closed schema", source)
+        self.assertIn("intent is not canonical JSON", source)
+        self.assertIn("test \"$(git rev-parse HEAD)\" = \"$expected\"", source)
+        self.assertIn("klokast-controller-guard --status --json --require-active", source)
+        self.assertIn('EXPECTED_REPO_NAME="klokast-instance"', source)
+        self.assertNotIn("github-app.pem", source)
+
+        completed = subprocess.run(
+            ["bash", "-n", str(ACTION_HELPER)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        completed = subprocess.run(
+            [str(ACTION_HELPER), "--help"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Runs one human-approved", completed.stdout)
 
 
 class PlatformInstanceTest(unittest.TestCase):

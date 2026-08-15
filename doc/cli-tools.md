@@ -96,7 +96,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | Tool | Source | Locus | What it does |
 | --- | --- | --- | --- |
 | `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles static-site Secret Authority intents and approved actions for GitHub App and Cloudflare token storage. |
-| `ksa-instance` | `klokast-ops/secret-authority/bin/` | root wrapper | Creates the private repository, registers its read-only deploy key, retires the temporary GitHub App, and synchronizes root-custodied instance source evidence. |
+| `ksa-instance` | `klokast-ops/secret-authority/bin/` | root wrapper | Verifies and registers the human-created private repository, registers its read-only deploy key, retires the temporary GitHub App, and synchronizes root-custodied instance source evidence. |
 | `klokast-controller-guard` | `ansible/roles/ops-controller/files/` | controller target | Checks the controller HA marker and exits nonzero unless the local controller is active. |
 
 ## Laptop And Developer Convenience Tools
@@ -111,6 +111,7 @@ Source: `klokast-dev/bin/`.
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
+| `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
 | `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |
 | `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent with the static-site Touch ID identity, sends the token over stdin, and verifies redacted status. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |

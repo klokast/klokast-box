@@ -148,53 +148,26 @@ ansible/bin/platform-instance prepare \
 The command prints a redacted repository hash and the public-key fingerprint.
 It keeps the private key root-only under `/etc/klokast/private-instance/`.
 
-Create and sign one intent for each high-authority action. This example
-verifies and registers the exact empty private repository that the human
-created:
+Run one wrapper command for each high-authority action from the trusted
+MacBook. First verify and register the human-created repository. Then register
+the controller read-only key:
 
 ```sh
-ansible/bin/secret-authority intent instance register-repository \
-  --repo-owner FAMILY \
-  --repo-name klokast-instance \
-  > register-repository.intent.json
-
-klokast-dev/bin/sign-secret-authority-intent \
-  --purpose private-instance \
-  --intent register-repository.intent.json
-
-ansible/bin/secret-authority instance register-repository \
-  --repo-owner FAMILY \
-  --repo-name klokast-instance \
-  --approval-intent register-repository.intent.json \
-  --approval-signature register-repository.intent.json.sig \
-  --signer-id human-private-instance
+klokast-dev/bin/run-private-instance-action register-repository
+klokast-dev/bin/run-private-instance-action register-read-key
 ```
 
-For private-instance actions, use the dedicated Apple CryptoTokenKit identity
-with a non-exportable Secure Enclave key and biometric protection. A passkey
-cannot sign an OpenSSH intent file. Sign on the trusted workstation. Move the
-intent and signature through the approved controller terminal path. Do not
-copy the local approval profile to the controller or an airunner. The signing
-helper uses a private Apple agent only for the duration of one operation.
+The wrapper gets one 10-minute intent from the controller and displays it. The
+human checks the exact action, repository, engine commit, key fingerprint when
+present, and expiry before approval. The wrapper asks before it calls the
+dedicated Apple CryptoTokenKit identity. Touch ID protects the non-exportable
+Secure Enclave key. The wrapper transfers only the intent and signature and
+runs only the approved action. It never copies the local approval profile to
+the controller or an airunner.
 
-Use `register-read-key` with the fingerprint returned by `prepare`. The action
-registers a GitHub deploy key only when GitHub confirms `read_only: true`:
-
-```sh
-ansible/bin/secret-authority intent instance register-read-key \
-  --repo-owner FAMILY \
-  --repo-name klokast-instance \
-  --key-fingerprint SHA256:FINGERPRINT \
-  > register-read-key.intent.json
-
-ansible/bin/secret-authority instance register-read-key \
-  --repo-owner FAMILY \
-  --repo-name klokast-instance \
-  --key-fingerprint SHA256:FINGERPRINT \
-  --approval-intent register-read-key.intent.json \
-  --approval-signature register-read-key.intent.json.sig \
-  --signer-id human-private-instance
-```
+`register-read-key` keeps the GitHub key only when GitHub confirms
+`read_only: true` and an authenticated Git query proves that the repository has
+no refs.
 
 Generate the initial files on the controller with one verified sealed-builder
 output. The values file and destination must be below the controller private
@@ -213,12 +186,17 @@ Do not commit or push it from an airunner. Do not use the temporary GitHub App
 to push content.
 
 After the first push, use the GitHub web interface to remove this repository
-from the temporary App installation. Then sign and run `retire-bootstrap` with
-the same repository and key fingerprint. Retirement fails unless the App can
-no longer list the repository, the anonymous Git read fails, and the deploy key
-can still read `refs/heads/main`. On success, it deletes the temporary App PEM
-and IDs from the controller. The human can delete the dedicated GitHub App
-later through the GitHub web interface.
+from the temporary App installation. Then run:
+
+```sh
+klokast-dev/bin/run-private-instance-action retire-bootstrap
+```
+
+Retirement fails unless the App can no longer list the repository, the
+anonymous Git read fails, and the deploy key can still read
+`refs/heads/main`. On success, it deletes the temporary App PEM and IDs from
+the controller. The human can delete the dedicated GitHub App later through
+the GitHub web interface.
 
 Synchronize the deployment checkout and create a fresh source receipt:
 

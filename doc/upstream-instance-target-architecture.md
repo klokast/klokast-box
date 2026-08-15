@@ -510,6 +510,11 @@ is bound to the reviewed public engine commit:
 - retire the temporary App credential after the human removes that repository
   from the App installation.
 
+The MacBook wrapper `klokast-dev/bin/run-private-instance-action` validates and
+displays one short-lived intent, asks the human for an explicit decision, and
+uses Touch ID before it transfers and runs only that action. It does not chain
+these authority changes.
+
 The human initializes the instance with a sealed-builder `klokast` binary,
 transfers the staged repository to the trusted workstation, reviews it, commits
 it, and pushes it with a human-owned private-repository identity. The GitHub App

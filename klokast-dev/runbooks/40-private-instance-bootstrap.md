@@ -242,178 +242,58 @@ fingerprint. The private deploy key stays root-only on `k002-ops`.
 
 ## 8. Run a human-signed instance action
 
-Use this section three times, in this order:
+The GitHub App credential alone cannot authorize these changes. For each
+high-authority change, the controller creates a single-use intent that expires
+after 10 minutes. The intent names the exact action, repository, controller
+engine commit, and key fingerprint when required.
 
-1. `register-repository`;
-2. `register-read-key`;
-3. `retire-bootstrap`, after the first private commit is pushed and the
-   repository is removed from the App installation.
+The wrapper does the mechanical work. Your responsibility is to read the
+displayed intent, approve only the expected values, and use Touch ID. It does
+not run a second action automatically.
 
-Each intent expires after 10 minutes. Complete the review, signature, upload,
-and action before it expires.
+### 8.1 Register the repository
 
-Set the action. Use `none` only for `register-repository`:
-
-```sh
-ACTION="register-repository"
-ACTION_FINGERPRINT="none"
-```
-
-For the other two actions, use:
+From the trusted MacBook, run:
 
 ```sh
-ACTION="register-read-key"  # or: retire-bootstrap
-ACTION_FINGERPRINT="$KEY_FINGERPRINT"
+klokast-dev/bin/run-private-instance-action register-repository
 ```
 
-Generate the canonical intent on the active controller:
+The wrapper displays the intent. Confirm these important fields:
+
+- action: `register-repository`;
+- repository: `jfm-home/klokast-instance`;
+- engine commit: the `ENGINE_COMMIT` from Step 1;
+- expiry: no more than 10 minutes in the future.
+
+Answer `y` only when all fields are correct, then approve the Touch ID prompt.
+The controller verifies that the repository is private, empty, and owned by
+the organization. It records the repository ID. It does not change repository
+contents.
+
+### 8.2 Register the controller read-only key
+
+After repository registration succeeds, run:
 
 ```sh
-case "$ACTION" in
-  register-repository|register-read-key|retire-bootstrap) ;;
-  *) echo "unsupported action: $ACTION" >&2; exit 1 ;;
-esac
-
-LOCAL_INTENT="$BOOTSTRAP_WORK/$ACTION.intent.json"
-rm -f "$LOCAL_INTENT" "$LOCAL_INTENT.sig"
-
-tailscale ssh "$SSH_TARGET" sh -s -- \
-  "$INSTANCE_OWNER" "$INSTANCE_REPO" "$ACTION" \
-  "$ACTION_FINGERPRINT" >"$LOCAL_INTENT" <<'SH'
-set -eu
-owner=$1
-repo=$2
-action=$3
-fingerprint=$4
-cd "$HOME/src/klokast/klokast-box"
-case "$action" in
-  register-repository)
-    ansible/bin/secret-authority intent instance register-repository \
-      --repo-owner "$owner" --repo-name "$repo" --ttl-seconds 600
-    ;;
-  register-read-key|retire-bootstrap)
-    ansible/bin/secret-authority intent instance "$action" \
-      --repo-owner "$owner" --repo-name "$repo" \
-      --key-fingerprint "$fingerprint" --ttl-seconds 600
-    ;;
-  *) exit 2 ;;
-esac
-SH
+klokast-dev/bin/run-private-instance-action register-read-key
 ```
 
-Validate and display the intent before signing:
+Confirm the same repository and engine commit. Also confirm that the displayed
+key fingerprint is the fingerprint from Step 7. Answer `y`, then approve Touch
+ID.
 
-```sh
-python3 - "$LOCAL_INTENT" "$ACTION" "$INSTANCE_OWNER" \
-  "$INSTANCE_REPO" "$ENGINE_COMMIT" "$ACTION_FINGERPRINT" <<'PY'
-import json
-import sys
+The controller asks GitHub to register that key as read-only. It then uses the
+key to prove that the repository still has no Git refs. If this proof fails,
+the controller removes the new key and stops.
 
-path, action, owner, repo, engine_commit, fingerprint = sys.argv[1:]
-with open(path, encoding="utf-8") as handle:
-    value = json.load(handle)
-expected = {
-    "schema_version": 1,
-    "authority": "klokast-secret-authority",
-    "app": "instance",
-    "action": action,
-    "repo_owner": owner,
-    "repo_name": repo,
-    "repo_head": engine_commit,
-}
-for key, wanted in expected.items():
-    if value.get(key) != wanted:
-        raise SystemExit(f"intent mismatch for {key}")
-if action == "register-repository":
-    if "key_fingerprint" in value:
-        raise SystemExit("repository registration intent contains an unexpected fingerprint")
-elif value.get("key_fingerprint") != fingerprint:
-    raise SystemExit("intent fingerprint mismatch")
-print(json.dumps(value, indent=2, sort_keys=True))
-PY
-```
+Confirm in GitHub that the deploy key is read-only. Then continue with Step 9.
+Do not run `retire-bootstrap` now. You will run it in Step 12, after the first
+private commit is pushed and App access is removed.
 
-Confirm all fields on the screen. In particular, check the action, owner,
-repository, key fingerprint when present, engine commit, and expiry time.
-
-Sign with the hardware-backed key from the `klokast-box` checkout:
-
-```sh
-klokast-dev/bin/sign-secret-authority-intent \
-  --purpose private-instance \
-  --intent "$LOCAL_INTENT"
-```
-
-Use Touch ID when macOS asks you to approve the signature. Confirm that the
-prompt is for the dedicated private-instance approval identity.
-
-Upload only the intent and signature to the controller:
-
-```sh
-REMOTE_APPROVAL_DIR="/home/smith/private/klokast/bootstrap-approvals"
-REMOTE_INTENT="$REMOTE_APPROVAL_DIR/$ACTION.intent.json"
-REMOTE_SIGNATURE="$REMOTE_INTENT.sig"
-
-tailscale ssh "$SSH_TARGET" sh -s -- "$REMOTE_APPROVAL_DIR" <<'SH'
-set -eu
-directory=$1
-case "$directory" in
-  /home/smith/private/klokast/*) ;;
-  *) exit 2 ;;
-esac
-install -d -m 0700 "$directory"
-SH
-
-tailscale ssh "$SSH_TARGET" \
-  "umask 077; cat > '$REMOTE_INTENT'" <"$LOCAL_INTENT"
-tailscale ssh "$SSH_TARGET" \
-  "umask 077; cat > '$REMOTE_SIGNATURE'" <"$LOCAL_INTENT.sig"
-```
-
-Run the exact signed action:
-
-```sh
-tailscale ssh "$SSH_TARGET" sh -s -- \
-  "$INSTANCE_OWNER" "$INSTANCE_REPO" "$ACTION" \
-  "$ACTION_FINGERPRINT" "$SIGNER_ID" \
-  "$REMOTE_INTENT" "$REMOTE_SIGNATURE" <<'SH'
-set -eu
-owner=$1
-repo=$2
-action=$3
-fingerprint=$4
-signer=$5
-intent=$6
-signature=$7
-cd "$HOME/src/klokast/klokast-box"
-case "$action" in
-  register-repository)
-    ansible/bin/secret-authority instance register-repository \
-      --repo-owner "$owner" --repo-name "$repo" \
-      --approval-intent "$intent" --approval-signature "$signature" \
-      --signer-id "$signer"
-    ;;
-  register-read-key|retire-bootstrap)
-    ansible/bin/secret-authority instance "$action" \
-      --repo-owner "$owner" --repo-name "$repo" \
-      --key-fingerprint "$fingerprint" \
-      --approval-intent "$intent" --approval-signature "$signature" \
-      --signer-id "$signer"
-    ;;
-  *) exit 2 ;;
-esac
-rm -f "$intent" "$signature"
-SH
-```
-
-Do not reuse an intent. If it expires or fails after its nonce is consumed,
-generate and sign a new intent.
-
-Run this section first with `register-repository`, then with
-`register-read-key`. The first action verifies the exact private organization
-repository and records its numeric GitHub ID. The second action verifies that
-the authenticated Git repository has no refs before it keeps the controller
-key. GitHub must show the controller deploy key as read-only.
+If you answer anything other than `y`, no signature is made and no action is
+run. If an action fails or its intent expires, run the same wrapper command
+again to create a new intent. Do not reuse or edit an intent.
 
 ## 9. Create the staged Contract v1 repository
 
@@ -580,12 +460,15 @@ does, stop. Do not select an unrelated repository, do not change to **All
 repositories**, and do not uninstall the App yet. Tell the agent the exact
 GitHub error without including private repository contents.
 
-If removal succeeds, run Step 8 with:
+If removal succeeds, run the final human-approved action from the trusted
+MacBook:
 
 ```sh
-ACTION="retire-bootstrap"
-ACTION_FINGERPRINT="$KEY_FINGERPRINT"
+klokast-dev/bin/run-private-instance-action retire-bootstrap
 ```
+
+Confirm the repository, engine commit, read-key fingerprint, and expiry in the
+displayed intent. Answer `y`, then approve Touch ID.
 
 The retirement action must confirm all of these conditions before it deletes
 the controller copy of the App credential:
@@ -610,7 +493,7 @@ Only after `retire-bootstrap` succeeds:
 
 ```sh
 rm -i "$PEM"
-unset PEM KEY_FINGERPRINT ACTION ACTION_FINGERPRINT
+unset PEM KEY_FINGERPRINT
 ```
 
 Do not delete the controller deploy key. It is the active controller's
