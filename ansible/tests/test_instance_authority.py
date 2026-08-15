@@ -41,17 +41,17 @@ class InstanceAuthorityTest(unittest.TestCase):
             check=False,
         )
 
-    def test_create_intent_is_canonical_and_bound_to_public_commit(self):
+    def test_register_intent_is_canonical_and_bound_to_public_commit(self):
         result = self.run_script(
-            "intent", "instance", "create-repository",
-            "--repo-owner", "family", "--repo-name", "klokast",
+            "intent", "instance", "register-repository",
+            "--repo-owner", "family", "--repo-name", "klokast-instance",
             "--expires-at", "2099-01-01T00:00:00Z",
             "--nonce", "nonce_123456789",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         intent = json.loads(result.stdout)
         self.assertEqual(result.stdout, self.mod.canonical_json(intent))
-        self.assertEqual(intent["action"], "create-repository")
+        self.assertEqual(intent["action"], "register-repository")
         self.assertEqual(intent["repo_head"], subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
         ).strip())
@@ -66,7 +66,17 @@ class InstanceAuthorityTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "Contents"):
                 app.installation_token({"administration": "write", "contents": "read"})
 
-    def test_create_repository_is_private_empty_and_uses_no_contents_permission(self):
+    def test_private_instance_repository_name_is_exact(self):
+        result = self.run_script(
+            "intent", "instance", "register-repository",
+            "--repo-owner", "family", "--repo-name", "klokast",
+            "--expires-at", "2099-01-01T00:00:00Z",
+            "--nonce", "nonce_123456789",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be exactly klokast-instance", result.stderr)
+
+    def test_register_repository_verifies_exact_private_empty_repository(self):
         calls = []
 
         class App:
@@ -79,11 +89,25 @@ class InstanceAuthorityTest(unittest.TestCase):
 
         def request(_token, method, path, body=None, expected=(200,)):
             calls.append((method, path, body, expected))
-            return {"full_name": "family/klokast", "private": True, "id": 123}
+            if path.endswith("/keys?per_page=100"):
+                return []
+            return {
+                "full_name": "family/klokast-instance",
+                "private": True,
+                "visibility": "private",
+                "owner": {"login": "family", "type": "Organization"},
+                "id": 123,
+                "size": 0,
+                "fork": False,
+                "archived": False,
+                "disabled": False,
+                "is_template": False,
+                "default_branch": "main",
+            }
 
         with tempfile.TemporaryDirectory() as temporary:
             args = mock.Mock(
-                repo_owner="family", repo_name="klokast", state_root=temporary,
+                repo_owner="family", repo_name="klokast-instance", state_root=temporary,
                 config_root=temporary, signer_id="human", audit_log=Path(temporary) / "audit.jsonl",
             )
             with mock.patch.object(self.mod, "require_root"), mock.patch.object(
@@ -92,16 +116,22 @@ class InstanceAuthorityTest(unittest.TestCase):
                 self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
             ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
                 self.mod, "github_request", side_effect=request
+            ), mock.patch.object(
+                self.mod, "require_private_remote"
             ), mock.patch("sys.stdout"):
-                self.mod.cmd_create_repository(args)
+                self.mod.cmd_register_repository(args)
             state = json.loads((Path(temporary) / "repository.json").read_text(encoding="utf-8"))
 
         self.assertTrue(state["private"])
-        self.assertEqual(calls[0], ("permissions", {"administration": "write", "metadata": "read"}))
-        create = calls[1]
-        self.assertEqual((create[0], create[1]), ("POST", "/orgs/family/repos"))
-        self.assertEqual(create[2]["private"], True)
-        self.assertEqual(create[2]["auto_init"], False)
+        self.assertIn("registered_at", state)
+        self.assertEqual(calls[0], ("permissions", {"administration": "read", "metadata": "read"}))
+        self.assertEqual(
+            [(call[0], call[1]) for call in calls[1:]],
+            [
+                ("GET", "/repos/family/klokast-instance"),
+                ("GET", "/repos/family/klokast-instance/keys?per_page=100"),
+            ],
+        )
 
     def test_register_deploy_key_requests_read_only_key(self):
         calls = []
@@ -117,13 +147,13 @@ class InstanceAuthorityTest(unittest.TestCase):
             calls.append((method, path, body, expected))
             if method == "GET":
                 return []
-            return {"key": "ssh-ed25519 public", "read_only": True}
+            return {"id": 456, "key": "ssh-ed25519 public", "read_only": True}
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source_root = root / "source"
             source_root.mkdir()
-            repository = "family/klokast"
+            repository = "family/klokast-instance"
             source = {
                 "schema_version": 1,
                 "repository": repository,
@@ -137,11 +167,11 @@ class InstanceAuthorityTest(unittest.TestCase):
                 "schema_version": 1, "repository": repository,
                 "repository_sha256": self.mod.repository_hash(repository),
                 "repository_id": 123, "private": True,
-                "created_at": "2026-01-01T00:00:00Z",
+                "registered_at": "2026-01-01T00:00:00Z",
             }
             (state_root / "repository.json").write_text(self.mod.canonical_json(state), encoding="utf-8")
             args = mock.Mock(
-                repo_owner="family", repo_name="klokast", source_root=source_root,
+                repo_owner="family", repo_name="klokast-instance", source_root=source_root,
                 state_root=state_root, config_root=root, key_fingerprint="SHA256:abcdefghijklmnopqrstuvwxyz1234567890",
                 signer_id="human", audit_log=root / "audit.jsonl",
             )
@@ -153,17 +183,90 @@ class InstanceAuthorityTest(unittest.TestCase):
                 self.mod, "fingerprint", return_value=args.key_fingerprint
             ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
                 self.mod, "github_request", side_effect=request
+            ), mock.patch.object(
+                self.mod, "require_empty_authenticated_remote"
             ), mock.patch("sys.stdout"):
                 self.mod.cmd_register_read_key(args)
 
         self.assertEqual(calls[-1][0], "POST")
         self.assertEqual(calls[-1][2]["read_only"], True)
 
+    def test_register_deploy_key_removes_new_key_when_repository_has_refs(self):
+        calls = []
+
+        class App:
+            def __init__(self, _root):
+                pass
+
+            def installation_token(self, _permissions):
+                return "token"
+
+        def request(_token, method, path, body=None, expected=(200,)):
+            calls.append((method, path, body, expected))
+            if method == "GET":
+                return []
+            if method == "POST":
+                return {"id": 456, "key": "ssh-ed25519 public", "read_only": True}
+            return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "source"
+            source_root.mkdir()
+            repository = "family/klokast-instance"
+            source = {
+                "schema_version": 1,
+                "repository": repository,
+                "repository_sha256": self.mod.repository_hash(repository),
+            }
+            (source_root / "source.json").write_text(self.mod.canonical_json(source), encoding="utf-8")
+            (source_root / "github-readonly.pub").write_text("ssh-ed25519 public\n", encoding="utf-8")
+            state_root = root / "state"
+            state_root.mkdir()
+            state = {
+                "schema_version": 1,
+                "repository": repository,
+                "repository_sha256": self.mod.repository_hash(repository),
+                "repository_id": 123,
+                "private": True,
+                "registered_at": "2026-01-01T00:00:00Z",
+            }
+            (state_root / "repository.json").write_text(self.mod.canonical_json(state), encoding="utf-8")
+            args = mock.Mock(
+                repo_owner="family",
+                repo_name="klokast-instance",
+                source_root=source_root,
+                state_root=state_root,
+                config_root=root,
+                key_fingerprint="SHA256:abcdefghijklmnopqrstuvwxyz1234567890",
+                signer_id="human",
+                audit_log=root / "audit.jsonl",
+            )
+            with mock.patch.object(self.mod, "require_root"), mock.patch.object(
+                self.mod, "require_active_controller"
+            ), mock.patch.object(
+                self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
+            ), mock.patch.object(
+                self.mod, "fingerprint", return_value=args.key_fingerprint
+            ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
+                self.mod, "github_request", side_effect=request
+            ), mock.patch.object(
+                self.mod,
+                "require_empty_authenticated_remote",
+                side_effect=self.mod.InstanceAuthorityError("private repository has refs"),
+            ):
+                with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "has refs"):
+                    self.mod.cmd_register_read_key(args)
+
+        self.assertEqual(calls[-1][0:2], (
+            "DELETE", "/repos/family/klokast-instance/keys/456"
+        ))
+
     def test_source_receipt_is_canonical_root_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = mock.Mock(receipt_root=root, infra_user=pwd.getpwuid(os.getuid()).pw_name)
-            repository = "family/klokast"
+            repository = "family/klokast-instance"
             state = {"repository": repository, "repository_id": 123}
             source = {"repository_sha256": self.mod.repository_hash(repository)}
             with mock.patch.object(self.mod.os, "chown"):
@@ -183,7 +286,7 @@ class InstanceAuthorityTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o750)
 
     def test_private_probe_retries_and_refuses_any_anonymous_success(self):
-        args = mock.Mock(repo_owner="family", repo_name="klokast")
+        args = mock.Mock(repo_owner="family", repo_name="klokast-instance")
         failed = mock.Mock(returncode=128)
         with mock.patch.object(self.mod, "run", return_value=failed) as runner:
             self.mod.require_private_remote(args)
@@ -266,6 +369,9 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn('printf \'APPROVAL_PURPOSE=%q\\n\'', source)
         self.assertIn('printf \'APPROVAL_PUBLIC_KEY=%q\\n\'', source)
         self.assertIn('printf \'APPROVAL_CTK_HASH=%q\\n\'', source)
+        self.assertIn('DEFAULT_REPO_NAME="klokast-instance"', source)
+        self.assertIn('repo="$DEFAULT_REPO_NAME"', source)
+        self.assertNotIn('prompt_default "Private repository name"', source)
         self.assertIn('confirm_yes "Use these settings?"', source)
         self.assertNotIn('Continue with Step 1?', source)
         self.assertNotIn("GITHUB_APP_PRIVATE_KEY", source)
@@ -348,6 +454,12 @@ class InstanceAuthorityTest(unittest.TestCase):
             'source "$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"',
             runbook,
         )
+        self.assertIn("The repository name is `klokast-instance`", runbook)
+        self.assertIn("Create the exact empty private repository", runbook)
+        self.assertIn("Select only `klokast-instance`", runbook)
+        self.assertIn('ACTION="register-repository"', runbook)
+        self.assertNotIn("create-repository", runbook)
+        self.assertNotIn("Leave the repository selection empty", runbook)
 
 
 class PlatformInstanceTest(unittest.TestCase):
@@ -365,7 +477,7 @@ class PlatformInstanceTest(unittest.TestCase):
                     self.mod.resolve_private_destination(str(root / "instance"))
 
     def test_source_actions_use_only_installed_root_wrapper(self):
-        args = mock.Mock(action="sync", repo_owner="family", repo_name="klokast")
+        args = mock.Mock(action="sync", repo_owner="family", repo_name="klokast-instance")
         completed = mock.Mock(returncode=0)
         with mock.patch.object(self.mod, "require_controller_user"), mock.patch.object(
             self.mod.Path, "is_file", return_value=True

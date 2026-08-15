@@ -492,13 +492,21 @@ deployable binaries locally.
 ## Private repository bootstrap and source custody
 
 `ansible/bin/platform-instance` and the installed root wrapper `ksa-instance`
-implement the private-source custody boundary. The workflow uses one dedicated,
-temporary GitHub App. The App has Repository Administration write and Metadata
-read only. It has no Contents permission. Three remote changes require a fresh,
-human-signed intent that is bound to the reviewed public engine commit:
+implement the private-source custody boundary. The exact repository name is
+`<family>/klokast-instance`. The name keeps `klokast` and `klokast-box`
+available for possible upstream forks.
 
-- create one exact empty private repository;
-- register the controller public key as a read-only deploy key;
+The human first creates the exact empty private organization repository in the
+GitHub web interface. The workflow then uses one dedicated, temporary GitHub
+App. The App is installed only on that repository. It is never installed on
+all organization repositories or on an unrelated carrier repository. The App
+has Repository Administration write and Metadata read only. It has no Contents
+permission. Three controller changes require a fresh, human-signed intent that
+is bound to the reviewed public engine commit:
+
+- verify and register the exact private, empty, non-fork repository;
+- register the controller public key as a read-only deploy key, then use that
+  key to prove that the repository has no Git refs;
 - retire the temporary App credential after the human removes that repository
   from the App installation.
 
@@ -547,5 +555,6 @@ may implement, in this order:
 The current milestone does not install `klokast` as an ambient controller
 command, author or push a private commit, migrate an instance, alter existing
 deployment inventory or platform-resource inputs, or apply a plan. Repository
-creation and deploy-key registration occur only when the human supplies the
-separate signed intents described above.
+creation is an explicit human GitHub action. Controller registration and
+deploy-key registration occur only when the human supplies the separate signed
+intents described above.

@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 . "$SCRIPT_DIR/../lib/approval-common.sh"
 
 DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
-DEFAULT_REPO_NAME="klokast"
+DEFAULT_REPO_NAME="klokast-instance"
 DEFAULT_WORK_DIR="$HOME/.local/share/klokast/private-instance-bootstrap"
 ENGINE_COMMIT="e87c9b0e0641c4318e8e501c37f3a1fa4ab865e6"
 BUILD_OPERATION="2658c86fa5ec"
@@ -284,14 +284,7 @@ while :; do
   printf 'Use a GitHub owner name of 1 to 39 letters, digits, or hyphens. It must start with a letter or digit.\n' >&2
 done
 
-repo=""
-while :; do
-  repo="$(prompt_default "Private repository name" "$DEFAULT_REPO_NAME")"
-  if ksa_valid_github_repo "$repo" && [ "${#repo}" -le 100 ]; then
-    break
-  fi
-  printf 'Use 1 to 100 letters, digits, dots, underscores, or hyphens.\n' >&2
-done
+repo="$DEFAULT_REPO_NAME"
 
 work_dir="$DEFAULT_WORK_DIR"
 ksa_select_touchid_profile private-instance

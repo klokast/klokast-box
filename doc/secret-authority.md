@@ -118,9 +118,12 @@ permissions only:
 - Metadata: read;
 - Contents: no access.
 
-Install the App on the organization that will own the private instance
-repository. From the trusted workstation, install its credential on the active
-controller:
+The human first creates the exact empty private organization repository
+`FAMILY/klokast-instance` in the GitHub web interface. Do not add a README,
+license, `.gitignore`, template, branch, or commit. Install the App on only
+that repository. Never grant it access to all organization repositories or an
+unrelated repository. From the trusted workstation, install its credential on
+the active controller:
 
 ```sh
 klokast-dev/bin/install-instance-github-app \
@@ -139,30 +142,31 @@ Prepare the controller read key as `smith` on the active controller:
 ```sh
 ansible/bin/platform-instance prepare \
   --repo-owner FAMILY \
-  --repo-name klokast
+  --repo-name klokast-instance
 ```
 
 The command prints a redacted repository hash and the public-key fingerprint.
 It keeps the private key root-only under `/etc/klokast/private-instance/`.
 
-Create and sign one intent for each high-authority action. This example creates
-the exact empty private repository:
+Create and sign one intent for each high-authority action. This example
+verifies and registers the exact empty private repository that the human
+created:
 
 ```sh
-ansible/bin/secret-authority intent instance create-repository \
+ansible/bin/secret-authority intent instance register-repository \
   --repo-owner FAMILY \
-  --repo-name klokast \
-  > create-repository.intent.json
+  --repo-name klokast-instance \
+  > register-repository.intent.json
 
 klokast-dev/bin/sign-secret-authority-intent \
   --purpose private-instance \
-  --intent create-repository.intent.json
+  --intent register-repository.intent.json
 
-ansible/bin/secret-authority instance create-repository \
+ansible/bin/secret-authority instance register-repository \
   --repo-owner FAMILY \
-  --repo-name klokast \
-  --approval-intent create-repository.intent.json \
-  --approval-signature create-repository.intent.json.sig \
+  --repo-name klokast-instance \
+  --approval-intent register-repository.intent.json \
+  --approval-signature register-repository.intent.json.sig \
   --signer-id human-private-instance
 ```
 
@@ -179,13 +183,13 @@ registers a GitHub deploy key only when GitHub confirms `read_only: true`:
 ```sh
 ansible/bin/secret-authority intent instance register-read-key \
   --repo-owner FAMILY \
-  --repo-name klokast \
+  --repo-name klokast-instance \
   --key-fingerprint SHA256:FINGERPRINT \
   > register-read-key.intent.json
 
 ansible/bin/secret-authority instance register-read-key \
   --repo-owner FAMILY \
-  --repo-name klokast \
+  --repo-name klokast-instance \
   --key-fingerprint SHA256:FINGERPRINT \
   --approval-intent register-read-key.intent.json \
   --approval-signature register-read-key.intent.json.sig \
@@ -221,7 +225,7 @@ Synchronize the deployment checkout and create a fresh source receipt:
 ```sh
 ansible/bin/platform-instance sync \
   --repo-owner FAMILY \
-  --repo-name klokast
+  --repo-name klokast-instance
 ```
 
 The checkout is `/home/smith/private/klokast/instance`. Its push URL is

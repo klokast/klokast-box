@@ -14,7 +14,8 @@ Do not paste the GitHub App PEM, private deployment values, signed intents,
 approval signatures, or private repository contents into chat. Do not run
 this procedure from an airunner. Run the human steps from the trusted MacBook.
 
-The temporary GitHub App has no Contents permission. It creates the empty
+The human creates the exact empty private repository before App installation.
+The temporary GitHub App has no Contents permission. It verifies the
 repository and registers one read-only deploy key. The human, not the App or
 an airunner, authors and pushes the first private commit.
 
@@ -50,7 +51,9 @@ source "$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
 ```
 
 `INSTANCE_OWNER` is an existing GitHub organization that the human controls.
-Keep the repository name as `klokast` unless the architecture changes.
+The repository name is `klokast-instance`. This name keeps `klokast` and
+`klokast-box` available if the organization later forks an upstream
+repository.
 
 The approval key is an Apple-native CryptoTokenKit identity protected by Touch
 ID. The private key is not exportable. The local profile contains its public
@@ -115,23 +118,47 @@ rm -i "$PEM_DOWNLOAD"
 
 Do not paste or display the PEM.
 
-## 4. Install the App on the private organization
+## 4. Create the exact empty private repository
 
-On the GitHub App page (`https://github.com/organizations/<githhub-organization>/settings/apps/<family>-klokast-instance-bootstrap/installations`):
+Create the repository in the GitHub web interface before you install the App:
+
+1. Open the `INSTANCE_OWNER` organization.
+2. Select **New repository**.
+3. Set **Repository name** to `klokast-instance`.
+4. Set visibility to **Private**.
+5. Do not select a repository template.
+6. Do not add a README, `.gitignore`, or license.
+7. Select **Create repository**.
+
+The result must be the exact empty organization repository
+`INSTANCE_OWNER/klokast-instance`. It must have no branch or commit. Do not
+create it in a personal account. Do not import, fork, rename, or reuse an
+existing repository.
+
+This manual action does not give the controller or airrunner access to the
+repository. The signed `register-repository` action in Step 8 will verify and
+record its identity and empty state.
+
+## 5. Install the App on the exact private repository
+
+On the GitHub App page, open **Install App** in the left side panel. The page
+URL starts with:
+
+```text
+https://github.com/organizations/INSTANCE_OWNER/settings/apps/
+```
 
 1. In the left side panel, select **Install App**.
 2. Select **Install** next to `INSTANCE_OWNER`.
 3. Select **Only select repositories**.
-4. Leave the repository selection empty because the target repository does
-   not exist yet.
+4. Select only `klokast-instance`.
 5. Review the permissions and select **Install**.
-   [ #BUG: GitHub does not allow an empty selected-repository installation. ]
-
 6. Record the integer installation ID from the final browser URL.
 
-GitHub grants an App access to repositories that the App creates. The App ID and installation ID are identifiers, not secrets. The PEM is a secret.
+Never select **All repositories** or an unrelated repository. The App ID and
+installation ID are identifiers, not secrets. The PEM is a secret.
 
-## 5. Install the App credential on the controller
+## 6. Install the App credential on the controller
 
 Set the two GitHub identifiers, then use the checked-in installer:
 
@@ -171,13 +198,13 @@ Tell the agent:
 ```text
 The temporary private-instance GitHub App is installed.
 The private organization is INSTANCE_OWNER.
-The repository name is klokast.
+The exact empty private repository is INSTANCE_OWNER/klokast-instance.
 ```
 
 Do not send the PEM. The agent can now prepare the controller read key and
 check the redacted status.
 
-## 6. Prepare the controller read key
+## 7. Prepare the controller read key
 
 The human can run this step directly, or ask the agent to run it:
 
@@ -213,11 +240,11 @@ PY
 The result is redacted. It contains a repository hash and the public-key
 fingerprint. The private deploy key stays root-only on `k002-ops`.
 
-## 7. Run a human-signed instance action
+## 8. Run a human-signed instance action
 
 Use this section three times, in this order:
 
-1. `create-repository`;
+1. `register-repository`;
 2. `register-read-key`;
 3. `retire-bootstrap`, after the first private commit is pushed and the
    repository is removed from the App installation.
@@ -225,10 +252,10 @@ Use this section three times, in this order:
 Each intent expires after 10 minutes. Complete the review, signature, upload,
 and action before it expires.
 
-Set the action. Use `none` only for `create-repository`:
+Set the action. Use `none` only for `register-repository`:
 
 ```sh
-ACTION="create-repository"
+ACTION="register-repository"
 ACTION_FINGERPRINT="none"
 ```
 
@@ -243,7 +270,7 @@ Generate the canonical intent on the active controller:
 
 ```sh
 case "$ACTION" in
-  create-repository|register-read-key|retire-bootstrap) ;;
+  register-repository|register-read-key|retire-bootstrap) ;;
   *) echo "unsupported action: $ACTION" >&2; exit 1 ;;
 esac
 
@@ -260,8 +287,8 @@ action=$3
 fingerprint=$4
 cd "$HOME/src/klokast/klokast-box"
 case "$action" in
-  create-repository)
-    ansible/bin/secret-authority intent instance create-repository \
+  register-repository)
+    ansible/bin/secret-authority intent instance register-repository \
       --repo-owner "$owner" --repo-name "$repo" --ttl-seconds 600
     ;;
   register-read-key|retire-bootstrap)
@@ -297,9 +324,9 @@ expected = {
 for key, wanted in expected.items():
     if value.get(key) != wanted:
         raise SystemExit(f"intent mismatch for {key}")
-if action == "create-repository":
+if action == "register-repository":
     if "key_fingerprint" in value:
-        raise SystemExit("create intent contains an unexpected fingerprint")
+        raise SystemExit("repository registration intent contains an unexpected fingerprint")
 elif value.get("key_fingerprint") != fingerprint:
     raise SystemExit("intent fingerprint mismatch")
 print(json.dumps(value, indent=2, sort_keys=True))
@@ -360,8 +387,8 @@ intent=$6
 signature=$7
 cd "$HOME/src/klokast/klokast-box"
 case "$action" in
-  create-repository)
-    ansible/bin/secret-authority instance create-repository \
+  register-repository)
+    ansible/bin/secret-authority instance register-repository \
       --repo-owner "$owner" --repo-name "$repo" \
       --approval-intent "$intent" --approval-signature "$signature" \
       --signer-id "$signer"
@@ -382,10 +409,13 @@ SH
 Do not reuse an intent. If it expires or fails after its nonce is consumed,
 generate and sign a new intent.
 
-Run this section first with `create-repository`, then with
-`register-read-key`. GitHub must show the controller deploy key as read-only.
+Run this section first with `register-repository`, then with
+`register-read-key`. The first action verifies the exact private organization
+repository and records its numeric GitHub ID. The second action verifies that
+the authenticated Git repository has no refs before it keeps the controller
+key. GitHub must show the controller deploy key as read-only.
 
-## 8. Create the staged Contract v1 repository
+## 9. Create the staged Contract v1 repository
 
 Create the private init values directly on the controller. Do not enter these
 values in chat:
@@ -440,14 +470,14 @@ SH
 The destination must not already exist. If it exists, stop and ask the agent
 to inspect it. Do not overwrite it.
 
-## 9. Transfer and edit the private repository on the MacBook
+## 10. Transfer and edit the private repository on the MacBook
 
 Transfer the staged repository directly from the controller to the MacBook:
 
 ```sh
 SEED_ARCHIVE="$BOOTSTRAP_WORK/instance-seed.tar"
 PRIVATE_PARENT="$HOME/src/private-klokast"
-PRIVATE_WORKTREE="$PRIVATE_PARENT/klokast"
+PRIVATE_WORKTREE="$PRIVATE_PARENT/klokast-instance"
 
 test ! -e "$PRIVATE_WORKTREE" || {
   echo "destination already exists: $PRIVATE_WORKTREE" >&2
@@ -501,7 +531,7 @@ ops/platform-resources.yml
 Confirm that `klokast.lock.yml` contains the exact `ENGINE_COMMIT`. Review all
 private values before the commit.
 
-## 10. Commit and push as the human
+## 11. Commit and push as the human
 
 Run from the private worktree:
 
@@ -534,7 +564,7 @@ contains the expected initial commit.
 Tell the agent that the private `main` branch is pushed. Do not paste the
 repository contents or private commit diff.
 
-## 11. Remove repository access from the temporary App
+## 12. Remove repository access from the temporary App
 
 In GitHub:
 
@@ -542,7 +572,7 @@ In GitHub:
 2. Select **GitHub Apps** or **Installed GitHub Apps**.
 3. Select **Configure** for the temporary bootstrap App.
 4. Keep **Only select repositories**.
-5. Remove the new `klokast` repository from the selection.
+5. Remove `klokast-instance` from the selection.
 6. Save the change.
 
 GitHub may refuse removal when this is the last selected repository. If it
@@ -550,7 +580,7 @@ does, stop. Do not select an unrelated repository, do not change to **All
 repositories**, and do not uninstall the App yet. Tell the agent the exact
 GitHub error without including private repository contents.
 
-If removal succeeds, run section 7 with:
+If removal succeeds, run Step 8 with:
 
 ```sh
 ACTION="retire-bootstrap"
@@ -570,7 +600,7 @@ Expected result includes:
 "retired": true
 ```
 
-## 12. Delete the temporary App
+## 13. Delete the temporary App
 
 Only after `retire-bootstrap` succeeds:
 
@@ -602,8 +632,9 @@ and registry authority stays active. No apply action is part of this runbook.
 
 ## Troubleshooting
 
-- **The GitHub installation requires one selected repository:** stop. Do not
-  grant the App access to an unrelated repository.
+- **The repository cannot be selected during App installation:** confirm that
+  it exists in `INSTANCE_OWNER`, is private, and that you are an organization
+  owner. Do not select an unrelated repository or **All repositories**.
 - **The intent expired:** generate and sign a new intent.
 - **The nonce was already used:** generate and sign a new intent.
 - **The intent has another engine commit:** stop. Pulling or changing the
@@ -612,8 +643,8 @@ and registry authority stays active. No apply action is part of this runbook.
   private-instance profile and that Touch ID is configured for the current Mac
   user. Rerun the signer self-test. Do not continue with an unapproved
   signature.
-- **The repository already exists:** stop. Do not reuse, import, rename, or
-  delete a repository until the agent checks the state.
+- **The repository existed before Step 4 or contains a branch:** stop. Do not
+  reuse, import, rename, empty, or delete it until the agent checks the state.
 - **The staged destination exists:** stop. Do not overwrite it.
 - **GitHub shows the deploy key as write-enabled:** stop and remove that key in
   the GitHub UI. Do not continue with a write-enabled controller key.

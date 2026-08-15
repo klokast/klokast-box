@@ -442,12 +442,14 @@ with `klokast init`. It does not create a remote repository, install Platform
 state, or receive secrets. Platform site time is always `Etc/UTC` (GMT), so init
 inputs do not contain a timezone.
 
-Private repository creation and read-key registration use a dedicated,
-temporary GitHub App with no Contents permission. Human-signed intents bind
-each action to the reviewed public engine commit. After the human removes the
-private repository from the App installation, the controller verifies the
-read-only deploy key and deletes the App credential. Controller fetches create
-fresh, content-addressed source receipts for Plan v1. See
+The human creates the exact empty private organization repository
+`<family>/klokast-instance`. Repository registration and read-key registration
+use a dedicated, temporary GitHub App with no Contents permission. The App is
+installed only on that exact repository. Human-signed intents bind each
+controller action to the reviewed public engine commit. After the human
+removes the private repository from the App installation, the controller
+verifies the read-only deploy key and deletes the App credential. Controller
+fetches create fresh, content-addressed source receipts for Plan v1. See
 `doc/upstream-instance-target-architecture.md` for the complete boundary.
 
 ## files locally stored in the boxes
