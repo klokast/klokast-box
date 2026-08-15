@@ -141,31 +141,30 @@ record its identity and empty state.
 
 ## 5. Install the App on the exact private repository
 
-On the GitHub App page, open **Install App** in the left side panel. The page
-URL starts with:
-
-```text
-https://github.com/organizations/INSTANCE_OWNER/settings/apps/
-```
-
-1. In the left side panel, select **Install App**.
-2. Select **Install** next to `INSTANCE_OWNER`.
-3. Select **Only select repositories**.
-4. Select only `klokast-instance`.
-5. Review the permissions and select **Install**.
-6. Record the integer installation ID from the final browser URL.
-
-Never select **All repositories** or an unrelated repository. The App ID and
-installation ID are identifiers, not secrets. The PEM is a secret.
+1. In the internet browser, open:
+`https://github.com/organizations/<FAMILY-GITHHUB-ORGA>/settings/apps/<FAMILY>-klokast-instance-bootstrap>` , where for example:
+  - `<FAMILY-GITHHUB-ORGA>` would be the `john-home` Github organization.
+  - `<FAMILY>-klokast-instance-bootstrap>` would be the `john-klokast-instance-bootstrap` Github app.
+2. In the left side panel, select **Install App**.
+3. Select **Install** next to `INSTANCE_OWNER`.
+4. Select **Only select repositories**. Don't select **All repositories** or an unrelated repository!
+5. Select only `klokast-instance`.
+6. Review the permissions and select **Install**.
+7. Write down the "installation ID": the digits at the end of the URL. The App ID and installation ID are identifiers, they aren't secrets. Don't forget that the PEM is a secret.
 
 ## 6. Install the App credential on the controller
 
-Set the two GitHub identifiers, then use the checked-in installer:
+Set the two GitHub identifiers and the path to the (secret) PEM:
 
 ```sh
 GITHUB_APP_ID="REPLACE_WITH_APP_ID"
 GITHUB_APP_INSTALLATION_ID="REPLACE_WITH_INSTALLATION_ID"
+PEM="$HOME/.config/klokast/secrets/private-instance-bootstrap.github-app.pem"
+```
 
+Then run the installer:
+
+```sh
 klokast-dev/bin/install-instance-github-app \
   --controller "$CONTROLLER" \
   --pem "$PEM" \
