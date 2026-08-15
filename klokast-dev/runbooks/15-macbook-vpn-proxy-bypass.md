@@ -1,6 +1,45 @@
 Our VPN client Clash Verge has set up a local proxy on the MacBook. Its bypass list has normal private LAN ranges, but not Tailscale's range `100.64.0.0/10`. So browsers would send Tailnet traffic into that local proxy, and the proxy closes it.
 `curl` reaches Tailscale directly without using the proxy.
 
+# 0. Updated way: `Clash Verge Rev` instructions
+
+On MacBook, if using VPN, setup direct connection to Tailnet sites:
+
+Clash Verge Rev -> Settings -> System Proxy (the settings icon)
+-> untick "Always use Default Bypass" (otherwise you cannot edit the Proxy Bypass list)
+-> add these to the Proxy Bypass Settings: `100.64.0.0/10,*.tail000000.ts.net`
+
+Clash Verge Rev -> Profiles -> right click the profile -> Edit Rules ->
+
+```
+Rule Type: IP-CIDR6
+Rule Content: fd7a:115c:a1e0::/48
+Proxy Policy: DIRECT
+```
+
+```
+Rule Type: IP-CIDR
+Rule Content: 100.64.0.0/10
+Proxy Policy: DIRECT
+```
+-> prepend rule
+
+```
+Rule Type: DOMAIN-SUFFIX
+Rule Content: tail000000.ts.net
+Proxy Policy: DIRECT
+```
+-> prepend rule
+
+-> prepend rule
+
+-> save
+
+Clash Verge Rev -> Home -> Network Settings
+   -> System proxy: ticked
+   -> Tun Mode: only ticked when using the terminal to reach sites via VPN (e.g. `chatgpt.com` CLI download)
+   -> Proxy Mode -> Rule
+
 # 1. Diagnosis
 
 The proxy can be identified by checking the port that was blocked (here, NextCloud), then check the PID of the listening process:

@@ -117,23 +117,19 @@ Do not paste or display the PEM.
 
 ## 4. Install the App on the private organization
 
-On the GitHub App page:
+On the GitHub App page (`https://github.com/organizations/<githhub-organization>/settings/apps/<family>-klokast-instance-bootstrap/installations`):
 
-1. Select **Install App**.
+1. In the left side panel, select **Install App**.
 2. Select **Install** next to `INSTANCE_OWNER`.
 3. Select **Only select repositories**.
 4. Leave the repository selection empty because the target repository does
    not exist yet.
 5. Review the permissions and select **Install**.
+   [ #BUG: GitHub does not allow an empty selected-repository installation. ]
+
 6. Record the integer installation ID from the final browser URL.
 
-GitHub grants an App access to repositories that the App creates. If GitHub
-does not allow an empty selected-repository installation, stop here. Do not
-select **All repositories** and do not select an unrelated repository. Tell
-the agent which GitHub screen blocked the installation.
-
-The App ID and installation ID are identifiers, not secrets. The PEM is a
-secret.
+GitHub grants an App access to repositories that the App creates. The App ID and installation ID are identifiers, not secrets. The PEM is a secret.
 
 ## 5. Install the App credential on the controller
 

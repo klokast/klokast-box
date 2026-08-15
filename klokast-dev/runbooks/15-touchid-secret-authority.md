@@ -76,10 +76,8 @@ Mac.
 
 ## 4. Deploy The Scoped Controller Verification
 
-Run this step from the active controller as `smith`, not from the cloud
-infra-agent:
-
 ```sh
+tailscale ssh smith@k002-ops
 cd ~/src/klokast/klokast-box
 git pull --ff-only
 ansible/bin/converge-ops-controller --box k002
