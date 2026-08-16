@@ -287,6 +287,14 @@ In the output, confirm these :
 Answer `y`, then approve Touch ID. If you answer anything other than `y`, no signature is made and no action is run.
 If an action fails or its intent expires, run the same wrapper command again to create a new intent. Do not reuse or edit an intent.
 
+For each run, the wrapper adds one redacted record to
+`$BOOTSTRAP_WORK/action-audit.jsonl`. The record has the action, result, failed
+phase, exit code, controller, engine commit, repository hash, and intent hash.
+It does not contain the intent, signature, deploy key, GitHub token, or GitHub
+response. The controller also records the approved action start, result, and
+deploy-key cleanup result in `/var/log/klokast/secret-authority.jsonl`. The
+wrapper prints both log locations when an action fails.
+
 The controller asks GitHub to register that key as read-only.
 It then uses the key to prove that the repository still has no Git refs. If this proof fails, the controller removes the new key and stops.
 
@@ -521,6 +529,10 @@ and registry authority stays active. No apply action is part of this runbook.
 - **The nonce was already used:** generate and sign a new intent.
 - **The intent has another engine commit:** stop. Pulling or changing the
   public controller checkout during bootstrap changes the approval boundary.
+- **An action fails after approval:** read the failed phase in the final
+  wrapper summary. Review the last record in
+  `$BOOTSTRAP_WORK/action-audit.jsonl`. Ask the agent to review the matching
+  intent hash in the root-only controller audit before you retry.
 - **macOS does not ask for Touch ID:** stop. Confirm that the session names the
   private-instance profile and that Touch ID is configured for the current Mac
   user. Rerun the signer self-test. Do not continue with an unapproved

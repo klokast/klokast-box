@@ -24,7 +24,8 @@ shows the exact intent, asks for approval, signs it with Touch ID, uploads it,
 and runs only the named action.
 
 Run prepare-private-instance-bootstrap before use. This wrapper loads its
-owner-only session file directly.
+owner-only session file directly. It writes a redacted action journal to
+action-audit.jsonl in the bootstrap work directory.
 EOF
 }
 
@@ -97,16 +98,95 @@ action_work="$(mktemp -d "$BOOTSTRAP_WORK/action.XXXXXX")" || \
   ksa_die "cannot create the temporary approval directory"
 status_file="$action_work/status.json"
 intent_file="$action_work/intent.json"
+action_log="$BOOTSTRAP_WORK/action-audit.jsonl"
 remote_intent=""
 remote_signature=""
+action_phase="read-controller-status"
+action_outcome="failure"
+intent_sha256=""
+action_fingerprint="none"
+
+append_action_log() {
+  python3 - "$action_log" "$action_outcome" "$1" "$action" "$action_phase" \
+    "$CONTROLLER" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$ENGINE_COMMIT" \
+    "$intent_sha256" "$action_fingerprint" <<'PY'
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+
+(path, outcome, exit_code, action, phase, controller, owner, repo,
+ engine_commit, intent_sha256, key_fingerprint) = sys.argv[1:]
+if outcome not in {"success", "failure", "cancelled"}:
+    raise SystemExit("invalid action log outcome")
+if not exit_code.isdigit() or not 0 <= int(exit_code) <= 255:
+    raise SystemExit("invalid action log exit code")
+if not re.fullmatch(r"[a-z0-9-]{1,80}", phase):
+    raise SystemExit("invalid action log phase")
+if not re.fullmatch(r"[0-9a-f]{40}", engine_commit):
+    raise SystemExit("invalid action log engine commit")
+if intent_sha256 and not re.fullmatch(r"[0-9a-f]{64}", intent_sha256):
+    raise SystemExit("invalid action log intent hash")
+repository = f"{owner}/{repo}"
+record = {
+    "ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    "event": "private-instance.wrapper.finished",
+    "action": action,
+    "outcome": outcome,
+    "exit_code": int(exit_code),
+    "phase": phase,
+    "controller": controller,
+    "repository_sha256": hashlib.sha256(repository.encode("utf-8")).hexdigest(),
+    "repo_head": engine_commit,
+}
+if intent_sha256:
+    record["intent_sha256"] = intent_sha256
+if key_fingerprint != "none":
+    record["key_fingerprint"] = key_fingerprint
+encoded = (json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+descriptor = os.open(path, flags, 0o600)
+try:
+    metadata = os.fstat(descriptor)
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+            or metadata.st_uid != os.getuid()):
+        raise SystemExit("action log is not a private regular file")
+    if os.write(descriptor, encoded) != len(encoded):
+        raise SystemExit("cannot append the complete action log record")
+    os.fsync(descriptor)
+    os.fchmod(descriptor, 0o600)
+finally:
+    os.close(descriptor)
+PY
+}
 
 cleanup() {
+  exit_status=$?
+  trap - EXIT
   if [ -n "$remote_intent" ]; then
     tailscale ssh "$SSH_TARGET" \
       "rm -f '$remote_intent' '$remote_signature'" >/dev/null 2>&1 || true
   fi
-  rm -f "$status_file" "$intent_file" "$intent_file.sig"
+  rm -f "$status_file" "$intent_file" "$intent_file.sig" || true
   rmdir "$action_work" 2>/dev/null || true
+  if ! append_action_log "$exit_status"; then
+    printf 'Warning: could not append the redacted action journal: %s\n' "$action_log" >&2
+  fi
+  if [ "$action_outcome" = failure ]; then
+    printf '\nPrivate-instance action failed.\n' >&2
+    printf '  Action: %s\n' "$action" >&2
+    printf '  Failed phase: %s\n' "$action_phase" >&2
+    printf '  Wrapper exit code: %s\n' "$exit_status" >&2
+    printf '  Redacted action journal: %s\n' "$action_log" >&2
+    printf '  Controller audit: /var/log/klokast/secret-authority.jsonl on %s\n' "$CONTROLLER" >&2
+    printf 'Earlier phases can have completed. Read the controller error above before you retry.\n' >&2
+  fi
+  exit "$exit_status"
 }
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
@@ -159,6 +239,7 @@ case "$action" in
     ;;
 esac
 
+action_phase="request-intent"
 tailscale ssh "$SSH_TARGET" sh -s -- \
   "$ENGINE_COMMIT" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$action" \
   "$action_fingerprint" >"$intent_file" <<'SH'
@@ -186,9 +267,11 @@ case "$action" in
 esac
 SH
 
-intent_nonce="$(python3 - "$intent_file" "$action" "$INSTANCE_OWNER" \
+action_phase="validate-intent"
+intent_metadata="$(python3 - "$intent_file" "$action" "$INSTANCE_OWNER" \
   "$INSTANCE_REPO" "$ENGINE_COMMIT" "$action_fingerprint" <<'PY'
 import datetime as dt
+import hashlib
 import json
 import re
 import sys
@@ -228,24 +311,30 @@ expires = dt.datetime.fromisoformat(expires_text[:-1] + "+00:00")
 now = dt.datetime.now(dt.timezone.utc)
 if not now < expires <= now + dt.timedelta(minutes=11):
     raise SystemExit("intent expiry is outside the expected short window")
-print(nonce)
+print(f"{nonce}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}")
 PY
 )" || ksa_die "the controller returned an invalid intent"
+intent_nonce="${intent_metadata%%:*}"
+intent_sha256="${intent_metadata#*:}"
 
 printf '\nPurpose\n  %s\n' "$action_summary"
 printf '\nExact short-lived intent to approve\n'
 python3 -m json.tool "$intent_file"
 printf '\nCheck the action, repository, engine commit, key fingerprint when present, and expiry.\n'
 printf 'Sign and run this exact action? [y/N] '
+action_phase="wait-for-approval"
 IFS= read -r answer || ksa_die "input ended before approval"
 case "$answer" in
   y|Y|yes|YES|Yes) ;;
   *)
     printf 'No signature was made. No action was run.\n'
+    action_phase="approval-declined"
+    action_outcome="cancelled"
     exit 0
     ;;
 esac
 
+action_phase="sign-intent"
 "$SCRIPT_DIR/sign-secret-authority-intent" \
   --purpose private-instance \
   --intent "$intent_file"
@@ -257,6 +346,7 @@ remote_directory="/home/smith/private/klokast/bootstrap-approvals"
 remote_intent="$remote_directory/$action.$intent_nonce.intent.json"
 remote_signature="$remote_intent.sig"
 
+action_phase="upload-approval"
 tailscale ssh "$SSH_TARGET" sh -s -- "$remote_directory" <<'SH'
 set -eu
 directory=$1
@@ -272,6 +362,7 @@ tailscale ssh "$SSH_TARGET" \
   "umask 077; cat > '$remote_signature'" <"$intent_file.sig"
 
 printf '\nController action result\n'
+action_phase="run-controller-action"
 tailscale ssh "$SSH_TARGET" sh -s -- \
   "$ENGINE_COMMIT" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$action" \
   "$action_fingerprint" "$SIGNER_ID" "$remote_intent" \
@@ -314,6 +405,7 @@ SH
 remote_intent=""
 remote_signature=""
 printf '\nRedacted controller status\n'
+action_phase="read-final-status"
 tailscale ssh "$SSH_TARGET" sh -s <<'SH'
 set -eu
 cd "$HOME/src/klokast/klokast-box"
@@ -332,3 +424,5 @@ case "$action" in
     printf '\nTemporary bootstrap authority is retired. Continue with Step 13 of the runbook.\n'
     ;;
 esac
+action_phase="complete"
+action_outcome="success"

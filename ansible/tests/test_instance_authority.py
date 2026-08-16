@@ -42,6 +42,15 @@ class InstanceAuthorityTest(unittest.TestCase):
             check=False,
         )
 
+    def approval_intent(self, action):
+        return {
+            "action": action,
+            "repo_owner": "family",
+            "repo_name": "klokast-instance",
+            "repo_head": "a" * 40,
+            "nonce": "nonce_123456789",
+        }
+
     def test_register_intent_is_canonical_and_bound_to_public_commit(self):
         result = self.run_script(
             "intent", "instance", "register-repository",
@@ -90,6 +99,28 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertNotIn("must-not-appear", str(raised.exception))
         self.assertNotIn("secret-token", str(raised.exception))
 
+    def test_approved_action_failure_audit_is_correlated_and_redacted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audit_log = Path(temporary) / "audit.jsonl"
+            args = mock.Mock(signer_id="human-private-instance", audit_log=audit_log)
+            intent = self.approval_intent("register-read-key")
+            self.mod.begin_approved_action(args, intent)
+            self.mod.set_approved_action_phase(
+                args, "create-deploy-key", github_status=422,
+            )
+            error = self.mod.InstanceAuthorityError("raw response must-not-appear")
+            self.mod.audit_approved_action_failure(args, error)
+            records = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual([item["event"] for item in records], [
+            "instance.action.started", "instance.action.finished",
+        ])
+        self.assertEqual(records[-1]["outcome"], "failure")
+        self.assertEqual(records[-1]["phase"], "create-deploy-key")
+        self.assertEqual(records[-1]["github_status"], 422)
+        self.assertEqual(records[0]["intent_sha256"], records[-1]["intent_sha256"])
+        self.assertNotIn("must-not-appear", json.dumps(records))
+
     def test_private_instance_repository_name_is_exact(self):
         result = self.run_script(
             "intent", "instance", "register-repository",
@@ -137,7 +168,7 @@ class InstanceAuthorityTest(unittest.TestCase):
             with mock.patch.object(self.mod, "require_root"), mock.patch.object(
                 self.mod, "require_active_controller"
             ), mock.patch.object(
-                self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
+                self.mod, "require_approval", return_value=self.approval_intent("register-repository")
             ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
                 self.mod, "github_request", side_effect=request
             ), mock.patch.object(
@@ -210,7 +241,7 @@ class InstanceAuthorityTest(unittest.TestCase):
             with mock.patch.object(self.mod, "require_root"), mock.patch.object(
                 self.mod, "require_active_controller"
             ), mock.patch.object(
-                self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
+                self.mod, "require_approval", return_value=self.approval_intent("register-read-key")
             ), mock.patch.object(
                 self.mod, "fingerprint", return_value=args.key_fingerprint
             ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
@@ -219,10 +250,22 @@ class InstanceAuthorityTest(unittest.TestCase):
                 self.mod, "require_empty_authenticated_remote"
             ), mock.patch("sys.stdout"):
                 self.mod.cmd_register_read_key(args)
+            audit_records = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
 
         self.assertEqual(calls[-1][0], "POST")
         self.assertEqual(calls[-1][2]["read_only"], True)
         self.assertEqual(calls[-1][2]["key"], "ssh-ed25519 public")
+        self.assertEqual([item["event"] for item in audit_records], [
+            "instance.action.started",
+            "instance.deploy-key.registered",
+            "instance.action.finished",
+        ])
+        self.assertEqual(audit_records[1]["result"], "created")
+        self.assertEqual(audit_records[-1]["outcome"], "success")
+        self.assertNotIn("ssh-ed25519 public", json.dumps(audit_records))
 
     def test_register_deploy_key_explains_key_already_in_use(self):
         class App:
@@ -278,7 +321,7 @@ class InstanceAuthorityTest(unittest.TestCase):
             with mock.patch.object(self.mod, "require_root"), mock.patch.object(
                 self.mod, "require_active_controller"
             ), mock.patch.object(
-                self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
+                self.mod, "require_approval", return_value=self.approval_intent("register-read-key")
             ), mock.patch.object(
                 self.mod, "fingerprint", return_value=args.key_fingerprint
             ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
@@ -355,7 +398,7 @@ class InstanceAuthorityTest(unittest.TestCase):
             with mock.patch.object(self.mod, "require_root"), mock.patch.object(
                 self.mod, "require_active_controller"
             ), mock.patch.object(
-                self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
+                self.mod, "require_approval", return_value=self.approval_intent("register-read-key")
             ), mock.patch.object(
                 self.mod, "fingerprint", return_value=args.key_fingerprint
             ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
@@ -367,10 +410,17 @@ class InstanceAuthorityTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "has refs"):
                     self.mod.cmd_register_read_key(args)
+            audit_records = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
 
         self.assertEqual(calls[-1][0:2], (
             "DELETE", "/repos/family/klokast-instance/keys/456"
         ))
+        self.assertEqual(audit_records[-1]["event"], "instance.deploy-key.cleanup.finished")
+        self.assertEqual(audit_records[-1]["outcome"], "success")
+        self.assertEqual(audit_records[-1]["reason"], "repository-validation-failed")
 
     def test_source_receipt_is_canonical_root_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -592,6 +642,11 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn('"$SCRIPT_DIR/sign-secret-authority-intent"', source)
         self.assertIn("intent fields do not match the closed schema", source)
         self.assertIn("intent is not canonical JSON", source)
+        self.assertIn("private-instance.wrapper.finished", source)
+        self.assertIn("intent_sha256", source)
+        self.assertIn("Private-instance action failed.", source)
+        self.assertIn("Failed phase:", source)
+        self.assertIn("secret-authority.jsonl", source)
         self.assertIn("test \"$(git rev-parse HEAD)\" = \"$expected\"", source)
         self.assertIn("klokast-controller-guard --status --json --require-active", source)
         self.assertIn('EXPECTED_REPO_NAME="klokast-instance"', source)

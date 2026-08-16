@@ -204,6 +204,58 @@ def audit(args, event, **fields):
     append_jsonl(args.audit_log, {"ts": format_utc(now_utc()), "event": event, **fields})
 
 
+def approved_action_audit_fields(args, intent, **fields):
+    repository = repository_name(intent["repo_owner"], intent["repo_name"])
+    return {
+        "action": intent["action"],
+        "repository_sha256": repository_hash(repository),
+        "repo_head": intent["repo_head"],
+        "signer_id": args.signer_id,
+        "nonce": intent["nonce"],
+        "intent_sha256": hashlib.sha256(canonical_json(intent).encode("utf-8")).hexdigest(),
+        **fields,
+    }
+
+
+def begin_approved_action(args, intent):
+    args.approved_action_intent = intent
+    args.approved_action_phase = "approval-accepted"
+    args.approved_action_details = {}
+    audit(args, "instance.action.started", **approved_action_audit_fields(
+        args, intent, phase=args.approved_action_phase,
+    ))
+
+
+def set_approved_action_phase(args, phase, **details):
+    args.approved_action_phase = phase
+    args.approved_action_details = details
+
+
+def finish_approved_action(args, intent, result, **fields):
+    audit(args, "instance.action.finished", **approved_action_audit_fields(
+        args, intent, outcome="success", result=result, **fields,
+    ))
+    args.approved_action_intent = None
+    args.approved_action_details = {}
+
+
+def audit_approved_action_failure(args, error):
+    intent = getattr(args, "approved_action_intent", None)
+    if not intent:
+        return
+    details = dict(getattr(args, "approved_action_details", {}))
+    if isinstance(error, GithubRequestError):
+        details.setdefault("github_status", error.status)
+    audit(args, "instance.action.finished", **approved_action_audit_fields(
+        args,
+        intent,
+        outcome="failure",
+        phase=getattr(args, "approved_action_phase", "unknown"),
+        error_type=type(error).__name__,
+        **details,
+    ))
+
+
 def parse_env_file(path):
     path = Path(path)
     if not path.is_file() or path.is_symlink():
@@ -560,10 +612,15 @@ def cmd_register_repository(args):
     require_root()
     require_active_controller()
     intent = require_approval(args)
+    begin_approved_action(args, intent)
+    set_approved_action_phase(args, "check-registration-state")
     if repository_state_path(args).exists():
         raise InstanceAuthorityError("private repository registration receipt already exists")
+    set_approved_action_phase(args, "request-github-token")
     token = GithubApp(args.config_root).installation_token({"administration": "read", "metadata": "read"})
+    set_approved_action_phase(args, "read-repository")
     response = github_request(token, "GET", f"/repos/{args.repo_owner}/{args.repo_name}")
+    set_approved_action_phase(args, "validate-repository")
     owner = response.get("owner") if isinstance(response, dict) else None
     if (
         not isinstance(response, dict)
@@ -585,9 +642,11 @@ def cmd_register_repository(args):
         or response.get("default_branch") != "main"
     ):
         raise InstanceAuthorityError("private repository must be a new empty non-fork repository on main")
+    set_approved_action_phase(args, "list-deploy-keys")
     keys = github_request(token, "GET", f"/repos/{args.repo_owner}/{args.repo_name}/keys?per_page=100")
     if not isinstance(keys, list) or keys:
         raise InstanceAuthorityError("new private repository must not contain a deploy key")
+    set_approved_action_phase(args, "verify-private-access")
     require_private_remote(args)
     state = {
         "schema_version": 1, "repository": response["full_name"],
@@ -597,9 +656,12 @@ def cmd_register_repository(args):
     }
     if not isinstance(state["repository_id"], int) or state["repository_id"] <= 0:
         raise InstanceAuthorityError("GitHub returned an invalid repository ID")
+    set_approved_action_phase(args, "write-registration-receipt")
     write_no_replace(repository_state_path(args), canonical_json(state).encode("utf-8"))
     audit(args, "instance.repository.registered", repository_sha256=state["repository_sha256"],
           repository_id=state["repository_id"], signer_id=args.signer_id, nonce=intent["nonce"])
+    finish_approved_action(args, intent, "repository-registered",
+                           repository_id=state["repository_id"])
     print(canonical_json({"schema_version": 1, "registered": True,
                           "repository_sha256": state["repository_sha256"],
                           "repository_id": state["repository_id"]}), end="")
@@ -609,15 +671,20 @@ def cmd_register_read_key(args):
     require_root()
     require_active_controller()
     intent = require_approval(args)
+    begin_approved_action(args, intent)
+    set_approved_action_phase(args, "load-controller-state")
     paths, source = load_source_config(args)
     state = load_repository_state(args)
+    set_approved_action_phase(args, "validate-controller-key")
     actual_fingerprint = fingerprint(paths["public"])
     if actual_fingerprint != args.key_fingerprint:
         raise InstanceAuthorityError("approved key fingerprint does not match controller key")
     public_key = normalized_ssh_public_key(paths["public"].read_text(encoding="utf-8"))
     if not public_key:
         raise InstanceAuthorityError("controller deploy public key is invalid")
+    set_approved_action_phase(args, "request-github-token")
     token = GithubApp(args.config_root).installation_token({"administration": "write", "metadata": "read"})
+    set_approved_action_phase(args, "list-deploy-keys")
     keys = github_request(token, "GET", f"/repos/{args.repo_owner}/{args.repo_name}/keys?per_page=100")
     if not isinstance(keys, list):
         raise InstanceAuthorityError("GitHub deploy-key listing is invalid")
@@ -630,12 +697,22 @@ def cmd_register_read_key(args):
             raise InstanceAuthorityError("GitHub deploy-key listing contains an invalid public key")
         if item.get("title") == title or listed_key == public_key:
             if listed_key == public_key and item.get("read_only") is True:
+                set_approved_action_phase(args, "verify-empty-repository", deploy_key_result="existing")
                 require_empty_authenticated_remote(args, paths)
+                audit(args, "instance.deploy-key.registered",
+                      repository_sha256=state["repository_sha256"],
+                      repository_id=state["repository_id"],
+                      key_fingerprint=actual_fingerprint, signer_id=args.signer_id,
+                      nonce=intent["nonce"], result="existing")
+                finish_approved_action(args, intent, "deploy-key-existing",
+                                       repository_id=state["repository_id"],
+                                       key_fingerprint=actual_fingerprint)
                 print(canonical_json({"schema_version": 1, "registered": True,
                                       "repository_sha256": source["repository_sha256"],
                                       "key_fingerprint": actual_fingerprint}), end="")
                 return
             raise InstanceAuthorityError("GitHub has a conflicting instance deploy key")
+    set_approved_action_phase(args, "create-deploy-key")
     try:
         created = github_request(token, "POST", f"/repos/{args.repo_owner}/{args.repo_name}/keys", {
             "title": title, "key": public_key, "read_only": True,
@@ -643,6 +720,7 @@ def cmd_register_read_key(args):
     except GithubRequestError as error:
         if error.status != 422:
             raise
+        set_approved_action_phase(args, "create-deploy-key", github_status=error.status)
         repository = repository_name(args.repo_owner, args.repo_name)
         reason = error.detail or "validation failed"
         message = (
@@ -655,6 +733,7 @@ def cmd_register_read_key(args):
                 "GitHub permits one deploy key to be used by only one repository"
             )
         raise InstanceAuthorityError(message) from error
+    set_approved_action_phase(args, "validate-created-deploy-key")
     created_id = created.get("id") if isinstance(created, dict) else None
     created_key = normalized_ssh_public_key(created.get("key")) if isinstance(created, dict) else ""
     response_problems = []
@@ -669,8 +748,16 @@ def cmd_register_read_key(args):
     if created_key != public_key:
         response_problems.append("public key material")
     if response_problems:
+        set_approved_action_phase(
+            args, "validate-created-deploy-key", response_problems=response_problems,
+        )
         removed = False
         if type(created_id) is int and created_id > 0:
+            set_approved_action_phase(
+                args, "remove-invalid-deploy-key", deploy_key_id=created_id,
+                response_problems=response_problems,
+                cleanup_reason="invalid-create-response", cleanup_outcome="failure",
+            )
             try:
                 github_request(
                     token,
@@ -683,17 +770,33 @@ def cmd_register_read_key(args):
                     "GitHub returned an invalid deploy key and it could not be removed"
                 ) from cleanup_error
             removed = True
+            audit(args, "instance.deploy-key.cleanup.finished",
+                  repository_sha256=state["repository_sha256"],
+                  repository_id=state["repository_id"], deploy_key_id=created_id,
+                  reason="invalid-create-response", outcome="success")
         detail = ", ".join(response_problems)
         if removed:
+            set_approved_action_phase(
+                args, "validate-created-deploy-key", deploy_key_id=created_id,
+                response_problems=response_problems,
+                cleanup_reason="invalid-create-response", cleanup_outcome="success",
+            )
             raise InstanceAuthorityError(
                 f"GitHub returned a deploy key with unexpected {detail}; the controller removed it"
             )
         raise InstanceAuthorityError(
             f"GitHub returned a deploy key with unexpected {detail}; no created key ID was available for cleanup"
         )
+    set_approved_action_phase(args, "verify-empty-repository", deploy_key_id=created_id,
+                              deploy_key_result="created")
     try:
         require_empty_authenticated_remote(args, paths)
     except InstanceAuthorityError as validation_error:
+        set_approved_action_phase(
+            args, "remove-deploy-key-after-repository-validation",
+            deploy_key_id=created_id, cleanup_reason="repository-validation-failed",
+            cleanup_outcome="failure",
+        )
         try:
             github_request(
                 token,
@@ -705,10 +808,23 @@ def cmd_register_read_key(args):
             raise InstanceAuthorityError(
                 "private repository validation failed and the new deploy key could not be removed"
             ) from cleanup_error
+        audit(args, "instance.deploy-key.cleanup.finished",
+              repository_sha256=state["repository_sha256"],
+              repository_id=state["repository_id"], deploy_key_id=created_id,
+              reason="repository-validation-failed", outcome="success")
+        set_approved_action_phase(
+            args, "verify-empty-repository", deploy_key_id=created_id,
+            deploy_key_result="created", cleanup_reason="repository-validation-failed",
+            cleanup_outcome="success",
+        )
         raise validation_error
     audit(args, "instance.deploy-key.registered", repository_sha256=state["repository_sha256"],
           repository_id=state["repository_id"], key_fingerprint=actual_fingerprint,
-          signer_id=args.signer_id, nonce=intent["nonce"])
+          signer_id=args.signer_id, nonce=intent["nonce"], result="created",
+          deploy_key_id=created_id)
+    finish_approved_action(args, intent, "deploy-key-created",
+                           repository_id=state["repository_id"],
+                           key_fingerprint=actual_fingerprint, deploy_key_id=created_id)
     print(canonical_json({"schema_version": 1, "registered": True,
                           "repository_sha256": source["repository_sha256"],
                           "key_fingerprint": actual_fingerprint}), end="")
@@ -902,15 +1018,22 @@ def cmd_retire_bootstrap(args):
     require_root()
     require_active_controller()
     intent = require_approval(args)
+    begin_approved_action(args, intent)
+    set_approved_action_phase(args, "load-controller-state")
     paths, source = load_source_config(args)
     state = load_repository_state(args)
+    set_approved_action_phase(args, "validate-controller-key")
     if fingerprint(paths["public"]) != args.key_fingerprint:
         raise InstanceAuthorityError("approved key fingerprint does not match controller key")
+    set_approved_action_phase(args, "request-github-token")
     token = GithubApp(args.config_root).installation_token({"administration": "read", "metadata": "read"})
+    set_approved_action_phase(args, "verify-app-access-removed")
     if state["repository_id"] in app_repository_ids(args, token):
         raise InstanceAuthorityError("remove the private repository from the GitHub App installation before retirement")
+    set_approved_action_phase(args, "verify-read-only-access")
     remote_head(args, paths)
     require_private_remote(args)
+    set_approved_action_phase(args, "delete-bootstrap-credential")
     config_root = Path(args.config_root)
     for name in ("github-app.pem", "github-app.env"):
         path = config_root / name
@@ -920,6 +1043,9 @@ def cmd_retire_bootstrap(args):
     audit(args, "instance.bootstrap.retired", repository_sha256=source["repository_sha256"],
           repository_id=state["repository_id"], key_fingerprint=args.key_fingerprint,
           signer_id=args.signer_id, nonce=intent["nonce"])
+    finish_approved_action(args, intent, "bootstrap-retired",
+                           repository_id=state["repository_id"],
+                           key_fingerprint=args.key_fingerprint)
     print(canonical_json({"schema_version": 1, "retired": True,
                           "repository_sha256": source["repository_sha256"]}), end="")
 
@@ -931,6 +1057,7 @@ def cmd_status(args):
     paths = source_paths(args)
     result = {
         "schema_version": 1,
+        "audit_log": str(args.audit_log),
         "allowed_signers_configured": Path(args.allowed_signers).is_file(),
         "approval_signer": EXPECTED_SIGNER_ID,
         "github_app_configured": (Path(args.config_root) / "github-app.env").is_file()
@@ -1030,6 +1157,7 @@ def main(argv=None):
         else:
             raise InstanceAuthorityError("unsupported command")
     except InstanceAuthorityError as error:
+        audit_approved_action_failure(args, error)
         die(str(error))
 
 
