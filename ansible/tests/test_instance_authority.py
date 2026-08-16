@@ -171,7 +171,12 @@ class InstanceAuthorityTest(unittest.TestCase):
             calls.append((method, path, body, expected))
             if method == "GET":
                 return []
-            return {"id": 456, "key": "ssh-ed25519 public", "read_only": True}
+            return {
+                "id": 456,
+                "title": "active controller private instance read-only",
+                "key": "ssh-ed25519 public",
+                "read_only": True,
+            }
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -184,7 +189,10 @@ class InstanceAuthorityTest(unittest.TestCase):
                 "repository_sha256": self.mod.repository_hash(repository),
             }
             (source_root / "source.json").write_text(self.mod.canonical_json(source), encoding="utf-8")
-            (source_root / "github-readonly.pub").write_text("ssh-ed25519 public\n", encoding="utf-8")
+            (source_root / "github-readonly.pub").write_text(
+                "ssh-ed25519 public klokast private instance read-only\n",
+                encoding="utf-8",
+            )
             state_root = root / "state"
             state_root.mkdir()
             state = {
@@ -214,6 +222,7 @@ class InstanceAuthorityTest(unittest.TestCase):
 
         self.assertEqual(calls[-1][0], "POST")
         self.assertEqual(calls[-1][2]["read_only"], True)
+        self.assertEqual(calls[-1][2]["key"], "ssh-ed25519 public")
 
     def test_register_deploy_key_explains_key_already_in_use(self):
         class App:
@@ -302,7 +311,12 @@ class InstanceAuthorityTest(unittest.TestCase):
             if method == "GET":
                 return []
             if method == "POST":
-                return {"id": 456, "key": "ssh-ed25519 public", "read_only": True}
+                return {
+                    "id": 456,
+                    "title": "active controller private instance read-only",
+                    "key": "ssh-ed25519 public",
+                    "read_only": True,
+                }
             return None
 
         with tempfile.TemporaryDirectory() as temporary:

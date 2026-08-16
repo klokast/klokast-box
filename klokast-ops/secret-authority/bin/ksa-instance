@@ -482,6 +482,15 @@ def fingerprint(public_key):
     return safe_fingerprint(parts[1])
 
 
+def normalized_ssh_public_key(value):
+    if not isinstance(value, str):
+        return ""
+    parts = value.split()
+    if len(parts) < 2:
+        return ""
+    return f"{parts[0]} {parts[1]}"
+
+
 def load_source_config(args):
     paths = source_paths(args)
     try:
@@ -605,7 +614,9 @@ def cmd_register_read_key(args):
     actual_fingerprint = fingerprint(paths["public"])
     if actual_fingerprint != args.key_fingerprint:
         raise InstanceAuthorityError("approved key fingerprint does not match controller key")
-    public_key = paths["public"].read_text(encoding="utf-8").strip()
+    public_key = normalized_ssh_public_key(paths["public"].read_text(encoding="utf-8"))
+    if not public_key:
+        raise InstanceAuthorityError("controller deploy public key is invalid")
     token = GithubApp(args.config_root).installation_token({"administration": "write", "metadata": "read"})
     keys = github_request(token, "GET", f"/repos/{args.repo_owner}/{args.repo_name}/keys?per_page=100")
     if not isinstance(keys, list):
@@ -614,8 +625,11 @@ def cmd_register_read_key(args):
     for item in keys:
         if not isinstance(item, dict):
             raise InstanceAuthorityError("GitHub deploy-key listing is invalid")
-        if item.get("title") == title or item.get("key") == public_key:
-            if item.get("key") == public_key and item.get("read_only") is True:
+        listed_key = normalized_ssh_public_key(item.get("key"))
+        if not listed_key:
+            raise InstanceAuthorityError("GitHub deploy-key listing contains an invalid public key")
+        if item.get("title") == title or listed_key == public_key:
+            if listed_key == public_key and item.get("read_only") is True:
                 require_empty_authenticated_remote(args, paths)
                 print(canonical_json({"schema_version": 1, "registered": True,
                                       "repository_sha256": source["repository_sha256"],
@@ -642,13 +656,20 @@ def cmd_register_read_key(args):
             )
         raise InstanceAuthorityError(message) from error
     created_id = created.get("id") if isinstance(created, dict) else None
-    if (
-        not isinstance(created, dict)
-        or type(created_id) is not int
-        or created_id <= 0
-        or created.get("read_only") is not True
-        or created.get("key") != public_key
-    ):
+    created_key = normalized_ssh_public_key(created.get("key")) if isinstance(created, dict) else ""
+    response_problems = []
+    if not isinstance(created, dict):
+        response_problems.append("response shape")
+    if type(created_id) is not int or created_id <= 0:
+        response_problems.append("key ID")
+    if isinstance(created, dict) and created.get("title") != title:
+        response_problems.append("title")
+    if isinstance(created, dict) and created.get("read_only") is not True:
+        response_problems.append("read-only state")
+    if created_key != public_key:
+        response_problems.append("public key material")
+    if response_problems:
+        removed = False
         if type(created_id) is int and created_id > 0:
             try:
                 github_request(
@@ -661,7 +682,15 @@ def cmd_register_read_key(args):
                 raise InstanceAuthorityError(
                     "GitHub returned an invalid deploy key and it could not be removed"
                 ) from cleanup_error
-        raise InstanceAuthorityError("GitHub did not register the exact read-only deploy key")
+            removed = True
+        detail = ", ".join(response_problems)
+        if removed:
+            raise InstanceAuthorityError(
+                f"GitHub returned a deploy key with unexpected {detail}; the controller removed it"
+            )
+        raise InstanceAuthorityError(
+            f"GitHub returned a deploy key with unexpected {detail}; no created key ID was available for cleanup"
+        )
     try:
         require_empty_authenticated_remote(args, paths)
     except InstanceAuthorityError as validation_error:
