@@ -258,14 +258,15 @@ From the trusted MacBook, run the wrapper:
 klokast-dev/bin/run-private-instance-action register-repository
 ```
 
-A pop-up displays the intent. The following fields are specially sensitive:
+The wrappers displays the intent. The following fields are specially sensitive:
 
 - action: `register-repository`;
 - repository: `<family-org>/klokast-instance`;
 - engine commit: the `ENGINE_COMMIT` from Step 1;
 - expiry: no more than 10 minutes in the future.
 
-Answer `y` when all fields are correct, then approve the Touch ID prompt.
+Answer `y` when all fields are correct.
+Sign the Touch ID prompt as it pops up. The name of the popup, `ctcardtoken`, is the name of the macOS CryptoTokenKit process that manages the MacBook Secure Enclave key.
 The controller will verify that the repository is private, empty, and owned by
 the <family> organization.
 It will record the repository ID. It won't change the repository contents.
@@ -278,21 +279,20 @@ After repository registration succeeds, run:
 klokast-dev/bin/run-private-instance-action register-read-key
 ```
 
-Confirm the same repository and engine commit. Also confirm that the displayed
-key fingerprint is the fingerprint from Step 7. Answer `y`, then approve Touch
-ID.
+In the output, confirm these :
+- same repository
+- same engine commit
+- same key fingerprint as in Step 7.
 
-The controller asks GitHub to register that key as read-only. It then uses the
-key to prove that the repository still has no Git refs. If this proof fails,
-the controller removes the new key and stops.
+Answer `y`, then approve Touch ID. If you answer anything other than `y`, no signature is made and no action is run.
+If an action fails or its intent expires, run the same wrapper command again to create a new intent. Do not reuse or edit an intent.
+
+The controller asks GitHub to register that key as read-only.
+It then uses the key to prove that the repository still has no Git refs. If this proof fails, the controller removes the new key and stops.
 
 Confirm in GitHub that the deploy key is read-only. Then continue with Step 9.
 Do not run `retire-bootstrap` now. You will run it in Step 12, after the first
 private commit is pushed and App access is removed.
-
-If you answer anything other than `y`, no signature is made and no action is
-run. If an action fails or its intent expires, run the same wrapper command
-again to create a new intent. Do not reuse or edit an intent.
 
 ## 9. Create the staged Contract v1 repository
 

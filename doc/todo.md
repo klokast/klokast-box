@@ -2,6 +2,23 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-16 - make touch ID sign in popups more explicit
+
+At @doc/40-private-instance-bootstrap.md, step #8.1 , the current Touch ID popup only reads:
+"ctcardtoken needs to authenticate to continue. touch ID to allow this."
+It would be better if the popup title is Klokast instead of ctcardtoken. And it should show the intent
+that is being signed. As the standard Touch ID popup cannot be customized, here is a proposal:
+Create a signed, one-shot Klokast Approval.app. It would validate
+the intent, display it, compute its digest, and sign the same in-memory bytes.
+Apple’s native authentication API supports an application name and a clear
+localizedReason. Apple documents this behavior
+(https://developer.apple.com/documentation/localauthentication/lacontext/localizedreason).
+The Security framework can also associate an LAContext with keychain
+authentication. Apple documentation
+(https://developer.apple.com/documentation/security/ksecuseauthenticationcontext).
+This will probably require a signer migration or a new signature format because the
+current OpenSSH security-key format contains extra flags and counter fields.
+
 # 2026-08-12 - validate native Touch ID signing on the MacBook
 
 The infra-agent host is Linux. It cannot execute Apple's `sc_auth`, access the
