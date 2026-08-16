@@ -1,9 +1,10 @@
 # Private Instance Bootstrap: Human Procedure
 
-Use this procedure to create the private Contract v1 repository and give the
-active controller read-only access to it.
+Use this procedure to create the private Contract v1 repository,
+and give the active controller read-only access to it.
 
-The current active controller is `k002-ops`. The current approved engine is:
+The Platform got one active controller `<box>-ops`.
+The current approved engine is:
 
 ```text
 commit: ce0c769a6357b4aedfdefbf3e5eaa77d7543c9ee
@@ -18,6 +19,8 @@ The human creates the exact empty private repository before App installation.
 The temporary GitHub App has no Contents permission. It verifies the
 repository and registers one read-only deploy key. The human, not the App or
 an airunner, authors and pushes the first private commit.
+
+## 0. Pre-requisites
 
 Complete `klokast-dev/runbooks/15-touchid-secret-authority.md` before Step 1.
 That migration installs the separate private-instance and static-site signers
@@ -50,33 +53,33 @@ When it completes, load the settings into the same terminal:
 source "$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
 ```
 
-`INSTANCE_OWNER` is an existing GitHub organization that the human controls.
-The repository name is `klokast-instance`. This name keeps `klokast` and
-`klokast-box` available if the organization later forks an upstream
-repository.
-
 The approval key is an Apple-native CryptoTokenKit identity protected by Touch
 ID. The private key is not exportable. The local profile contains its public
 key. A private, short-lived Apple `ssh-agent` obtains the matching Secure
 Enclave identity only while a signature is made. An Apple passkey cannot
 replace it because a passkey is bound to a compatible app or website and
-cannot sign the bootstrap intent file. See
-`klokast-dev/runbooks/15-touchid-secret-authority.md` for the shared signer
-design and recovery procedure.
+cannot sign the bootstrap intent file.
 
-## 2. Create the temporary GitHub App
+See `klokast-dev/runbooks/15-touchid-secret-authority.md`
+for the shared signer design and recovery procedure.
+
+## 2. Create the family organization in GitHub
+
+Create `<family-org>` GitHub organization, that the human controls.
+The wrapper will create the `klokast-instance` repository in it.
+
+Enable Deploy Keys: GitHub → <family-org> → Settings → Enabled
+
+## 3. Create the temporary GitHub App
 
 Open the organization settings in GitHub:
 
-```text
-Your organizations -> INSTANCE_OWNER -> Settings -> Developer settings
--> GitHub Apps -> New GitHub App
-```
+`Your organizations -> <family-org> -> Settings -> Developer settings -> GitHub Apps -> New GitHub App`
 
 Use these settings:
 
 - GitHub App name: a unique name such as
-  `INSTANCE_OWNER-klokast-instance-bootstrap`;
+  `<family-org>-klokast-instance-bootstrap`;
 - Homepage URL: `https://github.com/klokast/klokast-box`;
 - Callback URL: blank;
 - Request user authorization during installation: disabled;
@@ -93,7 +96,7 @@ Use these settings:
 Create the App. Review the permissions again before you continue. Do not add
 Contents access.
 
-## 3. Generate and protect the App private key
+## 4. Generate and protect the App private key
 
 On the App settings page:
 
@@ -118,11 +121,11 @@ rm -i "$PEM_DOWNLOAD"
 
 Do not paste or display the PEM.
 
-## 4. Create the exact empty private repository
+## 5. Create the exact empty private repository
 
 Create the repository in the GitHub web interface before you install the App:
 
-1. Open the `INSTANCE_OWNER` organization.
+1. Open the `<family-org>` organization.
 2. Select **New repository**.
 3. Set **Repository name** to `klokast-instance`.
 4. Set visibility to **Private**.
@@ -131,7 +134,7 @@ Create the repository in the GitHub web interface before you install the App:
 7. Select **Create repository**.
 
 The result must be the exact empty organization repository
-`INSTANCE_OWNER/klokast-instance`. It must have no branch or commit. Do not
+`<family-org>/klokast-instance`. It must have no branch or commit. Do not
 create it in a personal account. Do not import, fork, rename, or reuse an
 existing repository.
 
@@ -237,7 +240,7 @@ PY
 ```
 
 The result is redacted. It contains a repository hash and the public-key
-fingerprint. The private deploy key stays root-only on `k002-ops`.
+fingerprint. The private deploy key stays root-only on `<box>-ops`.
 
 ## 8. Run a human-signed instance action
 
