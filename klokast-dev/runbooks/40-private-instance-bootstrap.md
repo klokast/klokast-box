@@ -250,25 +250,25 @@ The wrapper does the mechanical work. Your responsibility is to read the
 displayed intent, approve only the expected values, and use Touch ID. It does
 not run a second action automatically.
 
-### 8.1 Register the repository
+### 8.1 Register the `<family-org>-klokast-instance` repository by the controller
 
-From the trusted MacBook, run:
+From the trusted MacBook, run the wrapper:
 
 ```sh
 klokast-dev/bin/run-private-instance-action register-repository
 ```
 
-The wrapper displays the intent. Confirm these important fields:
+A pop-up displays the intent. The following fields are specially sensitive:
 
 - action: `register-repository`;
-- repository: `jfm-home/klokast-instance`;
+- repository: `<family-org>/klokast-instance`;
 - engine commit: the `ENGINE_COMMIT` from Step 1;
 - expiry: no more than 10 minutes in the future.
 
-Answer `y` only when all fields are correct, then approve the Touch ID prompt.
-The controller verifies that the repository is private, empty, and owned by
-the organization. It records the repository ID. It does not change repository
-contents.
+Answer `y` when all fields are correct, then approve the Touch ID prompt.
+The controller will verify that the repository is private, empty, and owned by
+the <family> organization.
+It will record the repository ID. It won't change the repository contents.
 
 ### 8.2 Register the controller read-only key
 
