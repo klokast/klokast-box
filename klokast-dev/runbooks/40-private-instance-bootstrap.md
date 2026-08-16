@@ -531,10 +531,15 @@ and registry authority stays active. No apply action is part of this runbook.
   phase and run the helper again. It safely reuses a valid owner-only values
   file.
 - **The worktree helper fails after seed creation:** do not delete or
-  overwrite the controller seed or MacBook worktree. Review the last
-  `private-instance.worktree-preparation.finished` record in
-  `$BOOTSTRAP_WORK/action-audit.jsonl`, then ask the agent to inspect the
-  completed state.
+  overwrite the controller seed or MacBook worktree. If no MacBook worktree
+  was created, run the helper with `--resume-transfer`:
+
+  ```sh
+  klokast-dev/bin/prepare-private-instance-worktree --resume-transfer
+  ```
+
+  Recovery requires the matching owner-only audit record and rechecks the seed
+  with the pinned sealed binary before transfer.
 - **GitHub shows the deploy key as write-enabled:** stop and remove that key in
   the GitHub UI. Do not continue with a write-enabled controller key.
 - **App removal fails because it is the last selected repository:** keep the

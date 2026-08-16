@@ -92,9 +92,9 @@ class PrivateInstanceWorktreeHelperTest(unittest.TestCase):
             "README.md": "# Private instance\n",
             "klokast.lock.yml": (
                 "---\nschema_version: 1\nengine:\n"
-                "  repository: https://github.com/klokast/klokast-box\n"
-                "  ref: main\n"
-                f"  commit: {ENGINE_COMMIT}\n"
+                "    repository: https://github.com/klokast/klokast-box\n"
+                "    ref: main\n"
+                f"    commit: {ENGINE_COMMIT}\n"
             ),
             "klokast.yml": "---\nschema_version: 1\n",
             "ops/deployment.yml": "---\nschema_version: 1\n",
@@ -147,6 +147,8 @@ elif grep -q WORKTREE_SEED_OPERATION "$payload"; then
   [ "${FAKE_SEED_FAIL:-0}" != 1 ] || exit 1
 elif grep -q WORKTREE_SEED_STATE "$payload"; then
   printf 'present\n'
+elif grep -q WORKTREE_VERIFY_EXISTING_SEED "$payload"; then
+  printf 'verified\n'
 elif grep -q WORKTREE_STREAM_OPERATION "$payload"; then
   tar -C "$FAKE_REMOTE_ROOT" -cf - instance-seed
 else
@@ -157,7 +159,7 @@ fi
         )
         os.chmod(tailscale, 0o755)
 
-    def run_helper(self, answers=b"", extra_environment=None):
+    def run_helper(self, answers=b"", extra_environment=None, arguments=None):
         environment = os.environ.copy()
         environment.update({
             "HOME": str(self.home),
@@ -168,7 +170,7 @@ fi
             environment.update(extra_environment)
         master, slave = pty.openpty()
         process = subprocess.Popen(
-            [str(self.repo / "klokast-dev" / "bin" / HELPER.name)],
+            [str(self.repo / "klokast-dev" / "bin" / HELPER.name), *(arguments or [])],
             stdin=slave,
             stdout=slave,
             stderr=slave,
@@ -213,6 +215,7 @@ fi
         self.assertIn("staged repository with the exact sealed build", result.stdout)
         self.assertIn("does not display the\nprivate values", result.stdout)
         self.assertIn("create a commit, add a remote, or", result.stdout)
+        self.assertIn("--resume-transfer", result.stdout)
 
     def test_success_transfers_and_verifies_the_unborn_repository(self):
         result = self.run_helper(b"y\ny\n")
@@ -259,6 +262,38 @@ fi
         self.assertEqual(record["outcome"], "failure")
         self.assertTrue(record["seed_created"])
         self.assertFalse(record["worktree_created"])
+
+    def test_resume_transfer_requires_audit_and_reuses_verified_seed(self):
+        repository_hash = __import__("hashlib").sha256(
+            b"family/klokast-instance"
+        ).hexdigest()
+        self.audit_log.write_text(json.dumps({
+            "event": "private-instance.worktree-preparation.finished",
+            "controller": "k002-ops",
+            "repository_sha256": repository_hash,
+            "repo_head": ENGINE_COMMIT,
+            "build_operation": BUILD_OPERATION,
+            "outcome": "failure",
+            "phase": "validate-transferred-seed",
+            "values_file": "reused",
+            "seed_created": True,
+            "worktree_created": False,
+        }) + "\n", encoding="utf-8")
+        os.chmod(self.audit_log, 0o600)
+        result = self.run_helper(b"y\n", arguments=["--resume-transfer"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("existing controller seed passed sealed verification", result.stdout)
+        worktree = self.home / "src" / "private-klokast" / "klokast-instance"
+        self.assertTrue((worktree / ".git").is_dir())
+        self.assertEqual(self.read_audit()[-1]["outcome"], "success")
+
+    def test_resume_transfer_refuses_missing_audit_evidence(self):
+        result = self.run_helper(arguments=["--resume-transfer"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no matching incomplete seed-transfer audit record", result.stdout)
+        self.assertFalse(
+            (self.home / "src" / "private-klokast" / "klokast-instance").exists()
+        )
 
     def test_source_keeps_fixed_paths_and_redacted_transfer(self):
         source = HELPER.read_text(encoding="utf-8")

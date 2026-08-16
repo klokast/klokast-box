@@ -31,7 +31,7 @@ BOOTSTRAP_WORK=""
 
 usage() {
   cat <<EOF
-Usage: $0
+Usage: $0 [--resume-transfer]
 
 Prepares the private Contract values on the active controller, creates a
 staged repository with the exact sealed build, and transfers it to:
@@ -42,6 +42,11 @@ klokast-dev/runbooks/40-private-instance-bootstrap.md before use. The helper
 loads the owner-only bootstrap session directly. It does not display the
 private values, edit the two-box Contract, create a commit, add a remote, or
 push to GitHub.
+
+Use --resume-transfer only after an earlier run created the controller seed
+but failed before it published the MacBook worktree. This mode requires the
+matching redacted audit record and rechecks the seed with the pinned sealed
+binary before it transfers anything.
 EOF
 }
 
@@ -204,6 +209,45 @@ cancel() {
     printf 'Seed creation was cancelled. No seed or worktree was created.\n'
   fi
   exit 0
+}
+
+require_resume_audit() {
+  python3 - "$action_log" "$CONTROLLER" "$INSTANCE_OWNER" "$INSTANCE_REPO" \
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+path, controller, owner, repo, engine_commit, build_operation = sys.argv[1:]
+try:
+    metadata = os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit("no matching incomplete seed-transfer audit record was found")
+if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+        or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+    raise SystemExit("the bootstrap audit journal is not one owner-only regular file")
+repository_hash = hashlib.sha256(f"{owner}/{repo}".encode("utf-8")).hexdigest()
+with open(path, encoding="utf-8") as handle:
+    records = [json.loads(line) for line in handle if line.strip()]
+for record in reversed(records):
+    if not (record.get("event") == "private-instance.worktree-preparation.finished"
+            and record.get("controller") == controller
+            and record.get("repository_sha256") == repository_hash
+            and record.get("repo_head") == engine_commit
+            and record.get("build_operation") == build_operation):
+        continue
+    if (record.get("outcome") in {"failure", "cancelled"}
+            and record.get("seed_created") is True
+            and record.get("worktree_created") is False):
+        values_state = record.get("values_file", "unknown")
+        print(values_state if values_state in {"created", "reused"} else "unknown")
+        raise SystemExit(0)
+    raise SystemExit("the latest matching audit record does not permit seed-transfer recovery")
+else:
+    raise SystemExit("no matching incomplete seed-transfer audit record was found")
+PY
 }
 
 prepare_or_check_controller_values() {
@@ -393,6 +437,68 @@ fi
 SH
 }
 
+verify_existing_controller_seed() {
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_SEED" <<'SH'
+set -eu
+expected_commit=$1
+operation=$2
+seed_path=$3
+repo="$HOME/src/klokast/klokast-box"
+build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$operation"
+
+die() {
+  printf 'prepare-private-instance-worktree: controller seed recovery: %s\n' "$*" >&2
+  exit 1
+}
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
+  die "this controller is not active"
+[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ] || \
+  die "the controller engine commit changed"
+[ -z "$(git -C "$repo" status --porcelain)" ] || die "the controller checkout has changes"
+[ "$seed_path" = /home/smith/private/klokast/instance-seed ] || die "the seed path is invalid"
+[ -d "$seed_path/.git" ] && [ ! -L "$seed_path" ] || \
+  die "the expected controller seed is missing or unsafe"
+
+# WORKTREE_VERIFY_EXISTING_SEED: verify the sealed binary before recovery.
+python3 - "$repo/ansible/bin/platform-instance" "$build_dir" \
+  "$seed_path" "$expected_commit" <<'PY'
+import importlib.util
+import json
+import subprocess
+import sys
+from importlib.machinery import SourceFileLoader
+
+wrapper_path, build_path, seed_path, expected_commit = sys.argv[1:]
+loader = SourceFileLoader("klokast_platform_instance_recovery", wrapper_path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+wrapper = importlib.util.module_from_spec(spec)
+loader.exec_module(wrapper)
+plan = wrapper.load_plan_wrapper()
+try:
+    directory, commit = plan.resolve_build_directory(build_path)
+    receipt, binary = plan.verify_build_directory(directory, commit)
+    plan.verify_binary_version(binary, receipt)
+except plan.PlanError:
+    raise SystemExit("the pinned sealed build failed verification")
+if commit != expected_commit:
+    raise SystemExit("the sealed build has another engine commit")
+completed = subprocess.run(
+    [str(binary), "check", "--instance", seed_path, "--json"],
+    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+)
+try:
+    result = json.loads(completed.stdout)
+except json.JSONDecodeError:
+    raise SystemExit("the sealed checker returned an invalid result")
+if completed.returncode != 0 or result.get("valid") is not True:
+    raise SystemExit("the pinned sealed checker rejected the controller seed")
+print("verified")
+PY
+SH
+}
+
 stream_controller_seed() {
   tailscale ssh "$SSH_TARGET" sh -s -- \
     "$ENGINE_COMMIT" "$CONTROLLER_SEED" <<'SH'
@@ -535,7 +641,7 @@ git("diff", "--cached", "--check")
 
 with open(os.path.join(root, "klokast.lock.yml"), encoding="utf-8") as handle:
     lock = handle.read()
-commits = re.findall(r"(?m)^  commit: ([0-9a-f]{40})$", lock)
+commits = re.findall(r"(?m)^ +commit: ([0-9a-f]{40})$", lock)
 if commits != [engine_commit]:
     raise SystemExit("klokast.lock.yml does not contain the exact approved engine commit")
 PY
@@ -568,6 +674,7 @@ else:
 PY
 }
 
+mode="normal"
 case "${1:-}" in
   -h|--help)
     [ "$#" -eq 1 ] || ksa_die "--help does not accept other arguments"
@@ -576,6 +683,10 @@ case "${1:-}" in
     ;;
   "")
     [ "$#" -eq 0 ] || ksa_die "this helper does not accept arguments"
+    ;;
+  --resume-transfer)
+    [ "$#" -eq 1 ] || ksa_die "--resume-transfer does not accept other arguments"
+    mode="resume-transfer"
     ;;
   *)
     usage >&2
@@ -651,55 +762,70 @@ if [ -e "$PRIVATE_WORKTREE" ] || [ -L "$PRIVATE_WORKTREE" ]; then
 fi
 
 printf '\nChecking the active controller and private paths...\n'
-controller_values_result=""
-if ! controller_values_result="$(prepare_or_check_controller_values prepare)"; then
-  ksa_die "the controller preflight failed"
-fi
-values_state="$controller_values_result"
-case "$values_state" in
-  created)
-    printf 'Created an owner-only values template on %s.\n' "$CONTROLLER"
-    ;;
-  reused)
-    printf 'Reusing the existing owner-only values file on %s.\n' "$CONTROLLER"
-    ;;
-  *)
-    ksa_die "the controller returned an invalid values-file state"
-    ;;
-esac
-
-worktree_phase="edit-private-values"
-printf '\nThe controller will open the private values file in vi.\n'
-printf 'Replace every REPLACE value. Keep one operator in the family group.\n'
-printf 'Do not add a timezone. Platform time is always Etc/UTC.\n'
-tailscale ssh "$SSH_TARGET" -t \
-  "umask 077; exec vi '$CONTROLLER_VALUES'"
-
-worktree_phase="check-private-values"
-checked_state="$(prepare_or_check_controller_values check)"
-[ "$checked_state" = checked ] || ksa_die "the controller did not confirm the private values file"
-
-worktree_phase="confirm-seed"
-printf '\nReady to create the staged Contract repository.\n'
-printf '  Controller: %s\n' "$CONTROLLER"
-printf '  Engine: %s\n' "$ENGINE_COMMIT"
-printf '  Build operation: %s\n' "$BUILD_OPERATION"
-printf 'The sealed initializer will validate the private JSON and generated Contract.\n'
-if ! confirm_no "Create the controller seed with these fixed inputs?"; then
-  cancel
-fi
-
-worktree_phase="seed-controller"
-if ! seed_on_controller; then
-  recovered_seed_state=""
-  if recovered_seed_state="$(controller_seed_state 2>/dev/null)" && \
-      [ "$recovered_seed_state" = present ]; then
-    seed_created="true"
+if [ "$mode" = normal ]; then
+  controller_values_result=""
+  if ! controller_values_result="$(prepare_or_check_controller_values prepare)"; then
+    ksa_die "the controller preflight failed"
   fi
-  ksa_die "the sealed controller seed operation failed"
+  values_state="$controller_values_result"
+  case "$values_state" in
+    created)
+      printf 'Created an owner-only values template on %s.\n' "$CONTROLLER"
+      ;;
+    reused)
+      printf 'Reusing the existing owner-only values file on %s.\n' "$CONTROLLER"
+      ;;
+    *)
+      ksa_die "the controller returned an invalid values-file state"
+      ;;
+  esac
+
+  worktree_phase="edit-private-values"
+  printf '\nThe controller will open the private values file in vi.\n'
+  printf 'Replace every REPLACE value. Keep one operator in the family group.\n'
+  printf 'Do not add a timezone. Platform time is always Etc/UTC.\n'
+  tailscale ssh "$SSH_TARGET" -t \
+    "umask 077; exec vi '$CONTROLLER_VALUES'"
+
+  worktree_phase="check-private-values"
+  checked_state="$(prepare_or_check_controller_values check)"
+  [ "$checked_state" = checked ] || ksa_die "the controller did not confirm the private values file"
+
+  worktree_phase="confirm-seed"
+  printf '\nReady to create the staged Contract repository.\n'
+  printf '  Controller: %s\n' "$CONTROLLER"
+  printf '  Engine: %s\n' "$ENGINE_COMMIT"
+  printf '  Build operation: %s\n' "$BUILD_OPERATION"
+  printf 'The sealed initializer will validate the private JSON and generated Contract.\n'
+  if ! confirm_no "Create the controller seed with these fixed inputs?"; then
+    cancel
+  fi
+
+  worktree_phase="seed-controller"
+  if ! seed_on_controller; then
+    recovered_seed_state=""
+    if recovered_seed_state="$(controller_seed_state 2>/dev/null)" && \
+        [ "$recovered_seed_state" = present ]; then
+      seed_created="true"
+    fi
+    ksa_die "the sealed controller seed operation failed"
+  fi
+  seed_created="true"
+  printf 'The sealed initializer created the controller seed.\n'
+else
+  worktree_phase="validate-resume-audit"
+  resume_values_state=""
+  if ! resume_values_state="$(require_resume_audit)"; then
+    ksa_die "seed transfer recovery is not authorized by the local audit journal"
+  fi
+  values_state="$resume_values_state"
+  seed_created="true"
+  worktree_phase="verify-existing-controller-seed"
+  verified_state="$(verify_existing_controller_seed)"
+  [ "$verified_state" = verified ] || \
+    ksa_die "the controller seed did not pass sealed verification"
+  printf 'The existing controller seed passed sealed verification.\n'
 fi
-seed_created="true"
-printf 'The sealed initializer created the controller seed.\n'
 
 worktree_phase="confirm-transfer"
 printf '\nThe helper can now stream the generated repository to this MacBook.\n'
