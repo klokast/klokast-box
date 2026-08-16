@@ -79,6 +79,8 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 - Docs must be non-duplicative, contradiction-free, located where future agents will find it easily when working on a relate task.
 - If you find broken links in the documentation, try and repair them.
 - Describe in `doc/todo.md` any difficulties encountered during work, to allow an AI agent to later fix them and avoid future reliance on work arounds.
+- Error messages should be expressive and understandable.
+- Operating the wrappers and other code should generate best-practices logs.
 
 # Design Rules For Agents
 
