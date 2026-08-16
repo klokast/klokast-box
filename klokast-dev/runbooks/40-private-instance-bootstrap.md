@@ -320,7 +320,7 @@ The helper does these actions:
 - checks the session, active controller, exact engine, sealed build operation,
   and fixed private paths;
 - creates or reuses the owner-only controller values file and opens it in
-  `vi`;
+  `vi` with an interactive terminal;
 - asks before it runs the sealed initializer;
 - asks before it streams the new seed to the MacBook;
 - verifies that the worktree has the exact generated files, staged state,

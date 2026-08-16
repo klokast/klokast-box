@@ -672,7 +672,7 @@ worktree_phase="edit-private-values"
 printf '\nThe controller will open the private values file in vi.\n'
 printf 'Replace every REPLACE value. Keep one operator in the family group.\n'
 printf 'Do not add a timezone. Platform time is always Etc/UTC.\n'
-tailscale ssh "$SSH_TARGET" \
+tailscale ssh "$SSH_TARGET" -t \
   "umask 077; exec vi '$CONTROLLER_VALUES'"
 
 worktree_phase="check-private-values"

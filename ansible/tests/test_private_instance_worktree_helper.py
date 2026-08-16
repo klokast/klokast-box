@@ -119,7 +119,14 @@ shift
 target=${1:-}
 shift
 [ "$target" = smith@k002-ops ]
-if [ "${1:-}" != sh ] || [ "${2:-}" = -c ]; then
+if [ "${1:-}" = -t ]; then
+  [ "$#" -eq 2 ]
+  case "${2:-}" in
+    *"exec vi '/home/smith/private/klokast/init-values.json'"*) exit 0 ;;
+    *) exit 2 ;;
+  esac
+fi
+if [ "${1:-}" != sh ]; then
   exit 0
 fi
 payload=$(mktemp)
@@ -258,6 +265,7 @@ fi
         self.assertIn('CONTROLLER_VALUES="/home/smith/private/klokast/init-values.json"', source)
         self.assertIn('CONTROLLER_SEED="/home/smith/private/klokast/instance-seed"', source)
         self.assertIn('stream_controller_seed | tar -xf - -C "$transfer_work"', source)
+        self.assertIn('tailscale ssh "$SSH_TARGET" -t', source)
         self.assertIn("private-instance.worktree-preparation.finished", source)
         self.assertNotIn("SEED_ARCHIVE", source)
         self.assertNotIn("git commit", source)
