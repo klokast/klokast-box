@@ -53,6 +53,18 @@ class InstanceAuthorityError(Exception):
     pass
 
 
+class GithubRequestError(InstanceAuthorityError):
+    def __init__(self, method, path, status, detail=""):
+        self.method = method
+        self.path = path
+        self.status = status
+        self.detail = detail
+        message = f"GitHub API rejected {method} {path} with status {status}"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message)
+
+
 def die(message, code=1):
     print(f"ksa-instance: {message}", file=sys.stderr)
     raise SystemExit(code)
@@ -212,6 +224,45 @@ def parse_env_file(path):
     return values
 
 
+def safe_github_error_text(value, limit=240):
+    if not isinstance(value, str):
+        return ""
+    value = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", value)
+    normalized = " ".join(value.split())
+    printable = "".join(character for character in normalized if " " <= character <= "~")
+    return printable[:limit].rstrip()
+
+
+def github_error_detail(payload):
+    try:
+        value = json.loads(payload)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(value, dict):
+        return ""
+    parts = []
+    message = safe_github_error_text(value.get("message"))
+    if message:
+        parts.append(message)
+    errors = value.get("errors")
+    if isinstance(errors, list):
+        for item in errors[:4]:
+            if isinstance(item, str):
+                detail = safe_github_error_text(item)
+            elif isinstance(item, dict):
+                field = safe_github_error_text(item.get("field"), 80)
+                item_message = safe_github_error_text(item.get("message"))
+                code = safe_github_error_text(item.get("code"), 80)
+                detail = item_message or code
+                if field and detail:
+                    detail = f"{field}: {detail}"
+            else:
+                detail = ""
+            if detail and detail not in parts:
+                parts.append(detail)
+    return "; ".join(parts)[:600].rstrip()
+
+
 class GithubApp:
     def __init__(self, config_root):
         root = Path(config_root)
@@ -266,7 +317,7 @@ def github_request(token, method, path, body=None, expected=(200,)):
     except OSError as error:
         raise InstanceAuthorityError("GitHub API request failed") from error
     if status not in expected:
-        raise InstanceAuthorityError(f"GitHub API rejected {method} {path} with status {status}")
+        raise GithubRequestError(method, path, status, github_error_detail(payload))
     if not payload:
         return None
     try:
@@ -571,9 +622,25 @@ def cmd_register_read_key(args):
                                       "key_fingerprint": actual_fingerprint}), end="")
                 return
             raise InstanceAuthorityError("GitHub has a conflicting instance deploy key")
-    created = github_request(token, "POST", f"/repos/{args.repo_owner}/{args.repo_name}/keys", {
-        "title": title, "key": public_key, "read_only": True,
-    }, expected=(201,))
+    try:
+        created = github_request(token, "POST", f"/repos/{args.repo_owner}/{args.repo_name}/keys", {
+            "title": title, "key": public_key, "read_only": True,
+        }, expected=(201,))
+    except GithubRequestError as error:
+        if error.status != 422:
+            raise
+        repository = repository_name(args.repo_owner, args.repo_name)
+        reason = error.detail or "validation failed"
+        message = (
+            f"GitHub rejected the read-only deploy key for {repository} (HTTP 422): {reason}; "
+            f"controller key fingerprint: {actual_fingerprint}; GitHub did not create the key"
+        )
+        if "key is already in use" in reason.lower():
+            message += (
+                "; this key is already attached to a GitHub account or repository; "
+                "GitHub permits one deploy key to be used by only one repository"
+            )
+        raise InstanceAuthorityError(message) from error
     created_id = created.get("id") if isinstance(created, dict) else None
     if (
         not isinstance(created, dict)

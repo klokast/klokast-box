@@ -67,6 +67,29 @@ class InstanceAuthorityTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "Contents"):
                 app.installation_token({"administration": "write", "contents": "read"})
 
+    def test_github_request_reports_sanitized_validation_detail(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 422
+        response.read.return_value = json.dumps({
+            "message": "Validation Failed\u001b[31m",
+            "errors": [{
+                "resource": "PublicKey", "field": "key", "code": "custom",
+                "message": "key is already in use",
+            }],
+            "token": "must-not-appear",
+        }).encode("utf-8")
+        with mock.patch.object(self.mod.urllib.request, "urlopen", return_value=response):
+            with self.assertRaises(self.mod.GithubRequestError) as raised:
+                self.mod.github_request("secret-token", "POST", "/repos/family/repo/keys")
+        self.assertEqual(raised.exception.status, 422)
+        self.assertEqual(
+            raised.exception.detail,
+            "Validation Failed; key: key is already in use",
+        )
+        self.assertNotIn("must-not-appear", str(raised.exception))
+        self.assertNotIn("secret-token", str(raised.exception))
+
     def test_private_instance_repository_name_is_exact(self):
         result = self.run_script(
             "intent", "instance", "register-repository",
@@ -191,6 +214,78 @@ class InstanceAuthorityTest(unittest.TestCase):
 
         self.assertEqual(calls[-1][0], "POST")
         self.assertEqual(calls[-1][2]["read_only"], True)
+
+    def test_register_deploy_key_explains_key_already_in_use(self):
+        class App:
+            def __init__(self, _root):
+                pass
+
+            def installation_token(self, _permissions):
+                return "token"
+
+        def request(_token, method, path, body=None, expected=(200,)):
+            if method == "GET":
+                return []
+            raise self.mod.GithubRequestError(
+                method,
+                path,
+                422,
+                "Validation Failed; key: key is already in use",
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "source"
+            source_root.mkdir()
+            repository = "family/klokast-instance"
+            source = {
+                "schema_version": 1,
+                "repository": repository,
+                "repository_sha256": self.mod.repository_hash(repository),
+            }
+            (source_root / "source.json").write_text(self.mod.canonical_json(source), encoding="utf-8")
+            (source_root / "github-readonly.pub").write_text("ssh-ed25519 public\n", encoding="utf-8")
+            state_root = root / "state"
+            state_root.mkdir()
+            state = {
+                "schema_version": 1,
+                "repository": repository,
+                "repository_sha256": self.mod.repository_hash(repository),
+                "repository_id": 123,
+                "private": True,
+                "registered_at": "2026-01-01T00:00:00Z",
+            }
+            (state_root / "repository.json").write_text(self.mod.canonical_json(state), encoding="utf-8")
+            args = mock.Mock(
+                repo_owner="family",
+                repo_name="klokast-instance",
+                source_root=source_root,
+                state_root=state_root,
+                config_root=root,
+                key_fingerprint="SHA256:abcdefghijklmnopqrstuvwxyz1234567890",
+                signer_id="human",
+                audit_log=root / "audit.jsonl",
+            )
+            with mock.patch.object(self.mod, "require_root"), mock.patch.object(
+                self.mod, "require_active_controller"
+            ), mock.patch.object(
+                self.mod, "require_approval", return_value={"nonce": "nonce_123456789"}
+            ), mock.patch.object(
+                self.mod, "fingerprint", return_value=args.key_fingerprint
+            ), mock.patch.object(self.mod, "GithubApp", App), mock.patch.object(
+                self.mod, "github_request", side_effect=request
+            ):
+                with self.assertRaisesRegex(
+                    self.mod.InstanceAuthorityError,
+                    "already attached to a GitHub account or repository",
+                ) as raised:
+                    self.mod.cmd_register_read_key(args)
+
+        message = str(raised.exception)
+        self.assertIn("family/klokast-instance (HTTP 422)", message)
+        self.assertIn(args.key_fingerprint, message)
+        self.assertIn("GitHub did not create the key", message)
+        self.assertIn("only one repository", message)
 
     def test_register_deploy_key_removes_new_key_when_repository_has_refs(self):
         calls = []
