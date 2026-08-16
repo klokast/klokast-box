@@ -1,0 +1,743 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Used by ksa_die from the sourced helper.
+# shellcheck disable=SC2034
+KSA_TOOL_NAME="prepare-private-instance-worktree"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# shellcheck source=klokast-dev/lib/approval-common.sh
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+
+SESSION_FILE="$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
+EXPECTED_REPO_NAME="klokast-instance"
+EXPECTED_SIGNER_ID="human-private-instance"
+EXPECTED_PURPOSE="private-instance"
+CONTROLLER_VALUES="/home/smith/private/klokast/init-values.json"
+CONTROLLER_SEED="/home/smith/private/klokast/instance-seed"
+PRIVATE_PARENT="$HOME/src/private-klokast"
+PRIVATE_WORKTREE="$PRIVATE_PARENT/klokast-instance"
+
+# These values are replaced by the checked owner-only session before use.
+CONTROLLER=""
+SSH_TARGET=""
+INSTANCE_OWNER=""
+INSTANCE_REPO=""
+SIGNER_ID=""
+APPROVAL_PURPOSE=""
+ENGINE_COMMIT=""
+BUILD_OPERATION=""
+BOOTSTRAP_WORK=""
+
+usage() {
+  cat <<EOF
+Usage: $0
+
+Prepares the private Contract values on the active controller, creates a
+staged repository with the exact sealed build, and transfers it to:
+  $PRIVATE_WORKTREE
+
+Run prepare-private-instance-bootstrap and complete Step 8 of
+klokast-dev/runbooks/40-private-instance-bootstrap.md before use. The helper
+loads the owner-only bootstrap session directly. It does not display the
+private values, edit the two-box Contract, create a commit, add a remote, or
+push to GitHub.
+EOF
+}
+
+confirm_no() {
+  local prompt="$1"
+  local answer=""
+
+  printf '%s [y/N] ' "$prompt" >&2
+  IFS= read -r answer || ksa_die "input ended before confirmation"
+  case "$answer" in
+    y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_private_session_file() {
+  python3 - "$SESSION_FILE" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    metadata = os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit("bootstrap session is missing")
+if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+        or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+    raise SystemExit("bootstrap session must be one owner-only regular file")
+PY
+}
+
+validate_private_work_directory() {
+  python3 - "$BOOTSTRAP_WORK" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+metadata = os.lstat(path)
+if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or os.path.realpath(path) != path):
+    raise SystemExit("bootstrap work directory must be one owner-only real directory")
+PY
+}
+
+append_audit_log() {
+  python3 - "$action_log" "$worktree_outcome" "$1" "$worktree_phase" \
+    "$CONTROLLER" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$ENGINE_COMMIT" \
+    "$BUILD_OPERATION" "$values_state" "$seed_created" \
+    "$worktree_created" <<'PY'
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+
+(path, outcome, exit_code, phase, controller, owner, repo, engine_commit,
+ build_operation, values_state, seed_created, worktree_created) = sys.argv[1:]
+if outcome not in {"success", "failure", "cancelled"}:
+    raise SystemExit("invalid worktree log outcome")
+if not exit_code.isdigit() or not 0 <= int(exit_code) <= 255:
+    raise SystemExit("invalid worktree log exit code")
+if not re.fullmatch(r"[a-z0-9-]{1,80}", phase):
+    raise SystemExit("invalid worktree log phase")
+if not re.fullmatch(r"[0-9a-f]{40}", engine_commit):
+    raise SystemExit("invalid worktree log engine commit")
+if not re.fullmatch(r"[0-9a-f]{12}", build_operation):
+    raise SystemExit("invalid worktree log build operation")
+if values_state not in {"unknown", "created", "reused"}:
+    raise SystemExit("invalid worktree log values state")
+if seed_created not in {"true", "false"} or worktree_created not in {"true", "false"}:
+    raise SystemExit("invalid worktree log Boolean")
+repository = f"{owner}/{repo}"
+record = {
+    "ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    "event": "private-instance.worktree-preparation.finished",
+    "outcome": outcome,
+    "exit_code": int(exit_code),
+    "phase": phase,
+    "controller": controller,
+    "repository_sha256": hashlib.sha256(repository.encode("utf-8")).hexdigest(),
+    "repo_head": engine_commit,
+    "build_operation": build_operation,
+    "values_file": values_state,
+    "seed_created": seed_created == "true",
+    "worktree_created": worktree_created == "true",
+}
+encoded = (json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+descriptor = os.open(path, flags, 0o600)
+try:
+    metadata = os.fstat(descriptor)
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+            or metadata.st_uid != os.getuid()):
+        raise SystemExit("action log is not a private regular file")
+    view = memoryview(encoded)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise SystemExit("cannot append the complete action log record")
+        view = view[written:]
+    os.fsync(descriptor)
+    os.fchmod(descriptor, 0o600)
+finally:
+    os.close(descriptor)
+PY
+}
+
+cleanup() {
+  local exit_status=$?
+  trap - EXIT
+
+  if [ -n "$transfer_work" ]; then
+    case "$transfer_work" in
+      "$PRIVATE_PARENT"/.klokast-instance-transfer.*)
+        rm -rf "$transfer_work"
+        ;;
+      *)
+        printf 'Warning: refused to remove an unexpected temporary path: %s\n' \
+          "$transfer_work" >&2
+        ;;
+    esac
+  fi
+  if ! append_audit_log "$exit_status"; then
+    printf 'Warning: could not append the redacted bootstrap journal: %s\n' \
+      "$action_log" >&2
+  fi
+  if [ "$worktree_outcome" = failure ]; then
+    printf '\nPrivate-instance worktree preparation failed.\n' >&2
+    printf '  Failed phase: %s\n' "$worktree_phase" >&2
+    printf '  Wrapper exit code: %s\n' "$exit_status" >&2
+    printf '  Values file: %s\n' "$values_state" >&2
+    printf '  Controller seed created: %s\n' "$seed_created" >&2
+    printf '  MacBook worktree created: %s\n' "$worktree_created" >&2
+    printf '  Redacted bootstrap journal: %s\n' "$action_log" >&2
+    if [ "$seed_created" = true ] && [ "$worktree_created" = false ]; then
+      printf 'The controller seed can contain completed work. Do not delete or overwrite it. Ask the agent to inspect it before another attempt.\n' >&2
+    elif [ "$worktree_created" = true ]; then
+      printf 'The MacBook worktree can contain completed work. Do not overwrite it. Inspect it before another attempt.\n' >&2
+    else
+      printf 'No seed or worktree was created. Correct the error and run this helper again.\n' >&2
+    fi
+  fi
+  exit "$exit_status"
+}
+
+cancel() {
+  worktree_outcome="cancelled"
+  if [ "$seed_created" = true ]; then
+    printf 'Transfer was cancelled. The completed controller seed remains at:\n'
+    printf '  %s\n' "$CONTROLLER_SEED"
+    printf 'Do not delete or overwrite it. Ask the agent to inspect it before another attempt.\n'
+  else
+    printf 'Seed creation was cancelled. No seed or worktree was created.\n'
+  fi
+  exit 0
+}
+
+prepare_or_check_controller_values() {
+  local operation="$1"
+
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$CONTROLLER_VALUES" "$CONTROLLER_SEED" "$operation" \
+    "$INSTANCE_OWNER" "$INSTANCE_REPO" <<'SH'
+set -eu
+expected_commit=$1
+values_path=$2
+seed_path=$3
+operation=$4
+repo_owner=$5
+repo_name=$6
+repo="$HOME/src/klokast/klokast-box"
+
+die() {
+  printf 'prepare-private-instance-worktree: controller values check: %s\n' "$*" >&2
+  exit 1
+}
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
+  die "this controller is not active"
+[ -d "$repo/.git" ] || die "the controller checkout is missing"
+actual_commit=$(git -C "$repo" rev-parse HEAD) || die "cannot read the controller engine commit"
+[ "$actual_commit" = "$expected_commit" ] || \
+  die "controller engine is $actual_commit; expected $expected_commit"
+[ -z "$(git -C "$repo" status --porcelain)" ] || die "the controller checkout has changes"
+[ ! -e "$seed_path" ] && [ ! -L "$seed_path" ] || \
+  die "the staged destination already exists at $seed_path; do not overwrite it"
+
+status=$(cd "$repo" && ansible/bin/secret-authority instance status --redacted) || \
+  die "cannot read the redacted private-instance controller status"
+printf '%s\n' "$status" | python3 -c '
+import hashlib
+import json
+import re
+import sys
+
+owner, repo = sys.argv[1:]
+value = json.load(sys.stdin)
+for field in ("allowed_signers_configured", "github_app_configured",
+              "source_prepared", "repository_registered"):
+    if value.get(field) is not True:
+        raise SystemExit(f"controller prerequisite is false: {field}")
+if value.get("checkout_present") is not False:
+    raise SystemExit("the controller deployment checkout already exists")
+fingerprint = value.get("key_fingerprint", "")
+if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{20,80}", fingerprint):
+    raise SystemExit("controller read-key fingerprint is missing or invalid")
+expected_hash = hashlib.sha256(f"{owner}/{repo}".encode("utf-8")).hexdigest()
+if value.get("repository_sha256") != expected_hash:
+    raise SystemExit("controller repository does not match the bootstrap session")
+' "$repo_owner" "$repo_name" || die "private-instance controller prerequisites are incomplete"
+
+# WORKTREE_VALUES_PREFLIGHT: the MacBook wrapper tests this closed operation.
+python3 - "$values_path" "$operation" <<'PY'
+import os
+import stat
+import sys
+
+path, operation = sys.argv[1:]
+expected = "/home/smith/private/klokast/init-values.json"
+if path != expected or operation not in {"prepare", "check"}:
+    raise SystemExit("the values operation or path is invalid")
+parent = os.path.dirname(path)
+try:
+    parent_metadata = os.lstat(parent)
+except FileNotFoundError:
+    if operation != "prepare":
+        raise SystemExit("the controller private directory is missing")
+    os.makedirs(parent, mode=0o700, exist_ok=False)
+    parent_metadata = os.lstat(parent)
+if (not stat.S_ISDIR(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(parent_metadata.st_mode) & 0o077):
+    raise SystemExit("the controller private directory is not owner-only")
+if os.path.realpath(parent) != parent:
+    raise SystemExit("the controller private directory contains a path alias")
+
+def validate(metadata):
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+        raise SystemExit("init-values.json must be one owner-only regular file with mode 0600")
+    if metadata.st_size <= 0 or metadata.st_size > 64 * 1024:
+        raise SystemExit("init-values.json must be non-empty and no larger than 64 KiB")
+
+try:
+    metadata = os.lstat(path)
+except FileNotFoundError:
+    if operation != "prepare":
+        raise SystemExit("init-values.json is missing after the editor closed")
+    template = b'''{
+  "schema_version": 1,
+  "instance": {"name": "REPLACE_WITH_PRIVATE_INSTANCE_NAME"},
+  "tailnet": {
+    "magicdns_suffix": "REPLACE.ts.net",
+    "groups": {
+      "operators": ["REPLACE_WITH_OPERATOR_LOGIN"],
+      "family": ["REPLACE_WITH_OPERATOR_LOGIN", "REPLACE_WITH_FAMILY_LOGIN"]
+    }
+  },
+  "site": {
+    "country": "REPLACE_WITH_TWO_LETTER_COUNTRY",
+    "physical_location": "REPLACE_WITH_K001_LOCATION"
+  },
+  "box": {"hostname_prefix": "k001"}
+}
+'''
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        view = memoryview(template)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise SystemExit("cannot write the complete init-values.json template")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o600)
+        validate(os.fstat(descriptor))
+    finally:
+        os.close(descriptor)
+    print("created")
+else:
+    validate(metadata)
+    print("reused" if operation == "prepare" else "checked")
+PY
+SH
+}
+
+seed_on_controller() {
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_VALUES" \
+    "$CONTROLLER_SEED" <<'SH'
+set -eu
+commit=$1
+operation=$2
+values_path=$3
+seed_path=$4
+repo="$HOME/src/klokast/klokast-box"
+
+die() {
+  printf 'prepare-private-instance-worktree: controller seed: %s\n' "$*" >&2
+  exit 1
+}
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
+  die "this controller is not active"
+cd "$repo"
+[ "$(git rev-parse HEAD)" = "$commit" ] || die "the controller engine commit changed"
+[ -z "$(git status --porcelain)" ] || die "the controller checkout has changes"
+
+# WORKTREE_SEED_OPERATION: the MacBook wrapper tests this closed operation.
+ansible/bin/platform-instance seed \
+  --build-dir "/var/lib/klokast/builds/klokast-cli/$commit/$operation" \
+  --values "$values_path" \
+  --destination "$seed_path" >/dev/null
+[ -d "$seed_path/.git" ] || die "the seed command did not create the expected Git repository"
+SH
+}
+
+controller_seed_state() {
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$CONTROLLER_SEED" <<'SH'
+set -eu
+expected_commit=$1
+seed_path=$2
+repo="$HOME/src/klokast/klokast-box"
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
+[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ]
+[ -z "$(git -C "$repo" status --porcelain)" ]
+[ "$seed_path" = /home/smith/private/klokast/instance-seed ]
+
+# WORKTREE_SEED_STATE: distinguish a completed seed after a failed transport.
+if [ -d "$seed_path/.git" ] && [ ! -L "$seed_path" ]; then
+  printf 'present\n'
+elif [ ! -e "$seed_path" ] && [ ! -L "$seed_path" ]; then
+  printf 'absent\n'
+else
+  printf 'unsafe\n'
+fi
+SH
+}
+
+stream_controller_seed() {
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$CONTROLLER_SEED" <<'SH'
+set -eu
+expected_commit=$1
+seed_path=$2
+repo="$HOME/src/klokast/klokast-box"
+
+die() {
+  printf 'prepare-private-instance-worktree: controller transfer: %s\n' "$*" >&2
+  exit 1
+}
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
+  die "this controller is not active"
+[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ] || \
+  die "the controller engine commit changed"
+[ -z "$(git -C "$repo" status --porcelain)" ] || die "the controller checkout has changes"
+[ "$seed_path" = /home/smith/private/klokast/instance-seed ] || die "the seed path is invalid"
+[ -d "$seed_path/.git" ] && [ ! -L "$seed_path" ] || \
+  die "the expected controller seed is missing or unsafe"
+
+# WORKTREE_STREAM_OPERATION: stream only the fixed seed directory.
+tar -C /home/smith/private/klokast -cf - instance-seed
+SH
+}
+
+prepare_private_parent() {
+  python3 - "$HOME" "$PRIVATE_PARENT" "$PRIVATE_WORKTREE" <<'PY'
+import os
+import stat
+import sys
+
+home, parent, worktree = sys.argv[1:]
+expected_parent = os.path.join(home, "src", "private-klokast")
+if parent != expected_parent or worktree != os.path.join(parent, "klokast-instance"):
+    raise SystemExit("the private worktree path is not fixed below the user home")
+if os.path.realpath(home) != home:
+    raise SystemExit("the user home contains a path alias")
+for index, candidate in enumerate((os.path.join(home, "src"), parent)):
+    try:
+        metadata = os.lstat(candidate)
+    except FileNotFoundError:
+        os.mkdir(candidate, 0o700)
+        metadata = os.lstat(candidate)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise SystemExit("the private worktree path contains an unsafe directory")
+    if os.path.realpath(candidate) != candidate:
+        raise SystemExit("the private worktree path contains a path alias")
+    if index == 1 and stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise SystemExit("the private worktree parent is not owner-only")
+if os.path.lexists(worktree):
+    raise SystemExit(f"destination already exists: {worktree}")
+PY
+}
+
+validate_generated_worktree() {
+  local worktree="$1"
+
+  python3 - "$worktree" "$ENGINE_COMMIT" <<'PY'
+import os
+import re
+import stat
+import subprocess
+import sys
+
+root, engine_commit = sys.argv[1:]
+expected_files = [
+    ".gitignore",
+    "AGENTS.md",
+    "README.md",
+    "klokast.lock.yml",
+    "klokast.yml",
+    "ops/deployment.yml",
+    "ops/platform-resources.yml",
+]
+if os.path.islink(root) or not os.path.isdir(os.path.join(root, ".git")):
+    raise SystemExit("the transferred seed is not a standalone Git repository")
+
+for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+    for path in [current, *(os.path.join(current, name) for name in directories),
+                 *(os.path.join(current, name) for name in files)]:
+        metadata = os.lstat(path)
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise SystemExit("the transferred seed is not owner-only")
+        if path != current and (stat.S_ISLNK(metadata.st_mode)
+                                or not (stat.S_ISDIR(metadata.st_mode)
+                                        or stat.S_ISREG(metadata.st_mode))):
+            raise SystemExit("the transferred seed contains an unsafe filesystem object")
+
+actual_files = []
+actual_directories = []
+for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+    relative_directory = os.path.relpath(current, root)
+    for name in list(directories):
+        path = os.path.join(current, name)
+        if os.path.islink(path):
+            raise SystemExit("the transferred seed contains a symbolic link")
+    if relative_directory == ".":
+        directories[:] = [name for name in directories if name != ".git"]
+    else:
+        actual_directories.append(relative_directory)
+    for name in files:
+        path = os.path.join(current, name)
+        metadata = os.lstat(path)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit("the transferred seed contains a non-regular authoritative file")
+        actual_files.append(os.path.relpath(path, root))
+if sorted(actual_files) != expected_files:
+    raise SystemExit("the transferred seed does not contain the exact generated file set")
+if actual_directories != ["ops"]:
+    raise SystemExit("the transferred seed does not contain the exact generated directory set")
+
+environment = {
+    key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+}
+environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"})
+
+def git(*arguments, check=True):
+    return subprocess.run(
+        ["git", "-C", root, *arguments], env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check,
+    )
+
+branch = git("symbolic-ref", "--short", "HEAD").stdout.decode("utf-8").strip()
+if branch != "main":
+    raise SystemExit("the generated repository is not on the main branch")
+if git("rev-parse", "--verify", "HEAD", check=False).returncode == 0:
+    raise SystemExit("the generated repository already has a commit")
+if git("remote").stdout.strip():
+    raise SystemExit("the generated repository already has a Git remote")
+tracked = git("ls-files", "-z").stdout.decode("utf-8").rstrip("\0").split("\0")
+if sorted(tracked) != expected_files:
+    raise SystemExit("the generated repository index does not contain the exact file set")
+status = git("status", "--porcelain=v1", "-z").stdout.decode("utf-8").rstrip("\0").split("\0")
+if sorted(status) != sorted(f"A  {path}" for path in expected_files):
+    raise SystemExit("the generated repository is not in the expected fully staged state")
+git("diff", "--check")
+git("diff", "--cached", "--check")
+
+with open(os.path.join(root, "klokast.lock.yml"), encoding="utf-8") as handle:
+    lock = handle.read()
+commits = re.findall(r"(?m)^  commit: ([0-9a-f]{40})$", lock)
+if commits != [engine_commit]:
+    raise SystemExit("klokast.lock.yml does not contain the exact approved engine commit")
+PY
+}
+
+publish_worktree() {
+  local source="$1"
+
+  python3 - "$source" "$PRIVATE_WORKTREE" <<'PY'
+import ctypes
+import os
+import sys
+
+source, destination = sys.argv[1:]
+if os.path.lexists(destination):
+    raise SystemExit(f"destination already exists: {destination}")
+if sys.platform == "darwin":
+    rename_exclusive = 0x00000004
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = library.renamex_np
+    rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(os.fsencode(source), os.fsencode(destination), rename_exclusive) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), destination)
+else:
+    # The production wrapper is Darwin-only. This branch supports its
+    # deterministic Linux test harness.
+    os.rename(source, destination)
+PY
+}
+
+case "${1:-}" in
+  -h|--help)
+    [ "$#" -eq 1 ] || ksa_die "--help does not accept other arguments"
+    usage
+    exit 0
+    ;;
+  "")
+    [ "$#" -eq 0 ] || ksa_die "this helper does not accept arguments"
+    ;;
+  *)
+    usage >&2
+    ksa_die "this helper does not accept arguments"
+    ;;
+esac
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  ksa_die "run this helper in an interactive terminal on the trusted MacBook"
+fi
+[ "$(uname -s)" = Darwin ] || ksa_die "run this helper on the trusted MacBook"
+ksa_need_command git
+ksa_need_command mktemp
+ksa_need_command python3
+ksa_need_command tar
+ksa_need_command tailscale
+
+validate_private_session_file || \
+  ksa_die "bootstrap session is missing or unsafe; rerun prepare-private-instance-bootstrap"
+# The session is generated by prepare-private-instance-bootstrap and contains
+# only quoted identifiers and local paths.
+# shellcheck disable=SC1090
+. "$SESSION_FILE"
+
+ksa_valid_controller "${CONTROLLER:-}" || ksa_die "session controller is invalid"
+[ "${SSH_TARGET:-}" = "smith@$CONTROLLER" ] || ksa_die "session SSH target is invalid"
+ksa_valid_github_owner "${INSTANCE_OWNER:-}" || ksa_die "session GitHub owner is invalid"
+[ "${#INSTANCE_OWNER}" -le 39 ] || ksa_die "session GitHub owner is too long"
+[ "${INSTANCE_REPO:-}" = "$EXPECTED_REPO_NAME" ] || \
+  ksa_die "session repository must be $EXPECTED_REPO_NAME"
+[ "${SIGNER_ID:-}" = "$EXPECTED_SIGNER_ID" ] || ksa_die "session signer is invalid"
+[ "${APPROVAL_PURPOSE:-}" = "$EXPECTED_PURPOSE" ] || \
+  ksa_die "session approval purpose is invalid"
+case "${ENGINE_COMMIT:-}" in
+  ""|*[!0-9a-f]*) ksa_die "session engine commit is invalid" ;;
+esac
+[ "${#ENGINE_COMMIT}" -eq 40 ] || ksa_die "session engine commit must be full length"
+case "${BUILD_OPERATION:-}" in
+  ""|*[!0-9a-f]*) ksa_die "session build operation is invalid" ;;
+esac
+[ "${#BUILD_OPERATION}" -eq 12 ] || ksa_die "session build operation must have 12 hexadecimal characters"
+[ "${BOOTSTRAP_WORK:-}" = "$HOME/.local/share/klokast/private-instance-bootstrap" ] || \
+  ksa_die "session work directory is invalid"
+if [ ! -d "$BOOTSTRAP_WORK" ] || [ -L "$BOOTSTRAP_WORK" ]; then
+  ksa_die "session work directory is not a safe directory"
+fi
+validate_private_work_directory || ksa_die "session work directory is not owner-only"
+
+[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ] || \
+  ksa_die "the public checkout has changes; commit or preserve them before this operation"
+pinned_engine="$(sed -n 's/^ENGINE_COMMIT="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+pinned_operation="$(sed -n 's/^BUILD_OPERATION="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+if [ "$pinned_engine" != "$ENGINE_COMMIT" ] || \
+    [ "$pinned_operation" != "$BUILD_OPERATION" ]; then
+  ksa_die "the session does not match the current reviewed bootstrap helper; rerun prepare-private-instance-bootstrap"
+fi
+
+umask 077
+action_log="$BOOTSTRAP_WORK/action-audit.jsonl"
+worktree_phase="controller-preflight"
+worktree_outcome="failure"
+values_state="unknown"
+seed_created="false"
+worktree_created="false"
+transfer_work=""
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+if [ -e "$PRIVATE_WORKTREE" ] || [ -L "$PRIVATE_WORKTREE" ]; then
+  ksa_die "the MacBook destination already exists; do not overwrite it: $PRIVATE_WORKTREE"
+fi
+
+printf '\nChecking the active controller and private paths...\n'
+controller_values_result=""
+if ! controller_values_result="$(prepare_or_check_controller_values prepare)"; then
+  ksa_die "the controller preflight failed"
+fi
+values_state="$controller_values_result"
+case "$values_state" in
+  created)
+    printf 'Created an owner-only values template on %s.\n' "$CONTROLLER"
+    ;;
+  reused)
+    printf 'Reusing the existing owner-only values file on %s.\n' "$CONTROLLER"
+    ;;
+  *)
+    ksa_die "the controller returned an invalid values-file state"
+    ;;
+esac
+
+worktree_phase="edit-private-values"
+printf '\nThe controller will open the private values file in vi.\n'
+printf 'Replace every REPLACE value. Keep one operator in the family group.\n'
+printf 'Do not add a timezone. Platform time is always Etc/UTC.\n'
+tailscale ssh "$SSH_TARGET" \
+  "umask 077; exec vi '$CONTROLLER_VALUES'"
+
+worktree_phase="check-private-values"
+checked_state="$(prepare_or_check_controller_values check)"
+[ "$checked_state" = checked ] || ksa_die "the controller did not confirm the private values file"
+
+worktree_phase="confirm-seed"
+printf '\nReady to create the staged Contract repository.\n'
+printf '  Controller: %s\n' "$CONTROLLER"
+printf '  Engine: %s\n' "$ENGINE_COMMIT"
+printf '  Build operation: %s\n' "$BUILD_OPERATION"
+printf 'The sealed initializer will validate the private JSON and generated Contract.\n'
+if ! confirm_no "Create the controller seed with these fixed inputs?"; then
+  cancel
+fi
+
+worktree_phase="seed-controller"
+if ! seed_on_controller; then
+  recovered_seed_state=""
+  if recovered_seed_state="$(controller_seed_state 2>/dev/null)" && \
+      [ "$recovered_seed_state" = present ]; then
+    seed_created="true"
+  fi
+  ksa_die "the sealed controller seed operation failed"
+fi
+seed_created="true"
+printf 'The sealed initializer created the controller seed.\n'
+
+worktree_phase="confirm-transfer"
+printf '\nThe helper can now stream the generated repository to this MacBook.\n'
+printf '  Destination: %s\n' "$PRIVATE_WORKTREE"
+if ! confirm_no "Transfer and verify the generated repository now?"; then
+  cancel
+fi
+
+worktree_phase="prepare-local-parent"
+prepare_private_parent
+transfer_work="$(mktemp -d "$PRIVATE_PARENT/.klokast-instance-transfer.XXXXXX")" || \
+  ksa_die "cannot create the private transfer directory"
+chmod 0700 "$transfer_work"
+
+worktree_phase="transfer-seed"
+stream_controller_seed | tar -xf - -C "$transfer_work"
+transferred_seed="$transfer_work/instance-seed"
+chmod -R go-rwx "$transferred_seed"
+
+worktree_phase="validate-transferred-seed"
+validate_generated_worktree "$transferred_seed"
+
+worktree_phase="publish-local-worktree"
+publish_worktree "$transferred_seed"
+worktree_created="true"
+
+worktree_phase="review-preflight"
+validate_generated_worktree "$PRIVATE_WORKTREE"
+worktree_outcome="success"
+
+printf '\nPrivate Contract worktree is ready and verified.\n'
+printf '  Worktree: %s\n' "$PRIVATE_WORKTREE"
+printf '  Branch: main (no commit)\n'
+printf '  Remote: none\n'
+printf '  Engine lock: %s\n' "$ENGINE_COMMIT"
+printf '\nContinue with Step 10 of the runbook. Edit and review only these authoritative files:\n'
+printf '  klokast.yml\n'
+printf '  klokast.lock.yml\n'
+printf '  ops/deployment.yml\n'
+printf '  ops/platform-resources.yml\n'
+printf '\nDo not commit or push until the two-box Contract review is complete.\n'

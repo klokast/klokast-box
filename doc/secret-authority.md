@@ -169,9 +169,18 @@ the controller or an airunner.
 `read_only: true` and an authenticated Git query proves that the repository has
 no refs.
 
-Generate the initial files on the controller with one verified sealed-builder
-output. The values file and destination must be below the controller private
-root. The command makes a staged Git repository but does not commit or push:
+Use the MacBook helper to open the controller-private values, generate the
+initial files with one verified sealed-builder output, transfer the seed, and
+verify its initial Git state:
+
+```sh
+klokast-dev/bin/prepare-private-instance-worktree
+```
+
+The helper does not display private values, commit, add a remote, or push. Its
+underlying controller operation is the following fixed `platform-instance`
+interface. The values file and destination must be below the controller
+private root:
 
 ```sh
 ansible/bin/platform-instance seed \
@@ -180,10 +189,9 @@ ansible/bin/platform-instance seed \
   --destination /home/smith/private/klokast/instance-seed
 ```
 
-Transfer `instance-seed` to the trusted workstation. Review it, commit it, add
-the private remote, and push `main` with the human private-repository identity.
-Do not commit or push it from an airunner. Do not use the temporary GitHub App
-to push content.
+Review the transferred worktree, commit it, add the private remote, and push
+`main` with the human private-repository identity. Do not commit or push it
+from an airunner. Do not use the temporary GitHub App to push content.
 
 After the first push, use the GitHub web interface to remove this repository
 from the temporary App installation. Then run:

@@ -65,8 +65,10 @@ for the shared signer design and recovery procedure.
 
 ## 2. Create the family organization in GitHub
 
-Create `<family-org>` GitHub organization, that the human controls.
-The wrapper will create the `klokast-instance` repository in it.
+Create the `<family-org>` GitHub organization. The human must control this
+organization.
+The repository name is `klokast-instance`. The human will create the exact
+empty private repository in Step 5.
 
 Enable Deploy Keys: GitHub → <family-org> → Settings → Enabled
 
@@ -142,7 +144,7 @@ This manual action does not give the controller or airrunner access to the
 repository. The signed `register-repository` action in Step 8 will verify and
 record its identity and empty state.
 
-## 5. Install the App on the exact private repository
+## 5.1 Install the App on the exact private repository
 
 1. In the internet browser, open:
 `https://github.com/organizations/<FAMILY-GITHHUB-ORGA>/settings/apps/<FAMILY>-klokast-instance-bootstrap>` , where for example:
@@ -307,17 +309,25 @@ private commit is pushed and App access is removed.
 
 ## 9. Create the staged Contract v1 repository
 
-Create the private init values directly on the controller. Do not enter these
-values in chat:
+Run the worktree helper from the trusted MacBook:
 
 ```sh
-tailscale ssh "$SSH_TARGET"
-cd ~/src/klokast/klokast-box
-umask 077
-vi ~/private/klokast/init-values.json
+klokast-dev/bin/prepare-private-instance-worktree
 ```
 
-Use this JSON shape with the real private values:
+The helper does these actions:
+
+- checks the session, active controller, exact engine, sealed build operation,
+  and fixed private paths;
+- creates or reuses the owner-only controller values file and opens it in
+  `vi`;
+- asks before it runs the sealed initializer;
+- asks before it streams the new seed to the MacBook;
+- verifies that the worktree has the exact generated files, staged state,
+  `main` branch, no commit, no remote, and exact engine lock.
+
+It does not display or copy the private values file. Do not enter its values in
+chat. The template has this JSON shape:
 
 ```json
 {
@@ -341,51 +351,24 @@ Use this JSON shape with the real private values:
 One operator must also be in the family group. Do not add a timezone; Platform
 time is always `Etc/UTC`.
 
-Exit the controller shell, then seed with the exact sealed build:
+The helper writes a redacted result to `$BOOTSTRAP_WORK/action-audit.jsonl`.
+The record contains the phase, result, controller, repository hash, engine and
+build pins, and whether it created or reused each staged result. It does not
+contain private values or generated Contract content.
+
+The controller seed and MacBook worktree must not already exist. The helper
+does not overwrite or delete them. If the operation fails after it creates one
+of them, read the final recovery message and ask the agent to inspect that
+result before another attempt.
+
+## 10. Edit and review the private repository on the MacBook
+
+After the helper succeeds, it prints the private worktree path. Set the same
+shell variable for the remaining commands:
 
 ```sh
-tailscale ssh "$SSH_TARGET" sh -s -- \
-  "$ENGINE_COMMIT" "$BUILD_OPERATION" <<'SH'
-set -eu
-commit=$1
-operation=$2
-cd "$HOME/src/klokast/klokast-box"
-ansible/bin/platform-instance seed \
-  --build-dir "/var/lib/klokast/builds/klokast-cli/$commit/$operation" \
-  --values "/home/smith/private/klokast/init-values.json" \
-  --destination "/home/smith/private/klokast/instance-seed"
-SH
-```
-
-The destination must not already exist. If it exists, stop and ask the agent
-to inspect it. Do not overwrite it.
-
-## 10. Transfer and edit the private repository on the MacBook
-
-Transfer the staged repository directly from the controller to the MacBook:
-
-```sh
-SEED_ARCHIVE="$BOOTSTRAP_WORK/instance-seed.tar"
 PRIVATE_PARENT="$HOME/src/private-klokast"
 PRIVATE_WORKTREE="$PRIVATE_PARENT/klokast-instance"
-
-test ! -e "$PRIVATE_WORKTREE" || {
-  echo "destination already exists: $PRIVATE_WORKTREE" >&2
-  exit 1
-}
-install -d -m 0700 "$PRIVATE_PARENT"
-
-tailscale ssh "$SSH_TARGET" sh -s -- >"$SEED_ARCHIVE" <<'SH'
-set -eu
-cd /home/smith/private/klokast
-test -d instance-seed/.git
-tar -cf - instance-seed
-SH
-
-tar -xf "$SEED_ARCHIVE" -C "$PRIVATE_PARENT"
-mv "$PRIVATE_PARENT/instance-seed" "$PRIVATE_WORKTREE"
-rm -f "$SEED_ARCHIVE"
-chmod -R go-rwx "$PRIVATE_WORKTREE"
 ```
 
 The generated starter has one `k001` box. Edit it to describe the current
@@ -540,9 +523,18 @@ and registry authority stays active. No apply action is part of this runbook.
   private-instance profile and that Touch ID is configured for the current Mac
   user. Rerun the signer self-test. Do not continue with an unapproved
   signature.
-- **The repository existed before Step 4 or contains a branch:** stop. Do not
-  reuse, import, rename, empty, or delete it until the agent checks the state.
+- **The Step 5 repository was not new and empty or contains a branch:** stop.
+  Do not reuse, import, rename, empty, or delete it until the agent checks the
+  state.
 - **The staged destination exists:** stop. Do not overwrite it.
+- **The worktree helper fails before seed creation:** correct the reported
+  phase and run the helper again. It safely reuses a valid owner-only values
+  file.
+- **The worktree helper fails after seed creation:** do not delete or
+  overwrite the controller seed or MacBook worktree. Review the last
+  `private-instance.worktree-preparation.finished` record in
+  `$BOOTSTRAP_WORK/action-audit.jsonl`, then ask the agent to inspect the
+  completed state.
 - **GitHub shows the deploy key as write-enabled:** stop and remove that key in
   the GitHub UI. Do not continue with a write-enabled controller key.
 - **App removal fails because it is the last selected repository:** keep the
