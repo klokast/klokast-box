@@ -371,38 +371,135 @@ PRIVATE_PARENT="$HOME/src/private-klokast"
 PRIVATE_WORKTREE="$PRIVATE_PARENT/klokast-instance"
 ```
 
-The generated starter has one `k001` box. Edit it to describe the current
-two-box deployment:
-
-- keep stable `box-001` for `k001`;
-- add `box-002` for `k002`;
-- set `box-002` as the active controller;
-- set `box-001` as the standby controller;
-- declare one `controller_container` airunner on `box-002`, which resolves to
-  `k002-ops-airunner`;
-- copy the exact private Tailnet groups, sites, country values, and physical
-  locations from the current deployment;
-- for each box, set `declared_capabilities` to the union of the current
-  available and prohibited capabilities;
-- keep enabled capabilities, prohibited capabilities, and access policy equal
-  to the current registry;
-- represent every enabled legacy app, its logical box placement, and its
-  Boolean public-manifest resource bindings;
-- do not copy runtime state, device bindings, bridge ports, DHCP data, ingress
-  details, secrets, generated files, or compatibility-only fields into
-  Contract v1.
-
-Only these four files are authoritative:
+The repository has four authoritative Contract files, but you must edit only
+the two files under `ops/` in this step:
 
 ```text
-klokast.yml
-klokast.lock.yml
-ops/deployment.yml
-ops/platform-resources.yml
+File                          Action in Step 10
+klokast.yml                   Review only. Do not edit.
+klokast.lock.yml              Review only. Do not edit.
+ops/deployment.yml            Edit topology and control-plane intent.
+ops/platform-resources.yml    Edit access and application intent.
 ```
 
-Confirm that `klokast.lock.yml` contains the exact `ENGINE_COMMIT`. Review all
-private values before the commit.
+Leave `.gitignore`, `AGENTS.md`, and `README.md` as generated. They are support
+files, not Contract inputs.
+
+### 10.1 Review the generated control files
+
+`klokast.yml` must continue to point to these two paths:
+
+```yaml
+paths:
+  deployment: ops/deployment.yml
+  platform_resources: ops/platform-resources.yml
+```
+
+`klokast.lock.yml` must continue to name the canonical public engine, `main`,
+and the exact `ENGINE_COMMIT` from Step 1. These commands must produce no diff
+and must print `engine lock ok`:
+
+```sh
+git -C "$PRIVATE_WORKTREE" diff -- klokast.yml klokast.lock.yml
+grep -Eq "^[[:space:]]+commit: $ENGINE_COMMIT$" \
+  "$PRIVATE_WORKTREE/klokast.lock.yml" && echo "engine lock ok"
+```
+
+Stop if either generated control file needs a manual correction. Do not repair
+a generated control file by hand.
+
+### 10.2 Edit `ops/deployment.yml`
+
+Open `$PRIVATE_WORKTREE/ops/deployment.yml` in your local editor. Make only
+these changes:
+
+- keep `schema_version`, `instance`, and all `tailnet` values exactly as the
+  initializer generated them;
+- keep `site-001` and `box-001` exactly as generated;
+- add `site-002` for the physical site that contains `k002`;
+- set `site-002.country` to its two-letter uppercase country code;
+- set `site-002.timezone` to `Etc/UTC`;
+- set `site-002.physical_location` to the private physical-location text for
+  `k002`; omit this optional field only when no such text is recorded;
+- add `box-002` with `hostname_prefix: k002` and `site: site-002`;
+- replace `control_plane` with the exact block below.
+
+```yaml
+control_plane:
+  controller:
+    active_box: box-002
+    standby_box: box-001
+  airunners:
+    - id: airunner-001
+      kind: controller_container
+      box: box-002
+```
+
+This airunner resolves to `k002-ops-airunner`. Do not add current runtime
+health, IP addresses, credentials, or generated inventory to this file.
+
+Before you continue, confirm that an authoritative private source records the
+country and physical location for `k002`. Stop if it does not. Do not guess a
+private site value and do not copy it into chat.
+
+### 10.3 Edit `ops/platform-resources.yml`
+
+Open `$PRIVATE_WORKTREE/ops/platform-resources.yml` in your local editor.
+Replace the single-box starter intent with the current two-box intent.
+
+Under `boxes`, use the stable logical IDs `box-001` for `k001` and `box-002`
+for `k002`. Each box must contain all four access fields:
+
+```text
+declared_capabilities     legacy available capabilities plus legacy prohibited capabilities
+enabled_capabilities      exact effective legacy enabled capabilities
+prohibited_capabilities   exact effective legacy prohibited capabilities
+policy                    exact effective legacy policy
+```
+
+Do not copy a missing legacy field as an empty value. Use the effective value
+after legacy defaults are applied. The enabled and prohibited sets must not
+overlap. Each non-`none` policy value must be enabled on that box.
+
+Under `apps`, represent every enabled legacy application that has an embedded
+public manifest in the approved engine. Use these placement conversions:
+
+```text
+Legacy placement                         Contract v1 placement
+active_master only                       mode: single_box; box
+active_master plus passive_backup        mode: active_passive; active_master; passive_backup
+boxes                                    mode: multi_box; boxes
+```
+
+Convert each runtime box name to its logical ID: `k001` becomes `box-001` and
+`k002` becomes `box-002`. Copy only Boolean entries from the legacy app
+`resources` map. Use `{}` when that map is empty.
+
+An enabled application must have an `apps/<app>/platform-resources.yml`
+manifest in the public engine at `ENGINE_COMMIT`. Stop if a manifest is
+missing. Do not omit the enabled application, create a private manifest, or
+disable the application only to make the Contract pass.
+
+Do not copy these compatibility-only values into Contract v1:
+
+- runtime state or application-private configuration;
+- users, devices, bridge ports, DHCP reservations, or shared-guest settings;
+- application VM details, ingress modes, secrets, or generated files.
+
+### 10.4 Review the two edits
+
+Run:
+
+```sh
+cd "$PRIVATE_WORKTREE"
+git diff --check
+git diff -- ops/deployment.yml ops/platform-resources.yml
+```
+
+Review every private value locally. Confirm again that `klokast.yml`,
+`klokast.lock.yml`, `.gitignore`, `AGENTS.md`, and `README.md` have no unstaged
+changes. Continue to Step 11 only when every enabled application is represented
+and both private files contain the exact intended state.
 
 ## 11. Commit and push as the human
 
