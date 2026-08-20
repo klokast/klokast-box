@@ -85,20 +85,30 @@ class PrivateInstanceWorktreeHelperTest(unittest.TestCase):
 
     def make_generated_seed(self):
         seed = self.remote / "instance-seed"
-        (seed / "ops").mkdir(parents=True)
+        seed.mkdir(parents=True)
         files = {
             ".gitignore": "*.private\n",
             "AGENTS.md": "# Private instructions\n",
             "README.md": "# Private instance\n",
-            "klokast.lock.yml": (
-                "---\nschema_version: 1\nengine:\n"
-                "    repository: https://github.com/klokast/klokast-box\n"
-                "    ref: main\n"
-                f"    commit: {ENGINE_COMMIT}\n"
-            ),
-            "klokast.yml": "---\nschema_version: 1\n",
-            "ops/deployment.yml": "---\nschema_version: 1\n",
-            "ops/platform-resources.yml": "---\nschema_version: 1\n",
+            "klokast.lock.json": json.dumps({
+                "$schema": (
+                    "https://raw.githubusercontent.com/klokast/klokast-box/"
+                    f"{ENGINE_COMMIT}/schemas/klokast-lock-v1.schema.json"
+                ),
+                "schema-version": 1,
+                "engine": {
+                    "repository": "https://github.com/klokast/klokast-box",
+                    "ref": "main",
+                    "commit": ENGINE_COMMIT,
+                },
+            }, indent=2) + "\n",
+            "klokast-instance.json": json.dumps({
+                "$schema": (
+                    "https://raw.githubusercontent.com/klokast/klokast-box/"
+                    f"{ENGINE_COMMIT}/schemas/klokast-instance-v1.schema.json"
+                ),
+                "schema-version": 1,
+            }, indent=2) + "\n",
         }
         for relative, content in files.items():
             (seed / relative).write_text(content, encoding="utf-8")
@@ -151,6 +161,13 @@ elif grep -q WORKTREE_VERIFY_EXISTING_SEED "$payload"; then
   printf 'verified\n'
 elif grep -q WORKTREE_STREAM_OPERATION "$payload"; then
   tar -C "$FAKE_REMOTE_ROOT" -cf - instance-seed
+elif grep -q 'invalid controller archive operation' "$payload"; then
+  operation=${7:-}
+  case "$operation" in
+    check) printf 'present\n' ;;
+    move) printf '/home/smith/private/klokast/archive\n' ;;
+    *) exit 2 ;;
+  esac
 else
   exit 2
 fi
@@ -216,6 +233,7 @@ fi
         self.assertIn("does not display the\nprivate values", result.stdout)
         self.assertIn("create a commit, add a remote, or", result.stdout)
         self.assertIn("--resume-transfer", result.stdout)
+        self.assertIn("--archive-and-restart", result.stdout)
 
     def test_success_transfers_and_verifies_the_unborn_repository(self):
         result = self.run_helper(b"y\ny\n")
@@ -295,6 +313,22 @@ fi
             (self.home / "src" / "private-klokast" / "klokast-instance").exists()
         )
 
+    def test_archive_and_restart_preserves_the_earlier_worktree(self):
+        parent = self.home / "src" / "private-klokast"
+        parent.mkdir(parents=True, mode=0o700)
+        worktree = parent / "klokast-instance"
+        shutil.copytree(self.remote / "instance-seed", worktree)
+        os.chmod(worktree, 0o700)
+        result = self.run_helper(b"y\ny\ny\n", arguments=["--archive-and-restart"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        archives = list((parent / "archive").glob("klokast-instance.*"))
+        self.assertEqual(len(archives), 1)
+        self.assertTrue((archives[0] / ".git").is_dir())
+        self.assertTrue((worktree / ".git").is_dir())
+        record = self.read_audit()[-1]
+        self.assertEqual(record["mode"], "archive-and-restart")
+        self.assertTrue(record["archive_performed"])
+
     def test_source_keeps_fixed_paths_and_redacted_transfer(self):
         source = HELPER.read_text(encoding="utf-8")
         self.assertIn('CONTROLLER_VALUES="/home/smith/private/klokast/init-values.json"', source)
@@ -302,20 +336,20 @@ fi
         self.assertIn('stream_controller_seed | tar -xf - -C "$transfer_work"', source)
         self.assertIn('tailscale ssh "$SSH_TARGET" -t', source)
         self.assertIn("private-instance.worktree-preparation.finished", source)
-        self.assertNotIn("SEED_ARCHIVE", source)
+        self.assertIn("archive_controller_inputs", source)
         self.assertNotIn("git commit", source)
         self.assertNotIn("git remote add", source)
         self.assertNotIn("git push", source)
 
-    def test_runbook_uses_helper_and_keeps_contract_review_manual(self):
+    def test_runbook_uses_helper_and_keeps_instance_review_manual(self):
         runbook = (
             REPO_ROOT / "klokast-dev" / "runbooks" /
             "40-private-instance-bootstrap.md"
         ).read_text(encoding="utf-8")
         self.assertIn("klokast-dev/bin/prepare-private-instance-worktree", runbook)
-        self.assertIn("## 10. Edit and review the private repository", runbook)
+        self.assertIn("## 10. Review the private repository", runbook)
         self.assertIn("git commit -m \"Initialize private Klokast instance\"", runbook)
-        self.assertNotIn("SEED_ARCHIVE=", runbook)
+        self.assertIn("--archive-and-restart", runbook)
 
 
 if __name__ == "__main__":

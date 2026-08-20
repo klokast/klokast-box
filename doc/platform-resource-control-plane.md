@@ -55,12 +55,14 @@ The old network-only manifest format and compiler have been removed. App
 resource policy is compiled only from `platform-resources.yml`.
 
 This document describes the current deployed compiler registry. It still uses
-runtime box names and `available_capabilities`. Contract v1 is a separate
-logical desired-state interface. Its instance file uses stable box IDs and
-`declared_capabilities`. The current compiler must not read that file directly.
-A later compatibility resolver will project reviewed Contract v1 intent into
-the deployed registry format. Until that resolver exists, keep the current
-private registry and inventory inputs unchanged.
+runtime box names and `available_capabilities`. Instance Specification v1 is a
+separate logical desired-state interface. Its instance file uses stable box
+IDs and upstream connectivity profiles. It does not repeat the capability
+catalog or low-level policy. The compiler must not read that file directly.
+The read-only `klokast plan` compatibility resolver projects reviewed Instance
+Specification v1 intent into the deployed registry format. Keep the current
+private registry and inventory inputs until an authorized apply path replaces
+their authority.
 
 ## Topology Boundary
 

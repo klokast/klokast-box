@@ -1,0 +1,24 @@
+---
+music_box: ""
+music_removal_wipe_data: false
+music_podman_user: neo
+music_service_name: klokast-music
+music_service_root: /etc/klokast/music
+music_legacy_private_ingress_state_root: /var/lib/klokast/music-private-ingress
+music_pod_name: klokast-music
+music_image_name: localhost/klokast/music-backend:latest
+music_data_volumes:
+  - klokast-music-library
+  - klokast-music-playlists
+music_state_volumes:
+  - klokast-music-mpd-state
+  - klokast-music-mympd-state
+  - klokast-music-runtime
+  - klokast-music-ui-ts-state
+  - klokast-music-upload-ts-state
+music_container_names:
+  - music-snapserver
+  - music-mpd
+  - music-mympd
+  - music-ui-ingress
+  - music-upload-ingress

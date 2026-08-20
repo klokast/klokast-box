@@ -20,10 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	lockPath           = "klokast.lock.yml"
-	maximumTrackedFile = 1024 * 1024
-)
+const maximumTrackedFile = 1024 * 1024
 
 var (
 	allowedYAMLTags = map[string]bool{
@@ -31,7 +28,7 @@ var (
 		"!!int": true, "!!bool": true, "!!null": true, "!!float": true,
 	}
 	identifierPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	secretAssignment  = regexp.MustCompile(`(?i)^[ \t]*(?:password|passwd|secret|token|api[_-]?key|auth[_-]?key|private[_-]?key)[ \t]*:[ \t]*['"]?([^#'" \t\r\n]{8,})`)
+	secretAssignment  = regexp.MustCompile(`(?i)['"]?(?:password|passwd|secret|token|api[_-]?key|auth[_-]?key|private[_-]?key)['"]?[ \t]*[:=][ \t]*['"]?([^#'" \t\r\n]{8,})`)
 	secretTokens      = []*regexp.Regexp{
 		regexp.MustCompile(`tskey-[A-Za-z0-9_-]{8,}`),
 		regexp.MustCompile(`gh[pousr]_[A-Za-z0-9_]{8,}`),
@@ -59,15 +56,15 @@ type Engine struct {
 	Commit     string
 }
 
-type rootDocument = RootDocument
-type lockDocument = LockDocument
-type deploymentDocument = DeploymentDocument
-type platformDocument = PlatformDocument
+type featureDefinition struct {
+	Kind   string
+	Values map[string]bool
+}
 
 type appManifest struct {
 	PlacementMode string
-	Capabilities  map[string]bool
-	Resources     map[string]bool
+	Features      map[string]featureDefinition
+	Data          map[string]bool
 }
 
 type checker struct {
@@ -103,66 +100,39 @@ func Check(instancePath string, engine Engine) (Report, error) {
 	}
 	c.inspectTrackedFiles()
 
-	rootValue, rootNode, rootOK := c.loadAndValidate("klokast.yml", "schemas/instance-contract-v1.json")
-	var rootConfig rootDocument
-	if rootOK {
-		rootOK = decodeNode(rootNode, &rootConfig, func(message string) {
-			c.add("klokast.yml", "yaml.decode", message)
-		})
-		_ = rootValue
-	}
-	if !rootOK {
-		return c.report(), nil
-	}
-
-	paths := []string{lockPath, rootConfig.Paths.Deployment, rootConfig.Paths.PlatformResources}
-	seen := map[string]bool{"klokast.yml": true}
-	for _, path := range paths {
-		if seen[path] {
-			c.add(path, "path.duplicate", "authoritative files must use distinct paths")
+	instanceValue, instanceOK := c.loadAndValidateJSON(InstancePath, "schemas/klokast-instance-v1.schema.json")
+	lockValue, lockOK := c.loadAndValidateJSON(LockPath, "schemas/klokast-lock-v1.schema.json")
+	var instance InstanceDocument
+	var lock LockDocument
+	if instanceOK {
+		content, _ := json.Marshal(instanceValue)
+		if err := json.Unmarshal(content, &instance); err != nil {
+			c.add(InstancePath, "json.decode", "instance JSON cannot be decoded")
+			instanceOK = false
 		}
-		seen[path] = true
 	}
-
-	_, lockNode, lockOK := c.loadAndValidate(lockPath, "schemas/engine-lock-v1.json")
-	_, deploymentNode, deploymentOK := c.loadAndValidate(rootConfig.Paths.Deployment, "schemas/deployment-v1.json")
-	_, platformNode, platformOK := c.loadAndValidate(rootConfig.Paths.PlatformResources, "schemas/platform-resources-v1.json")
-
-	var lock lockDocument
-	var deployment deploymentDocument
-	var platform platformDocument
 	if lockOK {
-		lockOK = decodeNode(lockNode, &lock, func(message string) { c.add(lockPath, "yaml.decode", message) })
-	}
-	if deploymentOK {
-		deploymentOK = decodeNode(deploymentNode, &deployment, func(message string) {
-			c.add(rootConfig.Paths.Deployment, "yaml.decode", message)
-		})
-	}
-	if platformOK {
-		platformOK = decodeNode(platformNode, &platform, func(message string) {
-			c.add(rootConfig.Paths.PlatformResources, "yaml.decode", message)
-		})
+		content, _ := json.Marshal(lockValue)
+		if err := json.Unmarshal(content, &lock); err != nil {
+			c.add(LockPath, "json.decode", "lock JSON cannot be decoded")
+			lockOK = false
+		}
 	}
 	if lockOK {
 		c.validateLock(lock)
 	}
-	if deploymentOK {
-		c.validateDeployment(rootConfig.Paths.Deployment, deployment)
-	}
-	if deploymentOK && platformOK {
+	if instanceOK {
 		manifests, manifestErr := loadAppManifests()
 		if manifestErr != nil {
 			return Report{}, fmt.Errorf("load embedded application manifests: %w", manifestErr)
 		}
-		c.validatePlatform(rootConfig.Paths.PlatformResources, deployment, platform, manifests)
+		c.validateInstance(instance, manifests)
 	}
 	return c.report(), nil
 }
 
 func (c *checker) inspectRepository() bool {
-	command := isolatedGitCommand(c.root, "rev-parse", "--show-toplevel")
-	output, err := command.Output()
+	output, err := isolatedGitCommand(c.root, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		c.add(".", "git.repository", "instance must be a standalone Git repository")
 		return false
@@ -172,8 +142,7 @@ func (c *checker) inspectRepository() bool {
 		c.add(".", "git.repository", "instance must be the root of a standalone Git repository")
 		return false
 	}
-	super, err := isolatedGitCommand(c.root, "rev-parse", "--show-superproject-working-tree").Output()
-	if err == nil && strings.TrimSpace(string(super)) != "" {
+	if output, err := isolatedGitCommand(c.root, "rev-parse", "--show-superproject-working-tree").Output(); err == nil && strings.TrimSpace(string(output)) != "" {
 		c.add(".", "git.repository", "instance must not be embedded as a Git submodule")
 	}
 	tracked, err := isolatedGitCommand(c.root, "ls-files", "-z").Output()
@@ -190,12 +159,19 @@ func (c *checker) inspectRepository() bool {
 }
 
 func (c *checker) inspectTrackedFiles() {
+	obsolete := map[string]bool{
+		"klokast.yml": true, "klokast.lock.yml": true,
+		"ops/deployment.yml": true, "ops/platform-resources.yml": true,
+	}
 	paths := make([]string, 0, len(c.tracked))
 	for path := range c.tracked {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
+		if obsolete[path] {
+			c.add(path, "tracked.obsolete", "the unreleased YAML Contract input is not permitted by the Instance Specification")
+		}
 		if forbiddenTrackedPath(path) {
 			c.add(path, "tracked.forbidden", "generated state, secret paths, and key material must not be tracked")
 		}
@@ -233,31 +209,28 @@ func (c *checker) inspectTrackedFiles() {
 	}
 }
 
-func (c *checker) loadAndValidate(path, schemaPath string) (any, *yaml.Node, bool) {
-	full, clean, ok := c.safeAuthoritativePath(path)
-	if !ok {
-		return nil, nil, false
+func (c *checker) loadAndValidateJSON(path, schemaPath string) (any, bool) {
+	if !c.tracked[path] {
+		c.add(path, "git.untracked", "authoritative input must be tracked by Git")
+		return nil, false
 	}
-	if !c.tracked[clean] {
-		c.add(clean, "git.untracked", "authoritative input must be tracked by Git")
-		return nil, nil, false
-	}
-	content, err := os.ReadFile(full)
+	content, err := readRegularNoSymlinks(c.root, path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			c.add(clean, "path.missing", "authoritative input does not exist")
-			return nil, nil, false
+			c.add(path, "path.missing", "authoritative input does not exist")
+		} else {
+			c.add(path, "path.read", "authoritative input cannot be read")
 		}
-		c.add(clean, "path.read", "authoritative input cannot be read")
-		return nil, nil, false
+		return nil, false
 	}
-	node, value, parseDiagnostics := parseYAML(content)
-	for _, diagnostic := range parseDiagnostics {
-		diagnostic.Path = clean
-		c.diagnostics = append(c.diagnostics, diagnostic)
-	}
-	if len(parseDiagnostics) != 0 {
-		return nil, node, false
+	value, duplicatePath, err := decodeUniqueJSON(content)
+	if err != nil {
+		if duplicatePath != "" {
+			c.add(path+duplicatePath, "json.duplicate", "duplicate JSON object key is forbidden")
+		} else {
+			c.add(path, "json.syntax", "authoritative input must be one valid JSON document")
+		}
+		return nil, false
 	}
 	if err := validateSchema(schemaPath, value); err != nil {
 		var validationError *jsonschema.ValidationError
@@ -267,270 +240,410 @@ func (c *checker) loadAndValidate(path, schemaPath string) (any, *yaml.Node, boo
 				locations = []string{"$"}
 			}
 			for _, location := range locations {
-				c.add(clean+location, "schema.invalid", "document does not satisfy its Contract v1 schema")
+				c.add(path+location, "schema.invalid", "document does not satisfy the Instance Specification v1 schema")
 			}
 		} else {
-			c.add(clean, "schema.invalid", "document does not satisfy its Contract v1 schema")
+			c.add(path, "schema.invalid", "document does not satisfy the Instance Specification v1 schema")
 		}
-		return value, node, false
+		return value, false
 	}
-	return value, node, true
+	return value, true
 }
 
-func (c *checker) safeAuthoritativePath(path string) (string, string, bool) {
-	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
-	if path == "" || strings.Contains(path, "\\") || filepath.IsAbs(path) || clean != path || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		c.add(path, "path.unsafe", "authoritative path must be a clean relative path inside the instance repository")
-		return "", clean, false
+func (c *checker) validateLock(lock LockDocument) {
+	expectedSchema := schemaURL(c.engine.Commit, "klokast-lock-v1.schema.json")
+	if lock.Schema != expectedSchema {
+		c.add(LockPath+"$.$schema", "schema.engine", "lock schema URL must use the exact approved engine commit")
 	}
-	current := c.root
-	for _, component := range strings.Split(clean, "/") {
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				c.add(clean, "path.missing", "authoritative input does not exist")
-			} else {
-				c.add(clean, "path.read", "authoritative path cannot be inspected")
-			}
-			return "", clean, false
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			c.add(clean, "path.symlink", "authoritative paths may not contain symbolic links")
-			return "", clean, false
-		}
-	}
-	info, err := os.Stat(current)
-	if err != nil || !info.Mode().IsRegular() {
-		c.add(clean, "path.type", "authoritative input must be a regular file")
-		return "", clean, false
-	}
-	return current, clean, true
-}
-
-func (c *checker) validateLock(lock lockDocument) {
 	if c.engine.Repository != "https://github.com/klokast/klokast-box" || c.engine.Ref == "" ||
 		!regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9])?$`).MatchString(c.engine.Ref) ||
-		strings.Contains(c.engine.Ref, "//") || strings.Contains(c.engine.Ref, "..") ||
-		strings.Contains(c.engine.Ref, "@{") || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.engine.Commit) {
-		c.add(lockPath, "engine.binary", "running binary does not identify a full engine commit")
+		strings.Contains(c.engine.Ref, "//") || strings.Contains(c.engine.Ref, "..") || strings.Contains(c.engine.Ref, "@{") ||
+		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.engine.Commit) {
+		c.add(LockPath, "engine.binary", "running binary does not identify a full engine commit")
 		return
 	}
 	if lock.Engine.Repository != c.engine.Repository {
-		c.add(lockPath, "engine.repository", "engine lock repository does not match the running builder-approved engine")
+		c.add(LockPath, "engine.repository", "engine lock repository does not match the running builder-approved engine")
 	}
 	if lock.Engine.Ref != c.engine.Ref {
-		c.add(lockPath, "engine.ref", "engine lock ref does not match the running builder-approved engine")
+		c.add(LockPath, "engine.ref", "engine lock ref does not match the running builder-approved engine ref")
 	}
 	if lock.Engine.Commit != c.engine.Commit {
-		c.add(lockPath, "engine.mismatch", "engine lock commit does not match the running builder-approved engine commit")
+		c.add(LockPath, "engine.mismatch", "engine lock commit does not match the running builder-approved engine commit")
 	}
 }
 
-func (c *checker) validateDeployment(path string, deployment deploymentDocument) {
-	prefixes := map[string]string{}
+func (c *checker) validateInstance(instance InstanceDocument, manifests map[string]appManifest) {
+	if instance.Schema != schemaURL(c.engine.Commit, "klokast-instance-v1.schema.json") {
+		c.add(InstancePath+"$.$schema", "schema.engine", "instance schema URL must use the exact approved engine commit")
+	}
+	hasOperator, hasFamily, hasOperatorFamily := false, false, false
+	for _, member := range instance.Tailnet.Members {
+		memberOperator, memberFamily := false, false
+		for _, role := range member.Roles {
+			memberOperator = memberOperator || role == "operator"
+			memberFamily = memberFamily || role == "family"
+		}
+		hasOperator = hasOperator || memberOperator
+		hasFamily = hasFamily || memberFamily
+		hasOperatorFamily = hasOperatorFamily || (memberOperator && memberFamily)
+	}
+	if !hasOperator || !hasFamily || !hasOperatorFamily {
+		c.add(InstancePath+"$.tailnet.members", "tailnet.operator-family", "one member must have both operator and family roles")
+	}
+
 	generated := map[string]string{}
-	for box, value := range deployment.Boxes {
-		if _, ok := deployment.Sites[value.Site]; !ok {
-			c.add(path+"$.boxes."+box+".site", "reference.site", "box references an unknown site")
+	for box, value := range instance.Boxes {
+		if _, ok := instance.Sites[value.Site]; !ok {
+			c.add(InstancePath+"$.boxes."+box+".site", "reference.site", "box references an unknown site")
 		}
-		if prior, exists := prefixes[value.HostnamePrefix]; exists {
-			c.add(path+"$.boxes."+box+".hostname_prefix", "identity.prefix", "hostname prefix duplicates box "+prior)
+		if !hasConnectivityProfile(value, "tailscale") {
+			c.add(InstancePath+"$.boxes."+box+".connectivity-profiles", "connectivity.tailscale", "an Instance Specification v1 box must use the tailscale connectivity profile")
 		}
-		prefixes[value.HostnamePrefix] = box
 		for _, suffix := range reservedRuntimeSuffixes {
-			if value.HostnamePrefix == suffix || strings.HasSuffix(value.HostnamePrefix, "-"+suffix) {
-				c.add(path+"$.boxes."+box+".hostname_prefix", "identity.prefix", "hostname prefix ends in a reserved runtime role")
+			if box == suffix || strings.HasSuffix(box, "-"+suffix) {
+				c.add(InstancePath+"$.boxes."+box, "identity.box", "box ID ends in a reserved runtime role")
 				break
 			}
 		}
 		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "airunner", "ops-airunner"} {
-			name := value.HostnamePrefix + "-" + suffix
+			name := box + "-" + suffix
 			if len(name) > 63 || !identifierPattern.MatchString(name) {
-				c.add(path+"$.boxes."+box+".hostname_prefix", "identity.runtime", "hostname prefix cannot produce safe runtime names")
+				c.add(InstancePath+"$.boxes."+box, "identity.runtime", "box ID cannot produce safe runtime names")
 			}
 			if prior, exists := generated[name]; exists {
-				c.add(path+"$.boxes."+box+".hostname_prefix", "identity.runtime", "generated runtime name collides with "+prior)
+				c.add(InstancePath+"$.boxes."+box, "identity.runtime", "generated runtime name collides with "+prior)
 			}
 			generated[name] = box
 		}
 	}
-	controller := deployment.ControlPlane.Controller
-	if _, ok := deployment.Boxes[controller.ActiveBox]; !ok {
-		c.add(path+"$.control_plane.controller.active_box", "reference.box", "active controller references an unknown box")
+	if _, ok := instance.Boxes[instance.Controllers.Active]; !ok {
+		c.add(InstancePath+"$.controllers.active", "reference.box", "active controller references an unknown box")
 	}
-	if controller.StandbyBox != "" {
-		if _, ok := deployment.Boxes[controller.StandbyBox]; !ok {
-			c.add(path+"$.control_plane.controller.standby_box", "reference.box", "standby controller references an unknown box")
+	if instance.Controllers.Standby != "" {
+		if _, ok := instance.Boxes[instance.Controllers.Standby]; !ok {
+			c.add(InstancePath+"$.controllers.standby", "reference.box", "standby controller references an unknown box")
 		}
-		if controller.StandbyBox == controller.ActiveBox {
-			c.add(path+"$.control_plane.controller.standby_box", "cardinality.controller", "active and standby controllers must use different boxes")
-		}
-	}
-	operators := stringSet(deployment.Tailnet.Groups["operators"])
-	hasFamilyOperator := false
-	for _, login := range deployment.Tailnet.Groups["family"] {
-		if operators[login] {
-			hasFamilyOperator = true
-			break
+		if instance.Controllers.Standby == instance.Controllers.Active {
+			c.add(InstancePath+"$.controllers.standby", "cardinality.controller", "active and standby controllers must use different boxes")
 		}
 	}
-	if !hasFamilyOperator {
-		c.add(path+"$.tailnet.groups", "tailnet.operator-family", "one operator must also be a family member for combined policy tests")
+	if _, ok := instance.Airunners.Authorized[instance.Airunners.Preferred]; !ok {
+		c.add(InstancePath+"$.airunners.preferred", "reference.airunner", "preferred airunner must be authorized")
 	}
-	runnerIDs := map[string]bool{}
-	runnerBoxes := map[string]bool{}
-	externalHosts := map[string]bool{}
-	for index, runner := range deployment.ControlPlane.Airunners {
-		location := fmt.Sprintf("%s$.control_plane.airunners[%d]", path, index)
-		if runnerIDs[runner.ID] {
-			c.add(location+".id", "identity.airunner", "airunner ID must be unique")
-		}
-		runnerIDs[runner.ID] = true
+	airunnerBoxes := map[string]bool{}
+	for id, runner := range instance.Airunners.Authorized {
+		location := InstancePath + "$.airunners.authorized." + id
 		switch runner.Kind {
-		case "box", "controller_container":
-			if _, ok := deployment.Boxes[runner.Box]; !ok {
+		case "controller-container":
+			if runner.Box != instance.Controllers.Active && runner.Box != instance.Controllers.Standby {
+				c.add(location+".box", "reference.controller", "controller-container airunner must use an active or standby controller box")
+			}
+			if id != runner.Box+"-ops-airunner" {
+				c.add(location, "identity.airunner", "controller-container airunner ID must be <box>-ops-airunner")
+			}
+		case "box":
+			if _, ok := instance.Boxes[runner.Box]; !ok {
 				c.add(location+".box", "reference.box", "airunner references an unknown box")
 			}
-			if runner.Kind == "controller_container" && runner.Box != controller.ActiveBox && runner.Box != controller.StandbyBox {
-				c.add(location+".box", "reference.controller", "controller-container airunner must use the active or standby controller box")
+			if id != runner.Box+"-airunner" {
+				c.add(location, "identity.airunner", "box airunner ID must be <box>-airunner")
 			}
-			if runnerBoxes[runner.Box] {
-				c.add(location+".box", "cardinality.airunner", "a box may host only one declared airunner")
-			}
-			runnerBoxes[runner.Box] = true
 		case "external":
-			if externalHosts[runner.Hostname] {
-				c.add(location+".hostname", "identity.airunner", "external airunner hostname must be unique")
-			}
-			externalHosts[runner.Hostname] = true
-			if owner, exists := generated[runner.Hostname]; exists {
-				c.add(location+".hostname", "identity.runtime", "external hostname collides with generated names for "+owner)
+			if id != runner.Hostname {
+				c.add(location, "identity.airunner", "external airunner ID must equal its hostname")
 			}
 		}
+		if runner.Box != "" {
+			if airunnerBoxes[runner.Box] {
+				c.add(location+".box", "cardinality.airunner", "a box may host only one authorized airunner")
+			}
+			airunnerBoxes[runner.Box] = true
+		}
 	}
-}
 
-func (c *checker) validatePlatform(path string, deployment deploymentDocument, platform platformDocument, manifests map[string]appManifest) {
-	for box := range deployment.Boxes {
-		if _, ok := platform.Boxes[box]; !ok {
-			c.add(path+"$.boxes", "reference.box", "platform resources omit deployment box "+box)
-		}
-	}
-	for box, config := range platform.Boxes {
-		if _, ok := deployment.Boxes[box]; !ok {
-			c.add(path+"$.boxes."+box, "reference.box", "platform resources reference an unknown box")
-		}
-		declared := stringSet(config.Access.Declared)
-		enabled := stringSet(config.Access.Enabled)
-		prohibited := stringSet(config.Access.Prohibited)
-		if declared["none"] || enabled["none"] || prohibited["none"] {
-			c.add(path+"$.boxes."+box+".access", "capability.none", "none is a policy value, not a capability")
-		}
-		for capability := range enabled {
-			if !declared[capability] {
-				c.add(path+"$.boxes."+box+".access.enabled_capabilities", "capability.undeclared", "enabled capability must be declared")
-			}
-			if prohibited[capability] {
-				c.add(path+"$.boxes."+box+".access", "capability.conflict", "enabled and prohibited capabilities must be disjoint")
-			}
-		}
-		for intent, capability := range config.Access.Policy {
-			if capability != "none" && !enabled[capability] {
-				c.add(path+"$.boxes."+box+".access.policy."+intent, "capability.policy", "policy must select an enabled capability or none")
-			}
-		}
-	}
-	for app, binding := range platform.Apps {
-		manifest, ok := manifests[app]
-		location := path + "$.apps." + app
+	for appID, app := range instance.Apps {
+		location := InstancePath + "$.apps." + appID
+		manifest, ok := manifests[appID]
 		if !ok {
 			c.add(location, "app.unsupported", "application has no embedded public manifest")
 			continue
 		}
-		boxes := placementBoxes(binding.Placement.Mode, binding.Placement.Box, binding.Placement.ActiveMaster, binding.Placement.PassiveBackup, binding.Placement.Boxes)
-		for _, box := range boxes {
-			if _, ok := deployment.Boxes[box]; !ok {
-				c.add(location+".placement", "reference.box", "application placement references an unknown box")
+		if app.Placement != nil {
+			for _, box := range placementBoxes(*app.Placement) {
+				if _, ok := instance.Boxes[box]; !ok {
+					c.add(location+".placement", "reference.box", "application placement references an unknown box")
+				}
+			}
+			if app.Placement.Mode == "active-passive" && app.Placement.Active == app.Placement.Passive {
+				c.add(location+".placement", "placement.cardinality", "active and passive placements must use different boxes")
+			}
+			if manifest.PlacementMode != "" && manifest.PlacementMode != app.Placement.Mode {
+				c.add(location+".placement.mode", "placement.mode", "placement mode does not match the embedded public manifest")
 			}
 		}
-		if binding.Placement.Mode == "active_passive" && binding.Placement.ActiveMaster == binding.Placement.PassiveBackup {
-			c.add(location+".placement", "placement.cardinality", "active and passive placements must use different boxes")
-		}
-		if manifest.PlacementMode != "" && manifest.PlacementMode != binding.Placement.Mode {
-			c.add(location+".placement.mode", "placement.mode", "placement mode does not match the embedded public manifest")
-		}
-		for resource := range binding.Resources {
-			if !manifest.Resources[resource] {
-				c.add(location+".resources."+resource, "resource.unknown", "resource binding is not declared by the embedded public manifest")
+		for feature, value := range app.Features {
+			definition, ok := manifest.Features[feature]
+			if !ok {
+				c.add(location+".features."+feature, "feature.unknown", "feature is not declared by the embedded public manifest")
+				continue
+			}
+			if definition.Kind == "boolean" {
+				if _, ok := value.(bool); !ok {
+					c.add(location+".features."+feature, "feature.type", "feature must be Boolean")
+				}
+			} else if stringValue, ok := value.(string); !ok || !definition.Values[stringValue] {
+				c.add(location+".features."+feature, "feature.value", "feature must use one declared value")
 			}
 		}
-		if binding.Enabled {
-			for _, box := range boxes {
-				config, exists := platform.Boxes[box]
-				if !exists {
-					continue
-				}
-				enabled := stringSet(config.Access.Enabled)
-				for capability := range manifest.Capabilities {
-					if !enabled[capability] {
-						c.add(location, "capability.required", "enabled application requires capability "+capability+" on box "+box)
-					}
-				}
+		for dataID, data := range app.Data {
+			if !manifest.Data[dataID] {
+				c.add(location+".data."+dataID, "data.unknown", "data ID is not declared by the embedded public manifest")
+			}
+			if _, ok := instance.Boxes[data.Box]; !ok {
+				c.add(location+".data."+dataID+".box", "reference.box", "data references an unknown box")
 			}
 		}
 	}
 }
 
+func hasConnectivityProfile(box BoxDocument, expected string) bool {
+	for _, profile := range box.ConnectivityProfiles {
+		if profile == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaURL(commit, name string) string {
+	return "https://raw.githubusercontent.com/klokast/klokast-box/" + commit + "/schemas/" + name
+}
+
+func placementBoxes(value PlacementDocument) []string {
+	switch value.Mode {
+	case "single-box":
+		return []string{value.Box}
+	case "active-passive":
+		return []string{value.Active, value.Passive}
+	case "multi-box":
+		return value.Boxes
+	default:
+		return nil
+	}
+}
+
+func loadAppManifests() (map[string]appManifest, error) {
+	paths, err := fs.Glob(klokastbox.Assets, "apps/*/platform-resources.yml")
+	if err != nil {
+		return nil, err
+	}
+	manifests := map[string]appManifest{}
+	for _, path := range paths {
+		content, err := klokastbox.Assets.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		_, value, diagnostics := parseYAML(content)
+		if len(diagnostics) != 0 {
+			return nil, fmt.Errorf("%s is not safe YAML", path)
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s is not an object", path)
+		}
+		name, _ := object["app"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("%s has no app ID", path)
+		}
+		placement, _ := object["placement_mode"].(string)
+		manifest := appManifest{
+			PlacementMode: strings.ReplaceAll(placement, "_", "-"),
+			Features:      map[string]featureDefinition{},
+			Data:          map[string]bool{},
+		}
+		if values, ok := object["features"].([]any); ok {
+			for _, raw := range values {
+				entry, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := entry["id"].(string)
+				kind, _ := entry["type"].(string)
+				definition := featureDefinition{Kind: kind, Values: map[string]bool{}}
+				for _, value := range asStrings(entry["values"]) {
+					definition.Values[value] = true
+				}
+				if id != "" {
+					manifest.Features[id] = definition
+				}
+			}
+		}
+		if values, ok := object["datasets"].([]any); ok {
+			for _, raw := range values {
+				if entry, ok := raw.(map[string]any); ok {
+					if id, ok := entry["id"].(string); ok && id != "" {
+						manifest.Data[id] = true
+					}
+				}
+			}
+		}
+		if _, exists := manifests[name]; exists {
+			return nil, fmt.Errorf("duplicate app manifest %s", name)
+		}
+		manifests[name] = manifest
+	}
+	return manifests, nil
+}
+
+func asStrings(value any) []string {
+	items, _ := value.([]any)
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
+func decodeUniqueJSON(content []byte) (any, string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	value, duplicate, err := decodeJSONValue(decoder, "$")
+	if err != nil {
+		return nil, duplicate, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return nil, "", err
+	}
+	return value, "", nil
+}
+
+func decodeJSONValue(decoder *json.Decoder, path string) (any, string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, "", err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return token, "", nil
+	}
+	switch delimiter {
+	case '{':
+		object := map[string]any{}
+		seen := map[string]bool{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, "", err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, "", errors.New("JSON object key is not a string")
+			}
+			childPath := path + "." + key
+			if seen[key] {
+				return nil, childPath, errors.New("duplicate JSON object key")
+			}
+			seen[key] = true
+			value, duplicate, err := decodeJSONValue(decoder, childPath)
+			if err != nil {
+				return nil, duplicate, err
+			}
+			object[key] = value
+		}
+		if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+			return nil, "", errors.New("unterminated JSON object")
+		}
+		return object, "", nil
+	case '[':
+		var array []any
+		for decoder.More() {
+			value, duplicate, err := decodeJSONValue(decoder, path)
+			if err != nil {
+				return nil, duplicate, err
+			}
+			array = append(array, value)
+		}
+		if token, err = decoder.Token(); err != nil || token != json.Delim(']') {
+			return nil, "", errors.New("unterminated JSON array")
+		}
+		return array, "", nil
+	default:
+		return nil, "", errors.New("unexpected JSON delimiter")
+	}
+}
+
+// ParseSafeYAML converts one compatibility YAML document to JSON-compatible values.
+func ParseSafeYAML(content []byte) (any, []Diagnostic) {
+	_, value, diagnostics := parseYAML(content)
+	return value, diagnostics
+}
+
+// RawSecretLines returns suspect line numbers without returning values.
+func RawSecretLines(content []byte) []int {
+	var lines []int
+	for index, line := range bytes.Split(content, []byte{'\n'}) {
+		if secretAssignment.Match(line) || matchesAny(secretTokens, line) {
+			lines = append(lines, index+1)
+		}
+	}
+	return lines
+}
+
 func parseYAML(content []byte) (*yaml.Node, any, []Diagnostic) {
 	decoder := yaml.NewDecoder(bytes.NewReader(content))
-	var document yaml.Node
-	if err := decoder.Decode(&document); err != nil {
-		return nil, nil, []Diagnostic{{Code: "yaml.syntax", Message: "YAML cannot be parsed"}}
-	}
-	if len(document.Content) != 1 {
-		return &document, nil, []Diagnostic{{Code: "yaml.document", Message: "YAML must contain exactly one document"}}
+	var node yaml.Node
+	if err := decoder.Decode(&node); err != nil {
+		return nil, nil, []Diagnostic{{Code: "yaml.syntax", Message: "document is not valid safe YAML"}}
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return &document, nil, []Diagnostic{{Code: "yaml.document", Message: "YAML must contain exactly one document"}}
+		return &node, nil, []Diagnostic{{Code: "yaml.multiple", Message: "document must contain one YAML document"}}
 	}
-	diagnostics := inspectYAMLNode(document.Content[0])
+	diagnostics := inspectYAMLNode(&node)
 	if len(diagnostics) != 0 {
-		return &document, nil, diagnostics
+		return &node, nil, diagnostics
 	}
 	var value any
-	if err := document.Content[0].Decode(&value); err != nil {
-		return &document, nil, []Diagnostic{{Code: "yaml.decode", Message: "YAML value cannot be decoded"}}
+	if err := node.Decode(&value); err != nil {
+		return &node, nil, []Diagnostic{{Code: "yaml.decode", Message: "document cannot be decoded"}}
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return &document, nil, []Diagnostic{{Code: "yaml.json", Message: "YAML value is not JSON-compatible"}}
+		return &node, nil, []Diagnostic{{Code: "yaml.json", Message: "document is not JSON-compatible"}}
 	}
-	decoderJSON := json.NewDecoder(bytes.NewReader(encoded))
-	decoderJSON.UseNumber()
-	if err := decoderJSON.Decode(&value); err != nil {
-		return &document, nil, []Diagnostic{{Code: "yaml.json", Message: "YAML value is not JSON-compatible"}}
+	jsonDecoder := json.NewDecoder(bytes.NewReader(encoded))
+	jsonDecoder.UseNumber()
+	if err := jsonDecoder.Decode(&value); err != nil {
+		return &node, nil, []Diagnostic{{Code: "yaml.json", Message: "document is not JSON-compatible"}}
 	}
-	return &document, value, nil
+	return &node, value, nil
 }
 
 func inspectYAMLNode(node *yaml.Node) []Diagnostic {
 	var diagnostics []Diagnostic
 	if !allowedYAMLTags[node.Tag] {
-		diagnostics = append(diagnostics, Diagnostic{Code: "yaml.tag", Message: "custom or unsupported YAML tags are forbidden"})
+		diagnostics = append(diagnostics, Diagnostic{Code: "yaml.tag", Message: "custom YAML tags are forbidden"})
+	}
+	if node.Kind == yaml.AliasNode || node.Anchor != "" {
+		diagnostics = append(diagnostics, Diagnostic{Code: "yaml.alias", Message: "YAML aliases and anchors are forbidden"})
 	}
 	if node.Kind == yaml.MappingNode {
-		keys := map[string]bool{}
-		for index := 0; index < len(node.Content); index += 2 {
+		seen := map[string]bool{}
+		for index := 0; index+1 < len(node.Content); index += 2 {
 			key := node.Content[index]
 			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
-				diagnostics = append(diagnostics, Diagnostic{Code: "yaml.key", Message: "mapping keys must be plain strings"})
-			} else if keys[key.Value] {
-				diagnostics = append(diagnostics, Diagnostic{Code: "yaml.duplicate", Message: "duplicate mapping key is forbidden"})
-			} else {
-				keys[key.Value] = true
+				diagnostics = append(diagnostics, Diagnostic{Code: "yaml.key", Message: "YAML mapping keys must be strings"})
+			} else if seen[key.Value] {
+				diagnostics = append(diagnostics, Diagnostic{Code: "yaml.duplicate", Message: "duplicate YAML mapping key is forbidden"})
 			}
+			seen[key.Value] = true
 		}
 	}
 	for _, child := range node.Content {
@@ -561,73 +674,6 @@ func validateSchema(schemaPath string, value any) error {
 	return schema.Validate(value)
 }
 
-func loadAppManifests() (map[string]appManifest, error) {
-	paths, err := fs.Glob(klokastbox.Assets, "apps/*/platform-resources.yml")
-	if err != nil {
-		return nil, err
-	}
-	manifests := map[string]appManifest{}
-	for _, path := range paths {
-		content, err := klokastbox.Assets.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		_, value, diagnostics := parseYAML(content)
-		if len(diagnostics) != 0 {
-			return nil, fmt.Errorf("%s is not safe YAML", path)
-		}
-		object, ok := value.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("%s is not an object", path)
-		}
-		name, ok := object["app"].(string)
-		if !ok || name == "" {
-			return nil, fmt.Errorf("%s has no app ID", path)
-		}
-		manifest := appManifest{Capabilities: map[string]bool{}, Resources: map[string]bool{}}
-		manifest.PlacementMode, _ = object["placement_mode"].(string)
-		collectManifestFields(object, manifest.Capabilities, manifest.Resources)
-		if _, exists := manifests[name]; exists {
-			return nil, fmt.Errorf("duplicate app manifest %s", name)
-		}
-		manifests[name] = manifest
-	}
-	return manifests, nil
-}
-
-func collectManifestFields(value any, capabilities, resources map[string]bool) {
-	switch current := value.(type) {
-	case map[string]any:
-		if id, ok := current["id"].(string); ok {
-			resources[id] = true
-		}
-		if access, ok := current["access"].(map[string]any); ok {
-			if capability, ok := access["capability"].(string); ok {
-				capabilities[capability] = true
-			}
-		}
-		for _, child := range current {
-			collectManifestFields(child, capabilities, resources)
-		}
-	case []any:
-		for _, child := range current {
-			collectManifestFields(child, capabilities, resources)
-		}
-	}
-}
-
-func decodeNode(node *yaml.Node, target any, add func(string)) bool {
-	if len(node.Content) != 1 {
-		add("YAML document cannot be decoded")
-		return false
-	}
-	if err := node.Content[0].Decode(target); err != nil {
-		add("YAML document cannot be decoded")
-		return false
-	}
-	return true
-}
-
 func leafLocations(validationError *jsonschema.ValidationError) []string {
 	if len(validationError.Causes) == 0 {
 		return []string{jsonLocation(validationError.InstanceLocation)}
@@ -644,7 +690,7 @@ func jsonLocation(tokens []string) string {
 	var result strings.Builder
 	result.WriteString("$")
 	for _, token := range tokens {
-		if identifierPattern.MatchString(token) || regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`).MatchString(token) {
+		if identifierPattern.MatchString(token) || regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$-]*$`).MatchString(token) {
 			result.WriteString(".")
 			result.WriteString(token)
 		} else {
@@ -657,19 +703,6 @@ func jsonLocation(tokens []string) string {
 	return result.String()
 }
 
-func placementBoxes(mode, box, active, passive string, boxes []string) []string {
-	switch mode {
-	case "single_box":
-		return []string{box}
-	case "active_passive":
-		return []string{active, passive}
-	case "multi_box":
-		return boxes
-	default:
-		return nil
-	}
-}
-
 func forbiddenTrackedPath(path string) bool {
 	parts := strings.Split(filepath.ToSlash(path), "/")
 	for _, part := range parts {
@@ -679,10 +712,8 @@ func forbiddenTrackedPath(path string) bool {
 		}
 	}
 	base := parts[len(parts)-1]
-	if base == ".env" || strings.HasSuffix(base, ".tfstate") || strings.HasSuffix(base, ".tfstate.backup") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".p12") {
-		return true
-	}
-	return false
+	return base == ".env" || strings.HasSuffix(base, ".tfstate") || strings.HasSuffix(base, ".tfstate.backup") ||
+		strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".p12")
 }
 
 func matchesAny(patterns []*regexp.Regexp, value []byte) bool {
@@ -692,14 +723,6 @@ func matchesAny(patterns []*regexp.Regexp, value []byte) bool {
 		}
 	}
 	return false
-}
-
-func stringSet(values []string) map[string]bool {
-	result := make(map[string]bool, len(values))
-	for _, value := range values {
-		result[value] = true
-	}
-	return result
 }
 
 func isolatedGitCommand(root string, arguments ...string) *exec.Cmd {

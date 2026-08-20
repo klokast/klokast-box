@@ -1,22 +1,19 @@
-# Contract v1 instance rules
+# Klokast Instance Specification v1 rules
 
 - Keep this repository private and standalone.
-- Never commit secrets, credentials, key material, generated output, or runtime
-  state.
-- Treat `klokast.yml`, `klokast.lock.yml`, `ops/deployment.yml`, and
-  `ops/platform-resources.yml` as the only authoritative Contract v1 inputs.
-- Use stable logical box IDs for references and `hostname_prefix` only for
-  derived runtime names.
-- Declare a capability before enabling it. Enabled and prohibited capabilities
-  must be disjoint; declared and prohibited capabilities may overlap.
-- Bind only applications and resource IDs declared by the engine's embedded
-  public app manifests.
-- Use `Etc/UTC` for every site. Platform inputs do not select a timezone.
-- Validate with `klokast check --instance PATH` before review.
-- Use `klokast plan --instance PATH --compatibility-deployment FILE
-  --compatibility-registry FILE --compatibility-controller-ha FILE` only for an
-  offline, read-only compatibility report. Add `--observation FILE` and
-  `--instance-source-receipt FILE` to create Plan v1. Neither form authorizes
-  migration or apply changes.
-- Do not add private `apps/`, `extensions/`, site executors, generated
-  inventories, or policy override interfaces to Contract v1.
+- Treat `klokast-instance.json` and `klokast.lock.json` as the only
+  authoritative instance inputs.
+- Never commit secrets, credentials, key material, generated output, runtime
+  status, or user data.
+- Do not add a timezone. Platform time is always `Etc/UTC`.
+- Use a box ID such as `k001` as its runtime hostname prefix.
+- Select only connectivity profiles that the locked public engine defines.
+- Bind only apps, placement modes, features, and data IDs that public app
+  manifests define.
+- Use `desired-state: absent` only with declared retained data. Remove the app
+  entry after its declared data is removed.
+- Never treat omission as permission to delete unknown storage.
+- Do not edit the engine lock by hand.
+- Run `klokast check --instance PATH` before review and commit.
+- `klokast plan` and `klokast doctor` are read-only. They do not authorize an
+  apply or migration.

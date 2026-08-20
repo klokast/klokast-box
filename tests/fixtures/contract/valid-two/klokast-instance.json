@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
+  "airunners": {
+    "authorized": {
+      "k001-airunner": {
+        "box": "k001",
+        "kind": "box"
+      },
+      "vultr-ops-airunner": {
+        "hostname": "vultr-ops-airunner",
+        "kind": "external"
+      }
+    },
+    "preferred": "k001-airunner"
+  },
+  "apps": {
+    "music": {
+      "data": {
+        "library": {
+          "box": "k002",
+          "retention": "preserve"
+        }
+      },
+      "desired-state": "absent"
+    }
+  },
+  "boxes": {
+    "k001": {
+      "connectivity-profiles": [
+        "local-ap-direct-egress",
+        "tailscale"
+      ],
+      "site": "milla"
+    },
+    "k002": {
+      "connectivity-profiles": [
+        "tailscale"
+      ],
+      "site": "mingdu"
+    }
+  },
+  "controllers": {
+    "active": "k001",
+    "standby": "k002"
+  },
+  "instance": {
+    "id": "two-box-klokast"
+  },
+  "schema-version": 1,
+  "sites": {
+    "milla": {
+      "country": "FR",
+      "description": ""
+    },
+    "mingdu": {
+      "country": "CN",
+      "description": ""
+    }
+  },
+  "tailnet": {
+    "members": {
+      "admin@example.com": {
+        "roles": [
+          "family",
+          "operator"
+        ]
+      },
+      "family@example.com": {
+        "roles": [
+          "family"
+        ]
+      }
+    },
+    "tailnet-dns-name": "example.ts.net"
+  }
+}

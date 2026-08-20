@@ -71,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --profile single-box --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
 	return 2
 }
 
@@ -229,16 +229,14 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	instancePath := flags.String("instance", "", "path for the new standalone instance repository")
-	profile := flags.String("profile", "", "instance profile")
 	valuesPath := flags.String("values", "", "path to the init values JSON document")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *profile == "" || *valuesPath == "" {
-		fmt.Fprintln(stderr, "usage: klokast init --instance PATH --profile single-box --values FILE [--json]")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *valuesPath == "" {
+		fmt.Fprintln(stderr, "usage: klokast init --instance PATH --values FILE [--json]")
 		return 2
 	}
 	result, err := instance.Init(instance.Options{
 		InstancePath: *instancePath,
-		Profile:      *profile,
 		ValuesPath:   *valuesPath,
 	}, contract.Engine{
 		Repository: engineRepository,

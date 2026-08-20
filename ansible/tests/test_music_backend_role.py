@@ -37,6 +37,19 @@ SNAPSERVER_CONFIG = (
     / "templates"
     / "snapserver.conf.j2"
 )
+REMOVAL_TASKS = (
+    REPO_ROOT
+    / "apps"
+    / "music"
+    / "ansible"
+    / "roles"
+    / "music-backend-removal"
+    / "tasks"
+    / "main.yml"
+)
+TAILNET_REMOVAL = (
+    REPO_ROOT / "apps" / "music" / "ansible" / "playbooks" / "35-tailnet-remove.yml"
+)
 
 
 class MusicBackendRoleTest(unittest.TestCase):
@@ -80,6 +93,23 @@ class MusicBackendRoleTest(unittest.TestCase):
             tasks.index("Set MPD software volume"),
             tasks.index("Verify music backend pod is running"),
         )
+
+    def test_removal_has_a_closed_preserve_by_default_scope(self):
+        tasks = REMOVAL_TASKS.read_text(encoding="utf-8")
+        tailnet = TAILNET_REMOVAL.read_text(encoding="utf-8")
+
+        self.assertIn("music_data_inventory_after == music_data_inventory_before", tasks)
+        self.assertIn("not (music_removal_wipe_data | bool)", tasks)
+        self.assertIn("klokast-music-library", tasks)
+        self.assertIn("klokast-music-playlists", tasks)
+        self.assertIn("music_state_volumes", tasks)
+        self.assertIn("Prove that reconstructable Music objects are absent", tasks)
+        self.assertIn("Prove that the reconstructable Music backend image is absent", tasks)
+        self.assertNotIn("podman system prune", tasks)
+        self.assertNotIn("podman volume prune", tasks)
+        self.assertIn("tailscale-stale-device", tailnet)
+        self.assertIn("tailscale_device_fail_on_online_exact: true", tailnet)
+        self.assertIn('(box + "-audio", "tag:streamer")', MUSICCTL.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

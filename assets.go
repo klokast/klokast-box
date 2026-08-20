@@ -2,7 +2,7 @@ package klokastbox
 
 import "embed"
 
-// Assets contains the complete Contract v1 schemas, canonical instance
+// Assets contains the complete Instance Specification v1 schemas and support
 // template, and public application resource manifests used by klokast init,
 // klokast check, and klokast plan.
 //

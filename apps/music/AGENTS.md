@@ -59,3 +59,9 @@ the Pi MAC address under `devices.local-audio-endpoint.<box>.mac`.
 
 For Mac-side library upload, use `klokast-dev/bin/kk music upload`; it streams
 to the active `<box>-music-upload` ingress, never to the `bak` VM SSH identity.
+
+Use `ansible/bin/platform-app remove music --dry-run` before removal. Normal
+remove must hash and preserve `klokast-music-library` and
+`klokast-music-playlists`. It can delete only the fixed reconstructable Music
+resources and exact offline Tailnet identities. Data deletion requires the
+separate `destroy music --wipe-data --yes` command.

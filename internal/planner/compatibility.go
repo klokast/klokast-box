@@ -94,9 +94,9 @@ func compareDeployment(projection Projection, legacy compatibilityDocument) Comp
 		add("tailnet", "unsupported", "deployment.tailnet", "the legacy deployment tailnet field must be an object")
 	} else {
 		if equivalent(projectionTailnetSuffix(projection), tailnet["magicdns_suffix"]) {
-			add("tailnet.magicdns_suffix", "matched", "tailnet.suffix", "the MagicDNS suffix matches Contract v1")
+			add("tailnet.magicdns_suffix", "matched", "tailnet.suffix", "the Tailnet DNS name matches Instance Specification v1")
 		} else {
-			add("tailnet.magicdns_suffix", "conflict", "tailnet.suffix", "the MagicDNS suffix does not match Contract v1")
+			add("tailnet.magicdns_suffix", "conflict", "tailnet.suffix", "the Tailnet DNS name does not match Instance Specification v1")
 		}
 		groups, groupsOK := asMap(tailnet["groups"])
 		if !groupsOK {
@@ -104,9 +104,9 @@ func compareDeployment(projection Projection, legacy compatibilityDocument) Comp
 		} else {
 			for _, name := range []string{"operators", "family"} {
 				if equivalentStringSet(projectionTailnetGroup(projection, name), groups[name]) {
-					add("tailnet.groups."+name, "matched", "tailnet.group", "the Tailnet group matches Contract v1")
+					add("tailnet.groups."+name, "matched", "tailnet.group", "the Tailnet group matches Instance Specification v1")
 				} else {
-					add("tailnet.groups."+name, "conflict", "tailnet.group", "the Tailnet group does not match Contract v1")
+					add("tailnet.groups."+name, "conflict", "tailnet.group", "the Tailnet group does not match Instance Specification v1")
 				}
 			}
 			for _, name := range sortedKeys(groups) {
@@ -132,24 +132,14 @@ func compareDeployment(projection Projection, legacy compatibilityDocument) Comp
 			path := "boxes." + box.HostnamePrefix
 			legacyBox, ok := asMap(boxes[box.HostnamePrefix])
 			if !ok {
-				add(path, "conflict", "box.missing", "the legacy deployment has no object for the Contract box")
+				add(path, "conflict", "box.missing", "the legacy deployment has no object for the Instance Specification box")
 				continue
 			}
-			if equivalent(box.SiteID, legacyBox["site"]) {
-				add(path+".site", "matched", "box.site", "the box site matches Contract v1")
-			} else {
-				add(path+".site", "conflict", "box.site", "the box site does not match Contract v1")
+			if _, present := legacyBox["site"]; present {
+				add(path+".site", "compatibility_only", "box.site", "legacy site labels remain under deployment compatibility authority")
 			}
-			location := siteLocation(projection, box.SiteID)
-			legacyLocation, locationPresent := legacyBox["physical_location"]
-			locationMatches := equivalent(location, legacyLocation)
-			if location == "" && !locationPresent {
-				locationMatches = true
-			}
-			if locationMatches {
-				add(path+".physical_location", "matched", "box.location", "the physical location matches Contract v1")
-			} else {
-				add(path+".physical_location", "conflict", "box.location", "the physical location does not match Contract v1")
+			if _, present := legacyBox["physical_location"]; present {
+				add(path+".physical_location", "compatibility_only", "box.location", "legacy location text remains under deployment compatibility authority")
 			}
 			for _, field := range sortedKeys(legacyBox) {
 				if field != "site" && field != "physical_location" {
@@ -159,19 +149,19 @@ func compareDeployment(projection Projection, legacy compatibilityDocument) Comp
 		}
 		for _, prefix := range sortedKeys(boxes) {
 			if !expected[prefix] {
-				add("boxes."+prefix, "conflict", "box.unrepresented", "the legacy deployment box is not represented by Contract v1")
+				add("boxes."+prefix, "conflict", "box.unrepresented", "the legacy deployment box is not represented by Instance Specification v1")
 			}
 		}
 	}
 
 	findings = append(findings, Finding{
-		Path: "deployment.control_plane.controller", Class: "derived", Code: "controller.contract",
-		Authority: "contract_v1", Message: "Contract v1 owns the proposed controller placement",
+		Path: "deployment.control_plane.controller", Class: "derived", Code: "controller.instance-specification",
+		Authority: "instance_specification_v1", Message: "Instance Specification v1 owns the proposed controller placement",
 	})
 	for _, runner := range projection.ControlPlane.Airunners {
 		findings = append(findings, Finding{
-			Path: "deployment.control_plane.airunners." + runner.ID, Class: "derived", Code: "airunner.contract",
-			Authority: "contract_v1", Message: "Contract v1 owns the proposed airunner identity and placement",
+			Path: "deployment.control_plane.airunners." + runner.ID, Class: "derived", Code: "airunner.instance-specification",
+			Authority: "instance_specification_v1", Message: "Instance Specification v1 owns the proposed airunner identity and placement",
 		})
 	}
 	result := Compatibility{Findings: findings}
@@ -204,7 +194,7 @@ func compareControllerHA(projection Projection, legacy compatibilityDocument) Co
 		add("controllers", "unsupported", "controller.list", "the legacy controllers field must be an array")
 	} else {
 		if len(controllers) != len(expected) {
-			add("controllers", "conflict", "controller.cardinality", "the legacy and Contract controller sets have different sizes")
+			add("controllers", "conflict", "controller.cardinality", "the legacy and Instance Specification controller sets have different sizes")
 		}
 		for index, controller := range expected {
 			path := fmt.Sprintf("controllers[%d]", index)
@@ -220,9 +210,9 @@ func compareControllerHA(projection Projection, legacy compatibilityDocument) Co
 			prefix := prefixForProjectionBox(projection, controller.BoxID)
 			for field, wanted := range map[string]string{"box": prefix, "hostname": controller.Hostname} {
 				if equivalent(wanted, entry[field]) {
-					add(path+"."+field, "matched", "controller.match", "the controller identity matches Contract v1")
+					add(path+"."+field, "matched", "controller.match", "the controller identity matches Instance Specification v1")
 				} else {
-					add(path+"."+field, "conflict", "controller.mismatch", "the controller identity does not match Contract v1")
+					add(path+"."+field, "conflict", "controller.mismatch", "the controller identity does not match Instance Specification v1")
 				}
 			}
 			for _, field := range sortedKeys(entry) {
@@ -232,7 +222,7 @@ func compareControllerHA(projection Projection, legacy compatibilityDocument) Co
 			}
 		}
 		for index := len(expected); index < len(controllers); index++ {
-			add(fmt.Sprintf("controllers[%d]", index), "conflict", "controller.unrepresented", "the legacy controller has no Contract v1 representation")
+			add(fmt.Sprintf("controllers[%d]", index), "conflict", "controller.unrepresented", "the legacy controller has no Instance Specification v1 representation")
 		}
 	}
 	result := Compatibility{Findings: findings}

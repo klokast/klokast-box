@@ -422,11 +422,12 @@ Persistence uses separate assets with separate authority:
   inventories, facts, plans, provenance, receipts, and verified build outputs;
 - application storage: persistent user-service data.
 
-Contract v1 contains only `klokast.yml`, `klokast.lock.yml`, the deployment
-document, and the platform-resource document as authoritative inputs. It has no
-private app-configuration, extension, generated-state, inventory, or
-site-executor interface. Site executors require a later deployment schema
-version. See `doc/upstream-instance-target-architecture.md`.
+Klokast Instance Specification v1 contains only `klokast-instance.json` and
+`klokast.lock.json` as authoritative inputs. The instance file owns private
+topology, membership, connectivity-profile, controller, airunner, app, and
+retained-data intent. It has no secrets, generated state, observed status,
+inventory, or site-executor interface. See
+`doc/klokast-instance-specification.md`.
 
 The active controller is the only Platform mutation locus and secret custodian.
 The human authors and pushes private instance changes from a trusted
@@ -437,10 +438,10 @@ URL. Airunners may author and push reviewed public implementation changes, but
 they do not clone the private instance repository or hold controller-private
 state. Deployable `klokast` binaries are built only by the active controller through the
 networkless Xen `platform-builder` profile.
-The builder-approved binary can create a staged local Contract v1 repository
-with `klokast init`. It does not create a remote repository, install Platform
-state, or receive secrets. Platform site time is always `Etc/UTC` (GMT), so init
-inputs do not contain a timezone.
+The builder-approved binary can create a staged local Instance Specification
+v1 repository with `klokast init`. It does not create a remote repository,
+install Platform state, or receive secrets. Platform site time is always
+`Etc/UTC` (GMT), so instance inputs do not contain a timezone.
 
 The human creates the exact empty private organization repository
 `<family>/klokast-instance`. Repository registration and read-key registration
@@ -450,7 +451,7 @@ controller action to the reviewed public engine commit. After the human
 removes the private repository from the App installation, the controller
 verifies the read-only deploy key and deletes the App credential. Controller
 fetches create fresh, content-addressed source receipts for Plan v1. See
-`doc/upstream-instance-target-architecture.md` for the complete boundary.
+`doc/klokast-instance-specification.md` for the complete boundary.
 
 ## files locally stored in the boxes
 - unique to each box:

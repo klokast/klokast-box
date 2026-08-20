@@ -15,16 +15,9 @@ import (
 
 	klokastbox "klokast-box"
 	"klokast-box/internal/contract"
-
-	"github.com/santhosh-tekuri/jsonschema/v6"
-	"gopkg.in/yaml.v3"
 )
 
-const (
-	ProfileSingleBox  = "single-box"
-	maximumValuesFile = 64 * 1024
-	platformTimezone  = "Etc/UTC"
-)
+const maximumValuesFile = 64 * 1024
 
 var (
 	engineCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -33,14 +26,12 @@ var (
 
 type Options struct {
 	InstancePath string
-	Profile      string
 	ValuesPath   string
 }
 
 type Result struct {
 	Created      bool            `json:"created"`
 	InstancePath string          `json:"instance_path"`
-	Profile      string          `json:"profile"`
 	Engine       EngineSelection `json:"engine"`
 }
 
@@ -58,75 +49,6 @@ func (e *ValidationError) Error() string {
 	return "instance values or destination failed validation"
 }
 
-type valuesDocument struct {
-	SchemaVersion int `json:"schema_version"`
-	Instance      struct {
-		Name string `json:"name"`
-	} `json:"instance"`
-	Tailnet struct {
-		MagicDNSSuffix string `json:"magicdns_suffix"`
-		Groups         struct {
-			Operators []string `json:"operators"`
-			Family    []string `json:"family"`
-		} `json:"groups"`
-	} `json:"tailnet"`
-	Site struct {
-		Country          string `json:"country"`
-		PhysicalLocation string `json:"physical_location"`
-	} `json:"site"`
-	Box struct {
-		HostnamePrefix string `json:"hostname_prefix"`
-	} `json:"box"`
-}
-
-type deploymentDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
-	Instance      struct {
-		Name string `yaml:"name"`
-	} `yaml:"instance"`
-	Tailnet struct {
-		MagicDNSSuffix string `yaml:"magicdns_suffix"`
-		Groups         struct {
-			Operators []string `yaml:"operators"`
-			Family    []string `yaml:"family"`
-		} `yaml:"groups"`
-	} `yaml:"tailnet"`
-	Sites        map[string]siteDocument `yaml:"sites"`
-	Boxes        map[string]boxDocument  `yaml:"boxes"`
-	ControlPlane struct {
-		Controller struct {
-			ActiveBox string `yaml:"active_box"`
-		} `yaml:"controller"`
-		Airunners []airunnerDocument `yaml:"airunners"`
-	} `yaml:"control_plane"`
-}
-
-type siteDocument struct {
-	Country          string `yaml:"country"`
-	Timezone         string `yaml:"timezone"`
-	PhysicalLocation string `yaml:"physical_location,omitempty"`
-}
-
-type boxDocument struct {
-	HostnamePrefix string `yaml:"hostname_prefix"`
-	Site           string `yaml:"site"`
-}
-
-type airunnerDocument struct {
-	ID   string `yaml:"id"`
-	Kind string `yaml:"kind"`
-	Box  string `yaml:"box"`
-}
-
-type lockDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
-	Engine        struct {
-		Repository string `yaml:"repository"`
-		Ref        string `yaml:"ref"`
-		Commit     string `yaml:"commit"`
-	} `yaml:"engine"`
-}
-
 type duplicateJSONKeyError struct {
 	path string
 }
@@ -136,16 +58,12 @@ func (e *duplicateJSONKeyError) Error() string {
 }
 
 func Init(options Options, engine contract.Engine) (result Result, returnedErr error) {
-	if options.Profile != ProfileSingleBox {
-		return Result{}, validation("profile", "profile.unsupported", "profile must be single-box")
-	}
 	if err := validateEngine(engine); err != nil {
 		return Result{}, err
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return Result{}, fmt.Errorf("git is required: %w", err)
 	}
-
 	destination, err := resolveDestination(options.InstancePath)
 	if err != nil {
 		return Result{}, err
@@ -154,12 +72,11 @@ func Init(options Options, engine contract.Engine) (result Result, returnedErr e
 	if err != nil {
 		return Result{}, err
 	}
-	parent := filepath.Dir(destination)
-	if err := rejectGitWorktree(parent); err != nil {
+	if err := rejectGitWorktree(filepath.Dir(destination)); err != nil {
 		return Result{}, err
 	}
 
-	staging, err := os.MkdirTemp(parent, "."+filepath.Base(destination)+".klokast-init-")
+	staging, err := os.MkdirTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".klokast-init-")
 	if err != nil {
 		return Result{}, fmt.Errorf("create private staging directory: %w", err)
 	}
@@ -204,7 +121,6 @@ func Init(options Options, engine contract.Engine) (result Result, returnedErr e
 	return Result{
 		Created:      true,
 		InstancePath: destination,
-		Profile:      options.Profile,
 		Engine: EngineSelection{
 			Repository: engine.Repository,
 			Ref:        engine.Ref,
@@ -239,12 +155,8 @@ func resolveDestination(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve instance parent: %w", err)
 	}
-	info, err := os.Stat(parent)
-	if err != nil {
-		return "", fmt.Errorf("inspect instance parent: %w", err)
-	}
-	if !info.IsDir() {
-		return "", validation("instance", "path.parent", "instance parent must be a directory")
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return "", validation("instance", "path.parent", "instance parent must be an existing directory")
 	}
 	destination := filepath.Join(parent, base)
 	if _, err := os.Lstat(destination); err == nil {
@@ -281,66 +193,55 @@ func rejectGitWorktree(parent string) error {
 	return nil
 }
 
-func loadValues(path string) (valuesDocument, error) {
+func loadValues(path string) (any, error) {
 	if path == "" {
-		return valuesDocument{}, validation("values", "path.required", "values path is required")
+		return nil, validation("values", "path.required", "values path is required")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return valuesDocument{}, fmt.Errorf("resolve values path: %w", err)
+		return nil, fmt.Errorf("resolve values path: %w", err)
 	}
 	linkInfo, err := os.Lstat(abs)
 	if err != nil {
-		return valuesDocument{}, fmt.Errorf("inspect values file: %w", err)
+		return nil, fmt.Errorf("inspect values file: %w", err)
 	}
 	if linkInfo.Mode()&os.ModeSymlink != 0 {
-		return valuesDocument{}, validation("values", "path.symlink", "values file must not be a symbolic link")
+		return nil, validation("values", "path.symlink", "values file must not be a symbolic link")
 	}
 	if !linkInfo.Mode().IsRegular() {
-		return valuesDocument{}, validation("values", "path.type", "values file must be a regular file")
+		return nil, validation("values", "path.type", "values file must be a regular file")
 	}
-	if linkInfo.Size() > maximumValuesFile {
-		return valuesDocument{}, validation("values", "file.size", "values file exceeds the 64-KiB limit")
+	if linkInfo.Size() <= 0 || linkInfo.Size() > maximumValuesFile {
+		return nil, validation("values", "file.size", "values file must be non-empty and no larger than 64 KiB")
 	}
 	file, err := os.Open(abs)
 	if err != nil {
-		return valuesDocument{}, fmt.Errorf("open values file: %w", err)
+		return nil, fmt.Errorf("open values file: %w", err)
 	}
 	defer file.Close()
 	openInfo, err := file.Stat()
-	if err != nil {
-		return valuesDocument{}, fmt.Errorf("inspect open values file: %w", err)
-	}
-	if !os.SameFile(linkInfo, openInfo) || !openInfo.Mode().IsRegular() {
-		return valuesDocument{}, validation("values", "path.changed", "values file changed during inspection")
+	if err != nil || !os.SameFile(linkInfo, openInfo) || !openInfo.Mode().IsRegular() {
+		return nil, validation("values", "path.changed", "values file changed during inspection")
 	}
 	content, err := io.ReadAll(io.LimitReader(file, maximumValuesFile+1))
 	if err != nil {
-		return valuesDocument{}, fmt.Errorf("read values file: %w", err)
+		return nil, fmt.Errorf("read values file: %w", err)
 	}
 	if len(content) > maximumValuesFile {
-		return valuesDocument{}, validation("values", "file.size", "values file exceeds the 64-KiB limit")
+		return nil, validation("values", "file.size", "values file exceeds the 64-KiB limit")
+	}
+	if lines := contract.RawSecretLines(content); len(lines) != 0 {
+		return nil, validation(fmt.Sprintf("values:%d", lines[0]), "secret.raw", "possible raw secret value is present")
 	}
 	value, err := decodeUniqueJSON(content)
 	if err != nil {
 		var duplicate *duplicateJSONKeyError
 		if errors.As(err, &duplicate) {
-			return valuesDocument{}, validation("values"+duplicate.path, "json.duplicate", "duplicate JSON object key is forbidden")
+			return nil, validation("values"+duplicate.path, "json.duplicate", "duplicate JSON object key is forbidden")
 		}
-		return valuesDocument{}, validation("values", "json.syntax", "values file is not one valid JSON document")
+		return nil, validation("values", "json.syntax", "values file is not one valid JSON document")
 	}
-	if err := validateValuesSchema(value); err != nil {
-		var validationError *jsonschema.ValidationError
-		if errors.As(err, &validationError) {
-			return valuesDocument{}, validation("values", "schema.invalid", "values do not satisfy the single-box init schema")
-		}
-		return valuesDocument{}, fmt.Errorf("validate values with embedded schema: %w", err)
-	}
-	var values valuesDocument
-	if err := json.Unmarshal(content, &values); err != nil {
-		return valuesDocument{}, fmt.Errorf("decode validated values: %w", err)
-	}
-	return values, nil
+	return value, nil
 }
 
 func decodeUniqueJSON(content []byte) (any, error) {
@@ -415,28 +316,6 @@ func decodeJSONValue(decoder *json.Decoder, path string) (any, error) {
 	}
 }
 
-func validateValuesSchema(value any) error {
-	content, err := klokastbox.Assets.ReadFile("schemas/instance-init-v1.json")
-	if err != nil {
-		return err
-	}
-	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(content))
-	if err != nil {
-		return err
-	}
-	compiler := jsonschema.NewCompiler()
-	compiler.AssertFormat()
-	const location = "embedded:///instance-init-v1.json"
-	if err := compiler.AddResource(location, document); err != nil {
-		return err
-	}
-	schema, err := compiler.Compile(location)
-	if err != nil {
-		return err
-	}
-	return schema.Validate(value)
-}
-
 func copyTemplate(destination string) error {
 	return fs.WalkDir(klokastbox.Assets, "templates/instance", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -464,45 +343,37 @@ func copyTemplate(destination string) error {
 	})
 }
 
-func writeGeneratedDocuments(root string, values valuesDocument, engine contract.Engine) error {
-	var deployment deploymentDocument
-	deployment.SchemaVersion = 1
-	deployment.Instance.Name = values.Instance.Name
-	deployment.Tailnet.MagicDNSSuffix = values.Tailnet.MagicDNSSuffix
-	deployment.Tailnet.Groups.Operators = append([]string(nil), values.Tailnet.Groups.Operators...)
-	deployment.Tailnet.Groups.Family = append([]string{}, values.Tailnet.Groups.Family...)
-	deployment.Sites = map[string]siteDocument{
-		"site-001": {
-			Country:          values.Site.Country,
-			Timezone:         platformTimezone,
-			PhysicalLocation: values.Site.PhysicalLocation,
-		},
+func writeGeneratedDocuments(root string, values any, engine contract.Engine) error {
+	instanceContent, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", contract.InstancePath, err)
 	}
-	deployment.Boxes = map[string]boxDocument{
-		"box-001": {HostnamePrefix: values.Box.HostnamePrefix, Site: "site-001"},
+	instanceContent = append(instanceContent, '\n')
+	lock := contract.LockDocument{
+		Schema:        schemaURL(engine.Commit, "klokast-lock-v1.schema.json"),
+		SchemaVersion: 1,
 	}
-	deployment.ControlPlane.Controller.ActiveBox = "box-001"
-	deployment.ControlPlane.Airunners = []airunnerDocument{{ID: "airunner-001", Kind: "controller_container", Box: "box-001"}}
-
-	var lock lockDocument
-	lock.SchemaVersion = 1
 	lock.Engine.Repository = engine.Repository
 	lock.Engine.Ref = engine.Ref
 	lock.Engine.Commit = engine.Commit
-	for path, document := range map[string]any{
-		"ops/deployment.yml": deployment,
-		"klokast.lock.yml":   lock,
+	lockContent, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", contract.LockPath, err)
+	}
+	lockContent = append(lockContent, '\n')
+	for path, content := range map[string][]byte{
+		contract.InstancePath: instanceContent,
+		contract.LockPath:     lockContent,
 	} {
-		content, err := yaml.Marshal(document)
-		if err != nil {
-			return fmt.Errorf("encode %s: %w", path, err)
-		}
-		content = append([]byte("---\n"), content...)
-		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(path)), content, 0o640); err != nil {
+		if err := os.WriteFile(filepath.Join(root, path), content, 0o640); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}
 	return nil
+}
+
+func schemaURL(commit, name string) string {
+	return "https://raw.githubusercontent.com/klokast/klokast-box/" + commit + "/schemas/" + name
 }
 
 func initializeRepository(root string) error {
@@ -513,6 +384,15 @@ func initializeRepository(root string) error {
 		return fmt.Errorf("stage authoritative instance inputs: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func publishNoReplace(staging, destination string) error {
+	if _, err := os.Lstat(destination); err == nil {
+		return validation("instance", "path.exists", "instance destination already exists")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Rename(staging, destination)
 }
 
 func isolatedGitCommand(root string, arguments ...string) *exec.Cmd {

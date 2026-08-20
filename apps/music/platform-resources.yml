@@ -4,6 +4,13 @@ app: music
 risk_class: private_media_endpoint
 default_isolation: zone_vm_rootless_podman_plus_low_trust_iot_device
 placement_mode: multi_box
+datasets:
+  - id: library
+    type: durable_user_data
+    rationale: >-
+      Keeps imported audio files and user playlists when the Music services
+      are absent. Reconstructable player and Tailnet state are not part of
+      this dataset.
 resources:
   compute:
     - id: backend-player

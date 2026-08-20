@@ -35,13 +35,13 @@ func TestHealthySingleBoxAndDirtyWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Healthy || result.Summary.Drift != 0 || result.ProjectionHash == "" || len(result.Inputs) != 4 {
+	if !result.Valid || !result.Healthy || result.Summary.Drift != 0 || result.ProjectionHash == "" || len(result.Inputs) != 2 {
 		t.Fatalf("unexpected doctor result: %#v", result)
 	}
 	if len(result.ObservationGeneration) != 64 {
 		t.Fatalf("observation provenance is absent: %#v", result)
 	}
-	appendFile(t, filepath.Join(instance, "ops/deployment.yml"), "\n")
+	appendFile(t, filepath.Join(instance, contract.InstancePath), "\n")
 	dirty, err := Doctor(Options{InstancePath: instance, ObservationPath: path, Now: func() time.Time { return testNow }}, testEngine)
 	if err != nil || !dirty.Valid || !dirty.Healthy {
 		t.Fatalf("dirty checked worktree must remain accepted: result=%#v err=%v", dirty, err)
@@ -254,18 +254,20 @@ func prepareInstance(t *testing.T, twoBox bool) string {
 		if err != nil { return err }
 		return os.WriteFile(destination, content, 0o644)
 	}); err != nil { t.Fatal(err) }
+	fixture := "tests/fixtures/contract/init-single.json"
 	if twoBox {
-		for source, destination := range map[string]string{
-			"tests/fixtures/contract/valid-two/deployment.yml": "ops/deployment.yml",
-			"tests/fixtures/contract/valid-two/platform-resources.yml": "ops/platform-resources.yml",
-		} {
-			content, err := os.ReadFile(filepath.Join(repositoryRoot(t), source))
-			if err != nil { t.Fatal(err) }
-			if err := os.WriteFile(filepath.Join(root, destination), content, 0o644); err != nil { t.Fatal(err) }
-		}
+		fixture = "tests/fixtures/contract/valid-two/klokast-instance.json"
 	}
-	lock := fmt.Sprintf("---\nschema_version: 1\nengine:\n  repository: https://github.com/klokast/klokast-box\n  ref: main\n  commit: %s\n", testCommit)
-	if err := os.WriteFile(filepath.Join(root, "klokast.lock.yml"), []byte(lock), 0o644); err != nil { t.Fatal(err) }
+	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), fixture))
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(root, contract.InstancePath), content, 0o644); err != nil { t.Fatal(err) }
+	lock := fmt.Sprintf(`{
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/%s/schemas/klokast-lock-v1.schema.json",
+  "engine": {"commit": "%s", "ref": "main", "repository": "https://github.com/klokast/klokast-box"},
+  "schema-version": 1
+}
+`, testCommit, testCommit)
+	if err := os.WriteFile(filepath.Join(root, contract.LockPath), []byte(lock), 0o644); err != nil { t.Fatal(err) }
 	runGit(t, root, "init", "-q")
 	runGit(t, root, "add", "-A")
 	return root

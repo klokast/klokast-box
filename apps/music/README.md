@@ -77,3 +77,33 @@ apps/music/bin/musicctl verify \
 
 Open the compiled playback-control surface from an allowed client and play
 music from the selected local box.
+
+## Remove
+
+Preview the exact removal scope from the active controller:
+
+```sh
+ansible/bin/platform-app remove music --dry-run
+```
+
+The normal remove operation preserves the logical `library` dataset. This
+dataset contains the `klokast-music-library` and
+`klokast-music-playlists` volumes. The operation hashes and counts their
+contents before and after cleanup and fails if they change.
+
+After review, run:
+
+```sh
+ansible/bin/platform-app remove music --yes
+```
+
+The operation removes the fixed pod and containers, reconstructable MPD,
+myMPD, runtime, and Tailscale state volumes, app configuration, and the app
+image. It removes only exact offline Music and streamer Tailnet identities
+through the guarded device-lifecycle wrapper. It disables Music in the legacy
+registry, applies the app resource-cleanup scope, and writes a redacted audit
+record to `~/private/klokast/app-lifecycle-audit.jsonl`.
+
+`destroy music --wipe-data --yes` also removes the two declared data volumes.
+Do not use destroy when the private Instance Specification keeps the Music
+`library` data with `retention: preserve`.

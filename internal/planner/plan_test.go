@@ -36,14 +36,14 @@ func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
 		t.Fatalf("unexpected controller projection: %#v", result.Projection.ControlPlane)
 	}
 	runner := result.Projection.ControlPlane.Airunners[0]
-	if runner.Kind != "controller_container" || runner.RuntimeHostname != "k001-ops-airunner" || runner.BoxID != "box-001" {
+	if runner.Kind != "controller-container" || runner.RuntimeHostname != "k001-ops-airunner" || runner.BoxID != "k001" {
 		t.Fatalf("unexpected airunner projection: %#v", runner)
 	}
 	box := result.Projection.Boxes[0]
 	if strings.Join(box.Access.LegacyAvailable, ",") != "overlay" {
 		t.Fatalf("unexpected legacy capabilities: %#v", box.Access)
 	}
-	if len(result.Inputs) != 4 || len(result.ProjectionHash) != 64 || len(result.Compatibility.RegistrySHA256) != 64 {
+	if len(result.Inputs) != 2 || len(result.ProjectionHash) != 64 || len(result.Compatibility.RegistrySHA256) != 64 {
 		t.Fatalf("missing provenance: %#v", result)
 	}
 	if result.Compatibility.Summary.Conflict != 0 || result.Compatibility.Summary.Unsupported != 0 || result.Compatibility.Summary.CompatibilityOnly != 0 {
@@ -62,7 +62,7 @@ func TestCommittedCleanAndDirtyDeployability(t *testing.T) {
 	if !clean.Deployable || !clean.AuthorityReady || clean.Repository.HeadCommit == "" {
 		t.Fatalf("clean committed instance is not authority-ready: %#v", clean)
 	}
-	appendFile(t, filepath.Join(root, "ops/deployment.yml"), "\n")
+	appendFile(t, filepath.Join(root, contract.InstancePath), "\n")
 	dirty, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -103,14 +103,7 @@ func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
 		"boxes.k001.shared_guests": "compatibility_only",
 		"boxes.k001.dom0_bridge_ports": "compatibility_only",
 		"boxes.k001.dhcp_reservations": "compatibility_only",
-		"apps.nextcloud.runtime_state": "compatibility_only",
-		"apps.nextcloud.isolation": "compatibility_only",
-		"apps.nextcloud.users": "compatibility_only",
-		"apps.nextcloud.devices": "compatibility_only",
-		"apps.nextcloud.app_vms": "compatibility_only",
-		"apps.nextcloud.ingress_mode": "compatibility_only",
-		"apps.nextcloud.ephemeral": "compatibility_only",
-		"apps.nextcloud.resources": "conflict",
+		"apps.nextcloud": "derived",
 		"compatibility_marker": "unsupported",
 	}
 	for path, class := range expected {
@@ -119,9 +112,9 @@ func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
 		}
 	}
 	if result.Compatibility.Summary.Matched == 0 || result.Compatibility.Summary.Derived == 0 ||
-		result.Compatibility.Summary.CompatibilityOnly == 0 || result.Compatibility.Summary.Conflict == 0 ||
+		result.Compatibility.Summary.CompatibilityOnly == 0 ||
 		result.Compatibility.Summary.Unsupported == 0 {
-		t.Fatalf("fixture does not exercise every classification: %#v", result.Compatibility.Summary)
+		t.Fatalf("fixture does not exercise the expected classifications: %#v", result.Compatibility.Summary)
 	}
 	encoded, _ := json.Marshal(result)
 	for _, scalar := range []string{"person-example", "device-example", "192.0.2.10", "2099-01-01T00:00:00Z"} {
@@ -148,10 +141,8 @@ func TestUnrepresentedAppFieldsAreNotSilentlyOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"enabled", "runtime_state", "users", "devices", "app_vms", "ingress_mode", "ephemeral", "placement", "resources"} {
-		if !hasFinding(result, "apps.legacy-example."+field, "compatibility_only") {
-			t.Errorf("unrepresented app field was omitted: %s", field)
-		}
+	if !hasFinding(result, "apps.legacy-example", "derived") {
+		t.Fatalf("omitted disabled app was not resolved as absent: %#v", result.Compatibility.Findings)
 	}
 }
 
@@ -190,16 +181,20 @@ func TestConflictsAndUnsupportedFieldsFailCompatibility(t *testing.T) {
 }
 
 func TestEnabledAppMustMatchLegacyManifestPlacement(t *testing.T) {
-	root := prepareInstance(t, func(root string) {
-		replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "enabled: false", "enabled: true")
+	root := prepareTwoBoxInstance(t, func(root string) {
+		replaceInFile(t, filepath.Join(root, contract.InstancePath), `"apps": {`, `"apps": {
+    "nextcloud": {
+      "desired-state": "present",
+      "placement": {"mode": "active-passive", "active": "k001", "passive": "k002"}
+    },`)
 	})
-	legacy := strings.Replace(canonicalRegistry(), "enabled: false", "enabled: true", 1)
-	legacy = strings.Replace(legacy, "active_master: \"\"\n      passive_backup: \"\"", "active_master: k001", 1)
+	legacy := strings.Replace(canonicalTwoBoxRegistry(), "enabled: false", "enabled: true", 1)
+	legacy = strings.Replace(legacy, "active_master: \"\"\n      passive_backup: \"\"", "active_master: k001\n      passive_backup: k001", 1)
 	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Compatible || !hasCode(result, "placement.mode") {
+	if result.Compatible || !hasCode(result, "placement.mismatch") {
 		t.Fatalf("legacy placement-mode conflict is absent: %#v", result.Compatibility)
 	}
 }
@@ -261,39 +256,8 @@ func TestProjectionIsDeterministicAcrossRepositoryPaths(t *testing.T) {
 }
 
 func TestTwoBoxProjectionResolvesStandbyAndExternalRunner(t *testing.T) {
-	root := prepareInstance(t, nil)
-	for source, destination := range map[string]string{
-		"tests/fixtures/contract/valid-two/deployment.yml":         "ops/deployment.yml",
-		"tests/fixtures/contract/valid-two/platform-resources.yml": "ops/platform-resources.yml",
-	} {
-		content, err := os.ReadFile(filepath.Join(repositoryRoot(t), source))
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeFile(t, filepath.Join(root, destination), string(content))
-	}
-	runGit(t, root, "add", "-A")
-	registry := writeRegistry(t, `---
-schema_version: 1
-boxes:
-  k001:
-    access:
-      available_capabilities: [overlay]
-      enabled_capabilities: [overlay]
-      prohibited_capabilities: [direct-ingress]
-      policy: {private-service-ingress: overlay, public-ingress: none}
-  k002:
-    access:
-      available_capabilities: [overlay]
-      enabled_capabilities: [overlay]
-      prohibited_capabilities: [direct-ingress]
-      policy: {private-service-ingress: overlay, public-ingress: none}
-apps:
-  nextcloud:
-    enabled: false
-    placement: {active_master: "", passive_backup: ""}
-    resources: {cloudflare-tunnel-egress: false}
-`)
+	root := prepareTwoBoxInstance(t, nil)
+	registry := writeRegistry(t, canonicalTwoBoxRegistry())
 	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +300,52 @@ apps:
 `
 }
 
+func canonicalTwoBoxRegistry() string {
+	return `---
+schema_version: 1
+boxes:
+  k001:
+    access:
+      available_capabilities: [overlay, ap-uplink, direct-egress]
+      enabled_capabilities: [overlay, ap-uplink, direct-egress]
+      prohibited_capabilities: [rg-lan, direct-ingress]
+      policy:
+        local-presence-control: overlay
+        private-service-ingress: overlay
+        file-upload: overlay
+        household-wan-egress: direct-egress
+        public-ingress: none
+  k002:
+    access:
+      available_capabilities: [overlay]
+      enabled_capabilities: [overlay]
+      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
+      policy:
+        local-presence-control: overlay
+        private-service-ingress: overlay
+        file-upload: overlay
+        household-wan-egress: none
+        public-ingress: none
+apps:
+  nextcloud:
+    enabled: false
+    placement:
+      active_master: ""
+      passive_backup: ""
+    resources:
+      cloudflare-tunnel-egress: false
+`
+}
+
 func prepareInstance(t *testing.T, mutate func(string)) string {
+	return prepareFixtureInstance(t, "tests/fixtures/contract/init-single.json", mutate)
+}
+
+func prepareTwoBoxInstance(t *testing.T, mutate func(string)) string {
+	return prepareFixtureInstance(t, "tests/fixtures/contract/valid-two/klokast-instance.json", mutate)
+}
+
+func prepareFixtureInstance(t *testing.T, fixture string, mutate func(string)) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := fs.WalkDir(klokastbox.Assets, "templates/instance", func(path string, entry fs.DirEntry, err error) error {
@@ -359,7 +368,17 @@ func prepareInstance(t *testing.T, mutate func(string)) string {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(root, "klokast.lock.yml"), fmt.Sprintf("---\nschema_version: 1\nengine:\n  repository: https://github.com/klokast/klokast-box\n  ref: main\n  commit: %s\n", testCommit))
+	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, contract.InstancePath), string(content))
+	writeFile(t, filepath.Join(root, contract.LockPath), fmt.Sprintf(`{
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/%s/schemas/klokast-lock-v1.schema.json",
+  "engine": {"commit": "%s", "ref": "main", "repository": "https://github.com/klokast/klokast-box"},
+  "schema-version": 1
+}
+`, testCommit, testCommit))
 	if mutate != nil {
 		mutate(root)
 	}

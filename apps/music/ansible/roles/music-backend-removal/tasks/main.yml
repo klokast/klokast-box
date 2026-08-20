@@ -1,0 +1,236 @@
+---
+- name: Validate the fixed Music removal scope
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == platform_zones.bak.role
+      - node_name == music_box
+      - music_pod_name == 'klokast-music'
+      - music_data_volumes == ['klokast-music-library', 'klokast-music-playlists']
+      - music_state_volumes == ['klokast-music-mpd-state', 'klokast-music-mympd-state', 'klokast-music-runtime', 'klokast-music-ui-ts-state', 'klokast-music-upload-ts-state']
+      - music_removal_wipe_data | type_debug == 'bool'
+    fail_msg: Music removal received an unexpected target or storage scope.
+
+- name: Inventory declared Music data before removal
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/files/music-data-inventory.py
+      --podman-user {{ music_podman_user | quote }}
+      {% for volume in music_data_volumes %} --volume {{ volume | quote }}{% endfor %}
+    executable: python3
+  become: true
+  register: music_data_inventory_before_raw
+  changed_when: false
+
+- name: Record the declared Music data inventory
+  ansible.builtin.set_fact:
+    music_data_inventory_before: "{{ music_data_inventory_before_raw.stdout | from_json }}"
+
+- name: Show the redacted Music data preservation evidence
+  ansible.builtin.debug:
+    msg:
+      dataset: library
+      volumes: "{{ music_data_inventory_before.volumes }}"
+      aggregate_sha256: "{{ music_data_inventory_before.sha256 }}"
+
+- name: Stop and disable the Music backend service
+  ansible.builtin.raw: |
+    /sbin/rc-service {{ music_service_name | quote }} stop >/dev/null 2>&1 || true
+    /sbin/rc-update del {{ music_service_name | quote }} default >/dev/null 2>&1 || true
+  become: true
+  changed_when: false
+
+- name: Remove the fixed Music pod
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - pod
+      - rm
+      - --force
+      - "{{ music_pod_name }}"
+  become: true
+  register: music_remove_pod
+  changed_when: music_remove_pod.rc == 0
+  failed_when: music_remove_pod.rc not in [0, 1, 125]
+
+- name: Remove fixed Music containers left without the pod
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - rm
+      - --force
+      - "{{ item }}"
+  become: true
+  loop: "{{ music_container_names }}"
+  register: music_remove_containers
+  changed_when: music_remove_containers.rc == 0
+  failed_when: music_remove_containers.rc not in [0, 1, 125]
+
+- name: Remove reconstructable Music state volumes
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - volume
+      - rm
+      - "{{ item }}"
+  become: true
+  loop: "{{ music_state_volumes }}"
+  register: music_remove_state_volumes
+  changed_when: music_remove_state_volumes.rc == 0
+  failed_when: music_remove_state_volumes.rc not in [0, 1, 125]
+
+- name: Inspect the fixed Music pod after removal
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - pod
+      - exists
+      - "{{ music_pod_name }}"
+  become: true
+  register: music_pod_after_removal
+  changed_when: false
+  failed_when: music_pod_after_removal.rc not in [0, 1]
+
+- name: Inspect fixed Music containers after removal
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - container
+      - exists
+      - "{{ item }}"
+  become: true
+  loop: "{{ music_container_names }}"
+  register: music_containers_after_removal
+  changed_when: false
+  failed_when: music_containers_after_removal.rc not in [0, 1]
+
+- name: Inspect reconstructable Music volumes after removal
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - volume
+      - exists
+      - "{{ item }}"
+  become: true
+  loop: "{{ music_state_volumes }}"
+  register: music_state_volumes_after_removal
+  changed_when: false
+  failed_when: music_state_volumes_after_removal.rc not in [0, 1]
+
+- name: Prove that reconstructable Music objects are absent
+  ansible.builtin.assert:
+    that:
+      - music_pod_after_removal.rc == 1
+      - music_containers_after_removal.results | selectattr('rc', 'equalto', 0) | list | length == 0
+      - music_state_volumes_after_removal.results | selectattr('rc', 'equalto', 0) | list | length == 0
+    fail_msg: Music removal did not remove every declared pod, container, and state volume.
+
+- name: Remove declared Music data only for destroy
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - volume
+      - rm
+      - "{{ item }}"
+  become: true
+  loop: "{{ music_data_volumes }}"
+  register: music_remove_data_volumes
+  changed_when: music_remove_data_volumes.rc == 0
+  failed_when: music_remove_data_volumes.rc not in [0, 1, 125]
+  when: music_removal_wipe_data | bool
+
+- name: Remove Music service configuration and helpers
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  become: true
+  loop:
+    - "/etc/init.d/{{ music_service_name }}"
+    - /usr/local/sbin/music-backend-deploy
+    - "{{ music_service_root }}"
+    - "{{ music_legacy_private_ingress_state_root }}"
+
+- name: Remove the reconstructable Music backend image
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - image
+      - rm
+      - "{{ music_image_name }}"
+  become: true
+  register: music_remove_image
+  changed_when: music_remove_image.rc == 0
+  failed_when: music_remove_image.rc not in [0, 1, 125]
+
+- name: Inspect the reconstructable Music backend image after removal
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - "{{ music_podman_user }}"
+      - podman
+      - image
+      - exists
+      - "{{ music_image_name }}"
+  become: true
+  register: music_image_after_removal
+  changed_when: false
+  failed_when: music_image_after_removal.rc not in [0, 1]
+
+- name: Prove that the reconstructable Music backend image is absent
+  ansible.builtin.assert:
+    that:
+      - music_image_after_removal.rc == 1
+    fail_msg: Music removal did not remove the declared reconstructable image.
+
+- name: Inventory declared Music data after removal
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/files/music-data-inventory.py
+      --podman-user {{ music_podman_user | quote }}
+      {% for volume in music_data_volumes %} --volume {{ volume | quote }}{% endfor %}
+    executable: python3
+  become: true
+  register: music_data_inventory_after_raw
+  changed_when: false
+
+- name: Record the final declared Music data inventory
+  ansible.builtin.set_fact:
+    music_data_inventory_after: "{{ music_data_inventory_after_raw.stdout | from_json }}"
+
+- name: Prove that remove preserved the declared Music data
+  ansible.builtin.assert:
+    that:
+      - music_data_inventory_after == music_data_inventory_before
+    fail_msg: Music removal changed the declared library or playlists data.
+  when: not (music_removal_wipe_data | bool)
+
+- name: Prove that destroy removed the declared Music data
+  ansible.builtin.assert:
+    that:
+      - music_data_inventory_after.volumes | selectattr('present', 'equalto', true) | list | length == 0
+    fail_msg: Music destroy did not remove every declared data volume.
+  when: music_removal_wipe_data | bool

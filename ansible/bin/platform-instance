@@ -105,8 +105,6 @@ def seed(args):
         "init",
         "--instance",
         destination,
-        "--profile",
-        "single-box",
         "--values",
         values,
         "--json",

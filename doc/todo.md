@@ -2,24 +2,6 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
-# 2026-08-19 - complete the current private Contract v1 migration inputs
-
-The Step 10 review for the first private-instance bootstrap found two inputs
-that prevent an exact Contract v1 description of the current Platform.
-
-The private legacy `deployment.yml` has Tailnet groups but no box records. It
-does not record the country or physical location for `k002`. Record an
-authoritative private `site-002` value before the human edits the Contract. Do
-not infer this private value from a hostname or put it in a public file.
-
-The private legacy platform-resource registry enables `openclaw`, but the
-approved public engine has no `apps/openclaw/platform-resources.yml` manifest.
-The legacy compiler therefore stops with a missing-manifest error, and Contract
-v1 rejects an `openclaw` binding because it has no embedded public manifest.
-Add and validate the public manifest, or complete an explicit supported
-migration that removes the legacy enabled intent, before Step 10 continues.
-Do not omit the enabled app from the private Contract as a workaround.
-
 # 2026-08-16 - make touch ID sign in popups more explicit
 
 At @doc/40-private-instance-bootstrap.md, step #8.1 , the current Touch ID popup only reads:

@@ -1,6 +1,6 @@
 # Private Instance Bootstrap: Human Procedure
 
-Use this procedure to create the private Contract v1 repository,
+Use this procedure to create the private Klokast Instance Specification v1 repository,
 and give the active controller read-only access to it.
 
 The Platform got one active controller `<box>-ops`.
@@ -307,7 +307,7 @@ Confirm in GitHub that the deploy key is read-only. Then continue with Step 9.
 Do not run `retire-bootstrap` now. You will run it in Step 12, after the first
 private commit is pushed and App access is removed.
 
-## 9. Create the staged Contract v1 repository
+## 9. Create the staged Instance Specification v1 repository
 
 Run the worktree helper from the trusted MacBook:
 
@@ -319,49 +319,84 @@ The helper does these actions:
 
 - checks the session, active controller, exact engine, sealed build operation,
   and fixed private paths;
-- creates or reuses the owner-only controller values file and opens it in
-  `vi` with an interactive terminal;
+- creates or reuses the owner-only, complete instance JSON file and opens it
+  in `vi` with an interactive terminal;
 - asks before it runs the sealed initializer;
 - asks before it streams the new seed to the MacBook;
 - verifies that the worktree has the exact generated files, staged state,
   `main` branch, no commit, no remote, and exact engine lock.
 
-It does not display or copy the private values file. Do not enter its values in
-chat. The template has this JSON shape:
+It does not display or copy the private values file. Do not enter its private
+values in chat. The template already contains the reviewed two-box topology.
+Replace only `REPLACE_WITH_TAILNET_DNS_NAME` and
+`REPLACE_WITH_PRIVATE_LOGIN`. Keep both roles on that member. Review all other
+values:
 
 ```json
 {
-  "schema_version": 1,
-  "instance": {"name": "REPLACE_WITH_PRIVATE_INSTANCE_NAME"},
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/<ENGINE_COMMIT>/schemas/klokast-instance-v1.schema.json",
+  "schema-version": 1,
+  "instance": {"id": "klokast-instance"},
   "tailnet": {
-    "magicdns_suffix": "REPLACE.ts.net",
-    "groups": {
-      "operators": ["REPLACE_WITH_OPERATOR_LOGIN"],
-      "family": ["REPLACE_WITH_OPERATOR_LOGIN", "REPLACE_WITH_FAMILY_LOGIN"]
+    "tailnet-dns-name": "REPLACE_WITH_TAILNET_DNS_NAME",
+    "members": {
+      "REPLACE_WITH_PRIVATE_LOGIN": {"roles": ["operator", "family"]}
     }
   },
-  "site": {
-    "country": "REPLACE_WITH_TWO_LETTER_COUNTRY",
-    "physical_location": "REPLACE_WITH_K001_LOCATION"
+  "sites": {
+    "milla": {"country": "FR", "description": ""},
+    "mingdu": {"country": "CN", "description": ""}
   },
-  "box": {"hostname_prefix": "k001"}
+  "boxes": {
+    "k001": {
+      "site": "milla",
+      "connectivity-profiles": ["local-ap-direct-egress", "tailscale"]
+    },
+    "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]}
+  },
+  "controllers": {"active": "k002", "standby": "k001"},
+  "airunners": {
+    "preferred": "k002-ops-airunner",
+    "authorized": {
+      "k002-ops-airunner": {"kind": "controller-container", "box": "k002"}
+    }
+  },
+  "apps": {
+    "music": {
+      "desired-state": "absent",
+      "data": {"library": {"box": "k002", "retention": "preserve"}}
+    }
+  }
 }
 ```
 
-One operator must also be in the family group. Do not add a timezone; Platform
-time is always `Etc/UTC`.
+Use the Tailnet DNS name, not a machine MagicDNS name. Do not add a timezone;
+Platform time is always `Etc/UTC`.
 
 The helper writes a redacted result to `$BOOTSTRAP_WORK/action-audit.jsonl`.
 The record contains the phase, result, controller, repository hash, engine and
 build pins, and whether it created or reused each staged result. It does not
-contain private values or generated Contract content.
+contain private values or generated Instance Specification content.
 
 The controller seed and MacBook worktree must not already exist. The helper
 does not overwrite or delete them. If the operation fails after it creates one
 of them, read the final recovery message and ask the agent to inspect that
 result before another attempt.
 
-## 10. Edit and review the private repository on the MacBook
+The old unreleased YAML seed is not compatible with this format. If the
+controller seed or MacBook worktree comes from an earlier attempt, run:
+
+```sh
+klokast-dev/bin/prepare-private-instance-worktree --archive-and-restart
+```
+
+The helper checks that each existing repository is standalone, unborn, has no
+remote, has a recognized seed file set, and contains no symbolic links. It
+asks before it moves the controller seed, controller values file, and MacBook
+worktree to owner-only timestamped archive paths. It does not delete them.
+Then it creates a new JSON seed.
+
+## 10. Review the private repository on the MacBook
 
 After the helper succeeds, it prints the private worktree path. Set the same
 shell variable for the remaining commands:
@@ -371,135 +406,81 @@ PRIVATE_PARENT="$HOME/src/private-klokast"
 PRIVATE_WORKTREE="$PRIVATE_PARENT/klokast-instance"
 ```
 
-The repository has four authoritative Contract files, but you must edit only
-the two files under `ops/` in this step:
+The repository has two authoritative Instance Specification files:
 
 ```text
-File                          Action in Step 10
-klokast.yml                   Review only. Do not edit.
-klokast.lock.yml              Review only. Do not edit.
-ops/deployment.yml            Edit topology and control-plane intent.
-ops/platform-resources.yml    Edit access and application intent.
+File                     Action in Step 10
+klokast-instance.json    Review the complete private desired state.
+klokast.lock.json        Review only. Do not edit.
 ```
 
 Leave `.gitignore`, `AGENTS.md`, and `README.md` as generated. They are support
-files, not Contract inputs.
+files, not Instance Specification inputs.
 
-### 10.1 Review the generated control files
+The helper already generated the complete instance from the controller values
+file. No file requires an edit after a successful run. If the review finds an
+incorrect private value, edit only `klokast-instance.json`, then run the
+checks below. Never edit `klokast.lock.json`.
 
-`klokast.yml` must continue to point to these two paths:
+### 10.1 Review the engine and schema pins
 
-```yaml
-paths:
-  deployment: ops/deployment.yml
-  platform_resources: ops/platform-resources.yml
-```
-
-`klokast.lock.yml` must continue to name the canonical public engine, `main`,
-and the exact `ENGINE_COMMIT` from Step 1. These commands must produce no diff
-and must print `engine lock ok`:
+Both `$schema` values and the lock commit must use the exact `ENGINE_COMMIT`
+from Step 1:
 
 ```sh
-git -C "$PRIVATE_WORKTREE" diff -- klokast.yml klokast.lock.yml
-grep -Eq "^[[:space:]]+commit: $ENGINE_COMMIT$" \
-  "$PRIVATE_WORKTREE/klokast.lock.yml" && echo "engine lock ok"
+python3 - "$PRIVATE_WORKTREE" "$ENGINE_COMMIT" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+commit = sys.argv[2]
+instance = json.loads((root / "klokast-instance.json").read_text())
+lock = json.loads((root / "klokast.lock.json").read_text())
+assert lock["engine"]["commit"] == commit
+assert f"/{commit}/schemas/" in instance["$schema"]
+assert f"/{commit}/schemas/" in lock["$schema"]
+print("engine and schema pins ok")
+PY
 ```
 
-Stop if either generated control file needs a manual correction. Do not repair
-a generated control file by hand.
+Stop if the lock needs a correction. Rebuild the seed. Do not repair the lock
+by hand.
 
-### 10.2 Edit `ops/deployment.yml`
+### 10.2 Review `klokast-instance.json`
 
-Open `$PRIVATE_WORKTREE/ops/deployment.yml` in your local editor. Make only
-these changes:
+Confirm these points locally:
 
-- keep `schema_version`, `instance`, and all `tailnet` values exactly as the
-  initializer generated them;
-- keep `site-001` and `box-001` exactly as generated;
-- add `site-002` for the physical site that contains `k002`;
-- set `site-002.country` to its two-letter uppercase country code;
-- set `site-002.timezone` to `Etc/UTC`;
-- set `site-002.physical_location` to the private physical-location text for
-  `k002`; omit this optional field only when no such text is recorded;
-- add `box-002` with `hostname_prefix: k002` and `site: site-002`;
-- replace `control_plane` with the exact block below.
+- the private Tailnet DNS name and member login are exact;
+- the member has both `operator` and `family` roles;
+- `milla` is in `FR`, and `mingdu` is in `CN`;
+- `k001` uses `local-ap-direct-egress` and `tailscale`;
+- `k002` uses only `tailscale`;
+- the active controller is `k002`, and the standby controller is `k001`;
+- the preferred and only authorized airunner is `k002-ops-airunner` on `k002`;
+- Music is absent and its declared `library` data on `k002` has preservation
+  intent;
+- no other removed app is present;
+- there is no timezone, runtime-status, secret, IP-address, or generated-state
+  field.
 
-```yaml
-control_plane:
-  controller:
-    active_box: box-002
-    standby_box: box-001
-  airunners:
-    - id: airunner-001
-      kind: controller_container
-      box: box-002
-```
+See `doc/klokast-instance-specification.md` in the public repository for
+placement, app, feature, data, and connectivity-profile rules.
 
-This airunner resolves to `k002-ops-airunner`. Do not add current runtime
-health, IP addresses, credentials, or generated inventory to this file.
-
-Before you continue, confirm that an authoritative private source records the
-country and physical location for `k002`. Stop if it does not. Do not guess a
-private site value and do not copy it into chat.
-
-### 10.3 Edit `ops/platform-resources.yml`
-
-Open `$PRIVATE_WORKTREE/ops/platform-resources.yml` in your local editor.
-Replace the single-box starter intent with the current two-box intent.
-
-Under `boxes`, use the stable logical IDs `box-001` for `k001` and `box-002`
-for `k002`. Each box must contain all four access fields:
-
-```text
-declared_capabilities     legacy available capabilities plus legacy prohibited capabilities
-enabled_capabilities      exact effective legacy enabled capabilities
-prohibited_capabilities   exact effective legacy prohibited capabilities
-policy                    exact effective legacy policy
-```
-
-Do not copy a missing legacy field as an empty value. Use the effective value
-after legacy defaults are applied. The enabled and prohibited sets must not
-overlap. Each non-`none` policy value must be enabled on that box.
-
-Under `apps`, represent every enabled legacy application that has an embedded
-public manifest in the approved engine. Use these placement conversions:
-
-```text
-Legacy placement                         Contract v1 placement
-active_master only                       mode: single_box; box
-active_master plus passive_backup        mode: active_passive; active_master; passive_backup
-boxes                                    mode: multi_box; boxes
-```
-
-Convert each runtime box name to its logical ID: `k001` becomes `box-001` and
-`k002` becomes `box-002`. Copy only Boolean entries from the legacy app
-`resources` map. Use `{}` when that map is empty.
-
-An enabled application must have an `apps/<app>/platform-resources.yml`
-manifest in the public engine at `ENGINE_COMMIT`. Stop if a manifest is
-missing. Do not omit the enabled application, create a private manifest, or
-disable the application only to make the Contract pass.
-
-Do not copy these compatibility-only values into Contract v1:
-
-- runtime state or application-private configuration;
-- users, devices, bridge ports, DHCP reservations, or shared-guest settings;
-- application VM details, ingress modes, secrets, or generated files.
-
-### 10.4 Review the two edits
+### 10.3 Validate the review
 
 Run:
 
 ```sh
 cd "$PRIVATE_WORKTREE"
 git diff --check
-git diff -- ops/deployment.yml ops/platform-resources.yml
+python3 -m json.tool klokast-instance.json >/dev/null
+python3 -m json.tool klokast.lock.json >/dev/null
 ```
 
-Review every private value locally. Confirm again that `klokast.yml`,
-`klokast.lock.yml`, `.gitignore`, `AGENTS.md`, and `README.md` have no unstaged
-changes. Continue to Step 11 only when every enabled application is represented
-and both private files contain the exact intended state.
+Run the sealed checker as described by the helper output or through the
+controller workflow before deployment. Continue to Step 11 only when the two
+JSON files contain the exact intended state.
 
 ## 11. Commit and push as the human
 
@@ -513,8 +494,7 @@ git status --short
 git diff --check
 git diff --cached --check
 
-git add klokast.yml klokast.lock.yml ops/deployment.yml \
-  ops/platform-resources.yml README.md AGENTS.md .gitignore
+git add klokast-instance.json klokast.lock.json README.md AGENTS.md .gitignore
 git diff --cached --check
 git status --short
 git commit -m "Initialize private Klokast instance"
@@ -646,7 +626,7 @@ and registry authority stays active. No apply action is part of this runbook.
 ## References
 
 - [Private-instance Secret Authority](../../doc/secret-authority.md#private-instance-bootstrap)
-- [Upstream/instance target architecture](../../doc/upstream-instance-target-architecture.md)
+- [Klokast Instance Specification v1](../../doc/klokast-instance-specification.md)
 - [Apple `sc_auth` manual](https://keith.github.io/xcode-man-pages/sc_auth.8.html)
 - [GitHub: install your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
 - [GitHub: create an organization repository](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository)

@@ -1,4 +1,4 @@
-// Package doctor compares a checked Contract v1 projection with one redacted,
+// Package doctor compares a checked Instance Specification v1 projection with one redacted,
 // recent Observation v1 document. It performs no discovery and changes no state.
 package doctor
 
@@ -330,7 +330,7 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 	for _, projectedBox := range projection.Boxes {
 		prefix := projectedBox.HostnamePrefix
 		box, present := boxes[prefix]
-		check(present, "boxes."+prefix, "box.missing", "Contract box is absent from the observation")
+		check(present, "boxes."+prefix, "box.missing", "Instance Specification box is absent from the observation")
 		checkMachine(projectedBox.Runtime.Dom0, "tag:dom0")
 		for _, role := range []struct{ hostname, guest string }{
 			{projectedBox.Runtime.Router, "router"}, {projectedBox.Runtime.Backup, "bak"},

@@ -1,4 +1,4 @@
-// Package planner resolves Contract v1 logical intent and compares the result
+// Package planner resolves Instance Specification v1 intent and compares the result
 // with transitional desired-state inputs. It is read-only.
 package planner
 
@@ -91,11 +91,12 @@ type Site struct {
 }
 
 type Box struct {
-	ID             string       `json:"id"`
-	HostnamePrefix string       `json:"hostname_prefix"`
-	SiteID         string       `json:"site_id"`
-	Runtime        RuntimeNames `json:"runtime"`
-	Access         Access       `json:"access"`
+	ID                   string       `json:"id"`
+	HostnamePrefix       string       `json:"hostname_prefix"`
+	SiteID               string       `json:"site_id"`
+	ConnectivityProfiles []string     `json:"connectivity_profiles"`
+	Runtime              RuntimeNames `json:"runtime"`
+	Access               Access       `json:"access"`
 }
 
 type RuntimeNames struct {
@@ -139,10 +140,19 @@ type Airunner struct {
 }
 
 type App struct {
-	ID        string            `json:"id"`
-	Enabled   bool              `json:"enabled"`
-	Placement Placement         `json:"placement"`
-	Resources []ResourceBinding `json:"resources"`
+	ID           string            `json:"id"`
+	DesiredState string            `json:"desired_state"`
+	Enabled      bool              `json:"enabled"`
+	Placement    Placement         `json:"placement,omitempty"`
+	Resources    []ResourceBinding `json:"features"`
+	Data         []DataBinding     `json:"data"`
+}
+
+type DataBinding struct {
+	ID        string `json:"id"`
+	BoxID     string `json:"box_id"`
+	RuntimeBox string `json:"runtime_box"`
+	Retention string `json:"retention"`
 }
 
 type Placement struct {
@@ -316,7 +326,7 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 	return result, nil
 }
 
-// Resolve produces the deterministic Contract v1 projection. Plan and all
+// Resolve produces the deterministic Instance Specification v1 projection. Plan and all
 // offline observers use this resolver so runtime identities cannot diverge.
 func Resolve(snapshot contract.Snapshot) Projection {
 	result := Projection{
@@ -326,9 +336,9 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			Ref:        snapshot.Lock.Engine.Ref,
 			Commit:     snapshot.Lock.Engine.Commit,
 		},
-		InstanceID: snapshot.Deployment.Instance.Name,
+		InstanceID: snapshot.Instance.Instance.ID,
 		Tailnet: Tailnet{
-			MagicDNSSuffix: snapshot.Deployment.Tailnet.MagicDNSSuffix,
+			MagicDNSSuffix: snapshot.Instance.Tailnet.DNSName,
 			Groups:         []TailnetGroup{},
 		},
 		Sites:      []Site{},
@@ -338,45 +348,49 @@ func Resolve(snapshot contract.Snapshot) Projection {
 		},
 		Apps: []App{},
 	}
-	for _, name := range sortedKeys(snapshot.Deployment.Tailnet.Groups) {
-		result.Tailnet.Groups = append(result.Tailnet.Groups, TailnetGroup{Name: name, Members: sortedCopy(snapshot.Deployment.Tailnet.Groups[name])})
+	groups := map[string][]string{"operators": {}, "family": {}}
+	for login, member := range snapshot.Instance.Tailnet.Members {
+		for _, role := range member.Roles {
+			if role == "operator" {
+				groups["operators"] = append(groups["operators"], login)
+			} else if role == "family" {
+				groups["family"] = append(groups["family"], login)
+			}
+		}
 	}
-	siteIDs := sortedKeys(snapshot.Deployment.Sites)
+	for _, name := range []string{"family", "operators"} {
+		result.Tailnet.Groups = append(result.Tailnet.Groups, TailnetGroup{Name: name, Members: sortedCopy(groups[name])})
+	}
+	siteIDs := sortedKeys(snapshot.Instance.Sites)
 	for _, id := range siteIDs {
-		site := snapshot.Deployment.Sites[id]
-		result.Sites = append(result.Sites, Site{ID: id, Country: site.Country, Timezone: site.Timezone, PhysicalLocation: site.PhysicalLocation})
+		site := snapshot.Instance.Sites[id]
+		result.Sites = append(result.Sites, Site{ID: id, Country: site.Country, Timezone: "Etc/UTC", PhysicalLocation: site.Description})
 	}
-	boxIDs := sortedKeys(snapshot.Deployment.Boxes)
+	boxIDs := sortedKeys(snapshot.Instance.Boxes)
 	for _, id := range boxIDs {
-		box := snapshot.Deployment.Boxes[id]
-		platform := snapshot.Platform.Boxes[id]
-		prefix := box.HostnamePrefix
+		box := snapshot.Instance.Boxes[id]
+		prefix := id
 		result.Boxes = append(result.Boxes, Box{
-			ID: id, HostnamePrefix: prefix, SiteID: box.Site,
+			ID: id, HostnamePrefix: prefix, SiteID: box.Site, ConnectivityProfiles: sortedCopy(box.ConnectivityProfiles),
 			Runtime: RuntimeNames{
 				Dom0: prefix + "-dom0", Router: prefix + "-router", Backup: prefix + "-bak",
 				DMZ: prefix + "-dmz", IoT: prefix + "-iot", Ops: prefix + "-ops",
 			},
-			Access: Access{
-				Declared:        sortedCopy(platform.Access.Declared),
-				LegacyAvailable: legacyAvailable(platform.Access.Declared, platform.Access.Prohibited),
-				Enabled:         sortedCopy(platform.Access.Enabled),
-				Prohibited:      sortedCopy(platform.Access.Prohibited),
-				Policy:          policyBindings(platform.Access.Policy),
-			},
+			Access: accessForProfiles(box.ConnectivityProfiles),
 		})
 	}
-	active := snapshot.Deployment.ControlPlane.Controller.ActiveBox
-	result.ControlPlane.ActiveController = Controller{BoxID: active, Hostname: snapshot.Deployment.Boxes[active].HostnamePrefix + "-ops"}
-	if standby := snapshot.Deployment.ControlPlane.Controller.StandbyBox; standby != "" {
-		result.ControlPlane.StandbyController = &Controller{BoxID: standby, Hostname: snapshot.Deployment.Boxes[standby].HostnamePrefix + "-ops"}
+	active := snapshot.Instance.Controllers.Active
+	result.ControlPlane.ActiveController = Controller{BoxID: active, Hostname: active + "-ops"}
+	if standby := snapshot.Instance.Controllers.Standby; standby != "" {
+		result.ControlPlane.StandbyController = &Controller{BoxID: standby, Hostname: standby + "-ops"}
 	}
-	for _, runner := range snapshot.Deployment.ControlPlane.Airunners {
-		resolved := Airunner{ID: runner.ID, Kind: runner.Kind}
-		if runner.Kind == "box" || runner.Kind == "controller_container" {
-			prefix := snapshot.Deployment.Boxes[runner.Box].HostnamePrefix
+	for _, id := range sortedKeys(snapshot.Instance.Airunners.Authorized) {
+		runner := snapshot.Instance.Airunners.Authorized[id]
+		resolved := Airunner{ID: id, Kind: runner.Kind}
+		if runner.Kind == "box" || runner.Kind == "controller-container" {
+			prefix := runner.Box
 			resolved.BoxID = runner.Box
-			if runner.Kind == "controller_container" {
+			if runner.Kind == "controller-container" {
 				resolved.RuntimeHostname = prefix + "-ops-airunner"
 			} else {
 				resolved.RuntimeHostname = prefix + "-airunner"
@@ -387,14 +401,18 @@ func Resolve(snapshot contract.Snapshot) Projection {
 		result.ControlPlane.Airunners = append(result.ControlPlane.Airunners, resolved)
 	}
 	sort.Slice(result.ControlPlane.Airunners, func(i, j int) bool { return result.ControlPlane.Airunners[i].ID < result.ControlPlane.Airunners[j].ID })
-	appIDs := sortedKeys(snapshot.Platform.Apps)
+	appIDs := sortedKeys(snapshot.Instance.Apps)
 	for _, id := range appIDs {
-		binding := snapshot.Platform.Apps[id]
-		result.Apps = append(result.Apps, App{
-			ID: id, Enabled: binding.Enabled,
-			Placement: resolvePlacement(binding.Placement, snapshot.Deployment.Boxes),
-			Resources: resourceBindings(binding.Resources),
-		})
+		binding := snapshot.Instance.Apps[id]
+		resolved := App{ID: id, DesiredState: binding.DesiredState, Enabled: binding.DesiredState == "present", Resources: resourceBindings(binding.Features), Data: []DataBinding{}}
+		if binding.Placement != nil {
+			resolved.Placement = resolvePlacement(*binding.Placement)
+		}
+		for _, dataID := range sortedKeys(binding.Data) {
+			data := binding.Data[dataID]
+			resolved.Data = append(resolved.Data, DataBinding{ID: dataID, BoxID: data.Box, RuntimeBox: data.Box, Retention: data.Retention})
+		}
+		result.Apps = append(result.Apps, resolved)
 	}
 	return result
 }
@@ -409,21 +427,21 @@ func ProjectionHash(projection Projection) (string, error) {
 	return fmt.Sprintf("%x", digest[:]), nil
 }
 
-func resolvePlacement(value contract.PlacementDocument, boxes map[string]contract.BoxDocument) Placement {
+func resolvePlacement(value contract.PlacementDocument) Placement {
 	result := Placement{Mode: value.Mode}
 	switch value.Mode {
-	case "single_box":
+	case "single-box":
 		result.BoxID = value.Box
-		result.RuntimeBox = boxes[value.Box].HostnamePrefix
-	case "active_passive":
-		result.ActiveBoxID = value.ActiveMaster
-		result.ActiveRuntimeBox = boxes[value.ActiveMaster].HostnamePrefix
-		result.PassiveBoxID = value.PassiveBackup
-		result.PassiveRuntimeBox = boxes[value.PassiveBackup].HostnamePrefix
-	case "multi_box":
+		result.RuntimeBox = value.Box
+	case "active-passive":
+		result.ActiveBoxID = value.Active
+		result.ActiveRuntimeBox = value.Active
+		result.PassiveBoxID = value.Passive
+		result.PassiveRuntimeBox = value.Passive
+	case "multi-box":
 		result.BoxIDs = sortedCopy(value.Boxes)
 		for _, id := range result.BoxIDs {
-			result.RuntimeBoxes = append(result.RuntimeBoxes, boxes[id].HostnamePrefix)
+			result.RuntimeBoxes = append(result.RuntimeBoxes, id)
 		}
 	}
 	return result
@@ -441,7 +459,7 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 	add("schema_version", "matched", "registry.schema", "the legacy registry uses the supported compatibility schema")
 	for _, field := range sortedKeys(legacy.root) {
 		if field != "schema_version" && field != "boxes" && field != "apps" {
-			add(field, "unsupported", "registry.field", "the legacy registry root field has no Contract v1 mapping")
+			add(field, "unsupported", "registry.field", "the legacy registry root field has no Instance Specification v1 mapping")
 		}
 	}
 	boxes, _ := legacy.root["boxes"].(map[string]any)
@@ -476,34 +494,32 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 				"policy":                  policyMap(box.Access.Policy),
 			}
 			for _, field := range []string{"available_capabilities", "enabled_capabilities", "prohibited_capabilities", "policy"} {
-				class := "matched"
-				code := "access.match"
-				message := "the resolved access field matches the legacy registry"
 				matches := equivalent(expected[field], access[field])
 				if field != "policy" {
 					matches = equivalentStringSet(expected[field], access[field])
 				}
-				if !matches {
-					class, code, message = "conflict", "access.mismatch", "the resolved access field does not match the legacy registry"
+				if matches {
+					add(path+".access."+field, "matched", "access.profile", "the connectivity profile resolves to the legacy access field")
+				} else {
+					add(path+".access."+field, "conflict", "access.mismatch", "the connectivity profile does not resolve to the legacy access field")
 				}
-				add(path+".access."+field, class, code, message)
 			}
-			add(path+".access.available_capabilities", "derived", "capability.legacy", "legacy availability is declared capabilities minus prohibited capabilities")
 			for _, field := range sortedKeys(access) {
 				if field != "available_capabilities" && field != "enabled_capabilities" && field != "prohibited_capabilities" && field != "policy" {
 					add(path+".access."+field, "unsupported", "access.field", "the legacy access field is not accepted by the compatibility adapter")
 				}
 			}
 		}
+		add(path+".connectivity_profiles", "derived", "connectivity.profile", "the Instance Specification selects upstream connectivity profiles")
 		for _, field := range sortedKeys(legacyBox) {
 			if field != "access" {
-				add(path+"."+field, "compatibility_only", "box.compatibility", "the legacy box field has no Contract v1 representation and must be retained outside the projection")
+				add(path+"."+field, "compatibility_only", "box.compatibility", "the legacy box field has no Instance Specification v1 representation and must be retained outside the projection")
 			}
 		}
 	}
 	for _, id := range sortedKeys(boxes) {
 		if !expectedBoxes[id] {
-			add("boxes."+id, "conflict", "box.unrepresented", "the legacy box is not represented by a Contract v1 logical box")
+			add("boxes."+id, "conflict", "box.unrepresented", "the legacy box is not represented by an Instance Specification v1 box")
 		}
 	}
 
@@ -514,9 +530,12 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 		legacyValue, present := apps[app.ID]
 		if !present {
 			if app.Enabled {
-				add(path, "conflict", "app.missing", "the enabled Contract app is absent from the legacy registry")
+				add(path, "conflict", "app.missing", "the present Instance Specification app is absent from the legacy registry")
 			} else {
-				add(path, "derived", "app.disabled", "the disabled Contract app does not require a legacy registry entry")
+				add(path, "derived", "app.absent", "the absent app and its retained data do not require a legacy registry entry")
+			}
+			for _, data := range app.Data {
+				add(path+".data."+data.ID, "derived", "data.contract", "retained data is declared only by the Instance Specification")
 			}
 			continue
 		}
@@ -527,17 +546,17 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 		}
 		legacyEnabled, enabledOK := legacyApp["enabled"].(bool)
 		if !enabledOK || legacyEnabled != app.Enabled {
-			add(path+".enabled", "conflict", "app.enabled", "the Contract and legacy enabled states do not match")
+			add(path+".enabled", "conflict", "app.enabled", "the Instance Specification and legacy enabled states do not match")
 		} else {
-			add(path+".enabled", "matched", "app.enabled", "the Contract and legacy enabled states match")
+			add(path+".enabled", "matched", "app.enabled", "the Instance Specification and legacy enabled states match")
 		}
 		if app.Enabled {
-			mode := manifests[app.ID].PlacementMode
+			mode := strings.ReplaceAll(manifests[app.ID].PlacementMode, "_", "-")
 			if mode == "" {
-				mode = "active_passive"
+				mode = "active-passive"
 			}
 			if mode != app.Placement.Mode {
-				add(path+".placement", "conflict", "placement.mode", "the enabled Contract placement mode is not supported by the legacy app manifest")
+				add(path+".placement", "conflict", "placement.mode", "the present Instance Specification placement mode is not supported by the legacy app manifest")
 			}
 			expected := legacyPlacement(app.Placement)
 			if equivalent(expected, legacyApp["placement"]) {
@@ -550,24 +569,31 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 			if placementPresent && !isMap(placementValue) {
 				add(path+".placement", "unsupported", "placement.type", "the legacy app placement must be an object")
 			} else if placementHasTarget(placementValue) {
-				add(path+".placement", "compatibility_only", "placement.disabled", "disabled legacy cleanup placement is not authoritative Contract v1 intent")
+				add(path+".placement", "compatibility_only", "placement.disabled", "disabled legacy cleanup placement is not authoritative Instance Specification v1 intent")
 			} else {
-				add(path+".placement", "derived", "placement.preselected", "Contract v1 keeps the disabled app preselection outside the legacy adapter")
+				add(path+".placement", "derived", "placement.preselected", "Instance Specification v1 keeps disabled app preselection outside the legacy adapter")
 			}
 		}
-		expectedResources := resourceMap(app.Resources)
 		actualResources := legacyApp["resources"]
-		if actualResources == nil {
-			actualResources = map[string]any{}
+		if app.Enabled {
+			expectedResources := resourceMap(app.Resources)
+			if actualResources == nil {
+				actualResources = map[string]any{}
+			}
+			if equivalent(expectedResources, actualResources) {
+				add(path+".features", "matched", "features.match", "the Instance Specification features match legacy resource selections")
+			} else {
+				add(path+".features", "conflict", "features.mismatch", "the Instance Specification features do not match legacy resource selections")
+			}
+		} else if actualResources != nil {
+			add(path+".resources", "compatibility_only", "resources.absent", "legacy disabled-app resource preselection remains under compatibility authority")
 		}
-		if equivalent(expectedResources, actualResources) {
-			add(path+".resources", "matched", "resources.match", "the Contract resource bindings match the legacy registry")
-		} else {
-			add(path+".resources", "conflict", "resources.mismatch", "the Contract resource bindings do not match the legacy registry")
+		for _, data := range app.Data {
+			add(path+".data."+data.ID, "derived", "data.contract", "retained data is declared only by the Instance Specification")
 		}
 		for _, field := range sortedKeys(legacyApp) {
 			if field != "enabled" && field != "placement" && field != "resources" {
-				add(path+"."+field, "compatibility_only", "app.compatibility", "the legacy app field has no Contract v1 representation and must be retained outside the projection")
+				add(path+"."+field, "compatibility_only", "app.compatibility", "the legacy app field has no Instance Specification v1 representation and must be retained outside the projection")
 			}
 		}
 	}
@@ -580,10 +606,16 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 			add("apps."+id, "unsupported", "app.type", "the legacy app entry must be an object")
 			continue
 		}
-		if enabled, _ := legacyApp["enabled"].(bool); enabled {
-			add("apps."+id, "conflict", "app.unrepresented", "the enabled legacy app is not represented by Contract v1")
+		enabled, enabledOK := legacyApp["enabled"].(bool)
+		if !enabledOK {
+			add("apps."+id+".enabled", "unsupported", "app.enabled-type", "the unrepresented legacy enabled field must be a Boolean")
+			continue
+		}
+		if enabled {
+			add("apps."+id, "conflict", "app.unrepresented", "the enabled legacy app is not represented by Instance Specification v1")
 		} else {
-			add("apps."+id, "compatibility_only", "app.unrepresented", "the disabled legacy app is not represented by Contract v1")
+			add("apps."+id, "derived", "app.omitted", "an omitted Instance Specification app resolves to absent")
+			continue
 		}
 		for _, field := range sortedKeys(legacyApp) {
 			class := "compatibility_only"
@@ -593,7 +625,7 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 				if enabled, ok := legacyApp[field].(bool); !ok {
 					class, code, message = "unsupported", "app.enabled-type", "the unrepresented legacy enabled field must be a boolean"
 				} else if enabled {
-					class, code, message = "conflict", "app.enabled", "the enabled legacy app has no Contract v1 representation"
+					class, code, message = "conflict", "app.enabled", "the enabled legacy app has no Instance Specification v1 representation"
 				}
 			}
 			add("apps."+id+"."+field, class, code, message)
@@ -757,6 +789,52 @@ func legacyAvailable(declared, prohibited []string) []string {
 	return result
 }
 
+func accessForProfiles(profiles []string) Access {
+	declared := map[string]bool{
+		"overlay": true, "rg-lan": true, "direct-egress": true, "direct-ingress": true,
+	}
+	enabled := map[string]bool{}
+	for _, profile := range profiles {
+		switch profile {
+		case "tailscale":
+			enabled["overlay"] = true
+		case "local-ap-direct-egress":
+			declared["ap-uplink"] = true
+			enabled["ap-uplink"] = true
+			enabled["direct-egress"] = true
+		}
+	}
+	prohibited := map[string]bool{}
+	for capability := range declared {
+		if !enabled[capability] {
+			prohibited[capability] = true
+		}
+	}
+	policy := map[string]string{
+		"local-presence-control": "overlay",
+		"private-service-ingress": "overlay",
+		"file-upload": "overlay",
+		"household-wan-egress": "none",
+		"public-ingress": "none",
+	}
+	if enabled["direct-egress"] {
+		policy["household-wan-egress"] = "direct-egress"
+	}
+	return Access{
+		Declared: sortedBoolKeys(declared), LegacyAvailable: legacyAvailable(sortedBoolKeys(declared), sortedBoolKeys(prohibited)),
+		Enabled: sortedBoolKeys(enabled), Prohibited: sortedBoolKeys(prohibited), Policy: policyBindings(policy),
+	}
+}
+
+func sortedBoolKeys(values map[string]bool) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
 func policyBindings(values map[string]string) []PolicyBinding {
 	result := make([]PolicyBinding, 0, len(values))
 	for _, key := range sortedKeys(values) {
@@ -791,11 +869,11 @@ func resourceMap(values []ResourceBinding) map[string]any {
 
 func legacyPlacement(value Placement) map[string]any {
 	switch value.Mode {
-	case "single_box":
+	case "single-box":
 		return map[string]any{"active_master": value.RuntimeBox}
-	case "active_passive":
+	case "active-passive":
 		return map[string]any{"active_master": value.ActiveRuntimeBox, "passive_backup": value.PassiveRuntimeBox}
-	case "multi_box":
+	case "multi-box":
 		return map[string]any{"boxes": value.RuntimeBoxes}
 	default:
 		return map[string]any{}

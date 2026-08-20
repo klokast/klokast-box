@@ -170,7 +170,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		switch finding.Class {
 		case "matched", "derived":
 			before := sourceAuthority(finding)
-			if finding.Code == "airunner.contract" {
+			if finding.Code == "airunner.instance-specification" {
 				before = "none"
 			}
 			artifact.Actions = append(artifact.Actions, adoptionAction(finding, before, digests[before]))
@@ -265,7 +265,7 @@ func compatibilityDigests(inputs []planner.CompatibilityInput) map[string]string
 
 func authorityAssignments(artifact Artifact, digests map[string]string) []AuthorityAssignment {
 	result := []AuthorityAssignment{
-		{ID: "contract_v1", Scope: "candidate_desired_state", Disposition: "candidate", SourceCommit: artifact.Instance.Commit},
+		{ID: "instance_specification_v1", Scope: "candidate_desired_state", Disposition: "candidate", SourceCommit: artifact.Instance.Commit},
 		{ID: "legacy_engine_inventory", Scope: "execution_inventory", Disposition: "continuing", SourceCommit: artifact.Engine.Commit},
 		{ID: "observation_v1", Scope: "standard_substrate_health", Disposition: "evidence", SourceSHA256: artifact.Observation.GenerationSHA256},
 	}
@@ -282,8 +282,8 @@ func authorityAssignments(artifact Artifact, digests map[string]string) []Author
 
 func adoptionAction(finding planner.Finding, before, digest string) Action {
 	return Action{
-		ID: actionID("adopt_contract", finding.Path), Operation: "adopt_contract", Scope: finding.Path,
-		AuthorityBefore: before, AuthorityAfter: "contract_v1", Executor: "future_authorized_apply",
+		ID: actionID("adopt_instance_specification", finding.Path), Operation: "adopt_instance_specification", Scope: finding.Path,
+		AuthorityBefore: before, AuthorityAfter: "instance_specification_v1", Executor: "future_authorized_apply",
 		Preconditions: []string{"active_controller_fenced", "exact_plan_revalidated", "rollback_prepared"},
 		Rollback: Rollback{Strategy: "restore_authority", Authority: before, SourceSHA256: digest},
 	}

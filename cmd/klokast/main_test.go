@@ -48,21 +48,12 @@ func TestInitJSONAndExistingDestination(t *testing.T) {
 	})
 	parent := t.TempDir()
 	values := filepath.Join(parent, "values.json")
-	content := `{
-  "schema_version": 1,
-  "instance": {"name": "family-klokast"},
-  "tailnet": {
-    "magicdns_suffix": "example.ts.net",
-    "groups": {"operators": ["admin@example.com"], "family": ["admin@example.com"]}
-  },
-  "site": {"country": "FR"},
-  "box": {"hostname_prefix": "k001"}
-}`
+	content := mainInstanceValues()
 	if err := os.WriteFile(values, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(parent, "instance")
-	arguments := []string{"init", "--instance", destination, "--profile", "single-box", "--values", values, "--json"}
+	arguments := []string{"init", "--instance", destination, "--values", values, "--json"}
 	var stdout, stderr bytes.Buffer
 	if got := run(arguments, &stdout, &stderr); got != 0 {
 		t.Fatalf("run(init) = %d, stderr=%q", got, stderr.String())
@@ -124,22 +115,13 @@ func TestPlanJSONIsReadOnlyAndReportsUnbornRepository(t *testing.T) {
 	})
 	parent := t.TempDir()
 	values := filepath.Join(parent, "values.json")
-	valuesContent := `{
-  "schema_version": 1,
-  "instance": {"name": "family-klokast"},
-  "tailnet": {
-    "magicdns_suffix": "example.ts.net",
-    "groups": {"operators": ["admin@example.com"], "family": ["admin@example.com"]}
-  },
-  "site": {"country": "FR"},
-  "box": {"hostname_prefix": "k001"}
-}`
+	valuesContent := mainInstanceValues()
 	if err := os.WriteFile(values, []byte(valuesContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	instancePath := filepath.Join(parent, "instance")
 	var stdout, stderr bytes.Buffer
-	if got := run([]string{"init", "--instance", instancePath, "--profile", "single-box", "--values", values}, &stdout, &stderr); got != 0 {
+	if got := run([]string{"init", "--instance", instancePath, "--values", values}, &stdout, &stderr); got != 0 {
 		t.Fatalf("run(init) = %d, stderr=%q", got, stderr.String())
 	}
 	registry := filepath.Join(parent, "platform-resources.yml")
@@ -226,6 +208,26 @@ controllers:
 	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
+}
+
+func mainInstanceValues() string {
+	return `{
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
+  "schema-version": 1,
+  "instance": {"id": "family-klokast"},
+  "tailnet": {
+    "tailnet-dns-name": "example.ts.net",
+    "members": {"admin@example.com": {"roles": ["operator", "family"]}}
+  },
+  "sites": {"milla": {"country": "FR", "description": "Example home"}},
+  "boxes": {"k001": {"site": "milla", "connectivity-profiles": ["tailscale"]}},
+  "controllers": {"active": "k001"},
+  "airunners": {
+    "preferred": "k001-ops-airunner",
+    "authorized": {"k001-ops-airunner": {"kind": "controller-container", "box": "k001"}}
+  },
+  "apps": {}
+}`
 }
 
 func writeMainSourceReceipt(t *testing.T, directory, instancePath string) string {

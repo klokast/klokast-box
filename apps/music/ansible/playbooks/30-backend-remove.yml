@@ -1,0 +1,6 @@
+---
+- name: Remove the Music backend with explicit data retention
+  hosts: backend
+  gather_facts: false
+  roles:
+    - music-backend-removal

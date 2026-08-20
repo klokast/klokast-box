@@ -1,20 +1,45 @@
 {
-  "schema_version": 1,
-  "instance": {
-    "name": "family-klokast"
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
+  "airunners": {
+    "authorized": {
+      "k001-ops-airunner": {
+        "box": "k001",
+        "kind": "controller-container"
+      }
+    },
+    "preferred": "k001-ops-airunner"
   },
-  "tailnet": {
-    "magicdns_suffix": "example.ts.net",
-    "groups": {
-      "operators": ["admin@example.com"],
-      "family": ["admin@example.com", "family@example.com"]
+  "apps": {},
+  "boxes": {
+    "k001": {
+      "connectivity-profiles": [
+        "tailscale"
+      ],
+      "site": "milla"
     }
   },
-  "site": {
-    "country": "FR",
-    "physical_location": "Example home"
+  "controllers": {
+    "active": "k001"
   },
-  "box": {
-    "hostname_prefix": "k001"
+  "instance": {
+    "id": "family-klokast"
+  },
+  "schema-version": 1,
+  "sites": {
+    "milla": {
+      "country": "FR",
+      "description": "Example home"
+    }
+  },
+  "tailnet": {
+    "members": {
+      "admin@example.com": {
+        "roles": [
+          "family",
+          "operator"
+        ]
+      }
+    },
+    "tailnet-dns-name": "example.ts.net"
   }
 }

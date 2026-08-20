@@ -1952,6 +1952,37 @@ all:
             with redirect_stderr(io.StringIO()):
                 self.mod.validate_manifest_resources("badapp", manifest, topology)
 
+    def test_app_manifest_accepts_a_strict_dataset_catalog_entry(self):
+        topology = self.mod.load_topology()
+        manifest = {
+            "_manifest_path": "test",
+            "datasets": [
+                {
+                    "id": "library",
+                    "type": "durable_user_data",
+                    "rationale": "Preserve user media after service removal.",
+                }
+            ],
+            "resources": {},
+        }
+        self.mod.validate_manifest_resources("music", manifest, topology)
+
+    def test_app_manifest_rejects_a_duplicate_dataset_id(self):
+        topology = self.mod.load_topology()
+        dataset = {
+            "id": "library",
+            "type": "durable_user_data",
+            "rationale": "Preserve user media after service removal.",
+        }
+        manifest = {
+            "_manifest_path": "test",
+            "datasets": [dataset, dict(dataset)],
+            "resources": {},
+        }
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                self.mod.validate_manifest_resources("music", manifest, topology)
+
     def test_app_manifest_rejects_unknown_compute_field(self):
         topology = self.mod.load_topology()
         manifest = {

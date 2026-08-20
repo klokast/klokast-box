@@ -1,6 +1,0 @@
----
-contract: 1
-
-paths:
-  deployment: ops/deployment.yml
-  platform_resources: ops/platform-resources.yml

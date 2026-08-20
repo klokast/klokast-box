@@ -1,0 +1,25 @@
+---
+- name: Remove exact offline Music Tailnet identities
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run the guarded stale-device lifecycle for each Music identity
+      ansible.builtin.include_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_expected_hostname: "{{ music_tailnet_identity.hostname }}"
+        tailscale_device_expected_tag: "{{ music_tailnet_identity.tag }}"
+        tailscale_device_apply: true
+        tailscale_device_expected_confirm: >-
+          remove-music:{{ music_tailnet_identity.hostname }}:{{ music_tailnet_identity.tag }}
+        tailscale_device_confirm: >-
+          remove-music:{{ music_tailnet_identity.hostname }}:{{ music_tailnet_identity.tag }}
+        tailscale_device_fail_on_online_exact: true
+        tailscale_device_fail_on_online_exact_message: >-
+          Refusing Music removal because the exact Tailnet identity is still
+          online. Stop the endpoint or container and retry.
+      loop: "{{ music_tailnet_identities }}"
+      loop_control:
+        loop_var: music_tailnet_identity
+        label: "{{ music_tailnet_identity.hostname }} ({{ music_tailnet_identity.tag }})"

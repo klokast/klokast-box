@@ -31,22 +31,26 @@ BOOTSTRAP_WORK=""
 
 usage() {
   cat <<EOF
-Usage: $0 [--resume-transfer]
+Usage: $0 [--resume-transfer | --archive-and-restart]
 
-Prepares the private Contract values on the active controller, creates a
+Prepares the Klokast Instance Specification values on the active controller, creates a
 staged repository with the exact sealed build, and transfers it to:
   $PRIVATE_WORKTREE
 
 Run prepare-private-instance-bootstrap and complete Step 8 of
 klokast-dev/runbooks/40-private-instance-bootstrap.md before use. The helper
 loads the owner-only bootstrap session directly. It does not display the
-private values, edit the two-box Contract, create a commit, add a remote, or
+private values, create a commit, add a remote, or
 push to GitHub.
 
 Use --resume-transfer only after an earlier run created the controller seed
 but failed before it published the MacBook worktree. This mode requires the
 matching redacted audit record and rechecks the seed with the pinned sealed
 binary before it transfers anything.
+
+Use --archive-and-restart after a failed unreleased-format attempt. The helper
+checks the unborn seed and MacBook worktree, moves them to owner-only archive
+paths, archives the old values file, and starts again. It does not delete them.
 EOF
 }
 
@@ -98,7 +102,7 @@ append_audit_log() {
   python3 - "$action_log" "$worktree_outcome" "$1" "$worktree_phase" \
     "$CONTROLLER" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$ENGINE_COMMIT" \
     "$BUILD_OPERATION" "$values_state" "$seed_created" \
-    "$worktree_created" <<'PY'
+    "$worktree_created" "$audit_mode" "$archive_performed" <<'PY'
 import datetime as dt
 import hashlib
 import json
@@ -108,7 +112,8 @@ import stat
 import sys
 
 (path, outcome, exit_code, phase, controller, owner, repo, engine_commit,
- build_operation, values_state, seed_created, worktree_created) = sys.argv[1:]
+ build_operation, values_state, seed_created, worktree_created, mode,
+ archive_performed) = sys.argv[1:]
 if outcome not in {"success", "failure", "cancelled"}:
     raise SystemExit("invalid worktree log outcome")
 if not exit_code.isdigit() or not 0 <= int(exit_code) <= 255:
@@ -123,6 +128,10 @@ if values_state not in {"unknown", "created", "reused"}:
     raise SystemExit("invalid worktree log values state")
 if seed_created not in {"true", "false"} or worktree_created not in {"true", "false"}:
     raise SystemExit("invalid worktree log Boolean")
+if mode not in {"normal", "resume-transfer", "archive-and-restart"}:
+    raise SystemExit("invalid worktree mode")
+if archive_performed not in {"true", "false"}:
+    raise SystemExit("invalid archive Boolean")
 repository = f"{owner}/{repo}"
 record = {
     "ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -137,6 +146,8 @@ record = {
     "values_file": values_state,
     "seed_created": seed_created == "true",
     "worktree_created": worktree_created == "true",
+    "mode": mode,
+    "archive_performed": archive_performed == "true",
 }
 encoded = (json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
@@ -305,12 +316,13 @@ if value.get("repository_sha256") != expected_hash:
 ' "$repo_owner" "$repo_name" || die "private-instance controller prerequisites are incomplete"
 
 # WORKTREE_VALUES_PREFLIGHT: the MacBook wrapper tests this closed operation.
-python3 - "$values_path" "$operation" <<'PY'
+python3 - "$values_path" "$operation" "$expected_commit" <<'PY'
+import json
 import os
 import stat
 import sys
 
-path, operation = sys.argv[1:]
+path, operation, expected_commit = sys.argv[1:]
 expected = "/home/smith/private/klokast/init-values.json"
 if path != expected or operation not in {"prepare", "check"}:
     raise SystemExit("the values operation or path is invalid")
@@ -341,23 +353,46 @@ try:
 except FileNotFoundError:
     if operation != "prepare":
         raise SystemExit("init-values.json is missing after the editor closed")
-    template = b'''{
-  "schema_version": 1,
-  "instance": {"name": "REPLACE_WITH_PRIVATE_INSTANCE_NAME"},
-  "tailnet": {
-    "magicdns_suffix": "REPLACE.ts.net",
-    "groups": {
-      "operators": ["REPLACE_WITH_OPERATOR_LOGIN"],
-      "family": ["REPLACE_WITH_OPERATOR_LOGIN", "REPLACE_WITH_FAMILY_LOGIN"]
+    schema = (
+        "https://raw.githubusercontent.com/klokast/klokast-box/"
+        f"{expected_commit}/schemas/klokast-instance-v1.schema.json"
+    )
+    value = {
+        "$schema": schema,
+        "schema-version": 1,
+        "instance": {"id": "klokast-instance"},
+        "tailnet": {
+            "tailnet-dns-name": "REPLACE_WITH_TAILNET_DNS_NAME",
+            "members": {
+                "REPLACE_WITH_PRIVATE_LOGIN": {"roles": ["operator", "family"]},
+            },
+        },
+        "sites": {
+            "milla": {"country": "FR", "description": ""},
+            "mingdu": {"country": "CN", "description": ""},
+        },
+        "boxes": {
+            "k001": {
+                "site": "milla",
+                "connectivity-profiles": ["local-ap-direct-egress", "tailscale"],
+            },
+            "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]},
+        },
+        "controllers": {"active": "k002", "standby": "k001"},
+        "airunners": {
+            "preferred": "k002-ops-airunner",
+            "authorized": {
+                "k002-ops-airunner": {"kind": "controller-container", "box": "k002"},
+            },
+        },
+        "apps": {
+            "music": {
+                "desired-state": "absent",
+                "data": {"library": {"box": "k002", "retention": "preserve"}},
+            },
+        },
     }
-  },
-  "site": {
-    "country": "REPLACE_WITH_TWO_LETTER_COUNTRY",
-    "physical_location": "REPLACE_WITH_K001_LOCATION"
-  },
-  "box": {"hostname_prefix": "k001"}
-}
-'''
+    template = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -560,7 +595,7 @@ validate_generated_worktree() {
 
   python3 - "$worktree" "$ENGINE_COMMIT" <<'PY'
 import os
-import re
+import json
 import stat
 import subprocess
 import sys
@@ -570,10 +605,8 @@ expected_files = [
     ".gitignore",
     "AGENTS.md",
     "README.md",
-    "klokast.lock.yml",
-    "klokast.yml",
-    "ops/deployment.yml",
-    "ops/platform-resources.yml",
+    "klokast-instance.json",
+    "klokast.lock.json",
 ]
 if os.path.islink(root) or not os.path.isdir(os.path.join(root, ".git")):
     raise SystemExit("the transferred seed is not a standalone Git repository")
@@ -609,7 +642,7 @@ for current, directories, files in os.walk(root, topdown=True, followlinks=False
         actual_files.append(os.path.relpath(path, root))
 if sorted(actual_files) != expected_files:
     raise SystemExit("the transferred seed does not contain the exact generated file set")
-if actual_directories != ["ops"]:
+if actual_directories:
     raise SystemExit("the transferred seed does not contain the exact generated directory set")
 
 environment = {
@@ -639,11 +672,32 @@ if sorted(status) != sorted(f"A  {path}" for path in expected_files):
 git("diff", "--check")
 git("diff", "--cached", "--check")
 
-with open(os.path.join(root, "klokast.lock.yml"), encoding="utf-8") as handle:
-    lock = handle.read()
-commits = re.findall(r"(?m)^ +commit: ([0-9a-f]{40})$", lock)
-if commits != [engine_commit]:
-    raise SystemExit("klokast.lock.yml does not contain the exact approved engine commit")
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+with open(os.path.join(root, "klokast.lock.json"), encoding="utf-8") as handle:
+    lock = json.load(handle, object_pairs_hook=reject_duplicates)
+if lock.get("engine", {}).get("commit") != engine_commit:
+    raise SystemExit("klokast.lock.json does not contain the exact approved engine commit")
+lock_schema = (
+    "https://raw.githubusercontent.com/klokast/klokast-box/"
+    f"{engine_commit}/schemas/klokast-lock-v1.schema.json"
+)
+if lock.get("$schema") != lock_schema:
+    raise SystemExit("klokast.lock.json does not use the approved engine schema")
+with open(os.path.join(root, "klokast-instance.json"), encoding="utf-8") as handle:
+    instance = json.load(handle, object_pairs_hook=reject_duplicates)
+instance_schema = (
+    "https://raw.githubusercontent.com/klokast/klokast-box/"
+    f"{engine_commit}/schemas/klokast-instance-v1.schema.json"
+)
+if instance.get("$schema") != instance_schema:
+    raise SystemExit("klokast-instance.json does not use the approved engine schema")
 PY
 }
 
@@ -674,6 +728,162 @@ else:
 PY
 }
 
+archive_local_worktree() {
+  local operation="$1"
+  local stamp="$2"
+
+  python3 - "$PRIVATE_PARENT" "$PRIVATE_WORKTREE" "$operation" "$stamp" <<'PY'
+import os
+import stat
+import subprocess
+import sys
+
+parent, worktree, operation, stamp = sys.argv[1:]
+if operation not in {"check", "move"}:
+    raise SystemExit("invalid local archive operation")
+expected = os.path.join(parent, "klokast-instance")
+if (worktree != expected or len(stamp) != 15 or stamp[8:9] != "T"
+        or not (stamp[:8] + stamp[9:]).isdigit()):
+    raise SystemExit("invalid local archive target")
+if not os.path.lexists(worktree):
+    print("absent")
+    raise SystemExit(0)
+metadata = os.lstat(worktree)
+if (not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077):
+    raise SystemExit("the existing MacBook worktree is not one owner-only real directory")
+if not os.path.isdir(os.path.join(worktree, ".git")) or os.path.islink(os.path.join(worktree, ".git")):
+    raise SystemExit("the existing MacBook worktree is not a standalone Git repository")
+for current, directories, files in os.walk(worktree, topdown=True, followlinks=False):
+    for name in [*directories, *files]:
+        path = os.path.join(current, name)
+        if os.path.islink(path):
+            raise SystemExit("the existing MacBook worktree contains a symbolic link")
+environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"})
+def git(*arguments, check=True):
+    return subprocess.run(
+        ["git", "-C", worktree, *arguments], env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check,
+    )
+if git("rev-parse", "--verify", "HEAD", check=False).returncode == 0:
+    raise SystemExit("the existing MacBook worktree has a commit; archive it manually")
+if git("remote").stdout.strip():
+    raise SystemExit("the existing MacBook worktree has a remote; archive it manually")
+if git("symbolic-ref", "--short", "HEAD").stdout.strip() != b"main":
+    raise SystemExit("the existing MacBook worktree is not on branch main")
+tracked = set(git("ls-files").stdout.decode("utf-8").splitlines())
+old = {".gitignore", "AGENTS.md", "README.md", "klokast.yml", "klokast.lock.yml",
+       "ops/deployment.yml", "ops/platform-resources.yml"}
+new = {".gitignore", "AGENTS.md", "README.md", "klokast-instance.json", "klokast.lock.json"}
+if frozenset(tracked) not in {frozenset(old), frozenset(new)}:
+    raise SystemExit("the existing MacBook worktree does not have a recognized staged seed file set")
+if operation == "check":
+    print("present")
+    raise SystemExit(0)
+archive_parent = os.path.join(parent, "archive")
+try:
+    archive_metadata = os.lstat(archive_parent)
+except FileNotFoundError:
+    os.mkdir(archive_parent, 0o700)
+    archive_metadata = os.lstat(archive_parent)
+if (not stat.S_ISDIR(archive_metadata.st_mode) or archive_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(archive_metadata.st_mode) & 0o077 or os.path.islink(archive_parent)):
+    raise SystemExit("the local archive directory is not owner-only")
+destination = os.path.join(archive_parent, f"klokast-instance.{stamp}")
+if os.path.lexists(destination):
+    raise SystemExit("the local archive destination already exists")
+os.rename(worktree, destination)
+print(destination)
+PY
+}
+
+archive_controller_inputs() {
+  local operation="$1"
+  local stamp="$2"
+
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$CONTROLLER_VALUES" "$CONTROLLER_SEED" \
+    "$operation" "$stamp" <<'SH'
+set -eu
+expected_commit=$1
+values_path=$2
+seed_path=$3
+operation=$4
+stamp=$5
+repo="$HOME/src/klokast/klokast-box"
+
+/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
+[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ]
+[ -z "$(git -C "$repo" status --porcelain)" ]
+[ "$values_path" = /home/smith/private/klokast/init-values.json ]
+[ "$seed_path" = /home/smith/private/klokast/instance-seed ]
+
+python3 - "$values_path" "$seed_path" "$operation" "$stamp" <<'PY'
+import os
+import stat
+import subprocess
+import sys
+
+values_path, seed_path, operation, stamp = sys.argv[1:]
+if (operation not in {"check", "move"} or len(stamp) != 15 or stamp[8:9] != "T"
+        or not (stamp[:8] + stamp[9:]).isdigit()):
+    raise SystemExit("invalid controller archive operation")
+present = []
+if os.path.lexists(seed_path):
+    metadata = os.lstat(seed_path)
+    if (not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077):
+        raise SystemExit("the controller seed is not one owner-only real directory")
+    if not os.path.isdir(os.path.join(seed_path, ".git")) or os.path.islink(os.path.join(seed_path, ".git")):
+        raise SystemExit("the controller seed is not a standalone Git repository")
+    for current, directories, files in os.walk(seed_path, topdown=True, followlinks=False):
+        for name in [*directories, *files]:
+            if os.path.islink(os.path.join(current, name)):
+                raise SystemExit("the controller seed contains a symbolic link")
+    def git(*arguments, check=True):
+        return subprocess.run(
+            ["git", "-C", seed_path, *arguments], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=check,
+        )
+    if git("rev-parse", "--verify", "HEAD", check=False).returncode == 0:
+        raise SystemExit("the controller seed has a commit; archive it manually")
+    if git("remote").stdout.strip():
+        raise SystemExit("the controller seed has a remote; archive it manually")
+    present.append((seed_path, f"instance-seed.{stamp}"))
+if os.path.lexists(values_path):
+    metadata = os.lstat(values_path)
+    if (not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid() or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600):
+        raise SystemExit("the controller values file is not one owner-only regular file")
+    present.append((values_path, f"init-values.{stamp}.json"))
+if operation == "check":
+    print("present" if present else "absent")
+    raise SystemExit(0)
+if not present:
+    print("absent")
+    raise SystemExit(0)
+archive_parent = os.path.join(os.path.dirname(values_path), "archive")
+try:
+    archive_metadata = os.lstat(archive_parent)
+except FileNotFoundError:
+    os.mkdir(archive_parent, 0o700)
+    archive_metadata = os.lstat(archive_parent)
+if (not stat.S_ISDIR(archive_metadata.st_mode) or archive_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(archive_metadata.st_mode) & 0o077 or os.path.islink(archive_parent)):
+    raise SystemExit("the controller archive directory is not owner-only")
+for source, name in present:
+    destination = os.path.join(archive_parent, name)
+    if os.path.lexists(destination):
+        raise SystemExit("a controller archive destination already exists")
+for source, name in present:
+    os.rename(source, os.path.join(archive_parent, name))
+print(archive_parent)
+PY
+SH
+}
+
 mode="normal"
 case "${1:-}" in
   -h|--help)
@@ -688,17 +898,24 @@ case "${1:-}" in
     [ "$#" -eq 1 ] || ksa_die "--resume-transfer does not accept other arguments"
     mode="resume-transfer"
     ;;
+  --archive-and-restart)
+    [ "$#" -eq 1 ] || ksa_die "--archive-and-restart does not accept other arguments"
+    mode="archive-and-restart"
+    ;;
   *)
     usage >&2
     ksa_die "this helper does not accept arguments"
     ;;
 esac
 
+audit_mode="$mode"
+
 if [ ! -t 0 ] || [ ! -t 1 ]; then
   ksa_die "run this helper in an interactive terminal on the trusted MacBook"
 fi
 [ "$(uname -s)" = Darwin ] || ksa_die "run this helper on the trusted MacBook"
 ksa_need_command git
+ksa_need_command date
 ksa_need_command mktemp
 ksa_need_command python3
 ksa_need_command tar
@@ -753,9 +970,39 @@ worktree_outcome="failure"
 values_state="unknown"
 seed_created="false"
 worktree_created="false"
+archive_performed="false"
 transfer_work=""
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
+
+if [ "$mode" = archive-and-restart ]; then
+  worktree_phase="archive-preflight"
+  archive_stamp="$(date -u +%Y%m%dT%H%M%S)"
+  local_archive_state="$(archive_local_worktree check "$archive_stamp")" || \
+    ksa_die "the existing MacBook worktree is not safe for automatic archival"
+  controller_archive_state="$(archive_controller_inputs check "$archive_stamp")" || \
+    ksa_die "the existing controller inputs are not safe for automatic archival"
+  if [ "$local_archive_state" = absent ] && [ "$controller_archive_state" = absent ]; then
+    ksa_die "there is no earlier seed, values file, or MacBook worktree to archive"
+  fi
+  printf '\nThe helper found an incomplete unreleased-format attempt.\n'
+  printf 'It will move the checked files to owner-only timestamped archive paths.\n'
+  if ! confirm_no "Archive the earlier attempt and create a new JSON seed?"; then
+    cancel
+  fi
+  worktree_phase="archive-controller-inputs"
+  controller_archive_path="$(archive_controller_inputs move "$archive_stamp")" || \
+    ksa_die "the controller inputs could not be archived"
+  worktree_phase="archive-local-worktree"
+  local_archive_path="$(archive_local_worktree move "$archive_stamp")" || \
+    ksa_die "the MacBook worktree could not be archived"
+  archive_performed="true"
+  printf 'Archived the earlier controller inputs under: %s\n' "$controller_archive_path"
+  if [ "$local_archive_path" != absent ]; then
+    printf 'Archived the earlier MacBook worktree at: %s\n' "$local_archive_path"
+  fi
+  mode="normal"
+fi
 
 if [ -e "$PRIVATE_WORKTREE" ] || [ -L "$PRIVATE_WORKTREE" ]; then
   ksa_die "the MacBook destination already exists; do not overwrite it: $PRIVATE_WORKTREE"
@@ -782,7 +1029,7 @@ if [ "$mode" = normal ]; then
 
   worktree_phase="edit-private-values"
   printf '\nThe controller will open the private values file in vi.\n'
-  printf 'Replace every REPLACE value. Keep one operator in the family group.\n'
+  printf 'Replace both REPLACE values. Keep both operator and family roles on the member.\n'
   printf 'Do not add a timezone. Platform time is always Etc/UTC.\n'
   tailscale ssh "$SSH_TARGET" -t \
     "umask 077; exec vi '$CONTROLLER_VALUES'"
@@ -792,11 +1039,11 @@ if [ "$mode" = normal ]; then
   [ "$checked_state" = checked ] || ksa_die "the controller did not confirm the private values file"
 
   worktree_phase="confirm-seed"
-  printf '\nReady to create the staged Contract repository.\n'
+  printf '\nReady to create the staged Instance Specification repository.\n'
   printf '  Controller: %s\n' "$CONTROLLER"
   printf '  Engine: %s\n' "$ENGINE_COMMIT"
   printf '  Build operation: %s\n' "$BUILD_OPERATION"
-  printf 'The sealed initializer will validate the private JSON and generated Contract.\n'
+  printf 'The sealed initializer will validate the complete private JSON input.\n'
   if ! confirm_no "Create the controller seed with these fixed inputs?"; then
     cancel
   fi
@@ -856,14 +1103,12 @@ worktree_phase="review-preflight"
 validate_generated_worktree "$PRIVATE_WORKTREE"
 worktree_outcome="success"
 
-printf '\nPrivate Contract worktree is ready and verified.\n'
+printf '\nPrivate Instance Specification worktree is ready and verified.\n'
 printf '  Worktree: %s\n' "$PRIVATE_WORKTREE"
 printf '  Branch: main (no commit)\n'
 printf '  Remote: none\n'
 printf '  Engine lock: %s\n' "$ENGINE_COMMIT"
-printf '\nContinue with Step 10 of the runbook. Edit and review only these authoritative files:\n'
-printf '  klokast.yml\n'
-printf '  klokast.lock.yml\n'
-printf '  ops/deployment.yml\n'
-printf '  ops/platform-resources.yml\n'
-printf '\nDo not commit or push until the two-box Contract review is complete.\n'
+printf '\nContinue with Step 10 of the runbook. Review these authoritative files:\n'
+printf '  klokast-instance.json\n'
+printf '  klokast.lock.json\n'
+printf '\nDo not edit the lock. Do not commit or push until the review is complete.\n'

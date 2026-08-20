@@ -15,7 +15,7 @@ Locus terms:
 - `root wrapper`: installed root-owned copy under `/usr/local/sbin`; do not run
   the source copy with `sudo` directly from the repo.
 
-## Klokast Contract CLI
+## Klokast Instance Specification CLI
 
 Source: `cmd/klokast/`. A deployable binary must come from the active-controller
 `platform-builder` output. Use it through `platform-plan`; do not install it as
@@ -24,9 +24,9 @@ an ambient controller command.
 | Tool | Locus | What it does |
 | --- | --- | --- |
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
-| `klokast init` | trusted local host | Creates and stages a new offline single-box Contract v1 repository from a strict JSON values file. It does not create a commit or remote. |
-| `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Contract v1 repository. |
-| `klokast plan` | trusted local host | Compares Contract v1 with all legacy desired-state inputs. With a fresh Observation v1 input and Instance Source Receipt v1, it emits a hashed, provenance-aware Plan v1 artifact. It does not apply changes. |
+| `klokast init` | trusted local host | Creates and stages a new offline Instance Specification v1 repository from one complete strict JSON instance file. It does not create a commit or remote. |
+| `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
+| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With a fresh Observation v1 input and Instance Source Receipt v1, it emits a hashed, provenance-aware Plan v1 artifact. It does not apply changes. |
 
 ## Platform And Controller Wrappers
 
@@ -48,7 +48,7 @@ Source: `ansible/bin/`.
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
-| `platform-instance` | active controller | Seeds a private Contract v1 repository with a sealed-builder binary and prepares, synchronizes, or reports the root-custodied read-only deployment source. |
+| `platform-instance` | active controller | Seeds a private Instance Specification v1 repository with a sealed-builder binary and prepares, synchronizes, or reports the root-custodied read-only deployment source. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
 | `platform-plan` | active controller | Verifies one sealed-builder CLI receipt and one root-owned instance source receipt, creates Plan v1 from controller-private inputs, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
@@ -135,7 +135,7 @@ Source: `apps/*/bin/`.
 | `household-vpnctl` | controller | Deploys, installs, verifies, and checks status for the household VPN gateway app VM. |
 | `local-ingressctl` | controller | Deploys, installs, verifies, and checks status for local HTTPS ingress. |
 | `torrentctl` | controller | Deploys, installs, verifies, and checks status for the torrent app VM. |
-| `musicctl` | controller | Runs music app preflight, backend install, Pi endpoint install, full install, and verify. |
+| `musicctl` | controller | Runs Music preflight, backend install, Pi endpoint install, full install, verification, and guarded removal. |
 | `print-serverctl` | controller | Runs print-server preflight, install, and verify. |
 | `nextcloudctl` | controller | Legacy Nextcloud active/passive preflight, install, verify, backup-check, promote/failback, and remove wrapper. |
 | `nextcloud-v2ctl` | controller | Grant-based Nextcloud v2 image build, infra-prepare, install/start/stop/verify/backup/promote/remove wrapper. |

@@ -213,6 +213,21 @@ def write_vars(tmp, box, compiled, device, soundcard):
     if upload_ingress:
         payload["music_upload_tailscale_hostname"] = upload_ingress["hostname"]
         payload["music_upload_tailscale_tag"] = upload_ingress["tag"]
+
+    identities = {
+        (box + "-music", "tag:music"),
+        (box + "-music-upload", "tag:music-upload"),
+        (box + "-streamer", "tag:streamer"),
+        (box + "-audio", "tag:streamer"),
+        (device["hostname"], device["tailnet_tag"]),
+    }
+    for resource in compiled.get("tailnet_resources", []):
+        if resource.get("app") == "music" and resource.get("node") == box:
+            identities.add((resource["hostname"], resource["tag"]))
+    payload["music_tailnet_identities"] = [
+        {"hostname": hostname, "tag": tag}
+        for hostname, tag in sorted(identities)
+    ]
     path = tmp / "music-vars.yml"
     path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
     return path
@@ -389,6 +404,37 @@ def cmd_verify(args):
         )
 
 
+def cmd_remove(args):
+    if not args.yes:
+        die("remove requires --yes")
+    compiled, device = load_resources(args.resources_registry, args.box)
+    tmpdir = tempfile.TemporaryDirectory()
+    with tmpdir:
+        tmp = Path(tmpdir.name)
+        box_inventory = tmp / f"{args.box}.yml"
+        render_box_inventory(args.box, box_inventory)
+        vars_path = write_vars(tmp, args.box, compiled, device, "default")
+        with vars_path.open(encoding="utf-8") as handle:
+            variables = yaml.safe_load(handle)
+        variables["music_removal_wipe_data"] = bool(args.wipe_data)
+        vars_path.write_text(yaml.safe_dump(variables, sort_keys=True), encoding="utf-8")
+        print("musicctl: declared data action=" + ("delete" if args.wipe_data else "preserve"))
+        run_playbook(
+            tmp,
+            PLAYBOOK_DIR / "30-backend-remove.yml",
+            f"{args.box}-bak",
+            vars_path,
+            [BASE_INVENTORY, box_inventory],
+        )
+        run_playbook(
+            tmp,
+            PLAYBOOK_DIR / "35-tailnet-remove.yml",
+            "localhost",
+            vars_path,
+            [],
+        )
+
+
 def parser():
     parser = argparse.ArgumentParser(description="Manage the Klokast music app.")
     common = argparse.ArgumentParser(add_help=False)
@@ -415,6 +461,10 @@ def parser():
     sub.add_parser("backend-install", parents=[common]).set_defaults(func=cmd_backend_install)
     sub.add_parser("pi-install", parents=[common, bootstrap]).set_defaults(func=cmd_pi_install)
     sub.add_parser("verify", parents=[common]).set_defaults(func=cmd_verify)
+    remove = sub.add_parser("remove", parents=[common])
+    remove.add_argument("--yes", action="store_true")
+    remove.add_argument("--wipe-data", action="store_true")
+    remove.set_defaults(func=cmd_remove)
     return parser
 
 

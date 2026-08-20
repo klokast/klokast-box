@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/klokast/klokast-box/main/schemas/klokast-lock-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema-version", "engine"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "pattern": "^https://raw\\.githubusercontent\\.com/klokast/klokast-box/[0-9a-f]{40}/schemas/klokast-lock-v1\\.schema\\.json$"
+    },
+    "schema-version": {"const": 1},
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "ref", "commit"],
+      "properties": {
+        "repository": {"const": "https://github.com/klokast/klokast-box"},
+        "ref": {"type": "string", "minLength": 1, "maxLength": 255},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    }
+  }
+}

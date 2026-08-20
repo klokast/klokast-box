@@ -3,105 +3,96 @@ package contract
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
-// RootDocument is the validated Contract v1 root document.
-type RootDocument struct {
-	Contract int `yaml:"contract"`
-	Paths    struct {
-		Deployment        string `yaml:"deployment"`
-		PlatformResources string `yaml:"platform_resources"`
-	} `yaml:"paths"`
-}
+const (
+	InstancePath = "klokast-instance.json"
+	LockPath     = "klokast.lock.json"
+)
 
-// LockDocument is the validated Contract v1 engine lock.
-type LockDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
-	Engine        struct {
-		Repository string `yaml:"repository"`
-		Ref        string `yaml:"ref"`
-		Commit     string `yaml:"commit"`
-	} `yaml:"engine"`
-}
-
-// DeploymentDocument is the validated Contract v1 deployment document.
-type DeploymentDocument struct {
-	SchemaVersion int `yaml:"schema_version"`
+// InstanceDocument is the validated Klokast Instance Specification v1 input.
+type InstanceDocument struct {
+	Schema        string `json:"$schema"`
+	SchemaVersion int    `json:"schema-version"`
 	Instance      struct {
-		Name string `yaml:"name"`
-	} `yaml:"instance"`
+		ID string `json:"id"`
+	} `json:"instance"`
 	Tailnet struct {
-		MagicDNSSuffix string              `yaml:"magicdns_suffix"`
-		Groups         map[string][]string `yaml:"groups"`
-	} `yaml:"tailnet"`
-	Sites        map[string]SiteDocument `yaml:"sites"`
-	Boxes        map[string]BoxDocument  `yaml:"boxes"`
-	ControlPlane struct {
-		Controller ControllerDocument `yaml:"controller"`
-		Airunners  []AirunnerDocument `yaml:"airunners"`
-	} `yaml:"control_plane"`
+		DNSName string                    `json:"tailnet-dns-name"`
+		Members map[string]MemberDocument `json:"members"`
+	} `json:"tailnet"`
+	Sites       map[string]SiteDocument      `json:"sites"`
+	Boxes       map[string]BoxDocument       `json:"boxes"`
+	Controllers ControllerDocument           `json:"controllers"`
+	Airunners   AirunnersDocument             `json:"airunners"`
+	Apps        map[string]AppBindingDocument `json:"apps"`
+}
+
+type MemberDocument struct {
+	Roles []string `json:"roles"`
 }
 
 type SiteDocument struct {
-	Country          string `yaml:"country"`
-	Timezone         string `yaml:"timezone"`
-	PhysicalLocation string `yaml:"physical_location"`
+	Country     string `json:"country"`
+	Description string `json:"description"`
 }
 
 type BoxDocument struct {
-	HostnamePrefix string `yaml:"hostname_prefix"`
-	Site           string `yaml:"site"`
+	Site                 string   `json:"site"`
+	ConnectivityProfiles []string `json:"connectivity-profiles"`
 }
 
 type ControllerDocument struct {
-	ActiveBox  string `yaml:"active_box"`
-	StandbyBox string `yaml:"standby_box"`
+	Active  string `json:"active"`
+	Standby string `json:"standby,omitempty"`
+}
+
+type AirunnersDocument struct {
+	Preferred  string                       `json:"preferred"`
+	Authorized map[string]AirunnerDocument `json:"authorized"`
 }
 
 type AirunnerDocument struct {
-	ID       string `yaml:"id"`
-	Kind     string `yaml:"kind"`
-	Box      string `yaml:"box"`
-	Hostname string `yaml:"hostname"`
+	Kind     string `json:"kind"`
+	Box      string `json:"box,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
 }
 
-// PlatformDocument is the validated Contract v1 platform-resources document.
-type PlatformDocument struct {
-	SchemaVersion int                    `yaml:"schema_version"`
-	Boxes         map[string]PlatformBox `yaml:"boxes"`
-	Apps          map[string]AppBinding  `yaml:"apps"`
-}
-
-type PlatformBox struct {
-	Access AccessDocument `yaml:"access"`
-}
-
-type AccessDocument struct {
-	Declared   []string          `yaml:"declared_capabilities"`
-	Enabled    []string          `yaml:"enabled_capabilities"`
-	Prohibited []string          `yaml:"prohibited_capabilities"`
-	Policy     map[string]string `yaml:"policy"`
-}
-
-type AppBinding struct {
-	Enabled   bool              `yaml:"enabled"`
-	Placement PlacementDocument `yaml:"placement"`
-	Resources map[string]any    `yaml:"resources"`
+type AppBindingDocument struct {
+	DesiredState string                  `json:"desired-state"`
+	Placement    *PlacementDocument      `json:"placement,omitempty"`
+	Features     map[string]any          `json:"features,omitempty"`
+	Data         map[string]DataDocument `json:"data,omitempty"`
 }
 
 type PlacementDocument struct {
-	Mode          string   `yaml:"mode"`
-	Box           string   `yaml:"box"`
-	ActiveMaster  string   `yaml:"active_master"`
-	PassiveBackup string   `yaml:"passive_backup"`
-	Boxes         []string `yaml:"boxes"`
+	Mode    string   `json:"mode"`
+	Box     string   `json:"box,omitempty"`
+	Active  string   `json:"active,omitempty"`
+	Passive string   `json:"passive,omitempty"`
+	Boxes   []string `json:"boxes,omitempty"`
+}
+
+type DataDocument struct {
+	Box       string `json:"box"`
+	Retention string `json:"retention"`
+}
+
+// LockDocument selects the exact public engine used with an instance.
+type LockDocument struct {
+	Schema        string `json:"$schema"`
+	SchemaVersion int    `json:"schema-version"`
+	Engine        struct {
+		Repository string `json:"repository"`
+		Ref        string `json:"ref"`
+		Commit     string `json:"commit"`
+	} `json:"engine"`
 }
 
 // Input contains one authoritative file and its exact worktree content hash.
@@ -111,19 +102,15 @@ type Input struct {
 	SHA256  string
 }
 
-// Snapshot contains the checked Contract v1 documents and exact input bytes.
-// The caller must take another snapshot before acting if concurrent changes
-// matter. Snapshot never changes the instance repository.
+// Snapshot contains the two checked authoritative instance documents.
 type Snapshot struct {
-	Root       string
-	RootConfig RootDocument
-	Lock       LockDocument
-	Deployment DeploymentDocument
-	Platform   PlatformDocument
-	Inputs     []Input
+	Root     string
+	Instance InstanceDocument
+	Lock     LockDocument
+	Inputs   []Input
 }
 
-// Load checks and then reads a coherent Contract v1 worktree snapshot.
+// Load checks and then reads a coherent Instance Specification v1 snapshot.
 func Load(instancePath string, engine Engine) (Snapshot, Report, error) {
 	report, err := Check(instancePath, engine)
 	if err != nil || !report.Valid {
@@ -138,73 +125,28 @@ func Load(instancePath string, engine Engine) (Snapshot, Report, error) {
 		return Snapshot{}, Report{}, fmt.Errorf("resolve instance path: %w", err)
 	}
 
-	rootContent, err := readRegularNoSymlinks(root, "klokast.yml")
-	if err != nil {
-		return Snapshot{}, Report{}, fmt.Errorf("read checked root contract: %w", err)
-	}
-	var rootConfig RootDocument
-	if err := yaml.Unmarshal(rootContent, &rootConfig); err != nil {
-		return Snapshot{}, Report{}, fmt.Errorf("decode checked root contract: %w", err)
-	}
-
-	paths := []string{"klokast.yml", lockPath, rootConfig.Paths.Deployment, rootConfig.Paths.PlatformResources}
-	contents := make(map[string][]byte, len(paths))
-	contents["klokast.yml"] = rootContent
-	for _, path := range paths[1:] {
+	contents := make(map[string][]byte, 2)
+	for _, path := range []string{InstancePath, LockPath} {
 		content, readErr := readRegularNoSymlinks(root, path)
 		if readErr != nil {
 			return Snapshot{}, Report{}, fmt.Errorf("read checked authoritative input %s: %w", path, readErr)
 		}
 		contents[path] = content
 	}
-
+	var instance InstanceDocument
 	var lock LockDocument
-	var deployment DeploymentDocument
-	var platform PlatformDocument
-	for _, item := range []struct {
-		path   string
-		target any
-	}{
-		{lockPath, &lock},
-		{rootConfig.Paths.Deployment, &deployment},
-		{rootConfig.Paths.PlatformResources, &platform},
-	} {
-		if err := yaml.Unmarshal(contents[item.path], item.target); err != nil {
-			return Snapshot{}, Report{}, fmt.Errorf("decode checked authoritative input %s: %w", item.path, err)
-		}
+	if err := json.Unmarshal(contents[InstancePath], &instance); err != nil {
+		return Snapshot{}, Report{}, fmt.Errorf("decode checked %s: %w", InstancePath, err)
 	}
-
-	inputs := make([]Input, 0, len(paths))
-	for _, path := range paths {
+	if err := json.Unmarshal(contents[LockPath], &lock); err != nil {
+		return Snapshot{}, Report{}, fmt.Errorf("decode checked %s: %w", LockPath, err)
+	}
+	inputs := make([]Input, 0, 2)
+	for _, path := range []string{InstancePath, LockPath} {
 		digest := sha256.Sum256(contents[path])
 		inputs = append(inputs, Input{Path: path, Content: contents[path], SHA256: fmt.Sprintf("%x", digest[:])})
 	}
-	return Snapshot{
-		Root:       root,
-		RootConfig: rootConfig,
-		Lock:       lock,
-		Deployment: deployment,
-		Platform:   platform,
-		Inputs:     inputs,
-	}, report, nil
-}
-
-// ParseSafeYAML converts one safe YAML document to JSON-compatible values.
-func ParseSafeYAML(content []byte) (any, []Diagnostic) {
-	_, value, diagnostics := parseYAML(content)
-	return value, diagnostics
-}
-
-// RawSecretLines returns line numbers that look like raw secret assignments.
-// It never returns the suspected values.
-func RawSecretLines(content []byte) []int {
-	var lines []int
-	for index, line := range bytes.Split(content, []byte{'\n'}) {
-		if secretAssignment.Match(line) || matchesAny(secretTokens, line) {
-			lines = append(lines, index+1)
-		}
-	}
-	return lines
+	return Snapshot{Root: root, Instance: instance, Lock: lock, Inputs: inputs}, report, nil
 }
 
 func readRegularNoSymlinks(root, path string) ([]byte, error) {

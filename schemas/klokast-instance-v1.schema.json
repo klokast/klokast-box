@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/klokast/klokast-box/main/schemas/klokast-instance-v1.schema.json",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "box-id": {
+      "type": "string",
+      "pattern": "^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "tailnet-dns-name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*\\.)+ts\\.net$"
+    },
+    "login": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "maxLength": 320
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roles"],
+      "properties": {
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["family", "operator"]}
+        }
+      }
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["country", "description"],
+      "properties": {
+        "country": {"type": "string", "pattern": "^[A-Z]{2}$"},
+        "description": {"type": "string", "maxLength": 500}
+      }
+    },
+    "box": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["site", "connectivity-profiles"],
+      "properties": {
+        "site": {"$ref": "#/$defs/id"},
+        "connectivity-profiles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["tailscale", "local-ap-direct-egress"]
+          }
+        }
+      }
+    },
+    "controller-container-airunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "box"],
+      "properties": {
+        "kind": {"const": "controller-container"},
+        "box": {"$ref": "#/$defs/box-id"}
+      }
+    },
+    "box-airunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "box"],
+      "properties": {
+        "kind": {"const": "box"},
+        "box": {"$ref": "#/$defs/box-id"}
+      }
+    },
+    "external-airunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "hostname"],
+      "properties": {
+        "kind": {"const": "external"},
+        "hostname": {"$ref": "#/$defs/id"}
+      }
+    },
+    "single-box-placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "box"],
+      "properties": {
+        "mode": {"const": "single-box"},
+        "box": {"$ref": "#/$defs/box-id"}
+      }
+    },
+    "active-passive-placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "active", "passive"],
+      "properties": {
+        "mode": {"const": "active-passive"},
+        "active": {"$ref": "#/$defs/box-id"},
+        "passive": {"$ref": "#/$defs/box-id"}
+      }
+    },
+    "multi-box-placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "boxes"],
+      "properties": {
+        "mode": {"const": "multi-box"},
+        "boxes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/box-id"}
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["box", "retention"],
+      "properties": {
+        "box": {"$ref": "#/$defs/box-id"},
+        "retention": {"const": "preserve"}
+      }
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["desired-state"],
+      "properties": {
+        "desired-state": {"enum": ["present", "absent"]},
+        "placement": {
+          "oneOf": [
+            {"$ref": "#/$defs/single-box-placement"},
+            {"$ref": "#/$defs/active-passive-placement"},
+            {"$ref": "#/$defs/multi-box-placement"}
+          ]
+        },
+        "features": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {
+            "oneOf": [{"type": "boolean"}, {"type": "string"}]
+          }
+        },
+        "data": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {"$ref": "#/$defs/data"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"desired-state": {"const": "present"}}},
+          "then": {"required": ["placement"]}
+        },
+        {
+          "if": {"properties": {"desired-state": {"const": "absent"}}},
+          "then": {
+            "required": ["data"],
+            "properties": {"data": {"minProperties": 1}},
+            "not": {"anyOf": [{"required": ["placement"]}, {"required": ["features"]}]}
+          }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema-version", "instance", "tailnet", "sites", "boxes", "controllers", "airunners", "apps"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "pattern": "^https://raw\\.githubusercontent\\.com/klokast/klokast-box/[0-9a-f]{40}/schemas/klokast-instance-v1\\.schema\\.json$"
+    },
+    "schema-version": {"const": 1},
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {"id": {"$ref": "#/$defs/id"}}
+    },
+    "tailnet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tailnet-dns-name", "members"],
+      "properties": {
+        "tailnet-dns-name": {"$ref": "#/$defs/tailnet-dns-name"},
+        "members": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/login"},
+          "additionalProperties": {"$ref": "#/$defs/member"}
+        }
+      }
+    },
+    "sites": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/site"}
+    },
+    "boxes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/box-id"},
+      "additionalProperties": {"$ref": "#/$defs/box"}
+    },
+    "controllers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active"],
+      "properties": {
+        "active": {"$ref": "#/$defs/box-id"},
+        "standby": {"$ref": "#/$defs/box-id"}
+      }
+    },
+    "airunners": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preferred", "authorized"],
+      "properties": {
+        "preferred": {"$ref": "#/$defs/id"},
+        "authorized": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {
+            "oneOf": [
+              {"$ref": "#/$defs/controller-container-airunner"},
+              {"$ref": "#/$defs/box-airunner"},
+              {"$ref": "#/$defs/external-airunner"}
+            ]
+          }
+        }
+      }
+    },
+    "apps": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/app"}
+    }
+  }
+}

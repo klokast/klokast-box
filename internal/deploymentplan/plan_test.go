@@ -92,7 +92,7 @@ tailnet:
   magicdns_suffix: example.ts.net
   groups:
     operators: [admin@example.com]
-    family: [admin@example.com, family@example.com]
+    family: [admin@example.com]
 boxes:
   k001:
     site: site-001
@@ -191,16 +191,29 @@ func prepareInstance(t *testing.T) string {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, root, "klokast.lock.yml", fmt.Sprintf(`---
-schema_version: 1
-engine:
-  repository: https://github.com/klokast/klokast-box
-  ref: main
-  commit: %s
-`, testCommit))
+	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), "tests", "fixtures", "contract", "init-single.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, contract.InstancePath, string(content))
+	writeFile(t, root, contract.LockPath, fmt.Sprintf(`{
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/%s/schemas/klokast-lock-v1.schema.json",
+  "engine": {"commit": "%s", "ref": "main", "repository": "https://github.com/klokast/klokast-box"},
+  "schema-version": 1
+}
+`, testCommit, testCommit))
 	runGit(t, root, "init", "-q", "--initial-branch=main")
 	runGit(t, root, "add", "-A")
 	runGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "instance")
+	return root
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return root
 }
 

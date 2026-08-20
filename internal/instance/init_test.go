@@ -20,23 +20,16 @@ var approvedTestEngine = contract.Engine{
 	Commit:     approvedTestCommit,
 }
 
-func TestInitCreatesCheckedStandaloneSingleBoxInstance(t *testing.T) {
+func TestInitCreatesCheckedStandaloneInstance(t *testing.T) {
 	parent := t.TempDir()
-	valuesPath := writeValues(t, parent, validValues())
+	valuesPath := writeValues(t, parent, validValues(t))
 	destination := filepath.Join(parent, "private-instance")
-	result, err := Init(Options{
-		InstancePath: destination,
-		Profile:      ProfileSingleBox,
-		ValuesPath:   valuesPath,
-	}, approvedTestEngine)
+	result, err := Init(Options{InstancePath: destination, ValuesPath: valuesPath}, approvedTestEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Created || result.InstancePath != destination || result.Profile != ProfileSingleBox {
+	if !result.Created || result.InstancePath != destination || result.Engine.Commit != approvedTestCommit {
 		t.Fatalf("unexpected result: %#v", result)
-	}
-	if result.Engine.Commit != approvedTestCommit {
-		t.Fatalf("unexpected engine result: %#v", result.Engine)
 	}
 	info, err := os.Stat(destination)
 	if err != nil {
@@ -45,23 +38,13 @@ func TestInitCreatesCheckedStandaloneSingleBoxInstance(t *testing.T) {
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("instance mode = %o, want 700", info.Mode().Perm())
 	}
-	deployment := readTestFile(t, filepath.Join(destination, "ops/deployment.yml"))
-	for _, expected := range []string{
-		"name: family-klokast", "magicdns_suffix: example.ts.net", "timezone: Etc/UTC",
-		"physical_location: Example home", "hostname_prefix: k001", "active_box: box-001",
-		"id: airunner-001", "kind: controller_container",
-	} {
-		if !strings.Contains(deployment, expected) {
-			t.Fatalf("deployment omits %q:\n%s", expected, deployment)
-		}
+	instance := readTestFile(t, filepath.Join(destination, contract.InstancePath))
+	if strings.Contains(instance, "timezone") || !strings.Contains(instance, `"tailnet-dns-name": "example.ts.net"`) {
+		t.Fatalf("generated instance has unexpected content:\n%s", instance)
 	}
-	platform := readTestFile(t, filepath.Join(destination, "ops/platform-resources.yml"))
-	if !strings.Contains(platform, "nextcloud:\n    enabled: false") || !strings.Contains(platform, "mode: single_box") {
-		t.Fatalf("canonical disabled Nextcloud selection changed:\n%s", platform)
-	}
-	lock := readTestFile(t, filepath.Join(destination, "klokast.lock.yml"))
-	if !strings.Contains(lock, "commit: "+approvedTestCommit) || !strings.Contains(lock, "ref: main") {
-		t.Fatalf("lock does not bind approved engine:\n%s", lock)
+	lock := readTestFile(t, filepath.Join(destination, contract.LockPath))
+	if !strings.Contains(lock, `"commit": "`+approvedTestCommit+`"`) || !strings.Contains(lock, `"ref": "main"`) {
+		t.Fatalf("lock does not bind the approved engine:\n%s", lock)
 	}
 	if _, err := os.Stat(filepath.Join(destination, filepath.Base(valuesPath))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("values input was copied into the instance: %v", err)
@@ -75,93 +58,86 @@ func TestInitCreatesCheckedStandaloneSingleBoxInstance(t *testing.T) {
 	if command := exec.Command("git", "-C", destination, "remote"); strings.TrimSpace(runCommandOutput(t, command)) != "" {
 		t.Fatal("init configured a Git remote")
 	}
-	tracked := runGitOutput(t, destination, "ls-files")
-	for _, expected := range []string{"klokast.yml", "klokast.lock.yml", "ops/deployment.yml", "ops/platform-resources.yml"} {
-		if !strings.Contains(tracked, expected) {
-			t.Fatalf("tracked inputs omit %s:\n%s", expected, tracked)
+	tracked := strings.Fields(runGitOutput(t, destination, "ls-files"))
+	for _, expected := range []string{".gitignore", "AGENTS.md", "README.md", contract.InstancePath, contract.LockPath} {
+		if !containsString(tracked, expected) {
+			t.Fatalf("tracked inputs omit %s: %v", expected, tracked)
+		}
+	}
+	for _, obsolete := range []string{"klokast.yml", "klokast.lock.yml", "ops/deployment.yml", "ops/platform-resources.yml"} {
+		if containsString(tracked, obsolete) {
+			t.Fatalf("obsolete input remains tracked: %s", obsolete)
 		}
 	}
 	report, err := contract.Check(destination, approvedTestEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !report.Valid {
-		t.Fatalf("generated instance is invalid: %#v", report.Diagnostics)
+	if err != nil || !report.Valid {
+		t.Fatalf("generated instance is invalid: err=%v diagnostics=%#v", err, report.Diagnostics)
 	}
 }
 
-func TestInitOmitsOptionalPhysicalLocation(t *testing.T) {
+func TestInitCanonicalizesObjectKeyOrder(t *testing.T) {
 	parent := t.TempDir()
-	values := validValues()
-	delete(values["site"].(map[string]any), "physical_location")
 	result, err := Init(Options{
 		InstancePath: filepath.Join(parent, "instance"),
-		Profile:      ProfileSingleBox,
-		ValuesPath:   writeValues(t, parent, values),
+		ValuesPath:   writeValues(t, parent, validValues(t)),
 	}, approvedTestEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deployment := readTestFile(t, filepath.Join(result.InstancePath, "ops/deployment.yml"))
-	if strings.Contains(deployment, "physical_location") || !strings.Contains(deployment, "- admin@example.com") {
-		t.Fatalf("unexpected optional fields:\n%s", deployment)
+	content := readTestFile(t, filepath.Join(result.InstancePath, contract.InstancePath))
+	if strings.Index(content, `"$schema"`) > strings.Index(content, `"tailnet"`) {
+		t.Fatalf("instance JSON is not deterministically encoded:\n%s", content)
 	}
 }
 
 func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
-	t.Run("timezone-field", func(t *testing.T) {
-		parent := t.TempDir()
-		values := validValues()
-		values["site"].(map[string]any)["timezone"] = "Europe/Paris"
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   writeValues(t, parent, values),
-		}, approvedTestEngine, "schema.invalid")
-		requireNoStaging(t, parent)
-	})
+	tests := []struct {
+		name   string
+		code   string
+		mutate func(map[string]any)
+	}{
+		{"timezone-field", "schema.invalid", func(value map[string]any) { value["timezone"] = "Europe/Paris" }},
+		{"empty-members", "schema.invalid", func(value map[string]any) { value["tailnet"].(map[string]any)["members"] = map[string]any{} }},
+		{"reserved-box", "identity.box", func(value map[string]any) {
+			value["boxes"].(map[string]any)["builder"] = value["boxes"].(map[string]any)["k001"]
+			value["controllers"].(map[string]any)["active"] = "builder"
+			value["airunners"].(map[string]any)["preferred"] = "builder-ops-airunner"
+			value["airunners"].(map[string]any)["authorized"] = map[string]any{"builder-ops-airunner": map[string]any{"kind": "controller-container", "box": "builder"}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := t.TempDir()
+			values := validValues(t)
+			test.mutate(values)
+			requireValidationCode(t, Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: writeValues(t, parent, values)}, approvedTestEngine, test.code)
+			requireNoStaging(t, parent)
+		})
+	}
+
 	t.Run("duplicate-json-key", func(t *testing.T) {
 		parent := t.TempDir()
 		path := filepath.Join(parent, "values.json")
-		content := `{"schema_version":1,"schema_version":1}`
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(`{"schema-version":1,"schema-version":1}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   path,
-		}, approvedTestEngine, "json.duplicate")
+		requireValidationCode(t, Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: path}, approvedTestEngine, "json.duplicate")
 	})
 	t.Run("multiple-json-documents", func(t *testing.T) {
 		parent := t.TempDir()
-		path := writeValues(t, parent, validValues())
+		path := writeValues(t, parent, validValues(t))
 		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := file.WriteString("{}\n"); err != nil {
-			file.Close()
+			_ = file.Close()
 			t.Fatal(err)
 		}
 		if err := file.Close(); err != nil {
 			t.Fatal(err)
 		}
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   path,
-		}, approvedTestEngine, "json.syntax")
-	})
-	t.Run("empty-operators", func(t *testing.T) {
-		parent := t.TempDir()
-		values := validValues()
-		values["tailnet"].(map[string]any)["groups"].(map[string]any)["operators"] = []string{}
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   writeValues(t, parent, values),
-		}, approvedTestEngine, "schema.invalid")
+		requireValidationCode(t, Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: path}, approvedTestEngine, "json.syntax")
 	})
 	t.Run("oversized-values", func(t *testing.T) {
 		parent := t.TempDir()
@@ -169,24 +145,16 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		if err := os.WriteFile(path, make([]byte, maximumValuesFile+1), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   path,
-		}, approvedTestEngine, "file.size")
+		requireValidationCode(t, Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: path}, approvedTestEngine, "file.size")
 	})
 	t.Run("values-symlink", func(t *testing.T) {
 		parent := t.TempDir()
-		target := writeValues(t, parent, validValues())
+		target := writeValues(t, parent, validValues(t))
 		link := filepath.Join(parent, "link.json")
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   link,
-		}, approvedTestEngine, "path.symlink")
+		requireValidationCode(t, Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: link}, approvedTestEngine, "path.symlink")
 	})
 	t.Run("existing-destination", func(t *testing.T) {
 		parent := t.TempDir()
@@ -194,68 +162,27 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		if err := os.Mkdir(destination, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		requireValidationCode(t, Options{
-			InstancePath: destination,
-			Profile:      ProfileSingleBox,
-			ValuesPath:   writeValues(t, parent, validValues()),
-		}, approvedTestEngine, "path.exists")
+		requireValidationCode(t, Options{InstancePath: destination, ValuesPath: writeValues(t, parent, validValues(t))}, approvedTestEngine, "path.exists")
 	})
 	t.Run("nested-worktree", func(t *testing.T) {
 		parent := t.TempDir()
 		runGitOutput(t, parent, "init", "-q")
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   writeValues(t, parent, validValues()),
-		}, approvedTestEngine, "git.nested")
-	})
-	t.Run("generated-contract", func(t *testing.T) {
-		parent := t.TempDir()
-		values := validValues()
-		values["box"].(map[string]any)["hostname_prefix"] = "builder"
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   writeValues(t, parent, values),
-		}, approvedTestEngine, "identity.prefix")
-		requireNoStaging(t, parent)
+		requireValidationCode(t, Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: writeValues(t, parent, validValues(t))}, approvedTestEngine, "git.nested")
 	})
 	t.Run("secret-like-content", func(t *testing.T) {
 		parent := t.TempDir()
-		secret := "ghp_1234567890abcdef@example.com"
-		values := validValues()
-		values["tailnet"].(map[string]any)["groups"].(map[string]any)["operators"] = []string{secret}
-		values["tailnet"].(map[string]any)["groups"].(map[string]any)["family"] = []string{secret}
-		_, err := Init(Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      ProfileSingleBox,
-			ValuesPath:   writeValues(t, parent, values),
-		}, approvedTestEngine)
+		secret := "ghp_1234567890abcdef"
+		values := validValues(t)
+		values["instance"].(map[string]any)["id"] = secret
+		_, err := Init(Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: writeValues(t, parent, values)}, approvedTestEngine)
 		var validationError *ValidationError
 		if !errors.As(err, &validationError) {
 			t.Fatalf("Init() error = %v, want validation error", err)
 		}
-		found := false
-		for _, diagnostic := range validationError.Diagnostics {
-			if diagnostic.Code == "secret.raw" {
-				found = true
-			}
-			if strings.Contains(diagnostic.Message, secret) {
-				t.Fatalf("diagnostic exposed secret-like content: %#v", diagnostic)
-			}
-		}
-		if !found {
-			t.Fatalf("missing secret.raw: %#v", validationError.Diagnostics)
+		if !hasDiagnostic(validationError.Diagnostics, "secret.raw") || strings.Contains(validationError.Error(), secret) {
+			t.Fatalf("secret rejection is missing or unsafe: %#v", validationError.Diagnostics)
 		}
 		requireNoStaging(t, parent)
-	})
-	t.Run("unsupported-profile", func(t *testing.T) {
-		parent := t.TempDir()
-		requireValidationCode(t, Options{
-			InstancePath: filepath.Join(parent, "instance"),
-			Profile:      "two-box",
-			ValuesPath:   writeValues(t, parent, validValues()),
-		}, approvedTestEngine, "profile.unsupported")
 	})
 }
 
@@ -263,8 +190,7 @@ func TestInitRejectsUnapprovedBinaryBeforeCreatingDestination(t *testing.T) {
 	parent := t.TempDir()
 	_, err := Init(Options{
 		InstancePath: filepath.Join(parent, "instance"),
-		Profile:      ProfileSingleBox,
-		ValuesPath:   writeValues(t, parent, validValues()),
+		ValuesPath:   writeValues(t, parent, validValues(t)),
 	}, contract.Engine{Repository: "unverified", Ref: "unverified", Commit: strings.Repeat("0", 40)})
 	if err == nil {
 		t.Fatal("unapproved engine was accepted")
@@ -299,23 +225,27 @@ func TestPublishNoReplacePreservesExistingDestination(t *testing.T) {
 	}
 }
 
-func validValues() map[string]any {
-	return map[string]any{
-		"schema_version": 1,
-		"instance":       map[string]any{"name": "family-klokast"},
-		"tailnet": map[string]any{
-			"magicdns_suffix": "example.ts.net",
-			"groups": map[string]any{
-				"operators": []string{"admin@example.com"},
-				"family":    []string{"admin@example.com"},
-			},
-		},
-		"site": map[string]any{
-			"country":           "FR",
-			"physical_location": "Example home",
-		},
-		"box": map[string]any{"hostname_prefix": "k001"},
+func validValues(t *testing.T) map[string]any {
+	t.Helper()
+	path := filepath.Join(repositoryRoot(t), "tests", "fixtures", "contract", "init-single.json")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	var value map[string]any
+	if err := json.Unmarshal(content, &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func writeValues(t *testing.T, directory string, value any) string {
@@ -338,12 +268,27 @@ func requireValidationCode(t *testing.T, options Options, engine contract.Engine
 	if !errors.As(err, &validationError) {
 		t.Fatalf("Init() error = %v, want validation error", err)
 	}
-	for _, diagnostic := range validationError.Diagnostics {
+	if !hasDiagnostic(validationError.Diagnostics, code) {
+		t.Fatalf("missing %s: %#v", code, validationError.Diagnostics)
+	}
+}
+
+func hasDiagnostic(diagnostics []contract.Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
 		if diagnostic.Code == code {
-			return
+			return true
 		}
 	}
-	t.Fatalf("missing %s: %#v", code, validationError.Diagnostics)
+	return false
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func requireNoStaging(t *testing.T, parent string) {

@@ -116,9 +116,16 @@ MANIFEST_TOP_LEVEL_FIELDS = {
     "risk_class",
     "default_isolation",
     "placement_mode",
+    "datasets",
     "resources",
     "_manifest_path",
 }
+DATASET_FIELDS = {
+    "id",
+    "type",
+    "rationale",
+}
+DATASET_TYPES = {"durable_user_data"}
 RESOURCE_SECTION_FIELDS = {
     "compute",
     "network",
@@ -1290,6 +1297,24 @@ def validate_artifact_resource_shape(app_name, resource):
 
 def validate_manifest_resources(app_name, manifest, topology):
     reject_unknown_fields(manifest, MANIFEST_TOP_LEVEL_FIELDS, app_name)
+    datasets = manifest.get("datasets") or []
+    if not isinstance(datasets, list):
+        die(f"{manifest['_manifest_path']} datasets must be a list")
+    dataset_ids = set()
+    for index, dataset in enumerate(datasets):
+        field = f"{app_name}.datasets[{index}]"
+        reject_unknown_fields(dataset, DATASET_FIELDS, field)
+        reject_tcb_control_fields(dataset, field)
+        dataset_id = dataset.get("id")
+        validate_id(dataset_id, f"{field}.id")
+        if dataset_id in dataset_ids:
+            die(f"{app_name}.datasets contains duplicate id: {dataset_id}")
+        dataset_ids.add(dataset_id)
+        if dataset.get("type") not in DATASET_TYPES:
+            die(f"{field}.type must be one of: {', '.join(sorted(DATASET_TYPES))}")
+        rationale = dataset.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            die(f"{field}.rationale must be a non-empty string")
     resources = manifest.get("resources") or {}
     if not isinstance(resources, dict):
         die(f"{manifest['_manifest_path']} resources must be a mapping")

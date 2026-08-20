@@ -1,15 +1,13 @@
 package contract
 
 import (
+	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	klokastbox "klokast-box"
 )
 
 const testCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -44,156 +42,181 @@ func TestDirtyWorktreeIsAccepted(t *testing.T) {
 	}
 }
 
-func TestAmbientGitVariablesDoNotChangeRepositoryInspection(t *testing.T) {
-	root := prepareInstance(t, "single", nil)
-	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "attacker-git-dir"))
-	t.Setenv("GIT_WORK_TREE", t.TempDir())
-	report, err := Check(root, testEngine)
-	if err != nil || !report.Valid {
-		t.Fatalf("ambient Git variables affected check: err=%v diagnostics=%#v", err, report.Diagnostics)
-	}
-}
-
-func TestInvalidLockAndAuthoritativeTracking(t *testing.T) {
-	t.Run("mismatch", func(t *testing.T) {
+func TestStrictJSONAndAuthoritativeTracking(t *testing.T) {
+	t.Run("duplicate", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, lockPath), testCommit, strings.Repeat("b", 40))
+			replaceInFile(t, filepath.Join(root, InstancePath), `"schema-version": 1`, `"schema-version": 1, "schema-version": 1`)
 		})
-		requireCode(t, root, testCommit, "engine.mismatch")
+		requireCode(t, root, "json.duplicate")
 	})
-	t.Run("abbreviated", func(t *testing.T) {
+	t.Run("unknown", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, lockPath), testCommit, "abc123")
+			replaceInFile(t, filepath.Join(root, InstancePath), `"apps": {}`, `"apps": {}, "datasets": {}`)
 		})
-		requireCode(t, root, testCommit, "schema.invalid")
-	})
-	t.Run("repository", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, lockPath), "https://github.com/klokast/klokast-box", "https://github.com/example/fork")
-		})
-		requireCode(t, root, testCommit, "engine.repository")
-	})
-	t.Run("ref", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, lockPath), "ref: main", "ref: other")
-		})
-		requireCode(t, root, testCommit, "engine.ref")
+		requireCode(t, root, "schema.invalid")
 	})
 	t.Run("untracked", func(t *testing.T) {
 		root := prepareInstance(t, "single", nil)
-		runGit(t, root, "rm", "--cached", "ops/deployment.yml")
-		requireCode(t, root, testCommit, "git.untracked")
+		runGit(t, root, "rm", "--cached", InstancePath)
+		requireCode(t, root, "git.untracked")
+	})
+	t.Run("obsolete-yaml", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			writeTestFile(t, filepath.Join(root, "klokast.yml"), "contract: 1\n")
+		})
+		requireCode(t, root, "tracked.obsolete")
 	})
 }
 
-func TestIdentityReferencesAndCardinality(t *testing.T) {
+func TestEngineAndSchemaPins(t *testing.T) {
+	t.Run("lock-commit", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, LockPath), testCommit, strings.Repeat("b", 40))
+		})
+		requireCode(t, root, "engine.mismatch")
+	})
+	t.Run("instance-schema", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, InstancePath), testCommit, strings.Repeat("b", 40))
+		})
+		requireCode(t, root, "schema.engine")
+	})
+	t.Run("repository", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			replaceInFile(t, filepath.Join(root, LockPath), "https://github.com/klokast/klokast-box", "https://github.com/example/fork")
+		})
+		requireCode(t, root, "schema.invalid")
+	})
+}
+
+func TestIdentityReferencesAndAirunners(t *testing.T) {
 	tests := []struct {
 		name string
 		old  string
 		new  string
 		code string
 	}{
-		{"duplicate-prefix", "hostname_prefix: k002", "hostname_prefix: k001", "identity.prefix"},
-		{"broken-site", "site: site-002", "site: missing-site", "reference.site"},
-		{"broken-controller", "active_box: box-001", "active_box: missing-box", "reference.box"},
-		{"controller-cardinality", "standby_box: box-002", "standby_box: box-001", "cardinality.controller"},
-		{"duplicate-runner-id", "id: airunner-cloud-001", "id: airunner-001", "identity.airunner"},
+		{"site", `"site": "mingdu"`, `"site": "missing"`, "reference.site"},
+		{"controller", `"active": "k001"`, `"active": "missing"`, "reference.box"},
+		{"controller-cardinality", `"standby": "k002"`, `"standby": "k001"`, "cardinality.controller"},
+		{"preferred", `"preferred": "k001-airunner"`, `"preferred": "missing-airunner"`, "reference.airunner"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := prepareInstance(t, "two", func(root string) {
-				replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), test.old, test.new)
+				replaceInFile(t, filepath.Join(root, InstancePath), test.old, test.new)
 			})
-			requireCode(t, root, testCommit, test.code)
+			requireCode(t, root, test.code)
 		})
 	}
 }
 
-func TestRunnerUnionUnknownFieldsAndYAMLSafety(t *testing.T) {
-	t.Run("platform-timezone", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), "timezone: Etc/UTC", "timezone: Europe/Paris")
-		})
-		requireCode(t, root, testCommit, "schema.invalid")
+func TestVersionOneBoxRequiresTailscaleConnectivity(t *testing.T) {
+	root := prepareInstance(t, "two", func(root string) {
+		replaceInFile(t, filepath.Join(root, InstancePath),
+			`"connectivity-profiles": [
+        "local-ap-direct-egress",
+        "tailscale"
+      ]`,
+			`"connectivity-profiles": [
+        "local-ap-direct-egress"
+      ]`)
 	})
-	t.Run("runner-union", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), "      box: box-001", "      box: box-001\n      hostname: forbidden.example")
-		})
-		requireCode(t, root, testCommit, "schema.invalid")
-	})
-	t.Run("unknown-field", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "klokast.yml"), "contract: 1", "contract: 1\nunknown: true")
-		})
-		requireCode(t, root, testCommit, "schema.invalid")
-	})
-	t.Run("duplicate-key", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "klokast.yml"), "contract: 1", "contract: 1\ncontract: 1")
-		})
-		requireCode(t, root, testCommit, "yaml.duplicate")
-	})
-	t.Run("custom-tag", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "klokast.yml"), "contract: 1", "contract: !unsafe 1")
-		})
-		requireCode(t, root, testCommit, "yaml.tag")
-	})
+	requireCode(t, root, "connectivity.tailscale")
 }
 
-func TestDeploymentContractMatchesTailnetAndRunnerConsumers(t *testing.T) {
-	tests := []struct {
-		name string
-		old  string
-		new  string
-		code string
-	}{
-		{"magicdns-suffix", "magicdns_suffix: example.ts.net", "magicdns_suffix: example.com", "schema.invalid"},
-		{"unknown-group", "    family: [admin@example.com, family@example.com]", "    family: [admin@example.com, family@example.com]\n    guests: [guest@example.com]", "schema.invalid"},
-		{"empty-family", "family: [admin@example.com, family@example.com]", "family: []", "schema.invalid"},
-		{"invalid-login", "family@example.com", "not-a-login", "schema.invalid"},
-		{"no-operator-family-overlap", "family: [admin@example.com, family@example.com]", "family: [family@example.com]", "tailnet.operator-family"},
-		{"external-fqdn", "hostname: vultr-ops-airunner", "hostname: vultr-ops-airunner.example.com", "schema.invalid"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			root := prepareInstance(t, "two", func(root string) {
-				replaceInFile(t, filepath.Join(root, "ops/deployment.yml"), test.old, test.new)
-			})
-			requireCode(t, root, testCommit, test.code)
-		})
-	}
-
-	t.Run("controller-container-needs-controller-box", func(t *testing.T) {
+func TestAppLifecycleAndDataRules(t *testing.T) {
+	t.Run("absent-needs-data", func(t *testing.T) {
 		root := prepareInstance(t, "two", func(root string) {
-			deployment := filepath.Join(root, "ops/deployment.yml")
-			replaceInFile(t, deployment, "    standby_box: box-002\n", "")
-			replaceInFile(t, deployment, "      kind: box\n      box: box-001", "      kind: controller_container\n      box: box-002")
+			path := filepath.Join(root, InstancePath)
+			var value map[string]any
+			if err := json.Unmarshal([]byte(readTestFile(t, path)), &value); err != nil {
+				t.Fatal(err)
+			}
+			music := value["apps"].(map[string]any)["music"].(map[string]any)
+			delete(music, "data")
+			content, err := json.MarshalIndent(value, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, path, string(content)+"\n")
 		})
-		requireCode(t, root, testCommit, "reference.controller")
+		requireCode(t, root, "schema.invalid")
 	})
+	t.Run("unknown-data", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			replaceInFile(t, filepath.Join(root, InstancePath), `"library": {`, `"unknown": {`)
+		})
+		requireCode(t, root, "data.unknown")
+	})
+	t.Run("data-box", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			replaceInFile(t, filepath.Join(root, InstancePath), `"box": "k002",`, `"box": "missing",`)
+		})
+		requireCode(t, root, "reference.box")
+	})
+}
+
+func TestSecretAndGeneratedStateDetectionDoesNotEchoValues(t *testing.T) {
+	secret := "super-secret-token-value"
+	root := prepareInstance(t, "single", func(root string) {
+		writeTestFile(t, filepath.Join(root, "notes.json"), `{"token":"`+secret+`"}`+"\n")
+		writeTestFile(t, filepath.Join(root, ".klokast/plan.json"), "{}\n")
+	})
+	runGit(t, root, "add", "-f", ".klokast/plan.json")
+	report, err := Check(root, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCode(report, "secret.raw") || !hasCode(report, "tracked.forbidden") {
+		t.Fatalf("missing tracked-content diagnostics: %#v", report.Diagnostics)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic.Message, secret) {
+			t.Fatalf("secret leaked in diagnostic: %#v", diagnostic)
+		}
+	}
+}
+
+func TestTrackedContentLimits(t *testing.T) {
+	t.Run("binary", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			if err := os.WriteFile(filepath.Join(root, "binary.dat"), []byte{'a', 0, 'b'}, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+		requireCode(t, root, "tracked.binary")
+	})
+	t.Run("size", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("a", maximumTrackedFile+1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+		requireCode(t, root, "tracked.size")
+	})
+}
+
+func TestCompatibilityYAMLRequiresStringKeys(t *testing.T) {
+	_, diagnostics := ParseSafeYAML([]byte("1: value\n"))
+	if len(diagnostics) == 0 || diagnostics[0].Code != "yaml.key" {
+		t.Fatalf("non-string YAML key was accepted: %#v", diagnostics)
+	}
 }
 
 func TestSafePathsAndStandaloneRepository(t *testing.T) {
-	t.Run("traversal", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "klokast.yml"), "ops/deployment.yml", "../deployment.yml")
-		})
-		requireCode(t, root, testCommit, "path.unsafe")
-	})
 	t.Run("symlink", func(t *testing.T) {
 		root := prepareInstance(t, "single", nil)
-		outside := filepath.Join(t.TempDir(), "deployment.yml")
-		writeTestFile(t, outside, "schema_version: 1\n")
-		if err := os.Remove(filepath.Join(root, "ops/deployment.yml")); err != nil {
+		outside := filepath.Join(t.TempDir(), "instance.json")
+		writeTestFile(t, outside, "{}\n")
+		if err := os.Remove(filepath.Join(root, InstancePath)); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(outside, filepath.Join(root, "ops/deployment.yml")); err != nil {
+		if err := os.Symlink(outside, filepath.Join(root, InstancePath)); err != nil {
 			t.Fatal(err)
 		}
-		runGit(t, root, "add", "ops/deployment.yml")
-		requireCode(t, root, testCommit, "path.symlink")
+		runGit(t, root, "add", InstancePath)
+		requireCode(t, root, "path.symlink")
 	})
 	t.Run("nested", func(t *testing.T) {
 		outer := t.TempDir()
@@ -212,69 +235,6 @@ func TestSafePathsAndStandaloneRepository(t *testing.T) {
 	})
 }
 
-func TestCapabilityAndPlacementRules(t *testing.T) {
-	t.Run("resource-binding-type", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "cloudflare-tunnel-egress: false", "cloudflare-tunnel-egress: enabled")
-		})
-		requireCode(t, root, testCommit, "schema.invalid")
-	})
-	t.Run("enabled-undeclared", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "enabled_capabilities:\n        - overlay", "enabled_capabilities:\n        - overlay\n        - local-lan")
-		})
-		requireCode(t, root, testCommit, "capability.undeclared")
-	})
-	t.Run("enabled-prohibited", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "        - direct-ingress\n      policy:", "        - direct-ingress\n        - overlay\n      policy:")
-		})
-		requireCode(t, root, testCommit, "capability.conflict")
-	})
-	t.Run("policy-disabled", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "public-ingress: none", "public-ingress: direct-ingress")
-		})
-		requireCode(t, root, testCommit, "capability.policy")
-	})
-	t.Run("broken-placement", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, "ops/platform-resources.yml"), "box: box-001", "box: missing-box")
-		})
-		requireCode(t, root, testCommit, "reference.box")
-	})
-	t.Run("manifest-placement-mode", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			platform := filepath.Join(root, "ops/platform-resources.yml")
-			replaceInFile(t, platform, "nextcloud:", "torrent:")
-			replaceInFile(t, platform, "cloudflare-tunnel-egress", "vpn-egress")
-			replaceInFile(t, platform, "mode: single_box\n      box: box-001", "mode: multi_box\n      boxes: [box-001]")
-		})
-		requireCode(t, root, testCommit, "placement.mode")
-	})
-}
-
-func TestSecretAndGeneratedStateDetectionDoesNotEchoValues(t *testing.T) {
-	secret := "super-secret-token-value"
-	root := prepareInstance(t, "single", func(root string) {
-		writeTestFile(t, filepath.Join(root, "notes.yml"), "token: "+secret+"\n")
-		writeTestFile(t, filepath.Join(root, ".klokast/plan.json"), "{}\n")
-	})
-	runGit(t, root, "add", "-f", ".klokast/plan.json")
-	report, err := Check(root, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasCode(report, "secret.raw") || !hasCode(report, "tracked.forbidden") {
-		t.Fatalf("missing tracked-content diagnostics: %#v", report.Diagnostics)
-	}
-	for _, diagnostic := range report.Diagnostics {
-		if strings.Contains(diagnostic.Message, secret) {
-			t.Fatalf("secret leaked in diagnostic: %#v", diagnostic)
-		}
-	}
-}
-
 func TestOperationalFailureForMissingInstance(t *testing.T) {
 	if _, err := Check(filepath.Join(t.TempDir(), "missing"), testEngine); err == nil {
 		t.Fatal("missing instance did not produce operational failure")
@@ -284,39 +244,32 @@ func TestOperationalFailureForMissingInstance(t *testing.T) {
 func prepareInstance(t *testing.T, fixture string, mutate func(string)) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := fs.WalkDir(klokastbox.Assets, "templates/instance", func(path string, entry fs.DirEntry, err error) error {
+	for _, support := range []string{"README.md", "AGENTS.md", ".gitignore"} {
+		content, err := os.ReadFile(filepath.Join(repositoryRoot(t), "templates", "instance", support))
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		relative, err := filepath.Rel("templates/instance", path)
-		if err != nil || relative == "." {
-			return err
-		}
-		destination := filepath.Join(root, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(destination, 0o755)
-		}
-		content, err := klokastbox.Assets.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(destination, content, 0o644)
-	}); err != nil {
+		writeTestFile(t, filepath.Join(root, support), string(content))
+	}
+	source := filepath.Join(repositoryRoot(t), "tests", "fixtures", "contract", "init-single.json")
+	if fixture == "two" {
+		source = filepath.Join(repositoryRoot(t), "tests", "fixtures", "contract", "valid-two", InstancePath)
+	}
+	content, err := os.ReadFile(source)
+	if err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(root, lockPath), fmt.Sprintf("---\nschema_version: 1\nengine:\n  repository: https://github.com/klokast/klokast-box\n  ref: main\n  commit: %s\n", testCommit))
-	if fixture == "two" {
-		for source, destination := range map[string]string{
-			"tests/fixtures/contract/valid-two/deployment.yml":         "ops/deployment.yml",
-			"tests/fixtures/contract/valid-two/platform-resources.yml": "ops/platform-resources.yml",
-		} {
-			content, err := os.ReadFile(filepath.Join(repositoryRoot(t), source))
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeTestFile(t, filepath.Join(root, destination), string(content))
-		}
-	}
+	writeTestFile(t, filepath.Join(root, InstancePath), string(content))
+	writeTestFile(t, filepath.Join(root, LockPath), fmt.Sprintf(`{
+  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/%s/schemas/klokast-lock-v1.schema.json",
+  "engine": {
+    "commit": "%s",
+    "ref": "main",
+    "repository": "https://github.com/klokast/klokast-box"
+  },
+  "schema-version": 1
+}
+`, testCommit, testCommit))
 	if mutate != nil {
 		mutate(root)
 	}
@@ -334,11 +287,9 @@ func repositoryRoot(t *testing.T) string {
 	return root
 }
 
-func requireCode(t *testing.T, root, commit, code string) {
+func requireCode(t *testing.T, root, code string) {
 	t.Helper()
-	engine := testEngine
-	engine.Commit = commit
-	report, err := Check(root, engine)
+	report, err := Check(root, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,14 +309,20 @@ func hasCode(report Report, code string) bool {
 
 func replaceInFile(t *testing.T, path, old, replacement string) {
 	t.Helper()
+	content := readTestFile(t, path)
+	if strings.Count(content, old) != 1 {
+		t.Fatalf("%q does not occur exactly once in %s", old, path)
+	}
+	writeTestFile(t, path, strings.Replace(content, old, replacement, 1))
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(content), old) != 1 {
-		t.Fatalf("%q does not occur exactly once in %s", old, path)
-	}
-	writeTestFile(t, path, strings.Replace(string(content), old, replacement, 1))
+	return string(content)
 }
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -381,6 +338,7 @@ func writeTestFile(t *testing.T, path, content string) {
 func runGit(t *testing.T, root string, args ...string) {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}

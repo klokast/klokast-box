@@ -13,6 +13,7 @@ Usage:
   kk app list [--controller HOST] [--no-pull]
   kk app status <app> [--controller HOST] [--no-pull]
   kk app start|stop|restart|apply|verify|remove <app> [--controller HOST] [--no-pull]
+  kk app remove music --dry-run|--yes [--controller HOST] [--no-pull]
   kk app destroy <app> --wipe-data --yes [--controller HOST] [--no-pull]
   kk poweroff <box>-streamer
   kk music upload --from DIR --to BOX
