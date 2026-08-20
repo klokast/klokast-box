@@ -386,15 +386,6 @@ func initializeRepository(root string) error {
 	return nil
 }
 
-func publishNoReplace(staging, destination string) error {
-	if _, err := os.Lstat(destination); err == nil {
-		return validation("instance", "path.exists", "instance destination already exists")
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return os.Rename(staging, destination)
-}
-
 func isolatedGitCommand(root string, arguments ...string) *exec.Cmd {
 	command := exec.Command("git", append([]string{"-C", root}, arguments...)...)
 	environment := make([]string, 0, len(os.Environ())+2)

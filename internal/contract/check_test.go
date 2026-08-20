@@ -71,7 +71,7 @@ func TestStrictJSONAndAuthoritativeTracking(t *testing.T) {
 func TestEngineAndSchemaPins(t *testing.T) {
 	t.Run("lock-commit", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, LockPath), testCommit, strings.Repeat("b", 40))
+			replaceInFile(t, filepath.Join(root, LockPath), `"commit": "`+testCommit+`"`, `"commit": "`+strings.Repeat("b", 40)+`"`)
 		})
 		requireCode(t, root, "engine.mismatch")
 	})
