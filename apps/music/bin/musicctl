@@ -18,10 +18,8 @@ PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
 ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
 BASE_INVENTORY = REPO_ROOT / "ansible" / "inventory" / "hosts.yml"
 ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
-MAGICDNS_SUFFIX = os.environ.get(
-    "MUSIC_MAGICDNS_SUFFIX",
-    os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net"),
-)
+MAGICDNS_SUFFIX_TOOL = REPO_ROOT / "ansible" / "bin" / "magicdns-suffix"
+_MAGICDNS_SUFFIX = None
 RESOURCES_REGISTRY_DEFAULT = os.environ.get(
     "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
     os.environ.get("KLOKAST_APP_RESOURCES_REGISTRY", ""),
@@ -64,6 +62,18 @@ def run(argv, *, env=None):
 
 def output(argv):
     return subprocess.check_output(argv, cwd=REPO_ROOT, text=True)
+
+
+def magicdns_suffix():
+    global _MAGICDNS_SUFFIX
+    if _MAGICDNS_SUFFIX is None:
+        _MAGICDNS_SUFFIX = os.environ.get(
+            "MUSIC_MAGICDNS_SUFFIX",
+            os.environ.get("KLOKAST_MAGICDNS_SUFFIX", ""),
+        )
+        if not _MAGICDNS_SUFFIX:
+            _MAGICDNS_SUFFIX = output([str(MAGICDNS_SUFFIX_TOOL)]).strip()
+    return _MAGICDNS_SUFFIX
 
 
 def music_tailnet_resource(data, box, resource_id):
@@ -129,7 +139,7 @@ def render_box_inventory(box, output_path):
             "--node",
             box,
             "--magicdns-suffix",
-            MAGICDNS_SUFFIX,
+            magicdns_suffix(),
             "--output",
             str(output_path),
         ]
@@ -160,7 +170,7 @@ def write_pi_inventory(tmp, box, device, mode, bootstrap_user):
             f"-o ProxyCommand='{proxy} %h %p'"
         )
     else:
-        ansible_host = f"{host}.{MAGICDNS_SUFFIX}"
+        ansible_host = f"{host}.{magicdns_suffix()}"
         ansible_user = "neo"
         ssh_common_args = (
             "-o StrictHostKeyChecking=accept-new "
@@ -237,6 +247,7 @@ def ansible_env():
     env = os.environ.copy()
     env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
     env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
+    env["KLOKAST_MAGICDNS_SUFFIX"] = magicdns_suffix()
     return env
 
 
@@ -257,7 +268,7 @@ def verify_platform_resources(registry):
             "--app",
             "music",
             "--magicdns-suffix",
-            MAGICDNS_SUFFIX,
+            magicdns_suffix(),
             "verify",
         ]
     )
@@ -273,7 +284,7 @@ def build_and_load_images(box):
                 "--box",
                 box,
                 "--magicdns-suffix",
-                MAGICDNS_SUFFIX,
+                magicdns_suffix(),
                 command,
             ]
         )

@@ -111,6 +111,13 @@ class MusicBackendRoleTest(unittest.TestCase):
         self.assertIn("tailscale_device_fail_on_online_exact: true", tailnet)
         self.assertIn('(box + "-audio", "tag:streamer")', MUSICCTL.read_text(encoding="utf-8"))
 
+    def test_musicctl_auto_discovers_and_propagates_the_tailnet_dns_name(self):
+        musicctl = MUSICCTL.read_text(encoding="utf-8")
+
+        self.assertIn('MAGICDNS_SUFFIX_TOOL = REPO_ROOT / "ansible" / "bin" / "magicdns-suffix"', musicctl)
+        self.assertIn('env["KLOKAST_MAGICDNS_SUFFIX"] = magicdns_suffix()', musicctl)
+        self.assertNotIn('os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net")', musicctl)
+
 
 if __name__ == "__main__":
     unittest.main()
