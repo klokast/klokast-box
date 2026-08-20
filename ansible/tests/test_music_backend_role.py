@@ -110,6 +110,7 @@ class MusicBackendRoleTest(unittest.TestCase):
         self.assertIn("tailscale-stale-device", tailnet)
         self.assertIn("tailscale_device_fail_on_online_exact: true", tailnet)
         self.assertIn('(box + "-audio", "tag:streamer")', MUSICCTL.read_text(encoding="utf-8"))
+        self.assertIn('["localhost,"]', MUSICCTL.read_text(encoding="utf-8"))
 
     def test_musicctl_auto_discovers_and_propagates_the_tailnet_dns_name(self):
         musicctl = MUSICCTL.read_text(encoding="utf-8")

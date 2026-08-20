@@ -442,7 +442,7 @@ def cmd_remove(args):
             PLAYBOOK_DIR / "35-tailnet-remove.yml",
             "localhost",
             vars_path,
-            [],
+            ["localhost,"],
         )
 
 
