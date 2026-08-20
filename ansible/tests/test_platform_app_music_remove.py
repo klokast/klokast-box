@@ -82,6 +82,13 @@ class PlatformAppMusicRemoveTest(unittest.TestCase):
         self.assertNotEqual(missing_yes.returncode, 0)
         self.assertIn("destroy requires --yes", missing_yes.stderr)
 
+    def test_remove_passes_the_checked_commit_and_can_resume_after_disable(self):
+        source = PLATFORM_APP.read_text(encoding="utf-8")
+
+        self.assertIn('approved_commit = checked_repository_head()', source)
+        self.assertIn('"--approved-commit", approved_commit', source)
+        self.assertIn("Music is already disabled; resuming resource cleanup", source)
+
 
 if __name__ == "__main__":
     unittest.main()

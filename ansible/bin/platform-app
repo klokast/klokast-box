@@ -75,6 +75,14 @@ def run(argv, *, dry_run=False, stdout=None):
     return result
 
 
+def checked_repository_head():
+    result = run(["git", "rev-parse", "HEAD"], stdout=subprocess.PIPE)
+    head = (result.stdout or "").strip()
+    if not head:
+        die("cannot determine the checked repository commit")
+    return head
+
+
 def require_active_controller():
     guard = Path(os.environ.get("KLOKAST_CONTROLLER_GUARD", "/usr/local/sbin/klokast-controller-guard"))
     if not guard.exists() or not os.access(guard, os.X_OK):
@@ -410,17 +418,29 @@ def remove_one(args, wipe):
                 run(cmd, dry_run=True)
             print("platform-app: dry-run would disable apps.music and apply its resource cleanup scope")
             return
+        approved_commit = checked_repository_head()
         append_lifecycle_audit("app.lifecycle.started", plan, "started")
         try:
-            for box in boxes:
-                cmd = [ctl, "remove", "--box", box, "--resources-registry", args.registry, "--yes"]
-                if wipe:
-                    cmd.append("--wipe-data")
-                run(cmd)
-            entry["enabled"] = False
-            entry["runtime_state"] = "stopped"
-            save_registry(args.registry, registry)
-            run([PLATFORM_RESOURCES, "--registry", args.registry, "--app", "music", "apply"])
+            if entry.get("enabled"):
+                for box in boxes:
+                    cmd = [ctl, "remove", "--box", box, "--resources-registry", args.registry, "--yes"]
+                    if wipe:
+                        cmd.append("--wipe-data")
+                    run(cmd)
+                entry["enabled"] = False
+                entry["runtime_state"] = "stopped"
+                save_registry(args.registry, registry)
+            elif wipe:
+                die("cannot destroy Music data after the registry entry is disabled")
+            else:
+                print("platform-app: Music is already disabled; resuming resource cleanup")
+            run([
+                PLATFORM_RESOURCES,
+                "--registry", args.registry,
+                "--app", "music",
+                "--approved-commit", approved_commit,
+                "apply",
+            ])
             run([PLATFORM_RESOURCES, "--registry", args.registry, "--app", "music", "verify"])
         except SystemExit:
             append_lifecycle_audit("app.lifecycle.finished", plan, "failure")
