@@ -87,6 +87,8 @@ class PlatformAppMusicRemoveTest(unittest.TestCase):
 
         self.assertIn('approved_commit = checked_repository_head()', source)
         self.assertIn('"--approved-commit", approved_commit', source)
+        self.assertIn('magicdns_suffix = checked_magicdns_suffix()', source)
+        self.assertIn('"--magicdns-suffix", magicdns_suffix', source)
         self.assertIn("Music is already disabled; resuming resource cleanup", source)
 
 
