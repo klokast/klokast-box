@@ -35,11 +35,16 @@ cd /path/to/klokast-box
 klokast-dev/bin/prepare-private-instance-bootstrap
 ```
 
-The helper first lists the information, access, and hardware that you must
-prepare. It explains each action before it makes a change. It then:
+Before it asks for settings, the helper requires a clean checkout and runs a
+fast-forward Git pull. If the pull changes the helper, the running process
+prints the old and new commits and restarts the updated helper. It does not
+continue with shell functions loaded from the old commit.
+
+The helper then lists the information, access, and hardware that you must
+prepare. It explains each authority-changing action before it runs it. It:
 
 - collects the non-secret bootstrap settings;
-- checks and updates the public checkout;
+- confirms the updated public checkout commit;
 - checks the MacBook tools and active controller;
 - requires a clean controller checkout that contains the approved engine in
   its Git history, and verifies the exact sealed build receipt and binary;
@@ -51,6 +56,15 @@ The helper does not ask for a GitHub App PEM or private deployment values.
 The public controller checkout can be newer than the approved engine. These
 are separate pins: the current checkout supplies the bootstrap wrappers, and
 the approved sealed engine supplies the generated Instance Specification.
+
+An older helper that predates automatic restart cannot acquire this behavior
+during its own process. For the first adoption from such a version, update the
+checkout as a separate command before you run the helper:
+
+```sh
+git pull --ff-only
+klokast-dev/bin/prepare-private-instance-bootstrap
+```
 
 When it completes, load the settings into the same terminal:
 
@@ -612,6 +626,12 @@ and registry authority stays active. No apply action is part of this runbook.
   permitted when the approved engine is in the checkout history and the exact
   sealed build passes verification. Do not reset the controller checkout to
   the older engine commit.
+- **The helper updates and then reports behavior from the old commit:** the
+  running helper predates automatic restart. Run `git pull --ff-only` as a
+  separate command, then run the helper again. Current helpers restart before
+  any settings prompt or controller request.
+- **The checkout changes again during automatic restart:** no bootstrap action
+  ran. Run the helper again from the updated clean checkout.
 - **An action fails after approval:** read the failed phase in the final
   wrapper summary. Review the last record in
   `$BOOTSTRAP_WORK/action-audit.jsonl`. Ask the agent to review the matching

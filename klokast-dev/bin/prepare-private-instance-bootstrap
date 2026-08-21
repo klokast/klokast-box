@@ -49,8 +49,10 @@ show_actions() {
 
 What this helper will do
 
-- Ask for the non-secret names and local paths used by the runbook.
 - Require a clean checkout and update it with a fast-forward Git pull.
+- Restart from the updated checkout before any bootstrap action when the pull
+  changes this helper.
+- Ask for the non-secret names and local paths used by the runbook.
 - Check the MacBook tools and the active controller connection.
 - Ask before it creates or reuses the dedicated private-instance Secure
   Enclave identity and installs its public signer on the controller.
@@ -134,18 +136,45 @@ require_clean_checkout() {
   fi
 }
 
-check_macbook() {
+refresh_checkout_and_reexec() {
+  local before_commit=""
+  local after_commit=""
+  local restart_count="${KLOKAST_PRIVATE_BOOTSTRAP_REEXEC_COUNT:-0}"
+
   ksa_need_command git
 
-  if [ "$(uname -s)" != "Darwin" ]; then
-    ksa_die "run this helper on the trusted MacBook"
-  fi
+  case "$restart_count" in
+    0|1) ;;
+    *) ksa_die "internal checkout restart count is invalid" ;;
+  esac
 
   printf '\nChecking the klokast-box checkout...\n'
   require_clean_checkout
+  before_commit="$(git -C "$REPO_ROOT" rev-parse --verify HEAD)" || \
+    ksa_die "cannot read the current klokast-box checkout commit"
   git -C "$REPO_ROOT" pull --ff-only
   require_clean_checkout
-  printf 'klokast-box checkout ok\n'
+  after_commit="$(git -C "$REPO_ROOT" rev-parse --verify HEAD)" || \
+    ksa_die "cannot read the updated klokast-box checkout commit"
+
+  if [ "$before_commit" != "$after_commit" ]; then
+    printf 'Updated the helper checkout.\n'
+    printf '  Before: %s\n' "$before_commit"
+    printf '  After:  %s\n' "$after_commit"
+    if [ "$restart_count" -ne 0 ]; then
+      ksa_die "the checkout changed again during the automatic restart; no bootstrap action ran; run this helper again"
+    fi
+    printf 'Restarting the updated helper before any bootstrap action.\n'
+    export KLOKAST_PRIVATE_BOOTSTRAP_REEXEC_COUNT=1
+    exec "$SCRIPT_DIR/prepare-private-instance-bootstrap" || \
+      ksa_die "cannot restart the updated bootstrap helper"
+  fi
+
+  unset KLOKAST_PRIVATE_BOOTSTRAP_REEXEC_COUNT
+  printf 'klokast-box checkout ok at %s\n' "$after_commit"
+}
+
+check_macbook() {
 
   printf '\nChecking MacBook tools...\n'
   if ! "$SCRIPT_DIR/kk" doctor; then
@@ -243,11 +272,10 @@ write_session() {
   printf '  source %q\n' "$session_file"
 }
 
-show_prerequisites
-
 case "${1:-}" in
   -h|--help)
     [ "$#" -eq 1 ] || ksa_die "--help does not accept other arguments"
+    show_prerequisites
     show_actions
     usage
     exit 0
@@ -264,7 +292,13 @@ esac
 if [ ! -t 0 ] || [ ! -t 1 ]; then
   ksa_die "run this helper in an interactive terminal on the trusted MacBook"
 fi
+if [ "$(uname -s)" != "Darwin" ]; then
+  ksa_die "run this helper on the trusted MacBook"
+fi
 
+refresh_checkout_and_reexec
+
+show_prerequisites
 show_actions
 printf '\n'
 

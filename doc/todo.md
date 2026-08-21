@@ -2,6 +2,17 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-21 - self-updating bootstrap helper continued old shell functions
+
+`prepare-private-instance-bootstrap` previously ran `git pull --ff-only`
+after Bash had loaded its functions. A pull from `eb4b89b` to `8ac344f`
+updated the file on disk, but the process continued with the old controller
+commit equality check. The helper now updates before any settings prompt and
+uses `exec` when its commit changes. A two-commit Git fixture must continue to
+prove that only the updated helper runs after a pull. A helper version from
+before this correction still needs one separate `git pull --ff-only` to adopt
+the restart behavior.
+
 # 2026-08-21 - MacBook bootstrap wrappers require a real macOS integration run
 
 The infra-agent host cannot run the interactive private-instance wrappers
