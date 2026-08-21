@@ -178,20 +178,26 @@ intent version is separate from Instance Specification v1.
 `read_only: true` and an authenticated Git query proves that the repository has
 no refs.
 
-Use the MacBook helper to open the controller-private values, generate the
-initial files with one verified sealed-builder output, transfer the seed, and
-verify its initial Git state:
+Use the MacBook helper to run the guided controller-private values setup,
+generate the initial files with one verified sealed-builder output, transfer
+the seed, and verify its initial Git state:
 
 ```sh
 klokast-dev/bin/prepare-private-instance-worktree
 ```
 
-The helper does not display private values, commit, add a remote, or push. Its
-underlying controller operation is the following fixed `platform-instance`
-interface. The values file and destination must be below the controller
-private root:
+The helper shows the detected DNS name, member login, roles, and reviewed
+topology only in the trusted terminal. It does not copy those values into
+arguments or journals. It does not commit, add a remote, or push. Its
+underlying controller operations use these fixed `platform-instance`
+interfaces. The values file and destination use fixed paths below the
+controller private root:
 
 ```sh
+ansible/bin/platform-instance configure-values \
+  --engine-commit ENGINE-COMMIT \
+  --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION
+
 ansible/bin/platform-instance seed \
   --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION \
   --values /home/smith/private/klokast/init-values.json \

@@ -832,6 +832,7 @@ class PlatformInstanceTest(unittest.TestCase):
             root = Path(temporary)
             values = root / "values.json"
             values.write_text("{}\n", encoding="utf-8")
+            os.chmod(values, 0o600)
             destination = root / "seed"
             args = mock.Mock(build_dir="/verified/build", values=str(values), destination=str(destination))
             completed = mock.Mock(
@@ -841,6 +842,8 @@ class PlatformInstanceTest(unittest.TestCase):
             )
             with mock.patch.object(self.mod, "require_controller_user"), mock.patch.object(
                 self.mod, "PRIVATE_ROOT", root
+            ), mock.patch.object(
+                self.mod, "VALUES_PATH", values
             ), mock.patch.object(
                 self.mod, "DEPLOYMENT_CHECKOUT", root / "instance"
             ), mock.patch.object(

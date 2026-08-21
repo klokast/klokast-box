@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Verify, prepare, seed, synchronize, and report the private instance source."""
+"""Verify, configure, seed, synchronize, and report the private instance source."""
 
 import argparse
+import copy
 import getpass
 import importlib.util
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -19,7 +23,13 @@ PLATFORM_PLAN = SCRIPT.with_name("platform-plan")
 INSTALLED_AUTHORITY = Path("/usr/local/sbin/ksa-instance")
 PRIVATE_ROOT = Path("/home/smith/private/klokast")
 DEPLOYMENT_CHECKOUT = PRIVATE_ROOT / "instance"
+VALUES_PATH = PRIVATE_ROOT / "init-values.json"
+MAXIMUM_VALUES_SIZE = 64 * 1024
 ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+TAILNET_DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
+MEMBER_LOGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PLACEHOLDER_DNS = "REPLACE_WITH_TAILNET_DNS_NAME"
+PLACEHOLDER_LOGIN = "REPLACE_WITH_PRIVATE_LOGIN"
 
 
 class InstanceError(Exception):
@@ -125,6 +135,510 @@ def verify_engine(args):
     }, sort_keys=True))
 
 
+def verify_configure_engine(args):
+    """Return the sealed initializer after all controller checks pass."""
+    require_controller_user()
+    plan = load_plan_wrapper()
+    try:
+        plan.require_active_controller()
+        require_reviewed_engine(args.engine_commit)
+        directory, build_commit = plan.resolve_build_directory(args.build_dir)
+        if build_commit != args.engine_commit:
+            raise InstanceError(
+                f"sealed build is for engine {build_commit}; expected {args.engine_commit}"
+            )
+        receipt, binary = plan.verify_build_directory(directory, build_commit)
+        plan.verify_binary_version(binary, receipt)
+    except plan.PlanError as error:
+        raise InstanceError(f"sealed engine verification failed: {error}") from error
+    return binary
+
+
+def detect_tailnet_dns_name():
+    completed = run(["tailscale", "status", "--json"], capture=True, check=False)
+    if completed.returncode != 0:
+        raise InstanceError(
+            "cannot read Tailscale status; confirm that Tailscale is running on the controller"
+        )
+    try:
+        status_value = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise InstanceError("Tailscale status did not return valid JSON") from error
+    current_tailnet = status_value.get("CurrentTailnet")
+    current_tailnet = current_tailnet if isinstance(current_tailnet, dict) else {}
+    candidates = {
+        value.rstrip(".")
+        for value in (
+            status_value.get("MagicDNSSuffix"),
+            current_tailnet.get("MagicDNSSuffix"),
+        )
+        if isinstance(value, str) and value
+    }
+    if len(candidates) > 1:
+        raise InstanceError("Tailscale status reports conflicting Tailnet DNS names")
+    dns_name = next(iter(candidates), "")
+    if not TAILNET_DNS_RE.fullmatch(dns_name):
+        raise InstanceError(
+            "Tailscale status has no valid Tailnet DNS name ending in .ts.net"
+        )
+    return dns_name
+
+
+def require_real_directory(path, *, private):
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError as error:
+        raise InstanceError(f"required directory is missing: {path}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise InstanceError(f"directory is not owned by the controller user: {path}")
+    if os.path.realpath(path) != str(path):
+        raise InstanceError(f"directory contains a symbolic link or path alias: {path}")
+    if private and stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise InstanceError(f"private directory permits group or other access: {path}")
+
+
+def prepare_values_directory():
+    if not PRIVATE_ROOT.is_absolute() or VALUES_PATH != PRIVATE_ROOT / "init-values.json":
+        raise InstanceError("the instance values path is not the fixed controller private path")
+    home_directory = PRIVATE_ROOT.parent.parent
+    require_real_directory(home_directory, private=False)
+    for directory in (PRIVATE_ROOT.parent, PRIVATE_ROOT):
+        try:
+            os.mkdir(directory, 0o700)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise InstanceError(f"cannot create the controller private directory: {directory}") from error
+        require_real_directory(directory, private=True)
+
+
+def validate_values_metadata(metadata):
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise InstanceError(
+            "init-values.json must be one owner-only regular file with mode 0600"
+        )
+    if metadata.st_size <= 0 or metadata.st_size > MAXIMUM_VALUES_SIZE:
+        raise InstanceError("init-values.json must be non-empty and no larger than 64 KiB")
+
+
+def decode_unique_json(content):
+    def reject_duplicates(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        return json.loads(content.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise InstanceError(
+            "existing init-values.json is malformed or has duplicate keys; it was not changed"
+        ) from error
+
+
+def read_existing_values():
+    try:
+        path_metadata = os.lstat(VALUES_PATH)
+    except FileNotFoundError:
+        return None
+    validate_values_metadata(path_metadata)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(VALUES_PATH, flags)
+    except OSError as error:
+        raise InstanceError("cannot safely open init-values.json") from error
+    try:
+        open_metadata = os.fstat(descriptor)
+        validate_values_metadata(open_metadata)
+        if (
+            path_metadata.st_dev != open_metadata.st_dev
+            or path_metadata.st_ino != open_metadata.st_ino
+        ):
+            raise InstanceError("init-values.json changed during inspection")
+        chunks = []
+        remaining = MAXIMUM_VALUES_SIZE + 1
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 8192))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        if len(content) > MAXIMUM_VALUES_SIZE:
+            raise InstanceError("init-values.json is larger than 64 KiB")
+    finally:
+        os.close(descriptor)
+    return {
+        "metadata": path_metadata,
+        "content": content,
+        "value": decode_unique_json(content),
+    }
+
+
+def build_instance_values(engine_commit, dns_name, member_login):
+    return {
+        "$schema": (
+            "https://raw.githubusercontent.com/klokast/klokast-box/"
+            f"{engine_commit}/schemas/klokast-instance-v1.schema.json"
+        ),
+        "schema-version": 1,
+        "instance": {"id": "klokast-instance"},
+        "tailnet": {
+            "tailnet-dns-name": dns_name,
+            "members": {member_login: {"roles": ["operator", "family"]}},
+        },
+        "sites": {
+            "milla": {"country": "FR", "description": ""},
+            "mingdu": {"country": "CN", "description": ""},
+        },
+        "boxes": {
+            "k001": {
+                "site": "milla",
+                "connectivity-profiles": ["local-ap-direct-egress", "tailscale"],
+            },
+            "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]},
+        },
+        "controllers": {"active": "k002", "standby": "k001"},
+        "airunners": {
+            "preferred": "k002-ops-airunner",
+            "authorized": {
+                "k002-ops-airunner": {
+                    "kind": "controller-container",
+                    "box": "k002",
+                },
+            },
+        },
+        "apps": {
+            "music": {
+                "desired-state": "absent",
+                "data": {"library": {"box": "k002", "retention": "preserve"}},
+            },
+        },
+    }
+
+
+def member_login_error(value):
+    if not value:
+        return "enter the Tailscale member login"
+    if value != value.strip() or any(character.isspace() for character in value):
+        return "the Tailscale member login must not contain spaces"
+    if len(value) > 320:
+        return "the Tailscale member login must not exceed 320 characters"
+    if value in {PLACEHOLDER_LOGIN, PLACEHOLDER_DNS}:
+        return "replace the placeholder with the Tailscale member login"
+    if not MEMBER_LOGIN_RE.fullmatch(value):
+        return (
+            "enter one email-style Tailscale login, such as name@example.com; "
+            "it must contain one @ sign and a dot after it"
+        )
+    return None
+
+
+def classify_existing_values(existing, engine_commit, detected_dns):
+    value = existing["value"]
+    if not isinstance(value, dict):
+        raise InstanceError(
+            "existing init-values.json has an unexpected structure; it was not changed"
+        )
+    try:
+        dns_name = value["tailnet"]["tailnet-dns-name"]
+        members = value["tailnet"]["members"]
+    except (KeyError, TypeError) as error:
+        raise InstanceError(
+            "existing init-values.json has an unexpected structure; it was not changed"
+        ) from error
+    if not isinstance(members, dict) or len(members) != 1:
+        raise InstanceError(
+            "existing init-values.json does not have the reviewed single-member topology; "
+            "it was not changed"
+        )
+    member_login = next(iter(members))
+    if dns_name not in {PLACEHOLDER_DNS, detected_dns}:
+        raise InstanceError(
+            "existing init-values.json has a Tailnet DNS name that differs from current "
+            "Tailscale status; it was not changed"
+        )
+    if member_login != PLACEHOLDER_LOGIN and member_login_error(member_login):
+        raise InstanceError(
+            "existing init-values.json has an invalid Tailscale member login; it was not changed"
+        )
+    normalized = copy.deepcopy(value)
+    normalized["tailnet"]["tailnet-dns-name"] = PLACEHOLDER_DNS
+    normalized["tailnet"]["members"] = {
+        PLACEHOLDER_LOGIN: {"roles": ["operator", "family"]}
+    }
+    expected = build_instance_values(
+        engine_commit, PLACEHOLDER_DNS, PLACEHOLDER_LOGIN
+    )
+    if normalized != expected:
+        raise InstanceError(
+            "existing init-values.json differs from the reviewed topology; it was not changed"
+        )
+    if dns_name == detected_dns and member_login != PLACEHOLDER_LOGIN:
+        return "reused", member_login
+    default_login = member_login if member_login != PLACEHOLDER_LOGIN else None
+    return "repaired", default_login
+
+
+def read_terminal_line(prompt):
+    print(prompt, end="", file=sys.stderr, flush=True)
+    value = sys.stdin.readline()
+    if value == "":
+        raise InstanceError("input ended before configuration completed; no values were changed")
+    return value.rstrip("\r\n")
+
+
+def prompt_member_login(default_login=None):
+    while True:
+        if default_login:
+            answer = read_terminal_line(
+                f"Tailscale member login [{default_login}]: "
+            )
+            candidate = default_login if answer == "" else answer
+        else:
+            candidate = read_terminal_line("Tailscale member login: ")
+        correction = member_login_error(candidate)
+        if correction is None:
+            return candidate
+        print(f"Correction: {correction}.", file=sys.stderr)
+
+
+def confirm_configuration(prompt):
+    answer = read_terminal_line(f"{prompt} [y/N] ")
+    return answer in {"y", "Y", "yes", "YES", "Yes"}
+
+
+def safe_initializer_text(value, fallback):
+    if not isinstance(value, str):
+        return fallback
+    cleaned = " ".join(value.split())
+    cleaned = "".join(character for character in cleaned if character.isprintable())
+    return cleaned[:500] or fallback
+
+
+def parse_initializer_result(completed, destination):
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        if completed.returncode == 0:
+            raise InstanceError("sealed initializer returned invalid result JSON") from error
+        raise InstanceError(
+            f"sealed initializer failed with exit code {completed.returncode} and no readable result"
+        ) from error
+    if not isinstance(result, dict):
+        raise InstanceError("sealed initializer returned an unexpected result")
+    if completed.returncode != 0:
+        diagnostics = result.get("diagnostics")
+        if isinstance(diagnostics, list) and diagnostics:
+            messages = ["sealed initializer rejected the values:"]
+            for diagnostic in diagnostics:
+                if not isinstance(diagnostic, dict):
+                    continue
+                path = safe_initializer_text(diagnostic.get("path"), "values")
+                code = safe_initializer_text(diagnostic.get("code"), "validation.error")
+                message = safe_initializer_text(
+                    diagnostic.get("message"), "the field is invalid"
+                )
+                messages.append(f"  - {path} [{code}]: {message}")
+            if len(messages) > 1:
+                raise InstanceError("\n".join(messages))
+        operational = safe_initializer_text(
+            result.get("operational_error"), "the initializer reported an operational error"
+        )
+        raise InstanceError(f"sealed initializer failed: {operational}")
+    if result.get("created") is not True or Path(result.get("instance_path", "")) != destination:
+        raise InstanceError("sealed initializer did not create the requested validation repository")
+    return result
+
+
+def run_initializer(binary, values_path, destination):
+    completed = run(
+        [
+            binary,
+            "init",
+            "--instance",
+            destination,
+            "--values",
+            values_path,
+            "--json",
+        ],
+        capture=True,
+        check=False,
+    )
+    return parse_initializer_result(completed, destination)
+
+
+def validate_values_with_initializer(binary, values_path):
+    validation_root = Path(
+        tempfile.mkdtemp(prefix=".init-values-check.", dir=PRIVATE_ROOT)
+    )
+    os.chmod(validation_root, 0o700)
+    try:
+        run_initializer(binary, values_path, validation_root / "instance")
+    finally:
+        shutil.rmtree(validation_root)
+
+
+def validate_candidate_with_initializer(binary, value):
+    content = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".init-values-candidate.", dir=PRIVATE_ROOT
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise InstanceError("cannot write the complete candidate values file")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        validate_values_with_initializer(binary, temporary_path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def write_values_atomically(value, existing):
+    content = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".init-values-write.", dir=PRIVATE_ROOT
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise InstanceError("cannot write the complete init-values.json file")
+            view = view[written:]
+        os.fsync(descriptor)
+        validate_values_metadata(os.fstat(descriptor))
+        os.close(descriptor)
+        descriptor = -1
+
+        if existing is None:
+            try:
+                os.link(temporary_path, VALUES_PATH, follow_symlinks=False)
+            except FileExistsError as error:
+                raise InstanceError(
+                    "init-values.json appeared during configuration; it was not overwritten"
+                ) from error
+            temporary_path.unlink()
+        else:
+            current = read_existing_values()
+            if (
+                current is None
+                or current["content"] != existing["content"]
+                or current["metadata"].st_dev != existing["metadata"].st_dev
+                or current["metadata"].st_ino != existing["metadata"].st_ino
+            ):
+                raise InstanceError(
+                    "init-values.json changed during configuration; it was not overwritten"
+                )
+            os.replace(temporary_path, VALUES_PATH)
+        directory_descriptor = os.open(PRIVATE_ROOT, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        final_values = read_existing_values()
+        if final_values is None or final_values["content"] != content:
+            raise InstanceError("the complete init-values.json file was not published")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def show_configuration(dns_name, member_login, existing_state):
+    print("\nReview the Instance Specification values:", file=sys.stderr)
+    print(f"  Tailnet DNS name: {dns_name}", file=sys.stderr)
+    print(f"  Tailscale member login: {member_login}", file=sys.stderr)
+    print("  Member roles: operator, family", file=sys.stderr)
+    print("  Sites: milla (FR), mingdu (CN)", file=sys.stderr)
+    print(
+        "  Boxes: k001 at milla; k002 at mingdu; Tailscale connectivity on both",
+        file=sys.stderr,
+    )
+    print("  Controllers: k002 active; k001 standby", file=sys.stderr)
+    print("  Airunner: k002-ops-airunner", file=sys.stderr)
+    print("  Music: absent; library data on k002 is preserved", file=sys.stderr)
+    print("  Platform time: Etc/UTC (derived; no timezone field)", file=sys.stderr)
+    if existing_state == "reused":
+        print("  Existing values file: valid and unchanged", file=sys.stderr)
+    elif existing_state == "repaired":
+        print("  Existing values file: recognized placeholder template", file=sys.stderr)
+
+
+def configure_values(args):
+    binary = verify_configure_engine(args)
+    dns_name = detect_tailnet_dns_name()
+    prepare_values_directory()
+    existing = read_existing_values()
+    if existing is None:
+        result_state = "created"
+        member_login = prompt_member_login()
+    else:
+        result_state, default_login = classify_existing_values(
+            existing, args.engine_commit, dns_name
+        )
+        if result_state == "reused":
+            member_login = default_login
+        else:
+            member_login = prompt_member_login(default_login)
+    value = build_instance_values(args.engine_commit, dns_name, member_login)
+    if result_state == "reused":
+        validate_values_with_initializer(binary, VALUES_PATH)
+    else:
+        validate_candidate_with_initializer(binary, value)
+    show_configuration(dns_name, member_login, result_state)
+    prompt = (
+        "Reuse this owner-only values file?"
+        if result_state == "reused"
+        else "Write this owner-only values file?"
+    )
+    if not confirm_configuration(prompt):
+        print("Configuration cancelled. No values were changed.", file=sys.stderr)
+        print("cancelled")
+        return
+    if result_state == "reused":
+        current = read_existing_values()
+        if (
+            current is None
+            or current["content"] != existing["content"]
+            or current["metadata"].st_dev != existing["metadata"].st_dev
+            or current["metadata"].st_ino != existing["metadata"].st_ino
+        ):
+            raise InstanceError(
+                "init-values.json changed during review; it was not reused"
+            )
+    else:
+        write_values_atomically(value, existing)
+    print(f"Instance Specification values are complete ({result_state}).", file=sys.stderr)
+    print(result_state)
+
+
 def resolve_private_destination(value):
     supplied = Path(value)
     if not supplied.is_absolute():
@@ -153,8 +667,18 @@ def seed(args):
     except plan.PlanError as error:
         raise InstanceError(str(error)) from error
     supplied_values = Path(args.values)
-    if not supplied_values.is_absolute() or supplied_values.is_symlink() or not supplied_values.is_file():
-        raise InstanceError("--values must be one absolute regular non-symlink file on the controller")
+    if supplied_values != VALUES_PATH:
+        raise InstanceError(
+            "--values must be the fixed controller path /home/smith/private/klokast/init-values.json"
+        )
+    try:
+        values_metadata = os.lstat(supplied_values)
+    except FileNotFoundError as error:
+        raise InstanceError("--values file is missing on the controller") from error
+    try:
+        validate_values_metadata(values_metadata)
+    except InstanceError as error:
+        raise InstanceError(f"unsafe --values file: {error}") from error
     try:
         private_root = PRIVATE_ROOT.resolve(strict=True)
         values = supplied_values.resolve(strict=True)
@@ -163,24 +687,8 @@ def seed(args):
         raise InstanceError("--values must be below the controller private root") from error
     if values != supplied_values:
         raise InstanceError("--values must not contain symbolic links or path aliases")
-    if values.stat().st_size <= 0 or values.stat().st_size > 64 * 1024:
-        raise InstanceError("--values must be non-empty and no larger than 64 KiB")
     destination = resolve_private_destination(args.destination)
-    completed = run([
-        binary,
-        "init",
-        "--instance",
-        destination,
-        "--values",
-        values,
-        "--json",
-    ], capture=True)
-    try:
-        result = json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
-        raise InstanceError("builder-approved klokast returned invalid init JSON") from error
-    if result.get("created") is not True or Path(result.get("instance_path", "")) != destination:
-        raise InstanceError("builder-approved klokast did not create the requested staged instance")
+    run_initializer(binary, values, destination)
     print(json.dumps({
         "schema_version": 1,
         "seeded": True,
@@ -209,6 +717,9 @@ def parse_args(argv):
     verify_parser = commands.add_parser("verify-engine")
     verify_parser.add_argument("--engine-commit", required=True)
     verify_parser.add_argument("--build-dir", required=True)
+    configure_parser = commands.add_parser("configure-values")
+    configure_parser.add_argument("--engine-commit", required=True)
+    configure_parser.add_argument("--build-dir", required=True)
     seed_parser = commands.add_parser("seed")
     seed_parser.add_argument("--build-dir", required=True)
     seed_parser.add_argument("--values", required=True)
@@ -226,12 +737,17 @@ def main(argv=None):
     try:
         if args.action == "verify-engine":
             verify_engine(args)
+        elif args.action == "configure-values":
+            configure_values(args)
         elif args.action == "seed":
             seed(args)
         else:
             authority(args)
     except InstanceError as error:
         die(str(error))
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        die("operation interrupted; the values file is either unchanged or complete")
     return 0
 
 

@@ -130,30 +130,33 @@ target=${1:-}
 shift
 [ "$target" = smith@k002-ops ]
 if [ "${1:-}" = -t ]; then
-  [ "$#" -eq 2 ]
-  case "${2:-}" in
-    *"exec vi '/home/smith/private/klokast/init-values.json'"*) exit 0 ;;
-    *) exit 2 ;;
-  esac
+  exit 2
 fi
 if [ "${1:-}" != sh ]; then
-  exit 0
+  case "$*" in
+    *"platform-instance configure-values"*)
+      printf 'configure-values\n' >>"$FAKE_CALL_LOG"
+      [ "${FAKE_CONFIGURE_FAIL:-0}" != 1 ] || {
+        printf 'guided configuration rejected invalid input\n' >&2
+        exit 1
+      }
+      printf 'Review the Instance Specification values on the controller.\n' >&2
+      printf '%s\n' "${FAKE_VALUES_STATE:-created}"
+      exit 0
+      ;;
+    *) exit 2 ;;
+  esac
 fi
 payload=$(mktemp)
 trap 'rm -f "$payload"' EXIT
 cat >"$payload"
-if grep -q WORKTREE_VALUES_PREFLIGHT "$payload"; then
+if grep -q WORKTREE_CONTROLLER_PREFLIGHT "$payload"; then
   if [ "${FAKE_PREFLIGHT_FAIL:-0}" = 1 ]; then
     printf 'the staged destination already exists; do not overwrite it\n' >&2
     exit 1
   fi
-  operation=${8:-}
-  case "$operation" in
-    prepare) printf 'created\n' ;;
-    check) printf 'checked\n' ;;
-    *) exit 2 ;;
-  esac
 elif grep -q WORKTREE_SEED_OPERATION "$payload"; then
+  printf 'seed\n' >>"$FAKE_CALL_LOG"
   [ "${FAKE_SEED_FAIL:-0}" != 1 ] || exit 1
 elif grep -q WORKTREE_SEED_STATE "$payload"; then
   printf 'present\n'
@@ -182,6 +185,7 @@ fi
             "HOME": str(self.home),
             "PATH": f"{self.fake_bin}:{environment['PATH']}",
             "FAKE_REMOTE_ROOT": str(self.remote),
+            "FAKE_CALL_LOG": str(self.root / "fake-calls.log"),
         })
         if extra_environment:
             environment.update(extra_environment)
@@ -230,8 +234,9 @@ fi
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("staged repository with the exact sealed build", result.stdout)
-        self.assertIn("does not display the\nprivate values", result.stdout)
-        self.assertIn("create a commit, add a remote, or", result.stdout)
+        self.assertIn("does not display the\ncomplete private values file", result.stdout)
+        self.assertIn("does not copy the values into arguments or journals", result.stdout)
+        self.assertIn("does not create a commit, add a remote, or", result.stdout)
         self.assertIn("--resume-transfer", result.stdout)
         self.assertIn("--archive-and-restart", result.stdout)
 
@@ -254,6 +259,25 @@ fi
         self.assertEqual(record["engine_commit"], ENGINE_COMMIT)
         self.assertNotIn("REPLACE_WITH", json.dumps(record))
 
+    def test_repaired_values_state_is_recorded_without_private_values(self):
+        result = self.run_helper(
+            b"y\ny\n",
+            {"FAKE_VALUES_STATE": "repaired"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        record = self.read_audit()[-1]
+        self.assertEqual(record["values_file"], "repaired")
+        self.assertNotIn("example-tailnet.ts.net", json.dumps(record))
+        self.assertNotIn("member@example.com", json.dumps(record))
+
+    def test_valid_values_state_is_reused(self):
+        result = self.run_helper(
+            b"y\ny\n",
+            {"FAKE_VALUES_STATE": "reused"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.read_audit()[-1]["values_file"], "reused")
+
     def test_declining_seed_is_a_redacted_cancellation(self):
         result = self.run_helper(b"n\n")
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -262,6 +286,22 @@ fi
         self.assertEqual(record["outcome"], "cancelled")
         self.assertFalse(record["seed_created"])
         self.assertFalse(record["worktree_created"])
+
+    def test_guided_configuration_cancellation_cannot_start_the_seed(self):
+        result = self.run_helper(extra_environment={"FAKE_VALUES_STATE": "cancelled"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        calls = (self.root / "fake-calls.log").read_text(encoding="utf-8")
+        self.assertIn("configure-values", calls)
+        self.assertNotIn("seed\n", calls)
+        self.assertEqual(self.read_audit()[-1]["outcome"], "cancelled")
+
+    def test_invalid_guided_input_cannot_start_the_seed(self):
+        result = self.run_helper(extra_environment={"FAKE_CONFIGURE_FAIL": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        calls = (self.root / "fake-calls.log").read_text(encoding="utf-8")
+        self.assertIn("configure-values", calls)
+        self.assertNotIn("seed\n", calls)
+        self.assertIn("guided controller values setup failed", result.stdout)
 
     def test_controller_preflight_failure_reports_safe_recovery(self):
         result = self.run_helper(extra_environment={"FAKE_PREFLIGHT_FAIL": "1"})
@@ -335,7 +375,9 @@ fi
         self.assertIn('CONTROLLER_VALUES="/home/smith/private/klokast/init-values.json"', source)
         self.assertIn('CONTROLLER_SEED="/home/smith/private/klokast/instance-seed"', source)
         self.assertIn('stream_controller_seed | tar -xf - -C "$transfer_work"', source)
-        self.assertIn('tailscale ssh "$SSH_TARGET" -t', source)
+        self.assertIn("platform-instance configure-values", source)
+        self.assertNotIn('tailscale ssh "$SSH_TARGET" -t', source)
+        self.assertNotIn("exec vi", source)
         self.assertIn("private-instance.worktree-preparation.finished", source)
         self.assertIn("archive_controller_inputs", source)
         self.assertNotIn("git commit", source)

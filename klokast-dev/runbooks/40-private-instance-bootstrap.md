@@ -344,72 +344,49 @@ The helper does these actions:
 
 - checks the session, active controller, exact engine, sealed build operation,
   and fixed private paths;
-- creates or reuses the owner-only, complete instance JSON file and opens it
-  in `vi` with an interactive terminal;
-- asks before it runs the sealed initializer;
+- runs the guided values setup on the controller in the current terminal;
+- reads the exact Tailnet DNS name from `tailscale status --json`;
+- asks only for the Tailscale member login and checks it immediately;
+- shows the DNS name, login, fixed `operator` and `family` roles, and reviewed
+  two-box topology before it asks for confirmation;
+- writes the complete JSON file atomically with mode `0600` and validates it
+  with the sealed initializer;
+- asks before it uses the sealed initializer to create the controller seed;
 - asks before it streams the new seed to the MacBook;
 - verifies that the worktree has the exact generated files, staged state,
   `main` branch, no commit, no remote, and exact engine lock.
 
-It does not display or copy the private values file. Do not enter its private
-values in chat. The template already contains the reviewed two-box topology.
-Replace only `REPLACE_WITH_TAILNET_DNS_NAME` and
-`REPLACE_WITH_PRIVATE_LOGIN`. Keep both roles on that member. Review all other
-values:
+The setup uses the Tailnet DNS name, not a machine MagicDNS name. It does not
+add a timezone. Platform time is always `Etc/UTC`. The complete reviewed
+topology is in [Klokast Instance Specification v1](../../doc/klokast-instance-specification.md).
 
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/<ENGINE_COMMIT>/schemas/klokast-instance-v1.schema.json",
-  "schema-version": 1,
-  "instance": {"id": "klokast-instance"},
-  "tailnet": {
-    "tailnet-dns-name": "REPLACE_WITH_TAILNET_DNS_NAME",
-    "members": {
-      "REPLACE_WITH_PRIVATE_LOGIN": {"roles": ["operator", "family"]}
-    }
-  },
-  "sites": {
-    "milla": {"country": "FR", "description": ""},
-    "mingdu": {"country": "CN", "description": ""}
-  },
-  "boxes": {
-    "k001": {
-      "site": "milla",
-      "connectivity-profiles": ["local-ap-direct-egress", "tailscale"]
-    },
-    "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]}
-  },
-  "controllers": {"active": "k002", "standby": "k001"},
-  "airunners": {
-    "preferred": "k002-ops-airunner",
-    "authorized": {
-      "k002-ops-airunner": {"kind": "controller-container", "box": "k002"}
-    }
-  },
-  "apps": {
-    "music": {
-      "desired-state": "absent",
-      "data": {"library": {"box": "k002", "retention": "preserve"}}
-    }
-  }
-}
-```
+If the values file does not exist, the setup creates it. If the existing file
+is valid and has the reviewed topology, the setup shows it and can reuse it
+without a write. If it is the known placeholder template, including a partial
+edit of that template, the setup can repair it after confirmation. The setup
+does not overwrite a malformed file, an unexpected file, a symbolic link, a
+hard link, or a file with unsafe permissions.
 
-Use the Tailnet DNS name, not a machine MagicDNS name. Do not add a timezone;
-Platform time is always `Etc/UTC`.
+An invalid login gives a specific correction and asks again. An invalid or
+unavailable Tailscale status stops the operation. Cancellation, end of input,
+or an interrupt cannot start seed creation. If the sealed initializer rejects
+the completed values, the helper prints each rejected field before it stops.
 
 The helper writes a redacted result to `$BOOTSTRAP_WORK/action-audit.jsonl`.
 The record contains the phase, result, controller, repository hash, engine and
-build pins, and whether it created or reused each staged result. It does not
-contain private values or generated Instance Specification content.
+build pins, and whether it created, reused, or repaired each staged result. It
+does not contain private values or generated Instance Specification content.
 
 The controller seed and MacBook worktree must not already exist. The helper
 does not overwrite or delete them. If the operation fails after it creates one
 of them, read the final recovery message and ask the agent to inspect that
 result before another attempt.
 
-The old unreleased YAML seed is not compatible with this format. If the
-controller seed or MacBook worktree comes from an earlier attempt, run:
+Run the normal helper again to repair the known placeholder values file. Do
+not use `--archive-and-restart` for that recovery.
+
+The old unreleased YAML seed is not compatible with this format. If a
+controller seed or MacBook worktree comes from that earlier format, run:
 
 ```sh
 klokast-dev/bin/prepare-private-instance-worktree --archive-and-restart

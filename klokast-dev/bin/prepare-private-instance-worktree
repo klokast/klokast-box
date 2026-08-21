@@ -33,15 +33,16 @@ usage() {
   cat <<EOF
 Usage: $0 [--resume-transfer | --archive-and-restart]
 
-Prepares the Klokast Instance Specification values on the active controller, creates a
+Guides the private Instance Specification setup on the active controller, creates a
 staged repository with the exact sealed build, and transfers it to:
   $PRIVATE_WORKTREE
 
 Run prepare-private-instance-bootstrap and complete Step 8 of
 klokast-dev/runbooks/40-private-instance-bootstrap.md before use. The helper
 loads the owner-only bootstrap session directly. It does not display the
-private values, create a commit, add a remote, or
-push to GitHub.
+complete private values file. It shows the guided values review only in the
+current terminal and does not copy the values into arguments or journals. It
+does not create a commit, add a remote, or push to GitHub.
 
 Use --resume-transfer only after an earlier run created the controller seed
 but failed before it published the MacBook worktree. This mode requires the
@@ -124,7 +125,7 @@ if not re.fullmatch(r"[0-9a-f]{40}", engine_commit):
     raise SystemExit("invalid worktree log engine commit")
 if not re.fullmatch(r"[0-9a-f]{12}", build_operation):
     raise SystemExit("invalid worktree log build operation")
-if values_state not in {"unknown", "created", "reused"}:
+if values_state not in {"unknown", "created", "reused", "repaired"}:
     raise SystemExit("invalid worktree log values state")
 if seed_created not in {"true", "false"} or worktree_created not in {"true", "false"}:
     raise SystemExit("invalid worktree log Boolean")
@@ -253,7 +254,7 @@ for record in reversed(records):
             and record.get("seed_created") is True
             and record.get("worktree_created") is False):
         values_state = record.get("values_file", "unknown")
-        print(values_state if values_state in {"created", "reused"} else "unknown")
+        print(values_state if values_state in {"created", "reused", "repaired"} else "unknown")
         raise SystemExit(0)
     raise SystemExit("the latest matching audit record does not permit seed-transfer recovery")
 else:
@@ -261,20 +262,18 @@ else:
 PY
 }
 
-prepare_or_check_controller_values() {
-  local operation="$1"
-
+controller_preflight() {
+  # WORKTREE_CONTROLLER_PREFLIGHT: the MacBook wrapper tests this closed operation.
   tailscale ssh "$SSH_TARGET" sh -s -- \
-    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_VALUES" \
-    "$CONTROLLER_SEED" "$operation" "$INSTANCE_OWNER" "$INSTANCE_REPO" <<'SH'
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_SEED" \
+    "$INSTANCE_OWNER" "$INSTANCE_REPO" <<'SH'
+# WORKTREE_CONTROLLER_PREFLIGHT
 set -eu
 expected_commit=$1
 build_operation=$2
-values_path=$3
-seed_path=$4
-operation=$5
-repo_owner=$6
-repo_name=$7
+seed_path=$3
+repo_owner=$4
+repo_name=$5
 repo="$HOME/src/klokast/klokast-box"
 build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$build_operation"
 
@@ -314,107 +313,17 @@ expected_hash = hashlib.sha256(f"{owner}/{repo}".encode("utf-8")).hexdigest()
 if value.get("repository_sha256") != expected_hash:
     raise SystemExit("controller repository does not match the bootstrap session")
 ' "$repo_owner" "$repo_name" || die "private-instance controller prerequisites are incomplete"
-
-# WORKTREE_VALUES_PREFLIGHT: the MacBook wrapper tests this closed operation.
-python3 - "$values_path" "$operation" "$expected_commit" <<'PY'
-import json
-import os
-import stat
-import sys
-
-path, operation, expected_commit = sys.argv[1:]
-expected = "/home/smith/private/klokast/init-values.json"
-if path != expected or operation not in {"prepare", "check"}:
-    raise SystemExit("the values operation or path is invalid")
-parent = os.path.dirname(path)
-try:
-    parent_metadata = os.lstat(parent)
-except FileNotFoundError:
-    if operation != "prepare":
-        raise SystemExit("the controller private directory is missing")
-    os.makedirs(parent, mode=0o700, exist_ok=False)
-    parent_metadata = os.lstat(parent)
-if (not stat.S_ISDIR(parent_metadata.st_mode)
-        or parent_metadata.st_uid != os.getuid()
-        or stat.S_IMODE(parent_metadata.st_mode) & 0o077):
-    raise SystemExit("the controller private directory is not owner-only")
-if os.path.realpath(parent) != parent:
-    raise SystemExit("the controller private directory contains a path alias")
-
-def validate(metadata):
-    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
-            or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
-        raise SystemExit("init-values.json must be one owner-only regular file with mode 0600")
-    if metadata.st_size <= 0 or metadata.st_size > 64 * 1024:
-        raise SystemExit("init-values.json must be non-empty and no larger than 64 KiB")
-
-try:
-    metadata = os.lstat(path)
-except FileNotFoundError:
-    if operation != "prepare":
-        raise SystemExit("init-values.json is missing after the editor closed")
-    schema = (
-        "https://raw.githubusercontent.com/klokast/klokast-box/"
-        f"{expected_commit}/schemas/klokast-instance-v1.schema.json"
-    )
-    value = {
-        "$schema": schema,
-        "schema-version": 1,
-        "instance": {"id": "klokast-instance"},
-        "tailnet": {
-            "tailnet-dns-name": "REPLACE_WITH_TAILNET_DNS_NAME",
-            "members": {
-                "REPLACE_WITH_PRIVATE_LOGIN": {"roles": ["operator", "family"]},
-            },
-        },
-        "sites": {
-            "milla": {"country": "FR", "description": ""},
-            "mingdu": {"country": "CN", "description": ""},
-        },
-        "boxes": {
-            "k001": {
-                "site": "milla",
-                "connectivity-profiles": ["local-ap-direct-egress", "tailscale"],
-            },
-            "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]},
-        },
-        "controllers": {"active": "k002", "standby": "k001"},
-        "airunners": {
-            "preferred": "k002-ops-airunner",
-            "authorized": {
-                "k002-ops-airunner": {"kind": "controller-container", "box": "k002"},
-            },
-        },
-        "apps": {
-            "music": {
-                "desired-state": "absent",
-                "data": {"library": {"box": "k002", "retention": "preserve"}},
-            },
-        },
-    }
-    template = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        view = memoryview(template)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise SystemExit("cannot write the complete init-values.json template")
-            view = view[written:]
-        os.fsync(descriptor)
-        os.fchmod(descriptor, 0o600)
-        validate(os.fstat(descriptor))
-    finally:
-        os.close(descriptor)
-    print("created")
-else:
-    validate(metadata)
-    print("reused" if operation == "prepare" else "checked")
-PY
 SH
+}
+
+configure_controller_values() {
+  local remote_command=""
+
+  # The private DNS name and member login pass only through the controller's
+  # standard input and error streams. Standard output contains one redacted
+  # result word for the local journal.
+  remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance configure-values --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION"
+  tailscale ssh "$SSH_TARGET" "$remote_command"
 }
 
 seed_on_controller() {
@@ -1014,42 +923,45 @@ if [ -e "$PRIVATE_WORKTREE" ] || [ -L "$PRIVATE_WORKTREE" ]; then
   ksa_die "the MacBook destination already exists; do not overwrite it: $PRIVATE_WORKTREE"
 fi
 
+worktree_phase="controller-preflight"
 printf '\nChecking the active controller and private paths...\n'
 if [ "$mode" = normal ]; then
-  controller_values_result=""
-  if ! controller_values_result="$(prepare_or_check_controller_values prepare)"; then
+  if ! controller_preflight; then
     ksa_die "the controller preflight failed"
   fi
-  values_state="$controller_values_result"
+
+  worktree_phase="configure-private-values"
+  printf '\nThe controller will guide the private Instance Specification setup.\n'
+  printf 'It detects the Tailnet DNS name and asks only for the Tailscale member login.\n'
+  values_state=""
+  if ! values_state="$(configure_controller_values)"; then
+    ksa_die "the guided controller values setup failed"
+  fi
   case "$values_state" in
     created)
-      printf 'Created an owner-only values template on %s.\n' "$CONTROLLER"
+      printf 'Created and validated the owner-only values file on %s.\n' "$CONTROLLER"
       ;;
     reused)
-      printf 'Reusing the existing owner-only values file on %s.\n' "$CONTROLLER"
+      printf 'Reviewed and validated the existing owner-only values file on %s.\n' "$CONTROLLER"
+      ;;
+    repaired)
+      printf 'Repaired and validated the recognized placeholder file on %s.\n' "$CONTROLLER"
+      ;;
+    cancelled)
+      values_state="unknown"
+      cancel
       ;;
     *)
       ksa_die "the controller returned an invalid values-file state"
       ;;
   esac
 
-  worktree_phase="edit-private-values"
-  printf '\nThe controller will open the private values file in vi.\n'
-  printf 'Replace both REPLACE values. Keep both operator and family roles on the member.\n'
-  printf 'Do not add a timezone. Platform time is always Etc/UTC.\n'
-  tailscale ssh "$SSH_TARGET" -t \
-    "umask 077; exec vi '$CONTROLLER_VALUES'"
-
-  worktree_phase="check-private-values"
-  checked_state="$(prepare_or_check_controller_values check)"
-  [ "$checked_state" = checked ] || ksa_die "the controller did not confirm the private values file"
-
   worktree_phase="confirm-seed"
   printf '\nReady to create the staged Instance Specification repository.\n'
   printf '  Controller: %s\n' "$CONTROLLER"
   printf '  Engine: %s\n' "$ENGINE_COMMIT"
   printf '  Build operation: %s\n' "$BUILD_OPERATION"
-  printf 'The sealed initializer will validate the complete private JSON input.\n'
+  printf 'The complete private JSON input passed the sealed initializer validation.\n'
   if ! confirm_no "Create the controller seed with these fixed inputs?"; then
     cancel
   fi
