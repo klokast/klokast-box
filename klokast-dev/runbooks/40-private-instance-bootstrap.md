@@ -41,11 +41,16 @@ prepare. It explains each action before it makes a change. It then:
 - collects the non-secret bootstrap settings;
 - checks and updates the public checkout;
 - checks the MacBook tools and active controller;
+- requires a clean controller checkout that contains the approved engine in
+  its Git history, and verifies the exact sealed build receipt and binary;
 - creates or reuses the private-instance Secure Enclave approval key and asks
   before it installs the public signer on the controller;
 - saves an owner-only session file for the remaining steps.
 
 The helper does not ask for a GitHub App PEM or private deployment values.
+The public controller checkout can be newer than the approved engine. These
+are separate pins: the current checkout supplies the bootstrap wrappers, and
+the approved sealed engine supplies the generated Instance Specification.
 
 When it completes, load the settings into the same terminal:
 
@@ -248,8 +253,10 @@ fingerprint. The private deploy key stays root-only on `<box>-ops`.
 
 The GitHub App credential alone cannot authorize these changes. For each
 high-authority change, the controller creates a single-use intent that expires
-after 10 minutes. The intent names the exact action, repository, controller
-engine commit, and key fingerprint when required.
+after 10 minutes. The intent names the exact action, repository, current clean
+controller commit, approved engine commit, and key fingerprint when required.
+In the intent, `repo_head` is the current controller commit and
+`engine_commit` is the approved sealed engine from Step 1.
 
 The wrapper does the mechanical work. Your responsibility is to read the
 displayed intent, approve only the expected values, and use Touch ID. It does
@@ -263,11 +270,12 @@ From the trusted MacBook, run the wrapper:
 klokast-dev/bin/run-private-instance-action register-repository
 ```
 
-The wrappers displays the intent. The following fields are specially sensitive:
+The wrapper displays the intent. Check these sensitive fields:
 
 - action: `register-repository`;
 - repository: `<family-org>/klokast-instance`;
-- engine commit: the `ENGINE_COMMIT` from Step 1;
+- `repo_head`: the current clean controller checkout reported in Step 1;
+- `engine_commit`: the `ENGINE_COMMIT` from Step 1;
 - expiry: no more than 10 minutes in the future.
 
 Answer `y` when all fields are correct.
@@ -284,17 +292,20 @@ After repository registration succeeds, run:
 klokast-dev/bin/run-private-instance-action register-read-key
 ```
 
-In the output, confirm these :
-- same repository
-- same engine commit
-- same key fingerprint as in Step 7.
+In the output, confirm these values:
+
+- the same repository;
+- the current clean controller commit in `repo_head`;
+- the same approved engine commit;
+- the same key fingerprint as in Step 7.
 
 Answer `y`, then approve Touch ID. If you answer anything other than `y`, no signature is made and no action is run.
 If an action fails or its intent expires, run the same wrapper command again to create a new intent. Do not reuse or edit an intent.
 
 For each run, the wrapper adds one redacted record to
 `$BOOTSTRAP_WORK/action-audit.jsonl`. The record has the action, result, failed
-phase, exit code, controller, engine commit, repository hash, and intent hash.
+phase, exit code, controller commit, engine commit, repository hash, and intent
+hash.
 It does not contain the intent, signature, deploy key, GitHub token, or GitHub
 response. The controller also records the approved action start, result, and
 deploy-key cleanup result in `/var/log/klokast/secret-authority.jsonl`. The
@@ -590,8 +601,17 @@ and registry authority stays active. No apply action is part of this runbook.
   owner. Do not select an unrelated repository or **All repositories**.
 - **The intent expired:** generate and sign a new intent.
 - **The nonce was already used:** generate and sign a new intent.
-- **The intent has another engine commit:** stop. Pulling or changing the
-  public controller checkout during bootstrap changes the approval boundary.
+- **The intent has another `repo_head`:** stop. The controller checkout changed
+  after preflight. Rerun the wrapper and review the new current controller
+  commit before approval.
+- **The intent has another engine commit:** stop. Rerun
+  `prepare-private-instance-bootstrap` and load its new session. A newer clean
+  public controller checkout is permitted, but the intent must still contain
+  the exact approved engine from Step 1.
+- **The controller checkout is newer than the approved engine:** this is
+  permitted when the approved engine is in the checkout history and the exact
+  sealed build passes verification. Do not reset the controller checkout to
+  the older engine commit.
 - **An action fails after approval:** read the failed phase in the final
   wrapper summary. Review the last record in
   `$BOOTSTRAP_WORK/action-audit.jsonl`. Ask the agent to review the matching

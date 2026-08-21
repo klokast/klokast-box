@@ -141,7 +141,7 @@ record = {
     "phase": phase,
     "controller": controller,
     "repository_sha256": hashlib.sha256(repository.encode("utf-8")).hexdigest(),
-    "repo_head": engine_commit,
+    "engine_commit": engine_commit,
     "build_operation": build_operation,
     "values_file": values_state,
     "seed_created": seed_created == "true",
@@ -246,7 +246,7 @@ for record in reversed(records):
     if not (record.get("event") == "private-instance.worktree-preparation.finished"
             and record.get("controller") == controller
             and record.get("repository_sha256") == repository_hash
-            and record.get("repo_head") == engine_commit
+            and record.get("engine_commit", record.get("repo_head")) == engine_commit
             and record.get("build_operation") == build_operation):
         continue
     if (record.get("outcome") in {"failure", "cancelled"}
@@ -265,33 +265,33 @@ prepare_or_check_controller_values() {
   local operation="$1"
 
   tailscale ssh "$SSH_TARGET" sh -s -- \
-    "$ENGINE_COMMIT" "$CONTROLLER_VALUES" "$CONTROLLER_SEED" "$operation" \
-    "$INSTANCE_OWNER" "$INSTANCE_REPO" <<'SH'
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_VALUES" \
+    "$CONTROLLER_SEED" "$operation" "$INSTANCE_OWNER" "$INSTANCE_REPO" <<'SH'
 set -eu
 expected_commit=$1
-values_path=$2
-seed_path=$3
-operation=$4
-repo_owner=$5
-repo_name=$6
+build_operation=$2
+values_path=$3
+seed_path=$4
+operation=$5
+repo_owner=$6
+repo_name=$7
 repo="$HOME/src/klokast/klokast-box"
+build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$build_operation"
 
 die() {
   printf 'prepare-private-instance-worktree: controller values check: %s\n' "$*" >&2
   exit 1
 }
 
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
-  die "this controller is not active"
 [ -d "$repo/.git" ] || die "the controller checkout is missing"
-actual_commit=$(git -C "$repo" rev-parse HEAD) || die "cannot read the controller engine commit"
-[ "$actual_commit" = "$expected_commit" ] || \
-  die "controller engine is $actual_commit; expected $expected_commit"
-[ -z "$(git -C "$repo" status --porcelain)" ] || die "the controller checkout has changes"
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected_commit" --build-dir "$build_dir" >/dev/null || \
+  die "the approved sealed engine or current controller checkout failed verification"
 [ ! -e "$seed_path" ] && [ ! -L "$seed_path" ] || \
   die "the staged destination already exists at $seed_path; do not overwrite it"
 
-status=$(cd "$repo" && ansible/bin/secret-authority instance status --redacted) || \
+status=$(ansible/bin/secret-authority instance status --redacted) || \
   die "cannot read the redacted private-instance controller status"
 printf '%s\n' "$status" | python3 -c '
 import hashlib
@@ -436,8 +436,10 @@ die() {
 /usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
   die "this controller is not active"
 cd "$repo"
-[ "$(git rev-parse HEAD)" = "$commit" ] || die "the controller engine commit changed"
-[ -z "$(git status --porcelain)" ] || die "the controller checkout has changes"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$commit" \
+  --build-dir "/var/lib/klokast/builds/klokast-cli/$commit/$operation" >/dev/null || \
+  die "the approved sealed engine or current controller checkout failed verification"
 
 # WORKTREE_SEED_OPERATION: the MacBook wrapper tests this closed operation.
 ansible/bin/platform-instance seed \
@@ -450,15 +452,17 @@ SH
 
 controller_seed_state() {
   tailscale ssh "$SSH_TARGET" sh -s -- \
-    "$ENGINE_COMMIT" "$CONTROLLER_SEED" <<'SH'
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_SEED" <<'SH'
 set -eu
 expected_commit=$1
-seed_path=$2
+operation=$2
+seed_path=$3
 repo="$HOME/src/klokast/klokast-box"
+build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$operation"
 
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
-[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ]
-[ -z "$(git -C "$repo" status --porcelain)" ]
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected_commit" --build-dir "$build_dir" >/dev/null
 [ "$seed_path" = /home/smith/private/klokast/instance-seed ]
 
 # WORKTREE_SEED_STATE: distinguish a completed seed after a failed transport.
@@ -487,11 +491,10 @@ die() {
   exit 1
 }
 
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
-  die "this controller is not active"
-[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ] || \
-  die "the controller engine commit changed"
-[ -z "$(git -C "$repo" status --porcelain)" ] || die "the controller checkout has changes"
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected_commit" --build-dir "$build_dir" >/dev/null || \
+  die "the approved sealed engine or current controller checkout failed verification"
 [ "$seed_path" = /home/smith/private/klokast/instance-seed ] || die "the seed path is invalid"
 [ -d "$seed_path/.git" ] && [ ! -L "$seed_path" ] || \
   die "the expected controller seed is missing or unsafe"
@@ -536,22 +539,23 @@ SH
 
 stream_controller_seed() {
   tailscale ssh "$SSH_TARGET" sh -s -- \
-    "$ENGINE_COMMIT" "$CONTROLLER_SEED" <<'SH'
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_SEED" <<'SH'
 set -eu
 expected_commit=$1
-seed_path=$2
+operation=$2
+seed_path=$3
 repo="$HOME/src/klokast/klokast-box"
+build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$operation"
 
 die() {
   printf 'prepare-private-instance-worktree: controller transfer: %s\n' "$*" >&2
   exit 1
 }
 
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null || \
-  die "this controller is not active"
-[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ] || \
-  die "the controller engine commit changed"
-[ -z "$(git -C "$repo" status --porcelain)" ] || die "the controller checkout has changes"
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected_commit" --build-dir "$build_dir" >/dev/null || \
+  die "the approved sealed engine or current controller checkout failed verification"
 [ "$seed_path" = /home/smith/private/klokast/instance-seed ] || die "the seed path is invalid"
 [ -d "$seed_path/.git" ] && [ ! -L "$seed_path" ] || \
   die "the expected controller seed is missing or unsafe"
@@ -803,19 +807,21 @@ archive_controller_inputs() {
   local stamp="$2"
 
   tailscale ssh "$SSH_TARGET" sh -s -- \
-    "$ENGINE_COMMIT" "$CONTROLLER_VALUES" "$CONTROLLER_SEED" \
-    "$operation" "$stamp" <<'SH'
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$CONTROLLER_VALUES" \
+    "$CONTROLLER_SEED" "$operation" "$stamp" <<'SH'
 set -eu
 expected_commit=$1
-values_path=$2
-seed_path=$3
-operation=$4
-stamp=$5
+build_operation=$2
+values_path=$3
+seed_path=$4
+operation=$5
+stamp=$6
 repo="$HOME/src/klokast/klokast-box"
+build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$build_operation"
 
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
-[ "$(git -C "$repo" rev-parse HEAD)" = "$expected_commit" ]
-[ -z "$(git -C "$repo" status --porcelain)" ]
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected_commit" --build-dir "$build_dir" >/dev/null
 [ "$values_path" = /home/smith/private/klokast/init-values.json ]
 [ "$seed_path" = /home/smith/private/klokast/instance-seed ]
 

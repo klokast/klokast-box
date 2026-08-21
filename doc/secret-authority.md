@@ -158,12 +158,21 @@ klokast-dev/bin/run-private-instance-action register-read-key
 ```
 
 The wrapper gets one 10-minute intent from the controller and displays it. The
-human checks the exact action, repository, engine commit, key fingerprint when
-present, and expiry before approval. The wrapper asks before it calls the
-dedicated Apple CryptoTokenKit identity. Touch ID protects the non-exportable
-Secure Enclave key. The wrapper transfers only the intent and signature and
-runs only the approved action. It never copies the local approval profile to
-the controller or an airunner.
+human checks the exact action, repository, current controller commit, approved
+engine commit, key fingerprint when present, and expiry before approval. The
+wrapper asks before it calls the dedicated Apple CryptoTokenKit identity.
+Touch ID protects the non-exportable Secure Enclave key. The wrapper transfers
+only the intent and signature and runs only the approved action. It never
+copies the local approval profile to the controller or an airunner.
+
+The approved engine and the current public controller checkout are separate
+pins. The controller checkout can be newer. It must be clean, and the approved
+engine must be in its Git history. Before an approval or seed operation, the
+MacBook wrappers also verify the exact sealed build directory, builder receipt,
+binary hash, and binary version with `platform-instance verify-engine`.
+The closed approval intent schema v2 uses `repo_head` for the current
+controller commit and `engine_commit` for the approved sealed engine. This
+intent version is separate from Instance Specification v1.
 
 `register-read-key` keeps the GitHub key only when GitHub confirms
 `read_only: true` and an authenticated Git query proves that the repository has

@@ -2,6 +2,16 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-21 - MacBook bootstrap wrappers require a real macOS integration run
+
+The infra-agent host cannot run the interactive private-instance wrappers
+because they require macOS, Tailscale access from the trusted MacBook, and
+Apple CryptoTokenKit. Deterministic tests cover the separate controller and
+approved-engine pins. The active controller can verify the sealed build and
+the installed root wrapper. The human must still rerun
+`prepare-private-instance-bootstrap` on the trusted MacBook to verify the
+complete terminal and Touch ID path after a wrapper change.
+
 # 2026-08-16 - make touch ID sign in popups more explicit
 
 At @doc/40-private-instance-bootstrap.md, step #8.1 , the current Touch ID popup only reads:

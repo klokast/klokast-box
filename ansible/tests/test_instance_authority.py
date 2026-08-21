@@ -34,8 +34,11 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.mod = load(SCRIPT, "ksa_instance")
 
     def run_script(self, *arguments):
+        return self.run_script_for_repo(REPO_ROOT, *arguments)
+
+    def run_script_for_repo(self, repo_root, *arguments):
         return subprocess.run(
-            [str(SCRIPT), "--repo-root", str(REPO_ROOT), *arguments],
+            [str(SCRIPT), "--repo-root", str(repo_root), *arguments],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -48,23 +51,80 @@ class InstanceAuthorityTest(unittest.TestCase):
             "repo_owner": "family",
             "repo_name": "klokast-instance",
             "repo_head": "a" * 40,
+            "engine_commit": "b" * 40,
             "nonce": "nonce_123456789",
         }
 
-    def test_register_intent_is_canonical_and_bound_to_public_commit(self):
-        result = self.run_script(
-            "intent", "instance", "register-repository",
-            "--repo-owner", "family", "--repo-name", "klokast-instance",
-            "--expires-at", "2099-01-01T00:00:00Z",
-            "--nonce", "nonce_123456789",
+    @staticmethod
+    def make_reviewed_repo(root):
+        subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
+        subprocess.run(["git", "-C", root, "config", "user.name", "Klokast test"], check=True)
+        subprocess.run(
+            ["git", "-C", root, "config", "user.email", "test@klokast.invalid"],
+            check=True,
         )
+        tracked = Path(root) / "tracked"
+        tracked.write_text("first\n", encoding="utf-8")
+        subprocess.run(["git", "-C", root, "add", "tracked"], check=True)
+        subprocess.run(["git", "-C", root, "commit", "-qm", "first"], check=True)
+        approved = subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "HEAD"], text=True
+        ).strip()
+        tracked.write_text("second\n", encoding="utf-8")
+        subprocess.run(["git", "-C", root, "commit", "-qam", "second"], check=True)
+        current = subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "HEAD"], text=True
+        ).strip()
+        return approved, current
+
+    def test_register_intent_is_canonical_and_bound_to_approved_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            approved_engine, current_commit = self.make_reviewed_repo(temporary)
+            result = self.run_script_for_repo(
+                temporary,
+                "intent", "instance", "register-repository",
+                "--repo-owner", "family", "--repo-name", "klokast-instance",
+                "--engine-commit", approved_engine,
+                "--expires-at", "2099-01-01T00:00:00Z",
+                "--nonce", "nonce_123456789",
+            )
         self.assertEqual(result.returncode, 0, result.stderr)
         intent = json.loads(result.stdout)
         self.assertEqual(result.stdout, self.mod.canonical_json(intent))
         self.assertEqual(intent["action"], "register-repository")
-        self.assertEqual(intent["repo_head"], subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
-        ).strip())
+        self.assertEqual(intent["schema_version"], 2)
+        self.assertEqual(intent["repo_head"], current_commit)
+        self.assertEqual(intent["engine_commit"], approved_engine)
+        self.assertNotEqual(approved_engine, current_commit)
+
+    def test_register_intent_rejects_unavailable_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.make_reviewed_repo(temporary)
+            result = self.run_script_for_repo(
+                temporary,
+                "intent", "instance", "register-repository",
+                "--repo-owner", "family", "--repo-name", "klokast-instance",
+                "--engine-commit", "a" * 40,
+                "--expires-at", "2099-01-01T00:00:00Z",
+                "--nonce", "nonce_123456789",
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("approved engine commit is not available", result.stderr)
+
+    def test_register_intent_rejects_changed_controller_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            approved_engine, _current_commit = self.make_reviewed_repo(temporary)
+            (Path(temporary) / "untracked").write_text("change\n", encoding="utf-8")
+            result = self.run_script_for_repo(
+                temporary,
+                "intent", "instance", "register-repository",
+                "--repo-owner", "family", "--repo-name", "klokast-instance",
+                "--engine-commit", approved_engine,
+                "--expires-at", "2099-01-01T00:00:00Z",
+                "--nonce", "nonce_123456789",
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("current controller checkout has changes", result.stderr)
 
     def test_github_app_refuses_contents_permission(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,9 +182,13 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertNotIn("must-not-appear", json.dumps(records))
 
     def test_private_instance_repository_name_is_exact(self):
+        approved_engine = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
+        ).strip()
         result = self.run_script(
             "intent", "instance", "register-repository",
             "--repo-owner", "family", "--repo-name", "klokast",
+            "--engine-commit", approved_engine,
             "--expires-at", "2099-01-01T00:00:00Z",
             "--nonce", "nonce_123456789",
         )
@@ -641,14 +705,18 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn("Sign and run this exact action? [y/N]", source)
         self.assertIn('"$SCRIPT_DIR/sign-secret-authority-intent"', source)
         self.assertIn("intent fields do not match the closed schema", source)
+        self.assertIn('"schema_version": 2', source)
+        self.assertIn('"engine_commit": engine_commit', source)
+        self.assertIn('"repo_head": controller_commit', source)
         self.assertIn("intent is not canonical JSON", source)
         self.assertIn("private-instance.wrapper.finished", source)
         self.assertIn("intent_sha256", source)
         self.assertIn("Private-instance action failed.", source)
         self.assertIn("Failed phase:", source)
         self.assertIn("secret-authority.jsonl", source)
-        self.assertIn("test \"$(git rev-parse HEAD)\" = \"$expected\"", source)
-        self.assertIn("klokast-controller-guard --status --json --require-active", source)
+        self.assertIn("ansible/bin/platform-instance verify-engine", source)
+        self.assertIn('--engine-commit "$expected"', source)
+        self.assertNotIn("test \"$(git rev-parse HEAD)\" = \"$expected\"", source)
         self.assertIn('EXPECTED_REPO_NAME="klokast-instance"', source)
         self.assertNotIn("github-app.pem", source)
 
@@ -678,6 +746,53 @@ class PlatformInstanceTest(unittest.TestCase):
                 self.assertEqual(self.mod.resolve_private_destination(str(root / "seed")), root / "seed")
                 with self.assertRaisesRegex(self.mod.InstanceError, "deployment checkout"):
                     self.mod.resolve_private_destination(str(root / "instance"))
+
+    def test_verify_engine_separates_current_checkout_from_sealed_engine(self):
+        class Plan:
+            class PlanError(Exception):
+                pass
+
+            @staticmethod
+            def require_active_controller():
+                return None
+
+            @staticmethod
+            def resolve_build_directory(_value):
+                return Path("/verified/build"), "a" * 40
+
+            @staticmethod
+            def verify_build_directory(_directory, _commit):
+                return {}, Path("/verified/klokast")
+
+            @staticmethod
+            def verify_binary_version(_binary, _receipt):
+                return None
+
+        args = mock.Mock(engine_commit="a" * 40, build_dir="/verified/build")
+        with mock.patch.object(self.mod, "require_controller_user"), mock.patch.object(
+            self.mod, "require_reviewed_engine", return_value="b" * 40
+        ), mock.patch.object(
+            self.mod, "load_plan_wrapper", return_value=Plan
+        ), mock.patch("builtins.print") as printer:
+            self.mod.verify_engine(args)
+        result = json.loads(printer.call_args.args[0])
+        self.assertEqual(result["engine_commit"], "a" * 40)
+        self.assertEqual(result["controller_commit"], "b" * 40)
+        self.assertTrue(result["verified"])
+
+    def test_reviewed_engine_requires_a_clean_ancestor(self):
+        current = mock.Mock(returncode=0, stdout="b" * 40 + "\n", stderr="")
+        clean = mock.Mock(returncode=0, stdout="", stderr="")
+        success = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(
+            self.mod, "run", side_effect=[current, clean, success, success]
+        ) as runner:
+            result = self.mod.require_reviewed_engine("a" * 40)
+        self.assertEqual(result, "b" * 40)
+        self.assertEqual(
+            runner.call_args_list[-1].args[0][-2:],
+            ["a" * 40, "b" * 40],
+        )
 
     def test_source_actions_use_only_installed_root_wrapper(self):
         args = mock.Mock(action="sync", repo_owner="family", repo_name="klokast-instance")

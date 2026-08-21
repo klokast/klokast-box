@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare, seed, synchronize, and report the private instance source."""
+"""Verify, prepare, seed, synchronize, and report the private instance source."""
 
 import argparse
 import getpass
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
@@ -18,6 +19,7 @@ PLATFORM_PLAN = SCRIPT.with_name("platform-plan")
 INSTALLED_AUTHORITY = Path("/usr/local/sbin/ksa-instance")
 PRIVATE_ROOT = Path("/home/smith/private/klokast")
 DEPLOYMENT_CHECKOUT = PRIVATE_ROOT / "instance"
+ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class InstanceError(Exception):
@@ -57,6 +59,70 @@ def load_plan_wrapper():
 def require_controller_user():
     if getpass.getuser() != "smith":
         raise InstanceError("run as smith on the active controller")
+
+
+def require_reviewed_engine(engine_commit):
+    if not ENGINE_COMMIT_RE.fullmatch(engine_commit or ""):
+        raise InstanceError("--engine-commit must be one full lowercase Git commit")
+    current = run(
+        ["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture=True, check=False
+    )
+    controller_commit = current.stdout.strip()
+    if current.returncode != 0 or not ENGINE_COMMIT_RE.fullmatch(controller_commit):
+        raise InstanceError("cannot read the current controller checkout commit")
+    changes = run(
+        ["git", "-C", REPO_ROOT, "status", "--porcelain"], capture=True, check=False
+    )
+    if changes.returncode != 0:
+        raise InstanceError("cannot inspect the current controller checkout")
+    if changes.stdout:
+        raise InstanceError(
+            f"controller checkout {controller_commit} has changes; commit or preserve them first"
+        )
+    available = run(
+        ["git", "-C", REPO_ROOT, "cat-file", "-e", f"{engine_commit}^{{commit}}"],
+        capture=True,
+        check=False,
+    )
+    if available.returncode != 0:
+        raise InstanceError(
+            f"approved engine {engine_commit} is not available in the controller checkout"
+        )
+    ancestor = run(
+        ["git", "-C", REPO_ROOT, "merge-base", "--is-ancestor", engine_commit, controller_commit],
+        capture=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise InstanceError(
+            f"approved engine {engine_commit} is not in the history of controller checkout "
+            f"{controller_commit}"
+        )
+    return controller_commit
+
+
+def verify_engine(args):
+    require_controller_user()
+    plan = load_plan_wrapper()
+    try:
+        plan.require_active_controller()
+        controller_commit = require_reviewed_engine(args.engine_commit)
+        directory, build_commit = plan.resolve_build_directory(args.build_dir)
+        if build_commit != args.engine_commit:
+            raise InstanceError(
+                f"sealed build is for engine {build_commit}; expected {args.engine_commit}"
+            )
+        receipt, binary = plan.verify_build_directory(directory, build_commit)
+        plan.verify_binary_version(binary, receipt)
+    except plan.PlanError as error:
+        raise InstanceError(f"sealed engine verification failed: {error}") from error
+    print(json.dumps({
+        "schema_version": 1,
+        "verified": True,
+        "controller_commit": controller_commit,
+        "engine_commit": args.engine_commit,
+        "build_directory": str(directory),
+    }, sort_keys=True))
 
 
 def resolve_private_destination(value):
@@ -140,6 +206,9 @@ def authority(args):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
+    verify_parser = commands.add_parser("verify-engine")
+    verify_parser.add_argument("--engine-commit", required=True)
+    verify_parser.add_argument("--build-dir", required=True)
     seed_parser = commands.add_parser("seed")
     seed_parser.add_argument("--build-dir", required=True)
     seed_parser.add_argument("--values", required=True)
@@ -155,7 +224,9 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        if args.action == "seed":
+        if args.action == "verify-engine":
+            verify_engine(args)
+        elif args.action == "seed":
             seed(args)
         else:
             authority(args)

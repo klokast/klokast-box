@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+INTENT_SCHEMA_VERSION = 2
 AUTHORITY = "klokast-secret-authority"
 APP = "instance"
 SIGNATURE_NAMESPACE = "klokast-secret-authority"
@@ -131,6 +131,42 @@ def current_repo_head(repo_root):
     return head
 
 
+def approved_engine_binding(repo_root, value):
+    if not HEAD_RE.fullmatch(value or ""):
+        raise InstanceAuthorityError("--engine-commit must be one full lowercase Git commit")
+    current = current_repo_head(repo_root)
+    changes = run(
+        ["git", "-C", str(repo_root), "status", "--porcelain"],
+        capture=True,
+        check=False,
+    )
+    if changes.returncode != 0:
+        raise InstanceAuthorityError("cannot inspect the current controller checkout")
+    if changes.stdout:
+        raise InstanceAuthorityError(
+            "current controller checkout has changes; commit or preserve them first"
+        )
+    available = run(
+        ["git", "-C", str(repo_root), "cat-file", "-e", f"{value}^{{commit}}"],
+        capture=True,
+        check=False,
+    )
+    if available.returncode != 0:
+        raise InstanceAuthorityError(
+            "approved engine commit is not available in the controller checkout"
+        )
+    ancestor = run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", value, current],
+        capture=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise InstanceAuthorityError(
+            "approved engine commit is not in the current controller checkout history"
+        )
+    return current, value
+
+
 def run(argv, *, capture=False, check=True, env=None, cwd=None, input_text=None):
     completed = subprocess.run(
         [str(item) for item in argv],
@@ -210,6 +246,7 @@ def approved_action_audit_fields(args, intent, **fields):
         "action": intent["action"],
         "repository_sha256": repository_hash(repository),
         "repo_head": intent["repo_head"],
+        "engine_commit": intent["engine_commit"],
         "signer_id": args.signer_id,
         "nonce": intent["nonce"],
         "intent_sha256": hashlib.sha256(canonical_json(intent).encode("utf-8")).hexdigest(),
@@ -389,14 +426,18 @@ def build_intent(args):
     nonce = args.nonce or secrets.token_urlsafe(18)
     if not NONCE_RE.fullmatch(nonce):
         raise InstanceAuthorityError("--nonce contains unsafe characters")
+    repo_owner = safe_owner(args.repo_owner)
+    repo_name = safe_repo(args.repo_name)
+    repo_head, engine_commit = approved_engine_binding(args.repo_root, args.engine_commit)
     intent = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": INTENT_SCHEMA_VERSION,
         "authority": AUTHORITY,
         "app": APP,
         "action": action,
-        "repo_owner": safe_owner(args.repo_owner),
-        "repo_name": safe_repo(args.repo_name),
-        "repo_head": current_repo_head(args.repo_root),
+        "repo_owner": repo_owner,
+        "repo_name": repo_name,
+        "repo_head": repo_head,
+        "engine_commit": engine_commit,
         "expires_at": format_utc(expires),
         "nonce": nonce,
     }
@@ -412,13 +453,14 @@ def validate_intent(intent):
     action = intent.get("action")
     expected = {
         "schema_version", "authority", "app", "action", "repo_owner", "repo_name",
-        "repo_head", "expires_at", "nonce",
+        "repo_head", "engine_commit", "expires_at", "nonce",
     }
     if action in {"register-read-key", "retire-bootstrap"}:
         expected.add("key_fingerprint")
     if set(intent) != expected:
         raise InstanceAuthorityError("approval intent fields do not match the closed schema")
-    if intent["schema_version"] != 1 or intent["authority"] != AUTHORITY or intent["app"] != APP:
+    if (intent["schema_version"] != INTENT_SCHEMA_VERSION
+            or intent["authority"] != AUTHORITY or intent["app"] != APP):
         raise InstanceAuthorityError("approval intent authority or version is invalid")
     if action not in HIGH_AUTHORITY_ACTIONS:
         raise InstanceAuthorityError("approval intent action is unsupported")
@@ -426,6 +468,8 @@ def validate_intent(intent):
     safe_repo(intent["repo_name"])
     if not HEAD_RE.fullmatch(intent["repo_head"]):
         raise InstanceAuthorityError("approval intent repo_head is invalid")
+    if not HEAD_RE.fullmatch(intent["engine_commit"]):
+        raise InstanceAuthorityError("approval intent engine_commit is invalid")
     parse_utc(intent["expires_at"], "expires_at")
     if not NONCE_RE.fullmatch(intent["nonce"]):
         raise InstanceAuthorityError("approval intent nonce is invalid")
@@ -467,7 +511,8 @@ def consume_nonce(args, intent):
                 continue
     append_jsonl(path, {
         "ts": format_utc(now_utc()), "nonce": intent["nonce"], "action": intent["action"],
-        "repo_head": intent["repo_head"], "signer_id": args.signer_id,
+        "repo_head": intent["repo_head"], "engine_commit": intent["engine_commit"],
+        "signer_id": args.signer_id,
     })
 
 
@@ -491,10 +536,14 @@ def require_approval(args):
 
 
 def build_execution_binding(args):
+    repo_owner = safe_owner(args.repo_owner)
+    repo_name = safe_repo(args.repo_name)
+    repo_head, engine_commit = approved_engine_binding(args.repo_root, args.engine_commit)
     value = {
-        "schema_version": 1, "authority": AUTHORITY, "app": APP,
-        "action": args.instance_action, "repo_owner": safe_owner(args.repo_owner),
-        "repo_name": safe_repo(args.repo_name), "repo_head": current_repo_head(args.repo_root),
+        "schema_version": INTENT_SCHEMA_VERSION, "authority": AUTHORITY, "app": APP,
+        "action": args.instance_action, "repo_owner": repo_owner,
+        "repo_name": repo_name,
+        "repo_head": repo_head, "engine_commit": engine_commit,
     }
     if args.instance_action in {"register-read-key", "retire-bootstrap"}:
         value["key_fingerprint"] = safe_fingerprint(args.key_fingerprint)
@@ -1079,9 +1128,11 @@ def cmd_status(args):
     print(canonical_json(result), end="")
 
 
-def add_repository_args(parser, fingerprint_required=False):
+def add_repository_args(parser, fingerprint_required=False, engine_required=False):
     parser.add_argument("--repo-owner", required=True)
     parser.add_argument("--repo-name", required=True)
+    if engine_required:
+        parser.add_argument("--engine-commit", required=True)
     if fingerprint_required:
         parser.add_argument("--key-fingerprint", required=True)
 
@@ -1103,7 +1154,11 @@ def add_instance_actions(parent, for_intent=False):
     actions = instance.add_subparsers(dest="instance_action", required=True)
     for action in sorted(HIGH_AUTHORITY_ACTIONS):
         parser = actions.add_parser(action)
-        add_repository_args(parser, fingerprint_required=action in {"register-read-key", "retire-bootstrap"})
+        add_repository_args(
+            parser,
+            fingerprint_required=action in {"register-read-key", "retire-bootstrap"},
+            engine_required=True,
+        )
         add_intent_options(parser) if for_intent else add_approval_options(parser)
     if not for_intent:
         status = actions.add_parser("status")

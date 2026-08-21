@@ -433,6 +433,8 @@
     group: root
     mode: "0755"
   loop: "{{ ops_controller_secret_authority_wrappers }}"
+  tags:
+    - ops-controller-secret-authority-wrappers
 
 - name: Remove retired Cloudflare guardian controller wrapper
   ansible.builtin.file:

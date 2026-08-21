@@ -147,7 +147,7 @@ if grep -q WORKTREE_VALUES_PREFLIGHT "$payload"; then
     printf 'the staged destination already exists; do not overwrite it\n' >&2
     exit 1
   fi
-  operation=${7:-}
+  operation=${8:-}
   case "$operation" in
     prepare) printf 'created\n' ;;
     check) printf 'checked\n' ;;
@@ -162,7 +162,7 @@ elif grep -q WORKTREE_VERIFY_EXISTING_SEED "$payload"; then
 elif grep -q WORKTREE_STREAM_OPERATION "$payload"; then
   tar -C "$FAKE_REMOTE_ROOT" -cf - instance-seed
 elif grep -q 'invalid controller archive operation' "$payload"; then
-  operation=${7:-}
+  operation=${8:-}
   case "$operation" in
     check) printf 'present\n' ;;
     move) printf '/home/smith/private/klokast/archive\n' ;;
@@ -251,6 +251,7 @@ fi
         self.assertTrue(record["seed_created"])
         self.assertTrue(record["worktree_created"])
         self.assertEqual(record["values_file"], "created")
+        self.assertEqual(record["engine_commit"], ENGINE_COMMIT)
         self.assertNotIn("REPLACE_WITH", json.dumps(record))
 
     def test_declining_seed_is_a_redacted_cancellation(self):

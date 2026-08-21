@@ -163,21 +163,23 @@ check_controller() {
   local ssh_target="smith@$controller"
 
   printf '\nChecking %s through Tailscale...\n' "$controller"
-  tailscale ssh "$ssh_target" sh -s -- "$ENGINE_COMMIT" <<'SH'
+  tailscale ssh "$ssh_target" sh -s -- "$ENGINE_COMMIT" "$BUILD_OPERATION" <<'SH'
 set -eu
 expected_commit=$1
+build_operation=$2
 repo="$HOME/src/klokast/klokast-box"
+build_dir="/var/lib/klokast/builds/klokast-cli/$expected_commit/$build_operation"
 
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
-test -d "$repo/.git"
-test -z "$(git -C "$repo" status --porcelain)"
-actual_commit=$(git -C "$repo" rev-parse HEAD)
-if [ "$actual_commit" != "$expected_commit" ]; then
-  echo "controller engine is $actual_commit; expected $expected_commit" >&2
+[ -d "$repo/.git" ] || {
+  printf 'prepare-private-instance-bootstrap: controller checkout is missing: %s\n' "$repo" >&2
   exit 2
-fi
+}
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected_commit" \
+  --build-dir "$build_dir"
 SH
-  printf 'Active controller and approved engine ok\n'
+  printf 'Active controller, clean public checkout, and sealed engine are verified.\n'
 }
 
 prepare_signer() {

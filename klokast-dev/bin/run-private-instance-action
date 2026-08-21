@@ -80,6 +80,11 @@ case "${ENGINE_COMMIT:-}" in
   ""|*[!0-9a-f]*) ksa_die "session engine commit is invalid" ;;
 esac
 [ "${#ENGINE_COMMIT}" -eq 40 ] || ksa_die "session engine commit must be full length"
+case "${BUILD_OPERATION:-}" in
+  ""|*[!0-9a-f]*) ksa_die "session build operation is invalid" ;;
+esac
+[ "${#BUILD_OPERATION}" -eq 12 ] || \
+  ksa_die "session build operation must have 12 hexadecimal characters"
 [ "${BOOTSTRAP_WORK:-}" = "$HOME/.local/share/klokast/private-instance-bootstrap" ] || \
   ksa_die "session work directory is invalid"
 if [ ! -d "$BOOTSTRAP_WORK" ] || [ -L "$BOOTSTRAP_WORK" ]; then
@@ -90,8 +95,12 @@ fi
   ksa_die "the public checkout has changes; preserve them before this approval"
 pinned_engine="$(sed -n 's/^ENGINE_COMMIT="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
   "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
-[ "$pinned_engine" = "$ENGINE_COMMIT" ] || \
+pinned_operation="$(sed -n 's/^BUILD_OPERATION="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+if [ "$pinned_engine" != "$ENGINE_COMMIT" ] || \
+    [ "$pinned_operation" != "$BUILD_OPERATION" ]; then
   ksa_die "the session does not match the current reviewed bootstrap helper; rerun it"
+fi
 
 umask 077
 action_work="$(mktemp -d "$BOOTSTRAP_WORK/action.XXXXXX")" || \
@@ -105,11 +114,12 @@ action_phase="read-controller-status"
 action_outcome="failure"
 intent_sha256=""
 action_fingerprint="none"
+controller_commit="none"
 
 append_action_log() {
   python3 - "$action_log" "$action_outcome" "$1" "$action" "$action_phase" \
     "$CONTROLLER" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$ENGINE_COMMIT" \
-    "$intent_sha256" "$action_fingerprint" <<'PY'
+    "$controller_commit" "$intent_sha256" "$action_fingerprint" <<'PY'
 import datetime as dt
 import hashlib
 import json
@@ -119,7 +129,7 @@ import stat
 import sys
 
 (path, outcome, exit_code, action, phase, controller, owner, repo,
- engine_commit, intent_sha256, key_fingerprint) = sys.argv[1:]
+ engine_commit, controller_commit, intent_sha256, key_fingerprint) = sys.argv[1:]
 if outcome not in {"success", "failure", "cancelled"}:
     raise SystemExit("invalid action log outcome")
 if not exit_code.isdigit() or not 0 <= int(exit_code) <= 255:
@@ -128,6 +138,9 @@ if not re.fullmatch(r"[a-z0-9-]{1,80}", phase):
     raise SystemExit("invalid action log phase")
 if not re.fullmatch(r"[0-9a-f]{40}", engine_commit):
     raise SystemExit("invalid action log engine commit")
+if (controller_commit != "none"
+        and not re.fullmatch(r"[0-9a-f]{40}", controller_commit)):
+    raise SystemExit("invalid action log controller commit")
 if intent_sha256 and not re.fullmatch(r"[0-9a-f]{64}", intent_sha256):
     raise SystemExit("invalid action log intent hash")
 repository = f"{owner}/{repo}"
@@ -140,8 +153,10 @@ record = {
     "phase": phase,
     "controller": controller,
     "repository_sha256": hashlib.sha256(repository.encode("utf-8")).hexdigest(),
-    "repo_head": engine_commit,
+    "engine_commit": engine_commit,
 }
+if controller_commit != "none":
+    record["repo_head"] = controller_commit
 if intent_sha256:
     record["intent_sha256"] = intent_sha256
 if key_fingerprint != "none":
@@ -191,41 +206,65 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 
-tailscale ssh "$SSH_TARGET" sh -s -- "$ENGINE_COMMIT" >"$status_file" <<'SH'
+tailscale ssh "$SSH_TARGET" sh -s -- \
+  "$ENGINE_COMMIT" "$BUILD_OPERATION" >"$status_file" <<'SH'
 set -eu
 expected=$1
+operation=$2
 cd "$HOME/src/klokast/klokast-box"
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
-test "$(git rev-parse HEAD)" = "$expected"
-test -z "$(git status --porcelain)"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected" \
+  --build-dir "/var/lib/klokast/builds/klokast-cli/$expected/$operation"
 ansible/bin/secret-authority instance status --redacted
 SH
 
-action_fingerprint="$(python3 - "$status_file" "$action" <<'PY'
+action_status_metadata="$(python3 - "$status_file" "$action" \
+  "$ENGINE_COMMIT" "$BUILD_OPERATION" <<'PY'
 import json
 import re
 import sys
 
-path, action = sys.argv[1:]
+path, action, engine_commit, build_operation = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
-    value = json.load(handle)
+    documents = [json.loads(line) for line in handle if line.strip()]
+if len(documents) != 2:
+    raise SystemExit("controller preflight did not return two JSON records")
+verification, value = documents
+expected_build = (
+    "/var/lib/klokast/builds/klokast-cli/"
+    f"{engine_commit}/{build_operation}"
+)
+expected_verification = {
+    "schema_version": 1,
+    "verified": True,
+    "engine_commit": engine_commit,
+    "build_directory": expected_build,
+}
+for field, wanted in expected_verification.items():
+    if verification.get(field) != wanted:
+        raise SystemExit(f"controller engine verification mismatch: {field}")
+controller_commit = verification.get("controller_commit", "")
+if not re.fullmatch(r"[0-9a-f]{40}", controller_commit):
+    raise SystemExit("controller verification did not return a valid checkout commit")
 for field in ("allowed_signers_configured", "github_app_configured", "source_prepared"):
     if value.get(field) is not True:
         raise SystemExit(f"controller prerequisite is false: {field}")
 registered = value.get("repository_registered") is True
+fingerprint = "none"
 if action == "register-repository":
     if registered:
         raise SystemExit("repository is already registered; run register-read-key next")
-    print("none")
 else:
     if not registered:
         raise SystemExit("repository is not registered; run register-repository first")
     fingerprint = value.get("key_fingerprint", "")
     if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{20,80}", fingerprint):
         raise SystemExit("controller did not return a valid read-key fingerprint")
-    print(fingerprint)
+print(f"{fingerprint}|{controller_commit}")
 PY
 )" || ksa_die "controller status does not permit $action"
+action_fingerprint="${action_status_metadata%%|*}"
+controller_commit="${action_status_metadata#*|}"
 
 case "$action" in
   register-repository)
@@ -241,27 +280,30 @@ esac
 
 action_phase="request-intent"
 tailscale ssh "$SSH_TARGET" sh -s -- \
-  "$ENGINE_COMMIT" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$action" \
-  "$action_fingerprint" >"$intent_file" <<'SH'
+  "$ENGINE_COMMIT" "$BUILD_OPERATION" "$INSTANCE_OWNER" "$INSTANCE_REPO" \
+  "$action" "$action_fingerprint" >"$intent_file" <<'SH'
 set -eu
 expected=$1
-owner=$2
-repo=$3
-action=$4
-fingerprint=$5
+operation=$2
+owner=$3
+repo=$4
+action=$5
+fingerprint=$6
 cd "$HOME/src/klokast/klokast-box"
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
-test "$(git rev-parse HEAD)" = "$expected"
-test -z "$(git status --porcelain)"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected" \
+  --build-dir "/var/lib/klokast/builds/klokast-cli/$expected/$operation" >/dev/null
 case "$action" in
   register-repository)
     ansible/bin/secret-authority intent instance register-repository \
-      --repo-owner "$owner" --repo-name "$repo" --ttl-seconds 600
+      --repo-owner "$owner" --repo-name "$repo" \
+      --engine-commit "$expected" --ttl-seconds 600
     ;;
   register-read-key|retire-bootstrap)
     ansible/bin/secret-authority intent instance "$action" \
       --repo-owner "$owner" --repo-name "$repo" \
-      --key-fingerprint "$fingerprint" --ttl-seconds 600
+      --engine-commit "$expected" --key-fingerprint "$fingerprint" \
+      --ttl-seconds 600
     ;;
   *) exit 2 ;;
 esac
@@ -269,25 +311,27 @@ SH
 
 action_phase="validate-intent"
 intent_metadata="$(python3 - "$intent_file" "$action" "$INSTANCE_OWNER" \
-  "$INSTANCE_REPO" "$ENGINE_COMMIT" "$action_fingerprint" <<'PY'
+  "$INSTANCE_REPO" "$controller_commit" "$ENGINE_COMMIT" \
+  "$action_fingerprint" <<'PY'
 import datetime as dt
 import hashlib
 import json
 import re
 import sys
 
-path, action, owner, repo, engine_commit, fingerprint = sys.argv[1:]
+path, action, owner, repo, controller_commit, engine_commit, fingerprint = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     raw = handle.read()
 value = json.loads(raw)
 expected = {
-    "schema_version": 1,
+    "schema_version": 2,
     "authority": "klokast-secret-authority",
     "app": "instance",
     "action": action,
     "repo_owner": owner,
     "repo_name": repo,
-    "repo_head": engine_commit,
+    "repo_head": controller_commit,
+    "engine_commit": engine_commit,
 }
 fields = set(expected) | {"expires_at", "nonce"}
 if action != "register-repository":
@@ -320,7 +364,7 @@ intent_sha256="${intent_metadata#*:}"
 printf '\nPurpose\n  %s\n' "$action_summary"
 printf '\nExact short-lived intent to approve\n'
 python3 -m json.tool "$intent_file"
-printf '\nCheck the action, repository, engine commit, key fingerprint when present, and expiry.\n'
+printf '\nCheck the action, repository, controller commit, approved engine commit, key fingerprint when present, and expiry.\n'
 printf 'Sign and run this exact action? [y/N] '
 action_phase="wait-for-approval"
 IFS= read -r answer || ksa_die "input ended before approval"
@@ -364,37 +408,39 @@ tailscale ssh "$SSH_TARGET" \
 printf '\nController action result\n'
 action_phase="run-controller-action"
 tailscale ssh "$SSH_TARGET" sh -s -- \
-  "$ENGINE_COMMIT" "$INSTANCE_OWNER" "$INSTANCE_REPO" "$action" \
-  "$action_fingerprint" "$SIGNER_ID" "$remote_intent" \
+  "$ENGINE_COMMIT" "$BUILD_OPERATION" "$INSTANCE_OWNER" "$INSTANCE_REPO" \
+  "$action" "$action_fingerprint" "$SIGNER_ID" "$remote_intent" \
   "$remote_signature" <<'SH'
 set -eu
 expected=$1
-owner=$2
-repo=$3
-action=$4
-fingerprint=$5
-signer=$6
-intent=$7
-signature=$8
+operation=$2
+owner=$3
+repo=$4
+action=$5
+fingerprint=$6
+signer=$7
+intent=$8
+signature=$9
 cleanup() {
   rm -f "$intent" "$signature"
 }
 trap cleanup EXIT HUP INT TERM
 cd "$HOME/src/klokast/klokast-box"
-/usr/local/sbin/klokast-controller-guard --status --json --require-active >/dev/null
-test "$(git rev-parse HEAD)" = "$expected"
-test -z "$(git status --porcelain)"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$expected" \
+  --build-dir "/var/lib/klokast/builds/klokast-cli/$expected/$operation" >/dev/null
 case "$action" in
   register-repository)
     ansible/bin/secret-authority instance register-repository \
       --repo-owner "$owner" --repo-name "$repo" \
+      --engine-commit "$expected" \
       --approval-intent "$intent" --approval-signature "$signature" \
       --signer-id "$signer"
     ;;
   register-read-key|retire-bootstrap)
     ansible/bin/secret-authority instance "$action" \
       --repo-owner "$owner" --repo-name "$repo" \
-      --key-fingerprint "$fingerprint" \
+      --engine-commit "$expected" --key-fingerprint "$fingerprint" \
       --approval-intent "$intent" --approval-signature "$signature" \
       --signer-id "$signer"
     ;;
