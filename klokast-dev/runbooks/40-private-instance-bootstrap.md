@@ -7,8 +7,8 @@ The Platform got one active controller `<box>-ops`.
 The current approved engine is:
 
 ```text
-commit: 13e9fea1cf29f884622da0137913e79f36a8d1f1
-build:  /var/lib/klokast/builds/klokast-cli/13e9fea1cf29f884622da0137913e79f36a8d1f1/fb57f08c0454
+commit: 87a66fe44d4c15ca604ed95029282a1334c3f8d4
+build:  /var/lib/klokast/builds/klokast-cli/87a66fe44d4c15ca604ed95029282a1334c3f8d4/91aba0deec0a
 ```
 
 Do not paste the GitHub App PEM, private deployment values, signed intents,
