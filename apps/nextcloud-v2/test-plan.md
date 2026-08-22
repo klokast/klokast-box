@@ -5,11 +5,11 @@ target-local reconciler. It intentionally tests registry ownership transitions
 before app runtime behavior.
 
 All Platform-changing commands run on the active controller, currently
-`k002-ops`, as `smith`. If starting from `vultr-ops`, enter the
+`boxb-ops`, as `smith`. If starting from `vultr-ops`, enter the
 controller first:
 
 ```sh
-tailscale ssh smith@k002-ops
+tailscale ssh smith@boxb-ops
 cd ~/src/klokast/klokast-box
 ```
 
@@ -24,7 +24,7 @@ Before mutating resources:
 
    ```sh
    ansible/bin/platform-map refresh \
-     --boxes k001,k002 \
+     --boxes boxa,boxb \
      --resources-registry ~/private/klokast/platform-resources.yml \
      --remote-scope full
    ansible/bin/platform-map validate
@@ -38,8 +38,8 @@ Before mutating resources:
    - Podman pod/container state on `bak` and `dmz`
 
 4. Verify management access is present before and after every apply:
-   - controller can SSH to `k001-router`, `k001-bak`, `k001-dmz`,
-     `k002-router`, `k002-bak`, and `k002-dmz`;
+   - controller can SSH to `boxa-router`, `boxa-bak`, `boxa-dmz`,
+     `boxb-router`, `boxb-bak`, and `boxb-dmz`;
    - `tailscale-management-input` remains in persisted and live nftables state.
 
 Do not run old Nextcloud and `nextcloud-v2` active ingress at the same time:
@@ -54,7 +54,7 @@ disabled apps.
 ### S0: Clean Old Nextcloud Resource Claims
 
 Set `nextcloud.enabled: false` and `nextcloud-v2.enabled: false` with explicit
-`active_master: k001` and `passive_backup: k002`.
+`active_master: boxa` and `passive_backup: boxb`.
 
 Run:
 
@@ -106,8 +106,8 @@ Enable:
 nextcloud-v2:
   enabled: true
   placement:
-    active_master: k001
-    passive_backup: k002
+    active_master: boxa
+    passive_backup: boxb
   resources:
     cloudflare-tunnel-egress: false
 ```
@@ -135,13 +135,13 @@ Then prepare app execution:
 
 ```sh
 apps/nextcloud-v2/bin/nextcloud-v2ctl infra-prepare \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry "$REGISTRY"
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl resource-grant-check \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
@@ -151,35 +151,35 @@ Install `klokast-node` on selected Podman VMs if not already installed:
 ansible-playbook -vv \
   -i ansible/inventory/hosts.yml \
   ansible/playbooks/82-klokast-node.yml \
-  --limit k001-bak,k001-dmz,k002-bak,k002-dmz
+  --limit boxa-bak,boxa-dmz,boxb-bak,boxb-dmz
 ```
 
 Build and load digest-pinned OCI archives before runtime install. Then run:
 
 ```sh
 apps/nextcloud-v2/bin/nextcloud-v2ctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl verify \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
 Expected:
 
-- active backend pod is running on `k001-bak`;
-- passive backend pod is stopped on `k002-bak`;
-- active DMZ ingress/proxy is running on `k001-dmz`;
-- passive DMZ ingress/proxy is stopped on `k002-dmz`;
+- active backend pod is running on `boxa-bak`;
+- passive backend pod is stopped on `boxb-bak`;
+- active DMZ ingress/proxy is running on `boxa-dmz`;
+- passive DMZ ingress/proxy is stopped on `boxb-dmz`;
 - `/var/lib/klokast/status/nextcloud-v2.json` reports success;
 - `https://next.<tailnet>/status.php` reaches the active site.
 
 ### S3: Add an Independent App
 
-Enable `immich` on `k001/k002` and apply only that app:
+Enable `immich` on `boxa/boxb` and apply only that app:
 
 ```sh
 ansible/bin/platform-resources \
@@ -200,7 +200,7 @@ Expected:
 
 ### S4: Add Static Site Egress Resources
 
-Enable `static-site` on `k001` and apply only that app:
+Enable `static-site` on `boxa` and apply only that app:
 
 ```sh
 ansible/bin/platform-resources \
@@ -234,10 +234,10 @@ ansible/bin/platform-resources \
 ansible/bin/platform-resources --registry "$REGISTRY" --app nextcloud-v2 verify
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
-  --box k001 \
+  --box boxa \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
-  --box k002 \
+  --box boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
@@ -300,8 +300,8 @@ Expected:
 
 ## Assumptions
 
-- Test boxes are `k001` active and `k002` passive.
-- The active controller is `k002-ops`.
+- Test boxes are `boxa` active and `boxb` passive.
+- The active controller is `boxb-ops`.
 - Static-site is the shared-ownership test app because it reuses Nextcloud
   backend TCP `8080`.
 - Immich is the independent coexistence test app because it uses backend TCP

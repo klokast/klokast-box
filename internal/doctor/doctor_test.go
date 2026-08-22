@@ -73,7 +73,7 @@ func TestLowerPriorityAirunnersRemainStrictlyRequired(t *testing.T) {
 			machineForTest(t, observation, "vultr-ops").Online = false
 		}, "tailnet.offline"},
 		{"wrong-tag", func(observation *Observation) {
-			machineForTest(t, observation, "k001-ops-airunner").Tags = []string{"tag:infra"}
+			machineForTest(t, observation, "boxa-ops-airunner").Tags = []string{"tag:infra"}
 		}, "tailnet.tag"},
 	}
 	for _, test := range tests {
@@ -205,19 +205,19 @@ func TestObservationHashUnknownFieldsSymlinkAndSize(t *testing.T) {
 
 func singleBoxObservation() Observation {
 	machines := []TailnetMachine{
-		{Hostname: "k001-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
-		{Hostname: "k001-bak", Online: true, Tags: []string{"tag:vm"}},
-		{Hostname: "k001-dmz", Online: true, Tags: []string{"tag:vm"}},
-		{Hostname: "k001-dom0", Online: true, Tags: []string{"tag:dom0"}},
-		{Hostname: "k001-iot", Online: true, Tags: []string{"tag:vm"}},
-		{Hostname: "k001-ops", Online: true, Tags: []string{"tag:ops"}},
-		{Hostname: "k001-router", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
+		{Hostname: "boxa-bak", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-dmz", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-dom0", Online: true, Tags: []string{"tag:dom0"}},
+		{Hostname: "boxa-iot", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-ops", Online: true, Tags: []string{"tag:ops"}},
+		{Hostname: "boxa-router", Online: true, Tags: []string{"tag:vm"}},
 	}
 	guests := []string{"bak", "dmz", "iot", "ops", "router"}
 	observation := Observation{
-		SchemaVersion: 1, ObservedAt: "2026-08-10T12:00:00Z", SourceController: "k001-ops",
+		SchemaVersion: 1, ObservedAt: "2026-08-10T12:00:00Z", SourceController: "boxa-ops",
 		SourceMapSHA256: strings.Repeat("b", 64), TailnetMachines: machines,
-		Boxes: []ObservedBox{{HostnamePrefix: "k001", Dom0Reachable: true, XenAvailable: true, RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...)}},
+		Boxes: []ObservedBox{{HostnamePrefix: "boxa", Dom0Reachable: true, XenAvailable: true, RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...)}},
 	}
 	sortObservation(&observation)
 	return observation
@@ -226,7 +226,7 @@ func singleBoxObservation() Observation {
 func twoBoxObservation() Observation {
 	observation := singleBoxObservation()
 	observation.TailnetMachines = append(observation.TailnetMachines,
-		TailnetMachine{Hostname: "k002-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
+		TailnetMachine{Hostname: "boxb-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
 		TailnetMachine{Hostname: "vultr-ops", Online: true, Tags: []string{"tag:infra"}},
 		TailnetMachine{Hostname: "hetzner-ops", Online: true, Tags: []string{"tag:infra"}},
 	)
@@ -234,10 +234,10 @@ func twoBoxObservation() Observation {
 		tag := "tag:vm"
 		if role == "dom0" { tag = "tag:dom0" }
 		if role == "ops" { tag = "tag:ops" }
-		observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "k002-" + role, Online: true, Tags: []string{tag}})
+		observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "boxb-" + role, Online: true, Tags: []string{tag}})
 	}
 	guests := []string{"bak", "dmz", "iot", "ops", "router"}
-	observation.Boxes = append(observation.Boxes, ObservedBox{HostnamePrefix: "k002", Dom0Reachable: true, XenAvailable: true, RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...)})
+	observation.Boxes = append(observation.Boxes, ObservedBox{HostnamePrefix: "boxb", Dom0Reachable: true, XenAvailable: true, RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...)})
 	sortObservation(&observation)
 	return observation
 }

@@ -94,14 +94,14 @@ tailnet:
     operators: [admin@example.com]
     family: [admin@example.com]
 boxes:
-  k001:
+  boxa:
     site: site-001
     physical_location: Example location
 `)
 	registry := writeFile(t, directory, "platform-resources.yml", `---
 schema_version: 1
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
@@ -126,8 +126,8 @@ schema_version: 1
 remote_user: smith
 repo_dir: ~/src/klokast/klokast-box
 controllers:
-  - box: k001
-    hostname: k001-ops
+  - box: boxa
+    hostname: boxa-ops
 `)
 	return Options{
 		InstancePath: instance, CompatibilityDeployment: deployment,
@@ -220,20 +220,20 @@ func repositoryRoot(t *testing.T) string {
 func writeObservation(t *testing.T, directory string) string {
 	t.Helper()
 	machines := []doctor.TailnetMachine{
-		{Hostname: "k001-bak", Online: true, Tags: []string{"tag:vm"}},
-		{Hostname: "k001-dmz", Online: true, Tags: []string{"tag:vm"}},
-		{Hostname: "k001-dom0", Online: true, Tags: []string{"tag:dom0"}},
-		{Hostname: "k001-iot", Online: true, Tags: []string{"tag:vm"}},
-		{Hostname: "k001-ops", Online: true, Tags: []string{"tag:ops"}},
-		{Hostname: "k001-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
-		{Hostname: "k001-router", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-bak", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-dmz", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-dom0", Online: true, Tags: []string{"tag:dom0"}},
+		{Hostname: "boxa-iot", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxa-ops", Online: true, Tags: []string{"tag:ops"}},
+		{Hostname: "boxa-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
+		{Hostname: "boxa-router", Online: true, Tags: []string{"tag:vm"}},
 	}
 	guests := []string{"bak", "dmz", "iot", "ops", "router"}
 	observation := doctor.Observation{
-		SchemaVersion: 1, ObservedAt: time.Now().UTC().Format(time.RFC3339), SourceController: "k001-ops",
+		SchemaVersion: 1, ObservedAt: time.Now().UTC().Format(time.RFC3339), SourceController: "boxa-ops",
 		SourceMapSHA256: strings.Repeat("b", 64), TailnetMachines: machines,
 		Boxes: []doctor.ObservedBox{{
-			HostnamePrefix: "k001", Dom0Reachable: true, XenAvailable: true,
+			HostnamePrefix: "boxa", Dom0Reachable: true, XenAvailable: true,
 			RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...),
 		}},
 	}

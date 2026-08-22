@@ -17,10 +17,10 @@ apps:
   torrent:
     enabled: true
     placement:
-      active_master: k002
+      active_master: boxb
     app_vms:
       torrent:
-        k002:
+        boxb:
           vm_ipv4_address: 192.168.200.30
     resources: {}
 ```
@@ -29,7 +29,7 @@ Deploy from the controller as `smith`:
 
 ```sh
 apps/torrent/bin/torrentctl deploy \
-  --box k002 \
+  --box boxb \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --vpn-config ~/private/klokast/torrent-vpn.yml
 ```
@@ -37,7 +37,7 @@ apps/torrent/bin/torrentctl deploy \
 Open the UI from an allowed Tailscale device:
 
 ```sh
-klokast-dev/bin/kk torrent open --to k002
+klokast-dev/bin/kk torrent open --to boxb
 ```
 
 ## Notes

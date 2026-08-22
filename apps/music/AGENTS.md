@@ -49,7 +49,7 @@ hostnames:
 
 ```sh
 apps/music/bin/musicctl install \
-  --box k001 \
+  --box boxa \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --bootstrap-user pi
 ```

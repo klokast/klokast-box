@@ -14,7 +14,7 @@ Enable in the private platform-resource registry:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay, local-lan, vpn-egress]
       enabled_capabilities: [overlay, local-lan, vpn-egress]
@@ -25,10 +25,10 @@ apps:
   household-vpn:
     enabled: true
     placement:
-      active_master: k002
+      active_master: boxb
     app_vms:
       gateway:
-        k002:
+        boxb:
           vm_ipv4_address: 192.168.200.40
     resources: {}
 ```
@@ -37,7 +37,7 @@ Deploy from the controller as `smith`:
 
 ```sh
 apps/household-vpn/bin/household-vpnctl deploy \
-  --box k002 \
+  --box boxb \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --vpn-config ~/private/klokast/household-vpn.yml \
   --local-domain home.example.com

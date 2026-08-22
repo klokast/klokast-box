@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 . "$SCRIPT_DIR/../lib/approval-common.sh"
 
-DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-}"
 DEFAULT_REPO_NAME="klokast-instance"
 DEFAULT_WORK_DIR="$HOME/.local/share/klokast/private-instance-bootstrap"
 ENGINE_COMMIT="9d9608350412d131a68a70152449b7bd48bda711"
@@ -22,7 +22,7 @@ Prepare these items before you continue:
 2. The name of a GitHub organization that you control.
 3. GitHub organization-owner access. A later step creates a temporary
    GitHub App and a private repository.
-4. The active controller name. The current default is k002-ops.
+4. The active controller name from private deployment state.
 5. Touch ID configured on this MacBook.
 6. A current macOS release with Apple's CryptoTokenKit identity commands and
    OpenSSH provider.
@@ -304,7 +304,11 @@ printf '\n'
 
 controller=""
 while :; do
-  controller="$(prompt_default "Active controller" "$DEFAULT_CONTROLLER")"
+  if [ -n "$DEFAULT_CONTROLLER" ]; then
+    controller="$(prompt_default "Active controller" "$DEFAULT_CONTROLLER")"
+  else
+    controller="$(prompt_required "Active controller")"
+  fi
   if ksa_valid_controller "$controller"; then
     break
   fi

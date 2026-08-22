@@ -6,16 +6,16 @@ beside the current `apps/nextcloud` implementation and does not replace it yet.
 ## Flow
 
 ```sh
-apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder k002-ops
+apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder boxb-ops
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl infra-prepare \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry ~/private/klokast/platform-resources.yml
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
@@ -27,22 +27,22 @@ only that grant.
 
 ```sh
 apps/nextcloud-v2/bin/nextcloud-v2ctl verify \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl backup-check \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl promote \
-  --old-active k001 \
-  --new-active k002 \
+  --old-active boxa \
+  --new-active boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
-  --box k001 \
+  --box boxa \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 

@@ -25,7 +25,7 @@ Converge the baseline of an existing in-Platform <box>-ops controller VM.
 This does not clone, stop, reinstall, or re-enroll the ops VM.
 
 Options:
-  --box BOX               Box short name, for example k002
+  --box BOX               Box short name, for example boxb
   --inventory PATH         Base Ansible inventory. Default: ansible/inventory/hosts.yml
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered

@@ -164,8 +164,8 @@ dom0_admin_user_name: neo
 # Per-box console password hashes are deployment-private state loaded from the
 # active controller, normally ~/private/klokast/dom0-console.yml:
 #   dom0_console_password_hashes:
-#     k001: "$6$..."
-#     k002: "$6$..."
+#     boxa: "$6$..."
+#     boxb: "$6$..."
 dom0_console_password_hashes: {}
 dom0_admin_password_hash: "{{ dom0_console_password_hashes[node_name] | default('') }}"
 dom0_lock_root_password: true

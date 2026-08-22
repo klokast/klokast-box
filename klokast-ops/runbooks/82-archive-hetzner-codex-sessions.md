@@ -8,7 +8,7 @@ contain sensitive Platform details or accidental secrets.
 Run the archive from the active Ansible controller:
 
 ```sh
-tailscale ssh smith@k002-ops
+tailscale ssh smith@boxb-ops
 cd ~/src/klokast/klokast-box
 git pull --ff-only
 ```

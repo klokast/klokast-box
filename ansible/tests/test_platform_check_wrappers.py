@@ -32,7 +32,7 @@ class PlatformCheckWrapperTest(unittest.TestCase):
 
     def test_platform_check_rejects_unknown_target_before_preflight(self):
         result = self.run_command(
-            [str(PLATFORM_CHECK), "--box", "k001", "--target", "not-a-target"]
+            [str(PLATFORM_CHECK), "--box", "boxa", "--target", "not-a-target"]
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -44,7 +44,7 @@ class PlatformCheckWrapperTest(unittest.TestCase):
                 str(PLATFORM_CHECK_REMOTE),
                 "--dry-run-plan",
                 "--box",
-                "k001",
+                "boxa",
                 "--target",
                 "all",
                 "--resources-registry",
@@ -63,7 +63,7 @@ class PlatformCheckWrapperTest(unittest.TestCase):
                 str(PLATFORM_CHECK_REMOTE),
                 "--dry-run-plan",
                 "--box",
-                "k001",
+                "boxa",
                 "--target",
                 "router",
             ]
@@ -88,7 +88,7 @@ class PlatformCheckWrapperTest(unittest.TestCase):
                 [
                     str(PLATFORM_CHECK),
                     "--box",
-                    "k001",
+                    "boxa",
                     "--target",
                     "dom0",
                     "--resources-registry",

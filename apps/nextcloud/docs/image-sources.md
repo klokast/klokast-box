@@ -20,7 +20,7 @@ blob downloads to `production.cloudflare.docker.com`, which timed out. The
 After moving a box to a site with different network paths, rerun:
 
 ```sh
-apps/nextcloud/bin/nextcloudctl preflight-images --boxes k001,k002
+apps/nextcloud/bin/nextcloudctl preflight-images --boxes boxa,boxb
 ```
 
 The direct profile should be selected if canonical Docker Hub is reachable and

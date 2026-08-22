@@ -65,7 +65,6 @@ type InputDigest struct {
 type Projection struct {
 	SchemaVersion int          `json:"schema_version"`
 	Engine        Engine       `json:"engine"`
-	InstanceID    string       `json:"instance_id"`
 	Tailnet       Tailnet      `json:"tailnet"`
 	Sites         []Site       `json:"sites"`
 	Boxes         []Box        `json:"boxes"`
@@ -94,7 +93,7 @@ type Box struct {
 	ID                   string       `json:"id"`
 	HostnamePrefix       string       `json:"hostname_prefix"`
 	SiteID               string       `json:"site_id"`
-	ConnectivityProfiles []string     `json:"connectivity_profiles"`
+	Connectivity         []string     `json:"connectivity"`
 	Runtime              RuntimeNames `json:"runtime"`
 	Access               Access       `json:"access"`
 }
@@ -329,9 +328,8 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			Ref:        snapshot.Lock.Engine.Ref,
 			Commit:     snapshot.Lock.Engine.Commit,
 		},
-		InstanceID: snapshot.Instance.Instance.ID,
 		Tailnet: Tailnet{
-			MagicDNSSuffix: snapshot.Instance.Tailnet.DNSName,
+			MagicDNSSuffix: snapshot.Instance.Tailscale.DNSName,
 			Groups:         []TailnetGroup{},
 		},
 		Sites:      []Site{},
@@ -342,7 +340,7 @@ func Resolve(snapshot contract.Snapshot) Projection {
 		Apps: []App{},
 	}
 	groups := map[string][]string{"operators": {}, "family": {}}
-	for login, member := range snapshot.Instance.Tailnet.Members {
+	for login, member := range snapshot.Instance.Tailscale.Members {
 		for _, role := range member.Roles {
 			if role == "operator" {
 				groups["operators"] = append(groups["operators"], login)
@@ -369,12 +367,12 @@ func Resolve(snapshot contract.Snapshot) Projection {
 		box := snapshot.Instance.Boxes[id]
 		prefix := id
 		result.Boxes = append(result.Boxes, Box{
-			ID: id, HostnamePrefix: prefix, SiteID: box.Site, ConnectivityProfiles: sortedCopy(box.ConnectivityProfiles),
+			ID: id, HostnamePrefix: prefix, SiteID: box.Site, Connectivity: sortedCopy(box.Connectivity),
 			Runtime: RuntimeNames{
 				Dom0: prefix + "-dom0", Router: prefix + "-router", Backup: prefix + "-bak",
 				DMZ: prefix + "-dmz", IoT: prefix + "-iot", Ops: prefix + "-ops",
 			},
-			Access: accessForProfiles(box.ConnectivityProfiles),
+			Access: accessForProfiles(box.Connectivity),
 		})
 	}
 	active := snapshot.Instance.Controllers.Active
@@ -492,7 +490,7 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 				}
 			}
 		}
-		add(path+".connectivity_profiles", "derived", "connectivity.profile", "the Instance Specification selects upstream connectivity profiles")
+		add(path+".connectivity", "derived", "connectivity.profile", "the Instance Specification selects upstream connectivity profiles")
 		for _, field := range sortedKeys(legacyBox) {
 			if field != "access" {
 				add(path+"."+field, "compatibility_only", "box.compatibility", "the legacy box field has no Instance Specification v1 representation and must be retained outside the projection")

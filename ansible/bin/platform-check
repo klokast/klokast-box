@@ -29,7 +29,7 @@ Usage:
 Run read-only Platform health checks against steady-state infrastructure.
 
 Options:
-  --box BOX               Box short name, for example k001
+  --box BOX               Box short name, for example boxa
   --target TARGET         Check target. Supported: all, dom0, router, podman,
                           ops, map, resources. Default: all
   --inventory PATH        Base Ansible inventory. Default: ansible/inventory/hosts.yml
@@ -48,13 +48,13 @@ Options:
   -h, --help              Show this help
 
 Examples:
-  ansible/bin/platform-check --box k001
-  ansible/bin/platform-check --box k001 --target all
-  ansible/bin/platform-check --box k001 --target dom0
-  ansible/bin/platform-check --box k001 --target router
-  ansible/bin/platform-check --box k001 --target podman
-  ansible/bin/platform-check --box k001 --target map --remote-scope dom0
-  ansible/bin/platform-check --box k001 --target dom0 -- -vvv
+  ansible/bin/platform-check --box boxa
+  ansible/bin/platform-check --box boxa --target all
+  ansible/bin/platform-check --box boxa --target dom0
+  ansible/bin/platform-check --box boxa --target router
+  ansible/bin/platform-check --box boxa --target podman
+  ansible/bin/platform-check --box boxa --target map --remote-scope dom0
+  ansible/bin/platform-check --box boxa --target dom0 -- -vvv
 
 Extra ansible-playbook args after -- apply to live Ansible assertion targets
 (dom0, router, podman, ops). They are ignored by map/resources targets.

@@ -19,7 +19,7 @@ runtime authority
 ```
 
 The public `klokast-box` repository owns implementation, schemas, app
-manifests, connectivity profiles, automation, and tests. The private instance
+manifests, connectivity profiles, automation, and neutral tests. The private instance
 repository owns deployment intent and the engine lock. It must not contain
 secrets, generated state, live status, or user data.
 
@@ -70,17 +70,15 @@ unreleased test does not make the version 2 specification.
 
 ## Instance document
 
-This example shows the first two-box deployment shape. Private login and
-Tailnet values are placeholders.
+This example shows a neutral two-box shape. Every identity and location value
+is an example. The human must replace it with private desired state before
+publication.
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/<commit>/schemas/klokast-instance-v1.schema.json",
   "schema-version": 1,
-  "instance": {
-    "id": "klokast-instance"
-  },
-  "tailnet": {
+  "tailscale": {
     "tailnet-dns-name": "<private-tailnet-dns-name>",
     "members": {
       "<private-login>": {
@@ -89,30 +87,30 @@ Tailnet values are placeholders.
     }
   },
   "boxes": {
-    "k001": {
-      "site": "mingdu",
-      "country": "CN",
+    "boxa": {
+      "site": "site-a",
+      "country": "XA",
       "description": "",
-      "connectivity-profiles": ["local-ap-direct-egress", "tailscale"]
+      "connectivity": ["local-ap-direct-egress", "tailscale"]
     },
-    "k002": {
-      "site": "milla",
-      "country": "FR",
+    "boxb": {
+      "site": "site-b",
+      "country": "XB",
       "description": "",
-      "connectivity-profiles": ["tailscale"]
+      "connectivity": ["tailscale"]
     }
   },
   "controllers": {
-    "active": "k002",
-    "standby": "k001"
+    "active": "boxb",
+    "standby": "boxa"
   },
-  "airunners": ["k002-ops-airunner"],
+  "airunners": ["boxb-ops-airunner"],
   "apps": {
     "music": {
       "desired-state": "absent",
       "data": {
         "library": {
-          "box": "k002",
+          "box": "boxb",
           "retention": "preserve"
         }
       }
@@ -123,6 +121,9 @@ Tailnet values are placeholders.
 
 Platform time is always `Etc/UTC`. The instance document has no timezone
 field.
+
+The document has no `instance` object or instance ID. The private Git
+repository identity and controller source receipt already identify the source.
 
 `tailnet-dns-name` uses the Tailscale name for the Tailnet DNS suffix. Each
 member has one or more roles. At least one member must have both `operator`
@@ -135,19 +136,19 @@ A box declares its site metadata directly. `site` is a stable private label,
 is no top-level site catalog. If more than one box uses the same site label,
 each box must use the same country and description for that site.
 
-A box ID is also its runtime prefix. For example, `k002` derives these names:
+A box ID is also its runtime prefix. For example, `boxb` derives these names:
 
 ```text
-k002-dom0
-k002-router
-k002-bak
-k002-dmz
-k002-iot
-k002-ops
-k002-ops-airunner
+boxb-dom0
+boxb-router
+boxb-bak
+boxb-dmz
+boxb-iot
+boxb-ops
+boxb-ops-airunner
 ```
 
-This rule removes the old `box-002` to `k002` translation. Box IDs cannot use
+This rule removes the old translated runtime prefix. Box IDs cannot use
 a reserved runtime suffix or produce a DNS label longer than 63 characters.
 
 The controller object selects one active box and, optionally, one different
@@ -180,7 +181,8 @@ capabilities or access policy. Version 1 has these profiles:
   send household traffic through direct WAN egress. Public ingress and
   residential-gateway LAN ingress are not enabled.
 
-Profiles are a set. `k001` uses both profiles. `k002` uses only `tailscale`.
+Profiles are a set. In the example, `boxa` uses both profiles and `boxb`
+uses only `tailscale`.
 Every version 1 box must select `tailscale`. This profile supplies the current
 private control path. Another overlay provider requires a later specification
 change before it can replace this profile.
@@ -202,9 +204,9 @@ A present app must have `placement`. It can also have typed `features` and
 named `data`. Placement has one of these shapes:
 
 ```json
-{"mode": "single-box", "box": "k001"}
-{"mode": "multi-box", "boxes": ["k001", "k002"]}
-{"mode": "active-passive", "active": "k002", "passive": "k001"}
+{"mode": "single-box", "box": "boxa"}
+{"mode": "multi-box", "boxes": ["boxa", "boxb"]}
+{"mode": "active-passive", "active": "boxb", "passive": "boxa"}
 ```
 
 `single-box` selects exactly one runtime box. `multi-box` selects a set of

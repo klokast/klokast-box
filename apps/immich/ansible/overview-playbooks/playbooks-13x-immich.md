@@ -9,7 +9,7 @@ VM firewall policy is owned by the platform-resource layer.
 Use `apps/immich/bin/immichctl`, not `ansible-playbook` directly, unless
 deliberately debugging one playbook. The wrapper:
 
-- accepts box names such as `k001`, not VM hostnames such as `k001-bak`.
+- accepts box names such as `boxa`, not VM hostnames such as `boxa-bak`.
 - renders temporary per-box inventories with `ansible/bin/render-node-inventory`.
 - combines app-local roles with shared roles.
 - requires a deployment platform-resource registry for `install`, `verify`,

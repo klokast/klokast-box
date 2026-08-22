@@ -38,7 +38,7 @@ not VM hostnames:
 
 ```sh
 apps/print-server/bin/print-serverctl install \
-  --box k002 \
+  --box boxb \
   --resources-registry ~/private/klokast/platform-resources.yml
 ```
 

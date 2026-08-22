@@ -36,7 +36,7 @@ class PlatformGuestTest(unittest.TestCase):
     def args(self, *, role="iot", dry_run=False):
         return SimpleNamespace(
             registry=self.registry,
-            box="k001",
+            box="boxa",
             role=role,
             dry_run=dry_run,
         )
@@ -49,7 +49,7 @@ class PlatformGuestTest(unittest.TestCase):
 
         data = yaml.safe_load(self.registry.read_text(encoding="utf-8"))
         self.assertEqual(
-            data["boxes"]["k001"]["shared_guests"]["iot"]["runtime_state"],
+            data["boxes"]["boxa"]["shared_guests"]["iot"]["runtime_state"],
             "stopped",
         )
         self.assertEqual(self.registry.stat().st_mode & 0o777, 0o600)
@@ -81,7 +81,7 @@ class PlatformGuestTest(unittest.TestCase):
 
         command = calls[0]
         self.assertIn("--box", command)
-        self.assertIn("k001", command)
+        self.assertIn("boxa", command)
         self.assertIn("--shared-guest-role", command)
         self.assertIn("iot", command)
         self.assertIn("--approved-commit", command)

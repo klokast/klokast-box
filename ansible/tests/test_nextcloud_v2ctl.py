@@ -22,8 +22,8 @@ class NextcloudV2CtlGrantTest(unittest.TestCase):
             "compiler": "platform-resources",
             "compiler_version": 11,
             "registry_sha256": "0" * 64,
-            "boxes": ["k001", "k002"],
-            "placement": {"active_master": "k001", "passive_backup": "k002"},
+            "boxes": ["boxa", "boxb"],
+            "placement": {"active_master": "boxa", "passive_backup": "boxb"},
             "resources": ["backend-http-upstream"],
             "tailnet_resources": [
                 {
@@ -50,9 +50,9 @@ class NextcloudV2CtlGrantTest(unittest.TestCase):
                 str(SCRIPT),
                 "resource-grant-check",
                 "--active-master",
-                "k001",
+                "boxa",
                 "--passive-backup",
-                "k002",
+                "boxb",
                 "--resource-grant",
                 str(grant_path),
             ],

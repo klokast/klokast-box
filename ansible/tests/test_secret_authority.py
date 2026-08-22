@@ -55,7 +55,7 @@ class SecretAuthorityTest(unittest.TestCase):
                 "static-site",
                 "install",
                 "--box",
-                "k001",
+                "boxa",
                 "--domain",
                 "www.klokast.ai",
                 "--resources-registry",
@@ -72,7 +72,7 @@ class SecretAuthorityTest(unittest.TestCase):
         self.assertEqual(result.stdout, self.mod.canonical_json(intent))
         self.assertEqual(intent["action"], "install")
         self.assertEqual(intent["app"], "static-site")
-        self.assertEqual(intent["box"], "k001")
+        self.assertEqual(intent["box"], "boxa")
         self.assertRegex(intent["resources_registry_sha256"], r"^[0-9a-f]{64}$")
 
     def test_intent_rejects_vm_hostname_as_box(self):
@@ -81,7 +81,7 @@ class SecretAuthorityTest(unittest.TestCase):
             "static-site",
             "bootstrap-repo",
             "--box",
-            "k001-dmz",
+            "boxa-dmz",
             "--domain",
             "www.klokast.ai",
             "--expires-at",

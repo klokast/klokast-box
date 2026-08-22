@@ -125,7 +125,7 @@ class PlatformResourcesTest(unittest.TestCase):
 
     def run_router_rule(self):
         return {
-            "node": "k001",
+            "node": "boxa",
             "app": "test",
             "resource": "backend-http-upstream",
             "comment": "app-test-router",
@@ -141,9 +141,9 @@ class PlatformResourcesTest(unittest.TestCase):
         router_rules = [self.run_router_rule()]
         ledger = self.mod.build_app_resource_ledger(router_rules, [])
         return {
-            "boxes": ["k001", "k002"],
+            "boxes": ["boxa", "boxb"],
             "app_vm_specs": [],
-            "apps": {"test": {"boxes": ["k001"]}},
+            "apps": {"test": {"boxes": ["boxa"]}},
             "app_resource_claims": ledger["claims"],
             "app_resource_effective_files": ledger["effective_files"],
             "app_resource_cleanup_scopes": [],
@@ -154,7 +154,7 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled = self.compiled_for_run()
         vm_rules = [
             {
-                "node": "k001",
+                "node": "boxa",
                 "app": "test",
                 "resource": "backend",
                 "target_role": "backend",
@@ -178,7 +178,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "nextcloud": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {"cloudflare-tunnel-egress": True},
                     }
                 },
@@ -190,7 +190,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertIn("app-nextcloud-backend-http-upstream-router", comments)
         self.assertIn("app-nextcloud-cloudflare-tunnel-egress-tcp", comments)
         self.assertIn("app-nextcloud-cloudflare-tunnel-egress-udp", comments)
-        self.assertEqual(compiled["apps"]["nextcloud"]["boxes"], ["k001", "k002"])
+        self.assertEqual(compiled["apps"]["nextcloud"]["boxes"], ["boxa", "boxb"])
         upstream_router_claims = self.claims_for_comment(
             compiled, "app-nextcloud-backend-http-upstream-router"
         )
@@ -214,7 +214,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "nextcloud": {
                         "enabled": False,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {"cloudflare-tunnel-egress": True},
                     }
                 },
@@ -222,20 +222,20 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         compiled = self.mod.compile_registry(path, ["nextcloud"])
         self.assert_no_raw_rule_arrays(compiled)
-        self.assertEqual(compiled["apps"]["nextcloud"]["boxes"], ["k001", "k002"])
+        self.assertEqual(compiled["apps"]["nextcloud"]["boxes"], ["boxa", "boxb"])
         self.assertEqual(
             compiled["app_resource_cleanup_scopes"],
             [
                 {
                     "schema_version": 1,
-                    "node": "k001",
+                    "node": "boxa",
                     "app": "nextcloud",
                     "host_roles": ["router", "backend", "dmz", "iot"],
                     "reason": "disabled-app",
                 },
                 {
                     "schema_version": 1,
-                    "node": "k002",
+                    "node": "boxb",
                     "app": "nextcloud",
                     "host_roles": ["router", "backend", "dmz", "iot"],
                     "reason": "disabled-app",
@@ -249,7 +249,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "schema_version": 1,
                 "apps": {},
                 "boxes": {
-                    "k001": {
+                    "boxa": {
                         "shared_guests": {"iot": {"runtime_state": "stopped"}}
                     }
                 },
@@ -258,7 +258,7 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled = self.mod.compile_registry(path, [])
 
         self.assertEqual(
-            compiled["box_configs"]["k001"]["shared_guests"],
+            compiled["box_configs"]["boxa"]["shared_guests"],
             {
                 "bak": {"runtime_state": "running"},
                 "dmz": {"runtime_state": "running"},
@@ -268,7 +268,7 @@ class PlatformResourcesTest(unittest.TestCase):
         mapped = {
             item["role"]: item
             for item in compiled["platform_map"]["shared_guests"]
-            if item["node"] == "k001"
+            if item["node"] == "boxa"
         }
         self.assertEqual(mapped["iot"]["runtime_state"], "stopped")
         self.assertFalse(mapped["iot"]["autostart"])
@@ -284,7 +284,7 @@ class PlatformResourcesTest(unittest.TestCase):
                     {
                         "schema_version": 1,
                         "apps": {},
-                        "boxes": {"k001": {"shared_guests": shared_guests}},
+                        "boxes": {"boxa": {"shared_guests": shared_guests}},
                     }
                 )
                 with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
@@ -299,13 +299,13 @@ class PlatformResourcesTest(unittest.TestCase):
                     "nextcloud-v2": {
                         "enabled": True,
                         "placement": {
-                            "active_master": "k001",
-                            "passive_backup": "k002",
+                            "active_master": "boxa",
+                            "passive_backup": "boxb",
                         },
                     }
                 },
                 "boxes": {
-                    "k001": {
+                    "boxa": {
                         "shared_guests": {"bak": {"runtime_state": "stopped"}}
                     }
                 },
@@ -313,7 +313,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
             self.mod.compile_registry(path, [])
-        self.assertIn("apps.nextcloud-v2 is running on k001", stderr.getvalue())
+        self.assertIn("apps.nextcloud-v2 is running on boxa", stderr.getvalue())
 
     def test_box_config_compile_tolerates_missing_manifest_for_stopped_app(self):
         path = self.write_registry(
@@ -326,7 +326,7 @@ class PlatformResourcesTest(unittest.TestCase):
                     }
                 },
                 "boxes": {
-                    "k001": {
+                    "boxa": {
                         "shared_guests": {"iot": {"runtime_state": "stopped"}}
                     }
                 },
@@ -335,7 +335,7 @@ class PlatformResourcesTest(unittest.TestCase):
 
         compiled = self.mod.compile_box_registry_plan(path)
         self.assertEqual(
-            compiled["box_configs"]["k001"]["shared_guests"]["iot"][
+            compiled["box_configs"]["boxa"]["shared_guests"]["iot"][
                 "runtime_state"
             ],
             "stopped",
@@ -348,12 +348,12 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "nextcloud-v2": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     },
                     "nextcloud": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     },
                 },
@@ -363,7 +363,7 @@ class PlatformResourcesTest(unittest.TestCase):
         shared = [
             item
             for item in compiled["app_resource_effective_files"]
-            if item["node"] == "k001"
+            if item["node"] == "boxa"
             and item["kind"] == "router-forward"
             and item["owners"] == ["nextcloud", "nextcloud-v2"]
         ]
@@ -377,12 +377,12 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "nextcloud-v2": {
                         "enabled": False,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     },
                     "nextcloud": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     },
                 },
@@ -400,7 +400,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "nextcloud-v2": {
                         "enabled": False,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     }
                 },
@@ -411,7 +411,7 @@ class PlatformResourcesTest(unittest.TestCase):
 
     def test_exclusive_conflicts_fail_before_apply(self):
         rule = {
-            "node": "k001",
+            "node": "boxa",
             "app": "app-a",
             "resource": "shared",
             "in_interface": "eth2",
@@ -437,7 +437,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "immich": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     }
                 },
@@ -447,7 +447,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assert_no_raw_rule_arrays(compiled)
         comments = self.claim_comments(compiled)
         self.assertIn("app-immich-backend-http-upstream-router", comments)
-        self.assertEqual(compiled["apps"]["immich"]["boxes"], ["k001", "k002"])
+        self.assertEqual(compiled["apps"]["immich"]["boxes"], ["boxa", "boxb"])
         upstream_router_claims = self.claims_for_comment(
             compiled, "app-immich-backend-http-upstream-router"
         )
@@ -474,14 +474,14 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "static-site": {
                         "enabled": True,
-                        "placement": {"active_master": "k001"},
+                        "placement": {"active_master": "boxa"},
                         "resources": {},
                     }
                 },
             }
         )
         compiled = self.mod.compile_registry(path, ["static-site"])
-        self.assertEqual(compiled["apps"]["static-site"]["boxes"], ["k001"])
+        self.assertEqual(compiled["apps"]["static-site"]["boxes"], ["boxa"])
         self.assertEqual(
             compiled["apps"]["static-site"]["resources"],
             ["github-ssh-egress", "cloudflare-tunnel-egress"],
@@ -500,14 +500,14 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(github_egress_claims[0]["normalized"]["source"], "192.168.200.10")
         self.assertEqual(github_egress_claims[0]["normalized"]["destination"], "")
         self.assertEqual(github_egress_claims[0]["normalized"]["ports"], [443])
-        self.assertEqual(self.mod.limit_for_resource_hosts(compiled), "k001-router")
+        self.assertEqual(self.mod.limit_for_resource_hosts(compiled), "boxa-router")
 
     def test_music_compiles_managed_iot_device_resources(self):
         path = self.write_registry(
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "dom0_bridge_ports": {
                             "iot": ["eth3"],
                         },
@@ -516,18 +516,18 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "music": {
                         "enabled": True,
-                        "placement": {"boxes": ["k001", "k002"]},
+                        "placement": {"boxes": ["boxa", "boxb"]},
                         "devices": {
                             "local-audio-endpoint": {
-                                "k001": {
+                                "boxa": {
                                     "mac": "b8:27:eb:00:00:01",
                                     "ipv4_address": "192.168.150.60",
-                                    "hostname": "k001-streamer",
+                                    "hostname": "boxa-streamer",
                                 },
-                                "k002": {
+                                "boxb": {
                                     "mac": "b8:27:eb:00:00:02",
                                     "ipv4_address": "192.168.150.60",
-                                    "hostname": "k002-streamer",
+                                    "hostname": "boxb-streamer",
                                 },
                             }
                         },
@@ -537,16 +537,16 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         compiled = self.mod.compile_registry(path, ["music"])
         self.assertEqual(
-            compiled["box_configs"]["k002"]["dom0_bridge_ports"],
+            compiled["box_configs"]["boxb"]["dom0_bridge_ports"],
             {"iot": ["eth3"]},
         )
-        self.assertEqual(compiled["apps"]["music"]["boxes"], ["k001", "k002"])
+        self.assertEqual(compiled["apps"]["music"]["boxes"], ["boxa", "boxb"])
         self.assertEqual(
             compiled["apps"]["music"]["resources"],
             ["snapcast-stream", "audio-endpoint-updates"],
         )
         self.assertEqual(len(compiled["managed_iot_devices"]), 2)
-        self.assertEqual(compiled["managed_iot_devices"][0]["hostname"], "k001-streamer")
+        self.assertEqual(compiled["managed_iot_devices"][0]["hostname"], "boxa-streamer")
         self.assertEqual(compiled["managed_iot_devices"][0]["ipv4_address"], "192.168.150.60")
         self.assertEqual(compiled["managed_iot_devices"][0]["tailnet_tag"], "tag:streamer")
         self.assertEqual(compiled["managed_iot_devices"][1]["ipv4_address"], "192.168.150.60")
@@ -555,16 +555,16 @@ class PlatformResourcesTest(unittest.TestCase):
             self.mod.router_managed_dhcp_hosts(compiled),
             [
                 {
-                    "node": "k001",
-                    "name": "k001-streamer",
+                    "node": "boxa",
+                    "name": "boxa-streamer",
                     "mac": "b8:27:eb:00:00:01",
                     "address": "192.168.150.60",
                     "app": "music",
                     "resource": "local-audio-endpoint",
                 },
                 {
-                    "node": "k002",
-                    "name": "k002-streamer",
+                    "node": "boxb",
+                    "name": "boxb-streamer",
                     "mac": "b8:27:eb:00:00:02",
                     "address": "192.168.150.60",
                     "app": "music",
@@ -599,10 +599,10 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(
             [item["hostname"] for item in tailnet_resources],
             [
-                "k001-music",
-                "k002-music",
-                "k001-music-upload",
-                "k002-music-upload",
+                "boxa-music",
+                "boxb-music",
+                "boxa-music-upload",
+                "boxb-music-upload",
             ],
         )
         self.assertEqual(
@@ -615,7 +615,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k001": {
+                    "boxa": {
                         "dhcp_reservations": [
                             {
                                 "hostname": "flint2",
@@ -630,7 +630,7 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled = self.mod.compile_registry(path, [])
         self.assertEqual(compiled["boxes"], [])
         self.assertEqual(
-            compiled["box_configs"]["k001"]["dhcp_reservations"],
+            compiled["box_configs"]["boxa"]["dhcp_reservations"],
             [
                 {
                     "hostname": "flint2",
@@ -643,7 +643,7 @@ class PlatformResourcesTest(unittest.TestCase):
             self.mod.router_managed_dhcp_hosts(compiled),
             [
                 {
-                    "node": "k001",
+                    "node": "boxa",
                     "name": "flint2",
                     "mac": "02:00:00:00:00:01",
                     "address": "10.10.30.2",
@@ -652,7 +652,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(self.mod.boxes_for_scope(compiled), ["k001"])
+        self.assertEqual(self.mod.boxes_for_scope(compiled), ["boxa"])
 
     def test_box_dhcp_reservation_rejects_invalid_identity_fields(self):
         cases = [
@@ -671,7 +671,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "boxes": {
-                        "k001": {
+                        "boxa": {
                             "dhcp_reservations": [reservation],
                         }
                     },
@@ -687,7 +687,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay", "local-lan"],
@@ -702,7 +702,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "local-ingress": {
                         "enabled": True,
-                        "placement": {"active_master": "k002"},
+                        "placement": {"active_master": "boxb"},
                     }
                 },
             }
@@ -737,7 +737,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay", "local-lan"],
@@ -752,7 +752,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "local-ingress": {
                         "enabled": True,
-                        "placement": {"active_master": "k002"},
+                        "placement": {"active_master": "boxb"},
                     }
                 },
             }
@@ -773,7 +773,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay"],
@@ -784,7 +784,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "local-ingress": {
                         "enabled": True,
-                        "placement": {"active_master": "k002"},
+                        "placement": {"active_master": "boxb"},
                     }
                 },
             }
@@ -798,7 +798,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay", "local-lan"],
@@ -812,13 +812,13 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "music": {
                         "enabled": True,
-                        "placement": {"boxes": ["k002"]},
+                        "placement": {"boxes": ["boxb"]},
                         "devices": {
                             "local-audio-endpoint": {
-                                "k002": {
+                                "boxb": {
                                     "mac": "b8:27:eb:00:00:02",
                                     "ipv4_address": "192.168.150.60",
-                                    "hostname": "k002-streamer",
+                                    "hostname": "boxb-streamer",
                                 },
                             }
                         },
@@ -830,7 +830,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(compiled["apps"]["music"]["tailnet_resources"], ["upload-ingress"])
         self.assertEqual(
             [item["hostname"] for item in compiled["tailnet_resources"]],
-            ["k002-music-upload"],
+            ["boxb-music-upload"],
         )
 
     def test_print_server_compiles_backend_to_iot_printer_resources(self):
@@ -840,13 +840,13 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "print-server": {
                         "enabled": True,
-                        "placement": {"boxes": ["k002"]},
+                        "placement": {"boxes": ["boxb"]},
                         "devices": {
                             "printer": {
-                                "k002": {
+                                "boxb": {
                                     "mac": "02:00:00:00:00:02",
                                     "ipv4_address": "192.168.150.78",
-                                    "hostname": "k002-printer",
+                                    "hostname": "boxb-printer",
                                 },
                             }
                         },
@@ -856,14 +856,14 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
         compiled = self.mod.compile_registry(path, ["print-server"])
-        self.assertEqual(compiled["apps"]["print-server"]["boxes"], ["k002"])
+        self.assertEqual(compiled["apps"]["print-server"]["boxes"], ["boxb"])
         self.assertEqual(compiled["apps"]["print-server"]["resources"], ["printer-ipp"])
         self.assertEqual(
             compiled["apps"]["print-server"]["tailnet_resources"],
             ["print-ingress"],
         )
         self.assertEqual(len(compiled["managed_iot_devices"]), 1)
-        self.assertEqual(compiled["managed_iot_devices"][0]["hostname"], "k002-printer")
+        self.assertEqual(compiled["managed_iot_devices"][0]["hostname"], "boxb-printer")
         self.assertEqual(
             compiled["managed_iot_devices"][0]["ipv4_address"],
             "192.168.150.78",
@@ -873,8 +873,8 @@ class PlatformResourcesTest(unittest.TestCase):
             self.mod.router_managed_dhcp_hosts(compiled),
             [
                 {
-                    "node": "k002",
-                    "name": "k002-printer",
+                    "node": "boxb",
+                    "name": "boxb-printer",
                     "mac": "02:00:00:00:00:02",
                     "address": "192.168.150.78",
                     "app": "print-server",
@@ -893,7 +893,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(router_claims[0]["normalized"]["ports"], [631])
         self.assertEqual(
             [(item["hostname"], item["tag"]) for item in compiled["tailnet_resources"]],
-            [("k002-print", "tag:print")],
+            [("boxb-print", "tag:print")],
         )
 
     def test_box_access_rejects_enabled_unavailable_capability(self):
@@ -901,7 +901,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay"],
                             "enabled_capabilities": ["overlay", "local-lan"],
@@ -920,7 +920,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k001": {
+                    "boxa": {
                         "access": {
                             "available_capabilities": [
                                 "overlay",
@@ -945,25 +945,25 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled = self.mod.compile_registry(path, [])
 
         self.assertEqual(
-            compiled["box_configs"]["k001"]["access"]["enabled_capabilities"],
+            compiled["box_configs"]["boxa"]["access"]["enabled_capabilities"],
             ["overlay", "ap-uplink", "direct-egress"],
         )
         self.assertEqual(
-            compiled["box_configs"]["k001"]["access"]["policy"]["household-wan-egress"],
+            compiled["box_configs"]["boxa"]["access"]["policy"]["household-wan-egress"],
             "direct-egress",
         )
         self.assertEqual(
-            compiled["box_configs"]["k001"]["dom0_bridge_ports"],
+            compiled["box_configs"]["boxa"]["dom0_bridge_ports"],
             {"lan": ["eth2"]},
         )
-        self.assertEqual(self.mod.boxes_for_scope(compiled), ["k001"])
+        self.assertEqual(self.mod.boxes_for_scope(compiled), ["boxa"])
 
     def test_box_access_rejects_prohibited_available_capability(self):
         path = self.write_registry(
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay", "direct-egress"],
                             "enabled_capabilities": ["overlay"],
@@ -983,7 +983,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": ["overlay", "direct-ingress"],
                             "enabled_capabilities": ["overlay"],
@@ -1006,8 +1006,8 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "music": {
                         "enabled": True,
-                        "placement": {"boxes": ["k001"]},
-                        "devices": {"local-audio-endpoint": {"k001": {}}},
+                        "placement": {"boxes": ["boxa"]},
+                        "devices": {"local-audio-endpoint": {"boxa": {}}},
                     }
                 },
             }
@@ -1021,7 +1021,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k001": {
+                    "boxa": {
                         "dom0_bridge_ports": {
                             "unknown": ["eth3"],
                         },
@@ -1041,7 +1041,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "static-site": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     }
                 },
@@ -1058,7 +1058,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "static-site": {
                         "enabled": False,
-                        "placement": {"active_master": "k001"},
+                        "placement": {"active_master": "boxa"},
                         "resources": {},
                     }
                 },
@@ -1066,13 +1066,13 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         compiled = self.mod.compile_registry(path, ["static-site"])
         self.assert_no_raw_rule_arrays(compiled)
-        self.assertEqual(compiled["apps"]["static-site"]["boxes"], ["k001"])
+        self.assertEqual(compiled["apps"]["static-site"]["boxes"], ["boxa"])
         self.assertEqual(
             compiled["app_resource_cleanup_scopes"],
             [
                 {
                     "schema_version": 1,
-                    "node": "k001",
+                    "node": "boxa",
                     "app": "static-site",
                     "host_roles": ["router", "backend", "dmz", "iot"],
                     "reason": "disabled-app",
@@ -1081,7 +1081,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         self.assertEqual(
             self.mod.limit_for_resource_hosts(compiled),
-            "k001-router,k001-bak,k001-dmz,k001-iot",
+            "boxa-router,boxa-bak,boxa-dmz,boxa-iot",
         )
 
     def test_apply_converges_router_topology_before_resources(self):
@@ -1098,9 +1098,9 @@ class PlatformResourcesTest(unittest.TestCase):
         first_cmd = playbook_calls[0]
         second_cmd = playbook_calls[1]
         self.assertIn("31-vm-router.yml", " ".join(map(str, first_cmd)))
-        self.assertEqual(first_cmd[first_cmd.index("--limit") + 1], "k001,k002")
+        self.assertEqual(first_cmd[first_cmd.index("--limit") + 1], "boxa,boxb")
         self.assertIn("80-platform-resources.yml", " ".join(map(str, second_cmd)))
-        self.assertEqual(second_cmd[second_cmd.index("--limit") + 1], "k001-router")
+        self.assertEqual(second_cmd[second_cmd.index("--limit") + 1], "boxa-router")
 
     def test_verify_does_not_converge_router_topology(self):
         compiled = self.compiled_for_run()
@@ -1116,7 +1116,7 @@ class PlatformResourcesTest(unittest.TestCase):
         cmd = playbook_calls[0]
         self.assertNotIn("31-vm-router.yml", " ".join(map(str, cmd)))
         self.assertIn("81-platform-resources-verify.yml", " ".join(map(str, cmd)))
-        self.assertEqual(cmd[cmd.index("--limit") + 1], "k001-router")
+        self.assertEqual(cmd[cmd.index("--limit") + 1], "boxa-router")
 
     def test_apply_uses_tailscale_ssh_for_podman_resource_hosts(self):
         compiled = self.compiled_with_podman_resource_for_run()
@@ -1133,7 +1133,7 @@ class PlatformResourcesTest(unittest.TestCase):
             for call in playbook_calls
             if "80-platform-resources.yml" in " ".join(map(str, call))
         ][0]
-        self.assertEqual(resource_cmd[resource_cmd.index("--limit") + 1], "k001-router")
+        self.assertEqual(resource_cmd[resource_cmd.index("--limit") + 1], "boxa-router")
 
         tailscale_calls = [
             call.args[0]
@@ -1141,14 +1141,14 @@ class PlatformResourcesTest(unittest.TestCase):
             if call.args[0] and call.args[0][0] == "tailscale"
         ]
         self.assertTrue(tailscale_calls)
-        self.assertTrue(all("neo@k001-bak" in call for call in tailscale_calls))
+        self.assertTrue(all("neo@boxa-bak" in call for call in tailscale_calls))
         joined_playbooks = "\n".join(" ".join(map(str, call)) for call in playbook_calls)
-        self.assertNotIn("k001-bak", joined_playbooks)
+        self.assertNotIn("boxa-bak", joined_playbooks)
 
         last_applied_uploads = [
             call
             for call in run.call_args_list
-            if '"inventory_hostname": "k001-bak"' in (call.kwargs.get("input") or "")
+            if '"inventory_hostname": "boxa-bak"' in (call.kwargs.get("input") or "")
         ]
         self.assertEqual(len(last_applied_uploads), 1)
         self.assertIn('"approved_commit": "abc123"', last_applied_uploads[0].kwargs["input"])
@@ -1165,7 +1165,7 @@ class PlatformResourcesTest(unittest.TestCase):
             if call.args[0] and call.args[0][0] == "ansible-playbook"
         ]
         resource_cmd = playbook_calls[0]
-        self.assertEqual(resource_cmd[resource_cmd.index("--limit") + 1], "k001-router")
+        self.assertEqual(resource_cmd[resource_cmd.index("--limit") + 1], "boxa-router")
 
         tailscale_calls = [
             call
@@ -1173,9 +1173,9 @@ class PlatformResourcesTest(unittest.TestCase):
             if call.args[0] and call.args[0][0] == "tailscale"
         ]
         self.assertEqual(len(tailscale_calls), 3)
-        self.assertTrue(all("neo@k001-bak" in call.args[0] for call in tailscale_calls))
+        self.assertTrue(all("neo@boxa-bak" in call.args[0] for call in tailscale_calls))
         self.assertFalse(
-            any('"inventory_hostname": "k001-bak"' in (call.kwargs.get("input") or "") for call in tailscale_calls)
+            any('"inventory_hostname": "boxa-bak"' in (call.kwargs.get("input") or "") for call in tailscale_calls)
         )
 
     def test_podman_remote_script_requires_firewall_baseline(self):
@@ -1192,11 +1192,11 @@ class PlatformResourcesTest(unittest.TestCase):
     def test_app_scoped_apply_skips_unrelated_app_vm_convergence(self):
         compiled = self.compiled_for_run()
         compiled["apps"] = {
-            "static-site": {"boxes": ["k001"]},
-            "user-shell": {"boxes": ["k001"]},
+            "static-site": {"boxes": ["boxa"]},
+            "user-shell": {"boxes": ["boxa"]},
         }
         compiled["app_vm_specs"] = [
-            {"app": "user-shell", "inventory_hostname": "k001-usr-alice"}
+            {"app": "user-shell", "inventory_hostname": "boxa-usr-alice"}
         ]
 
         with patch.object(self.mod.subprocess, "run") as run:
@@ -1224,7 +1224,7 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled = self.compiled_for_run()
         vm_rules = [
             {
-                "node": "k001",
+                "node": "boxa",
                 "app": "test",
                 "resource": "backend",
                 "target_role": "backend",
@@ -1235,7 +1235,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "comment": "app-test-backend-vm-input",
             },
             {
-                "node": "k002",
+                "node": "boxb",
                 "app": "test",
                 "resource": "dmz",
                 "target_role": "dmz",
@@ -1251,7 +1251,7 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled["app_resource_effective_files"] = ledger["effective_files"]
         self.assertEqual(
             self.mod.limit_for_resource_hosts(compiled),
-            "k001-router,k001-bak,k002-dmz",
+            "boxa-router,boxa-bak,boxb-dmz",
         )
 
     def test_immich_grant_exports_only_app_approved_state(self):
@@ -1261,11 +1261,11 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "nextcloud": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                     },
                     "immich": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                         "resources": {},
                     },
                 },
@@ -1277,8 +1277,8 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(grant["app"], "immich")
         self.assertTrue(grant["enabled"])
         self.assertEqual(grant["approved_commit"], "abc123")
-        self.assertEqual(grant["boxes"], ["k001", "k002"])
-        self.assertEqual(grant["placement"]["active_master"], "k001")
+        self.assertEqual(grant["boxes"], ["boxa", "boxb"])
+        self.assertEqual(grant["placement"]["active_master"], "boxa")
         self.assertEqual(grant["resources"], ["backend-http-upstream"])
         self.assertEqual(grant["tailnet_resources"][0]["tag"], "tag:immich")
         self.assertIn("app_resource_effective_files", grant)
@@ -1302,27 +1302,27 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "immich": {
                         "enabled": False,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                     }
                 },
             }
         )
         compiled = self.mod.compile_registry(path, ["immich"])
         self.assert_no_raw_rule_arrays(compiled)
-        self.assertEqual(compiled["apps"]["immich"]["boxes"], ["k001", "k002"])
+        self.assertEqual(compiled["apps"]["immich"]["boxes"], ["boxa", "boxb"])
         self.assertEqual(
             compiled["app_resource_cleanup_scopes"],
             [
                 {
                     "schema_version": 1,
-                    "node": "k001",
+                    "node": "boxa",
                     "app": "immich",
                     "host_roles": ["router", "backend", "dmz", "iot"],
                     "reason": "disabled-app",
                 },
                 {
                     "schema_version": 1,
-                    "node": "k002",
+                    "node": "boxb",
                     "app": "immich",
                     "host_roles": ["router", "backend", "dmz", "iot"],
                     "reason": "disabled-app",
@@ -1337,7 +1337,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "bootstrap-iso-debian": {
                         "enabled": True,
-                        "placement": {"builder_box": "k001"},
+                        "placement": {"builder_box": "boxa"},
                         "ephemeral": {
                             "privileged_approval": True,
                             "expires_at": "2099-01-01T00:00:00Z",
@@ -1348,7 +1348,7 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
         compiled = self.mod.compile_registry(path, ["bootstrap-iso-debian"])
-        self.assertEqual(compiled["apps"]["bootstrap-iso-debian"]["boxes"], ["k001"])
+        self.assertEqual(compiled["apps"]["bootstrap-iso-debian"]["boxes"], ["boxa"])
 
     def test_bootstrap_privileged_builder_rejects_missing_approval(self):
         path = self.write_registry(
@@ -1357,7 +1357,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "bootstrap-iso-debian": {
                         "enabled": True,
-                        "placement": {"builder_box": "k001"},
+                        "placement": {"builder_box": "boxa"},
                     }
                 },
             }
@@ -1373,7 +1373,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "user-shell": {
                         "enabled": True,
-                        "placement": {"active_master": "k001"},
+                        "placement": {"active_master": "boxa"},
                         "users": self.per_user_app_users()[:1],
                     }
                 },
@@ -1386,7 +1386,7 @@ class PlatformResourcesTest(unittest.TestCase):
         specs = compiled["app_vm_specs"]
         self.assertEqual(len(specs), 1)
         spec = specs[0]
-        self.assertEqual(spec["inventory_hostname"], "k001-usr-alice")
+        self.assertEqual(spec["inventory_hostname"], "boxa-usr-alice")
         self.assertEqual(spec["node_domain_role"], "usr")
         self.assertEqual(spec["zone"], "usr")
         self.assertEqual(spec["guest_spec"]["guest_name"], "usr-alice")
@@ -1402,7 +1402,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         self.assertEqual(egress[0]["normalized"]["source"], "192.168.175.20")
         policy = compiled["tailnet_policy_resources"][0]
-        self.assertEqual(policy["hostname"], "k001-usr-alice")
+        self.assertEqual(policy["hostname"], "boxa-usr-alice")
         self.assertEqual(policy["tag"], "tag:user-shell-alice")
         self.assertEqual(policy["grants"][0]["ports"], [22])
         self.assertEqual(policy["ssh"][0]["users"], ["alice"])
@@ -1415,7 +1415,7 @@ class PlatformResourcesTest(unittest.TestCase):
                     "apps": {
                         "user-shell": {
                             "enabled": True,
-                            "placement": {"active_master": "k001"},
+                            "placement": {"active_master": "boxa"},
                             "users": self.per_user_app_users()[:1],
                         }
                     },
@@ -1437,10 +1437,10 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "torrent": {
                         "enabled": True,
-                        "placement": {"active_master": "k002"},
+                        "placement": {"active_master": "boxb"},
                         "app_vms": {
                             "torrent": {
-                                "k002": {"vm_ipv4_address": "192.168.200.30"}
+                                "boxb": {"vm_ipv4_address": "192.168.200.30"}
                             }
                         },
                     }
@@ -1448,11 +1448,11 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
         compiled = self.mod.compile_registry(path, ["torrent"])
-        self.assertEqual(compiled["apps"]["torrent"]["boxes"], ["k002"])
+        self.assertEqual(compiled["apps"]["torrent"]["boxes"], ["boxb"])
         specs = compiled["app_vm_specs"]
         self.assertEqual(len(specs), 1)
         spec = specs[0]
-        self.assertEqual(spec["inventory_hostname"], "k002-torrent")
+        self.assertEqual(spec["inventory_hostname"], "boxb-torrent")
         self.assertEqual(spec["node_domain_role"], "dmz")
         self.assertEqual(spec["advertised_tags"], ["tag:vm", "tag:torrent"])
         self.assertEqual(spec["guest_spec"]["guest_os"], "alpine")
@@ -1489,16 +1489,16 @@ class PlatformResourcesTest(unittest.TestCase):
             self.mod.render_app_vm_inventory(compiled, output, "example.ts.net")
             inventory = yaml.safe_load(output.read_text(encoding="utf-8"))
         hosts = inventory["all"]["hosts"]
-        self.assertEqual(hosts["k002-torrent"]["ansible_become_method"], "doas")
-        self.assertEqual(hosts["k002-torrent"]["platform_app_vm_guest_os"], "alpine")
-        self.assertEqual(hosts["k002-torrent"]["platform_app_vm_zone"], "dmz")
-        self.assertEqual(hosts["k002-torrent"]["platform_app_vm_interface"], "eth0")
-        self.assertIn("vm_admin_authorized_key_file", hosts["k002-torrent"])
-        self.assertIn("vm_bootstrap_private_key_file", hosts["k002-torrent"])
-        self.assertIn("vm_bootstrap_known_hosts_file", hosts["k002-torrent"])
-        self.assertEqual(hosts["k002-torrent"]["vm_local_users"][0]["name"], "neo")
-        self.assertIn("k002-torrent", inventory["all"]["children"]["torrent_app_vms"]["hosts"])
-        self.assertIn("k002-torrent", inventory["all"]["children"]["dmz_app_vms"]["hosts"])
+        self.assertEqual(hosts["boxb-torrent"]["ansible_become_method"], "doas")
+        self.assertEqual(hosts["boxb-torrent"]["platform_app_vm_guest_os"], "alpine")
+        self.assertEqual(hosts["boxb-torrent"]["platform_app_vm_zone"], "dmz")
+        self.assertEqual(hosts["boxb-torrent"]["platform_app_vm_interface"], "eth0")
+        self.assertIn("vm_admin_authorized_key_file", hosts["boxb-torrent"])
+        self.assertIn("vm_bootstrap_private_key_file", hosts["boxb-torrent"])
+        self.assertIn("vm_bootstrap_known_hosts_file", hosts["boxb-torrent"])
+        self.assertEqual(hosts["boxb-torrent"]["vm_local_users"][0]["name"], "neo")
+        self.assertIn("boxb-torrent", inventory["all"]["children"]["torrent_app_vms"]["hosts"])
+        self.assertIn("boxb-torrent", inventory["all"]["children"]["dmz_app_vms"]["hosts"])
         self.assertNotIn("dmz", inventory["all"]["children"])
 
     def test_household_vpn_compiles_dedicated_alpine_app_vm(self):
@@ -1506,7 +1506,7 @@ class PlatformResourcesTest(unittest.TestCase):
             {
                 "schema_version": 1,
                 "boxes": {
-                    "k002": {
+                    "boxb": {
                         "access": {
                             "available_capabilities": [
                                 "overlay",
@@ -1528,10 +1528,10 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {
                     "household-vpn": {
                         "enabled": True,
-                        "placement": {"active_master": "k002"},
+                        "placement": {"active_master": "boxb"},
                         "app_vms": {
                             "gateway": {
-                                "k002": {"vm_ipv4_address": "192.168.200.40"}
+                                "boxb": {"vm_ipv4_address": "192.168.200.40"}
                             }
                         },
                     }
@@ -1539,11 +1539,11 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
         compiled = self.mod.compile_registry(path, ["household-vpn"])
-        self.assertEqual(compiled["apps"]["household-vpn"]["boxes"], ["k002"])
+        self.assertEqual(compiled["apps"]["household-vpn"]["boxes"], ["boxb"])
         specs = compiled["app_vm_specs"]
         self.assertEqual(len(specs), 1)
         spec = specs[0]
-        self.assertEqual(spec["inventory_hostname"], "k002-household-vpn")
+        self.assertEqual(spec["inventory_hostname"], "boxb-household-vpn")
         self.assertEqual(spec["node_domain_role"], "dmz")
         self.assertEqual(spec["advertised_tags"], ["tag:vm", "tag:household-vpn"])
         self.assertEqual(spec["guest_spec"]["guest_os"], "alpine")
@@ -1569,11 +1569,11 @@ class PlatformResourcesTest(unittest.TestCase):
             self.mod.render_app_vm_inventory(compiled, output, "example.ts.net")
             inventory = yaml.safe_load(output.read_text(encoding="utf-8"))
         self.assertIn(
-            "k002-household-vpn",
+            "boxb-household-vpn",
             inventory["all"]["children"]["household_vpn_app_vms"]["hosts"],
         )
         self.assertIn(
-            "k002-household-vpn",
+            "boxb-household-vpn",
             inventory["all"]["children"]["dmz_app_vms"]["hosts"],
         )
 
@@ -1587,7 +1587,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.mod.subprocess.run = fake_run
         try:
             self.mod.run_tailscale_ssh(
-                "k002-bak.tail",
+                "boxb-bak.tail",
                 ["sh", "-c", "umask 077 && cat > /tmp/a b"],
                 input_text="payload",
             )
@@ -1599,7 +1599,7 @@ class PlatformResourcesTest(unittest.TestCase):
             [
                 "tailscale",
                 "ssh",
-                "neo@k002-bak.tail",
+                "neo@boxb-bak.tail",
                 "sh -c 'umask 077 && cat > /tmp/a b'",
             ],
         )
@@ -1607,7 +1607,7 @@ class PlatformResourcesTest(unittest.TestCase):
 
     def test_platform_resources_inventory_does_not_override_dom0_remote_tmp(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "k001.yml"
+            output = Path(tmpdir) / "boxa.yml"
             original_run = self.mod.subprocess.run
 
             def fake_run(argv, **_kwargs):
@@ -1618,15 +1618,15 @@ all:
   children:
     k001_dom0:
       hosts:
-        k001-dom0:
-          node_name: k001
+        boxa-dom0:
+          node_name: boxa
 """,
                     encoding="utf-8",
                 )
 
             self.mod.subprocess.run = fake_run
             try:
-                self.mod.render_inventory("k001", output, "example.ts.net")
+                self.mod.render_inventory("boxa", output, "example.ts.net")
             finally:
                 self.mod.subprocess.run = original_run
 
@@ -1634,12 +1634,12 @@ all:
 
         self.assertNotIn(
             "ansible_remote_tmp",
-            inventory["all"]["children"]["k001_dom0"]["hosts"]["k001-dom0"],
+            inventory["all"]["children"]["k001_dom0"]["hosts"]["boxa-dom0"],
         )
 
     def test_platform_resources_inventory_passes_dom0_bridge_ports(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "k002.yml"
+            output = Path(tmpdir) / "boxb.yml"
             calls = []
             original_run = self.mod.subprocess.run
 
@@ -1651,10 +1651,10 @@ all:
             self.mod.subprocess.run = fake_run
             try:
                 self.mod.render_inventory(
-                    "k002",
+                    "boxb",
                     output,
                     "example.ts.net",
-                    {"k002": {"dom0_bridge_ports": {"iot": ["eth3"]}}},
+                    {"boxb": {"dom0_bridge_ports": {"iot": ["eth3"]}}},
                 )
             finally:
                 self.mod.subprocess.run = original_run
@@ -1664,10 +1664,10 @@ all:
         self.assertEqual(calls[0][index + 1], "iot=eth3")
 
     def test_app_vm_limit_includes_backend_builder_host(self):
-        specs = [{"inventory_hostname": "k001-usr-alice"}]
+        specs = [{"inventory_hostname": "boxa-usr-alice"}]
         self.assertEqual(
-            self.mod.limit_for_app_vms(["k001"], specs),
-            "k001-bak,k001-dom0,k001-usr-alice",
+            self.mod.limit_for_app_vms(["boxa"], specs),
+            "boxa-bak,boxa-dom0,boxa-usr-alice",
         )
 
     def test_platform_resources_vars_marks_desired_json_unsafe(self):
@@ -1707,7 +1707,7 @@ all:
             root = Path(tmpdir) / "app-resources"
             self.configure_reconciler_root(reconciler, root)
             selected_rule = {
-                "node": "k001",
+                "node": "boxa",
                 "app": "selected",
                 "resource": "web",
                 "in_interface": "eth2",
@@ -1730,7 +1730,7 @@ all:
             desired = self.desired_for_rules([selected_rule, other_rule])
             args = self.mod.argparse.Namespace(
                 scope_app=[],
-                node_name="k001",
+                node_name="boxa",
                 node_role="router",
             )
             with redirect_stdout(io.StringIO()):
@@ -1770,7 +1770,7 @@ all:
     def test_full_and_app_scoped_apply_converge_to_same_snippets(self):
         reconciler = load_reconcile_module()
         rule_a = {
-            "node": "k001",
+            "node": "boxa",
             "app": "app-a",
             "resource": "web",
             "in_interface": "eth2",
@@ -1787,7 +1787,7 @@ all:
         with tempfile.TemporaryDirectory() as full_tmp, tempfile.TemporaryDirectory() as scoped_tmp:
             full_root = Path(full_tmp) / "app-resources"
             scoped_root = Path(scoped_tmp) / "app-resources"
-            args = self.mod.argparse.Namespace(scope_app=[], node_name="k001", node_role="router")
+            args = self.mod.argparse.Namespace(scope_app=[], node_name="boxa", node_role="router")
 
             self.configure_reconciler_root(reconciler, full_root)
             with redirect_stdout(io.StringIO()):
@@ -1902,10 +1902,10 @@ all:
                 "apps": {
                     "badapp": {
                         "enabled": True,
-                        "placement": {"active_master": "k002"},
+                        "placement": {"active_master": "boxb"},
                         "app_vms": {
                             "runtime": {
-                                "k002": {
+                                "boxb": {
                                     "vm_ipv4_address": "192.168.200.30",
                                     "tailnet_tag": "tag:ops",
                                 }
@@ -1930,7 +1930,7 @@ all:
                         "id": "bad-builder",
                         "type": "ephemeral_privileged_builder",
                         "zone": "bak",
-                        "builder_host": "k001-bak",
+                        "builder_host": "boxa-bak",
                     }
                 ]
             },
@@ -2046,7 +2046,7 @@ all:
                 "apps": {
                     "missingapp": {
                         "enabled": True,
-                        "placement": {"active_master": "k001", "passive_backup": "k002"},
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
                     }
                 },
             }
@@ -2085,7 +2085,7 @@ all:
     def test_ops_role_hostname_is_not_accepted_as_box_name(self):
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.validate_box("k001-ops", "apps.example.placement.active_master")
+                self.mod.validate_box("boxa-ops", "apps.example.placement.active_master")
 
 
 if __name__ == "__main__":

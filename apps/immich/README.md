@@ -23,11 +23,11 @@ When the operator starts on an infra-agent host such as `vultr-ops`, first enter
 the controller:
 
 ```sh
-tailscale ssh smith@k002-ops
+tailscale ssh smith@boxb-ops
 cd ~/src/klokast/klokast-box
 apps/immich/bin/immich-install-from-controller \
-  --active-master k001 \
-  --passive-backup k002
+  --active-master boxa \
+  --passive-backup boxb
 ```
 
 The controller installer generates/reuses a controller-local `0600` secrets
@@ -40,9 +40,9 @@ SSH access to both controller users:
 
 ```sh
 apps/immich/bin/immich-install-from-mac \
-  --controller k002-ops \
-  --active-master k001 \
-  --passive-backup k002
+  --controller boxb-ops \
+  --active-master boxa \
+  --passive-backup boxb
 ```
 
 Both installers validate the `tag:immich` auth-key wrapper configuration, but
@@ -55,7 +55,7 @@ Set required secrets in the controller environment:
 ```sh
 export IMMICH_POSTGRES_PASSWORD='...'
 export IMMICH_RESTIC_PASSWORD='...'
-export IMMICH_RESTIC_REPOSITORY='sftp:neo@k002-bak.example.ts.net:/srv/immich-restic/k001'
+export IMMICH_RESTIC_REPOSITORY='sftp:neo@boxb-bak.example.ts.net:/srv/immich-restic/boxa'
 ```
 
 The ops server also needs a root-owned auth-key wrapper for the private Immich
@@ -78,12 +78,12 @@ Run preflight and install:
 
 ```sh
 apps/immich/bin/immichctl preflight \
-  --active-master k001 \
-  --passive-backup k002
+  --active-master boxa \
+  --passive-backup boxb
 
 apps/immich/bin/immichctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry path/to/platform-resources.yml
 ```
 
@@ -94,13 +94,13 @@ The first admin user is created manually through the Immich web UI at
 
 ```sh
 apps/immich/bin/immichctl verify \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry path/to/platform-resources.yml
 
 apps/immich/bin/immichctl backup-check \
-  --active-master k001 \
-  --passive-backup k002
+  --active-master boxa \
+  --passive-backup boxb
 ```
 
 The hourly backup hook briefly stops only `immich-server` while it writes a
@@ -117,8 +117,8 @@ Promotion is manual to avoid split-brain.
 
 ```sh
 apps/immich/bin/immichctl promote \
-  --old-active k001 \
-  --new-active k002 \
+  --old-active boxa \
+  --new-active boxb \
   --resources-registry path/to/platform-resources.yml
 ```
 
@@ -130,13 +130,13 @@ restore the latest backup on the passive site.
 Remove services while preserving persistent data:
 
 ```sh
-apps/immich/bin/immichctl remove --box k001
+apps/immich/bin/immichctl remove --box boxa
 ```
 
 Delete persistent data only with the explicit wipe flag:
 
 ```sh
-apps/immich/bin/immichctl remove --box k001 --wipe-data
+apps/immich/bin/immichctl remove --box boxa --wipe-data
 ```
 
 ## Destroy
@@ -152,8 +152,8 @@ Preview first:
 ```sh
 REG=~/private/klokast/platform-resources.yml
 apps/immich/bin/immichctl destroy \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry "$REG" \
   --wipe-data \
   --yes \
@@ -164,8 +164,8 @@ Then run:
 
 ```sh
 apps/immich/bin/immichctl destroy \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry "$REG" \
   --wipe-data \
   --yes

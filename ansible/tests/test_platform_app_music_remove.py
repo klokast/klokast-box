@@ -24,7 +24,7 @@ class PlatformAppMusicRemoveTest(unittest.TestCase):
                     "music": {
                         "enabled": True,
                         "runtime_state": "running",
-                        "placement": {"boxes": ["k002"]},
+                        "placement": {"boxes": ["boxb"]},
                         "resources": {},
                     }
                 },
@@ -56,8 +56,8 @@ class PlatformAppMusicRemoveTest(unittest.TestCase):
         self.assertIn('"data_action": "preserve"', result.stdout)
         self.assertIn('"plan_sha256":', result.stdout)
         self.assertIn("klokast-music-library", result.stdout)
-        self.assertIn('"hostname": "k002-audio"', result.stdout)
-        self.assertIn('"hostname": "k002-streamer"', result.stdout)
+        self.assertIn('"hostname": "boxb-audio"', result.stdout)
+        self.assertIn('"hostname": "boxb-streamer"', result.stdout)
         self.assertIn("dry-run would disable apps.music", result.stdout)
         self.assertEqual(self.registry.read_bytes(), before)
 

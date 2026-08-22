@@ -17,9 +17,9 @@ reject that access.
 Typical use:
 
 ```sh
-ansible/bin/platform-map refresh --boxes k001,k002
+ansible/bin/platform-map refresh --boxes boxa,boxb
 ansible/bin/platform-map refresh \
-  --boxes k001 \
+  --boxes boxa \
   --resources-registry /home/codex/private/klokast/platform-resources.yml \
   --remote-scope dom0
 ansible/bin/platform-map show
@@ -59,7 +59,7 @@ timezone option to this interface.
 
 Important options:
 
-- `--boxes k001,k002`: select boxes explicitly. If omitted, the tool tries to
+- `--boxes boxa,boxb`: select boxes explicitly. If omitted, the tool tries to
   infer box names from Tailscale peers. It loads the checked-in
   `cloud-providers.json` catalog and excludes supported `<cloud>-ops` hosts
   from box discovery.
@@ -81,17 +81,17 @@ Scope examples:
 
 ```sh
 # Full inventory, capacity, Xen, and Podman check.
-ansible/bin/platform-map refresh --boxes k001,k002 --remote-scope full
+ansible/bin/platform-map refresh --boxes boxa,boxb --remote-scope full
 
 # Fast app-VM readiness check: registry + Tailscale + dom0 Xen/LV.
 ansible/bin/platform-map refresh \
-  --boxes k001 \
+  --boxes boxa \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --remote-scope dom0
 
 # Fast local/Tailscale/registry-only check.
 ansible/bin/platform-map refresh \
-  --boxes k001 \
+  --boxes boxa \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --remote-scope none
 ```
@@ -115,12 +115,12 @@ Example override:
 ```yaml
 oob_devices:
   oob:
-    connected_box: k001
+    connected_box: boxa
 boxes:
-  k001:
+  boxa:
     site: site-a
     expect_ops: true
-  k002:
+  boxb:
     site: site-b
 ```
 
@@ -178,9 +178,9 @@ Each `boxes.<box>` object contains:
 - `dom0`: host OS, reachability, SSD/storage, and Xen facts.
 - `podman`: Podman VM facts by role: `bak`, `dmz`, `iot`, and `agent`.
 - `app_vms`: compiler-managed dynamic app VMs keyed by Tailnet hostname, for
-  example `k001-usr-alice`.
+  example `boxa-usr-alice`.
 - Compiler-managed box-scoped Tailnet resources and managed IoT devices, such
-  as `k002-music` or `k002-audio`, are included in `expected_hosts` when
+  as `boxb-music` or `boxb-audio`, are included in `expected_hosts` when
   compiled private Platform resources or collected
   `/etc/klokast/platform-resources/desired.json` declare them.
 - `capacity`: box-level capacity summaries.
@@ -249,8 +249,8 @@ unmanaged Podman containers, and RAM pressure. Unknown NanoKVM physical
 connection is informational, not a finding, because the device is movable.
 Offline NanoKVM is an operator-access warning only when physical access is
 available and the device can be plugged into the target box on demand.
-Compiler-managed app VMs such as `k001-usr-alice`, box-scoped Tailnet
-resources such as `k002-music`, and managed IoT devices such as `k002-audio`
+Compiler-managed app VMs such as `boxa-usr-alice`, box-scoped Tailnet
+resources such as `boxb-music`, and managed IoT devices such as `boxb-audio`
 are expected only when compiled private Platform resources or collected
 `/etc/klokast/platform-resources/desired.json` declare them.
 The fixed `<box>-usr` and `<box>-ops` VMs are known optional VMs. They are

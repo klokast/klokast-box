@@ -48,24 +48,24 @@ class PlatformMapTest(unittest.TestCase):
     def test_supported_cloud_ops_hosts_are_not_discovered_as_boxes(self):
         tailnet = {
             "peers": [
-                self.peer("k001-ops", ["tag:ops"]),
+                self.peer("boxa-ops", ["tag:ops"]),
                 self.peer("vultr-ops", ["tag:infra"]),
                 self.peer("hetzner-ops", ["tag:infra"]),
             ]
         }
-        self.assertEqual(self.mod.discover_boxes_from_tailnet(tailnet), ["k001"])
+        self.assertEqual(self.mod.discover_boxes_from_tailnet(tailnet), ["boxa"])
 
     def observation_source(self):
         peers = [
-            self.peer("k001-router", ["tag:vm"]),
-            self.peer("k001-dom0", ["tag:dom0"]),
+            self.peer("boxa-router", ["tag:vm"]),
+            self.peer("boxa-dom0", ["tag:dom0"]),
         ]
         return {
             "schema_version": 1,
             "generated_at": "2026-08-10T12:00:00Z",
-            "source_host": "k001-ops",
+            "source_host": "boxa-ops",
             "deployment_server": {
-                "hostname": "k001-ops",
+                "hostname": "boxa-ops",
                 "user": "private-user",
                 "provider": {"public_ipv4": "192.0.2.10", "location": {"city": "Private"}},
             },
@@ -75,8 +75,8 @@ class PlatformMapTest(unittest.TestCase):
                 "peers": peers,
             },
             "boxes": {
-                "k001": {
-                    "name": "k001",
+                "boxa": {
+                    "name": "boxa",
                     "overrides": {"site": "private-site"},
                     "podman": {"bak": {"containers": [{"name": "private-container"}]}},
                     "dom0": {
@@ -127,17 +127,17 @@ class PlatformMapTest(unittest.TestCase):
 
     def test_observation_export_rejects_duplicate_tailnet_identity(self):
         source = self.observation_source()
-        source["tailnet"]["peers"].append(self.peer("k001-router", ["tag:vm"]))
+        source["tailnet"]["peers"].append(self.peer("boxa-router", ["tag:vm"]))
         with self.assertRaises(SystemExit):
             self.mod.export_observation(self.write_source(source))
 
     def test_observation_export_rejects_ambiguous_controller_and_bad_xen_path(self):
         source = self.observation_source()
-        source["deployment_server"]["hostname"] = "k002-ops"
+        source["deployment_server"]["hostname"] = "boxb-ops"
         with self.assertRaises(SystemExit):
             self.mod.export_observation(self.write_source(source))
         source = self.observation_source()
-        source["boxes"]["k001"]["dom0"]["xen"]["autostart_files"] = ["/etc/xen/router.cfg"]
+        source["boxes"]["boxa"]["dom0"]["xen"]["autostart_files"] = ["/etc/xen/router.cfg"]
         with self.assertRaises(SystemExit):
             self.mod.export_observation(self.write_source(source))
 
@@ -158,22 +158,22 @@ class PlatformMapTest(unittest.TestCase):
         extra_peers=None,
     ):
         peers = [
-            self.peer("k001-dom0", ["tag:dom0"]),
-            self.peer("k001-router", ["tag:vm"]),
-            self.peer("k001-bak", ["tag:vm"]),
-            self.peer("k001-dmz", ["tag:vm"]),
-            self.peer("k001-iot", ["tag:vm"]),
+            self.peer("boxa-dom0", ["tag:dom0"]),
+            self.peer("boxa-router", ["tag:vm"]),
+            self.peer("boxa-bak", ["tag:vm"]),
+            self.peer("boxa-dmz", ["tag:vm"]),
+            self.peer("boxa-iot", ["tag:vm"]),
         ]
         if include_usr:
-            peers.append(self.peer("k001-usr", ["tag:vm"]))
+            peers.append(self.peer("boxa-usr", ["tag:vm"]))
         if include_ops:
-            peers.append(self.peer("k001-ops", ["tag:ops"]))
+            peers.append(self.peer("boxa-ops", ["tag:ops"]))
         if include_oob:
             peers.append(self.peer("oob", ["tag:oob"]))
         if include_app_vm:
             peers.append(
                 self.peer(
-                    "k001-usr-alice",
+                    "boxa-usr-alice",
                     app_vm_tags or ["tag:user-shell-alice", "tag:vm"],
                 )
             )
@@ -204,7 +204,7 @@ class PlatformMapTest(unittest.TestCase):
         if include_app_domain:
             live_domains.append("usr-alice                                    7  4096     4     -b----       1.0")
         return {
-            "inventory_hostname": "k001-dom0",
+            "inventory_hostname": "boxa-dom0",
             "xen": {
                 "expected_guests": expected_guests,
                 "xl_info_rc": "0",
@@ -215,12 +215,12 @@ class PlatformMapTest(unittest.TestCase):
 
     def expected_app_vms(self):
         return {
-            "k001-usr-alice": {
-                "node": "k001",
+            "boxa-usr-alice": {
+                "node": "boxa",
                 "app": "user-shell",
                 "resource": "user-runtime",
-                "hostname": "k001-usr-alice",
-                "tailnet_hostname": "k001-usr-alice",
+                "hostname": "boxa-usr-alice",
+                "tailnet_hostname": "boxa-usr-alice",
                 "guest_name": "usr-alice",
                 "user_slug": "alice",
                 "tailscale_login": "alice@example.com",
@@ -246,7 +246,7 @@ class PlatformMapTest(unittest.TestCase):
         extra_peers=None,
     ):
         return self.mod.summarize_box(
-            "k001",
+            "boxa",
             tailnet_index=self.tailnet_index(
                 include_app_vm=include_app_vm,
                 app_vm_tags=app_vm_tags,
@@ -255,7 +255,7 @@ class PlatformMapTest(unittest.TestCase):
                 include_oob=include_oob,
                 extra_peers=extra_peers,
             ),
-            remote_facts={"k001-dom0": self.dom0_fact(include_usr=include_usr, include_ops=include_ops)},
+            remote_facts={"boxa-dom0": self.dom0_fact(include_usr=include_usr, include_ops=include_ops)},
             overrides={},
             expected_app_vms=expected_app_vms or {},
             expected_tailnet_hostnames=expected_tailnet_hostnames or set(),
@@ -266,18 +266,18 @@ class PlatformMapTest(unittest.TestCase):
         codes = [item["code"] for item in summary["findings"]]
         self.assertNotIn("unmanaged_xen_domain", codes)
         self.assertNotIn("unexpected_tailscale_machine", codes)
-        self.assertTrue(summary["app_vms"]["k001-usr-alice"]["tailscale"]["tags_ok"])
-        self.assertTrue(summary["app_vms"]["k001-usr-alice"]["xen"]["running"])
+        self.assertTrue(summary["app_vms"]["boxa-usr-alice"]["tailscale"]["tags_ok"])
+        self.assertTrue(summary["app_vms"]["boxa-usr-alice"]["xen"]["running"])
 
     def test_stopped_expected_app_vm_can_be_offline_and_absent(self):
         expected = self.expected_app_vms()
-        expected["k001-usr-alice"]["runtime_state"] = "stopped"
-        expected["k001-usr-alice"]["autostart"] = False
+        expected["boxa-usr-alice"]["runtime_state"] = "stopped"
+        expected["boxa-usr-alice"]["autostart"] = False
         summary = self.mod.summarize_box(
-            "k001",
+            "boxa",
             tailnet_index=self.tailnet_index(include_app_vm=False),
             remote_facts={
-                "k001-dom0": self.dom0_fact(include_app_domain=False),
+                "boxa-dom0": self.dom0_fact(include_app_domain=False),
             },
             overrides={},
             expected_app_vms=expected,
@@ -287,7 +287,7 @@ class PlatformMapTest(unittest.TestCase):
         self.assertNotIn("missing_tailscale_machine", codes)
         self.assertNotIn("offline_tailscale_machine", codes)
         self.assertNotIn("missing_xen_domain", codes)
-        self.assertFalse(summary["app_vms"]["k001-usr-alice"]["xen"]["running"])
+        self.assertFalse(summary["app_vms"]["boxa-usr-alice"]["xen"]["running"])
 
     def test_stopped_shared_guest_can_be_offline_and_absent(self):
         fact = self.dom0_fact(include_app_domain=False)
@@ -300,12 +300,12 @@ class PlatformMapTest(unittest.TestCase):
         index = {
             key: value
             for key, value in index.items()
-            if "k001-iot" not in key
+            if "boxa-iot" not in key
         }
         summary = self.mod.summarize_box(
-            "k001",
+            "boxa",
             tailnet_index=index,
-            remote_facts={"k001-dom0": fact},
+            remote_facts={"boxa-dom0": fact},
             overrides={},
             expected_app_vms={},
             expected_tailnet_hostnames=set(),
@@ -325,9 +325,9 @@ class PlatformMapTest(unittest.TestCase):
 
     def test_running_stopped_shared_guest_is_reported(self):
         summary = self.mod.summarize_box(
-            "k001",
+            "boxa",
             tailnet_index=self.tailnet_index(include_app_vm=False),
-            remote_facts={"k001-dom0": self.dom0_fact(include_app_domain=False)},
+            remote_facts={"boxa-dom0": self.dom0_fact(include_app_domain=False)},
             overrides={},
             expected_shared_guests={
                 "iot": {"runtime_state": "stopped", "autostart": False}
@@ -341,9 +341,9 @@ class PlatformMapTest(unittest.TestCase):
             "platform_map": {
                 "app_vms": [
                     {
-                        "node": "k001",
-                        "hostname": "k001-usr-alice",
-                        "tailnet_hostname": "k001-usr-alice",
+                        "node": "boxa",
+                        "hostname": "boxa-usr-alice",
+                        "tailnet_hostname": "boxa-usr-alice",
                         "guest_name": "usr-alice",
                         "runtime_state": "stopped",
                     }
@@ -356,7 +356,7 @@ class PlatformMapTest(unittest.TestCase):
     def test_absent_optional_ops_vm_does_not_create_missing_findings(self):
         summary = self.summarize(include_ops=False, include_app_vm=False)
         scopes = [item["scope"] for item in summary["findings"]]
-        self.assertNotIn("k001-ops", scopes)
+        self.assertNotIn("boxa-ops", scopes)
         self.assertNotIn("ops", summary["machines"])
 
     def test_absent_optional_usr_vm_does_not_create_missing_findings(self):
@@ -366,7 +366,7 @@ class PlatformMapTest(unittest.TestCase):
             include_app_vm=False,
         )
         scopes = [item["scope"] for item in summary["findings"]]
-        self.assertNotIn("k001-usr", scopes)
+        self.assertNotIn("boxa-usr", scopes)
         self.assertNotIn("usr", summary["machines"])
 
     def test_unknown_oob_physical_connection_is_informational(self):
@@ -402,11 +402,11 @@ class PlatformMapTest(unittest.TestCase):
             "platform_map": {
                 "app_vms": [
                     {
-                        "node": "k001",
+                        "node": "boxa",
                         "app": "user-shell",
                         "resource": "user-runtime",
-                        "hostname": "k001-usr-alice",
-                        "tailnet_hostname": "k001-usr-alice",
+                        "hostname": "boxa-usr-alice",
+                        "tailnet_hostname": "boxa-usr-alice",
                         "guest_name": "usr-alice",
                         "user_slug": "alice",
                         "expected_tags": ["tag:vm", "tag:user-shell-alice"],
@@ -418,9 +418,9 @@ class PlatformMapTest(unittest.TestCase):
             }
         }
         by_box = self.mod.expected_app_vms_by_box_from_plans([plan])
-        self.assertEqual(by_box["k001"]["k001-usr-alice"]["guest_name"], "usr-alice")
+        self.assertEqual(by_box["boxa"]["boxa-usr-alice"]["guest_name"], "usr-alice")
         self.assertEqual(
-            by_box["k001"]["k001-usr-alice"]["expected_tags"],
+            by_box["boxa"]["boxa-usr-alice"]["expected_tags"],
             ["tag:user-shell-alice", "tag:vm"],
         )
 
@@ -429,10 +429,10 @@ class PlatformMapTest(unittest.TestCase):
             include_app_vm=False,
             include_usr=False,
             include_ops=False,
-            expected_tailnet_hostnames={"k001-audio", "k001-music"},
+            expected_tailnet_hostnames={"boxa-audio", "boxa-music"},
             extra_peers=[
-                self.peer("k001-audio", ["tag:streamer"]),
-                self.peer("k001-music", ["tag:music"]),
+                self.peer("boxa-audio", ["tag:streamer"]),
+                self.peer("boxa-music", ["tag:music"]),
             ],
         )
         findings = [
@@ -448,7 +448,7 @@ class PlatformMapTest(unittest.TestCase):
                 "platform_map": {
                     "shared_guests": [
                         {
-                            "node": "k001",
+                            "node": "boxa",
                             "role": "iot",
                             "runtime_state": "running",
                             "autostart": True,
@@ -460,7 +460,7 @@ class PlatformMapTest(unittest.TestCase):
                 "platform_map": {
                     "shared_guests": [
                         {
-                            "node": "k001",
+                            "node": "boxa",
                             "role": "iot",
                             "runtime_state": "stopped",
                             "autostart": False,
@@ -470,14 +470,14 @@ class PlatformMapTest(unittest.TestCase):
             },
         ]
         states = self.mod.expected_shared_guests_by_box_from_plans(plans)
-        self.assertEqual(states["k001"]["iot"]["runtime_state"], "stopped")
+        self.assertEqual(states["boxa"]["iot"]["runtime_state"], "stopped")
 
     def test_airunner_runtime_names_are_not_unexpected(self):
         summary = self.summarize(
             include_app_vm=False,
             extra_peers=[
-                self.peer("k001-ops-airunner", ["tag:airunner"]),
-                self.peer("k001-ops-airunner-candidate", ["tag:airunner"]),
+                self.peer("boxa-ops-airunner", ["tag:airunner"]),
+                self.peer("boxa-ops-airunner-candidate", ["tag:airunner"]),
             ],
         )
         findings = [
@@ -491,7 +491,7 @@ class PlatformMapTest(unittest.TestCase):
         summary = self.summarize(
             include_app_vm=False,
             extra_peers=[
-                self.peer("k001-ops-airunner-candidate", ["tag:infra"]),
+                self.peer("boxa-ops-airunner-candidate", ["tag:infra"]),
             ],
         )
         findings = [
@@ -504,22 +504,22 @@ class PlatformMapTest(unittest.TestCase):
     def test_expected_tailnet_hosts_load_from_platform_resource_plan(self):
         plan = {
             "tailnet_resources": [
-                {"node": "k001", "hostname": "k001-music"},
+                {"node": "boxa", "hostname": "boxa-music"},
                 {"node": "", "hostname": "photos"},
-                {"node": "k001", "hostname": "{box}-usr-{slug}"},
+                {"node": "boxa", "hostname": "{box}-usr-{slug}"},
             ],
             "platform_map": {
                 "managed_iot_devices": [
-                    {"node": "k001", "hostname": "k001-audio"},
+                    {"node": "boxa", "hostname": "boxa-audio"},
                 ],
             },
         }
         by_box = self.mod.expected_tailnet_hostnames_by_box_from_plans([plan])
-        self.assertEqual(by_box["k001"], {"k001-audio", "k001-music"})
+        self.assertEqual(by_box["boxa"], {"boxa-audio", "boxa-music"})
 
     def test_app_podman_containers_are_managed_from_desired_json(self):
         fact = {
-            "inventory_hostname": "k001-bak",
+            "inventory_hostname": "boxa-bak",
             "podman": {
                 "ps_stdout": "\n".join(
                     [

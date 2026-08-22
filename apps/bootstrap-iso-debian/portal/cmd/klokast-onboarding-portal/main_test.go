@@ -112,16 +112,16 @@ func TestDuplicateSubmitDoesNotRunTailscaleTwice(t *testing.T) {
 func TestSuffixedSelfNameEntersRetryState(t *testing.T) {
 	runner := &fakeRunner{
 		outs: map[string]string{
-			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"k001-bootstrap-1","DNSName":"k001-bootstrap-1.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]}}`,
+			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"boxa-bootstrap-1","DNSName":"boxa-bootstrap-1.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]}}`,
 		},
 	}
 	server := newPortalServer(runner)
 
-	_, message, status, err := server.enroll(context.Background(), "k001", "tskey-auth-first")
+	_, message, status, err := server.enroll(context.Background(), "boxa", "tskey-auth-first")
 	if !errors.Is(err, errNameInUse) || status != http.StatusConflict {
 		t.Fatalf("expected name conflict, status=%d err=%v", status, err)
 	}
-	if !strings.Contains(message, "k001-bootstrap-1") {
+	if !strings.Contains(message, "boxa-bootstrap-1") {
 		t.Fatalf("expected assigned suffix in message, got %q", message)
 	}
 	if !server.state.Retry || server.state.Enrolled {
@@ -132,16 +132,16 @@ func TestSuffixedSelfNameEntersRetryState(t *testing.T) {
 func TestVisiblePeerPrefixRejectsBoxName(t *testing.T) {
 	runner := &fakeRunner{
 		outs: map[string]string{
-			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"k001-bootstrap","DNSName":"k001-bootstrap.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]},"Peer":{"nodekey:1":{"HostName":"k001-dom0","DNSName":"k001-dom0.example.ts.net."}}}`,
+			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"boxa-bootstrap","DNSName":"boxa-bootstrap.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]},"Peer":{"nodekey:1":{"HostName":"boxa-dom0","DNSName":"boxa-dom0.example.ts.net."}}}`,
 		},
 	}
 	server := newPortalServer(runner)
 
-	_, message, status, err := server.enroll(context.Background(), "k001", "tskey-auth-first")
+	_, message, status, err := server.enroll(context.Background(), "boxa", "tskey-auth-first")
 	if !errors.Is(err, errNameInUse) || status != http.StatusConflict {
 		t.Fatalf("expected visible peer conflict, status=%d err=%v", status, err)
 	}
-	if !strings.Contains(message, "k001-dom0") {
+	if !strings.Contains(message, "boxa-dom0") {
 		t.Fatalf("expected peer name in message, got %q", message)
 	}
 }
@@ -150,20 +150,20 @@ func TestRetryUsesSetHostnameWithoutAuthKey(t *testing.T) {
 	runner := &fakeRunner{
 		outSeqs: map[string][]string{
 			"tailscale status --json": {
-				`{"BackendState":"Running","Self":{"HostName":"k001-bootstrap-1","DNSName":"k001-bootstrap-1.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]}}`,
-				`{"BackendState":"Running","Self":{"HostName":"k002-bootstrap","DNSName":"k002-bootstrap.example.ts.net.","TailscaleIPs":["100.64.0.11"],"Tags":["tag:bootstrap"]}}`,
+				`{"BackendState":"Running","Self":{"HostName":"boxa-bootstrap-1","DNSName":"boxa-bootstrap-1.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]}}`,
+				`{"BackendState":"Running","Self":{"HostName":"boxb-bootstrap","DNSName":"boxb-bootstrap.example.ts.net.","TailscaleIPs":["100.64.0.11"],"Tags":["tag:bootstrap"]}}`,
 			},
 		},
 	}
 	server := newPortalServer(runner)
-	server.state = enrollmentState{Retry: true, Hostname: "k001-bootstrap-1", VisibleMachineNames: []string{"k001-bootstrap-1"}}
+	server.state = enrollmentState{Retry: true, Hostname: "boxa-bootstrap-1", VisibleMachineNames: []string{"boxa-bootstrap-1"}}
 
-	_, _, status, err := server.rename(context.Background(), "k002")
+	_, _, status, err := server.rename(context.Background(), "boxb")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("retry rename failed: status=%d err=%v", status, err)
 	}
-	if !server.state.Enrolled || server.state.Hostname != "k002-bootstrap" {
-		t.Fatalf("expected final enrollment as k002-bootstrap: %+v", server.state)
+	if !server.state.Enrolled || server.state.Hostname != "boxb-bootstrap" {
+		t.Fatalf("expected final enrollment as boxb-bootstrap: %+v", server.state)
 	}
 
 	var upCalls int
@@ -181,7 +181,7 @@ func TestRetryUsesSetHostnameWithoutAuthKey(t *testing.T) {
 			if strings.Contains(command, "tskey-auth-") {
 				t.Fatalf("retry set command must not include auth key: %s", command)
 			}
-			if !strings.Contains(command, "--hostname=k002-bootstrap") {
+			if !strings.Contains(command, "--hostname=boxb-bootstrap") {
 				t.Fatalf("expected retry set hostname, got %s", command)
 			}
 		}
@@ -194,17 +194,17 @@ func TestRetryUsesSetHostnameWithoutAuthKey(t *testing.T) {
 func TestRetryRejectsVisibleNameBeforeSet(t *testing.T) {
 	runner := &fakeRunner{
 		outs: map[string]string{
-			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"k001-bootstrap-1","DNSName":"k001-bootstrap-1.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]},"Peer":{"nodekey:1":{"HostName":"k002-dom0","DNSName":"k002-dom0.example.ts.net."}}}`,
+			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"boxa-bootstrap-1","DNSName":"boxa-bootstrap-1.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]},"Peer":{"nodekey:1":{"HostName":"boxb-dom0","DNSName":"boxb-dom0.example.ts.net."}}}`,
 		},
 	}
 	server := newPortalServer(runner)
-	server.state = enrollmentState{Retry: true, Hostname: "k001-bootstrap-1", VisibleMachineNames: []string{"k001-bootstrap-1", "k002-dom0"}}
+	server.state = enrollmentState{Retry: true, Hostname: "boxa-bootstrap-1", VisibleMachineNames: []string{"boxa-bootstrap-1", "boxb-dom0"}}
 
-	_, message, status, err := server.rename(context.Background(), "k002")
+	_, message, status, err := server.rename(context.Background(), "boxb")
 	if !errors.Is(err, errNameInUse) || status != http.StatusConflict {
 		t.Fatalf("expected visible conflict before rename, status=%d err=%v", status, err)
 	}
-	if !strings.Contains(message, "k002-dom0") {
+	if !strings.Contains(message, "boxb-dom0") {
 		t.Fatalf("expected conflict name in message, got %q", message)
 	}
 	for _, call := range runner.calls {
@@ -218,8 +218,8 @@ func TestRetryPageRendersClientValidationDataWithoutAuthKey(t *testing.T) {
 	server := newPortalServer(&fakeRunner{})
 	server.state = enrollmentState{
 		Retry:               true,
-		Hostname:            "k001-bootstrap-1",
-		VisibleMachineNames: []string{"k001-bootstrap-1", "k002-dom0"},
+		Hostname:            "boxa-bootstrap-1",
+		VisibleMachineNames: []string{"boxa-bootstrap-1", "boxb-dom0"},
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -230,7 +230,7 @@ func TestRetryPageRendersClientValidationDataWithoutAuthKey(t *testing.T) {
 	if strings.Contains(body, `name="auth_key"`) {
 		t.Fatalf("retry page must not ask for auth key: %s", body)
 	}
-	if !strings.Contains(body, `const visibleNames = ["k001-bootstrap-1","k002-dom0"];`) {
+	if !strings.Contains(body, `const visibleNames = ["boxa-bootstrap-1","boxb-dom0"];`) {
 		t.Fatalf("expected visible names in client validation script: %s", body)
 	}
 }

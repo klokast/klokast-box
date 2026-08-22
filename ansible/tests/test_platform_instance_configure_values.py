@@ -90,36 +90,37 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
         self.assertIn("Platform time: Etc/UTC", stderr)
         self.assertEqual(stat.S_IMODE(self.values_path.stat().st_mode), 0o600)
         value = json.loads(self.values_path.read_text(encoding="utf-8"))
-        self.assertEqual(value["tailnet"]["tailnet-dns-name"], DNS_NAME)
+        self.assertEqual(value["tailscale"]["tailnet-dns-name"], DNS_NAME)
         self.assertEqual(
-            value["tailnet"]["members"][MEMBER_LOGIN]["roles"],
+            value["tailscale"]["members"][MEMBER_LOGIN]["roles"],
             ["operator", "family"],
         )
-        self.assertEqual(value["airunners"], ["k002-ops-airunner"])
-        self.assertIn("Airrunner: k002-ops-airunner", stderr)
+        self.assertEqual(value["airunners"], ["boxb-ops-airunner"])
+        self.assertIn("Example airrunner: boxb-ops-airunner", stderr)
         self.assertNotIn("sites", value)
         self.assertEqual(
-            value["boxes"]["k001"],
+            value["boxes"]["boxa"],
             {
-                "site": "mingdu",
-                "country": "CN",
+                "site": "site-a",
+                "country": "XA",
                 "description": "",
-                "connectivity-profiles": [
+                "connectivity": [
                     "local-ap-direct-egress",
                     "tailscale",
                 ],
             },
         )
         self.assertEqual(
-            value["boxes"]["k002"],
+            value["boxes"]["boxb"],
             {
-                "site": "milla",
-                "country": "FR",
+                "site": "site-b",
+                "country": "XB",
                 "description": "",
-                "connectivity-profiles": ["tailscale"],
+                "connectivity": ["tailscale"],
             },
         )
-        self.assertIn("k001 at mingdu (CN); k002 at milla (FR)", stderr)
+        self.assertIn("Example boxes: boxa at site-a (XA); boxb at site-b (XB)", stderr)
+        self.assertIn("replace all example topology", stderr)
         self.assertNotIn("timezone", json.dumps(value).lower())
         self.assertNotIn("REPLACE_WITH", json.dumps(value))
         validator.assert_called_once()
@@ -146,7 +147,7 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
         self.assertEqual(stdout, "repaired\n")
         self.assertIn(f"Tailscale member login [{MEMBER_LOGIN}]", stderr)
         value = json.loads(self.values_path.read_text(encoding="utf-8"))
-        self.assertIn(MEMBER_LOGIN, value["tailnet"]["members"])
+        self.assertIn(MEMBER_LOGIN, value["tailscale"]["members"])
 
     def test_valid_existing_file_is_reviewed_and_reused_without_rewrite(self):
         value = self.mod.build_instance_values(ENGINE_COMMIT, DNS_NAME, MEMBER_LOGIN)
@@ -277,12 +278,12 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
                 "created": False,
                 "diagnostics": [
                     {
-                        "path": "klokast-instance.json$.tailnet.tailnet-dns-name",
+                        "path": "klokast-instance.json$.tailscale.tailnet-dns-name",
                         "code": "schema.invalid",
                         "message": "document does not satisfy the schema",
                     },
                     {
-                        "path": "klokast-instance.json$.tailnet.members",
+                        "path": "klokast-instance.json$.tailscale.members",
                         "code": "member.operator",
                         "message": "an operator and family member is required",
                     },
@@ -294,7 +295,7 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
             self.mod.parse_initializer_result(completed, self.private_root / "seed")
         message = str(raised.exception)
         self.assertIn("tailnet-dns-name [schema.invalid]", message)
-        self.assertIn("tailnet.members [member.operator]", message)
+        self.assertIn("tailscale.members [member.operator]", message)
         self.assertNotIn("must-not-appear", message)
 
     def test_private_values_are_not_passed_as_initializer_arguments(self):

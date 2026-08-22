@@ -75,8 +75,8 @@ process state can use `/run/klokast`. Neither location is an authority.
 
 Instance Specification v1 has two authoritative files:
 
-- `klokast-instance.json` declares topology, membership, connectivity
-  profiles, controllers, an ordered list of exact airunner runtime identities,
+- `klokast-instance.json` declares topology, Tailscale membership,
+  connectivity, controllers, an ordered list of exact airunner runtime identities,
   typed app features, placement, and retained-data intent.
 - `klokast.lock.json` selects the canonical engine repository, the readable
   branch name, and the exact full engine commit.
@@ -96,6 +96,16 @@ uses the same site label, all such boxes must declare the same country and
 description. The resolver derives its normalized site projection from these
 box-owned values.
 
+The document has no instance ID. The private repository identity and the
+source receipt identify the desired-state source. A second free-form ID would
+not add authority. The root Tailscale object is `tailscale`, and each box uses
+`connectivity` for its set of connectivity-profile names.
+
+Public code, documents, examples, and test fixtures use neutral box, site, and
+country values. A public bootstrap template can describe a two-box shape, but
+it cannot supply deployment identities or locations. The human must author
+those values in the private repository before publication.
+
 Version 1 fixes the engine repository to
 `https://github.com/klokast/klokast-box`. Custom engine repositories and
 public upstream forks are outside version 1.
@@ -112,10 +122,12 @@ ordered array of exact runtime identities. The first identity has the highest
 preference. The order does not start, stop, select, or fail over a runner.
 Every listed identity remains desired and must be online.
 
-The supported current runtime is `k002-ops-airunner`. It is a root-managed
-container in `k002-ops`, has `tag:airunner`, and shares the controller VM
-kernel and compromise domain. It must not receive controller-private mounts,
-the Podman control socket, controller credentials, or private instance state.
+The supported current runtime form is `<box>-ops-airunner`. It is a
+root-managed container in `<box>-ops`, has `tag:airunner`, and shares the
+controller VM kernel and compromise domain. Its exact private identity comes
+only from `klokast-instance.json`. It must not receive controller-private
+mounts, the Podman control socket, controller credentials, or private instance
+state.
 
 An exact `<cloud>-ops` identity is valid only when the private desired state
 declares it as an airunner. It then has `tag:infra` and remains online. A cloud
@@ -142,8 +154,8 @@ documents and the embedded public manifests and connectivity profiles. It has
 no host discovery, network access, environment-dependent defaults, or current
 runtime input.
 
-The projection contains the selected engine, instance identity, Tailnet
-groups, sites derived from box metadata, boxes, derived runtime names, UTC
+The projection contains the selected engine, Tailscale groups, sites derived
+from box metadata, boxes, derived runtime names, UTC
 timezone, controller placement, the exact ordered airrunner identities, app
 placement, typed features, and retained-data intent. It sorts maps and
 unordered sets. It preserves airrunner order. The projection hash changes when
@@ -435,7 +447,7 @@ complete.
 
 | Milestone | State | Current status and next gate |
 | --- | --- | --- |
-| JSON contract | `implemented` | The two-file Instance Specification v1 is implemented and remains unreleased. |
+| JSON contract | `implemented` | The two-file Instance Specification v1 is implemented and remains unreleased. Its current shape uses `tailscale`, box `connectivity`, and no instance ID. Public fixtures contain no deployment-specific values. |
 | `klokast init` | `implemented` | Deterministic offline repository creation is implemented. |
 | `klokast check` | `implemented` | Closed JSON and repository validation is implemented. |
 | Compatibility planner | `implemented` | The deterministic comparison with all three legacy inputs is implemented. |

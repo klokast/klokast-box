@@ -55,6 +55,33 @@ func TestStrictJSONAndAuthoritativeTracking(t *testing.T) {
 		})
 		requireCode(t, root, "schema.invalid")
 	})
+	t.Run("removed-instance-id", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				value["instance"] = map[string]any{"id": "redundant"}
+			})
+		})
+		requireCode(t, root, "schema.invalid")
+	})
+	t.Run("old-tailnet-key", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				value["tailnet"] = value["tailscale"]
+				delete(value, "tailscale")
+			})
+		})
+		requireCode(t, root, "schema.invalid")
+	})
+	t.Run("old-connectivity-key", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
+				box["connectivity-profiles"] = box["connectivity"]
+				delete(box, "connectivity")
+			})
+		})
+		requireCode(t, root, "schema.invalid")
+	})
 	t.Run("untracked", func(t *testing.T) {
 		root := prepareInstance(t, "single", nil)
 		runGit(t, root, "rm", "--cached", InstancePath)
@@ -96,8 +123,8 @@ func TestIdentityReferencesAndAirunners(t *testing.T) {
 		new  string
 		code string
 	}{
-		{"controller", `"active": "k001"`, `"active": "missing"`, "reference.box"},
-		{"controller-cardinality", `"standby": "k002"`, `"standby": "k001"`, "cardinality.controller"},
+		{"controller", `"active": "boxa"`, `"active": "missing"`, "reference.box"},
+		{"controller-cardinality", `"standby": "boxb"`, `"standby": "boxa"`, "cardinality.controller"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -114,7 +141,7 @@ func TestInlineSiteMetadata(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
 			mutateInstanceJSON(t, root, func(value map[string]any) {
 				value["sites"] = map[string]any{
-					"milla": map[string]any{"country": "FR", "description": "Example home"},
+					"site-b": map[string]any{"country": "XB", "description": "Example home"},
 				}
 			})
 		})
@@ -123,7 +150,7 @@ func TestInlineSiteMetadata(t *testing.T) {
 	t.Run("missing-country", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {
 			mutateInstanceJSON(t, root, func(value map[string]any) {
-				box := value["boxes"].(map[string]any)["k001"].(map[string]any)
+				box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
 				delete(box, "country")
 			})
 		})
@@ -131,7 +158,7 @@ func TestInlineSiteMetadata(t *testing.T) {
 	})
 	t.Run("shared-site-metadata", func(t *testing.T) {
 		root := prepareInstance(t, "two", func(root string) {
-			replaceInFile(t, filepath.Join(root, InstancePath), `"site": "milla"`, `"site": "mingdu"`)
+			replaceInFile(t, filepath.Join(root, InstancePath), `"site": "site-b"`, `"site": "site-a"`)
 		})
 		requireCode(t, root, "site.inconsistent")
 	})
@@ -145,13 +172,13 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 	}{
 		{"old-object", func(value map[string]any) {
 			value["airunners"] = map[string]any{
-				"preferred": "k001-ops-airunner",
-				"authorized": map[string]any{"k001-ops-airunner": map[string]any{"kind": "controller-container", "box": "k001"}},
+				"preferred": "boxa-ops-airunner",
+				"authorized": map[string]any{"boxa-ops-airunner": map[string]any{"kind": "controller-container", "box": "boxa"}},
 			}
 		}, "schema.invalid"},
 		{"empty", func(value map[string]any) { value["airunners"] = []any{} }, "schema.invalid"},
 		{"duplicate", func(value map[string]any) {
-			value["airunners"] = []any{"k001-ops-airunner", "k001-ops-airunner"}
+			value["airunners"] = []any{"boxa-ops-airunner", "boxa-ops-airunner"}
 		}, "schema.invalid"},
 		{"unknown-provider", func(value map[string]any) {
 			value["airunners"] = []any{"digitalocean-ops"}
@@ -160,17 +187,17 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 			value["airunners"] = []any{"vultr-runner"}
 		}, "identity.airunner"},
 		{"removed-box-guest", func(value map[string]any) {
-			value["airunners"] = []any{"k001-airunner"}
+			value["airunners"] = []any{"boxa-airunner"}
 		}, "identity.airunner"},
 		{"non-controller-box", func(value map[string]any) {
 			value["boxes"].(map[string]any)["k003"] = map[string]any{
-				"site": "milla", "country": "FR", "description": "", "connectivity-profiles": []any{"tailscale"},
+				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"tailscale"},
 			}
 			value["airunners"] = []any{"k003-ops-airunner"}
 		}, "reference.controller"},
 		{"box-cloud-collision", func(value map[string]any) {
 			value["boxes"].(map[string]any)["vultr"] = map[string]any{
-				"site": "milla", "country": "FR", "description": "", "connectivity-profiles": []any{"tailscale"},
+				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"tailscale"},
 			}
 			value["airunners"] = []any{"vultr-ops"}
 		}, "identity.cloud-collision"},
@@ -210,11 +237,11 @@ func TestEmbeddedCloudProviderCatalog(t *testing.T) {
 func TestVersionOneBoxRequiresTailscaleConnectivity(t *testing.T) {
 	root := prepareInstance(t, "two", func(root string) {
 		replaceInFile(t, filepath.Join(root, InstancePath),
-			`"connectivity-profiles": [
+			`"connectivity": [
         "local-ap-direct-egress",
         "tailscale"
       ]`,
-			`"connectivity-profiles": [
+			`"connectivity": [
         "local-ap-direct-egress"
       ]`)
 	})
@@ -247,7 +274,7 @@ func TestAppLifecycleAndDataRules(t *testing.T) {
 	})
 	t.Run("data-box", func(t *testing.T) {
 		root := prepareInstance(t, "two", func(root string) {
-			replaceInFile(t, filepath.Join(root, InstancePath), `"box": "k002",`, `"box": "missing",`)
+			replaceInFile(t, filepath.Join(root, InstancePath), `"box": "boxb",`, `"box": "missing",`)
 		})
 		requireCode(t, root, "reference.box")
 	})

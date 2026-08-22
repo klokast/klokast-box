@@ -36,7 +36,7 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
         self.mod = load(WRAPPER, "platform_builder")
 
     def test_rejects_unsafe_box_commit_and_path_inputs(self):
-        for value in ("", "K001", "../k001", "k001-dom0", "a" * 33):
+        for value in ("", "K001", "../boxa", "boxa-dom0", "a" * 33):
             with self.subTest(box=value), self.assertRaises(self.mod.BuilderError):
                 self.mod.validate_box(value)
         for value in ("abc123", "A" * 40, "0" * 39, "0" * 41):
@@ -52,7 +52,7 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
     def test_rejects_non_smith_and_inactive_controllers(self):
         with patch.object(self.mod.getpass, "getuser", return_value="agent"):
             with self.assertRaisesRegex(self.mod.BuilderError, "smith"):
-                self.mod.require_active_controller("k001")
+                self.mod.require_active_controller("boxa")
         completed = Mock(returncode=78, stdout="", stderr="inactive")
         with patch.object(self.mod.getpass, "getuser", return_value="smith"), patch.object(
             self.mod.Path, "is_file", return_value=True
@@ -60,7 +60,7 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             self.mod, "run", return_value=completed
         ):
             with self.assertRaisesRegex(self.mod.BuilderError, "inactive"):
-                self.mod.require_active_controller("k001")
+                self.mod.require_active_controller("boxa")
 
     def test_rejects_dirty_or_unsynchronized_source(self):
         commit = "a" * 40
@@ -249,7 +249,7 @@ class PlatformBuilderDom0Test(unittest.TestCase):
 
     def test_xen_definition_has_zero_vifs_and_fixed_limits(self):
         rendered = self.mod.render_xen_config(
-            "k001-builder-klokast-cli-0123456789ab",
+            "boxa-builder-klokast-cli-0123456789ab",
             Path("/dev/vg0/lv_builder_klokast_cli_0123456789ab"),
         )
         self.assertIn("type = \"pvh\"", rendered)

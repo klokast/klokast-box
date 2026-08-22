@@ -6,7 +6,7 @@
   "github_repository": "klokast/klokast-box",
   "source_directory": "tmp",
   "release_repository_commit": "2f07f74349766434f734405412e781931ef380c5",
-  "used_for": ["k001"],
+  "used_for": ["boxa"],
   "security": {
     "secret_free_iso": true,
     "notes": "The bootstrap ISO must not embed a box name, Tailscale auth key, OAuth material, or inventory secret."

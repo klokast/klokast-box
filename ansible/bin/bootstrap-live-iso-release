@@ -20,7 +20,7 @@ Usage:
   ansible/bin/bootstrap-live-iso-release \
     --source-dir tmp \
     --tag bootstrap-iso-debian-YYYY-MM-DD \
-    [--used-for k001] \
+    [--used-for boxa] \
     [--manifest-out apps/bootstrap-iso-debian/releases/TAG.json] \
     [--repo OWNER/REPO] \
     [--title TITLE] \

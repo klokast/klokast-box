@@ -422,10 +422,10 @@ klokast.lock.json        Review only. Do not edit.
 Leave `.gitignore`, `AGENTS.md`, and `README.md` as generated. They are support
 files, not Instance Specification inputs.
 
-The helper already generated the complete instance from the controller values
-file. No file requires an edit after a successful run. If the review finds an
-incorrect private value, edit only `klokast-instance.json`, then run the
-checks below. Never edit `klokast.lock.json`.
+The helper generated a schema-valid neutral template. It did not supply a
+private box ID, site, country, controller, airunner, or application decision.
+Edit only `klokast-instance.json` and replace every example value with the
+private desired state. Never edit `klokast.lock.json`.
 
 ### 10.1 Review the engine and schema pins
 
@@ -458,17 +458,18 @@ Confirm these points locally:
 
 - the private Tailnet DNS name and member login are exact;
 - the member has both `operator` and `family` roles;
-- `k001` is at `mingdu` in `CN`, and `k002` is at `milla` in `FR`;
-- each box contains its site, country, and description, and there is no
-  top-level `sites` object;
-- `k001` uses `local-ap-direct-egress` and `tailscale`;
-- `k002` uses only `tailscale`;
-- the active controller is `k002`, and the standby controller is `k001`;
-- the only desired airunner is the installed `k002-ops-airunner` container;
+- the root object is `tailscale`, not `tailnet`;
+- no `instance` object or instance ID is present;
+- each private box ID contains its private site, country, description, and
+  `connectivity` set, and there is no top-level `sites` object;
+- each box selects `tailscale`, and only the applicable box selects
+  `local-ap-direct-egress`;
+- the active and optional standby controller box IDs are exact;
+- each listed airunner is an installed desired runtime in priority order;
 - no absent or destroyed airunner is listed;
-- Music is absent and its declared `library` data on `k002` has preservation
-  intent;
-- no other removed app is present;
+- each application, placement, feature, and retained-data declaration matches
+  the private intent;
+- no neutral example value remains;
 - there is no timezone, runtime-status, secret, IP-address, or generated-state
   field.
 

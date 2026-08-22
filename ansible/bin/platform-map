@@ -1688,7 +1688,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     if not boxes:
         boxes = discover_boxes_from_tailnet(tailnet)
     if not boxes:
-        warnings.append("no boxes were discovered from Tailscale; pass --boxes k001,k002")
+        warnings.append("no boxes were discovered from Tailscale; pass --boxes boxa,boxb")
 
     magicdns_suffix = args.magicdns_suffix or tailnet.get("magicdns_suffix") or "example.ts.net"
     remote_scope = "none" if args.skip_ansible else args.remote_scope
@@ -1904,7 +1904,7 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     refresh = subcommands.add_parser("refresh", help="gather facts and write the ignored summary JSON")
-    refresh.add_argument("--boxes", action="append", help="box names, comma-separated or repeated, for example k001,k002")
+    refresh.add_argument("--boxes", action="append", help="box names, comma-separated or repeated, for example boxa,boxb")
     refresh.add_argument("--inventory", type=Path, default=DEFAULT_BASE_INVENTORY, help="base Ansible inventory")
     refresh.add_argument("--magicdns-suffix", default="", help="override Tailscale MagicDNS suffix for generated inventory")
     refresh.add_argument("--artifact-dir", type=Path, default=RUN_DIR, help="runtime artifact directory")

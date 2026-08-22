@@ -73,8 +73,8 @@ class PlatformInstanceValidateCandidateTest(unittest.TestCase):
             "klokast-instance.json": json.dumps({
                 "schema-version": 1,
                 "boxes": {
-                    "k001": {"site": "milla", "country": "FR", "description": ""},
-                    "k002": {"site": "mingdu", "country": "CN", "description": ""},
+                    "boxa": {"site": "site-b", "country": "XB", "description": ""},
+                    "boxb": {"site": "site-a", "country": "XA", "description": ""},
                 },
             }) + "\n",
         }
@@ -100,11 +100,11 @@ import sys
 
 root = pathlib.Path(sys.argv[sys.argv.index("--instance") + 1])
 value = json.loads((root / "klokast-instance.json").read_text())
-valid = value.get("boxes", {}).get("k001", {}).get("site") == "mingdu"
+valid = value.get("boxes", {}).get("boxa", {}).get("site") == "site-a"
 result = {"valid": valid, "diagnostics": []}
 if not valid:
     result["diagnostics"].append({
-        "path": "klokast-instance.json#/boxes/k001/site",
+        "path": "klokast-instance.json#/boxes/boxa/site",
         "code": "test.site",
         "message": "candidate site was rejected",
     })
@@ -117,12 +117,12 @@ raise SystemExit(0 if valid else 1)
         return checker
 
     @staticmethod
-    def candidate(k001="mingdu", k002="milla"):
+    def candidate(boxa="site-a", boxb="site-b"):
         return (json.dumps({
             "schema-version": 1,
             "boxes": {
-                "k001": {"site": k001, "country": "CN", "description": ""},
-                "k002": {"site": k002, "country": "FR", "description": ""},
+                "boxa": {"site": boxa, "country": "XA", "description": ""},
+                "boxb": {"site": boxb, "country": "XB", "description": ""},
             },
         }) + "\n").encode()
 
@@ -143,13 +143,13 @@ raise SystemExit(0 if valid else 1)
             list(self.private_root.glob(".instance-candidate-check.*")), []
         )
         original = json.loads((self.seed / "klokast-instance.json").read_text())
-        self.assertEqual(original["boxes"]["k001"]["site"], "milla")
+        self.assertEqual(original["boxes"]["boxa"]["site"], "site-b")
 
     def test_checker_rejection_is_expressive_and_cleans_temporary_copy(self):
         with self.assertRaisesRegex(
             self.mod.InstanceError, "candidate site was rejected"
         ):
-            self.run_candidate(self.candidate(k001="milla", k002="mingdu"))
+            self.run_candidate(self.candidate(boxa="site-b", boxb="site-a"))
         self.assertEqual(
             list(self.private_root.glob(".instance-candidate-check.*")), []
         )

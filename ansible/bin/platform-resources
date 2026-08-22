@@ -406,7 +406,7 @@ def validate_user_field(value, field):
 
 def validate_box(value, field):
     if not isinstance(value, str) or not BOX_RE.fullmatch(value):
-        die(f"{field} must be a box name like k001")
+        die(f"{field} must be a box name like boxa")
     for suffix in ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt"):
         if value == suffix or value.endswith(f"-{suffix}"):
             die(f"{field} must be a box name, not a role hostname")

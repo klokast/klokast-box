@@ -5,7 +5,7 @@
 
 ```sh
 ansible/bin/platform-builder build-klokast-cli \
-  --box k002 \
+  --box boxb \
   --approved-commit 0123456789abcdef0123456789abcdef01234567
 ```
 

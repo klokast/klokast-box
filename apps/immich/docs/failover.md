@@ -11,8 +11,8 @@ residential connectivity or power fails.
 
    ```sh
    apps/immich/bin/immichctl promote \
-     --old-active k001 \
-     --new-active k002 \
+     --old-active boxa \
+     --new-active boxb \
      --resources-registry path/to/platform-resources.yml
    ```
 

@@ -250,7 +250,7 @@ The policy model should distinguish:
 - controller-direct recovery access;
 - forbidden executor-to-other-site access.
 
-An executor for `k001` must not reach `k002` management endpoints. Targets
+An executor for `boxa` must not reach `boxb` management endpoints. Targets
 must reject executor identities belonging to other sites. The controller keeps
 a separate direct management path for recovery and independent verification.
 
@@ -338,7 +338,7 @@ An illustrative envelope is:
   "operation_id": "0198cafe-0000-7000-8000-000000000001",
   "controller_epoch": 4,
   "site": "site-001",
-  "box": "k001",
+  "box": "boxa",
   "action": "app.apply",
   "resource": "torrent",
   "approved_engine_commit": "0123456789abcdef",
@@ -346,7 +346,7 @@ An illustrative envelope is:
   "plan_digest": "sha256:...",
   "issued_at": "2026-08-08T12:00:00Z",
   "expires_at": "2026-08-08T12:10:00Z",
-  "requested_by": "smith@k002-ops"
+  "requested_by": "smith@boxb-ops"
 }
 ```
 

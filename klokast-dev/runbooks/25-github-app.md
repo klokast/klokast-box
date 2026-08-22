@@ -120,7 +120,7 @@ GITHUB_APP_INSTALLATION_ID="12345678"
 PEM="$HOME/.config/klokast/secrets/klokast-static-broker.github-app.pem"
 
 klokast-dev/bin/install-static-site-github-app \
-  --controller k002-ops \
+  --controller boxb-ops \
   --pem "$PEM" \
   --app-id "$GITHUB_APP_ID" \
   --installation-id "$GITHUB_APP_INSTALLATION_ID"

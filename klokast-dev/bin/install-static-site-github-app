@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-}"
 
 usage() {
   cat <<EOF
@@ -15,7 +15,7 @@ Options:
   --pem PATH              Local GitHub App private-key PEM file.
   --app-id ID             Integer GitHub App ID.
   --installation-id ID    Integer GitHub App installation ID.
-  --controller HOST       Controller host. Default: ${DEFAULT_CONTROLLER}
+  --controller HOST       Active controller. Required unless KLOKAST_OPS_CONTROLLER is set.
   --skip-token-check      Skip the final GitHub installation-token mint check.
 EOF
 }
@@ -103,6 +103,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$pem" ] || die "--pem is required"
+[ -n "$controller" ] || die "--controller or KLOKAST_OPS_CONTROLLER is required"
 valid_integer "$app_id" || die "--app-id must be an integer"
 valid_integer "$installation_id" || die "--installation-id must be an integer"
 valid_controller "$controller" || die "--controller contains unsafe characters"

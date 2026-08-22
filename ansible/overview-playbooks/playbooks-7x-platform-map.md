@@ -18,7 +18,7 @@ metadata when available, and NanoKVM/OOB status from the controller.
 Typical usage:
 
 ```sh
-ansible/bin/platform-map refresh --boxes k001,k002
+ansible/bin/platform-map refresh --boxes boxa,boxb
 ansible/bin/platform-map show
 ansible/bin/platform-map validate
 ansible-inventory -i ansible/bin/platform-map --list
@@ -31,11 +31,11 @@ NanoKVM is physically connected to, can be kept in the ignored file
 ```yaml
 oob_devices:
   oob:
-    connected_box: k001
+    connected_box: boxa
 boxes:
-  k001:
+  boxa:
     site: site-a
-  k002:
+  boxb:
     site: site-b
 ```
 
@@ -97,24 +97,24 @@ Ansible connection instead of probing port 22.
 Typical usage on the Ansible controller:
 
 ```sh
-ansible/bin/platform-check --box k001
-ansible/bin/platform-check --box k001 --target all
-ansible/bin/platform-check --box k001 --target dom0
-ansible/bin/platform-check --box k001 --target router
-ansible/bin/platform-check --box k001 --target podman
-ansible/bin/platform-check --box k001 --target map --remote-scope dom0
-ansible/bin/platform-check --box k001 --target resources \
+ansible/bin/platform-check --box boxa
+ansible/bin/platform-check --box boxa --target all
+ansible/bin/platform-check --box boxa --target dom0
+ansible/bin/platform-check --box boxa --target router
+ansible/bin/platform-check --box boxa --target podman
+ansible/bin/platform-check --box boxa --target map --remote-scope dom0
+ansible/bin/platform-check --box boxa --target resources \
   --resources-registry ~/private/klokast/platform-resources.yml
-ansible/bin/platform-check --box k001 --target dom0 -- -vvv
+ansible/bin/platform-check --box boxa --target dom0 -- -vvv
 ```
 
 Typical usage from `vultr-ops` as `agent`:
 
 ```sh
-ansible/bin/platform-check-remote --box k001
-ansible/bin/platform-check-remote --box k001 --target all
-ansible/bin/platform-check-remote --box k001 --target dom0
-ansible/bin/platform-check-remote --no-pull --box k001 --target dom0 -- --syntax-check
+ansible/bin/platform-check-remote --box boxa
+ansible/bin/platform-check-remote --box boxa --target all
+ansible/bin/platform-check-remote --box boxa --target dom0
+ansible/bin/platform-check-remote --no-pull --box boxa --target dom0 -- --syntax-check
 ```
 
 `--resources-registry auto` is the default. On the active controller it uses

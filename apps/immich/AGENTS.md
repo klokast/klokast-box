@@ -4,8 +4,8 @@ Immich is deployed as an app-local automation package. Keep all Immich-specific
 playbooks, roles, scripts, templates, image lock files, and runbooks under
 `apps/immich/`.
 
-Do not use historical box names in this app. Test examples use `k001` as the
-active master and `k002` as the passive backup. The Platform backend VM suffix
+Do not use historical box names in this app. Test examples use `boxa` as the
+active master and `boxb` as the passive backup. The Platform backend VM suffix
 is still `-bak`.
 
 ## Architecture
@@ -76,8 +76,8 @@ not VM hostnames:
 
 ```sh
 apps/immich/bin/immichctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry path/to/platform-resources.yml
 ```
 

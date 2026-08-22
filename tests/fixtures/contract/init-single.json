@@ -1,27 +1,24 @@
 {
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
   "airunners": [
-    "k001-ops-airunner"
+    "boxa-ops-airunner"
   ],
   "apps": {},
   "boxes": {
-    "k001": {
-      "connectivity-profiles": [
+    "boxa": {
+      "connectivity": [
         "tailscale"
       ],
-      "country": "FR",
+      "country": "XB",
       "description": "Example home",
-      "site": "milla"
+      "site": "site-b"
     }
   },
   "controllers": {
-    "active": "k001"
-  },
-  "instance": {
-    "id": "family-klokast"
+    "active": "boxa"
   },
   "schema-version": 1,
-  "tailnet": {
+  "tailscale": {
     "members": {
       "admin@example.com": {
         "roles": [

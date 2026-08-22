@@ -31,7 +31,7 @@ class RenderTailscalePolicyTest(unittest.TestCase):
                             "family": ["admin@example.com", "family@example.com"],
                         },
                     },
-                    "boxes": {"k001": {"site": "site-a"}},
+                    "boxes": {"boxa": {"site": "site-a"}},
                 }
             ),
             encoding="utf-8",

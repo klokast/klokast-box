@@ -16,13 +16,13 @@ apps:
     enabled: true
     placement:
       boxes:
-        - k002
+        - boxb
     devices:
       printer:
-        k002:
+        boxb:
           mac: "02:00:00:00:00:02"
           ipv4_address: 192.168.150.78
-          hostname: k002-printer
+          hostname: boxb-printer
     resources: {}
 ```
 
@@ -30,10 +30,10 @@ Apply platform resources from the active controller as `smith`, then
 install:
 
 ```sh
-ansible/bin/platform-image-build --app print-server --box k002 build
-ansible/bin/platform-image-build --app print-server --box k002 load
+ansible/bin/platform-image-build --app print-server --box boxb build
+ansible/bin/platform-image-build --app print-server --box boxb load
 apps/print-server/bin/print-serverctl install \
-  --box k002 \
+  --box boxb \
   --resources-registry ~/private/klokast/platform-resources.yml
 ```
 
@@ -41,7 +41,7 @@ Verify:
 
 ```sh
 apps/print-server/bin/print-serverctl verify \
-  --box k002 \
+  --box boxb \
   --resources-registry ~/private/klokast/platform-resources.yml
 ```
 

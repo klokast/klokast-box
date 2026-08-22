@@ -145,16 +145,16 @@ sudo chmod 0600 /etc/tailscale-auth/ts-auth-*.authkey
 - The code of the wrappers is in `~/src/klokast/klokast-box/klokast-ops/tailscale/bin`.
 - The OAuth-backed wrappers must be called with explicit hostname and tags, for example:
   ```sh
-  sudo /usr/local/sbin/ts-authkey-vm --hostname k001-usr-alice --tags tag:vm,tag:user-shell-alice
-  sudo /usr/local/sbin/ts-authkey-usr --hostname k001-usr-shell --tags tag:usr
-  sudo /usr/local/sbin/ts-authkey-ops --hostname k001-ops --tags tag:ops
-  sudo /usr/local/sbin/ts-authkey-ops --hostname k001-ops --tags tag:ops,tag:infra
+  sudo /usr/local/sbin/ts-authkey-vm --hostname boxa-usr-alice --tags tag:vm,tag:user-shell-alice
+  sudo /usr/local/sbin/ts-authkey-usr --hostname boxa-usr-shell --tags tag:usr
+  sudo /usr/local/sbin/ts-authkey-ops --hostname boxa-ops --tags tag:ops
+  sudo /usr/local/sbin/ts-authkey-ops --hostname boxa-ops --tags tag:ops,tag:infra
   sudo /usr/local/sbin/ts-authkey-infra --hostname codex --tags tag:infra
-  sudo /usr/local/sbin/ts-authkey-airunner --hostname k002-ops-airunner --tags tag:airunner
-  sudo /usr/local/sbin/ts-authkey-music --hostname k002-music --tags tag:music
-  sudo /usr/local/sbin/ts-authkey-music-upload --hostname k002-music-upload --tags tag:music-upload
-  sudo /usr/local/sbin/ts-authkey-print --hostname k002-print --tags tag:print
-  sudo /usr/local/sbin/ts-authkey-streamer --hostname k002-streamer --tags tag:streamer
+  sudo /usr/local/sbin/ts-authkey-airunner --hostname boxb-ops-airunner --tags tag:airunner
+  sudo /usr/local/sbin/ts-authkey-music --hostname boxb-music --tags tag:music
+  sudo /usr/local/sbin/ts-authkey-music-upload --hostname boxb-music-upload --tags tag:music-upload
+  sudo /usr/local/sbin/ts-authkey-print --hostname boxb-print --tags tag:print
+  sudo /usr/local/sbin/ts-authkey-streamer --hostname boxb-streamer --tags tag:streamer
   ```
 
 - Here the names of the variables in the `klokast-box/ansible/inventory/group_vars/*.yml` files, that define the paths to the wrappers (`/usr/local/sbin/ts-authkey-*`):

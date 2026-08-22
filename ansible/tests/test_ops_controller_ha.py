@@ -56,7 +56,7 @@ class OpsControllerHaTest(unittest.TestCase):
 
     def test_standby_marker_blocks_active_requirement(self):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as marker:
-            marker.write('{"schema_version":1,"role":"standby","hostname":"k001-ops","active_box":"k002"}\n')
+            marker.write('{"schema_version":1,"role":"standby","hostname":"boxa-ops","active_box":"boxb"}\n')
             marker.flush()
 
             result = self.run_guard("--marker", marker.name, "--require-active")
@@ -66,7 +66,7 @@ class OpsControllerHaTest(unittest.TestCase):
 
     def test_authkey_mint_checks_guard_before_provider_secret(self):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as marker:
-            marker.write('{"schema_version":1,"role":"standby","hostname":"k001-ops","active_box":"k002"}\n')
+            marker.write('{"schema_version":1,"role":"standby","hostname":"boxa-ops","active_box":"boxb"}\n')
             marker.flush()
             env = os.environ.copy()
             env["KLOKAST_CONTROLLER_GUARD"] = str(GUARD)
@@ -78,7 +78,7 @@ class OpsControllerHaTest(unittest.TestCase):
                     "--purpose",
                     "ops",
                     "--hostname",
-                    "k001-ops",
+                    "boxa-ops",
                     "--tags",
                     "tag:ops",
                 ],
@@ -101,9 +101,9 @@ class OpsControllerHaTest(unittest.TestCase):
                 str(REPO_ROOT / "ops" / "controller-ha.yml"),
                 "bootstrap-standby",
                 "--box",
-                "k001",
+                "boxa",
                 "--active",
-                "k002",
+                "boxb",
                 "--dry-run-plan",
             ],
             text=True,
@@ -113,7 +113,7 @@ class OpsControllerHaTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("provision-ops-vm --box k001 --standby", result.stdout)
+        self.assertIn("provision-ops-vm --box boxa --standby", result.stdout)
 
     def test_marker_directory_remains_guard_readable(self):
         self.assertIn("doas install -d -m 0755 -o root -g root /etc/klokast", HA_SOURCE)

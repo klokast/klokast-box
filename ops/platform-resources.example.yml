@@ -1,7 +1,7 @@
 ---
 schema_version: 1
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities:
         - overlay
@@ -27,7 +27,7 @@ boxes:
       - hostname: flint2
         mac: "02:00:00:00:00:01"
         ipv4_address: "10.10.30.2"
-  k002:
+  boxb:
     access:
       available_capabilities:
         - overlay

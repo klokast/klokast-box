@@ -51,8 +51,8 @@ class PrivateInstanceWorktreeHelperTest(unittest.TestCase):
         session = work / "session.sh"
         session.write_text(
             "\n".join([
-                "CONTROLLER=k002-ops",
-                "SSH_TARGET=smith@k002-ops",
+                "CONTROLLER=boxb-ops",
+                "SSH_TARGET=smith@boxb-ops",
                 "INSTANCE_OWNER=family",
                 "INSTANCE_REPO=klokast-instance",
                 "SIGNER_ID=human-private-instance",
@@ -128,7 +128,7 @@ set -euo pipefail
 shift
 target=${1:-}
 shift
-[ "$target" = smith@k002-ops ]
+[ "$target" = smith@boxb-ops ]
 if [ "${1:-}" = -t ]; then
   exit 2
 fi
@@ -328,7 +328,7 @@ fi
         ).hexdigest()
         self.audit_log.write_text(json.dumps({
             "event": "private-instance.worktree-preparation.finished",
-            "controller": "k002-ops",
+            "controller": "boxb-ops",
             "repository_sha256": repository_hash,
             "repo_head": ENGINE_COMMIT,
             "build_operation": BUILD_OPERATION,

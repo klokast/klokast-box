@@ -282,7 +282,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 		c.add(InstancePath+"$.$schema", "schema.engine", "instance schema URL must use the exact approved engine commit")
 	}
 	hasOperator, hasFamily, hasOperatorFamily := false, false, false
-	for _, member := range instance.Tailnet.Members {
+	for _, member := range instance.Tailscale.Members {
 		memberOperator, memberFamily := false, false
 		for _, role := range member.Roles {
 			memberOperator = memberOperator || role == "operator"
@@ -293,7 +293,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 		hasOperatorFamily = hasOperatorFamily || (memberOperator && memberFamily)
 	}
 	if !hasOperator || !hasFamily || !hasOperatorFamily {
-		c.add(InstancePath+"$.tailnet.members", "tailnet.operator-family", "one member must have both operator and family roles")
+		c.add(InstancePath+"$.tailscale.members", "tailscale.operator-family", "one member must have both operator and family roles")
 	}
 
 	generated := map[string]string{}
@@ -312,7 +312,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 			sites[value.Site] = value
 		}
 		if !hasConnectivityProfile(value, "tailscale") {
-			c.add(InstancePath+"$.boxes."+box+".connectivity-profiles", "connectivity.tailscale", "an Instance Specification v1 box must use the tailscale connectivity profile")
+			c.add(InstancePath+"$.boxes."+box+".connectivity", "connectivity.tailscale", "an Instance Specification v1 box must use the tailscale connectivity profile")
 		}
 		for _, suffix := range reservedRuntimeSuffixes {
 			if box == suffix || strings.HasSuffix(box, "-"+suffix) {
@@ -412,7 +412,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 }
 
 func hasConnectivityProfile(box BoxDocument, expected string) bool {
-	for _, profile := range box.ConnectivityProfiles {
+	for _, profile := range box.Connectivity {
 		if profile == expected {
 			return true
 		}

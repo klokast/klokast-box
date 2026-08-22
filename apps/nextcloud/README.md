@@ -26,7 +26,7 @@ Set the required secrets in the controller environment:
 export NEXTCLOUD_ADMIN_PASSWORD='...'
 export NEXTCLOUD_POSTGRES_PASSWORD='...'
 export NEXTCLOUD_RESTIC_PASSWORD='...'
-export NEXTCLOUD_RESTIC_REPOSITORY='sftp:neo@k002-bak.example.ts.net:/srv/nextcloud-restic/k001'
+export NEXTCLOUD_RESTIC_REPOSITORY='sftp:neo@boxb-bak.example.ts.net:/srv/nextcloud-restic/boxa'
 ```
 
 The ops server also needs a root-owned auth-key wrapper for the private
@@ -65,33 +65,33 @@ Run preflight and install:
 
 ```sh
 apps/nextcloud/bin/nextcloudctl preflight \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --domain cloud.example.tld \
   --allow-missing-passive-for-test
 
 apps/nextcloud/bin/nextcloudctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --domain cloud.example.tld \
   --resources-registry path/to/platform-resources.yml
 ```
 
-Use `--allow-missing-passive-for-test` only while `k002` is not ready. A real
+Use `--allow-missing-passive-for-test` only while `boxb` is not ready. A real
 install requires both boxes.
 
 ## Verify
 
 ```sh
 apps/nextcloud/bin/nextcloudctl verify \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --domain cloud.example.tld \
   --resources-registry path/to/platform-resources.yml
 
 apps/nextcloud/bin/nextcloudctl backup-check \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --domain cloud.example.tld
 ```
 
@@ -103,8 +103,8 @@ Promotion is manual to avoid split-brain.
 
 ```sh
 apps/nextcloud/bin/nextcloudctl promote \
-  --old-active k001 \
-  --new-active k002 \
+  --old-active boxa \
+  --new-active boxb \
   --domain cloud.example.tld \
   --resources-registry path/to/platform-resources.yml
 ```
@@ -120,7 +120,7 @@ recovery complete.
 Remove services while preserving persistent data:
 
 ```sh
-apps/nextcloud/bin/nextcloudctl remove --box k001
+apps/nextcloud/bin/nextcloudctl remove --box boxa
 ```
 
 Removal also stops the private ingress, deletes the offline `next` Tailscale
@@ -131,7 +131,7 @@ files.
 Delete persistent data only with the explicit wipe flag:
 
 ```sh
-apps/nextcloud/bin/nextcloudctl remove --box k001 --wipe-data
+apps/nextcloud/bin/nextcloudctl remove --box boxa --wipe-data
 ```
 
 To close platform-managed firewall resources, first apply a deployment registry

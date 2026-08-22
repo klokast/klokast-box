@@ -3,8 +3,9 @@
 Use this after the static-site GitHub App has been installed from
 `klokast-dev/runbooks/25-github-app.md`.
 
-The current static-site placement is `k001`, and the active controller is
-`k002-ops`.
+The private instance selects the static-site placement and the active
+controller. The command blocks below use neutral example identities. Replace
+them with the private values before use.
 
 Do not paste Cloudflare tokens, GitHub keys, approval private keys, or signed
 intents into chat.
@@ -27,7 +28,7 @@ cd path/to/klokast-box
 git pull --ff-only
 
 klokast-dev/bin/install-secret-authority-approval-signer \
-  --controller k002-ops \
+  --controller boxb-ops \
   --purpose static-site
 ```
 
@@ -36,14 +37,14 @@ The wrapper:
 - creates or reuses one non-exportable, biometric-protected CryptoTokenKit
   identity;
 - installs its public key into
-  `/etc/klokast/secret-authority/allowed-signers-static-site` on `k002-ops`;
+  `/etc/klokast/secret-authority/allowed-signers-static-site` on `boxb-ops`;
 - runs a real signature verification round trip through the controller;
 - requires Touch ID for the test signature.
 
 Verify status:
 
 ```sh
-tailscale ssh smith@k002-ops \
+tailscale ssh smith@boxb-ops \
   'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted'
 ```
 
@@ -58,7 +59,7 @@ allowed_signers_configured=true
 In Cloudflare Zero Trust:
 
 1. Go to `Networking` -> `Tunnels`.
-2. Select the static-site tunnel, normally `klokast-static-k001`.
+2. Select the static-site tunnel, normally `klokast-static-boxa`.
 3. Select `Add a replica`.
 4. Copy the `cloudflared` install command into a local text editor. Do not run
    the command.
@@ -75,8 +76,8 @@ Run from the MacBook:
 
 ```sh
 klokast-dev/bin/ingest-static-site-cloudflare-token \
-  --controller k002-ops \
-  --box k001 \
+  --controller boxb-ops \
+  --box boxa \
   --domain www.klokast.ai
 ```
 
@@ -100,7 +101,7 @@ sign. The Secure Enclave signs bytes, not the display text.
 Verify:
 
 ```sh
-tailscale ssh smith@k002-ops \
+tailscale ssh smith@boxb-ops \
   'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted'
 ```
 

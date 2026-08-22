@@ -60,7 +60,7 @@ Generate an approval intent from the controller checkout:
 
 ```sh
 ansible/bin/secret-authority intent static-site install \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --resources-registry ~/private/klokast/platform-resources.yml \
   > intent.json
@@ -79,7 +79,7 @@ Run the approved action from `<box>-ops` as `smith`:
 
 ```sh
 ansible/bin/secret-authority static-site install \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --approval-intent intent.json \
@@ -94,8 +94,8 @@ disabled, sends the token only through stdin, and verifies redacted status:
 
 ```sh
 klokast-dev/bin/ingest-static-site-cloudflare-token \
-  --controller k002-ops \
-  --box k001 \
+  --controller boxb-ops \
+  --box boxa \
   --domain www.klokast.ai
 ```
 

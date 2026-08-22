@@ -9,15 +9,14 @@
   - `https://cwwk.net/products/6-lan-firewall-appliance-2-5g-router-12th-gen-intel-i3-n305-n100-ddr5-2-nvme-2-sata3-0-fanless-mini-pc-esxi-proxmox-host`
 - UEFI: AMI Aptio, version `2.22.1287` or `2.22.1288`
 
-## k001
-- box_name: `k001`
-- Physical location: private deployment metadata
-- Tailscale tags: [`k001-*`]
+## Box inventory
 
-## k002
-- box_name: `k002`
-- Physical location: private deployment metadata
-- Tailscale tags: [`k002-*`]
+Box IDs, physical locations, countries, and site assignments are private
+instance inputs. Read them from the private `klokast-instance.json`. Do not
+copy them into this public operations document.
+
+Each runtime machine uses its private box ID as the prefix and uses the public
+runtime suffix rules in `doc/architecture.md`.
 
 ## Restart Tailscale on a remote dom0
 

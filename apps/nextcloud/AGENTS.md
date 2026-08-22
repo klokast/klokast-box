@@ -4,8 +4,8 @@ Nextcloud is deployed as an app-local automation package. Keep all
 Nextcloud-specific playbooks, roles, scripts, templates, image build contexts,
 and runbooks under `apps/nextcloud/`.
 
-Do not use historical box names in this app. Test examples use `k001` as the
-active master and `k002` as the passive backup.
+Do not use historical box names in this app. Test examples use `boxa` as the
+active master and `boxb` as the passive backup.
 The Platform backend VM suffix is still `-bak`.
 
 ## Architecture
@@ -76,8 +76,8 @@ Use `apps/nextcloud/bin/nextcloudctl`. Pass box names, not VM hostnames:
 
 ```sh
 apps/nextcloud/bin/nextcloudctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --domain cloud.example.tld \
   --resources-registry path/to/platform-resources.yml
 ```

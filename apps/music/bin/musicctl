@@ -53,7 +53,7 @@ def valid_box(value):
 
 def require_box(value, field):
     if not valid_box(value):
-        die(f"{field} must be a box name like k001, not a VM hostname")
+        die(f"{field} must be a box name like boxa, not a VM hostname")
 
 
 def run(argv, *, env=None):

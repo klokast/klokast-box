@@ -2,7 +2,7 @@ Before intentionally powering off every box, run a final controller HA sync and 
 
 ```sh
 ansible/bin/ops-controller-ha status
-ansible/bin/ops-controller-ha sync --from k002 --to k001
+ansible/bin/ops-controller-ha sync --from boxb --to boxa
 ```
 
 Durable public automation lives in Git. Provider/API authority remains inside the active Platform controller and is not copied to the cloud runner or a general off-platform backup. After power returns, start one box, wait for its dom0 and `<box>-ops` Tailscale identities, then use:

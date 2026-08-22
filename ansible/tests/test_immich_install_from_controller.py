@@ -21,9 +21,9 @@ class ImmichInstallFromControllerTest(unittest.TestCase):
                 [
                     str(SCRIPT),
                     "--active-master",
-                    "k001",
+                    "boxa",
                     "--passive-backup",
-                    "k002",
+                    "boxb",
                     "--dry-run",
                 ],
                 check=False,

@@ -5,8 +5,8 @@ KSA_TOOL_NAME="ingest-static-site-cloudflare-token"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 . "$SCRIPT_DIR/../lib/approval-common.sh"
 
-DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-k002-ops}"
-DEFAULT_BOX="${KLOKAST_STATIC_SITE_BOX:-k001}"
+DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-}"
+DEFAULT_BOX="${KLOKAST_STATIC_SITE_BOX:-}"
 DEFAULT_DOMAIN="${KLOKAST_STATIC_SITE_DOMAIN:-www.klokast.ai}"
 DEFAULT_REPO_OWNER="${KLOKAST_STATIC_SITE_REPO_OWNER:-klokast}"
 DEFAULT_REPO_NAME="${KLOKAST_STATIC_SITE_REPO_NAME:-klokast-site}"
@@ -25,8 +25,8 @@ the Cloudflare Tunnel token, ingests it into the root-only Secret Authority on
 the ops controller, verifies redacted status, and prints a JSON result.
 
 Options:
-  --controller HOST   Controller host. Default: ${DEFAULT_CONTROLLER}
-  --box BOX           Static-site placement box. Default: ${DEFAULT_BOX}
+  --controller HOST   Active controller. Required unless KLOKAST_OPS_CONTROLLER is set.
+  --box BOX           Placement box. Required unless KLOKAST_STATIC_SITE_BOX is set.
   --domain HOST       Static-site public hostname. Default: ${DEFAULT_DOMAIN}
   --repo-owner NAME   GitHub repo owner. Default: ${DEFAULT_REPO_OWNER}
   --repo-name NAME    GitHub repo name. Default: ${DEFAULT_REPO_NAME}
@@ -262,10 +262,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+[ -n "$controller" ] || ksa_die "--controller or KLOKAST_OPS_CONTROLLER is required"
+[ -n "$box" ] || ksa_die "--box or KLOKAST_STATIC_SITE_BOX is required"
 ksa_valid_controller "$controller" || ksa_die "--controller contains unsafe characters"
 controller="$(ksa_resolve_controller "$controller")"
 ksa_valid_controller "$controller" || ksa_die "resolved controller contains unsafe characters"
-ksa_valid_box "$box" || ksa_die "--box must be a box name like k001, not a VM hostname"
+ksa_valid_box "$box" || ksa_die "--box must be a box name like boxa, not a VM hostname"
 ksa_valid_domain "$domain" || ksa_die "--domain must be a hostname"
 ksa_valid_github_owner "$repo_owner" || ksa_die "--repo-owner must be a GitHub organization/user name"
 ksa_valid_github_repo "$repo_name" || ksa_die "--repo-name must be a GitHub repository name"

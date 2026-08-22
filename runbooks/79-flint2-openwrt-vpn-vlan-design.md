@@ -79,7 +79,7 @@ Client gateway:     RG LAN address, likely 192.168.1.1
 
 If the RG uses another private range, use that range instead. In this temporary
 topology, clients should **not** receive `10.10.30.x` addresses; that range is
-for connecting the dumb AP to `k001-router`, not directly to the RG.
+for connecting the dumb AP to `boxa-router`, not directly to the RG.
 
 ### Step-by-step connection
 
@@ -109,7 +109,7 @@ for connecting the dumb AP to `k001-router`, not directly to the RG.
 
 5. Find the Flint's RG-side DHCP lease:
    - In the RG admin UI, check the DHCP/client list.
-   - Look for hostname `k001-ap`, `flint2`, or the Flint MAC address.
+   - Look for hostname `boxa-ap`, `flint2`, or the Flint MAC address.
    - Record the address, for example `192.168.1.23`.
 
 6. Connect a phone or laptop to the Flint SSID.

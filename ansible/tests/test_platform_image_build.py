@@ -92,7 +92,7 @@ class AppControlImageBuildTest(unittest.TestCase):
     def test_print_server_install_uses_platform_image_build_commands(self):
         ctl = load_module(PRINT_CTL, "print_server_ctl")
         with patch.object(ctl, "run") as run:
-            ctl.build_and_load_images("k002")
+            ctl.build_and_load_images("boxb")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(commands[0][-1], "build")
         self.assertEqual(commands[1][-1], "load")
@@ -102,7 +102,7 @@ class AppControlImageBuildTest(unittest.TestCase):
     def test_music_install_uses_platform_image_build_commands(self):
         ctl = load_module(MUSIC_CTL, "music_ctl")
         with patch.object(ctl, "run") as run:
-            ctl.build_and_load_images("k001")
+            ctl.build_and_load_images("boxa")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(commands[0][-1], "build")
         self.assertEqual(commands[1][-1], "load")

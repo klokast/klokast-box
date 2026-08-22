@@ -35,7 +35,7 @@ bootstrap ISO on NanoKVM, decommissions and reboots the current box, waits for
 the operator to enroll the rebooted ISO as BOX-bootstrap, then runs provision-box.
 
 Options:
-  --box BOX                 Box short name, for example k001
+  --box BOX                 Box short name, for example boxa
   --inventory PATH          Base Ansible inventory. Default: ansible/inventory/hosts.yml
   --target-disk-device DEV  Provisioning install target. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX  Tailscale MagicDNS suffix. Default: auto-discovered
@@ -48,9 +48,9 @@ Options:
   -h, --help                Show this help
 
 Examples:
-  ansible/bin/reinstall-box --box k001
-  ansible/bin/reinstall-box --box k001 --bootstrap-iso klokast-bootstrap-debian-trixie-amd64.iso
-  ansible/bin/reinstall-box --box k001 --yes -- -vvv
+  ansible/bin/reinstall-box --box boxa
+  ansible/bin/reinstall-box --box boxa --bootstrap-iso klokast-bootstrap-debian-trixie-amd64.iso
+  ansible/bin/reinstall-box --box boxa --yes -- -vvv
 EOF
 }
 

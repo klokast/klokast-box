@@ -227,9 +227,9 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
             [
                 str(wrapper),
                 "--controller",
-                "k002-ops",
+                "boxb-ops",
                 "--box",
-                "k001",
+                "boxa",
                 "--domain",
                 "www.klokast.ai",
             ],

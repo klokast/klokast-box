@@ -14,10 +14,10 @@ func testBundle() []byte {
   "schema_version": 1,
   "app": "nextcloud-v2",
   "operation": "install",
-  "target_box": "k001",
+  "target_box": "boxa",
   "target_role": "backend",
   "site_role": "active",
-  "placement": {"active_master": "k001", "passive_backup": "k002"},
+  "placement": {"active_master": "boxa", "passive_backup": "boxb"},
   "resource_grant_sha256": "abc",
   "runtime": {
     "pod_name": "nextcloud-v2",
@@ -60,10 +60,10 @@ func TestParseOpenClawDesiredValidation(t *testing.T) {
   "schema_version": 1,
   "app": "openclaw",
   "operation": "deploy",
-  "target_box": "k001",
+  "target_box": "boxa",
   "target_role": "agent",
   "site_role": "active",
-  "placement": {"active_master": "k001"},
+  "placement": {"active_master": "boxa"},
   "resource_grant_sha256": "abc",
   "runtime": {"openclaw_npm_version": "2026.5.27"}
 }`)

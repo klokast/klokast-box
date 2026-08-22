@@ -25,10 +25,10 @@ Options:
   -h, --help              Show this help.
 
 Examples:
-  ansible/bin/platform-check-remote --box k001
-  ansible/bin/platform-check-remote --box k001 --target all
-  ansible/bin/platform-check-remote --box k001 --target dom0
-  ansible/bin/platform-check-remote --no-pull --box k001 --target dom0 -- --syntax-check
+  ansible/bin/platform-check-remote --box boxa
+  ansible/bin/platform-check-remote --box boxa --target all
+  ansible/bin/platform-check-remote --box boxa --target dom0
+  ansible/bin/platform-check-remote --no-pull --box boxa --target dom0 -- --syntax-check
 EOF
 }
 

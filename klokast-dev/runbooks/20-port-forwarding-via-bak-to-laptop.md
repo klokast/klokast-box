@@ -7,7 +7,7 @@ Typically, this is after are decommissioning of the system, and you want to rein
 Run this command from the development laptop.
 
 - pre-requisite: Tailscale is running on the development laptop.
-- `k001` is the name of the box that is already online in the LAN. Adjust with yours.
+- `boxa` is the name of the box that is already online in the LAN. Adjust with yours.
 - `tail123456` is the code of the Tailscale network. Adjust with yours.
 - `neo` is the name of user on `<box>-bak`. This is standard.
 - `192.168.1.16` is the IP address of the new box. Adjust with yours.
@@ -19,7 +19,7 @@ Run this command from the development laptop.
 ssh -N \
   -J neo@codex.tail123456.ts.net \
   -L 127.0.0.1:8080:192.168.1.16:80 \
-  neo@k001-bak.tail123456.ts.net
+  neo@boxa-bak.tail123456.ts.net
 ```
 
 Let it running until you're done with step 2.

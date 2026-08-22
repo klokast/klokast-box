@@ -28,8 +28,8 @@ class ImmichctlGrantTest(unittest.TestCase):
             "compiler": "platform-resources",
             "compiler_version": 11,
             "registry_sha256": "0" * 64,
-            "boxes": ["k001", "k002"],
-            "placement": {"active_master": "k001", "passive_backup": "k002"},
+            "boxes": ["boxa", "boxb"],
+            "placement": {"active_master": "boxa", "passive_backup": "boxb"},
             "resources": ["backend-http-upstream"],
             "tailnet_resources": [
                 {
@@ -58,9 +58,9 @@ class ImmichctlGrantTest(unittest.TestCase):
                 str(SCRIPT),
                 "resource-grant-check",
                 "--active-master",
-                "k001",
+                "boxa",
                 "--passive-backup",
-                "k002",
+                "boxb",
                 "--resource-grant",
                 str(grant_path),
             ],
@@ -80,8 +80,8 @@ apps:
   immich:
     enabled: true
     placement:
-      active_master: k001
-      passive_backup: k002
+      active_master: boxa
+      passive_backup: boxb
     ingress_mode: tailscale
     resources:
       backend-http-upstream: true
@@ -101,9 +101,9 @@ apps:
                 str(SCRIPT),
                 "destroy",
                 "--active-master",
-                "k001",
+                "boxa",
                 "--passive-backup",
-                "k002",
+                "boxb",
                 "--resources-registry",
                 str(registry_path),
                 *extra_args,
@@ -127,7 +127,7 @@ apps:
         with tempfile.TemporaryDirectory() as tmpdir:
             marker = Path(tmpdir) / "approved"
             marker.write_text("commit-a\n", encoding="utf-8")
-            grant = self.make_grant(tmpdir, boxes=["k001", "k003"])
+            grant = self.make_grant(tmpdir, boxes=["boxa", "k003"])
             result = self.run_check(grant, marker)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("invalid Immich platform resource grant", result.stderr)
@@ -190,7 +190,7 @@ apps:
     def test_destroy_rejects_registry_placement_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = self.write_registry(tmpdir)
-            content = registry.read_text(encoding="utf-8").replace("passive_backup: k002", "passive_backup: k003")
+            content = registry.read_text(encoding="utf-8").replace("passive_backup: boxb", "passive_backup: k003")
             registry.write_text(content, encoding="utf-8")
             result = self.run_destroy(registry, "--wipe-data", "--yes", "--dry-run-plan")
 

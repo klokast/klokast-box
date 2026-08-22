@@ -23,7 +23,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Render a temporary Ansible inventory for one Klokast box."
     )
-    parser.add_argument("--node", required=True, help="Box short name, for example k001")
+    parser.add_argument("--node", required=True, help="Box short name, for example boxa")
     parser.add_argument(
         "--output",
         required=True,

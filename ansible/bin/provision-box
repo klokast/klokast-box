@@ -31,7 +31,7 @@ Provision one box from the Debian bootstrap ISO through dom0, Xen, router VM,
 and Podman VMs. Applications are not installed by this flow.
 
 Options:
-  --box BOX               Box short name, for example k001
+  --box BOX               Box short name, for example boxa
   --inventory PATH         Base Ansible inventory. Default: ansible/inventory/hosts.yml
   --from PHASE             First phase to run. Default: 10
   --to PHASE               Last phase to run. Default: 69
@@ -46,10 +46,10 @@ Options:
   -h, --help               Show this help
 
 Examples:
-  ansible/bin/provision-box --box k001
-  ansible/bin/provision-box --box k001 --yes
-  ansible/bin/provision-box --box k001 --from 23
-  ansible/bin/provision-box --box k001 --from 68 --to 69 -- -vvv
+  ansible/bin/provision-box --box boxa
+  ansible/bin/provision-box --box boxa --yes
+  ansible/bin/provision-box --box boxa --from 23
+  ansible/bin/provision-box --box boxa --from 68 --to 69 -- -vvv
 EOF
 }
 

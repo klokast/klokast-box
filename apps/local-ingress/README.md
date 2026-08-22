@@ -15,7 +15,7 @@ Enable in the private platform-resource registry:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay, local-lan]
       enabled_capabilities: [overlay, local-lan]
@@ -25,7 +25,7 @@ apps:
   local-ingress:
     enabled: true
     placement:
-      active_master: k002
+      active_master: boxb
     resources: {}
 ```
 
@@ -37,7 +37,7 @@ Deploy from the controller as `smith`:
 
 ```sh
 apps/local-ingress/bin/local-ingressctl deploy \
-  --box k002 \
+  --box boxb \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --local-domain home.example.com \
   --tls-cert ~/private/klokast/certs/home.example.com/fullchain.pem \

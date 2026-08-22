@@ -279,9 +279,9 @@ poweroff_streamer() {
   [ -z "$extra" ] || die "poweroff accepts exactly one target"
   case "$target" in
     *-streamer) box="${target%-streamer}" ;;
-    *) die "poweroff target must be a streamer name like k002-streamer" ;;
+    *) die "poweroff target must be a streamer name like boxb-streamer" ;;
   esac
-  valid_box "$box" || die "poweroff target must start with a box name like k002"
+  valid_box "$box" || die "poweroff target must start with a box name like boxb"
 
   need_command tailscale
   need_command ssh
@@ -378,7 +378,7 @@ music_upload() {
 
   [ -n "$from" ] || die "--from is required"
   [ -n "$box" ] || die "--to is required"
-  valid_box "$box" || die "--to must be a box name like k002, not a VM hostname"
+  valid_box "$box" || die "--to must be a box name like boxb, not a VM hostname"
 
   need_command tailscale
   need_command ssh
@@ -432,7 +432,7 @@ torrent_url() {
   done
 
   [ -n "$box" ] || die "--to is required"
-  valid_box "$box" || die "--to must be a box name like k002, not a VM hostname"
+  valid_box "$box" || die "--to must be a box name like boxb, not a VM hostname"
   printf 'https://%s-torrent.%s\n' "$box" "$TAILNET_SUFFIX"
 }
 

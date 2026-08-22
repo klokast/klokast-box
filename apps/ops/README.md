@@ -21,7 +21,7 @@ Prerequisites:
 Run from the current controller:
 
 ```sh
-ansible/bin/provision-ops-vm --box k001
+ansible/bin/provision-ops-vm --box boxa
 ```
 
 The controller clones the public `klokast/klokast-box` repository over HTTPS.
@@ -42,7 +42,7 @@ files into `/etc/klokast/`, and removes legacy reusable auth-key files from
 Routine controller-side updates are intentionally simple:
 
 ```sh
-tailscale ssh smith@k001-ops \
+tailscale ssh smith@boxa-ops \
   'cd ~/src/klokast/klokast-box && git pull --ff-only'
 ```
 
@@ -65,8 +65,8 @@ Provision the standby from the active controller without copying provider/API
 authority:
 
 ```sh
-ansible/bin/ops-controller-ha bootstrap-standby --box k001 --active k002
-ansible/bin/ops-controller-ha sync --from k002 --to k001
+ansible/bin/ops-controller-ha bootstrap-standby --box boxa --active boxb
+ansible/bin/ops-controller-ha sync --from boxb --to boxa
 ansible/bin/ops-controller-ha status
 ```
 
@@ -74,11 +74,11 @@ For a planned, no-outage handoff, both repositories must be clean and current:
 
 ```sh
 ansible/bin/ops-controller-ha switchover \
-  --old-active k001 \
-  --new-active k002
+  --old-active boxa \
+  --new-active boxb
 ansible/bin/ops-controller-ha sanitize-standby \
-  --box k001 \
-  --active k002 \
+  --box boxa \
+  --active boxb \
   --confirm
 ```
 
@@ -91,17 +91,17 @@ Manual promotion requires the old active controller to be fenced:
 
 ```sh
 ansible/bin/ops-controller-ha promote \
-  --new-active k001 \
-  --old-active k002 \
+  --new-active boxa \
+  --old-active boxb \
   --old-active-fenced
 ```
 
 After promotion, reseed provider/API authority from the MacBook-side wrappers:
 
 ```sh
-ansible/bin/ops-controller-ha reseed --controller k001-ops
+ansible/bin/ops-controller-ha reseed --controller boxa-ops
 klokast-dev/bin/install-tailscale-oauth \
-  --controller k001-ops \
+  --controller boxa-ops \
   --policy-env path/to/tailscale-policy.env \
   --devices-env path/to/tailscale-devices.env
 ```
@@ -133,16 +133,16 @@ sandboxes.
 approved Codex/OpenAI runners. Replace an in-Platform runner blue-green:
 
 ```sh
-ansible/bin/converge-ops-airunner --box k002 --instance candidate
-# Verify Mosh from the Mac to k002-ops-airunner-candidate.
+ansible/bin/converge-ops-airunner --box boxb --instance candidate
+# Verify Mosh from the Mac to boxb-ops-airunner-candidate.
 ansible/bin/converge-ops-airunner \
-  --box k002 --instance canonical --require-candidate-ready
-# Verify Mosh from the Mac to k002-ops-airunner.
-ansible/bin/retire-ops-airunner-candidate --box k002
+  --box boxb --instance canonical --require-candidate-ready
+# Verify Mosh from the Mac to boxb-ops-airunner.
+ansible/bin/retire-ops-airunner-candidate --box boxb
 ```
 
 The container and Tailnet names follow `<box>-<vm>-<container>`:
-`k002-ops-airunner` and `k002-ops-airunner-candidate`. Runtime services are
+`boxb-ops-airunner` and `boxb-ops-airunner-candidate`. Runtime services are
 `airunner` and `airunner-candidate`; Platform state and image namespaces remain
 under `/var/lib/klokast/` and `localhost/klokast/`.
 
@@ -159,7 +159,7 @@ checkout. A new key must be registered as a write-enabled
 The runner uses the `agent` account and must not mount `/home/smith`,
 `/etc/klokast`, `/var/lib/klokast`, controller deploy keys, private registries,
 OAuth files, or broker state. Approve it for routine use only after Codex auth,
-GitHub access, remote-terminal access to `smith@k002-ops`, session archiving,
+GitHub access, remote-terminal access to `smith@boxb-ops`, session archiving,
 and negative secret-read checks pass. Keep the approved runner set small because
 each runner is a persistent Control TCB authority. These checks verify secret
 custody and accidental path exposure; they do not make the container

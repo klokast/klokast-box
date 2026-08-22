@@ -23,8 +23,7 @@ The NanoKVM recovery invariant is represented outside Git:
 ```yaml
 # ~/private/klokast/dom0-console.yml
 dom0_console_password_hashes:
-  k001: "$6$..."
-  k002: "$6$..."
+  <box-id>: "$6$..."
 ```
 
 Only hashes are installed on dom0. Health checks fail closed when `neo` lacks

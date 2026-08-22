@@ -32,11 +32,11 @@ func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
 	if !result.Valid || !result.Compatible || result.Deployable || result.AuthorityReady {
 		t.Fatalf("unexpected plan gates: %#v", result)
 	}
-	if result.Projection.ControlPlane.ActiveController.Hostname != "k001-ops" {
+	if result.Projection.ControlPlane.ActiveController.Hostname != "boxa-ops" {
 		t.Fatalf("unexpected controller projection: %#v", result.Projection.ControlPlane)
 	}
 	runner := result.Projection.ControlPlane.Airunners[0]
-	if runner != "k001-ops-airunner" {
+	if runner != "boxa-ops-airunner" {
 		t.Fatalf("unexpected airunner projection: %#v", runner)
 	}
 	box := result.Projection.Boxes[0]
@@ -82,7 +82,7 @@ func TestCompatibilityOnlyFieldsRemainVisible(t *testing.T) {
 	if !result.Compatible || result.AuthorityReady || result.Compatibility.Summary.CompatibilityOnly != 1 {
 		t.Fatalf("compatibility-only field was not gated: %#v", result.Compatibility)
 	}
-	if !hasFinding(result, "boxes.k001.dom0_bridge_ports", "compatibility_only") {
+	if !hasFinding(result, "boxes.boxa.dom0_bridge_ports", "compatibility_only") {
 		t.Fatalf("compatibility-only field path is absent: %#v", result.Compatibility.Findings)
 	}
 }
@@ -99,10 +99,10 @@ func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
 	}
 	expected := map[string]string{
 		"schema_version": "matched",
-		"boxes.k001": "derived",
-		"boxes.k001.shared_guests": "compatibility_only",
-		"boxes.k001.dom0_bridge_ports": "compatibility_only",
-		"boxes.k001.dhcp_reservations": "compatibility_only",
+		"boxes.boxa": "derived",
+		"boxes.boxa.shared_guests": "compatibility_only",
+		"boxes.boxa.dom0_bridge_ports": "compatibility_only",
+		"boxes.boxa.dhcp_reservations": "compatibility_only",
 		"apps.nextcloud": "derived",
 		"compatibility_marker": "unsupported",
 	}
@@ -156,7 +156,7 @@ func TestConflictsAndUnsupportedFieldsFailCompatibility(t *testing.T) {
 		{
 			name:     "capability-conflict",
 			registry: strings.Replace(canonicalRegistry(), "available_capabilities: [overlay]", "available_capabilities: [overlay, direct-ingress]", 1),
-			path:     "boxes.k001.access.available_capabilities",
+			path:     "boxes.boxa.access.available_capabilities",
 			class:    "conflict",
 		},
 		{
@@ -185,11 +185,11 @@ func TestEnabledAppMustMatchLegacyManifestPlacement(t *testing.T) {
 		replaceInFile(t, filepath.Join(root, contract.InstancePath), `"apps": {`, `"apps": {
     "nextcloud": {
       "desired-state": "present",
-      "placement": {"mode": "active-passive", "active": "k001", "passive": "k002"}
+      "placement": {"mode": "active-passive", "active": "boxa", "passive": "boxb"}
     },`)
 	})
 	legacy := strings.Replace(canonicalTwoBoxRegistry(), "enabled: false", "enabled: true", 1)
-	legacy = strings.Replace(legacy, "active_master: \"\"\n      passive_backup: \"\"", "active_master: k001\n      passive_backup: k001", 1)
+	legacy = strings.Replace(legacy, "active_master: \"\"\n      passive_backup: \"\"", "active_master: boxa\n      passive_backup: boxa", 1)
 	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -265,16 +265,16 @@ func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
 	if !result.Valid || !result.Compatible || result.Projection.ControlPlane.StandbyController == nil {
 		t.Fatalf("two-box projection failed: %#v", result)
 	}
-	if result.Projection.ControlPlane.StandbyController.Hostname != "k002-ops" {
+	if result.Projection.ControlPlane.StandbyController.Hostname != "boxb-ops" {
 		t.Fatalf("unexpected standby controller: %#v", result.Projection.ControlPlane.StandbyController)
 	}
-	if len(result.Projection.Sites) != 2 || result.Projection.Sites[0].ID != "milla" ||
-		result.Projection.Sites[0].Country != "FR" || result.Projection.Sites[1].ID != "mingdu" ||
-		result.Projection.Sites[1].Country != "CN" {
+	if len(result.Projection.Sites) != 2 || result.Projection.Sites[0].ID != "site-a" ||
+		result.Projection.Sites[0].Country != "XA" || result.Projection.Sites[1].ID != "site-b" ||
+		result.Projection.Sites[1].Country != "XB" {
 		t.Fatalf("box metadata did not produce the expected site projection: %#v", result.Projection.Sites)
 	}
 	runners := result.Projection.ControlPlane.Airunners
-	want := "k002-ops-airunner,k001-ops-airunner,vultr-ops,hetzner-ops"
+	want := "boxb-ops-airunner,boxa-ops-airunner,vultr-ops,hetzner-ops"
 	if strings.Join(runners, ",") != want {
 		t.Fatalf("unexpected runners: %#v", runners)
 	}
@@ -288,10 +288,10 @@ func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
 	}
 	secondRoot := prepareTwoBoxInstance(t, func(root string) {
 		replaceInFile(t, filepath.Join(root, contract.InstancePath),
-			`"k002-ops-airunner",
-    "k001-ops-airunner"`,
-			`"k001-ops-airunner",
-    "k002-ops-airunner"`)
+			`"boxb-ops-airunner",
+    "boxa-ops-airunner"`,
+			`"boxa-ops-airunner",
+    "boxb-ops-airunner"`)
 	})
 	second, err := Plan(Options{InstancePath: secondRoot, CompatibilityRegistry: registry}, testEngine)
 	if err != nil {
@@ -300,7 +300,7 @@ func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
 	if !first.Valid || !second.Valid || first.ProjectionHash == second.ProjectionHash {
 		t.Fatalf("ordered airunner priority did not affect projection hash: %q == %q", first.ProjectionHash, second.ProjectionHash)
 	}
-	if strings.Join(second.Projection.ControlPlane.Airunners, ",") != "k001-ops-airunner,k002-ops-airunner,vultr-ops,hetzner-ops" {
+	if strings.Join(second.Projection.ControlPlane.Airunners, ",") != "boxa-ops-airunner,boxb-ops-airunner,vultr-ops,hetzner-ops" {
 		t.Fatalf("projection did not preserve changed priority: %#v", second.Projection.ControlPlane.Airunners)
 	}
 }
@@ -309,7 +309,7 @@ func canonicalRegistry() string {
 	return `---
 schema_version: 1
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
@@ -335,7 +335,7 @@ func canonicalTwoBoxRegistry() string {
 	return `---
 schema_version: 1
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities: [overlay, ap-uplink, direct-egress]
       enabled_capabilities: [overlay, ap-uplink, direct-egress]
@@ -346,7 +346,7 @@ boxes:
         file-upload: overlay
         household-wan-egress: direct-egress
         public-ingress: none
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]

@@ -31,7 +31,7 @@ tag whose `tagOwners` rules allow it to mint those child tags.
 Validate the installed credential before running `provision-ops-vm`:
 
 ```
-sudo /usr/local/sbin/ts-authkey-ops --check-config --hostname k002-ops --tags tag:ops
+sudo /usr/local/sbin/ts-authkey-ops --check-config --hostname boxb-ops --tags tag:ops
 ```
 
 Expected output:

@@ -10,8 +10,8 @@ usage() {
     cat <<'USAGE'
 Usage:
   apps/immich/bin/immich-install-from-controller \
-    --active-master k001 \
-    --passive-backup k002
+    --active-master boxa \
+    --passive-backup boxb
 
 Options:
   --registry PATH             Controller-local private platform resources registry.
@@ -47,7 +47,7 @@ valid_box() {
 
 require_box() {
     local value=$1 name=$2
-    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+    valid_box "$value" || die "$name must be a box name like boxa, not a VM hostname"
 }
 
 expand_controller_path() {

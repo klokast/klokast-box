@@ -11,8 +11,8 @@ residential connectivity or power fails.
 
    ```sh
    apps/nextcloud/bin/nextcloudctl promote \
-     --old-active k001 \
-     --new-active k002 \
+     --old-active boxa \
+     --new-active boxb \
      --domain cloud.example.tld \
      --resources-registry path/to/platform-resources.yml
    ```

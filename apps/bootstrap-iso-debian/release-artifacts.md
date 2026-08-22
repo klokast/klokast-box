@@ -43,7 +43,7 @@ ansible/bin/bootstrap-live-iso-release \
   --source-dir tmp \
   --tag bootstrap-iso-debian-2026-05-05 \
   --title "Bootstrap ISO Debian trixie / Alpine 3.23.3" \
-  --used-for k001 \
+  --used-for boxa \
   --iso-built-at 2026-05-05T01:53:00Z \
   --seed-built-at 2026-05-02T00:33:00Z \
   --manifest-out apps/bootstrap-iso-debian/releases/bootstrap-iso-debian-2026-05-05.json \
@@ -61,7 +61,7 @@ ansible/bin/bootstrap-live-iso-release \
   --source-dir tmp \
   --tag bootstrap-iso-debian-2026-05-05 \
   --title "Bootstrap ISO Debian trixie / Alpine 3.23.3" \
-  --used-for k001 \
+  --used-for boxa \
   --iso-built-at 2026-05-05T01:53:00Z \
   --seed-built-at 2026-05-02T00:33:00Z
 ```

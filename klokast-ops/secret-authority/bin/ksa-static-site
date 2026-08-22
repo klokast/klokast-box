@@ -81,7 +81,7 @@ def parse_utc(value, name):
 
 def safe_box(value):
     if not BOX_RE.match(value or ""):
-        raise SecretAuthorityError("--box must be a box name like k001")
+        raise SecretAuthorityError("--box must be a box name like boxa")
     suffixes = (
         "-bootstrap",
         "-dom0",

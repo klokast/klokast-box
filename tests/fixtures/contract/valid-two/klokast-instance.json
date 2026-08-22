@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
   "airunners": [
-    "k002-ops-airunner",
-    "k001-ops-airunner",
+    "boxb-ops-airunner",
+    "boxa-ops-airunner",
     "vultr-ops",
     "hetzner-ops"
   ],
@@ -10,7 +10,7 @@
     "music": {
       "data": {
         "library": {
-          "box": "k002",
+          "box": "boxb",
           "retention": "preserve"
         }
       },
@@ -18,33 +18,30 @@
     }
   },
   "boxes": {
-    "k001": {
-      "connectivity-profiles": [
+    "boxa": {
+      "connectivity": [
         "local-ap-direct-egress",
         "tailscale"
       ],
-      "country": "CN",
+      "country": "XA",
       "description": "",
-      "site": "mingdu"
+      "site": "site-a"
     },
-    "k002": {
-      "connectivity-profiles": [
+    "boxb": {
+      "connectivity": [
         "tailscale"
       ],
-      "country": "FR",
+      "country": "XB",
       "description": "",
-      "site": "milla"
+      "site": "site-b"
     }
   },
   "controllers": {
-    "active": "k001",
-    "standby": "k002"
-  },
-  "instance": {
-    "id": "two-box-klokast"
+    "active": "boxa",
+    "standby": "boxb"
   },
   "schema-version": 1,
-  "tailnet": {
+  "tailscale": {
     "members": {
       "admin@example.com": {
         "roles": [

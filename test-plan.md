@@ -56,7 +56,7 @@ restores app-owned resource claims, so run it only from the active controller as
 4. Probe management access.
 
    ```sh
-   for host in k001-router k002-router k001-bak k002-bak k001-dmz k002-dmz k001-iot k002-iot; do
+   for host in boxa-router boxb-router boxa-bak boxb-bak boxa-dmz boxb-dmz boxa-iot boxb-iot; do
      tailscale ssh neo@$host sh -s <<'SH'
    set -eu
    hostname
@@ -166,7 +166,7 @@ target-local verifier to confirm the already-rendered state and, if needed,
 restore metadata with the real registry SHA:
 
 ```sh
-tailscale ssh neo@k001-dmz sh -s -- k001 dmz <<'SH'
+tailscale ssh neo@boxa-dmz sh -s -- boxa dmz <<'SH'
 set -eu
 doas -n /usr/bin/python3 /usr/local/libexec/klokast-app-resources-reconcile \
   verify \

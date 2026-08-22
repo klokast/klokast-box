@@ -39,7 +39,7 @@ does not install another OpenSSH build.
 
 ```sh
 klokast-dev/bin/install-secret-authority-approval-signer \
-  --controller k002-ops \
+  --controller boxb-ops \
   --purpose private-instance
 ```
 
@@ -51,7 +51,7 @@ key. The command installs only the public key on the controller as
 
 ```sh
 klokast-dev/bin/install-secret-authority-approval-signer \
-  --controller k002-ops \
+  --controller boxb-ops \
   --purpose static-site
 ```
 
@@ -77,10 +77,10 @@ Mac.
 ## 4. Deploy The Scoped Controller Verification
 
 ```sh
-tailscale ssh smith@k002-ops
+tailscale ssh smith@boxb-ops
 cd ~/src/klokast/klokast-box
 git pull --ff-only
-ansible/bin/converge-ops-controller --box k002
+ansible/bin/converge-ops-controller --box boxb
 ```
 
 The private-instance authority now reads only
@@ -96,7 +96,7 @@ pass.
 
 ```sh
 klokast-dev/bin/install-secret-authority-approval-signer \
-  --controller k002-ops \
+  --controller boxb-ops \
   --finalize-migration
 ```
 

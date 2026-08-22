@@ -26,7 +26,7 @@ apps:
   bootstrap-iso-debian:
     enabled: true
     placement:
-      builder_box: k001
+      builder_box: boxa
     ephemeral:
       privileged_approval: true
       expires_at: "2026-06-01T00:00:00Z"

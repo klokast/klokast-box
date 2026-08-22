@@ -85,7 +85,7 @@ func TestInitCanonicalizesObjectKeyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := readTestFile(t, filepath.Join(result.InstancePath, contract.InstancePath))
-	if strings.Index(content, `"$schema"`) > strings.Index(content, `"tailnet"`) {
+	if strings.Index(content, `"$schema"`) > strings.Index(content, `"tailscale"`) {
 		t.Fatalf("instance JSON is not deterministically encoded:\n%s", content)
 	}
 }
@@ -97,9 +97,9 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		mutate func(map[string]any)
 	}{
 		{"timezone-field", "schema.invalid", func(value map[string]any) { value["timezone"] = "Europe/Paris" }},
-		{"empty-members", "schema.invalid", func(value map[string]any) { value["tailnet"].(map[string]any)["members"] = map[string]any{} }},
+		{"empty-members", "schema.invalid", func(value map[string]any) { value["tailscale"].(map[string]any)["members"] = map[string]any{} }},
 		{"reserved-box", "identity.box", func(value map[string]any) {
-			value["boxes"].(map[string]any)["builder"] = value["boxes"].(map[string]any)["k001"]
+			value["boxes"].(map[string]any)["builder"] = value["boxes"].(map[string]any)["boxa"]
 			value["controllers"].(map[string]any)["active"] = "builder"
 			value["airunners"] = []any{"builder-ops-airunner"}
 		}},
@@ -172,7 +172,7 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		parent := t.TempDir()
 		secret := "ghp_1234567890abcdef"
 		values := validValues(t)
-		values["instance"].(map[string]any)["id"] = secret
+		values["boxes"].(map[string]any)["boxa"].(map[string]any)["description"] = secret
 		_, err := Init(Options{InstancePath: filepath.Join(parent, "instance"), ValuesPath: writeValues(t, parent, values)}, approvedTestEngine)
 		var validationError *ValidationError
 		if !errors.As(err, &validationError) {

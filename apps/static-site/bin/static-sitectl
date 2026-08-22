@@ -73,7 +73,7 @@ valid_source_dir() {
 
 require_box() {
     local value=$1 name=$2
-    valid_box "$value" || die "$name must be a box name like k001, not a VM hostname"
+    valid_box "$value" || die "$name must be a box name like boxa, not a VM hostname"
 }
 
 render_inventory() {

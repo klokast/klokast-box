@@ -128,7 +128,7 @@ func TestPlanJSONIsReadOnlyAndReportsUnbornRepository(t *testing.T) {
 	registryContent := `---
 schema_version: 1
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
@@ -162,7 +162,7 @@ tailnet:
     operators: [admin@example.com]
     family: [admin@example.com]
 boxes:
-  k001:
+  boxa:
     site: site-001
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -171,8 +171,8 @@ boxes:
 	if err := os.WriteFile(controller, []byte(`---
 schema_version: 1
 controllers:
-  - box: k001
-    hostname: k001-ops
+  - box: boxa
+    hostname: boxa-ops
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ controllers:
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0] != "k001-ops-airunner" {
+	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0] != "boxa-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
 }
@@ -212,14 +212,13 @@ func mainInstanceValues() string {
 	return `{
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
   "schema-version": 1,
-  "instance": {"id": "family-klokast"},
-  "tailnet": {
+  "tailscale": {
     "tailnet-dns-name": "example.ts.net",
     "members": {"admin@example.com": {"roles": ["operator", "family"]}}
   },
-  "boxes": {"k001": {"site": "milla", "country": "FR", "description": "Example home", "connectivity-profiles": ["tailscale"]}},
-  "controllers": {"active": "k001"},
-  "airunners": ["k001-ops-airunner"],
+  "boxes": {"boxa": {"site": "site-b", "country": "XB", "description": "Example home", "connectivity": ["tailscale"]}},
+  "controllers": {"active": "boxa"},
+  "airunners": ["boxa-ops-airunner"],
   "apps": {}
 }`
 }
@@ -272,19 +271,19 @@ func writeMainObservation(t *testing.T, directory string) string {
 	value := map[string]any{
 		"schema_version": 1,
 		"observed_at": time.Now().UTC().Format(time.RFC3339),
-		"source_controller": "k001-ops",
+		"source_controller": "boxa-ops",
 		"source_map_sha256": strings.Repeat("b", 64),
 		"tailnet_machines": []any{
-			map[string]any{"hostname": "k001-bak", "online": true, "tags": []any{"tag:vm"}},
-			map[string]any{"hostname": "k001-dmz", "online": true, "tags": []any{"tag:vm"}},
-			map[string]any{"hostname": "k001-dom0", "online": true, "tags": []any{"tag:dom0"}},
-			map[string]any{"hostname": "k001-iot", "online": true, "tags": []any{"tag:vm"}},
-			map[string]any{"hostname": "k001-ops", "online": true, "tags": []any{"tag:ops"}},
-			map[string]any{"hostname": "k001-ops-airunner", "online": true, "tags": []any{"tag:airunner"}},
-			map[string]any{"hostname": "k001-router", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "boxa-bak", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "boxa-dmz", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "boxa-dom0", "online": true, "tags": []any{"tag:dom0"}},
+			map[string]any{"hostname": "boxa-iot", "online": true, "tags": []any{"tag:vm"}},
+			map[string]any{"hostname": "boxa-ops", "online": true, "tags": []any{"tag:ops"}},
+			map[string]any{"hostname": "boxa-ops-airunner", "online": true, "tags": []any{"tag:airunner"}},
+			map[string]any{"hostname": "boxa-router", "online": true, "tags": []any{"tag:vm"}},
 		},
 		"boxes": []any{map[string]any{
-			"hostname_prefix": "k001", "dom0_reachable": true, "xen_available": true,
+			"hostname_prefix": "boxa", "dom0_reachable": true, "xen_available": true,
 			"running_guests": guests, "configured_guests": guests, "autostart_guests": guests,
 		}},
 	}

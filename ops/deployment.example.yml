@@ -8,9 +8,9 @@ tailnet:
     family:
       - family@example.com
 boxes:
-  k001:
+  boxa:
     site: site-a
     physical_location: Example location
-  k002:
+  boxb:
     site: site-b
     physical_location: Example location

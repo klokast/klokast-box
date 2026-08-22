@@ -127,7 +127,7 @@ ansible/bin/nanokvm-virtual-media --load klokast-bootstrap-debian-trixie-amd64.i
 
 Boot the mini-PC from the generic Debian Live bootstrap ISO. From a machine on
 the same DHCP LAN, open `http://kk.local/` or `http://klokast.local/`, enter
-the box name such as `k001`, and paste the `tskey-auth-*` key. Confirm it
+the box ID from the private instance, and paste the `tskey-auth-*` key. Confirm it
 joined Tailscale as `<box>-bootstrap`, then run from the deployment server:
 
 ```sh
@@ -173,9 +173,10 @@ runs `provision-box`.
 
 # 8. Create the in-Platform ops controller
 
-The installed Codex/OpenAI runner is `k002-ops-airunner`. A separately
-provisioned `<cloud>-ops` VPS can also be approved, but it is not desired
-instance state unless it is installed and listed explicitly.
+The supported in-Platform Codex/OpenAI runner form is
+`<active-box>-ops-airunner`. Its exact identity comes from the private
+instance. A separately provisioned `<cloud>-ops` VPS can also be approved, but
+it is not desired instance state unless it is installed and listed explicitly.
 The in-Platform `<box>-ops` VM is the trusted infrastructure controller for TCB
 automation and private Platform state. It dispatches reviewed `klokast` CLI
 builds to a short-lived networkless Xen builder; it does not run the CLI's Go
@@ -188,7 +189,7 @@ current controller has `/etc/klokast/tailscale-policy.env` and
 scope and mint `tag:ops` auth keys. Verify before migration:
 
 ```sh
-sudo /usr/local/sbin/ts-authkey-ops --check-config --hostname k002-ops --tags tag:ops
+sudo /usr/local/sbin/ts-authkey-ops --check-config --hostname ACTIVE_BOX-ops --tags tag:ops
 ```
 
 The playbook installs the checked-in Tailscale wrappers locally before
@@ -215,22 +216,24 @@ The resulting VM has two local automation accounts:
 - `minion`: app installation and verification without infrastructure
   credentials.
 
-The current in-Platform runner is an `agent`-owned container on `k002-ops`.
-This controller-container runtime is a supported steady state:
+The in-Platform runner is an `agent`-owned container on the active
+`<box>-ops` controller. This controller-container runtime is a supported
+steady state. Set the private box ID before use:
 
 ```sh
-ansible/bin/converge-ops-airunner --box k002 --instance candidate
+BOX_ID="REPLACE_WITH_PRIVATE_BOX_ID"
+ansible/bin/converge-ops-airunner --box "$BOX_ID" --instance candidate
 # After Mac-side candidate Mosh verification:
 ansible/bin/converge-ops-airunner \
-  --box k002 --instance canonical --require-candidate-ready
+  --box "$BOX_ID" --instance canonical --require-candidate-ready
 # After Mac-side canonical Mosh verification:
-ansible/bin/retire-ops-airunner-candidate --box k002
+ansible/bin/retire-ops-airunner-candidate --box "$BOX_ID"
 ```
 
-Codex auth, GitHub access, `smith@k002-ops` remote-terminal access, session
-archiving, and negative secret-read checks must pass from
-`k002-ops-airunner`. Multiple runners can be approved at once, but keep the set
-small because each runner is a persistent Control TCB authority. During
+Codex auth, GitHub access, the `smith@<box>-ops` remote-terminal path, session
+archiving, and negative secret-read checks must pass from the declared
+`<box>-ops-airunner`. Multiple runners can be approved at once, but keep the
+set small because each runner is a persistent Control TCB authority. During
 blue-green container replacement, the candidate is
 `<box>-ops-airunner-candidate`; both containers temporarily share `/home/agent`,
 so do not mutate Git or Codex state from both at once.

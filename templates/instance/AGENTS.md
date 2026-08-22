@@ -6,7 +6,7 @@
 - Never commit secrets, credentials, key material, generated output, runtime
   status, or user data.
 - Do not add a timezone. Platform time is always `Etc/UTC`.
-- Use a box ID such as `k001` as its runtime hostname prefix.
+- Use a box ID such as `boxa` as its runtime hostname prefix.
 - Put `site`, `country`, and `description` directly in each box. Do not add a
   top-level site catalog. Boxes that use the same site label must use identical
   site metadata.

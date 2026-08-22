@@ -29,7 +29,7 @@ keys, or unrelated app state.
 Build image archives on the active `<box>-ops` controller as `smith`:
 
 ```sh
-apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder k002-ops
+apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder boxb-ops
 ```
 
 OCI archives are operational artifacts under `.run/nextcloud-v2/oci/` and must
@@ -42,12 +42,12 @@ The production app path is grant-based:
 
 ```sh
 apps/nextcloud-v2/bin/nextcloud-v2ctl infra-prepare \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resources-registry ~/private/klokast/platform-resources.yml
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl install \
-  --active-master k001 \
-  --passive-backup k002 \
+  --active-master boxa \
+  --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```

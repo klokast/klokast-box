@@ -72,7 +72,7 @@ Dry-run first cleanup for stale offline Tailscale machine identities that block 
   - collect local `tailscale status --json` on the deployment server to prove online/offline state.
   - for each targeted Podman VM, classify exact-name matches into `stale_exact`, `online_exact`, `online_suffix`, and `unknown_exact`.
   - delete only offline `stale_exact` entries whose hostname exactly matches `{{ node_hostname }}` and whose tag matches `{{ vm_tailscale_authkey_expected_tag }}`.
-  - report online exact-name machines and online suffixed machines such as `k001-bak-1`, but do not delete them.
+  - report online exact-name machines and online suffixed machines such as `boxa-bak-1`, but do not delete them.
   - keep exact-name machines when offline state cannot be proven from local Tailscale status.
   - delete selected stale machines only when `tailscale_stale_machine_apply=true` and `tailscale_stale_machine_confirm` matches `delete stale tailscale machines for {{ node_name }}`.
   - delete through `/usr/local/sbin/ts-device-delete-stale`, which re-fetches and verifies the target, including offline state from local Tailscale status, before calling the Tailscale device delete API.

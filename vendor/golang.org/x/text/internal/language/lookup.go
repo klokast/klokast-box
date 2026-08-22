@@ -373,7 +373,7 @@ var (
 		[maxLen]byte{'i', '-', 't', 's', 'u'}:                          _tsu, // i-tsu
 		[maxLen]byte{'n', 'o', '-', 'b', 'o', 'k'}:                     _nb,  // no-bok
 		[maxLen]byte{'n', 'o', '-', 'n', 'y', 'n'}:                     _nn,  // no-nyn
-		[maxLen]byte{'s', 'g', 'n', '-', 'b', 'e', '-', 'f', 'r'}:      _sfb, // sgn-BE-FR
+		[maxLen]byte{'s', 'g', 'n', '-', 'b', 'e', '-', 'f', 'r'}:      _sfb, // Belgian Francophone Sign Language
 		[maxLen]byte{'s', 'g', 'n', '-', 'b', 'e', '-', 'n', 'l'}:      _vgt, // sgn-BE-NL
 		[maxLen]byte{'s', 'g', 'n', '-', 'c', 'h', '-', 'd', 'e'}:      _sgg, // sgn-CH-DE
 		[maxLen]byte{'z', 'h', '-', 'g', 'u', 'o', 'y', 'u'}:           _cmn, // zh-guoyu

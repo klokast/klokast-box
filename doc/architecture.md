@@ -176,7 +176,7 @@ listed explicitly as prohibited capabilities.
   Host name: `<box>-usr-<slug>`.
   Tailscale tags: `tag:vm`, plus app-specific Tailnet tags when a separate ACL boundary is needed.
 
-  - `app_vm`: one dedicated VM for one app or appliance. For example: `k002-torrent`. Typical use cases: untrusted or risky service, rootful Docker or non-standard runtime, VPN leak containment, privileged networking, PCI/USB passthrough, different lifecycle or OS profile
+  - `app_vm`: one dedicated VM for one app or appliance. For example: `<box>-torrent`. Typical use cases: untrusted or risky service, rootful Docker or non-standard runtime, VPN leak containment, privileged networking, PCI/USB passthrough, different lifecycle or OS profile
 
   - `managed_iot_device`: an external physical device that the Platform manages or grants network access to. For example: Raspberry Pi audio endpoint, printer, camera bridge, local sensor gateway. This is not a VM and not a container. The app manifest declares the need symbolically. The private registry binds it to concrete facts, such as mac address, ip address, hostname, box.
 

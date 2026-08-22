@@ -33,7 +33,7 @@ Roles:
 Run through:
 
 ```sh
-ansible/bin/provision-ops-vm --box k001
+ansible/bin/provision-ops-vm --box boxa
 ```
 
 The wrapper runs `31-vm-router.yml` first so the existing router VM receives
@@ -84,7 +84,7 @@ Purpose:
 Run through:
 
 ```sh
-ansible/bin/refresh-ops-secrets --box k001
+ansible/bin/refresh-ops-secrets --box boxa
 ```
 
 ## `67-ops-controller-converge.yml`
@@ -101,7 +101,7 @@ Purpose:
 Run through:
 
 ```sh
-ansible/bin/converge-ops-controller --box k002
+ansible/bin/converge-ops-controller --box boxb
 ```
 
 The controller APK world is an exact allowlist. Unexpected world entries stop

@@ -292,31 +292,30 @@ def build_instance_values(engine_commit, dns_name, member_login):
             f"{engine_commit}/schemas/klokast-instance-v1.schema.json"
         ),
         "schema-version": 1,
-        "instance": {"id": "klokast-instance"},
-        "tailnet": {
+        "tailscale": {
             "tailnet-dns-name": dns_name,
             "members": {member_login: {"roles": ["operator", "family"]}},
         },
         "boxes": {
-            "k001": {
-                "site": "mingdu",
-                "country": "CN",
+            "boxa": {
+                "site": "site-a",
+                "country": "XA",
                 "description": "",
-                "connectivity-profiles": ["local-ap-direct-egress", "tailscale"],
+                "connectivity": ["local-ap-direct-egress", "tailscale"],
             },
-            "k002": {
-                "site": "milla",
-                "country": "FR",
+            "boxb": {
+                "site": "site-b",
+                "country": "XB",
                 "description": "",
-                "connectivity-profiles": ["tailscale"],
+                "connectivity": ["tailscale"],
             },
         },
-        "controllers": {"active": "k002", "standby": "k001"},
-        "airunners": ["k002-ops-airunner"],
+        "controllers": {"active": "boxb", "standby": "boxa"},
+        "airunners": ["boxb-ops-airunner"],
         "apps": {
             "music": {
                 "desired-state": "absent",
-                "data": {"library": {"box": "k002", "retention": "preserve"}},
+                "data": {"library": {"box": "boxb", "retention": "preserve"}},
             },
         },
     }
@@ -346,8 +345,8 @@ def classify_existing_values(existing, engine_commit, detected_dns):
             "existing init-values.json has an unexpected structure; it was not changed"
         )
     try:
-        dns_name = value["tailnet"]["tailnet-dns-name"]
-        members = value["tailnet"]["members"]
+        dns_name = value["tailscale"]["tailnet-dns-name"]
+        members = value["tailscale"]["members"]
     except (KeyError, TypeError) as error:
         raise InstanceError(
             "existing init-values.json has an unexpected structure; it was not changed"
@@ -368,8 +367,8 @@ def classify_existing_values(existing, engine_commit, detected_dns):
             "existing init-values.json has an invalid Tailscale member login; it was not changed"
         )
     normalized = copy.deepcopy(value)
-    normalized["tailnet"]["tailnet-dns-name"] = PLACEHOLDER_DNS
-    normalized["tailnet"]["members"] = {
+    normalized["tailscale"]["tailnet-dns-name"] = PLACEHOLDER_DNS
+    normalized["tailscale"]["members"] = {
         PLACEHOLDER_LOGIN: {"roles": ["operator", "family"]}
     }
     expected = build_instance_values(
@@ -568,18 +567,19 @@ def write_values_atomically(value, existing):
 
 
 def show_configuration(dns_name, member_login, existing_state):
-    print("\nReview the Instance Specification values:", file=sys.stderr)
+    print("\nReview the neutral Instance Specification template:", file=sys.stderr)
     print(f"  Tailnet DNS name: {dns_name}", file=sys.stderr)
     print(f"  Tailscale member login: {member_login}", file=sys.stderr)
     print("  Member roles: operator, family", file=sys.stderr)
     print(
-        "  Boxes: k001 at mingdu (CN); k002 at milla (FR); Tailscale connectivity on both",
+        "  Example boxes: boxa at site-a (XA); boxb at site-b (XB)",
         file=sys.stderr,
     )
-    print("  Controllers: k002 active; k001 standby", file=sys.stderr)
-    print("  Airrunner: k002-ops-airunner", file=sys.stderr)
-    print("  Music: absent; library data on k002 is preserved", file=sys.stderr)
+    print("  Example controllers: boxb active; boxa standby", file=sys.stderr)
+    print("  Example airrunner: boxb-ops-airunner", file=sys.stderr)
+    print("  Example app intent: Music absent; library data preserved on boxb", file=sys.stderr)
     print("  Platform time: Etc/UTC (derived; no timezone field)", file=sys.stderr)
+    print("  Required: replace all example topology and app values on the trusted MacBook", file=sys.stderr)
     if existing_state == "reused":
         print("  Existing values file: valid and unchanged", file=sys.stderr)
     elif existing_state == "repaired":
@@ -630,7 +630,7 @@ def configure_values(args):
             )
     else:
         write_values_atomically(value, existing)
-    print(f"Instance Specification values are complete ({result_state}).", file=sys.stderr)
+    print(f"Instance Specification template is complete ({result_state}).", file=sys.stderr)
     print(result_state)
 
 

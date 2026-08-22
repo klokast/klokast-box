@@ -133,7 +133,7 @@ may update `available_capabilities`, but only `enabled_capabilities` and
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay, local-lan]
       enabled_capabilities: [overlay]
@@ -151,7 +151,7 @@ bridge, approve the physical port separately from the flow policy:
 
 ```yaml
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities: [overlay, ap-uplink, direct-egress]
       enabled_capabilities: [overlay, ap-uplink, direct-egress]
@@ -168,7 +168,7 @@ boxes:
 ```
 
 This gives the AP and its bridged clients DHCP leases from `ap-uplink`, permits
-DNS/DHCP to `k001-router`, and opens only source-scoped web/DNS/NTP egress
+DNS/DHCP to `boxa-router`, and opens only source-scoped web/DNS/NTP egress
 from that AP uplink to `wan`. It does not expose Platform service zones unless
 app-owned `realm_to_zone_tcp` resources also compile.
 
@@ -366,8 +366,8 @@ apps:
   nextcloud:
     enabled: true
     placement:
-      active_master: k001
-      passive_backup: k002
+      active_master: boxa
+      passive_backup: boxb
     ingress_mode: tailscale
     resources:
       cloudflare-tunnel-egress: false
@@ -375,7 +375,7 @@ apps:
   bootstrap-iso-debian:
     enabled: true
     placement:
-      builder_box: k001
+      builder_box: boxa
     ephemeral:
       privileged_approval: true
       expires_at: "2026-06-01T00:00:00Z"
@@ -384,7 +384,7 @@ apps:
   user-shell:
     enabled: true
     placement:
-      active_master: k001
+      active_master: boxa
       passive_backup: ""
     resources: {}
     users:
@@ -396,25 +396,25 @@ apps:
   music:
     enabled: true
     placement:
-      boxes: [k001, k002]
+      boxes: [boxa, boxb]
     devices:
       local-audio-endpoint:
-        k001:
+        boxa:
           mac: b8:27:eb:00:00:01
           ipv4_address: 192.168.150.60
-          hostname: k001-streamer
-        k002:
+          hostname: boxa-streamer
+        boxb:
           mac: b8:27:eb:00:00:02
           ipv4_address: 192.168.150.60
-          hostname: k002-streamer
+          hostname: boxb-streamer
 
   torrent:
     enabled: true
     placement:
-      active_master: k002
+      active_master: boxb
     app_vms:
       torrent:
-        k002:
+        boxb:
           vm_ipv4_address: 192.168.200.30
 ```
 
@@ -430,7 +430,7 @@ endpoint on the IoT segment:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     dom0_bridge_ports:
       iot:
         - eth3
@@ -524,7 +524,7 @@ apps:
     enabled: true
     runtime_state: stopped
     placement:
-      active_master: k001
+      active_master: boxa
 ```
 
 When omitted, `runtime_state` defaults to `running` for enabled apps.
@@ -546,7 +546,7 @@ The private registry also owns durable runtime intent for the shared `bak`,
 
 ```yaml
 boxes:
-  k001:
+  boxa:
     shared_guests:
       iot:
         runtime_state: stopped
@@ -573,8 +573,8 @@ apps:
   nextcloud:
     enabled: false
     placement:
-      active_master: k001
-      passive_backup: k002
+      active_master: boxa
+      passive_backup: boxb
     ingress_mode: tailscale
     resources:
       cloudflare-tunnel-egress: true
@@ -622,7 +622,7 @@ only through keyed files in the `.d/` include directories.
 
 The desired state includes app-VM metadata consumed by `ansible/bin/platform-map`.
 That lets `platform-map validate` treat compiler-managed dynamic domains such
-as `k001-usr-alice` as expected while still reporting app VMs that have no
+as `boxa-usr-alice` as expected while still reporting app VMs that have no
 compiled or persisted desired state.
 
 ## App Notes

@@ -19,7 +19,7 @@ locations:
     note: Hetzner Helsinki.
   pek:
     provider: residential
-    country: CN
+    country: XA
     timezone: Asia/Shanghai
     note: Current coarse site code for yii, duh, and the nearby developer laptop.
 

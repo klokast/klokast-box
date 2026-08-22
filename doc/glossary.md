@@ -1,7 +1,7 @@
 - *Klokast* is a homelab platform: multi-sites but small (1 to 5 sites).
 
 - Placeholders:
-  - <box> : name of the box, for example `k001` or `milla`.
+  - <box> : name of the box, for example `boxa` or `site-b`.
   - <cloud> : name of the cloud service provider for a VPC, for example `hetzner` or `vultr`.
   - <family> : name of a specific Platform deployment.
 

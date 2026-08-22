@@ -66,8 +66,8 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
         session = work / "session.sh"
         session.write_text(
             "\n".join([
-                "CONTROLLER=k002-ops",
-                "SSH_TARGET=smith@k002-ops",
+                "CONTROLLER=boxb-ops",
+                "SSH_TARGET=smith@boxb-ops",
                 "INSTANCE_OWNER=family",
                 "INSTANCE_REPO=klokast-instance",
                 "SIGNER_ID=human-private-instance",
@@ -118,7 +118,7 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
                     f"{ENGINE_COMMIT}/schemas/klokast-instance-v1.schema.json"
                 ),
                 "schema-version": 1,
-                "airunners": ["k002-ops-airunner"],
+                "airunners": ["boxb-ops-airunner"],
             }, indent=2) + "\n",
             "klokast.lock.json": json.dumps({
                 "$schema": (
@@ -211,7 +211,7 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
     def edit_instance(self):
         path = self.worktree / "klokast-instance.json"
         value = json.loads(path.read_text(encoding="utf-8"))
-        value["airunners"] = ["k002-ops-airunner", "k003-ops-airunner"]
+        value["airunners"] = ["boxb-ops-airunner", "k003-ops-airunner"]
         path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
         os.chmod(path, 0o600)
 

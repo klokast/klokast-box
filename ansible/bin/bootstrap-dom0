@@ -30,7 +30,7 @@ Runs the blank-SSD bootstrap flow from the Debian live ISO to a verified
 diskless Alpine dom0 reachable over Tailscale SSH.
 
 Options:
-  --node NODE              Node short name, for example k001
+  --node NODE              Node short name, for example boxa
   --inventory PATH         Base Ansible inventory. Default: ansible/inventory/hosts.yml
   --from PHASE             First phase to run. Default: 10
   --to PHASE               Last phase to run. Default: 22
@@ -54,9 +54,9 @@ Phases:
   22  steady-state dom0 verification
 
 Examples:
-  ansible/bin/bootstrap-dom0 --node k001
-  ansible/bin/bootstrap-dom0 --node k001 --from 20
-  ansible/bin/bootstrap-dom0 --node k001 --from 21 --to 22 -- -vvv
+  ansible/bin/bootstrap-dom0 --node boxa
+  ansible/bin/bootstrap-dom0 --node boxa --from 20
+  ansible/bin/bootstrap-dom0 --node boxa --from 21 --to 22 -- -vvv
 EOF
 }
 

@@ -132,7 +132,7 @@ profile metadata as a workaround.
 # 2026-08-09 - NanoKVM Tailscale Serve is runbook-managed
 
 The NanoKVM HTTPS listener presents a self-signed certificate with
-`CN=localhost`. Tailscale connectivity and the operator grant can both work
+the certificate Common Name `localhost`. Tailscale connectivity and the operator grant can both work
 while a browser rejects `https://oob.<tailnet>.ts.net/`. The active `oob`
 device now uses a persistent Tailscale Serve configuration on TCP 443 that
 proxies to `https+insecure://localhost:443` and supplies a valid certificate.
@@ -147,7 +147,7 @@ detached restart workflow.
 
 # 2026-08-09 - remote Tailscale restarts must outlive Tailscale SSH
 
-A synchronous `rc-service tailscale restart` on k001 stopped the daemon and
+A synchronous `rc-service tailscale restart` on boxa stopped the daemon and
 therefore stopped its own Tailscale SSH transport before the remote shell could
 run the start action. The local console was required to start the service.
 
@@ -160,8 +160,8 @@ Tailscale-owned `/etc/resolv.conf`.
 
 # 2026-08-09 - keep dom0 package resolution on its Alpine release branch
 
-The k001 and k002 package-name comparison found `nghttp3` only on k002. Its
-older `libcurl` package required it, while the newer `libcurl` on k001 did not.
+The boxa and boxb package-name comparison found `nghttp3` only on boxb. Its
+older `libcurl` package required it, while the newer `libcurl` on boxa did not.
 The common dom0 repository setting used `latest-stable`, which had moved from
 Alpine 3.23 to Alpine 3.24 during the rollout. An unrestricted upgrade would
 therefore have performed an unreviewed release upgrade.
@@ -175,7 +175,7 @@ restore `latest-stable` or enable Tailscale self-update on dom0.
 
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 
-The first k001 dom0 policy canary showed that the live Alpine 3.23 repository
+The first boxa dom0 policy canary showed that the live Alpine 3.23 repository
 keeps `libcurl` as a dependency of `xen`. The earlier disposable dependency
 check did not detect this relationship. The steady-state policy now keeps
 `libcurl` out of `/etc/apk/world` but permits APK to install it as a transitive
@@ -211,15 +211,15 @@ Ansible syntax checks must run from the active controller after the reviewed
 commit is pushed. Do not install Platform controller tooling or private state
 on the infra-agent host as a workaround.
 
-# 2026-08-09 - k001 ops controller cannot reliably reach GitHub
+# 2026-08-09 - boxa ops controller cannot reliably reach GitHub
 
-During the exact APK-world rollout, `k001-ops` repeatedly failed to fetch
+During the exact APK-world rollout, `boxa-ops` repeatedly failed to fetch
 `https://github.com/klokast/klokast-box.git`; one controller convergence ended
 after 135 seconds with curl error 28. Its clean checkout had to be fast-forwarded
-from an exact Git bundle created on active controller `k002-ops`. The package
+from an exact Git bundle created on active controller `boxb-ops`. The package
 policy had already converged successfully, but the later public-checkout rehome
 task could not finish, and the ops verification upstream probe is expected to
-fail for the same reason. Investigate `k001-ops` DNS, outbound routing, and
+fail for the same reason. Investigate `boxa-ops` DNS, outbound routing, and
 firewall policy, and bound the rehome fetch. Do not weaken the requirement that
 controller checkouts match public upstream history.
 

@@ -174,7 +174,7 @@ still refuses the page, inspect the certificate:
 curl -vk https://oob.<tailnet>.ts.net/
 ```
 
-The NanoKVM default certificate has `CN=localhost` and is self-signed. It is
+The NanoKVM default certificate uses the Common Name `localhost` and is self-signed. It is
 not valid for the MagicDNS name. Configure Tailscale Serve on NanoKVM to
 terminate TLS with an automatically managed certificate and proxy to the
 device-local HTTPS listener:

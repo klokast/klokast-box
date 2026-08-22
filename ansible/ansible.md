@@ -70,7 +70,7 @@ Step-by-Step Flow :
       - Either enrolls NanoKVM into Tailscale as <box>-oob, or gives the MacBook/ops a direct LAN route to it.
   2. Human starts from MacBook
      ```
-     kk box up k001
+     kk box up boxa
      ```
      The MacBook becomes the launcher, not the long-term controller.
   3. MacBook validates local prerequisites
@@ -78,7 +78,7 @@ Step-by-Step Flow :
       - Checks MacBook is logged into Tailscale.
       - Checks GitHub repo checkout is clean enough to use.
       - Checks Hetzner token is available.
-      - Checks NanoKVM target config exists for k001.
+      - Checks NanoKVM target config exists for boxa.
   4. MacBook creates the ops server
       - Runs Terraform from klokast-ops.
       - Creates Hetzner Ubuntu server, firewall, SSH bootstrap path.
@@ -136,12 +136,12 @@ Step-by-Step Flow :
       - Does not format disk or install Alpine yet.
   11. Human enters bootstrap data
       - Opens http://kk.local/.
-      - Enters box name: k001.
+      - Enters box name: boxa.
       - Pastes bootstrap Tailscale auth key.
       - ISO runs:
       ```
         tailscale up --ssh \
-          --hostname=k001-bootstrap \
+          --hostname=boxa-bootstrap \
           --advertise-tags=tag:bootstrap \
           --auth-key=...
       ```
@@ -149,17 +149,17 @@ Step-by-Step Flow :
       - Ops is already waiting in a polling loop.
       - It watches tailscale status --json.
       - It requires exact match:
-          - hostname k001-bootstrap
+          - hostname boxa-bootstrap
           - online
           - has tag:bootstrap
       - Then it probes Tailscale SSH as root.
   13. Ops starts Ansible phase 2
       - Runs:
         ```
-        ansible/bin/provision-box --box k001
+        ansible/bin/provision-box --box boxa
         ```
       - The wrapper renders temporary inventory for the requested box name.
-      - Playbooks run from ops against k001-bootstrap.
+      - Playbooks run from ops against boxa-bootstrap.
   14. Ansible installs dom0
       - Phase 10 verifies bootstrap access.
       - Phase 11 wipes/repartitions SSD after explicit destructive gate.
@@ -169,9 +169,9 @@ Step-by-Step Flow :
         manual detach fallback for NanoKVM SSH outages.
       - Box reboots from SSD into Alpine diskless.
   15. Ansible completes identity handoff
-      - Box comes back temporarily as k001-bootstrap.
+      - Box comes back temporarily as boxa-bootstrap.
       - Phase 20 configures base dom0 state.
-      - Phase 21 switches Tailscale identity to k001-dom0 with tag:dom0.
+      - Phase 21 switches Tailscale identity to boxa-dom0 with tag:dom0.
       - Phase 22 verifies steady-state dom0.
   16. Ops continues Platform convergence
       - Runs next playbook groups:
@@ -190,6 +190,6 @@ Step-by-Step Flow :
       - The new `<box>-ops` VM owns infrastructure credentials and private
         state through `smith`; app work uses `minion`.
   18. MacBook only reports status
-      - kk box up k001 streams logs or shows the current phase.
+      - kk box up boxa streams logs or shows the current phase.
       - If MacBook sleeps/disconnects, ops continues.
-      - Re-running kk box up k001 attaches to the existing ops-side run or resumes from recorded state.
+      - Re-running kk box up boxa attaches to the existing ops-side run or resumes from recorded state.

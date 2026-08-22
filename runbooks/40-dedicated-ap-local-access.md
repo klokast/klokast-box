@@ -21,7 +21,7 @@ prohibit the paths that are never intended:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
 ```
@@ -32,12 +32,12 @@ Validate the live baseline:
 ansible/bin/platform-resources --registry "$REG" lint
 ansible/bin/platform-resources --registry "$REG" diff
 ansible/bin/platform-resources --registry "$REG" verify
-ansible/bin/platform-check --box k002 --target router
+ansible/bin/platform-check --box boxb --target router
 ```
 
 Expected baseline:
 
-- `k002` compiles as `available=overlay enabled=overlay`.
+- `boxb` compiles as `available=overlay enabled=overlay`.
 - `local-presence-control`, `private-service-ingress`, and `file-upload` select
   `overlay`.
 - The router has no DHCP range for `household` or `admin`.
@@ -71,7 +71,7 @@ enables only LAN music control; upload remains overlay-only:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay, local-lan]
       enabled_capabilities: [overlay, local-lan]
@@ -86,7 +86,7 @@ apps:
   local-ingress:
     enabled: true
     placement:
-      active_master: k002
+      active_master: boxb
     resources: {}
 ```
 
@@ -98,14 +98,14 @@ ansible/bin/platform-resources --registry "$REG" lint
 ansible/bin/platform-resources --registry "$REG" diff
 ansible/bin/platform-resources --registry "$REG" --approved-commit "$approved_commit" apply
 ansible/bin/platform-resources --registry "$REG" verify
-ansible/bin/platform-check --box k002 --target router
+ansible/bin/platform-check --box boxb --target router
 ```
 
 Deploy the local ingress and refresh the music backend:
 
 ```sh
 apps/local-ingress/bin/local-ingressctl deploy \
-  --box k002 \
+  --box boxb \
   --resources-registry "$REG" \
   --local-domain home.example.com \
   --tls-cert ~/private/klokast/certs/home.example.com/fullchain.pem \
@@ -113,11 +113,11 @@ apps/local-ingress/bin/local-ingressctl deploy \
   --approved-commit "$approved_commit"
 
 apps/music/bin/musicctl backend-install \
-  --box k002 \
+  --box boxb \
   --resources-registry "$REG"
 
 apps/music/bin/musicctl verify \
-  --box k002 \
+  --box boxb \
   --resources-registry "$REG"
 ```
 
@@ -127,7 +127,7 @@ Client checks from the AP:
 - An admin/AP-management client receives or uses `10.10.20.0/24`, gateway
   `10.10.20.1`.
 - `https://music.<local-domain>` controls playback on the physically local box.
-- `https://k002-music-upload.<tailnet>` remains the upload path.
+- `https://boxb-music-upload.<tailnet>` remains the upload path.
 - Internet egress from AP clients is unavailable unless `vpn-egress` is enabled.
 
 Only remove the old `<box>-music` overlay ingress after local playback has been
@@ -139,7 +139,7 @@ Enable this only after local music works. Extend the registry:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay, local-lan, vpn-egress]
       enabled_capabilities: [overlay, local-lan, vpn-egress]
@@ -154,10 +154,10 @@ apps:
   household-vpn:
     enabled: true
     placement:
-      active_master: k002
+      active_master: boxb
     app_vms:
       gateway:
-        k002:
+        boxb:
           vm_ipv4_address: 192.168.200.40
     resources: {}
 ```
@@ -168,13 +168,13 @@ Apply resources again, then deploy and verify the gateway:
 ansible/bin/platform-resources --registry "$REG" --approved-commit "$approved_commit" apply
 ansible/bin/platform-resources --registry "$REG" verify
 apps/household-vpn/bin/household-vpnctl deploy \
-  --box k002 \
+  --box boxb \
   --resources-registry "$REG" \
   --vpn-config ~/private/klokast/household-vpn.yml \
   --local-domain home.example.com \
   --approved-commit "$approved_commit"
-apps/household-vpn/bin/household-vpnctl verify --box k002 --resources-registry "$REG"
-ansible/bin/platform-check --box k002 --target router
+apps/household-vpn/bin/household-vpnctl verify --box boxb --resources-registry "$REG"
+ansible/bin/platform-check --box boxb --target router
 ```
 
 Expected VPN state: household/admin DHCP hands out the VPN VM as DNS, router
@@ -187,7 +187,7 @@ Disable the new capabilities in the registry:
 
 ```yaml
 boxes:
-  k002:
+  boxb:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
@@ -205,7 +205,7 @@ Then run:
 ```sh
 ansible/bin/platform-resources --registry "$REG" --approved-commit "$(git rev-parse HEAD)" apply
 ansible/bin/platform-resources --registry "$REG" verify
-ansible/bin/platform-check --box k002 --target router
+ansible/bin/platform-check --box boxb --target router
 ```
 
 After rollback, clients on the AP should not receive Klokast DHCP or reach

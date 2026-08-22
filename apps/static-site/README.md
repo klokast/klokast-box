@@ -32,7 +32,7 @@ apps:
   static-site:
     enabled: true
     placement:
-      active_master: k001
+      active_master: boxa
     resources: {}
 ```
 
@@ -46,12 +46,12 @@ the Secret Authority:
 
 ```sh
 ansible/bin/secret-authority intent static-site bootstrap-repo \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   > intent.json
 
 ansible/bin/secret-authority static-site bootstrap-repo \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --approval-intent intent.json \
   --approval-signature intent.json.sig \
@@ -69,8 +69,8 @@ and prints only redacted JSON:
 
 ```sh
 klokast-dev/bin/ingest-static-site-cloudflare-token \
-  --controller k002-ops \
-  --box k001 \
+  --controller boxb-ops \
+  --box boxa \
   --domain www.klokast.ai \
   --signer-id human \
   --key ~/.ssh/klokast-approval-sk
@@ -80,13 +80,13 @@ Then run install from `<box>-ops` as `smith`:
 
 ```sh
 ansible/bin/secret-authority intent static-site install \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --resources-registry ~/private/klokast/platform-resources.yml \
   > intent.json
 
 ansible/bin/secret-authority static-site install \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --resources-registry ~/private/klokast/platform-resources.yml \
   --approval-intent intent.json \
@@ -100,7 +100,7 @@ key is already registered, the minted GitHub token is not used by the app flow.
 
 ## Cloudflare
 
-Create one Cloudflare Tunnel named `klokast-static-k001`. Add a published
+Create one Cloudflare Tunnel named `klokast-static-boxa`. Add a published
 application route:
 
 - hostname: `www.klokast.ai`
@@ -115,7 +115,7 @@ Do not add WAN port forwarding.
 
 ```sh
 apps/static-site/bin/static-sitectl verify \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --resources-registry ~/private/klokast/platform-resources.yml
 

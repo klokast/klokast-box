@@ -25,7 +25,7 @@ converge one in-Platform `<box>-ops` controller VM. This is an explicit
 migration step; normal box provisioning does not create an ops VM on every box.
 
 Options:
-  --box BOX               Box short name, for example k001
+  --box BOX               Box short name, for example boxa
   --inventory PATH         Base Ansible inventory. Default: ansible/inventory/hosts.yml
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered

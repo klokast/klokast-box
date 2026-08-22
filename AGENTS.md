@@ -14,7 +14,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - Platform operations run on the active Ansible controller: the machine with `tag:ops`, currently `<box>-ops`, as user `smith`. During the account migration, legacy `smith` access may still exist only as a compatibility path.
 
-- If the current shell is on `vultr-ops`/`agent`, do not run Platform state-changing or state-inspecting workflows locally. Use a checked-in remote dispatcher when one exists, for example `ansible/bin/platform-check-remote --box k001 --target dom0`; otherwise first enter the controller: `tailscale ssh smith@<box>-ops`
+- If the current shell is on `vultr-ops`/`agent`, do not run Platform state-changing or state-inspecting workflows locally. Use a checked-in remote dispatcher when one exists, for example `ansible/bin/platform-check-remote --box BOX --target dom0`; otherwise first enter the controller: `tailscale ssh smith@<box>-ops`
 
 - From the controller, run commands from `~/src/klokast/klokast-box` and use controller-local private state such as `~/private/klokast/platform-resources.yml`.
 
@@ -30,8 +30,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
   ```yaml
   # ~/private/klokast/dom0-console.yml
   dom0_console_password_hashes:
-    k001: "$6$..."
-    k002: "$6$..."
+    <box-id>: "$6$..."
   ```
   - The public inventory must not contain these hashes. The provisioning wrappers load this private file for dom0 identity convergence, and the dom0 health checks fail if `neo` has no usable password hash or if `root` is not locked.
 

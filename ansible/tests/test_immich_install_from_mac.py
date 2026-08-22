@@ -19,16 +19,16 @@ class ImmichInstallFromMacTest(unittest.TestCase):
             home.mkdir()
             env = os.environ.copy()
             env["HOME"] = str(home)
-            secret_path = home / ".klokast" / "secrets" / "immich-k001-k002.env"
+            secret_path = home / ".klokast" / "secrets" / "immich-boxa-boxb.env"
             result = subprocess.run(
                 [
                     str(SCRIPT),
                     "--controller",
-                    "k002-ops",
+                    "boxb-ops",
                     "--active-master",
-                    "k001",
+                    "boxa",
                     "--passive-backup",
-                    "k002",
+                    "boxb",
                     "--dry-run",
                 ],
                 check=False,

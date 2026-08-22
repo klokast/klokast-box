@@ -49,7 +49,7 @@ Network > Interfaces > Devices > br-lan > Configure > Bridge ports > include: la
 Network > Interfaces > LAN > Edit > General Settings >
     Protocol: DHCP client
     Device: br-lan
-The Flint will get IP, gateway and DNS from k001-router.
+The Flint will get IP, gateway and DNS from boxa-router.
 
 6. Disable DHCP server on Flint, the box will provide DHCP/DNS.
 Network > Interfaces > LAN > Edit > DHCP Server > Ignore interface: checked > Save
@@ -63,7 +63,7 @@ Network > Wireless > select your SSID (typically one for 2.4 GHz and one for 5 G
     > scroll down > Interface Configuration > General Setup > Network > Select/check: lan > Save
 
 9. Hostname
-System > General Settings > hostname > k001-ap
+System > General Settings > hostname > boxa-ap
 
 10. Setup SSH server
 System > Administration > SSH Access > Set/check:
@@ -75,11 +75,11 @@ System > Administration > SSH Access > Set/check:
 
 `Save & Apply`
 
-- Flint gets a DHCP lease from k001-router on 10.10.30.0/24.
-- Phones/laptops also get 10.10.30.x leases from k001-router.
+- Flint gets a DHCP lease from boxa-router on 10.10.30.0/24.
+- Phones/laptops also get 10.10.30.x leases from boxa-router.
 - Gateway/DNS for everything is 10.10.30.1.
 - Flint web UI moves to whatever DHCP address it receives, likely 10.10.30.20-10.10.30.80.
 
-Set the Flint hostname to something like flint2 so we can find its lease easily from k001-router.
+Set the Flint hostname to something like flint2 so we can find its lease easily from boxa-router.
 
   Then you can SSH into the Flint from a machine on the same 10.10.30.0/24 network: ssh root@<flint-dhcp-ip>

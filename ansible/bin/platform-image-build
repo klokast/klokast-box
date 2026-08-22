@@ -46,7 +46,7 @@ def validate_app(value):
 
 def validate_box(value):
     if not APP_RE.fullmatch(value or ""):
-        die("--box must be a box name like k002")
+        die("--box must be a box name like boxb")
     for suffix in ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt"):
         if value == suffix or value.endswith(f"-{suffix}"):
             die("--box must be a box name, not a VM hostname")

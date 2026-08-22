@@ -2,7 +2,7 @@
 schema_version: 1
 compatibility_marker: fictitious
 boxes:
-  k001:
+  boxa:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]

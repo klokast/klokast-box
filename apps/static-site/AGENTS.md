@@ -5,7 +5,7 @@ Keep all app-specific automation under `apps/static-site/`.
 
 ## Architecture
 
-- Placement: one active box only, default `k001`.
+- Placement: one active box selected by private desired state.
 - Runtime host: `<box>-dmz`.
 - Public ingress: Cloudflare Tunnel from the DMZ VM.
 - Source path: the private GitHub repository `klokast/klokast-site` stores a
@@ -42,7 +42,7 @@ not VM hostnames:
 
 ```sh
 apps/static-site/bin/static-sitectl install \
-  --box k001 \
+  --box boxa \
   --domain www.klokast.ai \
   --resources-registry path/to/platform-resources.yml
 ```
