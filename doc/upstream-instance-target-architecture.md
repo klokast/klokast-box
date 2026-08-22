@@ -467,6 +467,19 @@ complete.
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
+The first four items in the ordered design work queue remain gated by a
+successful read-only acceptance Plan. A contract-valid private instance and a
+successful source synchronization do not satisfy that gate. Before a retry,
+the human must review private desired state against each exact current legacy
+authority. The process must not rewrite desired state from an observation or
+weaken a `conflict` finding to make the Plan pass.
+
+The exact current legacy controller HA desired-state document needs a defined
+controller-private custody and provenance path. A checked-in neutral example
+is not a valid live compatibility input. This design item is `proposed`; decide
+its authority, creation, update, rollback, test, and recovery behavior before
+the next acceptance attempt.
+
 The ordered design work queue is:
 
 1. Specify canonical engine-commit promotion. Keep custom engine repositories
@@ -490,7 +503,9 @@ Plan v1 made with the currently locked sealed engine. The result must have no
 authority for each `compatibility_only` finding.
 `legacy_removal_ready: false` is expected. The controller keeps the Plan and
 private findings. Only generic design defects can return to this public
-document.
+document. Runtime drift in the limited health scope is a refusal. The
+read-only acceptance flow must report it and must not repair, start, stop, or
+reconfigure a Platform host.
 
 Application schema expansion, application-data deletion, site executors,
 custom engine repositories, and isolated airunner VMs remain deferred.

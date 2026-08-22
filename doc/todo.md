@@ -2,6 +2,24 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-22 - complete private compatibility alignment before Plan acceptance
+
+A private instance can pass the JSON contract and source-custody checks while
+it still conflicts with current legacy desired-state authorities. Add a
+human-reviewed, controller-side compatibility preflight to the private update
+procedure. It must cover every currently enabled legacy application, box and
+controller identity, and selected connectivity profile. It must not derive or
+rewrite desired state from live observations.
+
+The exact legacy controller HA desired-state input also needs a
+controller-private custody and provenance design. Do not use the checked-in
+neutral HA example as live compatibility evidence, and do not publish private
+controller identities to correct that example. Keep Plan findings and paths
+on the controller. After the human aligns private intent and the compatibility
+inputs, rerun source synchronization, Observation v1, and Plan v1. Do not
+start engine promotion until the read-only acceptance Plan has no `conflict`
+or `unsupported` finding and its limited health scope passes.
+
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 
 GitHub rejects removal when a repository is the last selected repository of
