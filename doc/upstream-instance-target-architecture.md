@@ -326,7 +326,11 @@ suspected secret values. `platform-plan` verifies the active-controller guard,
 sealed builder receipt, binary digest and version, root-owned source receipt,
 observation source, and canonical plan hash. It stores the result without
 replacement below `/var/lib/klokast/plans/`. A valid refused plan can be kept
-for audit.
+for audit. The Plan root and each content-addressed commit directory are
+root-owned, group-readable and group-traversable by the controller account,
+and mode `0750`. Each immutable Plan is root-owned, group-readable, and mode
+`0440`. This access lets the controller account review stored evidence without
+granting it permission to replace that evidence.
 
 The gates have distinct meanings:
 

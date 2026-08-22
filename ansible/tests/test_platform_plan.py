@@ -152,6 +152,28 @@ class PlatformPlanTest(unittest.TestCase):
             verified, _ = self.mod.create_plan(Path("/verified/klokast"), ["--instance", "/private"])
         self.assertFalse(verified["deployable"])
 
+    def test_plan_directories_are_traversable_by_smith(self):
+        destination = self.mod.PLAN_ROOT / ("a" * 40)
+        account = Mock(pw_gid=1234)
+        with patch.object(self.mod.pwd, "getpwnam", return_value=account), patch.object(
+            self.mod, "run"
+        ) as run:
+            smith_group = self.mod.prepare_plan_directory(destination)
+        self.assertEqual(smith_group, "1234")
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                [
+                    "doas", "install", "-d", "-o", "root", "-g", "1234", "-m", "0750",
+                    self.mod.PLAN_ROOT,
+                ],
+                [
+                    "doas", "install", "-d", "-o", "root", "-g", "1234", "-m", "0750",
+                    destination,
+                ],
+            ],
+        )
+
     def test_immutable_install_uses_no_replace_link(self):
         source = WRAPPER.read_text(encoding="utf-8")
         self.assertIn('run(["doas", "ln", target_temporary, destination], check=False)', source)
