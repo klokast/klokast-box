@@ -489,27 +489,23 @@ JSON files contain the exact intended state.
 
 ## 11. Commit and push as the human
 
-Run from the private worktree:
+Run the MacBook publication helper from the public `klokast-box` checkout:
 
 ```sh
-cd "$PRIVATE_WORKTREE"
-
-test "$(git branch --show-current)" = main
-git status --short
-git diff --check
-git diff --cached --check
-
-git add klokast-instance.json klokast.lock.json README.md AGENTS.md .gitignore
-git diff --cached --check
-git status --short
-git commit -m "Initialize private Klokast instance"
-
-git remote add origin "git@github.com:$INSTANCE_OWNER/$INSTANCE_REPO.git"
-git push -u origin main
+cd "$HOME/src/klokast/klokast-box"
+klokast-dev/bin/publish-private-instance
 ```
 
-Use the human's private-repository GitHub identity. Do not use the temporary
-App, a controller key, or an airunner key to push.
+The helper rechecks the exact five-file staged tree, engine pins, local Git
+state, registered repository, and sealed controller seed. It displays the
+complete private diff only in the current MacBook terminal and asks before it
+creates the commit. It uses the human's configured Git author and private
+repository GitHub credential. It does not use the temporary App, a controller
+key, or an airunner key to push.
+
+If the commit succeeds but the push fails, run the same helper again. It only
+resumes when the exact one-commit clean tree still matches the sealed seed and
+GitHub `main` is absent. It never overwrites an existing remote branch.
 
 Confirm in the GitHub web UI that the repository is private and that `main`
 contains the expected initial commit.

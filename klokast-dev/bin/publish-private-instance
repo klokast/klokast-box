@@ -1,0 +1,447 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Used by ksa_die from the sourced shared library.
+# shellcheck disable=SC2034
+KSA_TOOL_NAME="publish-private-instance"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# shellcheck source=klokast-dev/lib/approval-common.sh
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+
+SESSION_FILE="$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
+PRIVATE_WORKTREE="$HOME/src/private-klokast/klokast-instance"
+EXPECTED_REPO_NAME="klokast-instance"
+COMMIT_MESSAGE="Initialize private Klokast instance"
+
+usage() {
+  cat <<EOF
+Usage: $0
+
+Run this helper in an interactive terminal on the trusted MacBook after
+prepare-private-instance-worktree succeeds. It verifies the exact staged tree
+against the sealed controller seed, displays the private staged diff locally,
+asks for confirmation, commits with the human Git identity, pushes main with
+the human GitHub credential, and verifies the remote commit.
+
+The helper can resume an exact local initial commit after a failed push. It
+does not give the controller or an airunner write access.
+EOF
+}
+
+confirm_no() {
+  local prompt="$1"
+  local answer=""
+
+  printf '%s [y/N] ' "$prompt" >&2
+  IFS= read -r answer || ksa_die "input ended before confirmation"
+  case "$answer" in
+    y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_clean_public_checkout() {
+  local changes=""
+
+  changes="$(git -C "$REPO_ROOT" status --porcelain)"
+  if [ -n "$changes" ]; then
+    printf '%s\n' "$changes" >&2
+    ksa_die "the klokast-box checkout has changes; commit or preserve them before you continue"
+  fi
+}
+
+refresh_checkout_and_reexec() {
+  local before_commit=""
+  local after_commit=""
+  local restart_count="${KLOKAST_PRIVATE_PUBLISH_REEXEC_COUNT:-0}"
+
+  case "$restart_count" in
+    0|1) ;;
+    *) ksa_die "internal checkout restart count is invalid" ;;
+  esac
+
+  printf 'Checking the klokast-box checkout...\n'
+  require_clean_public_checkout
+  before_commit="$(git -C "$REPO_ROOT" rev-parse --verify HEAD)" || \
+    ksa_die "cannot read the current klokast-box checkout commit"
+  git -C "$REPO_ROOT" pull --ff-only
+  require_clean_public_checkout
+  after_commit="$(git -C "$REPO_ROOT" rev-parse --verify HEAD)" || \
+    ksa_die "cannot read the updated klokast-box checkout commit"
+
+  if [ "$before_commit" != "$after_commit" ]; then
+    printf 'Updated the helper checkout from %s to %s.\n' "$before_commit" "$after_commit"
+    if [ "$restart_count" -ne 0 ]; then
+      ksa_die "the checkout changed again during automatic restart; run this helper again"
+    fi
+    printf 'Restarting the updated helper before private repository inspection.\n'
+    export KLOKAST_PRIVATE_PUBLISH_REEXEC_COUNT=1
+    exec "$SCRIPT_DIR/publish-private-instance" || \
+      ksa_die "cannot restart the updated publication helper"
+  fi
+  unset KLOKAST_PRIVATE_PUBLISH_REEXEC_COUNT
+}
+
+validate_session_file() {
+  python3 - "$HOME" "$SESSION_FILE" <<'PY'
+import os
+import stat
+import sys
+
+home, path = sys.argv[1:]
+expected = os.path.join(
+    home, ".local", "share", "klokast", "private-instance-bootstrap", "session.sh"
+)
+if path != expected or os.path.realpath(home) != home:
+    raise SystemExit("the bootstrap session path is not fixed below the user home")
+metadata = os.lstat(path)
+if (not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.getuid() or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != 0o600):
+    raise SystemExit("the bootstrap session is not one owner-only regular file")
+parent = os.path.dirname(path)
+parent_metadata = os.lstat(parent)
+if (not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(parent_metadata.st_mode) & 0o077):
+    raise SystemExit("the bootstrap work directory is not owner-only")
+PY
+}
+
+validate_private_files() {
+  python3 - "$HOME" "$PRIVATE_WORKTREE" "$ENGINE_COMMIT" <<'PY'
+import json
+import os
+import stat
+import sys
+
+home, root, engine_commit = sys.argv[1:]
+expected_root = os.path.join(home, "src", "private-klokast", "klokast-instance")
+if root != expected_root or os.path.realpath(home) != home or os.path.realpath(root) != root:
+    raise SystemExit("the private worktree path is not fixed below the user home")
+root_metadata = os.lstat(root)
+parent_metadata = os.lstat(os.path.dirname(root))
+git_metadata = os.lstat(os.path.join(root, ".git"))
+if (not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(parent_metadata.st_mode) & 0o077):
+    raise SystemExit("the private worktree parent is not owner-only")
+if (not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode)
+        or root_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(root_metadata.st_mode) & 0o077):
+    raise SystemExit("the private worktree is not one owner-only real directory")
+if (not stat.S_ISDIR(git_metadata.st_mode) or stat.S_ISLNK(git_metadata.st_mode)
+        or git_metadata.st_uid != os.getuid()):
+    raise SystemExit("the private worktree does not contain a safe Git directory")
+
+expected_files = {
+    ".gitignore", "AGENTS.md", "README.md",
+    "klokast-instance.json", "klokast.lock.json",
+}
+actual_files = set()
+for name in os.listdir(root):
+    if name == ".git":
+        continue
+    path = os.path.join(root, name)
+    metadata = os.lstat(path)
+    if (not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077):
+        raise SystemExit(f"private worktree entry is not owner-only and regular: {name}")
+    actual_files.add(name)
+if actual_files != expected_files:
+    raise SystemExit("the private worktree does not contain the exact generated file set")
+
+def reject_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+def load(name):
+    with open(os.path.join(root, name), encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicates)
+
+instance = load("klokast-instance.json")
+lock = load("klokast.lock.json")
+schema_prefix = (
+    "https://raw.githubusercontent.com/klokast/klokast-box/"
+    f"{engine_commit}/schemas/"
+)
+if instance.get("$schema") != schema_prefix + "klokast-instance-v1.schema.json":
+    raise SystemExit("the instance schema does not use the session engine")
+if lock.get("$schema") != schema_prefix + "klokast-lock-v1.schema.json":
+    raise SystemExit("the lock schema does not use the session engine")
+engine = lock.get("engine", {})
+if engine != {
+    "repository": "https://github.com/klokast/klokast-box",
+    "ref": "main",
+    "commit": engine_commit,
+}:
+    raise SystemExit("the engine lock does not match the reviewed session engine")
+PY
+}
+
+repository_state() {
+  local expected_paths=""
+  local actual_paths=""
+  local status=""
+  local expected_status=""
+  local first_commit=""
+
+  [ "$(git -C "$PRIVATE_WORKTREE" branch --show-current)" = main ] || \
+    ksa_die "the private worktree is not on branch main"
+  expected_paths="$(printf '%s\n' .gitignore AGENTS.md README.md klokast-instance.json klokast.lock.json)"
+  actual_paths="$(git -C "$PRIVATE_WORKTREE" ls-files | LC_ALL=C sort)"
+  [ "$actual_paths" = "$expected_paths" ] || \
+    ksa_die "the private worktree does not track the exact generated file set"
+  if git -C "$PRIVATE_WORKTREE" ls-files -s | awk '$1 != "100644" { bad = 1 } END { exit bad }'; then
+    :
+  else
+    ksa_die "the private worktree contains an unexpected staged file mode"
+  fi
+
+  if git -C "$PRIVATE_WORKTREE" rev-parse --verify HEAD >/dev/null 2>&1; then
+    [ "$(git -C "$PRIVATE_WORKTREE" rev-list --count HEAD)" = 1 ] || \
+      ksa_die "the private worktree does not contain exactly one initial commit"
+    first_commit="$(git -C "$PRIVATE_WORKTREE" rev-list --parents -n 1 HEAD)"
+    [ "$(printf '%s\n' "$first_commit" | awk '{ print NF }')" = 1 ] || \
+      ksa_die "the private initial commit has a parent"
+    [ "$(git -C "$PRIVATE_WORKTREE" log -1 --format=%s)" = "$COMMIT_MESSAGE" ] || \
+      ksa_die "the existing private initial commit has an unexpected message"
+    [ -z "$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)" ] || \
+      ksa_die "the committed private worktree is not clean"
+    LOCAL_TREE="$(git -C "$PRIVATE_WORKTREE" rev-parse 'HEAD^{tree}')"
+    LOCAL_COMMIT="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
+    LOCAL_STATE=committed
+  else
+    expected_status="$(printf '%s\n' \
+      'A  .gitignore' 'A  AGENTS.md' 'A  README.md' \
+      'A  klokast-instance.json' 'A  klokast.lock.json')"
+    status="$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)"
+    [ "$status" = "$expected_status" ] || \
+      ksa_die "the unborn private worktree does not contain the exact staged generated files"
+    git -C "$PRIVATE_WORKTREE" diff --cached --check
+    LOCAL_TREE="$(git -C "$PRIVATE_WORKTREE" write-tree)"
+    LOCAL_COMMIT=""
+    LOCAL_STATE=unborn
+  fi
+}
+
+validate_remote_configuration() {
+  local remotes=""
+
+  remotes="$(git -C "$PRIVATE_WORKTREE" remote)"
+  if [ -z "$remotes" ]; then
+    ORIGIN_CONFIGURED=false
+    return
+  fi
+  [ "$remotes" = origin ] || ksa_die "the private worktree has an unexpected Git remote"
+  [ "$(git -C "$PRIVATE_WORKTREE" config --get remote.origin.url)" = "$REMOTE_URL" ] || \
+    ksa_die "the private worktree origin does not match the registered repository"
+  ORIGIN_CONFIGURED=true
+}
+
+controller_seed_tree() {
+  tailscale ssh "$SSH_TARGET" sh -s -- \
+    "$ENGINE_COMMIT" "$BUILD_OPERATION" "$INSTANCE_OWNER" "$INSTANCE_REPO" <<'SH'
+set -eu
+engine_commit=$1
+build_operation=$2
+owner=$3
+repo_name=$4
+repo="$HOME/src/klokast/klokast-box"
+seed="$HOME/private/klokast/instance-seed"
+build_dir="/var/lib/klokast/builds/klokast-cli/$engine_commit/$build_operation"
+
+cd "$repo"
+ansible/bin/platform-instance verify-engine \
+  --engine-commit "$engine_commit" --build-dir "$build_dir" >/dev/null
+status="$(ansible/bin/secret-authority instance status --redacted)"
+printf '%s\n' "$status" | python3 -c '
+import hashlib
+import json
+import sys
+owner, repo = sys.argv[1:]
+value = json.load(sys.stdin)
+for field in ("allowed_signers_configured", "github_app_configured",
+              "source_prepared", "repository_registered"):
+    if value.get(field) is not True:
+        raise SystemExit(f"controller prerequisite is false: {field}")
+if value.get("checkout_present") is not False:
+    raise SystemExit("the controller deployment checkout already exists")
+expected = hashlib.sha256(f"{owner}/{repo}".encode()).hexdigest()
+if value.get("repository_sha256") != expected:
+    raise SystemExit("the controller repository does not match the session")
+' "$owner" "$repo_name"
+[ -d "$seed/.git" ] && [ ! -L "$seed" ]
+if git -C "$seed" rev-parse --verify HEAD >/dev/null 2>&1; then
+  printf 'publish-private-instance: controller seed already has a commit\n' >&2
+  exit 2
+fi
+[ -z "$(git -C "$seed" remote)" ]
+git -C "$seed" diff --cached --check
+git -C "$seed" write-tree
+SH
+}
+
+read_remote_state() {
+  local output=""
+  local result=0
+  local unexpected_refs=""
+
+  set +e
+  output="$(git ls-remote --exit-code "$REMOTE_URL" 2>&1)"
+  result=$?
+  set -e
+  case "$result" in
+    0)
+      unexpected_refs="$(printf '%s\n' "$output" | awk 'NF >= 2 && $2 != "HEAD" && $2 != "refs/heads/main" { print $2 }')"
+      [ -z "$unexpected_refs" ] || {
+        printf 'Unexpected private repository refs:\n%s\n' "$unexpected_refs" >&2
+        ksa_die "the initial publication refuses a repository with unexpected refs"
+      }
+      REMOTE_COMMIT="$(printf '%s\n' "$output" | awk 'NF >= 2 && $2 == "refs/heads/main" { print $1; exit }')"
+      case "$REMOTE_COMMIT" in
+        ""|*[!0-9a-f]*) ksa_die "GitHub returned refs without one valid main commit" ;;
+      esac
+      head_commit="$(printf '%s\n' "$output" | awk 'NF >= 2 && $2 == "HEAD" { print $1; exit }')"
+      if [ -n "$head_commit" ] && [ "$head_commit" != "$REMOTE_COMMIT" ]; then
+        ksa_die "GitHub HEAD does not match private main"
+      fi
+      ;;
+    2)
+      REMOTE_COMMIT=""
+      ;;
+    *)
+      printf '%s\n' "$output" >&2
+      ksa_die "cannot inspect the private GitHub main branch with the human credential"
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  -h|--help)
+    [ "$#" -eq 1 ] || ksa_die "--help does not accept other arguments"
+    usage
+    exit 0
+    ;;
+  "")
+    [ "$#" -eq 0 ] || ksa_die "this helper does not accept arguments"
+    ;;
+  *)
+    usage >&2
+    ksa_die "this helper does not accept arguments"
+    ;;
+esac
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  ksa_die "run this helper in an interactive terminal on the trusted MacBook"
+fi
+[ "$(uname -s)" = Darwin ] || ksa_die "run this helper on the trusted MacBook"
+for command in git python3 tailscale; do
+  ksa_need_command "$command"
+done
+
+refresh_checkout_and_reexec
+validate_session_file || ksa_die "bootstrap session is missing or unsafe"
+# The validated session contains quoted identifiers and paths, not private values.
+# shellcheck disable=SC1090
+. "$SESSION_FILE"
+
+ksa_valid_controller "${CONTROLLER:-}" || ksa_die "session controller is invalid"
+[ "${SSH_TARGET:-}" = "smith@$CONTROLLER" ] || ksa_die "session SSH target is invalid"
+ksa_valid_github_owner "${INSTANCE_OWNER:-}" || ksa_die "session GitHub owner is invalid"
+[ "${#INSTANCE_OWNER}" -le 39 ] || ksa_die "session GitHub owner is too long"
+[ "${INSTANCE_REPO:-}" = "$EXPECTED_REPO_NAME" ] || \
+  ksa_die "session repository must be $EXPECTED_REPO_NAME"
+case "${ENGINE_COMMIT:-}" in
+  ""|*[!0-9a-f]*) ksa_die "session engine commit is invalid" ;;
+esac
+[ "${#ENGINE_COMMIT}" -eq 40 ] || ksa_die "session engine commit must be full length"
+case "${BUILD_OPERATION:-}" in
+  ""|*[!0-9a-f]*) ksa_die "session build operation is invalid" ;;
+esac
+[ "${#BUILD_OPERATION}" -eq 12 ] || ksa_die "session build operation is invalid"
+
+pinned_engine="$(sed -n 's/^ENGINE_COMMIT="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+pinned_operation="$(sed -n 's/^BUILD_OPERATION="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+if [ "$pinned_engine" != "$ENGINE_COMMIT" ] || \
+    [ "$pinned_operation" != "$BUILD_OPERATION" ]; then
+  ksa_die "the session does not match the current reviewed bootstrap helper; rerun prepare-private-instance-bootstrap"
+fi
+
+REMOTE_URL="git@github.com:$INSTANCE_OWNER/$INSTANCE_REPO.git"
+validate_private_files
+repository_state
+validate_remote_configuration
+
+CONTROLLER_TREE="$(controller_seed_tree)" || \
+  ksa_die "the sealed controller seed could not be verified"
+[ "$CONTROLLER_TREE" = "$LOCAL_TREE" ] || \
+  ksa_die "the MacBook tree does not match the sealed controller seed"
+
+read_remote_state
+if [ "$LOCAL_STATE" = committed ]; then
+  if [ -n "$REMOTE_COMMIT" ]; then
+    [ "$REMOTE_COMMIT" = "$LOCAL_COMMIT" ] || \
+      ksa_die "GitHub main differs from the verified local initial commit"
+    printf 'Private instance main is already published and verified.\n'
+    printf '  Commit: %s\n' "$LOCAL_COMMIT"
+    exit 0
+  fi
+  printf '\nVerified an exact local initial commit after an earlier incomplete push.\n'
+  git -C "$PRIVATE_WORKTREE" --no-pager show --stat --oneline HEAD
+  confirm_no "Push this exact commit to $INSTANCE_OWNER/$INSTANCE_REPO now?" || \
+    ksa_die "push was not approved; no remote state changed"
+else
+  [ -z "$REMOTE_COMMIT" ] || \
+    ksa_die "GitHub main already exists; the initial publication refuses to overwrite it"
+  author_name="$(git -C "$PRIVATE_WORKTREE" config user.name || true)"
+  author_email="$(git -C "$PRIVATE_WORKTREE" config user.email || true)"
+  if [ -z "$author_name" ] || [ -z "$author_email" ]; then
+    ksa_die "configure the human Git user.name and user.email before publication"
+  fi
+
+  printf '\nPrivate initial commit review\n'
+  printf '  Repository: %s/%s\n' "$INSTANCE_OWNER" "$INSTANCE_REPO"
+  printf '  Author: %s <%s>\n' "$author_name" "$author_email"
+  printf '  Engine: %s\n' "$ENGINE_COMMIT"
+  printf '  Tree: %s (matches the sealed controller seed)\n\n' "$LOCAL_TREE"
+  git -C "$PRIVATE_WORKTREE" --no-pager diff --cached --stat
+  git -C "$PRIVATE_WORKTREE" --no-pager diff --cached
+  printf '\nReview the complete private diff above.\n'
+  confirm_no "Commit and push this exact tree to $INSTANCE_OWNER/$INSTANCE_REPO now?" || \
+    ksa_die "publication was not approved; no commit or remote was created"
+
+  if [ "$ORIGIN_CONFIGURED" = false ]; then
+    git -C "$PRIVATE_WORKTREE" remote add origin "$REMOTE_URL"
+    ORIGIN_CONFIGURED=true
+  fi
+  git -C "$PRIVATE_WORKTREE" commit -m "$COMMIT_MESSAGE" || \
+    ksa_die "the private initial commit failed; inspect the local worktree before retry"
+  LOCAL_COMMIT="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
+fi
+
+if [ "$ORIGIN_CONFIGURED" = false ]; then
+  git -C "$PRIVATE_WORKTREE" remote add origin "$REMOTE_URL"
+fi
+git -C "$PRIVATE_WORKTREE" push -u origin main || \
+  ksa_die "push failed; the exact local commit remains safe; rerun this helper to resume"
+read_remote_state
+[ "$REMOTE_COMMIT" = "$LOCAL_COMMIT" ] || \
+  ksa_die "GitHub main does not match the local commit after push"
+[ -z "$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)" ] || \
+  ksa_die "the private worktree is not clean after push"
+[ "$(git -C "$PRIVATE_WORKTREE" rev-parse '@{upstream}')" = "$LOCAL_COMMIT" ] || \
+  ksa_die "the local main upstream does not match the published commit"
+
+printf '\nPrivate instance main is published and verified.\n'
+printf '  Repository: %s/%s\n' "$INSTANCE_OWNER" "$INSTANCE_REPO"
+printf '  Commit: %s\n' "$LOCAL_COMMIT"
+printf 'Continue with Step 12 of the private-instance bootstrap runbook.\n'

@@ -384,14 +384,16 @@ fi
         self.assertNotIn("git remote add", source)
         self.assertNotIn("git push", source)
 
-    def test_runbook_uses_helper_and_keeps_instance_review_manual(self):
+    def test_runbook_uses_helpers_and_keeps_instance_review_manual(self):
         runbook = (
             REPO_ROOT / "klokast-dev" / "runbooks" /
             "40-private-instance-bootstrap.md"
         ).read_text(encoding="utf-8")
         self.assertIn("klokast-dev/bin/prepare-private-instance-worktree", runbook)
         self.assertIn("## 10. Review the private repository", runbook)
-        self.assertIn("git commit -m \"Initialize private Klokast instance\"", runbook)
+        self.assertIn("klokast-dev/bin/publish-private-instance", runbook)
+        self.assertIn("displays the\ncomplete private diff", runbook)
+        self.assertIn("uses the human's configured Git author", runbook)
         self.assertIn("--archive-and-restart", runbook)
 
 

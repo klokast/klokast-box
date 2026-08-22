@@ -111,6 +111,7 @@ Source: `klokast-dev/bin/`.
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
 | `prepare-private-instance-worktree` | laptop | Runs the guided owner-only values setup on the active controller, seeds with the pinned sealed build, streams the generated repository to the MacBook, and verifies its initial Git state without copying private values into arguments or the redacted journal. |
+| `publish-private-instance` | laptop | Compares the staged private tree with the sealed controller seed, asks the human to approve the displayed diff, commits with the human Git identity, pushes with the human GitHub credential, and verifies private `main`. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
 | `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
 | `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |
