@@ -19,10 +19,11 @@ usage() {
 Usage: $0
 
 Run this helper in an interactive terminal on the trusted MacBook after
-prepare-private-instance-worktree succeeds. It verifies the exact staged tree
-against the sealed controller seed, displays the private staged diff locally,
-asks for confirmation, commits with the human Git identity, pushes main with
-the human GitHub credential, and verifies the remote commit.
+prepare-private-instance-worktree succeeds. It accepts the exact generated
+tree or one human edit to klokast-instance.json that the controller validates
+with the sealed checker. It displays the private staged diff locally, asks for
+confirmation, commits with the human Git identity, pushes main with the human
+GitHub credential, and verifies the remote commit.
 
 The helper can resume an exact local initial commit after a failed push. It
 does not give the controller or an airunner write access.
@@ -288,6 +289,14 @@ git -C "$seed" write-tree
 SH
 }
 
+validate_controller_candidate() {
+  local remote_command=""
+
+  remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance validate-candidate --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION"
+  tailscale ssh "$SSH_TARGET" "$remote_command" \
+    <"$PRIVATE_WORKTREE/klokast-instance.json"
+}
+
 read_remote_state() {
   local output=""
   local result=0
@@ -383,8 +392,28 @@ validate_remote_configuration
 
 CONTROLLER_TREE="$(controller_seed_tree)" || \
   ksa_die "the sealed controller seed could not be verified"
-[ "$CONTROLLER_TREE" = "$LOCAL_TREE" ] || \
-  ksa_die "the MacBook tree does not match the sealed controller seed"
+if [ "$CONTROLLER_TREE" = "$LOCAL_TREE" ]; then
+  TREE_VALIDATION="exact sealed seed"
+else
+  candidate_result="$(validate_controller_candidate)" || \
+    ksa_die "the edited instance document did not pass sealed controller validation"
+  candidate_tree="$(printf '%s\n' "$candidate_result" | python3 -c '
+import json
+import re
+import sys
+expected_engine = sys.argv[1]
+value = json.load(sys.stdin)
+tree = value.get("tree", "")
+if (value.get("schema_version") != 1 or value.get("valid") is not True
+        or value.get("engine_commit") != expected_engine
+        or not re.fullmatch(r"[0-9a-f]{40,64}", tree)):
+    raise SystemExit("controller returned an invalid candidate-validation result")
+print(tree)
+' "$ENGINE_COMMIT")" || ksa_die "cannot verify the controller candidate result"
+  [ "$candidate_tree" = "$LOCAL_TREE" ] || \
+    ksa_die "the staged tree differs from the tree checked by the sealed controller"
+  TREE_VALIDATION="human-edited instance document accepted by sealed checker"
+fi
 
 read_remote_state
 if [ "$LOCAL_STATE" = committed ]; then
@@ -412,7 +441,7 @@ else
   printf '  Repository: %s/%s\n' "$INSTANCE_OWNER" "$INSTANCE_REPO"
   printf '  Author: %s <%s>\n' "$author_name" "$author_email"
   printf '  Engine: %s\n' "$ENGINE_COMMIT"
-  printf '  Tree: %s (matches the sealed controller seed)\n\n' "$LOCAL_TREE"
+  printf '  Tree: %s (%s)\n\n' "$LOCAL_TREE" "$TREE_VALIDATION"
   git -C "$PRIVATE_WORKTREE" --no-pager diff --cached --stat
   git -C "$PRIVATE_WORKTREE" --no-pager diff --cached
   printf '\nReview the complete private diff above.\n'

@@ -481,11 +481,14 @@ cd "$PRIVATE_WORKTREE"
 git diff --check
 python3 -m json.tool klokast-instance.json >/dev/null
 python3 -m json.tool klokast.lock.json >/dev/null
+git add klokast-instance.json
+git diff --cached --check
 ```
 
-Run the sealed checker as described by the helper output or through the
-controller workflow before deployment. Continue to Step 11 only when the two
-JSON files contain the exact intended state.
+Staging the reviewed instance document binds its exact content to the next
+step. The publication helper runs the sealed checker on that staged content.
+Continue to Step 11 only when the two JSON files contain the exact intended
+state.
 
 ## 11. Commit and push as the human
 
@@ -497,7 +500,12 @@ klokast-dev/bin/publish-private-instance
 ```
 
 The helper rechecks the exact five-file staged tree, engine pins, local Git
-state, registered repository, and sealed controller seed. It displays the
+state, registered repository, and sealed controller seed. If the human edited
+only `klokast-instance.json`, it sends that one document through standard
+input to a temporary owner-only controller check. The sealed checker validates
+it, the controller removes the temporary check directory, and the helper
+requires the checked Git tree to equal the staged MacBook tree. Support files
+and `klokast.lock.json` must still equal the seed. The helper displays the
 complete private diff only in the current MacBook terminal and asks before it
 creates the commit. It uses the human's configured Git author and private
 repository GitHub credential. It does not use the temporary App, a controller

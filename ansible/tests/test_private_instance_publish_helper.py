@@ -147,13 +147,20 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
             "#!/bin/sh\n"
             "set -eu\n"
             "[ \"${1:-}\" = ssh ]\n"
+            "case \"$*\" in\n"
+            "  *validate-candidate*)\n"
+            "    cat >/dev/null\n"
+            "    printf '{\"engine_commit\":\"%s\",\"schema_version\":1,\"tree\":\"%s\",\"valid\":true}\\n' \"$FAKE_ENGINE_COMMIT\" \"$FAKE_CANDIDATE_TREE\"\n"
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
             "cat >/dev/null\n"
             "printf '%s\\n' \"$FAKE_CONTROLLER_TREE\"\n",
             encoding="utf-8",
         )
         os.chmod(tailscale, 0o755)
 
-    def environment(self, controller_tree=None):
+    def environment(self, controller_tree=None, candidate_tree=None):
         value = os.environ.copy()
         value.update({
             "HOME": str(self.home),
@@ -161,17 +168,19 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
             "GIT_CONFIG_GLOBAL": str(self.git_config),
             "GIT_CONFIG_NOSYSTEM": "1",
             "FAKE_CONTROLLER_TREE": controller_tree or self.tree,
+            "FAKE_CANDIDATE_TREE": candidate_tree or self.tree,
+            "FAKE_ENGINE_COMMIT": ENGINE_COMMIT,
         })
         return value
 
-    def run_helper(self, answers=b"", controller_tree=None):
+    def run_helper(self, answers=b"", controller_tree=None, candidate_tree=None):
         master, slave = pty.openpty()
         process = subprocess.Popen(
             [str(self.public / "klokast-dev" / "bin" / HELPER.name)],
             stdin=slave,
             stdout=slave,
             stderr=slave,
-            env=self.environment(controller_tree),
+            env=self.environment(controller_tree, candidate_tree),
             close_fds=True,
         )
         os.close(slave)
@@ -222,14 +231,28 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
         self.assertIn("Private instance main is published and verified", result.stdout)
 
     def test_tree_mismatch_stops_before_commit_or_remote(self):
-        result = self.run_helper(controller_tree="f" * 40)
+        result = self.run_helper(
+            controller_tree="f" * 40,
+            candidate_tree="e" * 40,
+        )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not match the sealed controller seed", result.stdout)
+        self.assertIn("differs from the tree checked by the sealed controller", result.stdout)
         self.assertNotEqual(
             self.git("-C", self.worktree, "rev-parse", "--verify", "HEAD", check=False).returncode,
             0,
         )
         self.assertEqual(self.git("-C", self.worktree, "remote").stdout.strip(), "")
+
+    def test_sealed_validated_human_edit_can_publish(self):
+        result = self.run_helper(b"y\n", controller_tree="f" * 40)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("human-edited instance document accepted", result.stdout)
+        self.assertEqual(
+            self.git("-C", self.worktree, "rev-parse", "HEAD").stdout.strip(),
+            self.git(
+                "--git-dir", self.private_remote, "rev-parse", "refs/heads/main"
+            ).stdout.strip(),
+        )
 
     def test_declined_review_does_not_create_commit_or_remote(self):
         result = self.run_helper(b"n\n")

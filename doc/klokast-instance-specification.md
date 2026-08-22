@@ -273,6 +273,15 @@ unsupported apps, wrong app placement modes, unknown features or data, and an
 engine or schema commit mismatch. It accepts a dirty worktree so a human can
 check edits before commit.
 
+During initial private publication, the human can edit
+`klokast-instance.json` on the trusted MacBook and stage it. The human does not
+edit `klokast.lock.json` or the support files. The MacBook publication helper
+sends only the edited instance document through standard input to the active
+controller. The controller creates a temporary owner-only copy of the seed,
+checks the candidate with the pinned sealed binary, returns the checked Git
+tree, and removes the temporary copy. The helper commits only when that tree
+equals the staged MacBook tree.
+
 ## Projection, compatibility, and observation
 
 The resolver is deterministic and offline. It derives runtime names, UTC,

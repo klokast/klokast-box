@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify, configure, seed, synchronize, and report the private instance source."""
+"""Verify, configure, validate, seed, synchronize, and report the private instance source."""
 
 import argparse
 import copy
@@ -24,6 +24,7 @@ INSTALLED_AUTHORITY = Path("/usr/local/sbin/ksa-instance")
 PRIVATE_ROOT = Path("/home/smith/private/klokast")
 DEPLOYMENT_CHECKOUT = PRIVATE_ROOT / "instance"
 VALUES_PATH = PRIVATE_ROOT / "init-values.json"
+SEED_PATH = PRIVATE_ROOT / "instance-seed"
 MAXIMUM_VALUES_SIZE = 64 * 1024
 ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 TAILNET_DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
@@ -689,6 +690,131 @@ def seed(args):
     }, sort_keys=True))
 
 
+def validate_owner_only_repository_tree(root, label):
+    require_real_directory(root, private=True)
+    require_real_directory(root / ".git", private=True)
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        for name in [*directories, *files]:
+            path = Path(current) / name
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise InstanceError(f"the {label} contains a symbolic link")
+            if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise InstanceError(f"the {label} is not owner-only")
+            if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+                raise InstanceError(f"the {label} contains an unsafe filesystem object")
+
+
+def validate_unborn_seed():
+    if SEED_PATH != PRIVATE_ROOT / "instance-seed":
+        raise InstanceError("the controller seed path is not fixed")
+    require_real_directory(PRIVATE_ROOT, private=True)
+    validate_owner_only_repository_tree(SEED_PATH, "controller seed")
+    head = run(
+        ["git", "-C", SEED_PATH, "rev-parse", "--verify", "HEAD"],
+        capture=True,
+        check=False,
+    )
+    if head.returncode == 0:
+        raise InstanceError("the controller seed already has a commit")
+    remotes = run(["git", "-C", SEED_PATH, "remote"], capture=True)
+    if remotes.stdout.strip():
+        raise InstanceError("the controller seed has a Git remote")
+    run(["git", "-C", SEED_PATH, "diff", "--cached", "--check"])
+
+
+def read_candidate_document():
+    content = sys.stdin.buffer.read(MAXIMUM_VALUES_SIZE + 1)
+    if not content:
+        raise InstanceError("candidate klokast-instance.json is empty")
+    if len(content) > MAXIMUM_VALUES_SIZE:
+        raise InstanceError("candidate klokast-instance.json is larger than 64 KiB")
+    try:
+        decode_unique_json(content)
+    except InstanceError as error:
+        raise InstanceError(
+            "candidate klokast-instance.json is malformed or has duplicate keys"
+        ) from error
+    return content
+
+
+def parse_checker_result(completed):
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise InstanceError("sealed checker returned invalid result JSON") from error
+    if not isinstance(result, dict):
+        raise InstanceError("sealed checker returned an unexpected result")
+    if completed.returncode == 0 and result.get("valid") is True:
+        return
+    messages = ["sealed checker rejected candidate klokast-instance.json:"]
+    diagnostics = result.get("diagnostics")
+    if isinstance(diagnostics, list):
+        for diagnostic in diagnostics:
+            if not isinstance(diagnostic, dict):
+                continue
+            path = safe_initializer_text(diagnostic.get("path"), "klokast-instance.json")
+            code = safe_initializer_text(diagnostic.get("code"), "validation.error")
+            message = safe_initializer_text(
+                diagnostic.get("message"), "the field is invalid"
+            )
+            messages.append(f"  - {path} [{code}]: {message}")
+    if len(messages) == 1:
+        messages.append("  - candidate [validation.error]: validation failed")
+    raise InstanceError("\n".join(messages))
+
+
+def check_candidate(args):
+    binary = verify_configure_engine(args)
+    validate_unborn_seed()
+    content = read_candidate_document()
+    validation_root = Path(
+        tempfile.mkdtemp(prefix=".instance-candidate-check.", dir=PRIVATE_ROOT)
+    )
+    os.chmod(validation_root, 0o700)
+    candidate = validation_root / "instance"
+    try:
+        shutil.copytree(SEED_PATH, candidate, symlinks=True)
+        validate_owner_only_repository_tree(candidate, "candidate repository")
+        instance_path = candidate / "klokast-instance.json"
+        flags = os.O_WRONLY | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(instance_path, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise InstanceError("candidate destination is not one controller-owned file")
+            os.fchmod(descriptor, 0o600)
+            view = memoryview(content)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise InstanceError("cannot write the complete candidate instance document")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        run(["git", "-C", candidate, "add", "--", "klokast-instance.json"])
+        completed = run(
+            [binary, "check", "--instance", candidate, "--json"],
+            capture=True,
+            check=False,
+        )
+        parse_checker_result(completed)
+        tree = run(["git", "-C", candidate, "write-tree"], capture=True).stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+            raise InstanceError("validated candidate returned an invalid Git tree")
+        print(json.dumps({
+            "schema_version": 1,
+            "valid": True,
+            "engine_commit": args.engine_commit,
+            "tree": tree,
+        }, sort_keys=True))
+    finally:
+        shutil.rmtree(validation_root)
+
+
 def authority(args):
     require_controller_user()
     if not INSTALLED_AUTHORITY.is_file() or not os.access(INSTALLED_AUTHORITY, os.X_OK):
@@ -712,6 +838,9 @@ def parse_args(argv):
     configure_parser = commands.add_parser("configure-values")
     configure_parser.add_argument("--engine-commit", required=True)
     configure_parser.add_argument("--build-dir", required=True)
+    candidate_parser = commands.add_parser("validate-candidate")
+    candidate_parser.add_argument("--engine-commit", required=True)
+    candidate_parser.add_argument("--build-dir", required=True)
     seed_parser = commands.add_parser("seed")
     seed_parser.add_argument("--build-dir", required=True)
     seed_parser.add_argument("--values", required=True)
@@ -731,6 +860,8 @@ def main(argv=None):
             verify_engine(args)
         elif args.action == "configure-values":
             configure_values(args)
+        elif args.action == "validate-candidate":
+            check_candidate(args)
         elif args.action == "seed":
             seed(args)
         else:

@@ -202,11 +202,28 @@ ansible/bin/platform-instance seed \
   --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION \
   --values /home/smith/private/klokast/init-values.json \
   --destination /home/smith/private/klokast/instance-seed
+
+ansible/bin/platform-instance validate-candidate \
+  --engine-commit ENGINE-COMMIT \
+  --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION \
+  <klokast-instance.json
 ```
 
-Review the transferred worktree, commit it, add the private remote, and push
-`main` with the human private-repository identity. Do not commit or push it
-from an airunner. Do not use the temporary GitHub App to push content.
+`validate-candidate` accepts at most one 64 KiB instance document through
+standard input. It copies the owner-only unborn seed to a temporary private
+directory, replaces only `klokast-instance.json`, checks it with the sealed
+binary, returns the checked Git tree, and removes the temporary directory.
+It does not change the seed or values file.
+
+Review and publish the transferred worktree with the MacBook helper:
+
+```sh
+klokast-dev/bin/publish-private-instance
+```
+
+The helper commits and pushes `main` with the human private-repository
+identity. Do not commit or push from an airunner. Do not use the temporary
+GitHub App to push content.
 
 After the first push, use the GitHub web interface to remove this repository
 from the temporary App installation. Then run:
