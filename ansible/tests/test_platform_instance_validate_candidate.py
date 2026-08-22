@@ -86,6 +86,9 @@ class PlatformInstanceValidateCandidateTest(unittest.TestCase):
             os.chmod(current, 0o700)
             for name in names:
                 os.chmod(Path(current) / name, 0o600)
+        # The private seed root is the access boundary. Git can keep its normal
+        # nested directory mode below that owner-only root.
+        os.chmod(self.seed / ".git", 0o755)
 
     def make_checker(self):
         checker = self.root / "klokast"

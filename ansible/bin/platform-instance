@@ -690,17 +690,19 @@ def seed(args):
     }, sort_keys=True))
 
 
-def validate_owner_only_repository_tree(root, label):
+def validate_private_repository_tree(root, label):
     require_real_directory(root, private=True)
-    require_real_directory(root / ".git", private=True)
+    # The owner-only repository root is the access boundary. Normal nested Git
+    # modes are safe below it, but every object must still belong to smith.
+    require_real_directory(root / ".git", private=False)
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         for name in [*directories, *files]:
             path = Path(current) / name
             metadata = os.lstat(path)
             if stat.S_ISLNK(metadata.st_mode):
                 raise InstanceError(f"the {label} contains a symbolic link")
-            if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
-                raise InstanceError(f"the {label} is not owner-only")
+            if metadata.st_uid != os.getuid():
+                raise InstanceError(f"the {label} is not controller-owned")
             if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
                 raise InstanceError(f"the {label} contains an unsafe filesystem object")
 
@@ -709,7 +711,7 @@ def validate_unborn_seed():
     if SEED_PATH != PRIVATE_ROOT / "instance-seed":
         raise InstanceError("the controller seed path is not fixed")
     require_real_directory(PRIVATE_ROOT, private=True)
-    validate_owner_only_repository_tree(SEED_PATH, "controller seed")
+    validate_private_repository_tree(SEED_PATH, "controller seed")
     head = run(
         ["git", "-C", SEED_PATH, "rev-parse", "--verify", "HEAD"],
         capture=True,
@@ -775,7 +777,7 @@ def check_candidate(args):
     candidate = validation_root / "instance"
     try:
         shutil.copytree(SEED_PATH, candidate, symlinks=True)
-        validate_owner_only_repository_tree(candidate, "candidate repository")
+        validate_private_repository_tree(candidate, "candidate repository")
         instance_path = candidate / "klokast-instance.json"
         flags = os.O_WRONLY | os.O_TRUNC
         if hasattr(os, "O_NOFOLLOW"):
