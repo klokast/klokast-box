@@ -203,6 +203,18 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
             process.args, returncode, bytes(output).decode("utf-8", errors="replace"), ""
         )
 
+    def publish_initial(self):
+        result = self.run_helper(b"y\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        return self.git("-C", self.worktree, "rev-parse", "HEAD").stdout.strip()
+
+    def edit_instance(self):
+        path = self.worktree / "klokast-instance.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["airunners"] = ["k002-ops-airunner", "k003-ops-airunner"]
+        path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+
     def test_help_describes_human_publication_boundary(self):
         result = subprocess.run(
             [str(HELPER), "--help"],
@@ -300,6 +312,73 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
         ).stdout.strip()
         self.assertEqual(local_commit, remote_commit)
         self.assertIn("after an earlier incomplete push", result.stdout)
+
+    def test_staged_instance_update_commits_and_pushes_from_remote_main(self):
+        base_commit = self.publish_initial()
+        self.edit_instance()
+        self.git("-C", self.worktree, "add", "klokast-instance.json")
+        update_tree = self.git("-C", self.worktree, "write-tree").stdout.strip()
+
+        result = self.run_helper(
+            b"y\n", controller_tree=self.tree, candidate_tree=update_tree
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        local_commit = self.git("-C", self.worktree, "rev-parse", "HEAD").stdout.strip()
+        remote_commit = self.git(
+            "--git-dir", self.private_remote, "rev-parse", "refs/heads/main"
+        ).stdout.strip()
+        self.assertNotEqual(local_commit, base_commit)
+        self.assertEqual(local_commit, remote_commit)
+        self.assertEqual(
+            self.git("-C", self.worktree, "rev-list", "--count", "HEAD").stdout.strip(),
+            "2",
+        )
+        self.assertEqual(
+            self.git("-C", self.worktree, "log", "-1", "--format=%s").stdout.strip(),
+            "Update Klokast instance",
+        )
+        self.assertIn("Private instance update review", result.stdout)
+        self.assertIn("controller source synchronization", result.stdout)
+
+    def test_unstaged_instance_update_stops_with_stage_instruction(self):
+        self.publish_initial()
+        self.edit_instance()
+
+        result = self.run_helper()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("run git add klokast-instance.json and retry", result.stdout)
+        self.assertEqual(
+            self.git("-C", self.worktree, "rev-list", "--count", "HEAD").stdout.strip(),
+            "1",
+        )
+
+    def test_staged_update_stops_when_remote_main_moved(self):
+        base_commit = self.publish_initial()
+        remote_clone = self.root / "remote-clone"
+        self.git("clone", "-q", self.private_remote, remote_clone)
+        self.git("-C", remote_clone, "config", "user.name", "Other human")
+        self.git("-C", remote_clone, "config", "user.email", "other@example.com")
+        readme = remote_clone / "README.md"
+        readme.write_text("# Changed elsewhere\n", encoding="utf-8")
+        self.git("-C", remote_clone, "add", "README.md")
+        self.git("-C", remote_clone, "commit", "-qm", "Concurrent private change")
+        self.git("-C", remote_clone, "push", "-q", "origin", "main")
+
+        self.edit_instance()
+        self.git("-C", self.worktree, "add", "klokast-instance.json")
+        update_tree = self.git("-C", self.worktree, "write-tree").stdout.strip()
+        result = self.run_helper(
+            controller_tree=self.tree, candidate_tree=update_tree
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GitHub main does not match the local base commit", result.stdout)
+        self.assertEqual(
+            self.git("-C", self.worktree, "rev-parse", "HEAD").stdout.strip(),
+            base_commit,
+        )
 
 
 if __name__ == "__main__":

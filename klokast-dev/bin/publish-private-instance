@@ -12,7 +12,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 SESSION_FILE="$HOME/.local/share/klokast/private-instance-bootstrap/session.sh"
 PRIVATE_WORKTREE="$HOME/src/private-klokast/klokast-instance"
 EXPECTED_REPO_NAME="klokast-instance"
-COMMIT_MESSAGE="Initialize private Klokast instance"
+INITIAL_COMMIT_MESSAGE="Initialize private Klokast instance"
+UPDATE_COMMIT_MESSAGE="Update Klokast instance"
 
 usage() {
   cat <<EOF
@@ -20,13 +21,15 @@ Usage: $0
 
 Run this helper in an interactive terminal on the trusted MacBook after
 prepare-private-instance-worktree succeeds. It accepts the exact generated
-tree or one human edit to klokast-instance.json that the controller validates
-with the sealed checker. It displays the private staged diff locally, asks for
-confirmation, commits with the human Git identity, pushes main with the human
-GitHub credential, and verifies the remote commit.
+tree or a staged human edit to klokast-instance.json that the controller
+validates with the sealed checker. It displays the private staged diff locally,
+asks for confirmation, commits with the human Git identity, pushes main with
+the human GitHub credential, and verifies the remote commit.
 
 The helper can resume an exact local initial commit after a failed push. It
-does not give the controller or an airunner write access.
+also publishes later staged instance-document updates when GitHub main equals
+the local base commit.
+It does not give the controller or an airunner write access.
 EOF
 }
 
@@ -191,7 +194,7 @@ repository_state() {
   local actual_paths=""
   local status=""
   local expected_status=""
-  local first_commit=""
+  local cached_paths=""
 
   [ "$(git -C "$PRIVATE_WORKTREE" branch --show-current)" = main ] || \
     ksa_die "the private worktree is not on branch main"
@@ -206,18 +209,28 @@ repository_state() {
   fi
 
   if git -C "$PRIVATE_WORKTREE" rev-parse --verify HEAD >/dev/null 2>&1; then
-    [ "$(git -C "$PRIVATE_WORKTREE" rev-list --count HEAD)" = 1 ] || \
-      ksa_die "the private worktree does not contain exactly one initial commit"
-    first_commit="$(git -C "$PRIVATE_WORKTREE" rev-list --parents -n 1 HEAD)"
-    [ "$(printf '%s\n' "$first_commit" | awk '{ print NF }')" = 1 ] || \
-      ksa_die "the private initial commit has a parent"
-    [ "$(git -C "$PRIVATE_WORKTREE" log -1 --format=%s)" = "$COMMIT_MESSAGE" ] || \
-      ksa_die "the existing private initial commit has an unexpected message"
-    [ -z "$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)" ] || \
-      ksa_die "the committed private worktree is not clean"
-    LOCAL_TREE="$(git -C "$PRIVATE_WORKTREE" rev-parse 'HEAD^{tree}')"
+    status="$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)"
     LOCAL_COMMIT="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
-    LOCAL_STATE=committed
+    if [ -z "$status" ]; then
+      LOCAL_TREE="$(git -C "$PRIVATE_WORKTREE" rev-parse 'HEAD^{tree}')"
+      LOCAL_STATE=committed
+      return
+    fi
+
+    if ! git -C "$PRIVATE_WORKTREE" diff --quiet --; then
+      if [ "$status" = " M klokast-instance.json" ]; then
+        ksa_die "the instance edit is not staged; run git add klokast-instance.json and retry"
+      fi
+      ksa_die "the private worktree has unstaged changes; only one staged klokast-instance.json edit is accepted"
+    fi
+    cached_paths="$(git -C "$PRIVATE_WORKTREE" diff --cached --name-only)"
+    if [ "$cached_paths" != klokast-instance.json ] || \
+        [ "$status" != "M  klokast-instance.json" ]; then
+      ksa_die "only one staged klokast-instance.json edit is accepted after the initial commit"
+    fi
+    git -C "$PRIVATE_WORKTREE" diff --cached --check
+    LOCAL_TREE="$(git -C "$PRIVATE_WORKTREE" write-tree)"
+    LOCAL_STATE=update
   else
     expected_status="$(printf '%s\n' \
       'A  .gitignore' 'A  AGENTS.md' 'A  README.md' \
@@ -230,6 +243,41 @@ repository_state() {
     LOCAL_COMMIT=""
     LOCAL_STATE=unborn
   fi
+}
+
+require_exact_initial_commit() {
+  local commit="$1"
+  local first_commit=""
+
+  [ "$(git -C "$PRIVATE_WORKTREE" rev-list --count "$commit")" = 1 ] || \
+    ksa_die "an unpushed private history must contain exactly one initial commit"
+  first_commit="$(git -C "$PRIVATE_WORKTREE" rev-list --parents -n 1 "$commit")"
+  [ "$(printf '%s\n' "$first_commit" | awk '{ print NF }')" = 1 ] || \
+    ksa_die "the private initial commit has a parent"
+  [ "$(git -C "$PRIVATE_WORKTREE" log -1 --format=%s "$commit")" = \
+      "$INITIAL_COMMIT_MESSAGE" ] || \
+    ksa_die "the existing private initial commit has an unexpected message"
+}
+
+require_human_git_identity() {
+  AUTHOR_NAME="$(git -C "$PRIVATE_WORKTREE" config user.name || true)"
+  AUTHOR_EMAIL="$(git -C "$PRIVATE_WORKTREE" config user.email || true)"
+  if [ -z "$AUTHOR_NAME" ] || [ -z "$AUTHOR_EMAIL" ]; then
+    ksa_die "configure the human Git user.name and user.email before publication"
+  fi
+}
+
+require_staged_tree_unchanged() {
+  local expected_status="$1"
+  local status=""
+
+  status="$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)"
+  [ "$status" = "$expected_status" ] || \
+    ksa_die "the private worktree changed during review; inspect it and retry"
+  git -C "$PRIVATE_WORKTREE" diff --quiet -- || \
+    ksa_die "the private worktree gained an unstaged change during review"
+  [ "$(git -C "$PRIVATE_WORKTREE" write-tree)" = "$LOCAL_TREE" ] || \
+    ksa_die "the staged private tree changed during review; inspect it and retry"
 }
 
 validate_remote_configuration() {
@@ -268,12 +316,13 @@ import json
 import sys
 owner, repo = sys.argv[1:]
 value = json.load(sys.stdin)
-for field in ("allowed_signers_configured", "github_app_configured",
-              "source_prepared", "repository_registered"):
+for field in ("allowed_signers_configured", "source_prepared",
+              "repository_registered"):
     if value.get(field) is not True:
         raise SystemExit(f"controller prerequisite is false: {field}")
-if value.get("checkout_present") is not False:
-    raise SystemExit("the controller deployment checkout already exists")
+for field in ("github_app_configured", "checkout_present"):
+    if not isinstance(value.get(field), bool):
+        raise SystemExit(f"controller prerequisite is not Boolean: {field}")
 expected = hashlib.sha256(f"{owner}/{repo}".encode()).hexdigest()
 if value.get("repository_sha256") != expected:
     raise SystemExit("the controller repository does not match the session")
@@ -419,27 +468,55 @@ read_remote_state
 if [ "$LOCAL_STATE" = committed ]; then
   if [ -n "$REMOTE_COMMIT" ]; then
     [ "$REMOTE_COMMIT" = "$LOCAL_COMMIT" ] || \
-      ksa_die "GitHub main differs from the verified local initial commit"
+      ksa_die "GitHub main differs from the verified clean local commit"
     printf 'Private instance main is already published and verified.\n'
     printf '  Commit: %s\n' "$LOCAL_COMMIT"
     exit 0
   fi
+  require_exact_initial_commit "$LOCAL_COMMIT"
   printf '\nVerified an exact local initial commit after an earlier incomplete push.\n'
   git -C "$PRIVATE_WORKTREE" --no-pager show --stat --oneline HEAD
   confirm_no "Push this exact commit to $INSTANCE_OWNER/$INSTANCE_REPO now?" || \
     ksa_die "push was not approved; no remote state changed"
+  PUBLICATION_KIND=initial
+elif [ "$LOCAL_STATE" = update ]; then
+  if [ -n "$REMOTE_COMMIT" ]; then
+    [ "$REMOTE_COMMIT" = "$LOCAL_COMMIT" ] || \
+      ksa_die "GitHub main does not match the local base commit; pull and review the private history before retry"
+  else
+    require_exact_initial_commit "$LOCAL_COMMIT"
+  fi
+  require_human_git_identity
+
+  printf '\nPrivate instance update review\n'
+  printf '  Repository: %s/%s\n' "$INSTANCE_OWNER" "$INSTANCE_REPO"
+  printf '  Author: %s <%s>\n' "$AUTHOR_NAME" "$AUTHOR_EMAIL"
+  printf '  Base commit: %s\n' "$LOCAL_COMMIT"
+  printf '  Engine: %s\n' "$ENGINE_COMMIT"
+  printf '  Tree: %s (%s)\n\n' "$LOCAL_TREE" "$TREE_VALIDATION"
+  git -C "$PRIVATE_WORKTREE" --no-pager diff --cached --stat
+  git -C "$PRIVATE_WORKTREE" --no-pager diff --cached
+  printf '\nReview the complete private diff above.\n'
+  confirm_no "Commit and push this exact update to $INSTANCE_OWNER/$INSTANCE_REPO now?" || \
+    ksa_die "publication was not approved; no commit or remote state changed"
+  require_staged_tree_unchanged "M  klokast-instance.json"
+
+  if [ "$ORIGIN_CONFIGURED" = false ]; then
+    git -C "$PRIVATE_WORKTREE" remote add origin "$REMOTE_URL"
+    ORIGIN_CONFIGURED=true
+  fi
+  git -C "$PRIVATE_WORKTREE" commit -m "$UPDATE_COMMIT_MESSAGE" || \
+    ksa_die "the private update commit failed; inspect the local worktree before retry"
+  LOCAL_COMMIT="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
+  PUBLICATION_KIND=update
 else
   [ -z "$REMOTE_COMMIT" ] || \
     ksa_die "GitHub main already exists; the initial publication refuses to overwrite it"
-  author_name="$(git -C "$PRIVATE_WORKTREE" config user.name || true)"
-  author_email="$(git -C "$PRIVATE_WORKTREE" config user.email || true)"
-  if [ -z "$author_name" ] || [ -z "$author_email" ]; then
-    ksa_die "configure the human Git user.name and user.email before publication"
-  fi
+  require_human_git_identity
 
   printf '\nPrivate initial commit review\n'
   printf '  Repository: %s/%s\n' "$INSTANCE_OWNER" "$INSTANCE_REPO"
-  printf '  Author: %s <%s>\n' "$author_name" "$author_email"
+  printf '  Author: %s <%s>\n' "$AUTHOR_NAME" "$AUTHOR_EMAIL"
   printf '  Engine: %s\n' "$ENGINE_COMMIT"
   printf '  Tree: %s (%s)\n\n' "$LOCAL_TREE" "$TREE_VALIDATION"
   git -C "$PRIVATE_WORKTREE" --no-pager diff --cached --stat
@@ -447,14 +524,18 @@ else
   printf '\nReview the complete private diff above.\n'
   confirm_no "Commit and push this exact tree to $INSTANCE_OWNER/$INSTANCE_REPO now?" || \
     ksa_die "publication was not approved; no commit or remote was created"
+  require_staged_tree_unchanged "$(printf '%s\n' \
+    'A  .gitignore' 'A  AGENTS.md' 'A  README.md' \
+    'A  klokast-instance.json' 'A  klokast.lock.json')"
 
   if [ "$ORIGIN_CONFIGURED" = false ]; then
     git -C "$PRIVATE_WORKTREE" remote add origin "$REMOTE_URL"
     ORIGIN_CONFIGURED=true
   fi
-  git -C "$PRIVATE_WORKTREE" commit -m "$COMMIT_MESSAGE" || \
+  git -C "$PRIVATE_WORKTREE" commit -m "$INITIAL_COMMIT_MESSAGE" || \
     ksa_die "the private initial commit failed; inspect the local worktree before retry"
   LOCAL_COMMIT="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
+  PUBLICATION_KIND=initial
 fi
 
 if [ "$ORIGIN_CONFIGURED" = false ]; then
@@ -473,4 +554,8 @@ read_remote_state
 printf '\nPrivate instance main is published and verified.\n'
 printf '  Repository: %s/%s\n' "$INSTANCE_OWNER" "$INSTANCE_REPO"
 printf '  Commit: %s\n' "$LOCAL_COMMIT"
-printf 'Continue with Step 12 of the private-instance bootstrap runbook.\n'
+if [ "$PUBLICATION_KIND" = initial ]; then
+  printf 'Continue with Step 12 of the private-instance bootstrap runbook.\n'
+else
+  printf 'Continue with controller source synchronization and validation.\n'
+fi

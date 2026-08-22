@@ -273,14 +273,16 @@ unsupported apps, wrong app placement modes, unknown features or data, and an
 engine or schema commit mismatch. It accepts a dirty worktree so a human can
 check edits before commit.
 
-During initial private publication, the human can edit
-`klokast-instance.json` on the trusted MacBook and stage it. The human does not
-edit `klokast.lock.json` or the support files. The MacBook publication helper
-sends only the edited instance document through standard input to the active
-controller. The controller creates a temporary owner-only copy of the seed,
-checks the candidate with the pinned sealed binary, returns the checked Git
-tree, and removes the temporary copy. The helper commits only when that tree
-equals the staged MacBook tree.
+For the initial publication and later desired-state updates, the human edits
+only `klokast-instance.json` on the trusted MacBook and stages that file. The
+human does not edit `klokast.lock.json` or the support files. The MacBook
+publication helper sends only the edited instance document through standard
+input to the active controller. The controller creates a temporary owner-only
+copy of the seed, checks the candidate with the pinned sealed binary, returns
+the checked Git tree, and removes the temporary copy. The helper commits only
+when that tree equals the staged MacBook tree. For a later update, it also
+requires GitHub `main` to equal the local commit on which the edit is based.
+It does not merge or overwrite a changed remote branch.
 
 ## Projection, compatibility, and observation
 

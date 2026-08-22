@@ -222,8 +222,12 @@ klokast-dev/bin/publish-private-instance
 ```
 
 The helper commits and pushes `main` with the human private-repository
-identity. Do not commit or push from an airunner. Do not use the temporary
-GitHub App to push content.
+identity. It can also publish a later staged `klokast-instance.json` update
+when remote `main` still equals the local base commit. The sealed seed remains
+the validation base after the temporary GitHub App is retired and after the
+read-only deployment checkout exists. Neither controller state grants Git
+write authority. Do not commit or push from an airunner. Do not use the
+temporary GitHub App to push content.
 
 After the first push, use the GitHub web interface to remove this repository
 from the temporary App installation. Then run:
@@ -254,3 +258,6 @@ for 30 minutes. Pass its exact path to `ansible/bin/platform-plan` with
 ```sh
 ansible/bin/platform-instance status
 ```
+
+Run the same synchronization after each human-published instance update. The
+controller remains a read-only consumer of the private repository.

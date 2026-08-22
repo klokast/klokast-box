@@ -523,6 +523,28 @@ contains the expected initial commit.
 Tell the agent that the private `main` branch is pushed. Do not paste the
 repository contents or private commit diff.
 
+### Later instance edits
+
+For a later desired-state change, edit only `klokast-instance.json` in the
+private MacBook worktree. Validate the JSON, stage that one file, and run the
+same publication helper:
+
+```sh
+cd "$HOME/src/private-klokast/klokast-instance"
+python3 -m json.tool klokast-instance.json >/dev/null
+git diff --check
+git add klokast-instance.json
+git diff --cached --check
+
+cd "$HOME/src/klokast/klokast-box"
+klokast-dev/bin/publish-private-instance
+```
+
+The helper refuses unstaged changes, changes to another file, and remote
+divergence. It validates the exact staged tree with the sealed controller
+checker before it displays the private diff and asks for approval. After the
+push, synchronize and validate the controller read-only checkout again.
+
 ## 12. Remove repository access from the temporary App
 
 In GitHub:
