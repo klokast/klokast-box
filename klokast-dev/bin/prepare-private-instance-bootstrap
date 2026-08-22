@@ -9,8 +9,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 DEFAULT_CONTROLLER="${KLOKAST_OPS_CONTROLLER:-}"
 DEFAULT_REPO_NAME="klokast-instance"
 DEFAULT_WORK_DIR="$HOME/.local/share/klokast/private-instance-bootstrap"
-ENGINE_COMMIT="9d9608350412d131a68a70152449b7bd48bda711"
-BUILD_OPERATION="ca0a844b0014"
+ENGINE_COMMIT="09afa3e1e677da25ffdbdb1f22378e9f97a71e71"
+BUILD_OPERATION="d57fa19b5b58"
 
 show_prerequisites() {
   cat <<'EOF'
