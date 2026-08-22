@@ -176,6 +176,10 @@ class PlatformPlanTest(unittest.TestCase):
 
     def test_immutable_install_uses_no_replace_link(self):
         source = WRAPPER.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("smith_group = prepare_plan_directory(destination_directory)"),
+            source.index("if destination.exists():"),
+        )
         self.assertIn('run(["doas", "ln", target_temporary, destination], check=False)', source)
         self.assertIn('run(["doas", "rm", "-f", target_temporary], check=False)', source)
         self.assertNotIn("os.replace", source)

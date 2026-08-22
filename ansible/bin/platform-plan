@@ -268,6 +268,7 @@ def install_plan(plan, content):
         raise PlanError("Plan v1 does not contain an exact instance commit")
     destination_directory = PLAN_ROOT / commit
     destination = destination_directory / f"{digest}.json"
+    smith_group = prepare_plan_directory(destination_directory)
     if destination.exists():
         if read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v1") != content:
             raise PlanError("the immutable plan path already contains different content")
@@ -278,7 +279,6 @@ def install_plan(plan, content):
     temporary.chmod(0o600)
     target_temporary = destination_directory / f".{digest}.{os.getpid()}.tmp"
     try:
-        smith_group = prepare_plan_directory(destination_directory)
         run(["doas", "install", "-o", "root", "-g", smith_group, "-m", "0440", temporary, target_temporary])
         linked = run(["doas", "ln", target_temporary, destination], check=False)
         if linked.returncode != 0:
