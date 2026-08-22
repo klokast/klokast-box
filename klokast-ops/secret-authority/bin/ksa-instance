@@ -358,11 +358,7 @@ class GithubApp:
         self.config = parse_env_file(root / "github-app.env")
         self.private_key_path = root / "github-app.pem"
 
-    def installation_token(self, permissions):
-        if set(permissions) - {"administration", "metadata"}:
-            raise InstanceAuthorityError("instance bootstrap App must not request Contents access")
-        if permissions.get("administration") not in {"read", "write"}:
-            raise InstanceAuthorityError("instance bootstrap App requires bounded Administration access")
+    def integration(self):
         try:
             from github import Auth, GithubIntegration
         except ImportError as error:
@@ -373,7 +369,42 @@ class GithubApp:
             private_key = self.private_key_path.read_text(encoding="utf-8")
         except (KeyError, ValueError, OSError) as error:
             raise InstanceAuthorityError("temporary instance GitHub App credential is invalid") from error
-        result = GithubIntegration(auth=Auth.AppAuth(app_id, private_key)).get_access_token(
+        return GithubIntegration(auth=Auth.AppAuth(app_id, private_key)), installation_id
+
+    def installation_present(self):
+        try:
+            from github import GithubException, UnknownObjectException
+        except ImportError as error:
+            raise InstanceAuthorityError("py3-pygithub is required on the active controller") from error
+        integration, installation_id = self.integration()
+        try:
+            installation = integration.get_app_installation(installation_id)
+        except UnknownObjectException as error:
+            if error.status != 404:
+                raise InstanceAuthorityError("GitHub App installation verification failed") from error
+            try:
+                for _installation in integration.get_installations():
+                    raise InstanceAuthorityError(
+                        "temporary GitHub App still has another installation"
+                    )
+            except GithubException as list_error:
+                raise InstanceAuthorityError(
+                    "GitHub App installation verification failed"
+                ) from list_error
+            return False
+        except GithubException as error:
+            raise InstanceAuthorityError("GitHub App installation verification failed") from error
+        if getattr(installation, "id", None) != installation_id:
+            raise InstanceAuthorityError("GitHub App returned an unexpected installation identity")
+        return True
+
+    def installation_token(self, permissions):
+        if set(permissions) - {"administration", "metadata"}:
+            raise InstanceAuthorityError("instance bootstrap App must not request Contents access")
+        if permissions.get("administration") not in {"read", "write"}:
+            raise InstanceAuthorityError("instance bootstrap App requires bounded Administration access")
+        integration, installation_id = self.integration()
+        result = integration.get_access_token(
             installation_id, permissions
         )
         token = getattr(result, "token", "")
@@ -1074,11 +1105,17 @@ def cmd_retire_bootstrap(args):
     set_approved_action_phase(args, "validate-controller-key")
     if fingerprint(paths["public"]) != args.key_fingerprint:
         raise InstanceAuthorityError("approved key fingerprint does not match controller key")
-    set_approved_action_phase(args, "request-github-token")
-    token = GithubApp(args.config_root).installation_token({"administration": "read", "metadata": "read"})
-    set_approved_action_phase(args, "verify-app-access-removed")
-    if state["repository_id"] in app_repository_ids(args, token):
-        raise InstanceAuthorityError("remove the private repository from the GitHub App installation before retirement")
+    app = GithubApp(args.config_root)
+    set_approved_action_phase(args, "verify-github-installation")
+    if app.installation_present():
+        set_approved_action_phase(args, "request-github-token")
+        token = app.installation_token({"administration": "read", "metadata": "read"})
+        set_approved_action_phase(args, "verify-app-access-removed")
+        if state["repository_id"] in app_repository_ids(args, token):
+            raise InstanceAuthorityError("remove the private repository from the GitHub App installation before retirement")
+        installation_result = "repository-access-removed"
+    else:
+        installation_result = "installation-uninstalled"
     set_approved_action_phase(args, "verify-read-only-access")
     remote_head(args, paths)
     require_private_remote(args)
@@ -1091,10 +1128,12 @@ def cmd_retire_bootstrap(args):
         path.unlink(missing_ok=True)
     audit(args, "instance.bootstrap.retired", repository_sha256=source["repository_sha256"],
           repository_id=state["repository_id"], key_fingerprint=args.key_fingerprint,
-          signer_id=args.signer_id, nonce=intent["nonce"])
+          signer_id=args.signer_id, nonce=intent["nonce"],
+          github_installation_result=installation_result)
     finish_approved_action(args, intent, "bootstrap-retired",
                            repository_id=state["repository_id"],
-                           key_fingerprint=args.key_fingerprint)
+                           key_fingerprint=args.key_fingerprint,
+                           github_installation_result=installation_result)
     print(canonical_json({"schema_version": 1, "retired": True,
                           "repository_sha256": source["repository_sha256"]}), end="")
 

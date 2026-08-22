@@ -5,7 +5,9 @@ import os
 import pwd
 import stat
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -135,6 +137,256 @@ class InstanceAuthorityTest(unittest.TestCase):
             app = self.mod.GithubApp(root)
             with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "Contents"):
                 app.installation_token({"administration": "write", "contents": "read"})
+
+    def test_github_app_proves_uninstalled_installation_with_exact_404(self):
+        calls = {}
+
+        class FakeGithubException(Exception):
+            def __init__(self, status):
+                self.status = status
+
+        class FakeUnknownObjectException(FakeGithubException):
+            pass
+
+        class FakeAppAuth:
+            def __init__(self, app_id, private_key):
+                calls["app_id"] = app_id
+                calls["private_key"] = private_key
+
+        class FakeAuth:
+            AppAuth = FakeAppAuth
+
+        class FakeGithubIntegration:
+            def __init__(self, auth):
+                calls["auth"] = auth
+
+            def get_app_installation(self, installation_id):
+                calls["installation_id"] = installation_id
+                raise FakeUnknownObjectException(404)
+
+            def get_installations(self):
+                calls["listed_installations"] = True
+                return []
+
+        fake_github = types.SimpleNamespace(
+            Auth=FakeAuth,
+            GithubException=FakeGithubException,
+            GithubIntegration=FakeGithubIntegration,
+            UnknownObjectException=FakeUnknownObjectException,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "github-app.env").write_text(
+                "GITHUB_APP_ID=123456\nGITHUB_APP_INSTALLATION_ID=12345678\n",
+                encoding="utf-8",
+            )
+            (root / "github-app.pem").write_text("private-key\n", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"github": fake_github}):
+                present = self.mod.GithubApp(root).installation_present()
+
+        self.assertFalse(present)
+        self.assertEqual(calls["app_id"], 123456)
+        self.assertEqual(calls["installation_id"], 12345678)
+        self.assertEqual(calls["private_key"], "private-key\n")
+        self.assertIsInstance(calls["auth"], FakeAppAuth)
+        self.assertTrue(calls["listed_installations"])
+
+    def test_github_app_refuses_reinstalled_app_with_a_new_installation(self):
+        class FakeGithubException(Exception):
+            def __init__(self, status):
+                self.status = status
+
+        class FakeUnknownObjectException(FakeGithubException):
+            pass
+
+        class FakeAuth:
+            class AppAuth:
+                def __init__(self, _app_id, _private_key):
+                    pass
+
+        class FakeGithubIntegration:
+            def __init__(self, auth):
+                pass
+
+            def get_app_installation(self, _installation_id):
+                raise FakeUnknownObjectException(404)
+
+            def get_installations(self):
+                return [mock.Mock(id=87654321)]
+
+        fake_github = types.SimpleNamespace(
+            Auth=FakeAuth,
+            GithubException=FakeGithubException,
+            GithubIntegration=FakeGithubIntegration,
+            UnknownObjectException=FakeUnknownObjectException,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "github-app.env").write_text(
+                "GITHUB_APP_ID=123456\nGITHUB_APP_INSTALLATION_ID=12345678\n",
+                encoding="utf-8",
+            )
+            (root / "github-app.pem").write_text("private-key\n", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"github": fake_github}), self.assertRaisesRegex(
+                self.mod.InstanceAuthorityError,
+                "still has another installation",
+            ):
+                self.mod.GithubApp(root).installation_present()
+
+    def test_github_app_refuses_non_404_installation_failure(self):
+        class FakeGithubException(Exception):
+            def __init__(self, status):
+                self.status = status
+
+        class FakeUnknownObjectException(FakeGithubException):
+            pass
+
+        class FakeAuth:
+            class AppAuth:
+                def __init__(self, _app_id, _private_key):
+                    pass
+
+        class FakeGithubIntegration:
+            def __init__(self, auth):
+                pass
+
+            def get_app_installation(self, _installation_id):
+                raise FakeGithubException(403)
+
+        fake_github = types.SimpleNamespace(
+            Auth=FakeAuth,
+            GithubException=FakeGithubException,
+            GithubIntegration=FakeGithubIntegration,
+            UnknownObjectException=FakeUnknownObjectException,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "github-app.env").write_text(
+                "GITHUB_APP_ID=123456\nGITHUB_APP_INSTALLATION_ID=12345678\n",
+                encoding="utf-8",
+            )
+            (root / "github-app.pem").write_text("private-key\n", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"github": fake_github}), self.assertRaisesRegex(
+                self.mod.InstanceAuthorityError,
+                "installation verification failed",
+            ):
+                self.mod.GithubApp(root).installation_present()
+
+    def test_retire_bootstrap_accepts_verified_uninstalled_installation(self):
+        class App:
+            def __init__(self, _root):
+                pass
+
+            def installation_present(self):
+                return False
+
+            def installation_token(self, _permissions):
+                raise AssertionError("an uninstalled App must not mint an installation token")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("github-app.env", "github-app.pem"):
+                (root / name).write_text("temporary credential\n", encoding="utf-8")
+            public = root / "github-readonly.pub"
+            public.write_text("ssh-ed25519 public\n", encoding="utf-8")
+            fingerprint = "SHA256:abcdefghijklmnopqrstuvwxyz1234567890"
+            args = mock.Mock(
+                config_root=root,
+                key_fingerprint=fingerprint,
+                signer_id="human-private-instance",
+                audit_log=root / "audit.jsonl",
+            )
+            intent = self.approval_intent("retire-bootstrap")
+            source = {"repository_sha256": "a" * 64}
+            state = {"repository_id": 123}
+            with mock.patch.object(self.mod, "require_root"), mock.patch.object(
+                self.mod, "require_active_controller"
+            ), mock.patch.object(
+                self.mod, "require_approval", return_value=intent
+            ), mock.patch.object(
+                self.mod, "load_source_config", return_value=({"public": public}, source)
+            ), mock.patch.object(
+                self.mod, "load_repository_state", return_value=state
+            ), mock.patch.object(
+                self.mod, "fingerprint", return_value=fingerprint
+            ), mock.patch.object(
+                self.mod, "GithubApp", App
+            ), mock.patch.object(
+                self.mod, "app_repository_ids"
+            ) as repository_ids, mock.patch.object(
+                self.mod, "remote_head", return_value="b" * 40
+            ), mock.patch.object(
+                self.mod, "require_private_remote"
+            ), mock.patch("sys.stdout"):
+                self.mod.cmd_retire_bootstrap(args)
+            audit_records = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+        repository_ids.assert_not_called()
+        self.assertFalse((root / "github-app.env").exists())
+        self.assertFalse((root / "github-app.pem").exists())
+        self.assertEqual(audit_records[-2]["event"], "instance.bootstrap.retired")
+        self.assertEqual(
+            audit_records[-2]["github_installation_result"],
+            "installation-uninstalled",
+        )
+        self.assertEqual(
+            audit_records[-1]["github_installation_result"],
+            "installation-uninstalled",
+        )
+
+    def test_retire_bootstrap_refuses_present_repository_access(self):
+        class App:
+            def __init__(self, _root):
+                pass
+
+            def installation_present(self):
+                return True
+
+            def installation_token(self, _permissions):
+                return "installation-token"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("github-app.env", "github-app.pem"):
+                (root / name).write_text("temporary credential\n", encoding="utf-8")
+            public = root / "github-readonly.pub"
+            public.write_text("ssh-ed25519 public\n", encoding="utf-8")
+            fingerprint = "SHA256:abcdefghijklmnopqrstuvwxyz1234567890"
+            args = mock.Mock(
+                config_root=root,
+                key_fingerprint=fingerprint,
+                signer_id="human-private-instance",
+                audit_log=root / "audit.jsonl",
+            )
+            with mock.patch.object(self.mod, "require_root"), mock.patch.object(
+                self.mod, "require_active_controller"
+            ), mock.patch.object(
+                self.mod,
+                "require_approval",
+                return_value=self.approval_intent("retire-bootstrap"),
+            ), mock.patch.object(
+                self.mod,
+                "load_source_config",
+                return_value=({"public": public}, {"repository_sha256": "a" * 64}),
+            ), mock.patch.object(
+                self.mod, "load_repository_state", return_value={"repository_id": 123}
+            ), mock.patch.object(
+                self.mod, "fingerprint", return_value=fingerprint
+            ), mock.patch.object(
+                self.mod, "GithubApp", App
+            ), mock.patch.object(
+                self.mod, "app_repository_ids", return_value={123}
+            ), self.assertRaisesRegex(
+                self.mod.InstanceAuthorityError,
+                "remove the private repository",
+            ):
+                self.mod.cmd_retire_bootstrap(args)
+
+            self.assertTrue((root / "github-app.env").exists())
+            self.assertTrue((root / "github-app.pem").exists())
 
     def test_github_request_reports_sanitized_validation_detail(self):
         response = mock.MagicMock()

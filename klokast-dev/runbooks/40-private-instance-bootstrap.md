@@ -551,7 +551,8 @@ push, synchronize and validate the controller read-only checkout again.
 
 ## 12. Remove repository access from the temporary App
 
-In GitHub:
+If the organization has another repository, remove `klokast-instance` from
+the App installation:
 
 1. Open the organization settings.
 2. Select **GitHub Apps** or **Installed GitHub Apps**.
@@ -560,10 +561,20 @@ In GitHub:
 5. Remove `klokast-instance` from the selection.
 6. Save the change.
 
-GitHub may refuse removal when this is the last selected repository. If it
-does, stop. Do not select an unrelated repository, do not change to **All
-repositories**, and do not uninstall the App yet. Tell the agent the exact
-GitHub error without including private repository contents.
+GitHub refuses removal when `klokast-instance` is the last selected repository.
+In that case, keep **Only select repositories** with only `klokast-instance`
+selected. Do not select **All repositories**, and do not create a carrier
+repository. Use the organization installation page to select **Uninstall** for
+the temporary App. This removes the App installation and revokes its access to
+the organization. It does not delete the App definition from the owner's
+Developer settings.
+
+Keep the App definition, local PEM, and controller credential until the signed
+retirement action succeeds. The controller uses the App identity to verify
+that the saved installation ID no longer exists and that the dedicated App has
+no other installation. It accepts only an exact not-found result followed by
+an empty App installation list. Authentication failure and all other GitHub
+errors stop the action.
 
 If removal succeeds, run the final human-approved action from the trusted
 MacBook:
@@ -578,7 +589,8 @@ displayed intent. Answer `y`, then approve Touch ID.
 The retirement action must confirm all of these conditions before it deletes
 the controller copy of the App credential:
 
-- the App installation can no longer list the private repository;
+- the App installation can no longer list the private repository, or the App
+  identity proves that the installation was uninstalled;
 - anonymous Git access fails;
 - the controller read-only deploy key can still fetch `main`.
 
@@ -592,7 +604,8 @@ Expected result includes:
 
 Only after `retire-bootstrap` succeeds:
 
-1. Uninstall the temporary App from the organization.
+1. Uninstall the temporary App from the organization if Step 12 did not
+   already uninstall it.
 2. Delete the temporary GitHub App in its developer settings.
 3. Delete the local PEM:
 
@@ -669,9 +682,11 @@ and registry authority stays active. No apply action is part of this runbook.
   with the pinned sealed binary before transfer.
 - **GitHub shows the deploy key as write-enabled:** stop and remove that key in
   the GitHub UI. Do not continue with a write-enabled controller key.
-- **App removal fails because it is the last selected repository:** keep the
-  App and its root-only controller credential in place, and ask the agent to
-  review the retirement path.
+- **App removal fails because it is the last selected repository:** keep
+  **Only select repositories** with only `klokast-instance` selected. Do not
+  select **All repositories** or create a carrier repository. Uninstall the
+  organization App installation, keep the App definition and credentials, and
+  then run the signed retirement action.
 
 ## References
 

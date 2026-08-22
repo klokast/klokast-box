@@ -230,17 +230,22 @@ write authority. Do not commit or push from an airunner. Do not use the
 temporary GitHub App to push content.
 
 After the first push, use the GitHub web interface to remove this repository
-from the temporary App installation. Then run:
+from the temporary App installation. GitHub does not permit an installed App
+to have zero selected repositories. If `klokast-instance` is the only
+repository in the organization, uninstall the organization App installation
+instead. Keep the App definition and credentials until the signed retirement
+action succeeds. Then run:
 
 ```sh
 klokast-dev/bin/run-private-instance-action retire-bootstrap
 ```
 
-Retirement fails unless the App can no longer list the repository, the
-anonymous Git read fails, and the deploy key can still read
-`refs/heads/main`. On success, it deletes the temporary App PEM and IDs from
-the controller. The human can delete the dedicated GitHub App later through
-the GitHub web interface.
+Retirement fails unless the App can no longer list the repository or the App
+identity proves that the saved installation was uninstalled. It also requires
+the dedicated App to have no other installation, the anonymous Git read to
+fail, and the deploy key to read `refs/heads/main`. On success, it deletes the
+temporary App PEM and IDs from the controller. The human can then delete the
+dedicated GitHub App through the GitHub web interface.
 
 Synchronize the deployment checkout and create a fresh source receipt:
 

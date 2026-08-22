@@ -239,9 +239,12 @@ overwrite a changed remote branch.
 
 After the first human push, the human removes repository access from the
 temporary App. The controller retirement action confirms that the App no
-longer has repository authority, anonymous reads fail, and the root-held
-deploy key can still fetch `main`. It then deletes the temporary App
-credential.
+longer has repository authority. For a single-repository organization, the
+human can uninstall the App installation and keep the App identity until the
+controller proves that the installation no longer exists and that the
+dedicated App has no other installation. Retirement also confirms that
+anonymous reads fail and the root-held deploy key can still fetch `main`. It
+then deletes the temporary App credential.
 
 `platform-instance sync` maintains a clean controller deployment checkout
 with a disabled push URL. Each authenticated fast-forward fetch creates a

@@ -2,6 +2,18 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-22 - GitHub App cannot remove its last selected repository
+
+GitHub rejects removal when a repository is the last selected repository of
+an App installation. Do not change the temporary private-instance App to
+**All repositories**, and do not create an unrelated carrier repository. For
+a single-repository organization, uninstall the organization App installation
+but keep the App definition and credentials until the signed controller action
+proves that the installation ID no longer exists. The action must accept only
+an exact not-found result, require the dedicated App to have no other
+installation, verify the read-only deploy key, and then delete the controller
+credential.
+
 # 2026-08-22 - cloud-ops Ansible temporary directory ownership
 
 Controller-side syntax checks found an old mode-`0700`
