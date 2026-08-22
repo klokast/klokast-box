@@ -107,12 +107,7 @@ Tailnet values are placeholders.
     "active": "k002",
     "standby": "k001"
   },
-  "airunners": [
-    "k002-ops-airunner",
-    "k001-ops-airunner",
-    "vultr-ops",
-    "hetzner-ops"
-  ],
+  "airunners": ["k002-ops-airunner"],
   "apps": {
     "music": {
       "desired-state": "absent",

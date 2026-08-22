@@ -173,7 +173,9 @@ runs `provision-box`.
 
 # 8. Create the in-Platform ops controller
 
-The `vultr-ops` cloud VPS is an approved Codex/OpenAI runner.
+The installed Codex/OpenAI runner is `k002-ops-airunner`. A separately
+provisioned `<cloud>-ops` VPS can also be approved, but it is not desired
+instance state unless it is installed and listed explicitly.
 The in-Platform `<box>-ops` VM is the trusted infrastructure controller for TCB
 automation and private Platform state. It dispatches reviewed `klokast` CLI
 builds to a short-lived networkless Xen builder; it does not run the CLI's Go
