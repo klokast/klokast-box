@@ -2,6 +2,13 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-22 - cloud-ops Ansible temporary directory ownership
+
+Controller-side syntax checks found an old mode-`0700`
+`/tmp/klokast-ops-ansible-local` owned by another account. The checked-in
+configuration now uses `~/.ansible/tmp`. Do not restore a fixed shared path in
+`/tmp`; it fails when a different controller account runs Ansible.
+
 # 2026-08-22 - Terraform static-test execution locus
 
 The airunner and active controller do not have Terraform. Source changes can
