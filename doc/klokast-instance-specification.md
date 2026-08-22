@@ -23,6 +23,11 @@ manifests, connectivity profiles, automation, and tests. The private instance
 repository owns deployment intent and the engine lock. It must not contain
 secrets, generated state, live status, or user data.
 
+The [upstream/instance target architecture](upstream-instance-target-architecture.md)
+records implementation status, transition Plan semantics, engine promotion,
+future authorized apply, migration, and legacy-removal gates. This document
+remains the normative source for the JSON contract and `klokast` CLI behavior.
+
 ## Repository layout
 
 A private instance repository has two authoritative files:
@@ -329,7 +334,9 @@ evidence in `/var/lib/klokast`, and rebuildable artifacts in
 
 ## Deferred work
 
-Later reviewed work can add authorized apply, migration from all legacy
-authorities, more connectivity profiles, more app feature types, data movement
-and deletion operations, and site executors. Version 1 does not give an app or
-an airunner authority to grant itself resources or delete undeclared data.
+The [upstream/instance target architecture](upstream-instance-target-architecture.md)
+owns the ordered design work for engine promotion, Plan hardening, authorized
+apply, migration, and legacy removal. Later specification versions can add
+more connectivity profiles, app feature types, data operations, and site
+executors. Version 1 does not give an app or an airunner authority to grant
+itself resources or delete undeclared data.

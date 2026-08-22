@@ -431,8 +431,12 @@ Klokast Instance Specification v1 contains only `klokast-instance.json` and
 `klokast.lock.json` as authoritative inputs. The instance file owns private
 topology, membership, connectivity-profile, controller, airunner, app, and
 retained-data intent. It has no secrets, generated state, observed status,
-inventory, or site-executor interface. See
-`doc/klokast-instance-specification.md`.
+inventory, or site-executor interface. The
+[Klokast Instance Specification v1](klokast-instance-specification.md) owns
+the normative JSON contract and CLI behavior. The
+[upstream/instance target architecture](upstream-instance-target-architecture.md)
+owns the transition design, Plan semantics, future apply gates, and legacy
+removal requirements.
 
 The active controller is the only Platform mutation locus and secret custodian.
 The human authors and pushes private instance changes from a trusted
@@ -443,20 +447,11 @@ URL. Airunners may author and push reviewed public implementation changes, but
 they do not clone the private instance repository or hold controller-private
 state. Deployable `klokast` binaries are built only by the active controller through the
 networkless Xen `platform-builder` profile.
-The builder-approved binary can create a staged local Instance Specification
-v1 repository with `klokast init`. It does not create a remote repository,
-install Platform state, or receive secrets. Platform site time is always
-`Etc/UTC` (GMT), so instance inputs do not contain a timezone.
-
-The human creates the exact empty private organization repository
-`<family>/klokast-instance`. Repository registration and read-key registration
-use a dedicated, temporary GitHub App with no Contents permission. The App is
-installed only on that exact repository. Human-signed intents bind each
-controller action to the reviewed public engine commit. After the human
-removes the private repository from the App installation, the controller
-verifies the read-only deploy key and deletes the App credential. Controller
-fetches create fresh, content-addressed source receipts for Plan v1. See
-`doc/klokast-instance-specification.md` for the complete boundary.
+The target architecture records the current source-custody and sealed-build
+implementation. Exact human and controller procedures are in
+[Private Instance Bootstrap](../klokast-dev/runbooks/40-private-instance-bootstrap.md).
+Platform site time is always `Etc/UTC` (GMT), so instance inputs do not contain
+a timezone.
 
 ## files locally stored in the boxes
 - unique to each box:

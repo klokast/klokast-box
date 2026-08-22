@@ -24,38 +24,38 @@ custody, and catalog-driven Terraform workflows.
 
 # 2026-08-22 - add Tor as a shared service
 
-The Platform should offer following ways to connect to internet and users:
-- Tailscale (e.g. for inbound requests by family users)
-- CloudFlare (e.g. for inbound static website requests by external users)
-- local Access Point (e.g. for OS package downloads or traffic with torrent peers)
-- local VPN client (e.g. for airunner)
-- LAN (e.g. for user to play music)
-- Tor (e.g. for bitcoin core)
-- ...
-Those connection modes should be defined in a standardized way (via which router zones,
-how an app request those types, etc) so that new modes can be added to the Platform later.
+The Platform should support these standardized connection modes:
+
+- Tailscale, for example, for inbound requests from family users;
+- Cloudflare, for example, for inbound static website requests from external
+  users;
+- a local access point, for example, for OS package downloads or traffic with
+  torrent peers;
+- a local VPN client, for example, for an airunner;
+- a LAN, for example, for a user who plays music;
+- Tor, for example, for Bitcoin Core.
+
+Define how each mode uses router zones and how an app requests the mode. The
+design must make later connection modes easy to add.
 
 # 2026-08-22 - migrate this `todo.md` to GitHub "issues" and feature requests
 
 Or to another ticketing system, to industrialize the monitoring and resolution
 of tickets.
 
-# 2026-08-22 - protect against compromised `klokast.lock.json`
+# 2026-08-22 - controlled canonical engine-commit promotion
 
-The `.engine.repository` field in `klokast.lock.json` defines the upstream repo.
-So that the user can use his own fork of the repo, or a self-hosted clone. However,
-how to protect from an attacker who would edit `klokast.lock.json` in the
-(now untrusted) MacBook to point at a compromised malicious repo.
-Maybe `klokast.lock.json` should be signed by the MacBook Secure Element or Keychain,
-and there needs some monitoring to detect error in the signature check?
-Or is there a better design, following cyber security best practices, to guarantee that
-the installed deployment is pinned to an approved upstream?
+Instance Specification v1 fixes `.engine.repository` to the canonical
+`https://github.com/klokast/klokast-box` upstream. The checker, schema, sealed
+builder, and controller wrappers reject another repository. Custom forks and
+self-hosted engine repositories are outside version 1.
 
-# 2026-08-22 - upstream update process
-Harden how upstream updates are handled, both in the trusted laptop and in the boxes:
-- how the `.engine.repository` field in `klokast.lock.json` gets updated?
-- is there an equivalent upstream commit version pin in the box controllers?
-- How are deployed application pinned?
+The missing feature is a controlled workflow that promotes
+`.engine.commit` from one approved canonical commit to another. Specify human
+review and authorization, canonical ancestry checks, the exact sealed build,
+private lock publication, refusal cases, rollback, tests, and recovery. Keep
+the controller and airunner without private-repository push authority. See
+[the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-target-design).
 
 # 2026-08-21 - self-updating bootstrap helper continued old shell functions
 
@@ -78,26 +78,28 @@ the installed root wrapper. The human must still rerun
 `prepare-private-instance-bootstrap` on the trusted MacBook to verify the
 complete terminal and Touch ID path after a wrapper change.
 More generally, the end-to-end User Experience of the various Klokast processes
-must be mapped, reviewed, and improved. For example, the authentication process
-on the truste MacBook, to avoid unnecessary fingerprint scans, and make it clear
-to the user what he signs.
+must be mapped, reviewed, and improved. For example, review the authentication
+process on the trusted MacBook. Avoid unnecessary fingerprint scans, and make
+the signed intent clear to the user.
 
-# 2026-08-16 - make touch ID sign in popups more explicit
+# 2026-08-16 - make Touch ID signing prompts more explicit
 
-At @doc/40-private-instance-bootstrap.md, step #8.1 , the current Touch ID popup only reads:
-"ctcardtoken needs to authenticate to continue. touch ID to allow this."
-It would be better if the popup title is Klokast instead of ctcardtoken. And it should show the intent
-that is being signed. As the standard Touch ID popup cannot be customized, here is a proposal:
-Create a signed, one-shot Klokast Approval.app. It would validate
+During the procedure in
+[Private Instance Bootstrap](../klokast-dev/runbooks/40-private-instance-bootstrap.md),
+the current Touch ID prompt identifies `ctcardtoken` and does not show the
+intent. The prompt should identify Klokast and make the signed intent clear.
+The standard Touch ID prompt cannot be customized. One proposal is a signed,
+one-shot Klokast Approval app. It would validate
 the intent, display it, compute its digest, and sign the same in-memory bytes.
 Apple’s native authentication API supports an application name and a clear
-localizedReason. Apple documents this behavior
+`localizedReason`. Apple documents this behavior
 (https://developer.apple.com/documentation/localauthentication/lacontext/localizedreason).
 The Security framework can also associate an LAContext with keychain
 authentication. Apple documentation
 (https://developer.apple.com/documentation/security/ksecuseauthenticationcontext).
-This will probably require a signer migration or a new signature format because the
-current OpenSSH security-key format contains extra flags and counter fields.
+This change will probably require a signer migration or a new signature format
+because the current OpenSSH security-key format contains more flags and counter
+fields.
 
 # 2026-08-12 - validate native Touch ID signing on the MacBook
 
