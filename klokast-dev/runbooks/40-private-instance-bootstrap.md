@@ -7,8 +7,8 @@ The Platform got one active controller `<box>-ops`.
 The current approved engine is:
 
 ```text
-commit: 400561fc625921e123252ea3b3f84a61e7109cca
-build:  /var/lib/klokast/builds/klokast-cli/400561fc625921e123252ea3b3f84a61e7109cca/fc34f7dfcb84
+commit: 13e9fea1cf29f884622da0137913e79f36a8d1f1
+build:  /var/lib/klokast/builds/klokast-cli/13e9fea1cf29f884622da0137913e79f36a8d1f1/fb57f08c0454
 ```
 
 Do not paste the GitHub App PEM, private deployment values, signed intents,
@@ -385,8 +385,10 @@ result before another attempt.
 Run the normal helper again to repair the known placeholder values file. Do
 not use `--archive-and-restart` for that recovery.
 
-The old unreleased YAML seed is not compatible with this format. If a
-controller seed or MacBook worktree comes from that earlier format, run:
+An uncommitted seed from an earlier unreleased Instance Specification shape is
+not compatible with the current approved engine. This includes the former YAML
+format and the former JSON airunner object format. If the controller seed or
+MacBook worktree comes from one of those earlier formats, run:
 
 ```sh
 klokast-dev/bin/prepare-private-instance-worktree --archive-and-restart
@@ -396,7 +398,7 @@ The helper checks that each existing repository is standalone, unborn, has no
 remote, has a recognized seed file set, and contains no symbolic links. It
 asks before it moves the controller seed, controller values file, and MacBook
 worktree to owner-only timestamped archive paths. It does not delete them.
-Then it creates a new JSON seed.
+Then it creates a new JSON seed with the current approved engine.
 
 ## 10. Review the private repository on the MacBook
 
