@@ -99,7 +99,6 @@ func TestIdentityReferencesAndAirunners(t *testing.T) {
 		{"site", `"site": "mingdu"`, `"site": "missing"`, "reference.site"},
 		{"controller", `"active": "k001"`, `"active": "missing"`, "reference.box"},
 		{"controller-cardinality", `"standby": "k002"`, `"standby": "k001"`, "cardinality.controller"},
-		{"preferred", `"preferred": "k001-airunner"`, `"preferred": "missing-airunner"`, "reference.airunner"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -108,6 +107,76 @@ func TestIdentityReferencesAndAirunners(t *testing.T) {
 			})
 			requireCode(t, root, test.code)
 		})
+	}
+}
+
+func TestAirunnerRuntimeIdentityContract(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		code   string
+	}{
+		{"old-object", func(value map[string]any) {
+			value["airunners"] = map[string]any{
+				"preferred": "k001-ops-airunner",
+				"authorized": map[string]any{"k001-ops-airunner": map[string]any{"kind": "controller-container", "box": "k001"}},
+			}
+		}, "schema.invalid"},
+		{"empty", func(value map[string]any) { value["airunners"] = []any{} }, "schema.invalid"},
+		{"duplicate", func(value map[string]any) {
+			value["airunners"] = []any{"k001-ops-airunner", "k001-ops-airunner"}
+		}, "schema.invalid"},
+		{"unknown-provider", func(value map[string]any) {
+			value["airunners"] = []any{"digitalocean-ops"}
+		}, "reference.cloud-provider"},
+		{"invalid-suffix", func(value map[string]any) {
+			value["airunners"] = []any{"vultr-runner"}
+		}, "identity.airunner"},
+		{"removed-box-guest", func(value map[string]any) {
+			value["airunners"] = []any{"k001-airunner"}
+		}, "identity.airunner"},
+		{"non-controller-box", func(value map[string]any) {
+			value["boxes"].(map[string]any)["k003"] = map[string]any{
+				"site": "milla", "connectivity-profiles": []any{"tailscale"},
+			}
+			value["airunners"] = []any{"k003-ops-airunner"}
+		}, "reference.controller"},
+		{"box-cloud-collision", func(value map[string]any) {
+			value["boxes"].(map[string]any)["vultr"] = map[string]any{
+				"site": "milla", "connectivity-profiles": []any{"tailscale"},
+			}
+			value["airunners"] = []any{"vultr-ops"}
+		}, "identity.cloud-collision"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := prepareInstance(t, "two", func(root string) {
+				mutateInstanceJSON(t, root, test.mutate)
+			})
+			requireCode(t, root, test.code)
+		})
+	}
+}
+
+func TestEmbeddedCloudProviderCatalog(t *testing.T) {
+	providers, err := loadCloudProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 2 || providers["hetzner"].Domain != "hetzner.com" || providers["vultr"].Domain != "vultr.com" {
+		t.Fatalf("unexpected embedded cloud-provider catalog: %#v", providers)
+	}
+	invalid := []string{
+		`{"schema-version":1}`,
+		`{"Hetzner":{"name":"Hetzner","domain":"hetzner.com","comment":""}}`,
+		`{"hetzner":{"name":"other","domain":"hetzner.com","comment":""}}`,
+		`{"hetzner":{"name":"hetzner","domain":"Hetzner.com","comment":""}}`,
+		`{"hetzner":{"name":"hetzner","domain":"hetzner.com","comment":"","region":"hel1"}}`,
+	}
+	for index, content := range invalid {
+		if _, err := validateCloudProviders([]byte(content)); err == nil {
+			t.Errorf("invalid catalog %d was accepted", index)
+		}
 	}
 }
 
@@ -314,6 +383,21 @@ func replaceInFile(t *testing.T, path, old, replacement string) {
 		t.Fatalf("%q does not occur exactly once in %s", old, path)
 	}
 	writeTestFile(t, path, strings.Replace(content, old, replacement, 1))
+}
+
+func mutateInstanceJSON(t *testing.T, root string, mutate func(map[string]any)) {
+	t.Helper()
+	path := filepath.Join(root, InstancePath)
+	var value map[string]any
+	if err := json.Unmarshal([]byte(readTestFile(t, path)), &value); err != nil {
+		t.Fatal(err)
+	}
+	mutate(value)
+	content, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, path, string(content)+"\n")
 }
 
 func readTestFile(t *testing.T, path string) string {

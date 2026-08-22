@@ -3,6 +3,20 @@
   ansible.builtin.hostname:
     name: "{{ ops_hostname }}"
 
+- name: Read the exact system hostname
+  ansible.builtin.command:
+    argv:
+      - hostname
+      - --short
+  register: ubuntu_base_system_hostname
+  changed_when: false
+
+- name: Require the exact system hostname
+  ansible.builtin.assert:
+    that:
+      - ubuntu_base_system_hostname.stdout == ops_hostname
+    fail_msg: "The system hostname must be exactly {{ ops_hostname }}."
+
 - name: Ensure the Ubuntu MOTD is configured
   ansible.builtin.copy:
     dest: /etc/motd

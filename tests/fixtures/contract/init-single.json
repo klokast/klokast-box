@@ -1,14 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
-  "airunners": {
-    "authorized": {
-      "k001-ops-airunner": {
-        "box": "k001",
-        "kind": "controller-container"
-      }
-    },
-    "preferred": "k001-ops-airunner"
-  },
+  "airunners": [
+    "k001-ops-airunner"
+  ],
   "apps": {},
   "boxes": {
     "k001": {

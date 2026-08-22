@@ -95,6 +95,16 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
             value["tailnet"]["members"][MEMBER_LOGIN]["roles"],
             ["operator", "family"],
         )
+        self.assertEqual(
+            value["airunners"],
+            [
+                "k002-ops-airunner",
+                "k001-ops-airunner",
+                "vultr-ops",
+                "hetzner-ops",
+            ],
+        )
+        self.assertIn("Airunners (highest preference first)", stderr)
         self.assertNotIn("timezone", json.dumps(value).lower())
         self.assertNotIn("REPLACE_WITH", json.dumps(value))
         validator.assert_called_once()

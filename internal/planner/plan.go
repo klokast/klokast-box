@@ -124,19 +124,12 @@ type PolicyBinding struct {
 type ControlPlane struct {
 	ActiveController  Controller  `json:"active_controller"`
 	StandbyController *Controller `json:"standby_controller,omitempty"`
-	Airunners         []Airunner  `json:"airunners"`
+	Airunners         []string    `json:"airunners"`
 }
 
 type Controller struct {
 	BoxID    string `json:"box_id"`
 	Hostname string `json:"hostname"`
-}
-
-type Airunner struct {
-	ID              string `json:"id"`
-	Kind            string `json:"kind"`
-	BoxID           string `json:"box_id,omitempty"`
-	RuntimeHostname string `json:"runtime_hostname"`
 }
 
 type App struct {
@@ -344,7 +337,7 @@ func Resolve(snapshot contract.Snapshot) Projection {
 		Sites:      []Site{},
 		Boxes:      []Box{},
 		ControlPlane: ControlPlane{
-			Airunners: []Airunner{},
+			Airunners: []string{},
 		},
 		Apps: []App{},
 	}
@@ -384,23 +377,7 @@ func Resolve(snapshot contract.Snapshot) Projection {
 	if standby := snapshot.Instance.Controllers.Standby; standby != "" {
 		result.ControlPlane.StandbyController = &Controller{BoxID: standby, Hostname: standby + "-ops"}
 	}
-	for _, id := range sortedKeys(snapshot.Instance.Airunners.Authorized) {
-		runner := snapshot.Instance.Airunners.Authorized[id]
-		resolved := Airunner{ID: id, Kind: runner.Kind}
-		if runner.Kind == "box" || runner.Kind == "controller-container" {
-			prefix := runner.Box
-			resolved.BoxID = runner.Box
-			if runner.Kind == "controller-container" {
-				resolved.RuntimeHostname = prefix + "-ops-airunner"
-			} else {
-				resolved.RuntimeHostname = prefix + "-airunner"
-			}
-		} else {
-			resolved.RuntimeHostname = runner.Hostname
-		}
-		result.ControlPlane.Airunners = append(result.ControlPlane.Airunners, resolved)
-	}
-	sort.Slice(result.ControlPlane.Airunners, func(i, j int) bool { return result.ControlPlane.Airunners[i].ID < result.ControlPlane.Airunners[j].ID })
+	result.ControlPlane.Airunners = append(result.ControlPlane.Airunners, snapshot.Instance.Airunners...)
 	appIDs := sortedKeys(snapshot.Instance.Apps)
 	for _, id := range appIDs {
 		binding := snapshot.Instance.Apps[id]

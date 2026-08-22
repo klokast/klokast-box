@@ -4,7 +4,7 @@ Here the instructions to rescue a Hetzner instance that cannot boot or `sudo` an
 
 1. Open Hetzner Cloud web UI: `https://console.hetzner.cloud/`
 2. Select the project.
-3. Click the affected server (hostname: `codex` or `ops`).
+3. Click the affected server (hostname: `hetzner-ops`).
 4. In the server page, look at the top menu bar with tabs like Overview, Graphs, Networking, etc. > click `Enable Rescue`.
 5. Select the ssh public key from MacBook: `xiaoju_codex_hetzner`
 6. Actions > shutdown
@@ -30,6 +30,6 @@ Here the instructions to rescue a Hetzner instance that cannot boot or `sudo` an
   ```
 14. From Macbook, ssh normally as `neo`. `sudo` works again.
   ```
-  mosh nops
+  mosh neo@hetzner-ops
   sudo su
   ```

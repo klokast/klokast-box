@@ -30,7 +30,7 @@ type InstanceDocument struct {
 	Sites       map[string]SiteDocument      `json:"sites"`
 	Boxes       map[string]BoxDocument       `json:"boxes"`
 	Controllers ControllerDocument           `json:"controllers"`
-	Airunners   AirunnersDocument             `json:"airunners"`
+	Airunners   []string                      `json:"airunners"`
 	Apps        map[string]AppBindingDocument `json:"apps"`
 }
 
@@ -51,17 +51,6 @@ type BoxDocument struct {
 type ControllerDocument struct {
 	Active  string `json:"active"`
 	Standby string `json:"standby,omitempty"`
-}
-
-type AirunnersDocument struct {
-	Preferred  string                       `json:"preferred"`
-	Authorized map[string]AirunnerDocument `json:"authorized"`
-}
-
-type AirunnerDocument struct {
-	Kind     string `json:"kind"`
-	Box      string `json:"box,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
 }
 
 type AppBindingDocument struct {

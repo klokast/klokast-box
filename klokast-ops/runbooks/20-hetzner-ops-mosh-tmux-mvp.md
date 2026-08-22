@@ -1,55 +1,56 @@
 # Hetzner Ops MVP: Terraform + Ansible + Tailscale + Mosh + Tmux
 
-This is the minimum viable deployment for the future deployment server named
-`ops`. The current deployment server is `codex`; keep it running until `ops`
-has passed the checks below.
+This is the minimum viable deployment for the cloud infrastructure runner
+named `hetzner-ops`. It is not the Platform execution locus or credential
+custodian after a box controller is active.
 
 It does six things:
-- creates one Ubuntu 24.04 Hetzner VM named `ops`
+- creates one Ubuntu 24.04 Hetzner VM named `hetzner-ops`
 - attaches a Hetzner Cloud firewall at server creation
 - bootstraps the VM from the admin MacBook over public IPv4 SSH
-- enrolls it into Tailscale as `tag:ops`
+- enrolls it into Tailscale as `tag:infra`
 - installs the `neo` and `codex` users, Codex CLI, Ansible, mosh, and tmux
 - generates a GitHub deploy key for `codex` and clones `klokast-box`
 
-Terraform is an admin-side tool for this flow. It is not installed on `ops`.
+Terraform is an admin-side tool for this flow. It is not installed on `hetzner-ops`.
 
 ## Access Model
 
-Operator access to `ops` is Tailscale SSH: `tailscale ssh neo@ops` and
-`tailscale ssh codex@ops`. Public IPv4 SSH is only the initial bootstrap path
+Operator access to `hetzner-ops` is Tailscale SSH: `tailscale ssh neo@hetzner-ops` and
+`tailscale ssh codex@hetzner-ops`. Public IPv4 SSH is only the initial bootstrap path
 before the server is enrolled in Tailscale.
 
-`openssh-client` on `ops` does not create an operator login path. It provides
+`openssh-client` on `hetzner-ops` does not create an operator login path. It provides
 the outbound `ssh` binary that Git uses for `git@github.com:...` clone and
 push operations with the GitHub deploy key.
 
 ## Success
 
 Success means:
-- Hetzner has one server named `ops`
+- Hetzner has one server named `hetzner-ops`
 - the server shape is `cx23` in `hel1`
-- `hostnamectl --static` reports `ops`
+- `hostnamectl --static` reports `hetzner-ops`
 - both local users exist: `neo`, `codex`
 - `neo` can run `sudo` and is prompted for the `neo` password
 - `codex` is password-locked and can run only the narrow root wrappers in
   `/usr/local/sbin/codex-*`
 - `tailscale status --json` on the server reports `Running`
-- the node is enrolled with `tag:ops`
-- `tailscale ssh neo@ops` works from the MacBook
-- `tailscale ssh codex@ops` works from the MacBook
+- the Tailscale machine name is exactly `hetzner-ops`
+- the node is enrolled with `tag:infra`
+- `tailscale ssh neo@hetzner-ops` works from the MacBook
+- `tailscale ssh codex@hetzner-ops` works from the MacBook
 - `codex --version` works as user `codex`
-- `ansible --version`, `mosh --version`, and `tmux -V` work on `ops`
-- `/home/codex/src/klokast/klokast-box` is cloned on `ops`
+- `ansible --version`, `mosh --version`, and `tmux -V` work on `hetzner-ops`
+- `/home/codex/src/klokast/klokast-box` is cloned on `hetzner-ops`
 - the nested `klokast-ops` playbook exists in that checkout
-- `mosh neo@ops` works from the MacBook
+- `mosh neo@hetzner-ops` works from the MacBook
 - the playbook can be run twice without failing
 
 ## Human Interactions
 
 The human steps are explicit in this MVP:
-- create or confirm the reusable, pre-approved Tailscale auth key for `tag:ops`
-- confirm the tailnet ACL/grants allow SSH and mosh access to `tag:ops`
+- create or confirm the reusable, pre-approved Tailscale auth key for `tag:infra`
+- confirm the tailnet ACL/grants allow SSH and mosh access to `tag:infra`
 - run Terraform and Ansible from the admin MacBook
 - trust the new host key when SSH first connects to the public IPv4
 - type the local `neo` password when `ansible-playbook` prompts for it
@@ -83,9 +84,9 @@ Create a key in the Tailscale admin console with these settings:
 - reusable
 - pre-approved
 - not ephemeral
-- tags: `tag:ops`
+- tags: `tag:infra`
 
-The real tailnet policy must allow the operator to reach `tag:ops` over SSH and
+The real tailnet policy must allow the operator to reach `tag:infra` over SSH and
 mosh. The public repo contains `klokast-ops/tailscale/policy.hujson.j2`;
 the active controller renders the deployable policy to
 `~/private/klokast/tailscale-policy.hujson`.
@@ -103,7 +104,7 @@ terraform output -raw ipv4_address
 ```
 
 The Terraform defaults are:
-- hostname: `ops`
+- hostname: `hetzner-ops`
 - server type: `cx23`
 - location: `hel1`
 - image: `ubuntu-24.04`
@@ -137,15 +138,15 @@ ansible-playbook \
 
 The playbook prompts for:
 - the local password to set on `neo`
-- the reusable Tailscale auth key for `tag:ops`
+- the reusable Tailscale auth key for `tag:infra`
 
 GitHub does not use Tailscale SSH. The playbook therefore generates
-`/home/codex/.ssh/github-klokast-codex` on `ops`, pins GitHub SSH host keys,
+`/home/codex/.ssh/github-klokast-codex` on `hetzner-ops`, pins GitHub SSH host keys,
 checks whether GitHub accepts that deploy key, then clones
 `git@github.com:klokast/klokast-box.git` into
 `/home/codex/src/klokast/klokast-box`.
 
-On the first run for a new `ops` server, the playbook can stop after printing
+On the first run for a new `hetzner-ops` server, the playbook can stop after printing
 the public deploy key. In GitHub, add that public key to
 `klokast/klokast-box` under Settings > Deploy keys, enable write access, then
 re-run the same playbook. Do not move the private key through git or chat.
@@ -155,25 +156,26 @@ re-run the same playbook. Do not move the private key through git or chat.
 From the MacBook:
 
 ```bash
-tailscale ssh neo@ops 'hostnamectl --static && id neo && sudo -l'
-tailscale ssh codex@ops 'id codex && codex --version'
-tailscale ssh codex@ops 'ansible --version | head -n 1 && mosh --version | head -n 1 && tmux -V'
-tailscale ssh codex@ops 'git -C ~/src/klokast/klokast-box status --short --branch'
-tailscale ssh codex@ops 'test -f ~/src/klokast/klokast-box/klokast-ops/ansible/playbooks/00-ops-server.yml'
-tailscale ssh codex@ops 'sudo /usr/local/sbin/codex-tailscale-status >/dev/null && sudo /usr/local/sbin/codex-tailscale-prefs >/dev/null'
+tailscale ssh neo@hetzner-ops 'hostnamectl --static && id neo && sudo -l'
+tailscale ssh codex@hetzner-ops 'id codex && codex --version'
+tailscale ssh codex@hetzner-ops 'ansible --version | head -n 1 && mosh --version | head -n 1 && tmux -V'
+tailscale ssh codex@hetzner-ops 'git -C ~/src/klokast/klokast-box status --short --branch'
+tailscale ssh codex@hetzner-ops 'test -f ~/src/klokast/klokast-box/klokast-ops/ansible/playbooks/00-ops-server.yml'
+tailscale ssh codex@hetzner-ops 'sudo /usr/local/sbin/codex-tailscale-status >/dev/null && sudo /usr/local/sbin/codex-tailscale-prefs >/dev/null'
+tailscale ssh codex@hetzner-ops "tailscale status --json | jq -e '(.Self.DNSName // .Self.HostName) | rtrimstr(\".\") | split(\".\")[0] == \"hetzner-ops\"' >/dev/null"
 ```
 
 Then test the operator shell:
 
 ```bash
-mosh neo@ops
+mosh neo@hetzner-ops
 tmux new -As ops
 ```
 
 Then authenticate Codex:
 
 ```bash
-tailscale ssh codex@ops
+tailscale ssh codex@hetzner-ops
 codex login --device-auth
 ```
 
@@ -193,11 +195,11 @@ ansible-playbook --syntax-check playbooks/00-ops-server.yml -e neo_password=dumm
 
 Run these checks after provisioning:
 - re-run `ansible-playbook` once more and confirm it succeeds again
-- verify `tailscale ssh neo@ops` and `tailscale ssh codex@ops`
+- verify `tailscale ssh neo@hetzner-ops` and `tailscale ssh codex@hetzner-ops`
 - verify the `codex`, `ansible`, `mosh`, and `tmux` binaries
 - verify the `klokast-box` checkout and nested `klokast-ops` playbook
-- verify `mosh neo@ops`
-- reboot `ops`, then re-check Tailscale SSH, mosh, tmux, Codex, and Ansible
+- verify `mosh neo@hetzner-ops`
+- reboot `hetzner-ops`, then re-check Tailscale SSH, mosh, tmux, Codex, and Ansible
 
 ## Next Iterations
 
@@ -205,7 +207,7 @@ The next hardening and ergonomics steps should be:
 - narrow `bootstrap_ssh_source_ips` to the admin MacBook's current public CIDR
 - disable or further restrict the public bootstrap SSH path after Tailscale is
   healthy
-- add a host firewall on `ops`
-- store future Tailscale auth keys on `ops` with root-only wrappers
+- add a host firewall on `hetzner-ops`
+- store future Tailscale auth keys on `hetzner-ops` with root-only wrappers
 - install GitHub CLI only if it becomes necessary for operator workflows
 - add an OpenAI API-key backup flow for `codex`

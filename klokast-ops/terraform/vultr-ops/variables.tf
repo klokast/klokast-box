@@ -2,6 +2,11 @@ variable "server_name" {
   description = "Vultr instance hostname and label."
   type        = string
   default     = "vultr-ops"
+
+  validation {
+    condition     = var.server_name == "vultr-ops"
+    error_message = "server_name must be vultr-ops. The system and Tailscale hostnames use this exact runtime identity."
+  }
 }
 
 variable "region" {

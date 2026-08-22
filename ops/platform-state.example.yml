@@ -1,10 +1,10 @@
-last_updated: 2026-03-30
+last_updated: 2026-08-22
 
 platform:
   management_plane: tailscale
 
 providers:
-  Hetzner:
+  hetzner:
     type: cloud
     note: Use provider-native location ids where available.
   residential:
@@ -13,7 +13,7 @@ providers:
 
 locations:
   hel1:
-    provider: Hetzner
+    provider: hetzner
     country: FI
     timezone: Europe/Helsinki
     note: Hetzner Helsinki.
@@ -24,13 +24,12 @@ locations:
     note: Current coarse site code for yii, duh, and the nearby developer laptop.
 
 machines:
-  ops:
-    hostname: codex
-    planned_hostname: ops
+  hetzner-ops:
+    hostname: hetzner-ops
     users: [codex, neo]
-    provider: Hetzner
+    provider: hetzner
     location: hel1
-    note: Current deployment server. Provider and location may change later.
+    note: Cloud infrastructure runner. It is not the Platform credential custodian.
 
   og:
     hostname: og

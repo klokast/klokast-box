@@ -36,6 +36,25 @@ class PlatformMapTest(unittest.TestCase):
             "tailscale_ips": [],
         }
 
+    def test_cloud_provider_catalog_is_strict_and_has_initial_entries(self):
+        self.assertEqual(set(self.mod.CLOUD_PROVIDERS), {"hetzner", "vultr"})
+        self.assertEqual(self.mod.CLOUD_PROVIDERS["hetzner"]["domain"], "hetzner.com")
+        self.assertEqual(self.mod.CLOUD_PROVIDERS["vultr"]["domain"], "vultr.com")
+        with self.assertRaises(SystemExit):
+            self.mod.validate_cloud_provider_catalog(
+                {"vultr": {"name": "vultr", "domain": "vultr.com", "comment": "", "region": "icn"}}
+            )
+
+    def test_supported_cloud_ops_hosts_are_not_discovered_as_boxes(self):
+        tailnet = {
+            "peers": [
+                self.peer("k001-ops", ["tag:ops"]),
+                self.peer("vultr-ops", ["tag:infra"]),
+                self.peer("hetzner-ops", ["tag:infra"]),
+            ]
+        }
+        self.assertEqual(self.mod.discover_boxes_from_tailnet(tailnet), ["k001"])
+
     def observation_source(self):
         peers = [
             self.peer("k001-router", ["tag:vm"]),

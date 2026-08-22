@@ -9,11 +9,17 @@
       private: true
       confirm: true
     - name: tailscale_auth_key
-      prompt: Enter the reusable pre-approved Tailscale auth key for tag:ops (leave blank only if the host is already enrolled)
+      prompt: Enter the reusable pre-approved Tailscale auth key for tag:infra (leave blank only if the host is already enrolled)
       private: true
       default: ""
 
   pre_tasks:
+    - name: Require the exact Hetzner runtime hostname
+      ansible.builtin.assert:
+        that:
+          - ops_hostname == "hetzner-ops"
+        fail_msg: The Hetzner system and Tailscale hostnames must be exactly hetzner-ops.
+
     - name: Assert the target is an Ubuntu host
       ansible.builtin.assert:
         that:

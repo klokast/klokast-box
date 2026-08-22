@@ -6,7 +6,7 @@ supports a Codex/OpenAI runner container. Controller
 private state is not mounted into the container, but the runner remains a
 persistent Control TCB authority because it can connect as `smith`. The target
 architecture supports this `<box>-ops-airunner` container as a steady-state
-placement. A dedicated `<box>-airunner` VM is optional stronger isolation.
+placement.
 
 ## Provision
 

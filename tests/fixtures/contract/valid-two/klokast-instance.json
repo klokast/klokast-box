@@ -1,18 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
-  "airunners": {
-    "authorized": {
-      "k001-airunner": {
-        "box": "k001",
-        "kind": "box"
-      },
-      "vultr-ops-airunner": {
-        "hostname": "vultr-ops-airunner",
-        "kind": "external"
-      }
-    },
-    "preferred": "k001-airunner"
-  },
+  "airunners": [
+    "k002-ops-airunner",
+    "k001-ops-airunner",
+    "vultr-ops",
+    "hetzner-ops"
+  ],
   "apps": {
     "music": {
       "data": {

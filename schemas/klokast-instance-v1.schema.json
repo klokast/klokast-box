@@ -57,33 +57,6 @@
         }
       }
     },
-    "controller-container-airunner": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "box"],
-      "properties": {
-        "kind": {"const": "controller-container"},
-        "box": {"$ref": "#/$defs/box-id"}
-      }
-    },
-    "box-airunner": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "box"],
-      "properties": {
-        "kind": {"const": "box"},
-        "box": {"$ref": "#/$defs/box-id"}
-      }
-    },
-    "external-airunner": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "hostname"],
-      "properties": {
-        "kind": {"const": "external"},
-        "hostname": {"$ref": "#/$defs/id"}
-      }
-    },
     "single-box-placement": {
       "type": "object",
       "additionalProperties": false,
@@ -219,24 +192,10 @@
       }
     },
     "airunners": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["preferred", "authorized"],
-      "properties": {
-        "preferred": {"$ref": "#/$defs/id"},
-        "authorized": {
-          "type": "object",
-          "minProperties": 1,
-          "propertyNames": {"$ref": "#/$defs/id"},
-          "additionalProperties": {
-            "oneOf": [
-              {"$ref": "#/$defs/controller-container-airunner"},
-              {"$ref": "#/$defs/box-airunner"},
-              {"$ref": "#/$defs/external-airunner"}
-            ]
-          }
-        }
-      }
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/id"}
     },
     "apps": {
       "type": "object",

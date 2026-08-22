@@ -122,11 +122,15 @@ func Check(instancePath string, engine Engine) (Report, error) {
 		c.validateLock(lock)
 	}
 	if instanceOK {
+		providers, providerErr := loadCloudProviders()
+		if providerErr != nil {
+			return Report{}, fmt.Errorf("load embedded cloud-provider catalog: %w", providerErr)
+		}
 		manifests, manifestErr := loadAppManifests()
 		if manifestErr != nil {
 			return Report{}, fmt.Errorf("load embedded application manifests: %w", manifestErr)
 		}
-		c.validateInstance(instance, manifests)
+		c.validateInstance(instance, providers, manifests)
 	}
 	return c.report(), nil
 }
@@ -273,7 +277,7 @@ func (c *checker) validateLock(lock LockDocument) {
 	}
 }
 
-func (c *checker) validateInstance(instance InstanceDocument, manifests map[string]appManifest) {
+func (c *checker) validateInstance(instance InstanceDocument, providers map[string]cloudProvider, manifests map[string]appManifest) {
 	if instance.Schema != schemaURL(c.engine.Commit, "klokast-instance-v1.schema.json") {
 		c.add(InstancePath+"$.$schema", "schema.engine", "instance schema URL must use the exact approved engine commit")
 	}
@@ -306,7 +310,10 @@ func (c *checker) validateInstance(instance InstanceDocument, manifests map[stri
 				break
 			}
 		}
-		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "airunner", "ops-airunner"} {
+		if _, collision := providers[box]; collision {
+			c.add(InstancePath+"$.boxes."+box, "identity.cloud-collision", "box ID collides with a cloud-provider runtime prefix")
+		}
+		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "ops-airunner"} {
 			name := box + "-" + suffix
 			if len(name) > 63 || !identifierPattern.MatchString(name) {
 				c.add(InstancePath+"$.boxes."+box, "identity.runtime", "box ID cannot produce safe runtime names")
@@ -328,38 +335,25 @@ func (c *checker) validateInstance(instance InstanceDocument, manifests map[stri
 			c.add(InstancePath+"$.controllers.standby", "cardinality.controller", "active and standby controllers must use different boxes")
 		}
 	}
-	if _, ok := instance.Airunners.Authorized[instance.Airunners.Preferred]; !ok {
-		c.add(InstancePath+"$.airunners.preferred", "reference.airunner", "preferred airunner must be authorized")
-	}
-	airunnerBoxes := map[string]bool{}
-	for id, runner := range instance.Airunners.Authorized {
-		location := InstancePath + "$.airunners.authorized." + id
-		switch runner.Kind {
-		case "controller-container":
-			if runner.Box != instance.Controllers.Active && runner.Box != instance.Controllers.Standby {
-				c.add(location+".box", "reference.controller", "controller-container airunner must use an active or standby controller box")
+	for index, id := range instance.Airunners {
+		location := fmt.Sprintf("%s$.airunners[%d]", InstancePath, index)
+		if box, ok := strings.CutSuffix(id, "-ops-airunner"); ok && box != "" {
+			if box != instance.Controllers.Active && box != instance.Controllers.Standby {
+				c.add(location, "reference.controller", "airunner container must run in an active or standby controller VM")
 			}
-			if id != runner.Box+"-ops-airunner" {
-				c.add(location, "identity.airunner", "controller-container airunner ID must be <box>-ops-airunner")
-			}
-		case "box":
-			if _, ok := instance.Boxes[runner.Box]; !ok {
-				c.add(location+".box", "reference.box", "airunner references an unknown box")
-			}
-			if id != runner.Box+"-airunner" {
-				c.add(location, "identity.airunner", "box airunner ID must be <box>-airunner")
-			}
-		case "external":
-			if id != runner.Hostname {
-				c.add(location, "identity.airunner", "external airunner ID must equal its hostname")
-			}
+			continue
 		}
-		if runner.Box != "" {
-			if airunnerBoxes[runner.Box] {
-				c.add(location+".box", "cardinality.airunner", "a box may host only one authorized airunner")
+		if provider, ok := strings.CutSuffix(id, "-ops"); ok && provider != "" {
+			if _, collision := instance.Boxes[provider]; collision {
+				c.add(location, "identity.cloud-collision", "cloud airunner runtime name collides with a box ops runtime name")
+				continue
 			}
-			airunnerBoxes[runner.Box] = true
+			if _, supported := providers[provider]; !supported {
+				c.add(location, "reference.cloud-provider", "cloud airunner references an unsupported cloud provider")
+			}
+			continue
 		}
+		c.add(location, "identity.airunner", "airunner ID must be <box>-ops-airunner or <cloud>-ops")
 	}
 
 	for appID, app := range instance.Apps {

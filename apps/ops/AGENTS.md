@@ -11,8 +11,7 @@ that runner is not the controller or the private-state custodian.
   runner container on the same VM must not mount `/home/smith`, `/etc/klokast`,
   `/var/lib/klokast`, deploy keys, private registries, OAuth files, and broker
   state. It remains a persistent Control TCB authority. The
-  `<box>-ops-airunner` container is a supported steady-state placement. A
-  dedicated `<box>-airunner` VM is optional stronger isolation.
+  `<box>-ops-airunner` container is a supported steady-state placement.
 
 # Deployment model
 

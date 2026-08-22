@@ -49,7 +49,8 @@ checker rejects duplicate keys and unknown fields and reports a JSON path.
 
 Property names in the private files use kebab case. Object keys use stable,
 lowercase IDs. Unordered sets are JSON arrays. The checker requires unique
-items. The resolver sorts sets before it creates a projection.
+items. The resolver sorts sets before it creates a projection. The `airunners`
+array is an ordered preference list. The resolver does not sort it.
 
 Each file has a `$schema` URL. The URL uses the full approved engine commit:
 
@@ -106,15 +107,12 @@ Tailnet values are placeholders.
     "active": "k002",
     "standby": "k001"
   },
-  "airunners": {
-    "preferred": "k002-ops-airunner",
-    "authorized": {
-      "k002-ops-airunner": {
-        "kind": "controller-container",
-        "box": "k002"
-      }
-    }
-  },
+  "airunners": [
+    "k002-ops-airunner",
+    "k001-ops-airunner",
+    "vultr-ops",
+    "hetzner-ops"
+  ],
   "apps": {
     "music": {
       "desired-state": "absent",
@@ -150,6 +148,7 @@ k002-bak
 k002-dmz
 k002-iot
 k002-ops
+k002-ops-airunner
 ```
 
 This rule removes the old `box-002` to `k002` translation. Box IDs cannot use
@@ -158,16 +157,21 @@ a reserved runtime suffix or produce a DNS label longer than 63 characters.
 The controller object selects one active box and, optionally, one different
 standby box. It does not contain live controller status.
 
-An airunner has one of these closed kinds:
+`airunners` is a non-empty, duplicate-free array of exact runtime identities.
+The first item has the highest preference. Every item remains desired and must
+be online. Priority does not start, stop, select, or fail over a runner.
 
-- `controller-container`: runs on an active or standby controller box and has
-  the ID `<box>-ops-airunner`;
-- `box`: runs in the optional hardened box VM and has the ID
-  `<box>-airunner`;
-- `external`: has an explicit hostname, and its ID equals that hostname.
+An airunner identity has one of two forms:
 
-Only one authorized airunner can use a box. `preferred` must name an entry in
-`authorized`.
+- `<box>-ops-airunner` is a container in an active or standby `<box>-ops` VM.
+  It must have `tag:airunner`.
+- `<cloud>-ops` is a cloud VM. Its system hostname and Tailscale machine name
+  must both equal the array item. It must have `tag:infra`.
+
+The public [cloud provider catalog](../cloud-providers.json) defines supported
+`<cloud>` IDs. A box ID cannot equal a cloud-provider ID. The checker rejects
+unknown providers, other suffixes, name collisions, duplicate items, and the
+old placement object.
 
 ## Connectivity profiles
 
@@ -279,7 +283,11 @@ check edits before commit.
 The resolver is deterministic and offline. It derives runtime names, UTC,
 legacy Tailnet groups, connectivity capabilities, controller placement,
 airunner identities, app placement, features, and retained data. It sorts maps
-and sets before it creates the projection hash.
+and sets before it creates the projection hash. It preserves the `airunners`
+order, and a priority change changes the projection hash.
+
+Plan v1 emits `control_plane.airunners` as the same ordered string array. It
+does not emit airunner kinds, placement fields, or derived airunner objects.
 
 The compatibility planner compares this projection with the current private
 deployment file, platform-resource registry, and controller registry. A
@@ -290,7 +298,9 @@ absent. An enabled legacy app must have explicit present intent.
 With a fresh Observation v1 file and Instance Source Receipt v1, `plan` emits
 a hashed Plan v1 artifact. It does not apply changes. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy
-resources do not become desired state.
+resources do not become desired state. `doctor` checks every listed airunner
+for presence, online state, and its required tag. It does not select a runner,
+implement failover, or check a separate airunner Xen guest.
 
 Generated and observed data is output. It is never another Git authority.
 

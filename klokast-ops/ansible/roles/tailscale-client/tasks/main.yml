@@ -60,7 +60,7 @@
       - tailscale_auth_key | length > 0
     fail_msg: >
       The host is not yet enrolled in Tailscale. Re-run the playbook with the
-      reusable pre-approved tag:ops auth key.
+      reusable pre-approved auth key for the declared tag.
   when: (tailscale_status | default({})).BackendState | default("") != "Running"
 
 - name: Enroll the host into Tailscale

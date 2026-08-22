@@ -2,24 +2,18 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
-# 2026-08-22 - tailscale machine tags
+# 2026-08-22 - Terraform static-test execution locus
 
-review if tailscale tag `tag:infra` should become `tag:ops`
+The airunner and active controller do not have Terraform. Source changes can
+run Terraform `fmt`, `validate`, and `test` only on the trusted MacBook. Add a
+credential-free CI job for these static checks. Do not install Terraform on
+the controller only to work around this missing check.
 
-# 2026-08-22 - authorized cloud providers list
+# 2026-08-22 - catalog-driven cloud provider provisioning
 
-create a list of cloud providers
-for example `cloud-providers.json`
-(part of the upstream repo):
-`{hetzner: {name: "hetzner", domain: "hetzner.com", comment: "", },
-  vultr: {name: "vultr", domain: "vultr.com", comment:""}}`
-with a keyword and the URL and comment and link to the terraform template or automation,
-and that file is hashed and pinned for security.
-later to automatize the registration to the cloud provider,
-getting and securing the API key,
-look up prices and datacenter physical locations,
-register a new user account by the cloud provider,
-to fill in template or customize completely the terraform files to spin up `<cloud>-ops`.
+Keep `cloud-providers.json` as the reviewed public identity catalog. Later
+work can add pricing and region discovery, account registration, API-key
+custody, and catalog-driven Terraform workflows.
 
 # 2026-08-22 - add Tor as a shared service
 

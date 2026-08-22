@@ -36,6 +36,7 @@ PLATFORM_MAP_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "70-platform-map.yml"
 RENDER_NODE_INVENTORY = SCRIPT_DIR / "render-node-inventory"
 PLATFORM_RESOURCES = SCRIPT_DIR / "platform-resources"
 PLATFORM_MAP_EMPTY_TARGET = "all:!all"
+CLOUD_PROVIDERS_FILE = REPO_DIR / "cloud-providers.json"
 
 ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops")
 RESERVED_BOX_SUFFIXES = (*ROLE_SUFFIXES, "agent", "agt")
@@ -84,6 +85,55 @@ HETZNER_LOCATION_HINTS = {
 def die(message: str) -> None:
     print(f"platform-map: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def validate_cloud_provider_catalog(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict) or not value:
+        die("cloud-providers.json must be a non-empty object")
+    result: dict[str, dict[str, str]] = {}
+    provider_pattern = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+    domain_pattern = re.compile(
+        r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+        r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    )
+    for provider_id, entry in value.items():
+        if not isinstance(provider_id, str) or not provider_pattern.fullmatch(provider_id):
+            die("cloud-providers.json contains a provider ID that is not normalized")
+        if not isinstance(entry, dict) or set(entry) != {"name", "domain", "comment"}:
+            die(
+                f"cloud-providers.json entry {provider_id} must contain only "
+                "name, domain, and comment"
+            )
+        if not all(isinstance(entry[field], str) for field in ("name", "domain", "comment")):
+            die(f"cloud-providers.json entry {provider_id} fields must be strings")
+        if entry["name"] != provider_id:
+            die(f"cloud-providers.json entry {provider_id} name must equal its ID")
+        domain = entry["domain"]
+        if len(domain) > 253 or domain != domain.lower() or not domain_pattern.fullmatch(domain):
+            die(f"cloud-providers.json entry {provider_id} domain must be a lowercase DNS name")
+        if len(entry["comment"]) > 500:
+            die(f"cloud-providers.json entry {provider_id} comment exceeds 500 characters")
+        result[provider_id] = dict(entry)
+    return result
+
+
+def load_cloud_provider_catalog(path: Path) -> dict[str, dict[str, str]]:
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate object key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        die(f"cannot load the checked-in cloud-providers.json catalog: {error}")
+    return validate_cloud_provider_catalog(value)
+
+
+CLOUD_PROVIDERS = load_cloud_provider_catalog(CLOUD_PROVIDERS_FILE)
 
 
 def utc_now() -> str:
@@ -471,7 +521,7 @@ def discover_boxes_from_tailnet(tailnet: dict[str, Any]) -> list[str]:
         for name in peer.get("names") or []:
             short = str(name).split(".", 1)[0].lower()
             match = pattern.match(short)
-            if match and valid_box_name(match.group(1)):
+            if match and match.group(1) not in CLOUD_PROVIDERS and valid_box_name(match.group(1)):
                 boxes.add(match.group(1))
     return sorted(boxes)
 

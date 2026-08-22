@@ -51,6 +51,16 @@ run "vultr_ops_shape" {
 
 }
 
+run "reject_vultr_name_override" {
+  command = plan
+
+  variables {
+    server_name = "ops"
+  }
+
+  expect_failures = [var.server_name]
+}
+
 run "firewall_rules" {
   command = plan
 

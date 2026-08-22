@@ -48,7 +48,7 @@ func TestHealthySingleBoxAndDirtyWorktree(t *testing.T) {
 	}
 }
 
-func TestHealthyTwoBoxWithStandbyAndExternalAirunner(t *testing.T) {
+func TestHealthyTwoBoxWithAllOrderedAirunners(t *testing.T) {
 	instance := prepareInstance(t, true)
 	observation := twoBoxObservation()
 	result, err := Doctor(Options{InstancePath: instance, ObservationPath: writeObservation(t, observation), Now: func() time.Time { return testNow }}, testEngine)
@@ -57,6 +57,37 @@ func TestHealthyTwoBoxWithStandbyAndExternalAirunner(t *testing.T) {
 	}
 	if !result.Valid || !result.Healthy {
 		t.Fatalf("two-box observation is not healthy: %#v", result)
+	}
+}
+
+func TestLowerPriorityAirunnersRemainStrictlyRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Observation)
+		code   string
+	}{
+		{"missing", func(observation *Observation) {
+			observation.TailnetMachines = removeMachine(observation.TailnetMachines, "hetzner-ops")
+		}, "tailnet.missing"},
+		{"offline", func(observation *Observation) {
+			machineForTest(t, observation, "vultr-ops").Online = false
+		}, "tailnet.offline"},
+		{"wrong-tag", func(observation *Observation) {
+			machineForTest(t, observation, "k001-ops-airunner").Tags = []string{"tag:infra"}
+		}, "tailnet.tag"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := twoBoxObservation()
+			test.mutate(&observation)
+			result, err := Doctor(Options{InstancePath: prepareInstance(t, true), ObservationPath: writeObservation(t, observation), Now: func() time.Time { return testNow }}, testEngine)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Valid || result.Healthy || !hasFinding(result, test.code) {
+				t.Fatalf("lower-priority airunner drift was not reported: %#v", result)
+			}
+		})
 	}
 }
 
@@ -97,7 +128,7 @@ func TestObservedDriftIsRedacted(t *testing.T) {
 
 func TestExtraLegacyResourcesDoNotAffectAuthorityDecision(t *testing.T) {
 	observation := singleBoxObservation()
-	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "k001-airunner", Online: true, Tags: []string{"tag:airunner"}})
+	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "legacy-extra", Online: true, Tags: []string{"tag:infra"}})
 	sortObservation(&observation)
 	observation.Boxes[0].RunningGuests = append(observation.Boxes[0].RunningGuests, "legacy")
 	observation.Boxes[0].ConfiguredGuests = append(observation.Boxes[0].ConfiguredGuests, "legacy")
@@ -194,11 +225,11 @@ func singleBoxObservation() Observation {
 
 func twoBoxObservation() Observation {
 	observation := singleBoxObservation()
-	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "k001-airunner", Online: true, Tags: []string{"tag:airunner"}})
-	observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "vultr-ops-airunner", Online: true, Tags: []string{"tag:airunner"}})
-	observation.Boxes[0].RunningGuests = append(observation.Boxes[0].RunningGuests, "airunner")
-	observation.Boxes[0].ConfiguredGuests = append(observation.Boxes[0].ConfiguredGuests, "airunner")
-	observation.Boxes[0].AutostartGuests = append(observation.Boxes[0].AutostartGuests, "airunner")
+	observation.TailnetMachines = append(observation.TailnetMachines,
+		TailnetMachine{Hostname: "k002-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
+		TailnetMachine{Hostname: "vultr-ops", Online: true, Tags: []string{"tag:infra"}},
+		TailnetMachine{Hostname: "hetzner-ops", Online: true, Tags: []string{"tag:infra"}},
+	)
 	for _, role := range []string{"bak", "dmz", "dom0", "iot", "ops", "router"} {
 		tag := "tag:vm"
 		if role == "dom0" { tag = "tag:dom0" }
@@ -306,6 +337,17 @@ func removeMachine(values []TailnetMachine, hostname string) []TailnetMachine {
 	result := []TailnetMachine{}
 	for _, value := range values { if value.Hostname != hostname { result = append(result, value) } }
 	return result
+}
+
+func machineForTest(t *testing.T, observation *Observation, hostname string) *TailnetMachine {
+	t.Helper()
+	for index := range observation.TailnetMachines {
+		if observation.TailnetMachines[index].Hostname == hostname {
+			return &observation.TailnetMachines[index]
+		}
+	}
+	t.Fatalf("test observation has no machine %s", hostname)
+	return nil
 }
 
 func hasFinding(result Result, code string) bool {

@@ -60,7 +60,9 @@ timezone option to this interface.
 Important options:
 
 - `--boxes k001,k002`: select boxes explicitly. If omitted, the tool tries to
-  infer box names from Tailscale peers.
+  infer box names from Tailscale peers. It loads the checked-in
+  `cloud-providers.json` catalog and excludes supported `<cloud>-ops` hosts
+  from box discovery.
 - `--skip-ansible`: refresh only local, Tailscale, and provider facts.
 - `--remote-scope full|dom0|podman|none`: choose which remote facts to collect.
   Default `full` collects dom0/Xen/storage and Podman VM facts. Use `dom0` for

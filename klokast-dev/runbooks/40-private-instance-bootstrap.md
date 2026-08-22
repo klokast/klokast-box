@@ -459,7 +459,9 @@ Confirm these points locally:
 - `k001` uses `local-ap-direct-egress` and `tailscale`;
 - `k002` uses only `tailscale`;
 - the active controller is `k002`, and the standby controller is `k001`;
-- the preferred and only authorized airunner is `k002-ops-airunner` on `k002`;
+- the airunner preference order is `k002-ops-airunner`,
+  `k001-ops-airunner`, `vultr-ops`, then `hetzner-ops`;
+- every listed airunner is desired and must be online with its required tag;
 - Music is absent and its declared `library` data on `k002` has preservation
   intent;
 - no other removed app is present;

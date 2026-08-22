@@ -16,6 +16,12 @@
     ops_motd: "Wake up, Neo...\n"
 
   pre_tasks:
+    - name: Require the exact Vultr runtime hostname
+      ansible.builtin.assert:
+        that:
+          - ops_hostname == "vultr-ops"
+        fail_msg: The Vultr system and Tailscale hostnames must be exactly vultr-ops.
+
     - name: Assert the target is an Ubuntu host
       ansible.builtin.assert:
         that:

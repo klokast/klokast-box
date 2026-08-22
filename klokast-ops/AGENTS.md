@@ -1,5 +1,5 @@
-This directory contains the automated path for the future deployment server
-named `ops`.
+This directory contains the automated path for the `hetzner-ops` and
+`vultr-ops` cloud infrastructure runners.
 
 Use the `mosh` + `tmux` path as the current supported operator workflow.
 
@@ -10,7 +10,7 @@ Automation lives here:
 - Runbook: `/home/codex/src/klokast/klokast-box/klokast-ops/runbooks/20-hetzner-ops-mosh-tmux-mvp.md`
 - Vultr infra-agent runbook: `/home/codex/src/klokast/klokast-box/klokast-ops/runbooks/81-provision-vultr-ops.md`
 
-- Hetzner VM: `ops`
+- Hetzner VM: `hetzner-ops`, with matching system and Tailscale hostnames
 - Vultr VM: `vultr-ops`, an authoritative AI runner with `tag:infra`; it is
   not the Ansible execution locus or Platform credential custodian
 - users: `neo` and `codex`
@@ -28,7 +28,7 @@ Automation lives here:
   `klokast-ops/ansible/inventory/group_vars/all.yml`.
 - `<box>-ops` controller packages are declared in
   `ansible/inventory/group_vars/ops.yml`.
-- deployment toolchain on `ops`: Ansible, not Terraform
+- deployment toolchain on `hetzner-ops`: Ansible, not Terraform
 
 For reference, the older manual runbook:
 `/home/codex/src/klokast/klokast-box/klokast-ops/runbooks/03-hetzner-mosh-tmux-on-ops.md`

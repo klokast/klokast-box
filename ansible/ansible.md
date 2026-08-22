@@ -183,7 +183,7 @@ Step-by-Step Flow :
       - initial apps if requested
       - Each identity is created by Ansible on the target machine using ops-side wrappers.
   17. Optional: create the in-Platform ops controller
-      - Hetzner `ops` may remain an approved Codex/OpenAI runner and
+      - `hetzner-ops` may remain an approved Codex/OpenAI runner and
         break-glass bootstrap host.
       - Run `ansible/bin/provision-ops-vm --box <box>` for the chosen master
         box.

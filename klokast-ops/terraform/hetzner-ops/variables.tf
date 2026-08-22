@@ -1,7 +1,12 @@
 variable "server_name" {
   description = "Hetzner Cloud server hostname."
   type        = string
-  default     = "ops"
+  default     = "hetzner-ops"
+
+  validation {
+    condition     = var.server_name == "hetzner-ops"
+    error_message = "server_name must be hetzner-ops. The system and Tailscale hostnames use this exact runtime identity."
+  }
 }
 
 variable "server_type" {

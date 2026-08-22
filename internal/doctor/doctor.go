@@ -356,12 +356,11 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 		checkGuest(box, present, prefix, "ops")
 	}
 	for _, runner := range projection.ControlPlane.Airunners {
-		checkMachine(runner.RuntimeHostname, "tag:airunner")
-		if runner.Kind == "box" {
-			prefix := prefixForBoxID(projection, runner.BoxID)
-			box, present := boxes[prefix]
-			checkGuest(box, present, prefix, "airunner")
+		tag := "tag:infra"
+		if strings.HasSuffix(runner, "-ops-airunner") {
+			tag = "tag:airunner"
 		}
+		checkMachine(runner, tag)
 	}
 }
 

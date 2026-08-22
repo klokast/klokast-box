@@ -1,4 +1,6 @@
-The `klokast-ops/terraform/vultr-ops` code is intended to run from the current Ansible controller (typically before migration it is user `agent` on `hetzner-ops`  ; after migration it is user `klokast-agent` on `<box>-ops`.
+The `klokast-ops/terraform/vultr-ops` code is intended to run from the current
+Ansible controller. Before migration, this is typically user `agent` on
+`hetzner-ops`. After migration, this is user `klokast-agent` on `<box>-ops`.
 It runs from whichever machine is acting as controller and has Terraform, Ansible, Tailscale wrapper access, `VULTR_API_KEY`, `GITHUB_TOKEN`, and the bootstrap SSH key.
 
 The `vultr-ops` provisioned by this code is a cloud AI runner and persistent Control TCB authority. It runs Codex CLI as user `agent`, uses Tailscale tag `tag:infra`, and reaches `<box>-ops` as `smith`. It is not the Ansible execution locus or Platform credential custodian.
@@ -64,6 +66,7 @@ tailscale ssh agent@vultr-ops 'grep -A2 "^\[tui\]" ~/.codex/config.toml'
         - plan: `vc2-1c-1gb`
         - OS ID: `2760`, documented as Ubuntu 26.04 LTS x64
         - Vultr tags: `klokast`, `infra-agent`
+    - Rejects any `server_name` override other than `vultr-ops`.
 - `klokast-ops/terraform/vultr-ops/outputs.tf`
       - Exposes instance ID, hostname, IPv4, IPv6, firewall group ID, SSH key ID.
   - `klokast-ops/terraform/vultr-ops/versions.tf`
@@ -81,6 +84,7 @@ tailscale ssh agent@vultr-ops 'grep -A2 "^\[tui\]" ~/.codex/config.toml'
         - ops_tailscale_tags: [`tag:infra`]
         - exact hostname required
         - GitHub deploy key auto-registration enabled
+    - Verifies that the system and Tailscale hostnames are both `vultr-ops`.
     - Applies roles:
         - ubuntu-base
         - user-accounts

@@ -101,8 +101,7 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		{"reserved-box", "identity.box", func(value map[string]any) {
 			value["boxes"].(map[string]any)["builder"] = value["boxes"].(map[string]any)["k001"]
 			value["controllers"].(map[string]any)["active"] = "builder"
-			value["airunners"].(map[string]any)["preferred"] = "builder-ops-airunner"
-			value["airunners"].(map[string]any)["authorized"] = map[string]any{"builder-ops-airunner": map[string]any{"kind": "controller-container", "box": "builder"}}
+			value["airunners"] = []any{"builder-ops-airunner"}
 		}},
 	}
 	for _, test := range tests {

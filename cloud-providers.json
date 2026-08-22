@@ -1,0 +1,12 @@
+{
+  "hetzner": {
+    "name": "hetzner",
+    "domain": "hetzner.com",
+    "comment": ""
+  },
+  "vultr": {
+    "name": "vultr",
+    "domain": "vultr.com",
+    "comment": ""
+  }
+}

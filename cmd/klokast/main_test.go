@@ -196,16 +196,14 @@ controllers:
 		PlanSHA256 string `json:"plan_sha256"`
 		Projection struct {
 			ControlPlane struct {
-				Airunners []struct {
-					RuntimeHostname string `json:"runtime_hostname"`
-				} `json:"airunners"`
+				Airunners []string `json:"airunners"`
 			} `json:"control_plane"`
 		} `json:"projection"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0].RuntimeHostname != "k001-ops-airunner" {
+	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0] != "k001-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
 }
@@ -222,10 +220,7 @@ func mainInstanceValues() string {
   "sites": {"milla": {"country": "FR", "description": "Example home"}},
   "boxes": {"k001": {"site": "milla", "connectivity-profiles": ["tailscale"]}},
   "controllers": {"active": "k001"},
-  "airunners": {
-    "preferred": "k001-ops-airunner",
-    "authorized": {"k001-ops-airunner": {"kind": "controller-container", "box": "k001"}}
-  },
+  "airunners": ["k001-ops-airunner"],
   "apps": {}
 }`
 }

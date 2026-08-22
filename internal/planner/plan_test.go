@@ -36,7 +36,7 @@ func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
 		t.Fatalf("unexpected controller projection: %#v", result.Projection.ControlPlane)
 	}
 	runner := result.Projection.ControlPlane.Airunners[0]
-	if runner.Kind != "controller-container" || runner.RuntimeHostname != "k001-ops-airunner" || runner.BoxID != "k001" {
+	if runner != "k001-ops-airunner" {
 		t.Fatalf("unexpected airunner projection: %#v", runner)
 	}
 	box := result.Projection.Boxes[0]
@@ -255,7 +255,7 @@ func TestProjectionIsDeterministicAcrossRepositoryPaths(t *testing.T) {
 	}
 }
 
-func TestTwoBoxProjectionResolvesStandbyAndExternalRunner(t *testing.T) {
+func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
 	root := prepareTwoBoxInstance(t, nil)
 	registry := writeRegistry(t, canonicalTwoBoxRegistry())
 	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
@@ -269,8 +269,34 @@ func TestTwoBoxProjectionResolvesStandbyAndExternalRunner(t *testing.T) {
 		t.Fatalf("unexpected standby controller: %#v", result.Projection.ControlPlane.StandbyController)
 	}
 	runners := result.Projection.ControlPlane.Airunners
-	if len(runners) != 2 || runners[1].RuntimeHostname != "vultr-ops-airunner" {
+	want := "k002-ops-airunner,k001-ops-airunner,vultr-ops,hetzner-ops"
+	if strings.Join(runners, ",") != want {
 		t.Fatalf("unexpected runners: %#v", runners)
+	}
+}
+
+func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
+	registry := writeRegistry(t, canonicalTwoBoxRegistry())
+	first, err := Plan(Options{InstancePath: prepareTwoBoxInstance(t, nil), CompatibilityRegistry: registry}, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRoot := prepareTwoBoxInstance(t, func(root string) {
+		replaceInFile(t, filepath.Join(root, contract.InstancePath),
+			`"k002-ops-airunner",
+    "k001-ops-airunner"`,
+			`"k001-ops-airunner",
+    "k002-ops-airunner"`)
+	})
+	second, err := Plan(Options{InstancePath: secondRoot, CompatibilityRegistry: registry}, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Valid || !second.Valid || first.ProjectionHash == second.ProjectionHash {
+		t.Fatalf("ordered airunner priority did not affect projection hash: %q == %q", first.ProjectionHash, second.ProjectionHash)
+	}
+	if strings.Join(second.Projection.ControlPlane.Airunners, ",") != "k001-ops-airunner,k002-ops-airunner,vultr-ops,hetzner-ops" {
+		t.Fatalf("projection did not preserve changed priority: %#v", second.Projection.ControlPlane.Airunners)
 	}
 }
 

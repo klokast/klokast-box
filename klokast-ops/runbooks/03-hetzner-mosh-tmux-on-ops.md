@@ -87,7 +87,7 @@ agent ALL=(root) NOPASSWD: /usr/bin/npm update -g *
 # setup Tailscale
 
 sudo curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --ssh --advertise-tags=tag:ops
+sudo tailscale up --ssh --hostname=hetzner-ops --advertise-tags=tag:infra
 
 # mosh
 
@@ -123,7 +123,7 @@ locale -a | grep en_GB          # output should be en_GB.utf8
 
 Authentication is handled by Tailscale SSH, then connection moves to mosh:
 
-From MacBook, tailscale-ssh to `ops`
+From MacBook, use Tailscale SSH to the exact cloud runtime name.
 - once as user `agent`: `mosh vaops`,
 - once again as user `neo`: `mosh vnops`
 

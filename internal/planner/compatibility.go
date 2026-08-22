@@ -160,8 +160,8 @@ func compareDeployment(projection Projection, legacy compatibilityDocument) Comp
 	})
 	for _, runner := range projection.ControlPlane.Airunners {
 		findings = append(findings, Finding{
-			Path: "deployment.control_plane.airunners." + runner.ID, Class: "derived", Code: "airunner.instance-specification",
-			Authority: "instance_specification_v1", Message: "Instance Specification v1 owns the proposed airunner identity and placement",
+			Path: "deployment.control_plane.airunners." + runner, Class: "derived", Code: "airunner.instance-specification",
+			Authority: "instance_specification_v1", Message: "Instance Specification v1 owns the ordered airunner runtime identity",
 		})
 	}
 	result := Compatibility{Findings: findings}

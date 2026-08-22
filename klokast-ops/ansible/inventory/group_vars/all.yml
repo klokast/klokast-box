@@ -1,5 +1,5 @@
 ---
-ops_hostname: ops
+ops_hostname: hetzner-ops
 ops_primary_user: neo
 ops_codex_user: codex
 ops_agent_user: "{{ ops_codex_user }}"
@@ -38,7 +38,8 @@ ops_codex_npm_packages:
 ops_agent_npm_packages: "{{ ops_codex_npm_packages }}"
 
 ops_tailscale_tags:
-  - tag:ops
+  - tag:infra
+ops_tailscale_require_exact_hostname: true
 tailscale_auth_key: ""
 
 ops_source_root: "/home/{{ ops_agent_user }}/src/klokast"

@@ -308,15 +308,12 @@ def build_instance_values(engine_commit, dns_name, member_login):
             "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]},
         },
         "controllers": {"active": "k002", "standby": "k001"},
-        "airunners": {
-            "preferred": "k002-ops-airunner",
-            "authorized": {
-                "k002-ops-airunner": {
-                    "kind": "controller-container",
-                    "box": "k002",
-                },
-            },
-        },
+        "airunners": [
+            "k002-ops-airunner",
+            "k001-ops-airunner",
+            "vultr-ops",
+            "hetzner-ops",
+        ],
         "apps": {
             "music": {
                 "desired-state": "absent",
@@ -582,7 +579,11 @@ def show_configuration(dns_name, member_login, existing_state):
         file=sys.stderr,
     )
     print("  Controllers: k002 active; k001 standby", file=sys.stderr)
-    print("  Airunner: k002-ops-airunner", file=sys.stderr)
+    print(
+        "  Airunners (highest preference first): "
+        "k002-ops-airunner, k001-ops-airunner, vultr-ops, hetzner-ops",
+        file=sys.stderr,
+    )
     print("  Music: absent; library data on k002 is preserved", file=sys.stderr)
     print("  Platform time: Etc/UTC (derived; no timezone field)", file=sys.stderr)
     if existing_state == "reused":

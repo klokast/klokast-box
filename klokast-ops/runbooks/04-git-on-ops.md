@@ -1,11 +1,11 @@
 # Git On Ops
 
 The current MVP configures Git for the `codex` user through Ansible. It does
-not require GitHub CLI on `ops`.
+not require GitHub CLI on `hetzner-ops`.
 
-Operator access to `ops` uses Tailscale SSH only. The SSH client on `ops` is
-for outbound GitHub Git-over-SSH traffic, because GitHub does not use
-Tailscale SSH.
+Operator access to `hetzner-ops` uses Tailscale SSH only. The SSH client on
+`hetzner-ops` is for outbound GitHub Git-over-SSH traffic, because GitHub does
+not use Tailscale SSH.
 
 The role `source-repositories` does this on the server:
 - creates `/home/codex/.ssh`
@@ -44,9 +44,9 @@ do not store it in git.
 From the MacBook:
 
 ```bash
-tailscale ssh codex@ops 'ssh -T git@github.com || true'
-tailscale ssh codex@ops 'git -C ~/src/klokast/klokast-box status --short --branch'
-tailscale ssh codex@ops 'test -f ~/src/klokast/klokast-box/klokast-ops/ansible/playbooks/00-ops-server.yml'
+tailscale ssh codex@hetzner-ops 'ssh -T git@github.com || true'
+tailscale ssh codex@hetzner-ops 'git -C ~/src/klokast/klokast-box status --short --branch'
+tailscale ssh codex@hetzner-ops 'test -f ~/src/klokast/klokast-box/klokast-ops/ansible/playbooks/00-ops-server.yml'
 ```
 
 The `ssh -T` command should say that GitHub authenticated the key and does not
