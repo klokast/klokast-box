@@ -7,8 +7,8 @@ The Platform got one active controller `<box>-ops`.
 The current approved engine is:
 
 ```text
-commit: 87a66fe44d4c15ca604ed95029282a1334c3f8d4
-build:  /var/lib/klokast/builds/klokast-cli/87a66fe44d4c15ca604ed95029282a1334c3f8d4/91aba0deec0a
+commit: 9d9608350412d131a68a70152449b7bd48bda711
+build:  /var/lib/klokast/builds/klokast-cli/9d9608350412d131a68a70152449b7bd48bda711/ca0a844b0014
 ```
 
 Do not paste the GitHub App PEM, private deployment values, signed intents,
@@ -387,8 +387,9 @@ not use `--archive-and-restart` for that recovery.
 
 An uncommitted seed from an earlier unreleased Instance Specification shape is
 not compatible with the current approved engine. This includes the former YAML
-format and the former JSON airunner object format. If the controller seed or
-MacBook worktree comes from one of those earlier formats, run:
+format, the former JSON airunner object format, and the former top-level JSON
+site catalog. If the controller seed or MacBook worktree comes from one of
+those earlier formats, run:
 
 ```sh
 klokast-dev/bin/prepare-private-instance-worktree --archive-and-restart
