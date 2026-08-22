@@ -90,6 +90,12 @@ The normative schemas, field rules, examples, and CLI exit behavior are in the
 document does not duplicate those schemas. The old unreleased YAML instance
 files are invalid inputs.
 
+Version 1 has no top-level site catalog. Each box declares its stable `site`
+label, two-letter `country`, and `description` directly. When more than one box
+uses the same site label, all such boxes must declare the same country and
+description. The resolver derives its normalized site projection from these
+box-owned values.
+
 Version 1 fixes the engine repository to
 `https://github.com/klokast/klokast-box`. Custom engine repositories and
 public upstream forks are outside version 1.
@@ -137,11 +143,11 @@ no host discovery, network access, environment-dependent defaults, or current
 runtime input.
 
 The projection contains the selected engine, instance identity, Tailnet
-groups, sites, boxes, derived runtime names, UTC timezone, controller
-placement, the exact ordered airrunner identities, app placement, typed
-features, and retained-data intent. It sorts maps and unordered sets. It
-preserves airrunner order. The projection hash changes when any authoritative
-input or ordered runner priority changes.
+groups, sites derived from box metadata, boxes, derived runtime names, UTC
+timezone, controller placement, the exact ordered airrunner identities, app
+placement, typed features, and retained-data intent. It sorts maps and
+unordered sets. It preserves airrunner order. The projection hash changes when
+any authoritative input or ordered runner priority changes.
 
 The compatibility planner compares the projection with three current legacy
 authorities:

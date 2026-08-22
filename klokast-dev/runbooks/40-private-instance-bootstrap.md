@@ -457,7 +457,9 @@ Confirm these points locally:
 
 - the private Tailnet DNS name and member login are exact;
 - the member has both `operator` and `family` roles;
-- `milla` is in `FR`, and `mingdu` is in `CN`;
+- `k001` is at `mingdu` in `CN`, and `k002` is at `milla` in `FR`;
+- each box contains its site, country, and description, and there is no
+  top-level `sites` object;
 - `k001` uses `local-ap-direct-egress` and `tailscale`;
 - `k002` uses only `tailscale`;
 - the active controller is `k002`, and the standby controller is `k001`;

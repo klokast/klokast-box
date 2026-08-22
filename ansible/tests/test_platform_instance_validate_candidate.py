@@ -73,8 +73,8 @@ class PlatformInstanceValidateCandidateTest(unittest.TestCase):
             "klokast-instance.json": json.dumps({
                 "schema-version": 1,
                 "boxes": {
-                    "k001": {"site": "milla"},
-                    "k002": {"site": "mingdu"},
+                    "k001": {"site": "milla", "country": "FR", "description": ""},
+                    "k002": {"site": "mingdu", "country": "CN", "description": ""},
                 },
             }) + "\n",
         }
@@ -121,8 +121,8 @@ raise SystemExit(0 if valid else 1)
         return (json.dumps({
             "schema-version": 1,
             "boxes": {
-                "k001": {"site": k001},
-                "k002": {"site": k002},
+                "k001": {"site": k001, "country": "CN", "description": ""},
+                "k002": {"site": k002, "country": "FR", "description": ""},
             },
         }) + "\n").encode()
 

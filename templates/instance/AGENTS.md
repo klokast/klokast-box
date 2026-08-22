@@ -7,6 +7,9 @@
   status, or user data.
 - Do not add a timezone. Platform time is always `Etc/UTC`.
 - Use a box ID such as `k001` as its runtime hostname prefix.
+- Put `site`, `country`, and `description` directly in each box. Do not add a
+  top-level site catalog. Boxes that use the same site label must use identical
+  site metadata.
 - Select only connectivity profiles that the locked public engine defines.
 - Bind only apps, placement modes, features, and data IDs that public app
   manifests define.

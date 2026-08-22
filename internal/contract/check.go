@@ -297,9 +297,19 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 	}
 
 	generated := map[string]string{}
-	for box, value := range instance.Boxes {
-		if _, ok := instance.Sites[value.Site]; !ok {
-			c.add(InstancePath+"$.boxes."+box+".site", "reference.site", "box references an unknown site")
+	sites := map[string]BoxDocument{}
+	boxIDs := make([]string, 0, len(instance.Boxes))
+	for box := range instance.Boxes {
+		boxIDs = append(boxIDs, box)
+	}
+	sort.Strings(boxIDs)
+	for _, box := range boxIDs {
+		value := instance.Boxes[box]
+		if prior, ok := sites[value.Site]; ok &&
+			(prior.Country != value.Country || prior.Description != value.Description) {
+			c.add(InstancePath+"$.boxes."+box+".site", "site.inconsistent", "boxes with the same site label must use the same country and description")
+		} else if !ok {
+			sites[value.Site] = value
 		}
 		if !hasConnectivityProfile(value, "tailscale") {
 			c.add(InstancePath+"$.boxes."+box+".connectivity-profiles", "connectivity.tailscale", "an Instance Specification v1 box must use the tailscale connectivity profile")

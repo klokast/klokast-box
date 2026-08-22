@@ -297,16 +297,19 @@ def build_instance_values(engine_commit, dns_name, member_login):
             "tailnet-dns-name": dns_name,
             "members": {member_login: {"roles": ["operator", "family"]}},
         },
-        "sites": {
-            "milla": {"country": "FR", "description": ""},
-            "mingdu": {"country": "CN", "description": ""},
-        },
         "boxes": {
             "k001": {
-                "site": "milla",
+                "site": "mingdu",
+                "country": "CN",
+                "description": "",
                 "connectivity-profiles": ["local-ap-direct-egress", "tailscale"],
             },
-            "k002": {"site": "mingdu", "connectivity-profiles": ["tailscale"]},
+            "k002": {
+                "site": "milla",
+                "country": "FR",
+                "description": "",
+                "connectivity-profiles": ["tailscale"],
+            },
         },
         "controllers": {"active": "k002", "standby": "k001"},
         "airunners": ["k002-ops-airunner"],
@@ -569,9 +572,8 @@ def show_configuration(dns_name, member_login, existing_state):
     print(f"  Tailnet DNS name: {dns_name}", file=sys.stderr)
     print(f"  Tailscale member login: {member_login}", file=sys.stderr)
     print("  Member roles: operator, family", file=sys.stderr)
-    print("  Sites: milla (FR), mingdu (CN)", file=sys.stderr)
     print(
-        "  Boxes: k001 at milla; k002 at mingdu; Tailscale connectivity on both",
+        "  Boxes: k001 at mingdu (CN); k002 at milla (FR); Tailscale connectivity on both",
         file=sys.stderr,
     )
     print("  Controllers: k002 active; k001 standby", file=sys.stderr)

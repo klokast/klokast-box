@@ -96,7 +96,6 @@ func TestIdentityReferencesAndAirunners(t *testing.T) {
 		new  string
 		code string
 	}{
-		{"site", `"site": "mingdu"`, `"site": "missing"`, "reference.site"},
 		{"controller", `"active": "k001"`, `"active": "missing"`, "reference.box"},
 		{"controller-cardinality", `"standby": "k002"`, `"standby": "k001"`, "cardinality.controller"},
 	}
@@ -108,6 +107,34 @@ func TestIdentityReferencesAndAirunners(t *testing.T) {
 			requireCode(t, root, test.code)
 		})
 	}
+}
+
+func TestInlineSiteMetadata(t *testing.T) {
+	t.Run("top-level-sites", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				value["sites"] = map[string]any{
+					"milla": map[string]any{"country": "FR", "description": "Example home"},
+				}
+			})
+		})
+		requireCode(t, root, "schema.invalid")
+	})
+	t.Run("missing-country", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				box := value["boxes"].(map[string]any)["k001"].(map[string]any)
+				delete(box, "country")
+			})
+		})
+		requireCode(t, root, "schema.invalid")
+	})
+	t.Run("shared-site-metadata", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			replaceInFile(t, filepath.Join(root, InstancePath), `"site": "milla"`, `"site": "mingdu"`)
+		})
+		requireCode(t, root, "site.inconsistent")
+	})
 }
 
 func TestAirunnerRuntimeIdentityContract(t *testing.T) {
@@ -137,13 +164,13 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 		}, "identity.airunner"},
 		{"non-controller-box", func(value map[string]any) {
 			value["boxes"].(map[string]any)["k003"] = map[string]any{
-				"site": "milla", "connectivity-profiles": []any{"tailscale"},
+				"site": "milla", "country": "FR", "description": "", "connectivity-profiles": []any{"tailscale"},
 			}
 			value["airunners"] = []any{"k003-ops-airunner"}
 		}, "reference.controller"},
 		{"box-cloud-collision", func(value map[string]any) {
 			value["boxes"].(map[string]any)["vultr"] = map[string]any{
-				"site": "milla", "connectivity-profiles": []any{"tailscale"},
+				"site": "milla", "country": "FR", "description": "", "connectivity-profiles": []any{"tailscale"},
 			}
 			value["airunners"] = []any{"vultr-ops"}
 		}, "identity.cloud-collision"},

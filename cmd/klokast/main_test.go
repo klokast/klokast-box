@@ -217,8 +217,7 @@ func mainInstanceValues() string {
     "tailnet-dns-name": "example.ts.net",
     "members": {"admin@example.com": {"roles": ["operator", "family"]}}
   },
-  "sites": {"milla": {"country": "FR", "description": "Example home"}},
-  "boxes": {"k001": {"site": "milla", "connectivity-profiles": ["tailscale"]}},
+  "boxes": {"k001": {"site": "milla", "country": "FR", "description": "Example home", "connectivity-profiles": ["tailscale"]}},
   "controllers": {"active": "k001"},
   "airunners": ["k001-ops-airunner"],
   "apps": {}

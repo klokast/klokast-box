@@ -27,7 +27,6 @@ type InstanceDocument struct {
 		DNSName string                    `json:"tailnet-dns-name"`
 		Members map[string]MemberDocument `json:"members"`
 	} `json:"tailnet"`
-	Sites       map[string]SiteDocument      `json:"sites"`
 	Boxes       map[string]BoxDocument       `json:"boxes"`
 	Controllers ControllerDocument           `json:"controllers"`
 	Airunners   []string                      `json:"airunners"`
@@ -38,13 +37,10 @@ type MemberDocument struct {
 	Roles []string `json:"roles"`
 }
 
-type SiteDocument struct {
-	Country     string `json:"country"`
-	Description string `json:"description"`
-}
-
 type BoxDocument struct {
 	Site                 string   `json:"site"`
+	Country              string   `json:"country"`
+	Description          string   `json:"description"`
 	ConnectivityProfiles []string `json:"connectivity-profiles"`
 }
 

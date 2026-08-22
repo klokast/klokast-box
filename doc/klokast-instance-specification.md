@@ -88,23 +88,17 @@ Tailnet values are placeholders.
       }
     }
   },
-  "sites": {
-    "milla": {
-      "country": "FR",
-      "description": ""
-    },
-    "mingdu": {
-      "country": "CN",
-      "description": ""
-    }
-  },
   "boxes": {
     "k001": {
-      "site": "milla",
+      "site": "mingdu",
+      "country": "CN",
+      "description": "",
       "connectivity-profiles": ["local-ap-direct-egress", "tailscale"]
     },
     "k002": {
-      "site": "mingdu",
+      "site": "milla",
+      "country": "FR",
+      "description": "",
       "connectivity-profiles": ["tailscale"]
     }
   },
@@ -134,10 +128,12 @@ field.
 member has one or more roles. At least one member must have both `operator`
 and `family` roles.
 
-## Sites, boxes, and runtime names
+## Boxes, sites, and runtime names
 
-A site ID is a stable private label. A site has a two-letter country code and
-a description. The description can be empty.
+A box declares its site metadata directly. `site` is a stable private label,
+`country` is a two-letter country code, and `description` can be empty. There
+is no top-level site catalog. If more than one box uses the same site label,
+each box must use the same country and description for that site.
 
 A box ID is also its runtime prefix. For example, `k002` derives these names:
 

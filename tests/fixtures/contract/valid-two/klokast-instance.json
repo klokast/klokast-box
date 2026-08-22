@@ -23,13 +23,17 @@
         "local-ap-direct-egress",
         "tailscale"
       ],
-      "site": "milla"
+      "country": "CN",
+      "description": "",
+      "site": "mingdu"
     },
     "k002": {
       "connectivity-profiles": [
         "tailscale"
       ],
-      "site": "mingdu"
+      "country": "FR",
+      "description": "",
+      "site": "milla"
     }
   },
   "controllers": {
@@ -40,16 +44,6 @@
     "id": "two-box-klokast"
   },
   "schema-version": 1,
-  "sites": {
-    "milla": {
-      "country": "FR",
-      "description": ""
-    },
-    "mingdu": {
-      "country": "CN",
-      "description": ""
-    }
-  },
   "tailnet": {
     "members": {
       "admin@example.com": {

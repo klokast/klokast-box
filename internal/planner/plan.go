@@ -354,10 +354,15 @@ func Resolve(snapshot contract.Snapshot) Projection {
 	for _, name := range []string{"family", "operators"} {
 		result.Tailnet.Groups = append(result.Tailnet.Groups, TailnetGroup{Name: name, Members: sortedCopy(groups[name])})
 	}
-	siteIDs := sortedKeys(snapshot.Instance.Sites)
+	projectedSites := map[string]Site{}
+	for _, box := range snapshot.Instance.Boxes {
+		projectedSites[box.Site] = Site{
+			ID: box.Site, Country: box.Country, Timezone: "Etc/UTC", PhysicalLocation: box.Description,
+		}
+	}
+	siteIDs := sortedKeys(projectedSites)
 	for _, id := range siteIDs {
-		site := snapshot.Instance.Sites[id]
-		result.Sites = append(result.Sites, Site{ID: id, Country: site.Country, Timezone: "Etc/UTC", PhysicalLocation: site.Description})
+		result.Sites = append(result.Sites, projectedSites[id])
 	}
 	boxIDs := sortedKeys(snapshot.Instance.Boxes)
 	for _, id := range boxIDs {

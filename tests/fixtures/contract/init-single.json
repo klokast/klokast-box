@@ -9,6 +9,8 @@
       "connectivity-profiles": [
         "tailscale"
       ],
+      "country": "FR",
+      "description": "Example home",
       "site": "milla"
     }
   },
@@ -19,12 +21,6 @@
     "id": "family-klokast"
   },
   "schema-version": 1,
-  "sites": {
-    "milla": {
-      "country": "FR",
-      "description": "Example home"
-    }
-  },
   "tailnet": {
     "members": {
       "admin@example.com": {

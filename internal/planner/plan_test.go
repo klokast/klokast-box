@@ -268,6 +268,11 @@ func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
 	if result.Projection.ControlPlane.StandbyController.Hostname != "k002-ops" {
 		t.Fatalf("unexpected standby controller: %#v", result.Projection.ControlPlane.StandbyController)
 	}
+	if len(result.Projection.Sites) != 2 || result.Projection.Sites[0].ID != "milla" ||
+		result.Projection.Sites[0].Country != "FR" || result.Projection.Sites[1].ID != "mingdu" ||
+		result.Projection.Sites[1].Country != "CN" {
+		t.Fatalf("box metadata did not produce the expected site projection: %#v", result.Projection.Sites)
+	}
 	runners := result.Projection.ControlPlane.Airunners
 	want := "k002-ops-airunner,k001-ops-airunner,vultr-ops,hetzner-ops"
 	if strings.Join(runners, ",") != want {

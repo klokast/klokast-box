@@ -97,6 +97,29 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
         )
         self.assertEqual(value["airunners"], ["k002-ops-airunner"])
         self.assertIn("Airrunner: k002-ops-airunner", stderr)
+        self.assertNotIn("sites", value)
+        self.assertEqual(
+            value["boxes"]["k001"],
+            {
+                "site": "mingdu",
+                "country": "CN",
+                "description": "",
+                "connectivity-profiles": [
+                    "local-ap-direct-egress",
+                    "tailscale",
+                ],
+            },
+        )
+        self.assertEqual(
+            value["boxes"]["k002"],
+            {
+                "site": "milla",
+                "country": "FR",
+                "description": "",
+                "connectivity-profiles": ["tailscale"],
+            },
+        )
+        self.assertIn("k001 at mingdu (CN); k002 at milla (FR)", stderr)
         self.assertNotIn("timezone", json.dumps(value).lower())
         self.assertNotIn("REPLACE_WITH", json.dumps(value))
         validator.assert_called_once()
