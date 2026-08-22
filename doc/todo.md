@@ -2,6 +2,60 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-22 - tailscale machine tags
+
+review if tailscale tag `tag:infra` should become `tag:ops`
+
+# 2026-08-22 - authorized cloud providers list
+
+create a list of cloud providers
+for example `cloud-providers.json`
+(part of the upstream repo):
+`{hetzner: {name: "hetzner", domain: "hetzner.com", comment: "", },
+  vultr: {name: "vultr", domain: "vultr.com", comment:""}}`
+with a keyword and the URL and comment and link to the terraform template or automation,
+and that file is hashed and pinned for security.
+later to automatize the registration to the cloud provider,
+getting and securing the API key,
+look up prices and datacenter physical locations,
+register a new user account by the cloud provider,
+to fill in template or customize completely the terraform files to spin up `<cloud>-ops`.
+
+# 2026-08-22 - add Tor as a shared service
+
+The Platform should offer following ways to connect to internet and users:
+- Tailscale (e.g. for inbound requests by family users)
+- CloudFlare (e.g. for inbound static website requests by external users)
+- local Access Point (e.g. for OS package downloads or traffic with torrent peers)
+- local VPN client (e.g. for airunner)
+- LAN (e.g. for user to play music)
+- Tor (e.g. for bitcoin core)
+- ...
+Those connection modes should be defined in a standardized way (via which router zones,
+how an app request those types, etc) so that new modes can be added to the Platform later.
+
+# 2026-08-22 - migrate this `todo.md` to GitHub "issues" and feature requests
+
+Or to another ticketing system, to industrialize the monitoring and resolution
+of tickets.
+
+# 2026-08-22 - protect against compromised `klokast.lock.json`
+
+The `.engine.repository` field in `klokast.lock.json` defines the upstream repo.
+So that the user can use his own fork of the repo, or a self-hosted clone. However,
+how to protect from an attacker who would edit `klokast.lock.json` in the
+(now untrusted) MacBook to point at a compromised malicious repo.
+Maybe `klokast.lock.json` should be signed by the MacBook Secure Element or Keychain,
+and there needs some monitoring to detect error in the signature check?
+Or is there a better design, following cyber security best practices, to guarantee that
+the installed deployment is pinned to an approved upstream?
+
+# 2026-08-22 - upstream update process
+Harden how upstream updates are handled, both in the trusted laptop and in the boxes:
+- how the `.engine.repository` field in `klokast.lock.json` gets updated?
+- is there an equivalent upstream commit version pin in the box controllers?
+- How are deployed application pinned?
+
 # 2026-08-21 - self-updating bootstrap helper continued old shell functions
 
 `prepare-private-instance-bootstrap` previously ran `git pull --ff-only`
@@ -22,6 +76,10 @@ approved-engine pins. The active controller can verify the sealed build and
 the installed root wrapper. The human must still rerun
 `prepare-private-instance-bootstrap` on the trusted MacBook to verify the
 complete terminal and Touch ID path after a wrapper change.
+More generally, the end-to-end User Experience of the various Klokast processes
+must be mapped, reviewed, and improved. For example, the authentication process
+on the truste MacBook, to avoid unnecessary fingerprint scans, and make it clear
+to the user what he signs.
 
 # 2026-08-16 - make touch ID sign in popups more explicit
 
