@@ -98,7 +98,7 @@ func TestObservedDriftIsRedacted(t *testing.T) {
 		code string
 	}{
 		{"missing-machine", func(o *Observation) { o.TailnetMachines = o.TailnetMachines[1:] }, "tailnet.missing"},
-		{"offline-machine", func(o *Observation) { o.TailnetMachines[0].Online = false }, "tailnet.offline"},
+		{"offline-machine", func(o *Observation) { machineForTest(t, o, "boxa-router").Online = false }, "tailnet.offline"},
 		{"wrong-tag", func(o *Observation) { o.TailnetMachines[0].Tags = []string{"tag:redacted-wrong-role"} }, "tailnet.tag"},
 		{"dom0-unreachable", func(o *Observation) { o.Boxes[0].Dom0Reachable = false }, "dom0.unreachable"},
 		{"xen-unavailable", func(o *Observation) { o.Boxes[0].XenAvailable = false }, "xen.unavailable"},
