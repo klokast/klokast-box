@@ -777,6 +777,17 @@ class InstanceAuthorityTest(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("os.lchown(Path(current) / name", source)
 
+    def test_root_git_inspection_does_not_refresh_controller_index(self):
+        completed = mock.Mock(stdout="clean\n", returncode=0)
+        with mock.patch.object(self.mod, "run", return_value=completed) as runner:
+            output, returncode = self.mod.git_output(
+                "/home/smith/private/klokast/instance", "status", "--porcelain"
+            )
+        self.assertEqual(output, "clean")
+        self.assertEqual(returncode, 0)
+        environment = runner.call_args.kwargs["env"]
+        self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
+
     def test_controller_role_installs_wrapper_and_private_boundaries(self):
         variables = (REPO_ROOT / "ansible" / "inventory" / "group_vars" / "ops.yml").read_text(
             encoding="utf-8"

@@ -2,6 +2,17 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-23 - root Git inspection changed private checkout index ownership
+
+The first live publication check after engine activation found that
+`.git/index` in the controller read-only private checkout belonged to `root`.
+The source authority had first synchronized and assigned the checkout to
+`smith`, but a later root-owned `git status` refreshed the optional index lock.
+The candidate validator correctly refused the mixed ownership. Root-owned Git
+inspection now sets `GIT_OPTIONAL_LOCKS=0`. Keep this invariant when adding
+source-status or receipt checks so a read-only authority check cannot change
+the controller-owned checkout.
+
 # 2026-08-22 - live-verify private compatibility alignment
 
 The design for controller-private HA custody, compatibility preflight, and

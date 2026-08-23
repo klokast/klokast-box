@@ -1280,8 +1280,15 @@ def synchronize_registered_source(args):
 
 
 def git_output(root, *arguments, check=True):
+    # The authority runs as root, but the deployment checkout belongs to the
+    # controller account. Read-only Git commands must not refresh its index as
+    # root. Required writes, such as write-tree in an owner-only temporary
+    # repository, still work when optional locks are disabled.
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     completed = run(
-        ["git", "-C", str(root), *arguments], capture=True, check=False
+        ["git", "-C", str(root), *arguments], capture=True, check=False,
+        env=environment,
     )
     if check and completed.returncode != 0:
         raise InstanceAuthorityError("Git verification failed")
