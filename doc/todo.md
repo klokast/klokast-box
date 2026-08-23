@@ -79,6 +79,14 @@ private lock publication, refusal cases, rollback, tests, and recovery. Keep
 the controller and airunner without private-repository push authority. See
 [the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-target-design).
 
+This workflow now blocks live verification of the implemented read-only
+acceptance corrections. The private lock correctly selects the earlier sealed
+engine, while the corrected planner and Doctor behavior is in a later verified
+engine commit. Do not run the later binary against the earlier lock, edit the
+lock directly, or weaken the engine identity check. Use the refused baseline
+Plan as input to the promotion design, promote through the decided workflow,
+and then rerun the complete read-only acceptance flow.
+
 # 2026-08-21 - self-updating bootstrap helper continued old shell functions
 
 `prepare-private-instance-bootstrap` previously ran `git pull --ff-only`

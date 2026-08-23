@@ -466,17 +466,27 @@ complete.
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is implemented as read-only evidence. Exact per-scope authority-coverage hardening remains. |
-| Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Complete the MacBook and active-controller acceptance flow before engine promotion. |
+| Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Live verification requires controlled promotion to an engine commit that contains these changes. |
 | Engine promotion | `proposed` | It is not implemented. Complete the canonical engine-commit promotion design next. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
 ### Read-only acceptance alignment decision
 
-The first four items in the ordered design work queue remain gated by a
-successful read-only acceptance Plan. A contract-valid private instance and a
-successful source synchronization do not satisfy that gate. The following
-design is `decided` for this gate.
+The apply, migration, and legacy-removal work in the ordered design queue
+remains gated by a successful read-only acceptance Plan. A contract-valid
+private instance and a successful source synchronization do not satisfy that
+gate. The following design is `decided` for this gate.
+
+The baseline acceptance attempt used the currently locked sealed engine and
+identified generic planner and Doctor defects. The corrected behavior is part
+of a later public engine commit. The fixed-engine contract prevents that
+binary from interpreting an instance whose lock selects the earlier commit.
+Therefore controlled canonical engine promotion is a prerequisite for live
+verification of this alignment milestone. Do not replace the lock directly,
+run an unbound binary, or weaken the engine check to avoid that dependency.
+The refused baseline Plan is valid input evidence for the engine-promotion
+design loop.
 
 Authority and custody are as follows:
 
@@ -584,8 +594,9 @@ The ordered design work queue is:
 5. Use successful pilot evidence to design staged scope migration and the
    later legacy-removal gate.
 
-After this documentation milestone is merged, the active controller must run
-the existing private-instance read-only acceptance flow. The flow must verify
+After the exact implementation commit is promoted through the controlled
+engine-promotion workflow, the active controller must rerun the existing
+private-instance read-only acceptance flow. The flow must verify
 redacted bootstrap retirement and source status, stop for human completion if
 the temporary App still has authority, synchronize the read-only checkout,
 refresh the Platform map, export a fresh owner-only Observation v1, and store a
