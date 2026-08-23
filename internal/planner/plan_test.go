@@ -223,6 +223,20 @@ func TestEnabledAppMustMatchLegacyManifestPlacement(t *testing.T) {
 
 func TestSemanticFeatureBindsLegacyResourceFlag(t *testing.T) {
 	root := prepareTwoBoxInstance(t, func(root string) {
+		replaceInFile(t, filepath.Join(root, contract.InstancePath),
+			`"direct-wan-egress",
+        "local-ap-uplink",`,
+			`"direct-wan-egress",
+        "edge-tunnel-ingress",
+        "local-ap-uplink",`)
+		replaceInFile(t, filepath.Join(root, contract.InstancePath),
+			`"boxb": {
+      "connectivity": [
+        "overlay"`,
+			`"boxb": {
+      "connectivity": [
+        "edge-tunnel-ingress",
+        "overlay"`)
 		replaceInFile(t, filepath.Join(root, contract.InstancePath), `"apps": {`, `"apps": {
     "nextcloud": {
       "desired-state": "present",
