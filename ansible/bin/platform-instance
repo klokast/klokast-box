@@ -730,6 +730,57 @@ def validate_unborn_seed():
     run(["git", "-C", SEED_PATH, "diff", "--cached", "--check"])
 
 
+def active_engine_status():
+    if not INSTALLED_AUTHORITY.is_file() or not os.access(INSTALLED_AUTHORITY, os.X_OK):
+        raise InstanceError("installed instance Secret Authority wrapper is missing")
+    completed = run(
+        ["sudo", "-n", INSTALLED_AUTHORITY, "--repo-root", REPO_ROOT, "engine", "status"],
+        capture=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise InstanceError("cannot synchronize and verify the active engine")
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise InstanceError("active engine status returned invalid JSON") from error
+    if not isinstance(value, dict) or value.get("valid") is not True:
+        raise InstanceError("active engine has no immutable activation receipt")
+    return value
+
+
+def validate_deployment_base(args):
+    validate_private_repository_tree(DEPLOYMENT_CHECKOUT, "deployment checkout")
+    if run(
+        ["git", "-C", DEPLOYMENT_CHECKOUT, "status", "--porcelain=v1", "--untracked-files=all"],
+        capture=True,
+    ).stdout:
+        raise InstanceError("the controller deployment checkout is dirty")
+    branch = run(
+        ["git", "-C", DEPLOYMENT_CHECKOUT, "branch", "--show-current"], capture=True
+    ).stdout.strip()
+    commit = run(["git", "-C", DEPLOYMENT_CHECKOUT, "rev-parse", "HEAD"], capture=True).stdout.strip()
+    tree = run(["git", "-C", DEPLOYMENT_CHECKOUT, "rev-parse", "HEAD^{tree}"], capture=True).stdout.strip()
+    if branch != "main" or not ENGINE_COMMIT_RE.fullmatch(commit) or not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        raise InstanceError("the controller deployment checkout identity is invalid")
+    if args.base_commit != commit or args.base_tree != tree:
+        raise InstanceError("MacBook base commit and tree do not match the synchronized controller checkout")
+    status = active_engine_status()
+    expected_operation = Path(args.build_dir).name
+    expected = {
+        "engine_commit": args.engine_commit,
+        "build_operation": expected_operation,
+        "private_commit": commit,
+        "private_tree": tree,
+    }
+    for field, wanted in expected.items():
+        if status.get(field) != wanted:
+            raise InstanceError(f"active engine evidence does not match candidate field: {field}")
+    if not re.fullmatch(r"[0-9a-f]{64}", status.get("source_receipt_sha256", "")):
+        raise InstanceError("active engine status has no fresh source receipt")
+    return DEPLOYMENT_CHECKOUT, status
+
+
 def read_candidate_document():
     content = sys.stdin.buffer.read(MAXIMUM_VALUES_SIZE + 1)
     if not content:
@@ -800,7 +851,14 @@ def parse_compatibility_result(completed):
 
 def check_candidate(args):
     binary = verify_configure_engine(args)
-    validate_unborn_seed()
+    if (DEPLOYMENT_CHECKOUT / ".git").is_dir():
+        base, engine_status = validate_deployment_base(args)
+    else:
+        if getattr(args, "base_commit", "") or getattr(args, "base_tree", ""):
+            raise InstanceError("initial seed validation does not accept a committed base")
+        validate_unborn_seed()
+        base = SEED_PATH
+        engine_status = None
     content = read_candidate_document()
     validation_root = Path(
         tempfile.mkdtemp(prefix=".instance-candidate-check.", dir=PRIVATE_ROOT)
@@ -808,7 +866,7 @@ def check_candidate(args):
     os.chmod(validation_root, 0o700)
     candidate = validation_root / "instance"
     try:
-        shutil.copytree(SEED_PATH, candidate, symlinks=True)
+        shutil.copytree(base, candidate, symlinks=True)
         validate_private_repository_tree(candidate, "candidate repository")
         instance_path = candidate / "klokast-instance.json"
         flags = os.O_WRONLY | os.O_TRUNC
@@ -836,6 +894,47 @@ def check_candidate(args):
             check=False,
         )
         parse_checker_result(completed)
+        if engine_status is not None:
+            plan = load_plan_wrapper()
+            previous_commit = engine_status.get("previous_engine_commit", "")
+            previous_operation = engine_status.get("previous_build_operation", "")
+            if not ENGINE_COMMIT_RE.fullmatch(previous_commit) or not re.fullmatch(r"[0-9a-f]{12}", previous_operation):
+                raise InstanceError("active engine activation has no valid rollback engine")
+            rollback_directory = (
+                Path("/var/lib/klokast/builds/klokast-cli")
+                / previous_commit
+                / previous_operation
+            )
+            try:
+                directory, rollback_commit = plan.resolve_build_directory(rollback_directory)
+                if rollback_commit != previous_commit:
+                    raise InstanceError("rollback sealed build commit is invalid")
+                rollback_receipt, rollback_binary = plan.verify_build_directory(directory, rollback_commit)
+                plan.verify_binary_version(rollback_binary, rollback_receipt)
+            except plan.PlanError as error:
+                raise InstanceError(f"rollback sealed engine verification failed: {error}") from error
+            rollback_instance = json.loads(instance_path.read_text(encoding="utf-8"))
+            rollback_lock_path = candidate / "klokast.lock.json"
+            active_lock_content = rollback_lock_path.read_bytes()
+            rollback_lock = json.loads(active_lock_content)
+            prefix = (
+                "https://raw.githubusercontent.com/klokast/klokast-box/"
+                f"{previous_commit}/schemas/"
+            )
+            rollback_instance["$schema"] = prefix + "klokast-instance-v1.schema.json"
+            rollback_lock["$schema"] = prefix + "klokast-lock-v1.schema.json"
+            rollback_lock["engine"]["commit"] = previous_commit
+            instance_path.write_text(json.dumps(rollback_instance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            rollback_lock_path.write_text(json.dumps(rollback_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            rollback_completed = run(
+                [rollback_binary, "check", "--instance", candidate, "--json"],
+                capture=True,
+                check=False,
+            )
+            parse_checker_result(rollback_completed)
+            instance_path.write_bytes(content)
+            rollback_lock_path.write_bytes(active_lock_content)
+            run(["git", "-C", candidate, "add", "--", "klokast-instance.json", "klokast.lock.json"])
         compatibility_summary = None
         if getattr(args, "require_compatible", False):
             completed = run(
@@ -885,6 +984,50 @@ def authority(args):
         raise InstanceError("instance Secret Authority action failed")
 
 
+def engine_authority(args):
+    require_controller_user()
+    if not INSTALLED_AUTHORITY.is_file() or not os.access(INSTALLED_AUTHORITY, os.X_OK):
+        raise InstanceError("installed instance Secret Authority wrapper is missing")
+    command = [
+        "sudo", "-n", INSTALLED_AUTHORITY, "--repo-root", REPO_ROOT,
+        "engine", args.action,
+    ]
+    if args.action == "promotion-preflight":
+        if args.rollback:
+            if args.new_engine_commit or args.build_operation:
+                raise InstanceError("--rollback does not accept an engine commit or build operation")
+        else:
+            if not args.new_engine_commit or not args.build_operation:
+                raise InstanceError("promotion preflight requires --new-engine-commit and --build-operation")
+            command.extend([
+                "--new-engine-commit", args.new_engine_commit,
+                "--build-operation", args.build_operation,
+            ])
+    elif args.action == "promotion-approve":
+        command.extend([
+            "--approval-intent", args.approval_intent,
+            "--approval-signature", args.approval_signature,
+            "--signer-id", args.signer_id,
+        ])
+    elif args.action == "promotion-activate":
+        command.extend([
+            "--engine-commit", args.engine_commit,
+            "--private-commit", args.private_commit,
+            "--promotion-receipt", args.promotion_receipt,
+        ])
+    elif args.action == "status":
+        if bool(args.candidate_engine) != bool(args.candidate_tree):
+            raise InstanceError("candidate engine status requires both engine commit and tree")
+        if args.candidate_engine:
+            command.extend([
+                "--candidate-engine", args.candidate_engine,
+                "--candidate-tree", args.candidate_tree,
+            ])
+    completed = run(command, check=False)
+    if completed.returncode != 0:
+        raise InstanceError(f"engine {args.action} failed")
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
@@ -898,6 +1041,8 @@ def parse_args(argv):
     candidate_parser.add_argument("--engine-commit", required=True)
     candidate_parser.add_argument("--build-dir", required=True)
     candidate_parser.add_argument("--require-compatible", action="store_true")
+    candidate_parser.add_argument("--base-commit", default="")
+    candidate_parser.add_argument("--base-tree", default="")
     seed_parser = commands.add_parser("seed")
     seed_parser.add_argument("--build-dir", required=True)
     seed_parser.add_argument("--values", required=True)
@@ -907,6 +1052,21 @@ def parse_args(argv):
         source.add_argument("--repo-owner", required=True)
         source.add_argument("--repo-name", required=True)
     commands.add_parser("status")
+    promotion_preflight = commands.add_parser("promotion-preflight")
+    promotion_preflight.add_argument("--new-engine-commit")
+    promotion_preflight.add_argument("--build-operation")
+    promotion_preflight.add_argument("--rollback", action="store_true")
+    promotion_approve = commands.add_parser("promotion-approve")
+    promotion_approve.add_argument("--approval-intent", required=True)
+    promotion_approve.add_argument("--approval-signature", required=True)
+    promotion_approve.add_argument("--signer-id", required=True)
+    promotion_activate = commands.add_parser("promotion-activate")
+    promotion_activate.add_argument("--engine-commit", required=True)
+    promotion_activate.add_argument("--private-commit", required=True)
+    promotion_activate.add_argument("--promotion-receipt", required=True)
+    engine_status = commands.add_parser("engine-status")
+    engine_status.add_argument("--candidate-engine")
+    engine_status.add_argument("--candidate-tree")
     return parser.parse_args(argv)
 
 
@@ -921,6 +1081,13 @@ def main(argv=None):
             check_candidate(args)
         elif args.action == "seed":
             seed(args)
+        elif args.action in {
+            "promotion-preflight", "promotion-approve", "promotion-activate",
+            "engine-status",
+        }:
+            if args.action == "engine-status":
+                args.action = "status"
+            engine_authority(args)
         else:
             authority(args)
     except InstanceError as error:

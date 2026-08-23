@@ -280,16 +280,28 @@ For the initial publication and later desired-state updates, the human edits
 only `klokast-instance.json` on the trusted MacBook and stages that file. The
 human does not edit `klokast.lock.json` or the support files. The MacBook
 publication helper sends only the edited instance document through standard
-input to the active controller. The controller creates a temporary owner-only
-copy of the seed, checks the candidate with the pinned sealed binary, and
-compares it with the exact three controller-private legacy inputs. It returns
-the checked Git tree only when there is no `conflict` or `unsupported`
-finding, and it removes the temporary copy. The helper commits only when that
-tree equals the staged MacBook tree. For a later update, it also requires
-GitHub `main` to equal the local commit on which the edit is based.
+input to the active controller. Before the first commit, the controller uses
+the owner-only unborn seed and its bootstrap engine. After a deployment
+checkout exists, it uses that exact clean commit, a fresh source receipt, and
+the engine selected by the lock and its immutable activation receipt. It
+checks the candidate with the sealed binary and compares it with the exact
+three controller-private legacy inputs. It also checks the rollback form with
+the recorded previous sealed engine. It returns the checked Git tree only when
+there is no `conflict` or `unsupported` finding, and it removes the temporary
+copy. The helper commits only when that tree equals the staged MacBook tree.
+For a later update, it also requires MacBook, GitHub, source receipt, and
+controller `main` to have the same base commit and tree.
 `publish-private-instance --check` performs the same check without a commit,
 push, or publication. The helper does not merge or overwrite a changed remote
 branch.
+
+The human changes engine metadata only through
+`promote-private-instance-engine`. A schema-compatible promotion changes only
+the two `$schema` commits and `engine.commit`. It uses a canonical
+`klokast/klokast-box` `main` descendant, exact sealed old and new builds, one
+short-lived Touch ID approval, a forward private commit, and immutable
+promotion and activation receipts. `--rollback` selects only the previous
+engine from the active activation receipt and also creates a forward commit.
 
 ## Projection, compatibility, and observation
 

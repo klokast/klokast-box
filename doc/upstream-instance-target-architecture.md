@@ -355,31 +355,95 @@ a human must confirm that every `compatibility_only` finding names one
 continuing authority. A current `legacy_removal_ready: false` result is
 expected.
 
-## 9. Engine promotion target design
+## 9. Engine promotion decision
 
-Version 1 fixes the engine repository to the canonical
-`klokast/klokast-box` upstream and pins one full commit. Initialization and
-publication protect the existing lock, but no controlled workflow can yet
-promote it to a later canonical commit.
+Status: `implemented`. Live MacBook and controller acceptance is pending.
 
-The next design loop must specify one closed promotion from the current locked
-commit to one reviewed canonical commit. Before promotion can move to
-`decided`, the design must define:
+Version 1 promotes only between schema-compatible commits on canonical
+`https://github.com/klokast/klokast-box` `main`. The airunner authors and
+pushes public implementation code. The active controller tests and builds the
+exact public commit. The human selects the engine, approves it with the
+existing `human-private-instance` Touch ID signer, and pushes the private
+commit. The private Git commit is the engine-selection authority. Promotion
+and activation receipts are immutable evidence. They do not select an engine.
 
-- who proposes, reviews, and authorizes the new commit;
-- how the controller proves canonical upstream ancestry and the selected ref;
-- how the sealed builder tests and builds the exact candidate;
-- which old and new source, schema, binary, and receipt hashes are inputs;
-- how the private lock update is delivered to the trusted MacBook without
-  giving the controller or airunner private-repository push authority;
-- all refusal cases for divergence, downgrade, stale evidence, or mismatched
-  engine identity;
-- rollback to the last accepted engine and recovery when either engine cannot
-  read the current instance;
-- deterministic tests and a live acceptance procedure.
+One promotion can change only these values:
 
-Custom engine repositories remain outside version 1. Promotion must not add a
-generic repository selector or make the airunner an engine-approval authority.
+- `klokast-instance.json` `$schema` commit;
+- `klokast.lock.json` `$schema` commit;
+- `klokast.lock.json` `engine.commit`.
+
+All other private JSON values, support files, the engine repository, and the
+engine ref must stay equal. Schema migration, custom repositories, and an
+arbitrary downgrade are outside this milestone.
+
+The trusted MacBook command is
+`klokast-dev/bin/promote-private-instance-engine`. It requires clean and
+synchronized public and private `main` branches. It reads the old engine only
+from the private lock. A normal promotion requires the new commit to be the
+exact public and controller `main` commit and a strict descendant of the old
+commit. The helper builds the candidate in an owner-only temporary directory,
+shows the complete private diff only on the MacBook, and sends one bounded
+candidate envelope through standard input. `--check` never edits the real
+private worktree.
+
+The active controller exposes `promotion-preflight`, `promotion-approve`,
+`promotion-activate`, and `engine-status` through `platform-instance`. These
+operations are evidence and validation interfaces. They are not ambient
+engine selectors. Preflight requires the active `smith` controller, canonical
+public `main`, exact ancestry, exactly identified sealed builds, successful
+builder tests, matching embedded engine identities, a fresh private source
+receipt, and an exact MacBook, GitHub, and controller private base. The target
+binary must accept the candidate. The current binary must accept the prepared
+rollback form.
+
+The canonical 10-minute signed intent binds both engine commits, both build
+operations, both binary and builder-receipt hashes, the controller public
+commit, private repository hash and numeric ID, private base commit and tree,
+candidate and rollback trees, source-receipt hash, signer, nonce, issue time,
+and expiry. The installed `ksa-instance` wrapper verifies the scoped signer,
+consumes the nonce, audits the action, and stores an immutable promotion
+receipt. Promotion and activation directories are root-owned, readable and
+traversable by `smith`, and mode `0750`. Receipts are root-owned,
+`smith`-readable, and mode `0440`:
+
+```text
+/var/lib/klokast/engine-promotions/<engine-commit>/<receipt-sha256>.json
+/var/lib/klokast/engine-activations/<private-commit>/<receipt-sha256>.json
+```
+
+These receipts contain hashes and numeric repository IDs. They do not contain
+the private repository name, a private path, or private JSON. Activation
+fetches private `main` with the read-only deploy key. It requires the fetched
+commit tree to equal the approved candidate tree and binds that private
+commit, its fresh source receipt, the promotion receipt, the sealed build, and
+the selected engine.
+
+After the first private commit, candidate publication uses the exact clean
+deployment checkout, not the unborn seed. It requires a fresh source receipt
+and an exact MacBook, GitHub, and controller base. It resolves the engine from
+the private lock and its activation receipt. The bootstrap session and its
+hard-coded build remain valid only for repository creation and initial
+publication. A later normal update can change only `klokast-instance.json` and
+must also pass the recorded rollback engine.
+
+Rollback is a new forward private commit. `--rollback` can select only the
+previous engine in the active activation receipt. It reconstructs the current
+semantic instance with the previous schema URLs and lock, verifies the result
+with the previous sealed binary, obtains a new Touch ID approval, pushes
+without force, synchronizes the controller, and creates a new activation
+receipt. It cannot hide Platform drift or a private-intent conflict. If a
+candidate fails before publication, no private file changes. If publication
+succeeds and activation fails, the helper stops and reports the checked
+rollback command.
+
+The workflow refuses dirty, divergent, unborn, unrelated, equal, stale,
+tampered, unsupported, or non-canonical inputs; unexpected private changes;
+missing or ambiguous sealed evidence; changed source bases; expired intents;
+wrong signers; changed signed bytes; nonce reuse; and a candidate or activated
+tree mismatch. Live acceptance must test interruption and resume boundaries,
+forward rollback, later publication without bootstrap pins, receipt modes and
+hashes, focused contracts, and the exact controller-sealed build.
 
 ## 10. Authorized apply target design
 
@@ -467,7 +531,7 @@ complete.
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is implemented as read-only evidence. Exact per-scope authority-coverage hardening remains. |
 | Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Live verification requires controlled promotion to an engine commit that contains these changes. |
-| Engine promotion | `proposed` | It is not implemented. Complete the canonical engine-commit promotion design next. |
+| Engine promotion | `implemented` | The canonical schema-compatible promotion, immutable evidence, active-engine publication, and forward rollback workflow are checked in. Real MacBook Touch ID promotion and controller activation remain the live-verification gate. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 

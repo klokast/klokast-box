@@ -21,6 +21,7 @@ INSTALLER = REPO_ROOT / "klokast-dev" / "bin" / "install-instance-github-app"
 PREPARE_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "prepare-private-instance-bootstrap"
 SIGN_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "sign-secret-authority-intent"
 ACTION_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "run-private-instance-action"
+PROMOTION_HELPER = REPO_ROOT / "klokast-dev" / "bin" / "promote-private-instance-engine"
 
 
 def load(path, name):
@@ -788,6 +789,8 @@ class InstanceAuthorityTest(unittest.TestCase):
         self.assertIn("Remove retired Cloudflare guardian controller wrapper", tasks)
         self.assertIn("- path: /etc/klokast/private-instance", tasks)
         self.assertIn("- path: /var/lib/klokast/instance-sources", tasks)
+        self.assertIn("- path: /var/lib/klokast/engine-promotions", tasks)
+        self.assertIn("- path: /var/lib/klokast/engine-activations", tasks)
         self.assertIn("Cmnd_Alias KLOKAST_INFRA_SECRET_AUTHORITY_WRAPPERS", tasks)
         self.assertIn("Cmnd_Alias KLOKAST_INFRA_TAILSCALE_WRAPPERS", tasks)
 
@@ -816,6 +819,24 @@ class InstanceAuthorityTest(unittest.TestCase):
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_engine_promotion_helper_preserves_private_git_authority(self):
+        completed = subprocess.run(
+            [str(PROMOTION_HELPER), "--help"], text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("trusted\nMacBook", completed.stdout)
+        self.assertIn("edit, stage, commit, or push", completed.stdout)
+        source = PROMOTION_HELPER.read_text(encoding="utf-8")
+        self.assertIn("human-private-instance", source)
+        self.assertIn("promotion-preflight", source)
+        self.assertIn("promotion-approve", source)
+        self.assertIn("promotion-activate", source)
+        self.assertIn("--rollback does not accept an arbitrary engine commit", source)
+        self.assertIn("git -C \"$PRIVATE_WORKTREE\" push origin main", source)
+        self.assertNotIn("prepare-private-instance-bootstrap", source)
+        self.assertNotIn("09afa3e1e677da25ffdbdb1f22378e9f97a71e71", source)
 
     def test_private_instance_prepare_helper_starts_with_prerequisites(self):
         completed = subprocess.run(

@@ -7,10 +7,11 @@ Format of the first line: `# yyyy-mm-dd - title`
 The design for controller-private HA custody, compatibility preflight, and
 the limited shared-guest health scope is decided in
 [the upstream/instance target architecture](upstream-instance-target-architecture.md#read-only-acceptance-alignment-decision).
-Implement it and run the real MacBook and active-controller acceptance flow.
-Do not start engine promotion until the stored Plan is valid, compatible,
-substrate healthy, deployable, and authority ready. Keep all private inputs,
-findings, observations, and Plan artifacts on the controller.
+Run the controlled engine promotion first, then run the real MacBook and
+active-controller acceptance flow. The refused baseline Plan permits
+engine-promotion work. A successful read-only Plan is required before apply
+work, not before promotion. Keep all private inputs, findings, observations,
+and Plan artifacts on the controller.
 
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 
@@ -72,11 +73,12 @@ Instance Specification v1 fixes `.engine.repository` to the canonical
 builder, and controller wrappers reject another repository. Custom forks and
 self-hosted engine repositories are outside version 1.
 
-The missing feature is a controlled workflow that promotes
-`.engine.commit` from one approved canonical commit to another. Specify human
-review and authorization, canonical ancestry checks, the exact sealed build,
-private lock publication, refusal cases, rollback, tests, and recovery. Keep
-the controller and airunner without private-repository push authority. See
+The controlled workflow for `.engine.commit` is implemented. It includes
+human review and Touch ID authorization, canonical ancestry checks, exact
+sealed builds, private lock publication, immutable evidence, refusal cases,
+and forward rollback. Keep the controller and airunner without
+private-repository push authority. Complete its real MacBook and active
+controller acceptance. See
 [the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-target-design).
 
 This workflow now blocks live verification of the implemented read-only
@@ -151,8 +153,10 @@ The first revised run also found that Apple `ssh-add -?` groups short options
 as `[-cDdKkLlqvXx]`. Capability checks must recognize `K` inside this group;
 they must not require the separate text `-K` in the usage output.
 
-The infra-agent also has no Go toolchain. Run Go tests and the exact build in
-the networkless controller-managed sealed builder after the commit is pushed.
+The infra-agent also has no Go toolchain or `ansible-playbook` command. Run Go
+tests, the Ansible syntax check, and the exact build through the active
+controller after the commit is pushed. The deployable binary must still come
+only from the networkless controller-managed sealed builder.
 
 Before the old approval signer is retired, run both purpose-specific signer
 setups and their controller verification round trips from `og`. Do not weaken

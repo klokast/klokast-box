@@ -250,6 +250,14 @@
       owner: root
       group: "{{ ops_infra_user }}"
       mode: "0750"
+    - path: /var/lib/klokast/engine-promotions
+      owner: root
+      group: "{{ ops_infra_user }}"
+      mode: "0750"
+    - path: /var/lib/klokast/engine-activations
+      owner: root
+      group: "{{ ops_infra_user }}"
+      mode: "0750"
     - path: "{{ ops_secret_authority_audit_log | dirname }}"
       owner: root
       group: root

@@ -10,8 +10,11 @@ import pwd
 import re
 import secrets
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,18 +25,28 @@ AUTHORITY = "klokast-secret-authority"
 APP = "instance"
 SIGNATURE_NAMESPACE = "klokast-secret-authority"
 SOURCE_KIND = "klokast.instance-source.v1"
+PROMOTION_KIND = "klokast.engine-promotion.v1"
+ACTIVATION_KIND = "klokast.engine-activation.v1"
 DEFAULT_REPO_ROOT = "/home/smith/src/klokast/klokast-box"
 DEFAULT_INFRA_USER = "smith"
 DEFAULT_CONFIG_ROOT = "/etc/klokast/secret-authority/instance-bootstrap"
 DEFAULT_SOURCE_ROOT = "/etc/klokast/private-instance"
 DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority/instance"
 DEFAULT_RECEIPT_ROOT = "/var/lib/klokast/instance-sources"
+DEFAULT_PROMOTION_ROOT = "/var/lib/klokast/engine-promotions"
+DEFAULT_ACTIVATION_ROOT = "/var/lib/klokast/engine-activations"
 DEFAULT_CHECKOUT = "/home/smith/private/klokast/instance"
 DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
 DEFAULT_ALLOWED_SIGNERS = "/etc/klokast/secret-authority/allowed-signers-private-instance"
 EXPECTED_SIGNER_ID = "human-private-instance"
 EXPECTED_REPO_NAME = "klokast-instance"
 DEFAULT_TTL_SECONDS = 600
+CANONICAL_ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
+CANONICAL_ENGINE_REF = "main"
+BUILD_ROOT = Path("/var/lib/klokast/builds/klokast-cli")
+MAX_PROMOTION_ENVELOPE_BYTES = 256 * 1024
+MAX_RECEIPT_BYTES = 64 * 1024
+MAX_BINARY_BYTES = 64 * 1024 * 1024
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
 HIGH_AUTHORITY_ACTIONS = {"register-repository", "register-read-key", "retire-bootstrap"}
@@ -43,6 +56,9 @@ REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
 HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{20,80}$")
+OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+TREE_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 GITHUB_KNOWN_HOSTS = """github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
 github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
@@ -542,7 +558,8 @@ def consume_nonce(args, intent):
                 continue
     append_jsonl(path, {
         "ts": format_utc(now_utc()), "nonce": intent["nonce"], "action": intent["action"],
-        "repo_head": intent["repo_head"], "engine_commit": intent["engine_commit"],
+        "repo_head": intent.get("repo_head", intent.get("controller_public_commit", "")),
+        "engine_commit": intent.get("engine_commit", intent.get("new_engine_commit", "")),
         "signer_id": args.signer_id,
     })
 
@@ -1167,6 +1184,940 @@ def cmd_status(args):
     print(canonical_json(result), end="")
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_bounded_regular(path, maximum, label):
+    path = Path(path)
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        raise InstanceAuthorityError(f"cannot inspect {label}") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_size <= 0
+        or metadata.st_size > maximum
+    ):
+        raise InstanceAuthorityError(f"{label} must be one bounded regular file")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise InstanceAuthorityError(f"cannot read {label}") from error
+
+
+def decode_closed_json(content, label):
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(content, object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise InstanceAuthorityError(f"{label} is not valid duplicate-free JSON") from error
+
+
+def load_registered_source_identity(args):
+    paths = source_paths(args)
+    try:
+        source = json.loads(paths["config"].read_text(encoding="utf-8"))
+        state = json.loads(repository_state_path(args).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstanceAuthorityError("private instance source registration is incomplete") from error
+    if set(source) != {"schema_version", "repository", "repository_sha256"} or source.get("schema_version") != 1:
+        raise InstanceAuthorityError("private instance source config is invalid")
+    expected_state = {
+        "schema_version", "repository", "repository_sha256", "repository_id",
+        "private", "registered_at",
+    }
+    if set(state) != expected_state or state.get("schema_version") != 1 or state.get("private") is not True:
+        raise InstanceAuthorityError("private repository registration receipt is invalid")
+    repository = source.get("repository", "")
+    if (
+        state.get("repository") != repository
+        or source.get("repository_sha256") != repository_hash(repository)
+        or state.get("repository_sha256") != source.get("repository_sha256")
+        or not isinstance(state.get("repository_id"), int)
+        or state["repository_id"] <= 0
+    ):
+        raise InstanceAuthorityError("private instance source identities do not match")
+    parts = repository.split("/", 1)
+    if len(parts) != 2:
+        raise InstanceAuthorityError("private instance source repository identity is invalid")
+    args.repo_owner = safe_owner(parts[0])
+    args.repo_name = safe_repo(parts[1])
+    return paths, source, state
+
+
+def synchronize_registered_source(args):
+    paths, source, state = load_registered_source_identity(args)
+    expected_head = remote_head(args, paths)
+    require_private_remote(args)
+    commit = git_checkout(args, paths, expected_head)
+    key_fingerprint = fingerprint(paths["public"])
+    receipt_path, receipt = write_source_receipt(
+        args, state, source, commit, key_fingerprint
+    )
+    return paths, source, state, commit, receipt_path, receipt
+
+
+def git_output(root, *arguments, check=True):
+    completed = run(
+        ["git", "-C", str(root), *arguments], capture=True, check=False
+    )
+    if check and completed.returncode != 0:
+        raise InstanceAuthorityError("Git verification failed")
+    return completed.stdout.strip(), completed.returncode
+
+
+def require_public_checkout(repo_root, target_commit, *, exact_target):
+    root = Path(repo_root)
+    head, _ = git_output(root, "rev-parse", "HEAD")
+    if not HEAD_RE.fullmatch(head):
+        raise InstanceAuthorityError("controller public checkout has no valid commit")
+    if git_output(root, "status", "--porcelain")[0]:
+        raise InstanceAuthorityError("controller public checkout is not clean")
+    if git_output(root, "branch", "--show-current")[0] != CANONICAL_ENGINE_REF:
+        raise InstanceAuthorityError("controller public checkout is not on main")
+    if git_output(root, "remote")[0].splitlines() != ["origin"]:
+        raise InstanceAuthorityError("controller public checkout must have only origin")
+    origin = git_output(root, "remote", "get-url", "origin")[0]
+    accepted = {
+        "git@github.com:klokast/klokast-box.git",
+        "https://github.com/klokast/klokast-box",
+        "https://github.com/klokast/klokast-box.git",
+    }
+    if origin not in accepted:
+        raise InstanceAuthorityError("controller public origin is not canonical klokast/klokast-box")
+    upstream = git_output(root, "rev-parse", "@{upstream}")[0]
+    if upstream != head or git_output(root, "rev-parse", "refs/remotes/origin/main")[0] != head:
+        raise InstanceAuthorityError("controller public main is not synchronized with its upstream")
+    remote = run(
+        ["git", "ls-remote", CANONICAL_ENGINE_REPOSITORY, "refs/heads/main"],
+        capture=True,
+        check=False,
+    )
+    fields = remote.stdout.strip().split()
+    if remote.returncode != 0 or len(fields) != 2 or fields[1] != "refs/heads/main" or fields[0] != head:
+        raise InstanceAuthorityError("GitHub canonical main does not match the controller checkout")
+    if exact_target and head != target_commit:
+        raise InstanceAuthorityError("controller public checkout is not the exact candidate engine commit")
+    available = git_output(root, "cat-file", "-e", f"{target_commit}^{{commit}}", check=False)[1]
+    if available != 0:
+        raise InstanceAuthorityError("candidate engine commit is not available in the controller checkout")
+    return head
+
+
+def verify_sealed_build(commit, operation=None):
+    if not HEAD_RE.fullmatch(commit or ""):
+        raise InstanceAuthorityError("sealed build commit is invalid")
+    commit_root = BUILD_ROOT / commit
+    if operation is None:
+        try:
+            operations = sorted(
+                child.name for child in commit_root.iterdir()
+                if child.is_dir() and not child.is_symlink() and OPERATION_RE.fullmatch(child.name)
+            )
+        except OSError as error:
+            raise InstanceAuthorityError(f"sealed build is missing for engine {commit}") from error
+        if len(operations) != 1:
+            raise InstanceAuthorityError(
+                f"engine {commit} must have exactly one sealed build operation"
+            )
+        operation = operations[0]
+    if not OPERATION_RE.fullmatch(operation or ""):
+        raise InstanceAuthorityError("sealed build operation is invalid")
+    directory = commit_root / operation
+    try:
+        resolved = directory.resolve(strict=True)
+        resolved.relative_to(BUILD_ROOT.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise InstanceAuthorityError("sealed build directory is missing or unsafe") from error
+    if resolved != directory or directory.is_symlink():
+        raise InstanceAuthorityError("sealed build directory contains a path alias")
+    receipt_path = directory / "receipt.json"
+    binary_path = directory / "klokast"
+    receipt_content = read_bounded_regular(receipt_path, MAX_RECEIPT_BYTES, "sealed builder receipt")
+    read_bounded_regular(binary_path, MAX_BINARY_BYTES, "sealed klokast binary")
+    receipt = decode_closed_json(receipt_content, "sealed builder receipt")
+    required = {
+        "schema_version": 1,
+        "source_repository": CANONICAL_ENGINE_REPOSITORY,
+        "source_ref": CANONICAL_ENGINE_REF,
+        "source_commit": commit,
+        "test_result": "success",
+        "build_result": "success",
+    }
+    for field, wanted in required.items():
+        if receipt.get(field) != wanted:
+            raise InstanceAuthorityError(f"sealed builder receipt {field} is invalid")
+    binary_digest = receipt.get("binary_sha256")
+    if not DIGEST_RE.fullmatch(binary_digest or "") or sha256_file(binary_path) != binary_digest:
+        raise InstanceAuthorityError("sealed binary hash does not match its builder receipt")
+    if not os.access(binary_path, os.X_OK):
+        raise InstanceAuthorityError("sealed klokast binary is not executable")
+    completed = run([binary_path, "version", "--json"], capture=True, check=False)
+    version = decode_closed_json(completed.stdout, "sealed binary version")
+    if completed.returncode != 0 or any(
+        version.get(field) != wanted
+        for field, wanted in {
+            "engine_repository": CANONICAL_ENGINE_REPOSITORY,
+            "engine_ref": CANONICAL_ENGINE_REF,
+            "engine_commit": commit,
+        }.items()
+    ):
+        raise InstanceAuthorityError("sealed binary identity does not match its build")
+    return {
+        "commit": commit,
+        "operation": operation,
+        "directory": directory,
+        "receipt_path": receipt_path,
+        "receipt_sha256": hashlib.sha256(receipt_content).hexdigest(),
+        "binary_path": binary_path,
+        "binary_sha256": binary_digest,
+    }
+
+
+def checkout_state(checkout):
+    root = Path(checkout)
+    if root.is_symlink() or not (root / ".git").is_dir():
+        raise InstanceAuthorityError("private deployment checkout is missing or unsafe")
+    if git_output(root, "status", "--porcelain=v1", "--untracked-files=all")[0]:
+        raise InstanceAuthorityError("private deployment checkout is not clean")
+    if git_output(root, "branch", "--show-current")[0] != "main":
+        raise InstanceAuthorityError("private deployment checkout is not on main")
+    commit = git_output(root, "rev-parse", "HEAD")[0]
+    tree = git_output(root, "rev-parse", "HEAD^{tree}")[0]
+    if not HEAD_RE.fullmatch(commit) or not TREE_RE.fullmatch(tree):
+        raise InstanceAuthorityError("private deployment checkout identity is invalid")
+    tracked = git_output(root, "ls-files")[0].splitlines()
+    expected = [".gitignore", "AGENTS.md", "README.md", "klokast-instance.json", "klokast.lock.json"]
+    if tracked != expected:
+        raise InstanceAuthorityError("private deployment checkout has an unexpected tracked file set")
+    modes = git_output(root, "ls-files", "-s")[0].splitlines()
+    if any(not line.startswith("100644 ") for line in modes):
+        raise InstanceAuthorityError("private deployment checkout has an unexpected file mode")
+    return root, commit, tree
+
+
+def schema_url(commit, name):
+    return (
+        "https://raw.githubusercontent.com/klokast/klokast-box/"
+        f"{commit}/schemas/{name}"
+    )
+
+
+def semantic_without_engine_metadata(instance, lock):
+    instance_value = json.loads(json.dumps(instance))
+    lock_value = json.loads(json.dumps(lock))
+    instance_value.pop("$schema", None)
+    lock_value.pop("$schema", None)
+    engine = lock_value.get("engine")
+    if isinstance(engine, dict):
+        engine.pop("commit", None)
+    return instance_value, lock_value
+
+
+def load_activation_receipts(args, engine_commit, private_commit):
+    root = Path(args.activation_root)
+    if not root.exists():
+        return []
+    receipts = []
+    for path in sorted(root.glob("*/*.json")):
+        try:
+            value = load_group_receipt(
+                path, args.activation_root, ACTIVATION_KIND
+            )
+        except InstanceAuthorityError:
+            continue
+        if (
+            value.get("engine_commit") != engine_commit
+            or not HEAD_RE.fullmatch(value.get("private_commit", ""))
+        ):
+            continue
+        ancestor = git_output(args.checkout, "merge-base", "--is-ancestor", value["private_commit"], private_commit, check=False)[1]
+        if ancestor == 0:
+            receipts.append((value.get("activated_at", ""), path, value))
+    return sorted(receipts)
+
+
+def active_engine_binding(args, engine_commit, private_commit):
+    receipts = load_activation_receipts(args, engine_commit, private_commit)
+    if not receipts:
+        return None
+    _activated_at, path, value = receipts[-1]
+    return path, value
+
+
+def validate_activation_binding(args, binding, source, state):
+    if binding is None:
+        raise InstanceAuthorityError("active engine has no immutable activation receipt")
+    _path, activation = binding
+    if (
+        activation.get("private_repository_sha256") != source.get("repository_sha256")
+        or activation.get("private_repository_id") != state.get("repository_id")
+    ):
+        raise InstanceAuthorityError("active engine activation names another private repository")
+    build = verify_sealed_build(
+        activation.get("engine_commit", ""), activation.get("build_operation")
+    )
+    if (
+        build["binary_sha256"] != activation.get("binary_sha256")
+        or build["receipt_sha256"] != activation.get("builder_receipt_sha256")
+    ):
+        raise InstanceAuthorityError("active sealed build differs from its activation receipt")
+    previous = verify_sealed_build(
+        activation.get("previous_engine_commit", ""),
+        activation.get("previous_build_operation"),
+    )
+    if (
+        previous["binary_sha256"] != activation.get("previous_binary_sha256")
+        or previous["receipt_sha256"] != activation.get("previous_builder_receipt_sha256")
+    ):
+        raise InstanceAuthorityError("rollback sealed build differs from its activation receipt")
+    promotion_digest = activation.get("promotion_receipt_sha256", "")
+    if not DIGEST_RE.fullmatch(promotion_digest):
+        raise InstanceAuthorityError("active engine activation has an invalid promotion receipt hash")
+    promotion_path = (
+        Path(args.promotion_root)
+        / activation["engine_commit"]
+        / f"{promotion_digest}.json"
+    )
+    promotion = load_group_receipt(
+        promotion_path, args.promotion_root, PROMOTION_KIND,
+        "new_engine_commit", activation["engine_commit"],
+    )
+    if (
+        promotion.get("old_engine_commit") != activation.get("previous_engine_commit")
+        or promotion.get("old_build_operation") != activation.get("previous_build_operation")
+        or promotion.get("candidate_tree") != activation.get("private_tree")
+    ):
+        raise InstanceAuthorityError("activation and promotion receipts do not match")
+    return activation, build, previous
+
+
+def pending_promotion_binding(args, engine_commit, private_tree, source, state):
+    root = Path(args.promotion_root) / engine_commit
+    if not root.exists():
+        return None
+    matches = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            promotion = load_group_receipt(
+                path, args.promotion_root, PROMOTION_KIND,
+                "new_engine_commit", engine_commit,
+            )
+        except InstanceAuthorityError:
+            continue
+        if (
+            promotion.get("candidate_tree") == private_tree
+            and promotion.get("private_repository_sha256") == source.get("repository_sha256")
+            and promotion.get("private_repository_id") == state.get("repository_id")
+        ):
+            matches.append((path, promotion))
+    if len(matches) > 1:
+        raise InstanceAuthorityError("more than one pending promotion receipt matches private main")
+    return matches[0] if matches else None
+
+
+def validate_pending_promotion(args, binding):
+    if binding is None:
+        raise InstanceAuthorityError("rollback has no approved promotion evidence")
+    _path, promotion = binding
+    current = verify_sealed_build(
+        promotion.get("new_engine_commit", ""), promotion.get("new_build_operation")
+    )
+    previous = verify_sealed_build(
+        promotion.get("old_engine_commit", ""), promotion.get("old_build_operation")
+    )
+    if (
+        current["binary_sha256"] != promotion.get("new_binary_sha256")
+        or current["receipt_sha256"] != promotion.get("new_builder_receipt_sha256")
+        or previous["binary_sha256"] != promotion.get("old_binary_sha256")
+        or previous["receipt_sha256"] != promotion.get("old_builder_receipt_sha256")
+    ):
+        raise InstanceAuthorityError("pending promotion sealed evidence has changed")
+    return promotion, current, previous
+
+
+def write_group_receipt(args, root, identity, receipt):
+    digest = hashlib.sha256(canonical_json(receipt).rstrip("\n").encode("utf-8")).hexdigest()
+    complete = {**receipt, "receipt_sha256": digest}
+    directory = Path(root) / identity
+    ensure_private_dir(directory, 0o750)
+    path = directory / f"{digest}.json"
+    content = canonical_json(complete).encode("utf-8")
+    if path.exists():
+        if path.read_bytes() != content:
+            raise InstanceAuthorityError("immutable engine evidence path has different content")
+    else:
+        write_no_replace(path, content, 0o440)
+    try:
+        smith = pwd.getpwnam(args.infra_user)
+    except KeyError as error:
+        raise InstanceAuthorityError("infra user does not exist") from error
+    os.chown(directory, 0, smith.pw_gid)
+    os.chmod(directory, 0o750)
+    os.chown(path, 0, smith.pw_gid)
+    os.chmod(path, 0o440)
+    return path, complete
+
+
+def validate_source_receipt_binding(args, commit, digest, repository_sha256, repository_id):
+    if not HEAD_RE.fullmatch(commit or "") or not DIGEST_RE.fullmatch(digest or ""):
+        raise InstanceAuthorityError("instance source receipt identity is invalid")
+    path = Path(args.receipt_root) / commit / f"{digest}.json"
+    content = read_bounded_regular(path, MAX_RECEIPT_BYTES, "instance source receipt")
+    value = decode_closed_json(content, "instance source receipt")
+    calculated = hashlib.sha256(canonical_json({
+        key: item for key, item in value.items() if key != "receipt_sha256"
+    }).rstrip("\n").encode("utf-8")).hexdigest()
+    if (
+        value.get("kind") != SOURCE_KIND
+        or value.get("commit") != commit
+        or value.get("receipt_sha256") != digest
+        or value.get("repository_sha256") != repository_sha256
+        or value.get("repository_id") != repository_id
+        or calculated != digest
+    ):
+        raise InstanceAuthorityError("instance source receipt does not match promotion intent")
+    try:
+        smith = pwd.getpwnam("smith")
+    except KeyError as error:
+        raise InstanceAuthorityError("controller account smith is missing") from error
+    metadata = path.stat()
+    parent_metadata = path.parent.stat()
+    if metadata.st_uid != 0 or metadata.st_gid != smith.pw_gid or stat.S_IMODE(metadata.st_mode) != 0o440:
+        raise InstanceAuthorityError("instance source receipt ownership or mode is unsafe")
+    if parent_metadata.st_uid != 0 or parent_metadata.st_gid != smith.pw_gid or stat.S_IMODE(parent_metadata.st_mode) != 0o750:
+        raise InstanceAuthorityError("instance source receipt directory ownership or mode is unsafe")
+    return value
+
+
+def read_promotion_envelope():
+    content = sys.stdin.buffer.read(MAX_PROMOTION_ENVELOPE_BYTES + 1)
+    if not content:
+        raise InstanceAuthorityError("engine promotion candidate envelope is empty")
+    if len(content) > MAX_PROMOTION_ENVELOPE_BYTES:
+        raise InstanceAuthorityError("engine promotion candidate envelope is larger than 256 KiB")
+    value = decode_closed_json(content, "engine promotion candidate envelope")
+    expected = {
+        "schema_version", "action", "engine_repository", "engine_ref",
+        "old_engine_commit", "new_engine_commit", "private_base_commit",
+        "private_base_tree", "candidate_tree", "rollback_tree",
+        "candidate_instance_json", "candidate_lock_json",
+    }
+    if not isinstance(value, dict) or set(value) != expected or value.get("schema_version") != 1:
+        raise InstanceAuthorityError("engine promotion candidate envelope fields do not match the closed schema")
+    if value.get("engine_repository") != CANONICAL_ENGINE_REPOSITORY or value.get("engine_ref") != CANONICAL_ENGINE_REF:
+        raise InstanceAuthorityError("engine promotion candidate does not use canonical klokast/klokast-box main")
+    for field in ("old_engine_commit", "new_engine_commit", "private_base_commit"):
+        if not HEAD_RE.fullmatch(value.get(field, "")):
+            raise InstanceAuthorityError(f"engine promotion candidate {field} is invalid")
+    for field in ("private_base_tree", "candidate_tree", "rollback_tree"):
+        if not TREE_RE.fullmatch(value.get(field, "")):
+            raise InstanceAuthorityError(f"engine promotion candidate {field} is invalid")
+    if not isinstance(value.get("candidate_instance_json"), str) or not isinstance(value.get("candidate_lock_json"), str):
+        raise InstanceAuthorityError("engine promotion candidate JSON files are invalid")
+    return value
+
+
+def validate_candidate_tree(args, envelope, old_build, new_build):
+    checkout, base_commit, base_tree = checkout_state(args.checkout)
+    if envelope["private_base_commit"] != base_commit or envelope["private_base_tree"] != base_tree:
+        raise InstanceAuthorityError("MacBook private base does not match controller and GitHub main")
+    base_instance_content = read_bounded_regular(checkout / "klokast-instance.json", 64 * 1024, "private instance document")
+    base_lock_content = read_bounded_regular(checkout / "klokast.lock.json", 64 * 1024, "private engine lock")
+    base_instance = decode_closed_json(base_instance_content, "private instance document")
+    base_lock = decode_closed_json(base_lock_content, "private engine lock")
+    candidate_instance_content = envelope["candidate_instance_json"].encode("utf-8")
+    candidate_lock_content = envelope["candidate_lock_json"].encode("utf-8")
+    if len(candidate_instance_content) > 64 * 1024 or len(candidate_lock_content) > 64 * 1024:
+        raise InstanceAuthorityError("engine promotion candidate file is larger than 64 KiB")
+    candidate_instance = decode_closed_json(candidate_instance_content, "candidate instance document")
+    candidate_lock = decode_closed_json(candidate_lock_content, "candidate engine lock")
+    old_commit = envelope["old_engine_commit"]
+    new_commit = envelope["new_engine_commit"]
+    expected_old_engine = {
+        "repository": CANONICAL_ENGINE_REPOSITORY,
+        "ref": CANONICAL_ENGINE_REF,
+        "commit": old_commit,
+    }
+    expected_new_engine = {**expected_old_engine, "commit": new_commit}
+    if base_instance.get("$schema") != schema_url(old_commit, "klokast-instance-v1.schema.json"):
+        raise InstanceAuthorityError("current private instance schema does not match its engine lock")
+    if base_lock.get("$schema") != schema_url(old_commit, "klokast-lock-v1.schema.json") or base_lock.get("engine") != expected_old_engine:
+        raise InstanceAuthorityError("current private engine lock is not canonical")
+    if candidate_instance.get("$schema") != schema_url(new_commit, "klokast-instance-v1.schema.json"):
+        raise InstanceAuthorityError("candidate instance schema does not match the target engine")
+    if candidate_lock.get("$schema") != schema_url(new_commit, "klokast-lock-v1.schema.json") or candidate_lock.get("engine") != expected_new_engine:
+        raise InstanceAuthorityError("candidate engine lock does not match the target engine")
+    if semantic_without_engine_metadata(base_instance, base_lock) != semantic_without_engine_metadata(candidate_instance, candidate_lock):
+        raise InstanceAuthorityError("engine promotion changes private values outside the three permitted metadata fields")
+    temporary = Path(tempfile.mkdtemp(prefix=".engine-promotion.", dir=Path(args.checkout).parent))
+    os.chmod(temporary, 0o700)
+    candidate = temporary / "candidate"
+    rollback = temporary / "rollback"
+    try:
+        for destination in (candidate, rollback):
+            destination.mkdir(mode=0o700)
+            run(["git", "-C", destination, "init", "-q", "--initial-branch=main"])
+            for name in (".gitignore", "AGENTS.md", "README.md"):
+                source_path = checkout / name
+                metadata = os.lstat(source_path)
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise InstanceAuthorityError("private support file is not one regular file")
+                (destination / name).write_bytes(source_path.read_bytes())
+        (candidate / "klokast-instance.json").write_bytes(candidate_instance_content)
+        (candidate / "klokast.lock.json").write_bytes(candidate_lock_content)
+        (rollback / "klokast-instance.json").write_bytes(base_instance_content)
+        (rollback / "klokast.lock.json").write_bytes(base_lock_content)
+        for destination in (candidate, rollback):
+            run(["git", "-C", destination, "add", "-A"])
+            run(["git", "-C", destination, "diff", "--cached", "--check"])
+        candidate_tree = git_output(candidate, "write-tree")[0]
+        rollback_tree = git_output(rollback, "write-tree")[0]
+        if candidate_tree != envelope["candidate_tree"]:
+            raise InstanceAuthorityError("candidate tree differs from the exact MacBook candidate")
+        if rollback_tree != envelope["rollback_tree"] or rollback_tree != base_tree:
+            raise InstanceAuthorityError("rollback tree differs from the current private tree")
+        checked = run([new_build["binary_path"], "check", "--instance", candidate, "--json"], capture=True, check=False)
+        checked_value = decode_closed_json(checked.stdout, "target engine check result")
+        if checked.returncode != 0 or checked_value.get("valid") is not True:
+            raise InstanceAuthorityError("target sealed engine rejected the promotion candidate")
+        rollback_checked = run([old_build["binary_path"], "check", "--instance", rollback, "--json"], capture=True, check=False)
+        rollback_value = decode_closed_json(rollback_checked.stdout, "rollback engine check result")
+        if rollback_checked.returncode != 0 or rollback_value.get("valid") is not True:
+            raise InstanceAuthorityError("current sealed engine rejected the prepared rollback form")
+    finally:
+        shutil.rmtree(temporary)
+    return base_commit, base_tree
+
+
+def promotion_intent_fields():
+    return {
+        "schema_version", "authority", "app", "action", "engine_repository",
+        "engine_ref", "old_engine_commit", "new_engine_commit",
+        "old_build_operation", "new_build_operation", "old_binary_sha256",
+        "new_binary_sha256", "old_builder_receipt_sha256",
+        "new_builder_receipt_sha256", "controller_public_commit",
+        "private_repository_sha256", "private_repository_id",
+        "private_base_commit", "private_base_tree", "candidate_tree",
+        "rollback_tree", "source_receipt_sha256", "signer_id", "nonce",
+        "issued_at", "expires_at",
+    }
+
+
+def validate_promotion_intent(value):
+    if not isinstance(value, dict) or set(value) != promotion_intent_fields():
+        raise InstanceAuthorityError("engine promotion intent fields do not match the closed schema")
+    if value.get("schema_version") != 1 or value.get("authority") != AUTHORITY or value.get("app") != APP:
+        raise InstanceAuthorityError("engine promotion intent authority or version is invalid")
+    if value.get("action") not in {"promote-engine", "rollback-engine"}:
+        raise InstanceAuthorityError("engine promotion intent action is invalid")
+    if value.get("engine_repository") != CANONICAL_ENGINE_REPOSITORY or value.get("engine_ref") != CANONICAL_ENGINE_REF:
+        raise InstanceAuthorityError("engine promotion intent repository or ref is invalid")
+    for field in ("old_engine_commit", "new_engine_commit", "controller_public_commit", "private_base_commit"):
+        if not HEAD_RE.fullmatch(value.get(field, "")):
+            raise InstanceAuthorityError(f"engine promotion intent {field} is invalid")
+    for field in ("old_build_operation", "new_build_operation"):
+        if not OPERATION_RE.fullmatch(value.get(field, "")):
+            raise InstanceAuthorityError(f"engine promotion intent {field} is invalid")
+    for field in (
+        "old_binary_sha256", "new_binary_sha256", "old_builder_receipt_sha256",
+        "new_builder_receipt_sha256", "private_repository_sha256",
+        "source_receipt_sha256",
+    ):
+        if not DIGEST_RE.fullmatch(value.get(field, "")):
+            raise InstanceAuthorityError(f"engine promotion intent {field} is invalid")
+    for field in ("private_base_tree", "candidate_tree", "rollback_tree"):
+        if not TREE_RE.fullmatch(value.get(field, "")):
+            raise InstanceAuthorityError(f"engine promotion intent {field} is invalid")
+    if not isinstance(value.get("private_repository_id"), int) or value["private_repository_id"] <= 0:
+        raise InstanceAuthorityError("engine promotion intent repository ID is invalid")
+    if value.get("signer_id") != EXPECTED_SIGNER_ID or not NONCE_RE.fullmatch(value.get("nonce", "")):
+        raise InstanceAuthorityError("engine promotion intent signer or nonce is invalid")
+    issued = parse_utc(value.get("issued_at"), "issued_at")
+    expires = parse_utc(value.get("expires_at"), "expires_at")
+    if expires <= issued or expires > issued + dt.timedelta(seconds=DEFAULT_TTL_SECONDS):
+        raise InstanceAuthorityError("engine promotion intent lifetime exceeds 10 minutes")
+    return issued, expires
+
+
+def cmd_promotion_preflight(args):
+    require_root()
+    require_active_controller()
+    envelope = read_promotion_envelope()
+    if envelope["action"] == "promote-engine":
+        if not args.new_engine_commit or not args.build_operation:
+            raise InstanceAuthorityError("promotion requires a new engine commit and build operation")
+        if envelope["new_engine_commit"] != args.new_engine_commit:
+            raise InstanceAuthorityError("promotion command and candidate engine commits differ")
+    elif envelope["action"] == "rollback-engine":
+        if args.new_engine_commit or args.build_operation:
+            raise InstanceAuthorityError("rollback does not accept an arbitrary engine or build operation")
+    else:
+        raise InstanceAuthorityError("engine promotion candidate action is invalid")
+    paths, source, state, source_commit, source_receipt_path, source_receipt = synchronize_registered_source(args)
+    del paths, source_receipt_path
+    checkout, base_commit, base_tree = checkout_state(args.checkout)
+    del checkout
+    if source_commit != base_commit or source_receipt.get("commit") != base_commit:
+        raise InstanceAuthorityError("fresh source receipt does not match private GitHub main")
+    lock = decode_closed_json(
+        read_bounded_regular(Path(args.checkout) / "klokast.lock.json", 64 * 1024, "private engine lock"),
+        "private engine lock",
+    )
+    engine = lock.get("engine") if isinstance(lock, dict) else None
+    old_commit = engine.get("commit") if isinstance(engine, dict) else ""
+    if old_commit != envelope["old_engine_commit"]:
+        raise InstanceAuthorityError("candidate old engine does not match the private lock")
+    if envelope["action"] == "promote-engine":
+        new_commit = args.new_engine_commit
+        if new_commit == old_commit:
+            raise InstanceAuthorityError("candidate engine must differ from the active engine")
+        controller_commit = require_public_checkout(args.repo_root, new_commit, exact_target=True)
+        if git_output(args.repo_root, "merge-base", "--is-ancestor", old_commit, new_commit, check=False)[1] != 0:
+            raise InstanceAuthorityError("candidate engine is not a strict descendant of the active engine")
+        old_binding = active_engine_binding(args, old_commit, base_commit)
+        if old_binding:
+            _activation, old_build, _previous_build = validate_activation_binding(
+                args, old_binding, source, state
+            )
+        else:
+            old_build = verify_sealed_build(old_commit)
+        new_build = verify_sealed_build(new_commit, args.build_operation)
+    else:
+        controller_commit = require_public_checkout(args.repo_root, old_commit, exact_target=False)
+        active_binding = active_engine_binding(args, old_commit, base_commit)
+        if active_binding is not None:
+            activation, old_build, new_build = validate_activation_binding(
+                args, active_binding, source, state
+            )
+            new_commit = activation.get("previous_engine_commit", "")
+        else:
+            pending = pending_promotion_binding(
+                args, old_commit, base_tree, source, state
+            )
+            promotion, old_build, new_build = validate_pending_promotion(args, pending)
+            new_commit = promotion.get("old_engine_commit", "")
+        if envelope["new_engine_commit"] != new_commit or not HEAD_RE.fullmatch(new_commit):
+            raise InstanceAuthorityError("rollback target is not the previous activated engine")
+    validate_candidate_tree(args, envelope, old_build, new_build)
+    if envelope["private_base_commit"] != base_commit or envelope["private_base_tree"] != base_tree:
+        raise InstanceAuthorityError("candidate base changed during promotion preflight")
+    issued = now_utc()
+    intent = {
+        "schema_version": 1,
+        "authority": AUTHORITY,
+        "app": APP,
+        "action": envelope["action"],
+        "engine_repository": CANONICAL_ENGINE_REPOSITORY,
+        "engine_ref": CANONICAL_ENGINE_REF,
+        "old_engine_commit": old_commit,
+        "new_engine_commit": new_commit,
+        "old_build_operation": old_build["operation"],
+        "new_build_operation": new_build["operation"],
+        "old_binary_sha256": old_build["binary_sha256"],
+        "new_binary_sha256": new_build["binary_sha256"],
+        "old_builder_receipt_sha256": old_build["receipt_sha256"],
+        "new_builder_receipt_sha256": new_build["receipt_sha256"],
+        "controller_public_commit": controller_commit,
+        "private_repository_sha256": source["repository_sha256"],
+        "private_repository_id": state["repository_id"],
+        "private_base_commit": base_commit,
+        "private_base_tree": base_tree,
+        "candidate_tree": envelope["candidate_tree"],
+        "rollback_tree": envelope["rollback_tree"],
+        "source_receipt_sha256": source_receipt["receipt_sha256"],
+        "signer_id": EXPECTED_SIGNER_ID,
+        "nonce": secrets.token_urlsafe(18),
+        "issued_at": format_utc(issued),
+        "expires_at": format_utc(issued + dt.timedelta(seconds=DEFAULT_TTL_SECONDS)),
+    }
+    validate_promotion_intent(intent)
+    audit(args, "instance.engine-promotion.preflight", action=intent["action"],
+          old_engine_commit=old_commit, new_engine_commit=new_commit,
+          private_repository_sha256=source["repository_sha256"],
+          private_repository_id=state["repository_id"], candidate_tree=envelope["candidate_tree"])
+    print(canonical_json(intent), end="")
+
+
+def load_promotion_intent(path):
+    content = read_bounded_regular(path, MAX_RECEIPT_BYTES, "engine promotion intent")
+    value = decode_closed_json(content, "engine promotion intent")
+    if content.decode("utf-8") != canonical_json(value):
+        raise InstanceAuthorityError("engine promotion intent is not canonical JSON")
+    validate_promotion_intent(value)
+    return value, content
+
+
+def cmd_promotion_approve(args):
+    require_root()
+    require_active_controller()
+    if args.signer_id != EXPECTED_SIGNER_ID:
+        raise InstanceAuthorityError(f"engine promotion requires signer ID {EXPECTED_SIGNER_ID}")
+    intent, intent_content = load_promotion_intent(args.approval_intent)
+    issued, expires = validate_promotion_intent(intent)
+    current_time = now_utc()
+    if issued > current_time or expires <= current_time:
+        raise InstanceAuthorityError("engine promotion intent is not current")
+    signature = read_bounded_regular(args.approval_signature, MAX_RECEIPT_BYTES, "engine promotion signature")
+    completed = run(
+        ["ssh-keygen", "-Y", "verify", "-f", args.allowed_signers, "-I", args.signer_id,
+         "-n", SIGNATURE_NAMESPACE, "-s", args.approval_signature],
+        capture=True, check=False, input_text=intent_content.decode("utf-8"),
+    )
+    if completed.returncode != 0:
+        raise InstanceAuthorityError("engine promotion signature verification failed")
+    if current_repo_head(args.repo_root) != intent["controller_public_commit"]:
+        raise InstanceAuthorityError("controller public checkout changed after preflight")
+    _checkout, base_commit, base_tree = checkout_state(args.checkout)
+    if base_commit != intent["private_base_commit"] or base_tree != intent["private_base_tree"]:
+        raise InstanceAuthorityError("private source changed after promotion preflight")
+    _paths, source, state = load_registered_source_identity(args)
+    if (
+        source["repository_sha256"] != intent["private_repository_sha256"]
+        or state["repository_id"] != intent["private_repository_id"]
+    ):
+        raise InstanceAuthorityError("private repository identity changed after preflight")
+    validate_source_receipt_binding(
+        args, base_commit, intent["source_receipt_sha256"],
+        source["repository_sha256"], state["repository_id"],
+    )
+    old_build = verify_sealed_build(intent["old_engine_commit"], intent["old_build_operation"])
+    new_build = verify_sealed_build(intent["new_engine_commit"], intent["new_build_operation"])
+    for actual, field in (
+        (old_build["binary_sha256"], "old_binary_sha256"),
+        (new_build["binary_sha256"], "new_binary_sha256"),
+        (old_build["receipt_sha256"], "old_builder_receipt_sha256"),
+        (new_build["receipt_sha256"], "new_builder_receipt_sha256"),
+    ):
+        if actual != intent[field]:
+            raise InstanceAuthorityError(f"sealed evidence changed after preflight: {field}")
+    consume_nonce(args, intent)
+    receipt = {
+        "schema_version": 1,
+        "kind": PROMOTION_KIND,
+        **intent,
+        "intent_sha256": hashlib.sha256(intent_content).hexdigest(),
+        "signature_sha256": hashlib.sha256(signature).hexdigest(),
+        "approved_at": format_utc(now_utc()),
+    }
+    path, complete = write_group_receipt(
+        args, args.promotion_root, intent["new_engine_commit"], receipt
+    )
+    audit(args, "instance.engine-promotion.approved", action=intent["action"],
+          old_engine_commit=intent["old_engine_commit"],
+          new_engine_commit=intent["new_engine_commit"],
+          private_repository_sha256=intent["private_repository_sha256"],
+          private_repository_id=intent["private_repository_id"],
+          receipt_sha256=complete["receipt_sha256"], signer_id=args.signer_id,
+          nonce=intent["nonce"])
+    print(canonical_json({"schema_version": 1, "approved": True,
+                          "receipt_sha256": complete["receipt_sha256"],
+                          "receipt_path": str(path)}), end="")
+
+
+def load_group_receipt(path, root, kind, identity_field=None, identity=None):
+    supplied = Path(path)
+    try:
+        resolved = supplied.resolve(strict=True)
+        resolved.relative_to(Path(root).resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise InstanceAuthorityError("engine evidence path is outside its fixed root") from error
+    if supplied != resolved or supplied.is_symlink():
+        raise InstanceAuthorityError("engine evidence path contains a symbolic link or alias")
+    content = read_bounded_regular(supplied, MAX_RECEIPT_BYTES, "engine evidence receipt")
+    value = decode_closed_json(content, "engine evidence receipt")
+    digest = hashlib.sha256(canonical_json({
+        key: item for key, item in value.items() if key != "receipt_sha256"
+    }).rstrip("\n").encode("utf-8")).hexdigest()
+    if value.get("kind") != kind or value.get("receipt_sha256") != digest or supplied.name != f"{digest}.json":
+        raise InstanceAuthorityError("engine evidence receipt hash is invalid")
+    if identity_field and (
+        value.get(identity_field) != identity or supplied.parent.name != identity
+    ):
+        raise InstanceAuthorityError("engine evidence receipt identity is invalid")
+    try:
+        smith = pwd.getpwnam("smith")
+    except KeyError as error:
+        raise InstanceAuthorityError("controller account smith is missing") from error
+    metadata = supplied.stat()
+    parent_metadata = supplied.parent.stat()
+    if metadata.st_uid != 0 or metadata.st_gid != smith.pw_gid or stat.S_IMODE(metadata.st_mode) != 0o440:
+        raise InstanceAuthorityError("engine evidence receipt ownership or mode is unsafe")
+    if parent_metadata.st_uid != 0 or parent_metadata.st_gid != smith.pw_gid or stat.S_IMODE(parent_metadata.st_mode) != 0o750:
+        raise InstanceAuthorityError("engine evidence directory ownership or mode is unsafe")
+    return value
+
+
+def cmd_promotion_activate(args):
+    require_root()
+    require_active_controller()
+    if not HEAD_RE.fullmatch(args.private_commit or ""):
+        raise InstanceAuthorityError("--private-commit must be one full lowercase Git commit")
+    promotion = load_group_receipt(
+        args.promotion_receipt, args.promotion_root, PROMOTION_KIND,
+        "new_engine_commit", args.engine_commit,
+    )
+    _paths, source, state, commit, source_path, source_receipt = synchronize_registered_source(args)
+    del source_path
+    checkout, checked_commit, tree = checkout_state(args.checkout)
+    if commit != args.private_commit or checked_commit != args.private_commit:
+        raise InstanceAuthorityError("GitHub and controller private main do not match the activated commit")
+    if tree != promotion.get("candidate_tree"):
+        raise InstanceAuthorityError("activated private commit tree does not match the approved candidate tree")
+    if source.get("repository_sha256") != promotion.get("private_repository_sha256") or state.get("repository_id") != promotion.get("private_repository_id"):
+        raise InstanceAuthorityError("activated private repository identity differs from approval")
+    lock = decode_closed_json(
+        read_bounded_regular(checkout / "klokast.lock.json", 64 * 1024, "activated engine lock"),
+        "activated engine lock",
+    )
+    engine = lock.get("engine") if isinstance(lock, dict) else None
+    expected_engine = {
+        "repository": CANONICAL_ENGINE_REPOSITORY,
+        "ref": CANONICAL_ENGINE_REF,
+        "commit": args.engine_commit,
+    }
+    if engine != expected_engine:
+        raise InstanceAuthorityError("activated private lock does not select the approved engine")
+    build = verify_sealed_build(args.engine_commit, promotion.get("new_build_operation"))
+    if build["binary_sha256"] != promotion.get("new_binary_sha256") or build["receipt_sha256"] != promotion.get("new_builder_receipt_sha256"):
+        raise InstanceAuthorityError("activated sealed build differs from promotion approval")
+    checked = run([build["binary_path"], "check", "--instance", checkout, "--json"], capture=True, check=False)
+    checked_value = decode_closed_json(checked.stdout, "activated engine check result")
+    if checked.returncode != 0 or checked_value.get("valid") is not True:
+        raise InstanceAuthorityError("activated sealed engine rejected the private checkout")
+    promotion_digest = promotion["receipt_sha256"]
+    receipt = {
+        "schema_version": 1,
+        "kind": ACTIVATION_KIND,
+        "activated_at": format_utc(now_utc()),
+        "private_repository_sha256": source["repository_sha256"],
+        "private_repository_id": state["repository_id"],
+        "private_commit": commit,
+        "private_tree": tree,
+        "source_receipt_sha256": source_receipt["receipt_sha256"],
+        "promotion_receipt_sha256": promotion_digest,
+        "engine_repository": CANONICAL_ENGINE_REPOSITORY,
+        "engine_ref": CANONICAL_ENGINE_REF,
+        "engine_commit": args.engine_commit,
+        "build_operation": build["operation"],
+        "binary_sha256": build["binary_sha256"],
+        "builder_receipt_sha256": build["receipt_sha256"],
+        "previous_engine_commit": promotion["old_engine_commit"],
+        "previous_build_operation": promotion["old_build_operation"],
+        "previous_binary_sha256": promotion["old_binary_sha256"],
+        "previous_builder_receipt_sha256": promotion["old_builder_receipt_sha256"],
+        "rollback_tree": promotion["rollback_tree"],
+    }
+    path, complete = write_group_receipt(args, args.activation_root, commit, receipt)
+    audit(args, "instance.engine.activated", engine_commit=args.engine_commit,
+          private_repository_sha256=source["repository_sha256"],
+          private_repository_id=state["repository_id"], private_commit=commit,
+          promotion_receipt_sha256=promotion_digest,
+          activation_receipt_sha256=complete["receipt_sha256"])
+    print(canonical_json({"schema_version": 1, "activated": True,
+                          "engine_commit": args.engine_commit,
+                          "private_commit": commit,
+                          "receipt_sha256": complete["receipt_sha256"],
+                          "receipt_path": str(path)}), end="")
+
+
+def cmd_engine_status(args):
+    require_root()
+    require_active_controller()
+    _paths, source, state, synchronized_commit, _source_path, source_receipt = \
+        synchronize_registered_source(args)
+    checkout, commit, tree = checkout_state(args.checkout)
+    if synchronized_commit != commit:
+        raise InstanceAuthorityError("fresh private source synchronization did not converge")
+    if args.candidate_engine or args.candidate_tree:
+        if not HEAD_RE.fullmatch(args.candidate_engine or "") or not TREE_RE.fullmatch(args.candidate_tree or ""):
+            raise InstanceAuthorityError("candidate engine status requires one full engine commit and tree")
+        pending = pending_promotion_binding(
+            args, args.candidate_engine, args.candidate_tree, source, state
+        )
+        promotion, _candidate_build, _previous_build = validate_pending_promotion(
+            args, pending
+        )
+        if promotion.get("private_base_commit") != commit or promotion.get("private_base_tree") != tree:
+            raise InstanceAuthorityError("pending promotion base no longer matches private GitHub main")
+        path, promotion = pending
+        print(canonical_json({
+            "schema_version": 1,
+            "resumable": True,
+            "engine_commit": args.candidate_engine,
+            "candidate_tree": args.candidate_tree,
+            "private_base_commit": commit,
+            "private_base_tree": tree,
+            "promotion_receipt_sha256": promotion["receipt_sha256"],
+            "promotion_receipt_path": str(path),
+            "source_receipt_sha256": source_receipt["receipt_sha256"],
+        }), end="")
+        return
+    lock = decode_closed_json(
+        read_bounded_regular(checkout / "klokast.lock.json", 64 * 1024, "private engine lock"),
+        "private engine lock",
+    )
+    engine = lock.get("engine") if isinstance(lock, dict) else None
+    if not isinstance(engine, dict) or engine.get("repository") != CANONICAL_ENGINE_REPOSITORY or engine.get("ref") != CANONICAL_ENGINE_REF or not HEAD_RE.fullmatch(engine.get("commit", "")):
+        raise InstanceAuthorityError("private engine lock is not canonical")
+    binding = active_engine_binding(args, engine["commit"], commit)
+    if binding is not None:
+        validate_activation_binding(args, binding, source, state)
+    pending = None
+    if binding is None:
+        pending = pending_promotion_binding(
+            args, engine["commit"], tree, source, state
+        )
+        if pending is not None:
+            validate_pending_promotion(args, pending)
+    result = {
+        "schema_version": 1,
+        "valid": binding is not None,
+        "engine_repository": CANONICAL_ENGINE_REPOSITORY,
+        "engine_ref": CANONICAL_ENGINE_REF,
+        "engine_commit": engine["commit"],
+        "private_repository_sha256": source["repository_sha256"],
+        "private_repository_id": state["repository_id"],
+        "private_commit": commit,
+        "private_tree": tree,
+        "source_receipt_sha256": source_receipt["receipt_sha256"],
+        "activation_present": binding is not None,
+        "pending_activation": pending is not None,
+    }
+    if binding:
+        path, activation = binding
+        result.update({
+            "build_operation": activation["build_operation"],
+            "previous_engine_commit": activation["previous_engine_commit"],
+            "previous_build_operation": activation["previous_build_operation"],
+            "activation_receipt_sha256": activation["receipt_sha256"],
+            "activation_receipt_path": str(path),
+        })
+    elif pending:
+        path, promotion = pending
+        result.update({
+            "build_operation": promotion["new_build_operation"],
+            "previous_engine_commit": promotion["old_engine_commit"],
+            "previous_build_operation": promotion["old_build_operation"],
+            "promotion_receipt_sha256": promotion["receipt_sha256"],
+            "promotion_receipt_path": str(path),
+        })
+    print(canonical_json(result), end="")
+
+
 def add_repository_args(parser, fingerprint_required=False, engine_required=False):
     parser.add_argument("--repo-owner", required=True)
     parser.add_argument("--repo-name", required=True)
@@ -1212,6 +2163,8 @@ def build_parser():
     parser.add_argument("--source-root", default=os.environ.get("KSA_INSTANCE_SOURCE_ROOT", DEFAULT_SOURCE_ROOT))
     parser.add_argument("--state-root", default=os.environ.get("KSA_INSTANCE_STATE_ROOT", DEFAULT_STATE_ROOT))
     parser.add_argument("--receipt-root", default=os.environ.get("KSA_INSTANCE_RECEIPT_ROOT", DEFAULT_RECEIPT_ROOT))
+    parser.add_argument("--promotion-root", default=os.environ.get("KSA_ENGINE_PROMOTION_ROOT", DEFAULT_PROMOTION_ROOT))
+    parser.add_argument("--activation-root", default=os.environ.get("KSA_ENGINE_ACTIVATION_ROOT", DEFAULT_ACTIVATION_ROOT))
     parser.add_argument("--checkout", default=os.environ.get("KSA_INSTANCE_CHECKOUT", DEFAULT_CHECKOUT))
     parser.add_argument("--audit-log", default=os.environ.get("KSA_AUDIT_LOG", DEFAULT_AUDIT_LOG))
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1225,6 +2178,22 @@ def build_parser():
         add_repository_args(action_parser)
     status = source_actions.add_parser("status")
     status.add_argument("--redacted", action="store_true")
+    engine = commands.add_parser("engine")
+    engine_actions = engine.add_subparsers(dest="engine_action", required=True)
+    preflight = engine_actions.add_parser("promotion-preflight")
+    preflight.add_argument("--new-engine-commit")
+    preflight.add_argument("--build-operation")
+    approve = engine_actions.add_parser("promotion-approve")
+    approve.add_argument("--approval-intent", required=True)
+    approve.add_argument("--approval-signature", required=True)
+    approve.add_argument("--signer-id", required=True)
+    activate = engine_actions.add_parser("promotion-activate")
+    activate.add_argument("--engine-commit", required=True)
+    activate.add_argument("--private-commit", required=True)
+    activate.add_argument("--promotion-receipt", required=True)
+    engine_status = engine_actions.add_parser("status")
+    engine_status.add_argument("--candidate-engine")
+    engine_status.add_argument("--candidate-tree")
     return parser
 
 
@@ -1240,6 +2209,14 @@ def main(argv=None):
             cmd_source_sync(args)
         elif args.command == "source" and args.source_action == "status":
             cmd_status(args)
+        elif args.command == "engine" and args.engine_action == "promotion-preflight":
+            cmd_promotion_preflight(args)
+        elif args.command == "engine" and args.engine_action == "promotion-approve":
+            cmd_promotion_approve(args)
+        elif args.command == "engine" and args.engine_action == "promotion-activate":
+            cmd_promotion_activate(args)
+        elif args.command == "engine" and args.engine_action == "status":
+            cmd_engine_status(args)
         elif args.command == "instance" and args.instance_action == "register-repository":
             cmd_register_repository(args)
         elif args.command == "instance" and args.instance_action == "register-read-key":

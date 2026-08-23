@@ -48,7 +48,7 @@ Source: `ansible/bin/`.
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
-| `platform-instance` | active controller | Guides and validates the fixed private initialization values, seeds an Instance Specification v1 repository with a sealed-builder binary, and prepares, synchronizes, or reports the root-custodied read-only deployment source. |
+| `platform-instance` | active controller | Guides and validates private initialization, seeds with a sealed-builder binary, maintains the root-custodied read-only source, and performs controlled engine promotion preflight, approval, activation, and status checks. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
 | `platform-plan` | active controller | Verifies one sealed-builder CLI receipt and one root-owned instance source receipt, creates Plan v1 from controller-private inputs, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
@@ -113,6 +113,7 @@ Source: `klokast-dev/bin/`.
 | `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
 | `prepare-private-instance-worktree` | laptop | Runs the guided owner-only values setup on the active controller, seeds with the pinned sealed build, streams the generated repository to the MacBook, and verifies its initial Git state without copying private values into arguments or the redacted journal. |
 | `publish-private-instance` | laptop | Checks or publishes the initial seed or a later staged `klokast-instance.json` edit after sealed contract and compatibility validation, exact remote-base checks, human diff approval, and private `main` verification. |
+| `promote-private-instance-engine` | laptop | Checks or publishes one schema-compatible canonical engine promotion, obtains Touch ID approval, activates the exact private tree on the read-only controller, and supports receipt-bound forward rollback. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
 | `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
 | `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |

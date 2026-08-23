@@ -347,6 +347,9 @@ validate_controller_candidate() {
   local remote_command=""
 
   remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance validate-candidate --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION --require-compatible"
+  if [ -n "${LOCAL_COMMIT:-}" ]; then
+    remote_command="$remote_command --base-commit $LOCAL_COMMIT --base-tree $BASE_TREE"
+  fi
   tailscale ssh "$SSH_TARGET" "$remote_command" \
     <"$PRIVATE_WORKTREE/klokast-instance.json"
 }
@@ -415,42 +418,96 @@ for command in git python3 tailscale; do
 done
 
 refresh_checkout_and_reexec
-validate_session_file || ksa_die "bootstrap session is missing or unsafe"
-# The validated session contains quoted identifiers and paths, not private values.
-# shellcheck disable=SC1090
-. "$SESSION_FILE"
 
-ksa_valid_controller "${CONTROLLER:-}" || ksa_die "session controller is invalid"
-[ "${SSH_TARGET:-}" = "smith@$CONTROLLER" ] || ksa_die "session SSH target is invalid"
-ksa_valid_github_owner "${INSTANCE_OWNER:-}" || ksa_die "session GitHub owner is invalid"
-[ "${#INSTANCE_OWNER}" -le 39 ] || ksa_die "session GitHub owner is too long"
-[ "${INSTANCE_REPO:-}" = "$EXPECTED_REPO_NAME" ] || \
-  ksa_die "session repository must be $EXPECTED_REPO_NAME"
-case "${ENGINE_COMMIT:-}" in
-  ""|*[!0-9a-f]*) ksa_die "session engine commit is invalid" ;;
-esac
-[ "${#ENGINE_COMMIT}" -eq 40 ] || ksa_die "session engine commit must be full length"
-case "${BUILD_OPERATION:-}" in
-  ""|*[!0-9a-f]*) ksa_die "session build operation is invalid" ;;
-esac
-[ "${#BUILD_OPERATION}" -eq 12 ] || ksa_die "session build operation is invalid"
-
-pinned_engine="$(sed -n 's/^ENGINE_COMMIT="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
-  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
-pinned_operation="$(sed -n 's/^BUILD_OPERATION="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
-  "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
-if [ "$pinned_engine" != "$ENGINE_COMMIT" ] || \
-    [ "$pinned_operation" != "$BUILD_OPERATION" ]; then
-  ksa_die "the session does not match the current reviewed bootstrap helper; rerun prepare-private-instance-bootstrap"
+if git -C "$PRIVATE_WORKTREE" rev-parse --verify HEAD >/dev/null 2>&1; then
+  CONTROLLER="$("$REPO_ROOT/ansible/bin/ops-controller-ha" resolve-active)" || \
+    ksa_die "cannot resolve the active controller from the private HA registry"
+  ksa_valid_controller "$CONTROLLER" || ksa_die "private HA registry returned an invalid controller"
+  SSH_TARGET="smith@$CONTROLLER"
+  private_origin="$(git -C "$PRIVATE_WORKTREE" config --get remote.origin.url || true)"
+  case "$private_origin" in
+    git@github.com:*/klokast-instance.git)
+      INSTANCE_OWNER="${private_origin#git@github.com:}"
+      INSTANCE_OWNER="${INSTANCE_OWNER%/klokast-instance.git}"
+      ;;
+    *) ksa_die "committed private worktree origin is not the expected GitHub repository" ;;
+  esac
+  INSTANCE_REPO=$EXPECTED_REPO_NAME
+  ENGINE_COMMIT="$(python3 - "$PRIVATE_WORKTREE/klokast.lock.json" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+engine = value.get("engine") if isinstance(value, dict) else None
+commit = engine.get("commit", "") if isinstance(engine, dict) else ""
+if not re.fullmatch(r"[0-9a-f]{40}", commit):
+    raise SystemExit("private engine lock commit is invalid")
+if engine.get("repository") != "https://github.com/klokast/klokast-box" or engine.get("ref") != "main":
+    raise SystemExit("private engine lock is not canonical")
+print(commit)
+PY
+)" || ksa_die "cannot resolve the active engine from the private lock"
+  ENGINE_STATUS="$(tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance engine-status)" || \
+    ksa_die "controller could not synchronize and verify the active engine"
+  BUILD_OPERATION="$(printf '%s\n' "$ENGINE_STATUS" | python3 -c '
+import json
+import re
+import sys
+expected = sys.argv[1]
+value = json.load(sys.stdin)
+operation = value.get("build_operation", "")
+if value.get("valid") is not True or value.get("engine_commit") != expected:
+    raise SystemExit("controller active engine does not match the private lock")
+if not re.fullmatch(r"[0-9a-f]{12}", operation):
+    raise SystemExit("controller active engine build operation is invalid")
+print(operation)
+' "$ENGINE_COMMIT")" || ksa_die "controller returned invalid active engine evidence"
+else
+  validate_session_file || ksa_die "bootstrap session is missing or unsafe"
+  # The validated session contains quoted identifiers and paths, not private values.
+  # shellcheck disable=SC1090
+  . "$SESSION_FILE"
+  ksa_valid_controller "${CONTROLLER:-}" || ksa_die "session controller is invalid"
+  [ "${SSH_TARGET:-}" = "smith@$CONTROLLER" ] || ksa_die "session SSH target is invalid"
+  pinned_engine="$(sed -n 's/^ENGINE_COMMIT="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+    "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+  pinned_operation="$(sed -n 's/^BUILD_OPERATION="\([0-9a-f][0-9a-f]*\)"$/\1/p' \
+    "$SCRIPT_DIR/prepare-private-instance-bootstrap")"
+  if [ "$pinned_engine" != "$ENGINE_COMMIT" ] || [ "$pinned_operation" != "$BUILD_OPERATION" ]; then
+    ksa_die "the session does not match the current reviewed bootstrap helper"
+  fi
 fi
+
+ksa_valid_github_owner "${INSTANCE_OWNER:-}" || ksa_die "private repository owner is invalid"
+[ "${INSTANCE_REPO:-}" = "$EXPECTED_REPO_NAME" ] || ksa_die "private repository name is invalid"
+case "${ENGINE_COMMIT:-}" in ""|*[!0-9a-f]*) ksa_die "active engine commit is invalid" ;; esac
+[ "${#ENGINE_COMMIT}" -eq 40 ] || ksa_die "active engine commit must be full length"
+case "${BUILD_OPERATION:-}" in ""|*[!0-9a-f]*) ksa_die "active build operation is invalid" ;; esac
+[ "${#BUILD_OPERATION}" -eq 12 ] || ksa_die "active build operation is invalid"
 
 REMOTE_URL="git@github.com:$INSTANCE_OWNER/$INSTANCE_REPO.git"
 validate_private_files
 repository_state
 validate_remote_configuration
 
-CONTROLLER_TREE="$(controller_seed_tree)" || \
-  ksa_die "the sealed controller seed could not be verified"
+if [ "$LOCAL_STATE" = unborn ]; then
+  BASE_TREE=""
+  CONTROLLER_TREE="$(controller_seed_tree)" || \
+    ksa_die "the sealed controller seed could not be verified"
+else
+  BASE_TREE="$(git -C "$PRIVATE_WORKTREE" rev-parse 'HEAD^{tree}')"
+  CONTROLLER_TREE="$LOCAL_TREE"
+  printf '%s\n' "$ENGINE_STATUS" | python3 -c '
+import json
+import sys
+value = json.load(sys.stdin)
+if value.get("private_commit") != sys.argv[1] or value.get("private_tree") != sys.argv[2]:
+    raise SystemExit("controller private base does not match the MacBook")
+  ' "$LOCAL_COMMIT" "$BASE_TREE" >/dev/null || \
+    ksa_die "MacBook, GitHub, source receipt, and controller private bases do not match"
+fi
 candidate_result="$(validate_controller_candidate)" || \
   ksa_die "the instance document did not pass sealed compatibility validation"
 candidate_tree="$(printf '%s\n' "$candidate_result" | python3 -c '

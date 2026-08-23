@@ -1,0 +1,589 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Used by ksa_die from the sourced shared library.
+# shellcheck disable=SC2034
+KSA_TOOL_NAME="promote-private-instance-engine"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# shellcheck source=klokast-dev/lib/approval-common.sh
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+
+PRIVATE_WORKTREE="$HOME/src/private-klokast/klokast-instance"
+ENGINE_REPOSITORY="https://github.com/klokast/klokast-box"
+SIGNER_ID=human-private-instance
+CHECK_ONLY=false
+ROLLBACK=false
+CONTROLLER=""
+NEW_ENGINE_COMMIT=""
+BUILD_OPERATION=""
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 --controller HOST --new-engine-commit COMMIT --build-operation OPERATION [--check]
+  $0 [--controller HOST] --rollback [--check]
+
+Promote the private Instance Specification to one exact sealed canonical
+engine. Run this helper only in an interactive terminal on the trusted
+MacBook. The controller validates the exact candidate, but only the human
+MacBook commits and pushes private main.
+
+--check creates and validates an owner-only temporary candidate. It does not
+edit, stage, commit, or push the private worktree.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --controller)
+      [ "$#" -ge 2 ] || ksa_die "--controller requires a value"
+      CONTROLLER=$2
+      shift 2
+      ;;
+    --new-engine-commit)
+      [ "$#" -ge 2 ] || ksa_die "--new-engine-commit requires a value"
+      NEW_ENGINE_COMMIT=$2
+      shift 2
+      ;;
+    --build-operation)
+      [ "$#" -ge 2 ] || ksa_die "--build-operation requires a value"
+      BUILD_OPERATION=$2
+      shift 2
+      ;;
+    --rollback)
+      ROLLBACK=true
+      shift
+      ;;
+    --check)
+      CHECK_ONLY=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      ksa_die "unsupported argument: $1"
+      ;;
+  esac
+done
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  ksa_die "run this helper in an interactive terminal on the trusted MacBook"
+fi
+[ "$(uname -s)" = Darwin ] || ksa_die "run this helper on the trusted MacBook"
+for command in git python3 tailscale mktemp; do
+  ksa_need_command "$command"
+done
+
+case "$NEW_ENGINE_COMMIT" in
+  ""|*[!0-9a-f]*) [ "$ROLLBACK" = true ] || ksa_die "--new-engine-commit must be one full lowercase Git commit" ;;
+esac
+if [ -n "$NEW_ENGINE_COMMIT" ]; then
+  [ "${#NEW_ENGINE_COMMIT}" -eq 40 ] || ksa_die "--new-engine-commit must be one full lowercase Git commit"
+fi
+case "$BUILD_OPERATION" in
+  ""|*[!0-9a-f]*) [ "$ROLLBACK" = true ] || ksa_die "--build-operation must have 12 lowercase hexadecimal characters" ;;
+esac
+if [ -n "$BUILD_OPERATION" ]; then
+  [ "${#BUILD_OPERATION}" -eq 12 ] || ksa_die "--build-operation must have 12 lowercase hexadecimal characters"
+fi
+if [ "$ROLLBACK" = true ]; then
+  if [ -n "$NEW_ENGINE_COMMIT" ] || [ -n "$BUILD_OPERATION" ]; then
+    ksa_die "--rollback does not accept an arbitrary engine commit or build operation"
+  fi
+  if [ -z "$CONTROLLER" ]; then
+    CONTROLLER="$("$REPO_ROOT/ansible/bin/ops-controller-ha" resolve-active)" || \
+      ksa_die "cannot resolve the active controller from the private HA registry"
+  fi
+else
+  [ -n "$CONTROLLER" ] || ksa_die "--controller is required for promotion"
+  if [ -z "$NEW_ENGINE_COMMIT" ] || [ -z "$BUILD_OPERATION" ]; then
+    ksa_die "promotion requires --new-engine-commit and --build-operation"
+  fi
+fi
+ksa_valid_controller "$CONTROLLER" || ksa_die "controller hostname is invalid"
+SSH_TARGET="smith@$CONTROLLER"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/klokast-engine-promotion.XXXXXX")" || \
+  ksa_die "cannot create the owner-only candidate directory"
+chmod 0700 "$WORK"
+REMOTE_INTENT=""
+REMOTE_SIGNATURE=""
+cleanup() {
+  if [ -n "$REMOTE_INTENT" ]; then
+    tailscale ssh "$SSH_TARGET" sh -s -- "$REMOTE_INTENT" "$REMOTE_SIGNATURE" <<'SH' >/dev/null 2>&1 || true
+set -eu
+case "$1" in /home/smith/private/klokast/promotion-approvals/*) rm -f "$1" ;; esac
+case "$2" in /home/smith/private/klokast/promotion-approvals/*) rm -f "$2" ;; esac
+SH
+  fi
+  case "$WORK" in
+    "${TMPDIR:-/tmp}"/klokast-engine-promotion.*) rm -rf "$WORK" ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+activate_published_commit() {
+  activation_engine=$1
+  activation_commit=$2
+  activation_promotion_receipt=$3
+  activation_result="$WORK/activation-result.json"
+  if ! tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    promotion-activate --engine-commit "$activation_engine" \
+    --private-commit "$activation_commit" \
+    --promotion-receipt "$activation_promotion_receipt" \
+    >"$activation_result"; then
+    printf 'The private engine commit is published, but controller activation failed.\n' >&2
+    printf 'Inspect the safe controller error. Then use this checked forward rollback workflow:\n' >&2
+    printf '  %s --controller %s --rollback\n' "$0" "$CONTROLLER" >&2
+    return 2
+  fi
+  python3 - "$activation_result" "$activation_engine" "$activation_commit" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+if value.get("activated") is not True or value.get("engine_commit") != sys.argv[2] or value.get("private_commit") != sys.argv[3]:
+    raise SystemExit("controller returned an invalid engine activation result")
+PY
+
+  evidence_dir="$HOME/.local/share/klokast/private-instance-engine"
+  install -d -m 0700 "$evidence_dir"
+  python3 - "$activation_result" "$evidence_dir/.active.json.$$" "$CONTROLLER" <<'PY'
+import json
+import os
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+evidence = {
+    "schema_version": 1,
+    "controller": sys.argv[3],
+    "engine_commit": value["engine_commit"],
+    "private_commit": value["private_commit"],
+    "activation_receipt_sha256": value["receipt_sha256"],
+}
+with open(sys.argv[2], "x", encoding="utf-8") as handle:
+    json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+os.chmod(sys.argv[2], 0o600)
+PY
+  mv -f "$evidence_dir/.active.json.$$" "$evidence_dir/active.json"
+  chmod 0600 "$evidence_dir/active.json"
+  printf 'Canonical engine promotion completed and activated.\n'
+  printf '  Engine: %s\n' "$activation_engine"
+  printf '  Private commit: %s\n' "$activation_commit"
+}
+
+require_clean_branch() {
+  root=$1
+  label=$2
+  if [ ! -d "$root/.git" ] || [ -L "$root" ]; then
+    ksa_die "$label checkout is missing or unsafe"
+  fi
+  [ "$(git -C "$root" branch --show-current)" = main ] || ksa_die "$label checkout is not on main"
+  [ -z "$(git -C "$root" status --porcelain --untracked-files=all)" ] || \
+    ksa_die "$label checkout has changes"
+  [ "$(git -C "$root" remote)" = origin ] || ksa_die "$label checkout must have only origin"
+}
+
+require_clean_branch "$REPO_ROOT" "public"
+PUBLIC_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+PUBLIC_UPSTREAM="$(git -C "$REPO_ROOT" rev-parse '@{upstream}')"
+[ "$PUBLIC_HEAD" = "$PUBLIC_UPSTREAM" ] || ksa_die "public HEAD and upstream main differ"
+PUBLIC_REMOTE="$(git ls-remote "$ENGINE_REPOSITORY" refs/heads/main | awk 'NF == 2 && $2 == "refs/heads/main" { print $1 }')"
+[ "$PUBLIC_REMOTE" = "$PUBLIC_HEAD" ] || ksa_die "public HEAD does not match GitHub canonical main"
+case "$(git -C "$REPO_ROOT" config --get remote.origin.url)" in
+  git@github.com:klokast/klokast-box.git|https://github.com/klokast/klokast-box|https://github.com/klokast/klokast-box.git) ;;
+  *) ksa_die "public origin is not canonical klokast/klokast-box" ;;
+esac
+
+require_clean_branch "$PRIVATE_WORKTREE" "private"
+PRIVATE_HEAD="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
+PRIVATE_TREE="$(git -C "$PRIVATE_WORKTREE" rev-parse 'HEAD^{tree}')"
+PRIVATE_UPSTREAM="$(git -C "$PRIVATE_WORKTREE" rev-parse '@{upstream}')"
+PRIVATE_REMOTE_URL="$(git -C "$PRIVATE_WORKTREE" config --get remote.origin.url)"
+case "$PRIVATE_REMOTE_URL" in
+  git@github.com:*/klokast-instance.git) ;;
+  *) ksa_die "private origin is not the expected GitHub instance repository" ;;
+esac
+PRIVATE_REMOTE_HEAD="$(git ls-remote "$PRIVATE_REMOTE_URL" refs/heads/main | awk 'NF == 2 && $2 == "refs/heads/main" { print $1 }')"
+[ -n "$PRIVATE_REMOTE_HEAD" ] || ksa_die "GitHub private main has no valid commit"
+
+OLD_ENGINE_COMMIT="$(python3 - "$PRIVATE_WORKTREE/klokast.lock.json" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+engine = value.get("engine") if isinstance(value, dict) else None
+if not isinstance(engine, dict):
+    raise SystemExit("private engine lock is invalid")
+if engine.get("repository") != "https://github.com/klokast/klokast-box" or engine.get("ref") != "main":
+    raise SystemExit("private engine lock is not canonical")
+commit = engine.get("commit", "")
+if not re.fullmatch(r"[0-9a-f]{40}", commit):
+    raise SystemExit("private engine commit is invalid")
+print(commit)
+PY
+)" || ksa_die "cannot read the active engine from the private lock"
+
+if [ "$PRIVATE_HEAD" != "$PRIVATE_REMOTE_HEAD" ]; then
+  [ "$PRIVATE_UPSTREAM" = "$PRIVATE_REMOTE_HEAD" ] || \
+    ksa_die "private upstream and GitHub main differ"
+  [ "$(git -C "$PRIVATE_WORKTREE" rev-list --count "$PRIVATE_REMOTE_HEAD..$PRIVATE_HEAD")" = 1 ] || \
+    ksa_die "private local main is not one resumable engine commit ahead of GitHub"
+  [ "$(git -C "$PRIVATE_WORKTREE" rev-parse "$PRIVATE_HEAD^")" = "$PRIVATE_REMOTE_HEAD" ] || \
+    ksa_die "private local engine commit is not based on GitHub main"
+  [ "$(git -C "$PRIVATE_WORKTREE" log -1 --format=%s "$PRIVATE_HEAD")" = \
+      "Promote Klokast engine to ${OLD_ENGINE_COMMIT:0:12}" ] || \
+    ksa_die "private local commit is not the exact resumable engine promotion"
+  RESUME_STATUS="$WORK/resume-status.json"
+  tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    engine-status --candidate-engine "$OLD_ENGINE_COMMIT" \
+    --candidate-tree "$PRIVATE_TREE" >"$RESUME_STATUS" || \
+    ksa_die "controller has no approved promotion receipt for the local commit"
+  PROMOTION_RECEIPT="$(python3 - "$RESUME_STATUS" "$OLD_ENGINE_COMMIT" \
+    "$PRIVATE_TREE" "$PRIVATE_REMOTE_HEAD" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+expected = {
+    "resumable": True,
+    "engine_commit": sys.argv[2],
+    "candidate_tree": sys.argv[3],
+    "private_base_commit": sys.argv[4],
+}
+for field, wanted in expected.items():
+    if value.get(field) != wanted:
+        raise SystemExit(f"pending promotion mismatch: {field}")
+path = value.get("promotion_receipt_path", "")
+if not re.fullmatch(r"/var/lib/klokast/engine-promotions/[0-9a-f]{40}/[0-9a-f]{64}\.json", path):
+    raise SystemExit("pending promotion receipt path is invalid")
+print(path)
+PY
+)" || ksa_die "controller returned invalid resumable promotion evidence"
+  printf 'Verified one exact approved local engine commit after an incomplete push.\n'
+  git -C "$PRIVATE_WORKTREE" --no-pager show --stat --oneline HEAD
+  printf 'Push and activate this exact commit now? [y/N] '
+  IFS= read -r answer || ksa_die "input ended before resume confirmation"
+  case "$answer" in
+    y|Y|yes|YES|Yes) ;;
+    *) ksa_die "resume was not approved; no remote state changed" ;;
+  esac
+  git -C "$PRIVATE_WORKTREE" push origin main || \
+    ksa_die "private push failed again; the exact approved local commit remains safe"
+  PUSHED_REMOTE="$(git ls-remote "$PRIVATE_REMOTE_URL" refs/heads/main | awk 'NF == 2 { print $1 }')"
+  [ "$PUSHED_REMOTE" = "$PRIVATE_HEAD" ] || ksa_die "GitHub private main differs after resumed push"
+  activate_published_commit "$OLD_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PROMOTION_RECEIPT"
+  exit 0
+fi
+[ "$PRIVATE_UPSTREAM" = "$PRIVATE_HEAD" ] || ksa_die "private HEAD and upstream main differ"
+
+if [ "$ROLLBACK" = false ]; then
+  CURRENT_ENGINE_STATUS="$WORK/current-engine-status.json"
+  tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance engine-status \
+    >"$CURRENT_ENGINE_STATUS" || ksa_die "controller engine status failed"
+  if python3 - "$CURRENT_ENGINE_STATUS" "$OLD_ENGINE_COMMIT" "$BUILD_OPERATION" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+raise SystemExit(0 if (
+    value.get("pending_activation") is True
+    and value.get("engine_commit") == sys.argv[2]
+    and value.get("build_operation") == sys.argv[3]
+) else 1)
+PY
+  then
+    PROMOTION_RECEIPT="$(python3 - "$CURRENT_ENGINE_STATUS" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+path = value.get("promotion_receipt_path", "")
+if not re.fullmatch(r"/var/lib/klokast/engine-promotions/[0-9a-f]{40}/[0-9a-f]{64}\.json", path):
+    raise SystemExit("pending promotion receipt path is invalid")
+print(path)
+PY
+)" || ksa_die "controller returned invalid pending activation evidence"
+    [ "$NEW_ENGINE_COMMIT" = "$OLD_ENGINE_COMMIT" ] || \
+      ksa_die "requested engine differs from the published pending activation"
+    printf 'Private engine commit is already published. Resuming controller activation.\n'
+    activate_published_commit "$OLD_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PROMOTION_RECEIPT"
+    exit 0
+  fi
+fi
+
+if [ "$ROLLBACK" = true ]; then
+  STATUS_FILE="$WORK/engine-status.json"
+  tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance engine-status \
+    >"$STATUS_FILE" || ksa_die "controller engine status failed"
+  NEW_ENGINE_COMMIT="$(python3 - "$STATUS_FILE" "$OLD_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PRIVATE_TREE" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+activated = value.get("valid") is True and value.get("activation_present") is True
+pending = value.get("pending_activation") is True
+if not (activated or pending):
+    raise SystemExit("active engine has no immutable activation or pending promotion receipt")
+for field, expected in (("engine_commit", sys.argv[2]), ("private_commit", sys.argv[3]), ("private_tree", sys.argv[4])):
+    if value.get(field) != expected:
+        raise SystemExit(f"controller engine status mismatch: {field}")
+target = value.get("previous_engine_commit", "")
+if not re.fullmatch(r"[0-9a-f]{40}", target) or target == sys.argv[2]:
+    raise SystemExit("activation receipt has no valid previous engine")
+print(target)
+PY
+)" || ksa_die "controller did not return a valid checked rollback target"
+else
+  [ "$PUBLIC_HEAD" = "$NEW_ENGINE_COMMIT" ] || \
+    ksa_die "public HEAD, upstream main, GitHub main, and requested new engine must be equal"
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$OLD_ENGINE_COMMIT" "$NEW_ENGINE_COMMIT" || \
+    ksa_die "new engine is not a strict descendant of the active engine"
+  [ "$OLD_ENGINE_COMMIT" != "$NEW_ENGINE_COMMIT" ] || \
+    ksa_die "new engine must differ from the active engine"
+fi
+git -C "$REPO_ROOT" cat-file -e "$NEW_ENGINE_COMMIT^{commit}" || \
+  ksa_die "target engine commit is not available in the public checkout"
+
+CANDIDATE="$WORK/candidate"
+ENVELOPE="$WORK/envelope.json"
+python3 - "$PRIVATE_WORKTREE" "$CANDIDATE" "$ENVELOPE" \
+  "$OLD_ENGINE_COMMIT" "$NEW_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PRIVATE_TREE" \
+  "$ROLLBACK" <<'PY'
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+
+root, candidate_text, envelope_text, old_commit, new_commit, base_commit, base_tree, rollback = sys.argv[1:]
+root = pathlib.Path(root)
+candidate = pathlib.Path(candidate_text)
+candidate.mkdir(mode=0o700)
+
+def reject_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+def load(name):
+    with (root / name).open(encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicates)
+
+instance = load("klokast-instance.json")
+lock = load("klokast.lock.json")
+instance_source = (root / "klokast-instance.json").read_text(encoding="utf-8")
+lock_source = (root / "klokast.lock.json").read_text(encoding="utf-8")
+old_prefix = f"https://raw.githubusercontent.com/klokast/klokast-box/{old_commit}/schemas/"
+new_prefix = f"https://raw.githubusercontent.com/klokast/klokast-box/{new_commit}/schemas/"
+old_instance_schema = old_prefix + "klokast-instance-v1.schema.json"
+new_instance_schema = new_prefix + "klokast-instance-v1.schema.json"
+old_lock_schema = old_prefix + "klokast-lock-v1.schema.json"
+new_lock_schema = new_prefix + "klokast-lock-v1.schema.json"
+if instance_source.count(old_instance_schema) != 1 or lock_source.count(old_lock_schema) != 1:
+    raise SystemExit("private schema URLs are not unique and canonical")
+instance_content = instance_source.replace(old_instance_schema, new_instance_schema, 1)
+lock_content = lock_source.replace(old_lock_schema, new_lock_schema, 1)
+engine = lock.get("engine")
+if not isinstance(engine, dict) or engine.get("commit") != old_commit:
+    raise SystemExit("private engine lock changed during candidate construction")
+commit_pattern = re.compile(r'("commit"\s*:\s*)"' + re.escape(old_commit) + r'"')
+lock_content, replacements = commit_pattern.subn(
+    lambda match: match.group(1) + '"' + new_commit + '"', lock_content
+)
+if replacements != 1:
+    raise SystemExit("private engine commit is not one unique lock value")
+for name in (".gitignore", "AGENTS.md", "README.md"):
+    source = root / name
+    if source.is_symlink() or not source.is_file():
+        raise SystemExit("private support file is unsafe")
+    shutil.copyfile(source, candidate / name)
+(candidate / "klokast-instance.json").write_text(instance_content, encoding="utf-8")
+(candidate / "klokast.lock.json").write_text(lock_content, encoding="utf-8")
+subprocess.run(["git", "-C", candidate, "init", "-q", "--initial-branch=main"], check=True)
+subprocess.run(["git", "-C", candidate, "add", "-A"], check=True)
+subprocess.run(["git", "-C", candidate, "diff", "--cached", "--check"], check=True)
+tree = subprocess.check_output(["git", "-C", candidate, "write-tree"], text=True).strip()
+envelope = {
+    "schema_version": 1,
+    "action": "rollback-engine" if rollback == "true" else "promote-engine",
+    "engine_repository": "https://github.com/klokast/klokast-box",
+    "engine_ref": "main",
+    "old_engine_commit": old_commit,
+    "new_engine_commit": new_commit,
+    "private_base_commit": base_commit,
+    "private_base_tree": base_tree,
+    "candidate_tree": tree,
+    "rollback_tree": base_tree,
+    "candidate_instance_json": instance_content,
+    "candidate_lock_json": lock_content,
+}
+pathlib.Path(envelope_text).write_text(
+    json.dumps(envelope, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+os.chmod(envelope_text, 0o600)
+print(tree)
+PY
+CANDIDATE_TREE="$(git -C "$CANDIDATE" write-tree)"
+
+printf '\nPrivate engine metadata diff (MacBook only)\n'
+set +e
+diff -u "$PRIVATE_WORKTREE/klokast-instance.json" "$CANDIDATE/klokast-instance.json"
+diff_instance_result=$?
+diff -u "$PRIVATE_WORKTREE/klokast.lock.json" "$CANDIDATE/klokast.lock.json"
+diff_lock_result=$?
+set -e
+if [ "$diff_instance_result" -gt 1 ] || [ "$diff_lock_result" -gt 1 ]; then
+  ksa_die "cannot show the private candidate diff"
+fi
+
+INTENT="$WORK/intent.json"
+if [ "$ROLLBACK" = true ]; then
+  tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    promotion-preflight --rollback <"$ENVELOPE" >"$INTENT" || \
+    ksa_die "controller rollback preflight rejected the exact candidate"
+else
+  tailscale ssh "$SSH_TARGET" \
+    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    promotion-preflight --new-engine-commit "$NEW_ENGINE_COMMIT" \
+    --build-operation "$BUILD_OPERATION" <"$ENVELOPE" >"$INTENT" || \
+    ksa_die "controller promotion preflight rejected the exact candidate"
+fi
+
+INTENT_NONCE="$(python3 - "$INTENT" "$OLD_ENGINE_COMMIT" "$NEW_ENGINE_COMMIT" \
+  "$PRIVATE_HEAD" "$PRIVATE_TREE" "$CANDIDATE_TREE" "$PUBLIC_HEAD" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    raw = handle.read()
+value = json.loads(raw)
+canonical = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+if raw != canonical:
+    raise SystemExit("promotion intent is not canonical JSON")
+expected = {
+    "old_engine_commit": sys.argv[2],
+    "new_engine_commit": sys.argv[3],
+    "private_base_commit": sys.argv[4],
+    "private_base_tree": sys.argv[5],
+    "candidate_tree": sys.argv[6],
+    "controller_public_commit": sys.argv[7],
+    "engine_repository": "https://github.com/klokast/klokast-box",
+    "engine_ref": "main",
+    "signer_id": "human-private-instance",
+}
+for field, wanted in expected.items():
+    if value.get(field) != wanted:
+        raise SystemExit(f"promotion intent mismatch: {field}")
+issued = dt.datetime.fromisoformat(value["issued_at"].replace("Z", "+00:00"))
+expires = dt.datetime.fromisoformat(value["expires_at"].replace("Z", "+00:00"))
+now = dt.datetime.now(dt.timezone.utc)
+if not issued <= now < expires <= issued + dt.timedelta(minutes=10):
+    raise SystemExit("promotion intent is stale or exceeds 10 minutes")
+nonce = value.get("nonce", "")
+if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", nonce):
+    raise SystemExit("promotion intent nonce is invalid")
+print(nonce)
+PY
+)" || ksa_die "controller returned an invalid engine promotion intent"
+
+printf '\nController engine promotion intent\n'
+python3 -m json.tool "$INTENT"
+printf '\nReview the complete private diff and the exact short-lived intent above.\n'
+
+if [ "$CHECK_ONLY" = true ]; then
+  printf 'Engine promotion dry check passed.\n'
+  printf 'No private worktree, commit, GitHub branch, or controller activation was changed.\n'
+  exit 0
+fi
+
+printf 'Sign, commit, push, and activate this exact engine change? [y/N] '
+IFS= read -r answer || ksa_die "input ended before approval"
+case "$answer" in
+  y|Y|yes|YES|Yes) ;;
+  *)
+    printf 'No signature was made. No private state changed.\n'
+    exit 0
+    ;;
+esac
+
+"$SCRIPT_DIR/sign-secret-authority-intent" --purpose private-instance --intent "$INTENT" || \
+  ksa_die "Touch ID did not approve the engine promotion intent"
+if [ ! -f "$INTENT.sig" ] || [ -L "$INTENT.sig" ]; then
+  ksa_die "Touch ID signature file is missing"
+fi
+
+REMOTE_DIRECTORY=/home/smith/private/klokast/promotion-approvals
+REMOTE_INTENT="$REMOTE_DIRECTORY/$INTENT_NONCE.intent.json"
+REMOTE_SIGNATURE="$REMOTE_INTENT.sig"
+tailscale ssh "$SSH_TARGET" sh -s -- "$REMOTE_DIRECTORY" <<'SH'
+set -eu
+[ "$1" = /home/smith/private/klokast/promotion-approvals ] || exit 2
+install -d -m 0700 "$1"
+SH
+tailscale ssh "$SSH_TARGET" "umask 077; cat > '$REMOTE_INTENT'" <"$INTENT"
+tailscale ssh "$SSH_TARGET" "umask 077; cat > '$REMOTE_SIGNATURE'" <"$INTENT.sig"
+
+APPROVAL_RESULT="$WORK/approval-result.json"
+tailscale ssh "$SSH_TARGET" \
+  /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+  promotion-approve --approval-intent "$REMOTE_INTENT" \
+  --approval-signature "$REMOTE_SIGNATURE" --signer-id "$SIGNER_ID" \
+  >"$APPROVAL_RESULT" || ksa_die "controller did not accept the signed engine promotion"
+PROMOTION_RECEIPT="$(python3 - "$APPROVAL_RESULT" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+path = value.get("receipt_path", "")
+if value.get("approved") is not True or not re.fullmatch(
+        r"/var/lib/klokast/engine-promotions/[0-9a-f]{40}/[0-9a-f]{64}\.json", path):
+    raise SystemExit("controller returned an invalid promotion receipt")
+print(path)
+PY
+)" || ksa_die "cannot validate the controller promotion receipt"
+
+require_clean_branch "$PRIVATE_WORKTREE" "private"
+[ "$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)" = "$PRIVATE_HEAD" ] || \
+  ksa_die "private base changed after approval; no candidate was installed"
+install -m 0600 "$CANDIDATE/klokast-instance.json" "$PRIVATE_WORKTREE/klokast-instance.json"
+install -m 0600 "$CANDIDATE/klokast.lock.json" "$PRIVATE_WORKTREE/klokast.lock.json"
+git -C "$PRIVATE_WORKTREE" add -- klokast-instance.json klokast.lock.json
+[ "$(git -C "$PRIVATE_WORKTREE" write-tree)" = "$CANDIDATE_TREE" ] || \
+  ksa_die "staged private tree differs from the approved candidate"
+git -C "$PRIVATE_WORKTREE" diff --cached --check
+git -C "$PRIVATE_WORKTREE" commit -m "Promote Klokast engine to ${NEW_ENGINE_COMMIT:0:12}" || \
+  ksa_die "private engine commit failed; the exact approved files remain staged"
+PRIVATE_COMMIT="$(git -C "$PRIVATE_WORKTREE" rev-parse HEAD)"
+git -C "$PRIVATE_WORKTREE" push origin main || \
+  ksa_die "private push failed; the exact approved local commit is safe, but activation did not run"
+PUSHED_REMOTE="$(git ls-remote "$PRIVATE_REMOTE_URL" refs/heads/main | awk 'NF == 2 { print $1 }')"
+[ "$PUSHED_REMOTE" = "$PRIVATE_COMMIT" ] || ksa_die "GitHub private main differs after push"
+[ "$(git -C "$PRIVATE_WORKTREE" rev-parse '@{upstream}')" = "$PRIVATE_COMMIT" ] || \
+  ksa_die "private upstream differs after push"
+[ -z "$(git -C "$PRIVATE_WORKTREE" status --porcelain --untracked-files=all)" ] || \
+  ksa_die "private worktree is not clean after push"
+
+activate_published_commit "$NEW_ENGINE_COMMIT" "$PRIVATE_COMMIT" "$PROMOTION_RECEIPT"

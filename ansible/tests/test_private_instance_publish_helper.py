@@ -37,10 +37,18 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
         self.git("-C", self.public, "config", "user.email", "test@klokast.invalid")
         helper_dir = self.public / "klokast-dev" / "bin"
         library_dir = self.public / "klokast-dev" / "lib"
+        ansible_bin = self.public / "ansible" / "bin"
         helper_dir.mkdir(parents=True)
         library_dir.mkdir(parents=True)
+        ansible_bin.mkdir(parents=True)
         shutil.copy2(HELPER, helper_dir / HELPER.name)
         shutil.copy2(COMMON, library_dir / COMMON.name)
+        controller_ha = ansible_bin / "ops-controller-ha"
+        controller_ha.write_text(
+            "#!/bin/sh\n[ \"${1:-}\" = resolve-active ] || exit 2\nprintf 'boxb-ops\\n'\n",
+            encoding="utf-8",
+        )
+        os.chmod(controller_ha, 0o755)
         bootstrap = helper_dir / "prepare-private-instance-bootstrap"
         bootstrap.write_text(
             f'ENGINE_COMMIT="{ENGINE_COMMIT}"\nBUILD_OPERATION="{BUILD_OPERATION}"\n',
@@ -148,6 +156,10 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
             "set -eu\n"
             "[ \"${1:-}\" = ssh ]\n"
             "case \"$*\" in\n"
+            "  *engine-status*)\n"
+            "    printf '{\"activation_present\":true,\"build_operation\":\"%s\",\"engine_commit\":\"%s\",\"previous_build_operation\":\"cccccccccccc\",\"previous_engine_commit\":\"%s\",\"private_commit\":\"%s\",\"private_tree\":\"%s\",\"schema_version\":1,\"source_receipt_sha256\":\"%s\",\"valid\":true}\\n' \"$FAKE_BUILD_OPERATION\" \"$FAKE_ENGINE_COMMIT\" \"$FAKE_PREVIOUS_ENGINE_COMMIT\" \"$FAKE_PRIVATE_COMMIT\" \"$FAKE_PRIVATE_TREE\" \"$FAKE_SOURCE_RECEIPT\"\n"
+            "    exit 0\n"
+            "    ;;\n"
             "  *validate-candidate*)\n"
             "    cat >/dev/null\n"
             "    printf '{\"compatible\":true,\"engine_commit\":\"%s\",\"schema_version\":1,\"tree\":\"%s\",\"valid\":true}\\n' \"$FAKE_ENGINE_COMMIT\" \"$FAKE_CANDIDATE_TREE\"\n"
@@ -162,6 +174,12 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
 
     def environment(self, controller_tree=None, candidate_tree=None):
         value = os.environ.copy()
+        private_commit = self.git(
+            "-C", self.worktree, "rev-parse", "--verify", "HEAD", check=False
+        ).stdout.strip()
+        private_tree = self.git(
+            "-C", self.worktree, "rev-parse", "HEAD^{tree}", check=False
+        ).stdout.strip()
         value.update({
             "HOME": str(self.home),
             "PATH": f"{self.fake_bin}:{value['PATH']}",
@@ -170,6 +188,11 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
             "FAKE_CONTROLLER_TREE": controller_tree or self.tree,
             "FAKE_CANDIDATE_TREE": candidate_tree or self.tree,
             "FAKE_ENGINE_COMMIT": ENGINE_COMMIT,
+            "FAKE_BUILD_OPERATION": BUILD_OPERATION,
+            "FAKE_PREVIOUS_ENGINE_COMMIT": "d" * 40,
+            "FAKE_PRIVATE_COMMIT": private_commit,
+            "FAKE_PRIVATE_TREE": private_tree,
+            "FAKE_SOURCE_RECEIPT": "e" * 64,
         })
         return value
 

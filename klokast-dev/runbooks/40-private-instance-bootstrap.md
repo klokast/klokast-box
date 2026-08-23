@@ -662,6 +662,43 @@ The agent can then run `platform-instance sync`, create a fresh Observation
 v1 file, and generate the live read-only Plan v1 artifact. Legacy deployment
 and registry authority stays active. No apply action is part of this runbook.
 
+## 14. Promote the active engine
+
+Do not edit the lock. After the agent reports the exact public commit and
+12-character sealed build operation, review that public range and run this dry
+check on the trusted MacBook:
+
+```sh
+cd "$HOME/src/klokast/klokast-box"
+git pull --ff-only
+
+klokast-dev/bin/promote-private-instance-engine \
+  --controller "$ACTIVE_CONTROLLER" \
+  --new-engine-commit "$NEW_ENGINE_COMMIT" \
+  --build-operation "$BUILD_OPERATION" \
+  --check
+```
+
+The helper shows the complete private diff only in this terminal. It must
+change only the two schema URLs and the lock commit. Run the same command
+without `--check`, review the 10-minute intent, answer `y`, and approve Touch
+ID. The helper commits and pushes from the MacBook, synchronizes the
+controller read-only checkout, and creates immutable promotion and activation
+receipts.
+
+If a published promotion cannot activate, inspect the safe controller error.
+Then use the checked forward rollback. Do not reset or force-push `main`:
+
+```sh
+klokast-dev/bin/promote-private-instance-engine \
+  --controller "$ACTIVE_CONTROLLER" \
+  --rollback
+```
+
+After activation, later `publish-private-instance` runs resolve the active
+controller from the private HA registry. They use the active engine evidence
+instead of the bootstrap engine and build pins.
+
 ## Troubleshooting
 
 - **The repository cannot be selected during App installation:** confirm that

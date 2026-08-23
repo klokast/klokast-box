@@ -230,11 +230,13 @@ compatibility validation without a commit, push, or publication.
 
 The helper commits and pushes `main` with the human private-repository
 identity. It can also publish a later staged `klokast-instance.json` update
-when remote `main` still equals the local base commit. The sealed seed remains
-the validation base after the temporary GitHub App is retired and after the
-read-only deployment checkout exists. Neither controller state grants Git
-write authority. Do not commit or push from an airunner. Do not use the
-temporary GitHub App to push content.
+when remote `main` still equals the local base commit. The sealed seed is the
+validation base only before the first private commit. Later publication uses
+the exact synchronized deployment checkout, a fresh source receipt, and the
+engine selected by the private lock and its immutable activation receipt. It
+also verifies that the recorded previous engine can read the rollback form.
+Neither controller state grants Git write authority. Do not commit or push
+from an airunner. Do not use the temporary GitHub App to push content.
 
 After the first push, use the GitHub web interface to remove this repository
 from the temporary App installation. GitHub does not permit an installed App
@@ -273,3 +275,36 @@ ansible/bin/platform-instance status
 
 Run the same synchronization after each human-published instance update. The
 controller remains a read-only consumer of the private repository.
+
+## Controlled Engine Promotion
+
+After the active controller builds one later canonical commit with the sealed
+builder, run this command on the trusted MacBook:
+
+```sh
+klokast-dev/bin/promote-private-instance-engine \
+  --controller BOX-ops \
+  --new-engine-commit COMMIT \
+  --build-operation OPERATION \
+  --check
+```
+
+Remove `--check` only after review. The helper reads the old engine from the
+private lock, shows the exact three-value metadata diff locally, gets a
+10-minute controller intent, and uses the existing
+`human-private-instance` Touch ID signer. The human MacBook creates and pushes
+the private commit. The controller stays read-only and activates only the
+approved candidate tree.
+
+Use this command for a forward rollback:
+
+```sh
+klokast-dev/bin/promote-private-instance-engine --controller BOX-ops --rollback
+```
+
+Rollback accepts only the previous engine in the active activation receipt.
+It never rewinds or force-pushes private `main`. Promotion receipts are below
+`/var/lib/klokast/engine-promotions/`. Activation receipts are below
+`/var/lib/klokast/engine-activations/`. Both are immutable root-owned evidence
+that is readable by `smith` and contains no private repository name, private
+path, or private JSON.
