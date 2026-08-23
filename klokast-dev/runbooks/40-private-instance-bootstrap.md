@@ -679,12 +679,15 @@ klokast-dev/bin/promote-private-instance-engine \
   --check
 ```
 
-The helper shows the complete private diff only in this terminal. It must
-change only the two schema URLs and the lock commit. Run the same command
-without `--check`, review the 10-minute intent, answer `y`, and approve Touch
-ID. The helper commits and pushes from the MacBook, synchronizes the
-controller read-only checkout, and creates immutable promotion and activation
-receipts.
+The helper shows the complete private diff only in this terminal. It permits
+either the two schema URLs and lock commit, or the closed legacy Instance v1
+transition that it identifies in the intent. That transition renames the
+legacy Tailnet and connectivity keys, inlines referenced site metadata, and
+removes only the redundant instance ID and site map. Confirm that no private
+value changes. Run the same command without `--check`, review the 10-minute
+intent, answer `y`, and approve Touch ID. The helper commits and pushes from
+the MacBook, synchronizes the controller read-only checkout, and creates
+immutable promotion and activation receipts.
 
 If a published promotion cannot activate, inspect the safe controller error.
 Then use the checked forward rollback. Do not reset or force-push `main`:

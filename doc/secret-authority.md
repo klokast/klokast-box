@@ -290,8 +290,10 @@ klokast-dev/bin/promote-private-instance-engine \
 ```
 
 Remove `--check` only after review. The helper reads the old engine from the
-private lock, shows the exact three-value metadata diff locally, gets a
-10-minute controller intent, and uses the existing
+private lock and shows the complete engine and schema-transition diff locally.
+It permits a metadata-only change or the closed reversible legacy Instance v1
+transition. It gets a 10-minute controller intent that binds the transition
+and uses the existing
 `human-private-instance` Touch ID signer. The human MacBook creates and pushes
 the private commit. The controller stays read-only and activates only the
 approved candidate tree.

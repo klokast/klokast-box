@@ -76,10 +76,16 @@ self-hosted engine repositories are outside version 1.
 The controlled workflow for `.engine.commit` is implemented. It includes
 human review and Touch ID authorization, canonical ancestry checks, exact
 sealed builds, private lock publication, immutable evidence, refusal cases,
-and forward rollback. Keep the controller and airunner without
+and forward rollback. The first implementation assumed that the private lock
+already selected the later simplified Instance v1 shape. Live MacBook review
+showed that canonical private `main` still selected the legacy top-level site
+shape. The workflow now includes one closed reversible legacy-to-current
+Instance v1 transform and records its inverse for rollback validation. This
+prevents future work from relying on the incorrect schema-compatible
+assumption. Keep the controller and airunner without
 private-repository push authority. Complete its real MacBook and active
 controller acceptance. See
-[the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-target-design).
+[the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-decision).
 
 This workflow now blocks live verification of the implemented read-only
 acceptance corrections. The private lock correctly selects the earlier sealed

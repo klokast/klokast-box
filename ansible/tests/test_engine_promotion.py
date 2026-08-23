@@ -81,7 +81,22 @@ class EnginePromotionTest(unittest.TestCase):
             "klokast-instance.json": json.dumps({
                 "$schema": self.schema(OLD_COMMIT, "klokast-instance-v1.schema.json"),
                 "schema-version": 1,
+                "instance": {"id": "klokast-instance"},
+                "tailnet": {
+                    "tailnet-dns-name": "example.ts.net",
+                    "members": {"human@example.invalid": {"roles": ["operator", "family"]}},
+                },
+                "sites": {
+                    "site-a": {"country": "XA", "description": ""},
+                    "site-b": {"country": "XB", "description": "Example"},
+                },
+                "boxes": {
+                    "boxa": {"site": "site-a", "connectivity-profiles": ["tailscale"]},
+                    "boxb": {"site": "site-b", "connectivity-profiles": ["tailscale"]},
+                },
+                "controllers": {"active": "boxa", "standby": "boxb"},
                 "airunners": ["boxa-ops-airunner"],
+                "apps": {},
             }, indent=2, sort_keys=True) + "\n",
             "klokast.lock.json": json.dumps({
                 "$schema": self.schema(OLD_COMMIT, "klokast-lock-v1.schema.json"),
@@ -101,10 +116,11 @@ class EnginePromotionTest(unittest.TestCase):
         subprocess.run(["git", "-C", self.checkout, "add", "-A"], check=True)
         subprocess.run(["git", "-C", self.checkout, "commit", "-qm", "initial"], check=True)
 
-    def candidate_envelope(self, change_private_value=False):
+    def candidate_envelope(self, change_private_value=False, transition=None):
         instance = json.loads((self.checkout / "klokast-instance.json").read_text())
         lock = json.loads((self.checkout / "klokast.lock.json").read_text())
-        instance["$schema"] = self.schema(NEW_COMMIT, "klokast-instance-v1.schema.json")
+        transition = transition or self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT
+        instance = self.mod.transition_instance_v1(instance, transition, NEW_COMMIT)
         lock["$schema"] = self.schema(NEW_COMMIT, "klokast-lock-v1.schema.json")
         lock["engine"]["commit"] = NEW_COMMIT
         if change_private_value:
@@ -124,6 +140,7 @@ class EnginePromotionTest(unittest.TestCase):
             "action": "promote-engine",
             "engine_repository": "https://github.com/klokast/klokast-box",
             "engine_ref": "main",
+            "schema_transition": transition,
             "old_engine_commit": OLD_COMMIT,
             "new_engine_commit": NEW_COMMIT,
             "private_base_commit": self.git(self.checkout, "rev-parse", "HEAD"),
@@ -134,7 +151,7 @@ class EnginePromotionTest(unittest.TestCase):
             "candidate_lock_json": lock_content,
         }
 
-    def test_candidate_allows_only_three_engine_metadata_values(self):
+    def test_candidate_allows_exact_reversible_schema_transition(self):
         envelope = self.candidate_envelope()
         commit, tree = self.mod.validate_candidate_tree(
             self.args, envelope, self.old_build, self.new_build
@@ -143,10 +160,55 @@ class EnginePromotionTest(unittest.TestCase):
         self.assertEqual(tree, envelope["private_base_tree"])
         self.assertEqual(list(self.root.glob(".engine-promotion.*")), [])
 
+    def test_schema_transition_moves_only_redundant_legacy_structure(self):
+        legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
+        current = self.mod.transition_instance_v1(
+            legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, NEW_COMMIT
+        )
+        self.assertNotIn("instance", current)
+        self.assertNotIn("tailnet", current)
+        self.assertNotIn("sites", current)
+        self.assertIn("tailscale", current)
+        self.assertEqual(current["boxes"]["boxa"]["country"], "XA")
+        self.assertEqual(current["boxes"]["boxa"]["connectivity"], ["tailscale"])
+        reconstructed = self.mod.transition_instance_v1(
+            current, self.mod.SCHEMA_TRANSITION_CURRENT_TO_LEGACY, OLD_COMMIT
+        )
+        self.assertEqual(reconstructed, legacy)
+
+    def test_schema_transition_rejects_unused_legacy_site(self):
+        legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
+        legacy["sites"]["unused"] = {"country": "XC", "description": ""}
+        with self.assertRaisesRegex(
+            self.mod.InstanceAuthorityError, "unused site metadata"
+        ):
+            self.mod.transition_instance_v1(
+                legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, NEW_COMMIT
+            )
+
+    def test_candidate_allows_recorded_inverse_transition(self):
+        legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
+        current = self.mod.transition_instance_v1(
+            legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, OLD_COMMIT
+        )
+        (self.checkout / "klokast-instance.json").write_text(
+            json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "-C", self.checkout, "add", "klokast-instance.json"], check=True)
+        subprocess.run(["git", "-C", self.checkout, "commit", "-qm", "current shape"], check=True)
+        envelope = self.candidate_envelope(
+            transition=self.mod.SCHEMA_TRANSITION_CURRENT_TO_LEGACY
+        )
+        commit, tree = self.mod.validate_candidate_tree(
+            self.args, envelope, self.old_build, self.new_build
+        )
+        self.assertEqual(commit, envelope["private_base_commit"])
+        self.assertEqual(tree, envelope["private_base_tree"])
+
     def test_candidate_rejects_a_private_intent_change(self):
         envelope = self.candidate_envelope(change_private_value=True)
         with self.assertRaisesRegex(
-            self.mod.InstanceAuthorityError, "outside the three permitted"
+            self.mod.InstanceAuthorityError, "exact deterministic"
         ):
             self.mod.validate_candidate_tree(
                 self.args, envelope, self.old_build, self.new_build
@@ -170,6 +232,7 @@ class EnginePromotionTest(unittest.TestCase):
             "action": "promote-engine",
             "engine_repository": "https://github.com/klokast/klokast-box",
             "engine_ref": "main",
+            "schema_transition": self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
             "old_engine_commit": OLD_COMMIT,
             "new_engine_commit": NEW_COMMIT,
             "old_build_operation": "c" * 12,

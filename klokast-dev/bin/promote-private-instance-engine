@@ -328,7 +328,8 @@ if [ "$ROLLBACK" = true ]; then
   tailscale ssh "$SSH_TARGET" \
     /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance engine-status \
     >"$STATUS_FILE" || ksa_die "controller engine status failed"
-  NEW_ENGINE_COMMIT="$(python3 - "$STATUS_FILE" "$OLD_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PRIVATE_TREE" <<'PY'
+  ROLLBACK_TARGET="$WORK/rollback-target"
+  if ! python3 - "$STATUS_FILE" "$OLD_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PRIVATE_TREE" >"$ROLLBACK_TARGET" <<'PY'
 import json
 import re
 import sys
@@ -344,10 +345,23 @@ for field, expected in (("engine_commit", sys.argv[2]), ("private_commit", sys.a
 target = value.get("previous_engine_commit", "")
 if not re.fullmatch(r"[0-9a-f]{40}", target) or target == sys.argv[2]:
     raise SystemExit("activation receipt has no valid previous engine")
+transition = value.get("rollback_schema_transition", "")
+if transition not in {
+    "metadata-only",
+    "instance-v1-legacy-to-current",
+    "instance-v1-current-to-legacy",
+}:
+    raise SystemExit("activation receipt has no valid rollback schema transition")
 print(target)
+print(transition)
 PY
-)" || ksa_die "controller did not return a valid checked rollback target"
+  then
+    ksa_die "controller did not return a valid checked rollback target"
+  fi
+  NEW_ENGINE_COMMIT="$(sed -n '1p' "$ROLLBACK_TARGET")"
+  SCHEMA_TRANSITION="$(sed -n '2p' "$ROLLBACK_TARGET")"
 else
+  SCHEMA_TRANSITION=""
   [ "$PUBLIC_HEAD" = "$NEW_ENGINE_COMMIT" ] || \
     ksa_die "public HEAD, upstream main, GitHub main, and requested new engine must be equal"
   git -C "$REPO_ROOT" merge-base --is-ancestor "$OLD_ENGINE_COMMIT" "$NEW_ENGINE_COMMIT" || \
@@ -360,9 +374,10 @@ git -C "$REPO_ROOT" cat-file -e "$NEW_ENGINE_COMMIT^{commit}" || \
 
 CANDIDATE="$WORK/candidate"
 ENVELOPE="$WORK/envelope.json"
+TRANSITION_FILE="$WORK/schema-transition"
 python3 - "$PRIVATE_WORKTREE" "$CANDIDATE" "$ENVELOPE" \
   "$OLD_ENGINE_COMMIT" "$NEW_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PRIVATE_TREE" \
-  "$ROLLBACK" <<'PY'
+  "$ROLLBACK" "$SCHEMA_TRANSITION" "$TRANSITION_FILE" <<'PY'
 import json
 import os
 import pathlib
@@ -371,7 +386,10 @@ import shutil
 import subprocess
 import sys
 
-root, candidate_text, envelope_text, old_commit, new_commit, base_commit, base_tree, rollback = sys.argv[1:]
+(
+    root, candidate_text, envelope_text, old_commit, new_commit, base_commit,
+    base_tree, rollback, requested_transition, transition_file,
+) = sys.argv[1:]
 root = pathlib.Path(root)
 candidate = pathlib.Path(candidate_text)
 candidate.mkdir(mode=0o700)
@@ -388,6 +406,99 @@ def load(name):
     with (root / name).open(encoding="utf-8") as handle:
         return json.load(handle, object_pairs_hook=reject_duplicates)
 
+def schema_url(commit, name):
+    return (
+        "https://raw.githubusercontent.com/klokast/klokast-box/"
+        f"{commit}/schemas/{name}"
+    )
+
+def inverse_transition(transition):
+    return {
+        "metadata-only": "metadata-only",
+        "instance-v1-legacy-to-current": "instance-v1-current-to-legacy",
+        "instance-v1-current-to-legacy": "instance-v1-legacy-to-current",
+    }[transition]
+
+def transition_instance(value, transition, target_commit):
+    value = json.loads(json.dumps(value))
+    value["$schema"] = schema_url(target_commit, "klokast-instance-v1.schema.json")
+    if transition == "metadata-only":
+        return value
+    legacy_keys = {
+        "$schema", "schema-version", "instance", "tailnet", "sites",
+        "boxes", "controllers", "airunners", "apps",
+    }
+    current_keys = {
+        "$schema", "schema-version", "tailscale", "boxes", "controllers",
+        "airunners", "apps",
+    }
+    if transition == "instance-v1-legacy-to-current":
+        if set(value) != legacy_keys or value.get("instance") != {"id": "klokast-instance"}:
+            raise SystemExit("legacy Instance v1 document cannot be migrated without data loss")
+        sites = value.get("sites")
+        boxes = value.get("boxes")
+        if not isinstance(sites, dict) or not isinstance(boxes, dict) or not boxes:
+            raise SystemExit("legacy Instance v1 site or box data is invalid")
+        migrated = {}
+        referenced = set()
+        for box, document in boxes.items():
+            if not isinstance(document, dict) or set(document) != {"site", "connectivity-profiles"}:
+                raise SystemExit("legacy Instance v1 box data is not the exact supported shape")
+            site = document.get("site")
+            metadata = sites.get(site) if isinstance(site, str) else None
+            if not isinstance(metadata, dict) or set(metadata) != {"country", "description"}:
+                raise SystemExit("legacy Instance v1 box references invalid site metadata")
+            referenced.add(site)
+            migrated[box] = {
+                "site": site,
+                "country": metadata["country"],
+                "description": metadata["description"],
+                "connectivity": document["connectivity-profiles"],
+            }
+        if referenced != set(sites):
+            raise SystemExit("legacy Instance v1 has unused site metadata that cannot be removed")
+        return {
+            "$schema": value["$schema"],
+            "schema-version": value["schema-version"],
+            "tailscale": value["tailnet"],
+            "boxes": migrated,
+            "controllers": value["controllers"],
+            "airunners": value["airunners"],
+            "apps": value["apps"],
+        }
+    if transition != "instance-v1-current-to-legacy" or set(value) != current_keys:
+        raise SystemExit("current Instance v1 document cannot be converted to the legacy shape")
+    boxes = value.get("boxes")
+    if not isinstance(boxes, dict) or not boxes:
+        raise SystemExit("current Instance v1 box data is invalid")
+    legacy_boxes = {}
+    sites = {}
+    for box, document in boxes.items():
+        if not isinstance(document, dict) or set(document) != {"site", "country", "description", "connectivity"}:
+            raise SystemExit("current Instance v1 box data is not the exact supported shape")
+        site = document.get("site")
+        if not isinstance(site, str):
+            raise SystemExit("current Instance v1 box site is invalid")
+        metadata = {"country": document["country"], "description": document["description"]}
+        if site in sites and sites[site] != metadata:
+            raise SystemExit("boxes with one site have inconsistent legacy metadata")
+        sites[site] = metadata
+        legacy_boxes[box] = {
+            "site": site,
+            "connectivity-profiles": document["connectivity"],
+        }
+    return {
+        "$schema": value["$schema"],
+        "schema-version": value["schema-version"],
+        "instance": {"id": "klokast-instance"},
+        "tailnet": value["tailscale"],
+        "sites": sites,
+        "boxes": legacy_boxes,
+        "controllers": value["controllers"],
+        "airunners": value["airunners"],
+        "apps": value["apps"],
+    }
+
 instance = load("klokast-instance.json")
 lock = load("klokast.lock.json")
 instance_source = (root / "klokast-instance.json").read_text(encoding="utf-8")
@@ -400,7 +511,37 @@ old_lock_schema = old_prefix + "klokast-lock-v1.schema.json"
 new_lock_schema = new_prefix + "klokast-lock-v1.schema.json"
 if instance_source.count(old_instance_schema) != 1 or lock_source.count(old_lock_schema) != 1:
     raise SystemExit("private schema URLs are not unique and canonical")
-instance_content = instance_source.replace(old_instance_schema, new_instance_schema, 1)
+legacy_keys = {
+    "$schema", "schema-version", "instance", "tailnet", "sites", "boxes",
+    "controllers", "airunners", "apps",
+}
+current_keys = {
+    "$schema", "schema-version", "tailscale", "boxes", "controllers",
+    "airunners", "apps",
+}
+if requested_transition:
+    transition = requested_transition
+elif set(instance) == legacy_keys:
+    transition = "instance-v1-legacy-to-current"
+elif set(instance) == current_keys:
+    transition = "metadata-only"
+else:
+    raise SystemExit("private Instance v1 document has no supported promotion shape")
+if transition not in {
+    "metadata-only",
+    "instance-v1-legacy-to-current",
+    "instance-v1-current-to-legacy",
+}:
+    raise SystemExit("requested schema transition is unsupported")
+migrated_instance = transition_instance(instance, transition, new_commit)
+if transition_instance(migrated_instance, inverse_transition(transition), old_commit) != instance:
+    raise SystemExit("private Instance v1 schema transition is not exactly reversible")
+if transition == "metadata-only":
+    instance_content = instance_source.replace(old_instance_schema, new_instance_schema, 1)
+else:
+    instance_content = json.dumps(
+        migrated_instance, ensure_ascii=True, indent=2, sort_keys=True
+    ) + "\n"
 lock_content = lock_source.replace(old_lock_schema, new_lock_schema, 1)
 engine = lock.get("engine")
 if not isinstance(engine, dict) or engine.get("commit") != old_commit:
@@ -427,6 +568,7 @@ envelope = {
     "action": "rollback-engine" if rollback == "true" else "promote-engine",
     "engine_repository": "https://github.com/klokast/klokast-box",
     "engine_ref": "main",
+    "schema_transition": transition,
     "old_engine_commit": old_commit,
     "new_engine_commit": new_commit,
     "private_base_commit": base_commit,
@@ -441,11 +583,15 @@ pathlib.Path(envelope_text).write_text(
     encoding="utf-8",
 )
 os.chmod(envelope_text, 0o600)
+pathlib.Path(transition_file).write_text(transition + "\n", encoding="utf-8")
+os.chmod(transition_file, 0o600)
 print(tree)
 PY
 CANDIDATE_TREE="$(git -C "$CANDIDATE" write-tree)"
+SCHEMA_TRANSITION="$(sed -n '1p' "$TRANSITION_FILE")"
 
-printf '\nPrivate engine metadata diff (MacBook only)\n'
+printf '\nPrivate engine and schema-transition diff (MacBook only)\n'
+printf 'Schema transition: %s\n' "$SCHEMA_TRANSITION"
 set +e
 diff -u "$PRIVATE_WORKTREE/klokast-instance.json" "$CANDIDATE/klokast-instance.json"
 diff_instance_result=$?
@@ -471,7 +617,8 @@ else
 fi
 
 INTENT_NONCE="$(python3 - "$INTENT" "$OLD_ENGINE_COMMIT" "$NEW_ENGINE_COMMIT" \
-  "$PRIVATE_HEAD" "$PRIVATE_TREE" "$CANDIDATE_TREE" "$PUBLIC_HEAD" <<'PY'
+  "$PRIVATE_HEAD" "$PRIVATE_TREE" "$CANDIDATE_TREE" "$PUBLIC_HEAD" \
+  "$SCHEMA_TRANSITION" <<'PY'
 import datetime as dt
 import json
 import re
@@ -489,6 +636,7 @@ expected = {
     "private_base_tree": sys.argv[5],
     "candidate_tree": sys.argv[6],
     "controller_public_commit": sys.argv[7],
+    "schema_transition": sys.argv[8],
     "engine_repository": "https://github.com/klokast/klokast-box",
     "engine_ref": "main",
     "signer_id": "human-private-instance",

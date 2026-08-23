@@ -295,13 +295,18 @@ controller `main` to have the same base commit and tree.
 push, or publication. The helper does not merge or overwrite a changed remote
 branch.
 
-The human changes engine metadata only through
-`promote-private-instance-engine`. A schema-compatible promotion changes only
-the two `$schema` commits and `engine.commit`. It uses a canonical
-`klokast/klokast-box` `main` descendant, exact sealed old and new builds, one
-short-lived Touch ID approval, a forward private commit, and immutable
-promotion and activation receipts. `--rollback` selects only the previous
-engine from the active activation receipt and also creates a forward commit.
+The human changes the selected engine only through
+`promote-private-instance-engine`. A metadata-only promotion changes the two
+`$schema` commits and `engine.commit`. The one supported legacy Instance v1
+transition also converts `tailnet` to `tailscale`, converts each box
+`connectivity-profiles` field to `connectivity`, moves referenced site
+metadata into each box, and removes the redundant instance ID and site map.
+The controller independently reconstructs this closed transform and its exact
+inverse. Promotion uses a canonical `klokast/klokast-box` `main` descendant,
+exact sealed old and new builds, one short-lived Touch ID approval, a forward
+private commit, and immutable promotion and activation receipts. `--rollback`
+selects only the previous engine and recorded inverse schema transition from
+the active activation receipt and also creates a forward commit.
 
 ## Projection, compatibility, and observation
 

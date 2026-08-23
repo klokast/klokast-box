@@ -43,6 +43,14 @@ EXPECTED_REPO_NAME = "klokast-instance"
 DEFAULT_TTL_SECONDS = 600
 CANONICAL_ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
 CANONICAL_ENGINE_REF = "main"
+SCHEMA_TRANSITION_METADATA_ONLY = "metadata-only"
+SCHEMA_TRANSITION_LEGACY_TO_CURRENT = "instance-v1-legacy-to-current"
+SCHEMA_TRANSITION_CURRENT_TO_LEGACY = "instance-v1-current-to-legacy"
+SCHEMA_TRANSITIONS = {
+    SCHEMA_TRANSITION_METADATA_ONLY,
+    SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
+    SCHEMA_TRANSITION_CURRENT_TO_LEGACY,
+}
 BUILD_ROOT = Path("/var/lib/klokast/builds/klokast-cli")
 MAX_PROMOTION_ENVELOPE_BYTES = 256 * 1024
 MAX_RECEIPT_BYTES = 64 * 1024
@@ -1428,6 +1436,107 @@ def semantic_without_engine_metadata(instance, lock):
     return instance_value, lock_value
 
 
+def inverse_schema_transition(transition):
+    inverse = {
+        SCHEMA_TRANSITION_METADATA_ONLY: SCHEMA_TRANSITION_METADATA_ONLY,
+        SCHEMA_TRANSITION_LEGACY_TO_CURRENT: SCHEMA_TRANSITION_CURRENT_TO_LEGACY,
+        SCHEMA_TRANSITION_CURRENT_TO_LEGACY: SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
+    }
+    try:
+        return inverse[transition]
+    except KeyError as error:
+        raise InstanceAuthorityError("engine evidence has an unsupported schema transition") from error
+
+
+def transition_instance_v1(instance, transition, target_commit):
+    if transition not in SCHEMA_TRANSITIONS:
+        raise InstanceAuthorityError("engine promotion schema transition is unsupported")
+    value = json.loads(json.dumps(instance))
+    value["$schema"] = schema_url(target_commit, "klokast-instance-v1.schema.json")
+    if transition == SCHEMA_TRANSITION_METADATA_ONLY:
+        return value
+
+    legacy_keys = {
+        "$schema", "schema-version", "instance", "tailnet", "sites",
+        "boxes", "controllers", "airunners", "apps",
+    }
+    current_keys = {
+        "$schema", "schema-version", "tailscale", "boxes", "controllers",
+        "airunners", "apps",
+    }
+    if transition == SCHEMA_TRANSITION_LEGACY_TO_CURRENT:
+        if set(value) != legacy_keys or value.get("instance") != {"id": "klokast-instance"}:
+            raise InstanceAuthorityError("legacy Instance v1 document cannot be migrated without data loss")
+        sites = value.get("sites")
+        boxes = value.get("boxes")
+        if not isinstance(sites, dict) or not isinstance(boxes, dict) or not boxes:
+            raise InstanceAuthorityError("legacy Instance v1 site or box data is invalid")
+        migrated_boxes = {}
+        referenced_sites = set()
+        for box, document in boxes.items():
+            if not isinstance(document, dict) or set(document) != {"site", "connectivity-profiles"}:
+                raise InstanceAuthorityError("legacy Instance v1 box data is not the exact supported shape")
+            site = document.get("site")
+            metadata = sites.get(site) if isinstance(site, str) else None
+            if not isinstance(metadata, dict) or set(metadata) != {"country", "description"}:
+                raise InstanceAuthorityError("legacy Instance v1 box references invalid site metadata")
+            referenced_sites.add(site)
+            migrated_boxes[box] = {
+                "site": site,
+                "country": metadata["country"],
+                "description": metadata["description"],
+                "connectivity": document["connectivity-profiles"],
+            }
+        if referenced_sites != set(sites):
+            raise InstanceAuthorityError("legacy Instance v1 has unused site metadata that cannot be removed")
+        return {
+            "$schema": value["$schema"],
+            "schema-version": value["schema-version"],
+            "tailscale": value["tailnet"],
+            "boxes": migrated_boxes,
+            "controllers": value["controllers"],
+            "airunners": value["airunners"],
+            "apps": value["apps"],
+        }
+
+    if set(value) != current_keys:
+        raise InstanceAuthorityError("current Instance v1 document cannot be converted to the legacy shape")
+    boxes = value.get("boxes")
+    if not isinstance(boxes, dict) or not boxes:
+        raise InstanceAuthorityError("current Instance v1 box data is invalid")
+    legacy_boxes = {}
+    sites = {}
+    for box, document in boxes.items():
+        expected = {"site", "country", "description", "connectivity"}
+        if not isinstance(document, dict) or set(document) != expected:
+            raise InstanceAuthorityError("current Instance v1 box data is not the exact supported shape")
+        site = document.get("site")
+        if not isinstance(site, str):
+            raise InstanceAuthorityError("current Instance v1 box site is invalid")
+        metadata = {
+            "country": document["country"],
+            "description": document["description"],
+        }
+        if site in sites and sites[site] != metadata:
+            raise InstanceAuthorityError("boxes with one site have inconsistent legacy metadata")
+        sites[site] = metadata
+        legacy_boxes[box] = {
+            "site": site,
+            "connectivity-profiles": document["connectivity"],
+        }
+    return {
+        "$schema": value["$schema"],
+        "schema-version": value["schema-version"],
+        "instance": {"id": "klokast-instance"},
+        "tailnet": value["tailscale"],
+        "sites": sites,
+        "boxes": legacy_boxes,
+        "controllers": value["controllers"],
+        "airunners": value["airunners"],
+        "apps": value["apps"],
+    }
+
+
 def load_activation_receipts(args, engine_commit, private_commit):
     root = Path(args.activation_root)
     if not root.exists():
@@ -1468,6 +1577,12 @@ def validate_activation_binding(args, binding, source, state):
         or activation.get("private_repository_id") != state.get("repository_id")
     ):
         raise InstanceAuthorityError("active engine activation names another private repository")
+    transition = activation.get("schema_transition")
+    if (
+        transition not in SCHEMA_TRANSITIONS
+        or activation.get("rollback_schema_transition") != inverse_schema_transition(transition)
+    ):
+        raise InstanceAuthorityError("active engine activation has an invalid schema transition")
     build = verify_sealed_build(
         activation.get("engine_commit", ""), activation.get("build_operation")
     )
@@ -1501,6 +1616,7 @@ def validate_activation_binding(args, binding, source, state):
         promotion.get("old_engine_commit") != activation.get("previous_engine_commit")
         or promotion.get("old_build_operation") != activation.get("previous_build_operation")
         or promotion.get("candidate_tree") != activation.get("private_tree")
+        or promotion.get("schema_transition") != transition
     ):
         raise InstanceAuthorityError("activation and promotion receipts do not match")
     return activation, build, previous
@@ -1534,6 +1650,8 @@ def validate_pending_promotion(args, binding):
     if binding is None:
         raise InstanceAuthorityError("rollback has no approved promotion evidence")
     _path, promotion = binding
+    if promotion.get("schema_transition") not in SCHEMA_TRANSITIONS:
+        raise InstanceAuthorityError("pending promotion has an invalid schema transition")
     current = verify_sealed_build(
         promotion.get("new_engine_commit", ""), promotion.get("new_build_operation")
     )
@@ -1613,6 +1731,7 @@ def read_promotion_envelope():
     value = decode_closed_json(content, "engine promotion candidate envelope")
     expected = {
         "schema_version", "action", "engine_repository", "engine_ref",
+        "schema_transition",
         "old_engine_commit", "new_engine_commit", "private_base_commit",
         "private_base_tree", "candidate_tree", "rollback_tree",
         "candidate_instance_json", "candidate_lock_json",
@@ -1621,6 +1740,8 @@ def read_promotion_envelope():
         raise InstanceAuthorityError("engine promotion candidate envelope fields do not match the closed schema")
     if value.get("engine_repository") != CANONICAL_ENGINE_REPOSITORY or value.get("engine_ref") != CANONICAL_ENGINE_REF:
         raise InstanceAuthorityError("engine promotion candidate does not use canonical klokast/klokast-box main")
+    if value.get("schema_transition") not in SCHEMA_TRANSITIONS:
+        raise InstanceAuthorityError("engine promotion candidate schema transition is unsupported")
     for field in ("old_engine_commit", "new_engine_commit", "private_base_commit"):
         if not HEAD_RE.fullmatch(value.get(field, "")):
             raise InstanceAuthorityError(f"engine promotion candidate {field} is invalid")
@@ -1662,8 +1783,21 @@ def validate_candidate_tree(args, envelope, old_build, new_build):
         raise InstanceAuthorityError("candidate instance schema does not match the target engine")
     if candidate_lock.get("$schema") != schema_url(new_commit, "klokast-lock-v1.schema.json") or candidate_lock.get("engine") != expected_new_engine:
         raise InstanceAuthorityError("candidate engine lock does not match the target engine")
-    if semantic_without_engine_metadata(base_instance, base_lock) != semantic_without_engine_metadata(candidate_instance, candidate_lock):
-        raise InstanceAuthorityError("engine promotion changes private values outside the three permitted metadata fields")
+    transition = envelope["schema_transition"]
+    expected_candidate_instance = transition_instance_v1(
+        base_instance, transition, new_commit
+    )
+    if expected_candidate_instance != candidate_instance:
+        raise InstanceAuthorityError(
+            "engine promotion candidate is not the exact deterministic schema transition"
+        )
+    if semantic_without_engine_metadata({}, base_lock)[1] != semantic_without_engine_metadata({}, candidate_lock)[1]:
+        raise InstanceAuthorityError("engine promotion changes private lock values outside engine metadata")
+    reconstructed_base = transition_instance_v1(
+        candidate_instance, inverse_schema_transition(transition), old_commit
+    )
+    if reconstructed_base != base_instance:
+        raise InstanceAuthorityError("engine promotion schema transition is not exactly reversible")
     temporary = Path(tempfile.mkdtemp(prefix=".engine-promotion.", dir=Path(args.checkout).parent))
     os.chmod(temporary, 0o700)
     candidate = temporary / "candidate"
@@ -1707,7 +1841,7 @@ def validate_candidate_tree(args, envelope, old_build, new_build):
 def promotion_intent_fields():
     return {
         "schema_version", "authority", "app", "action", "engine_repository",
-        "engine_ref", "old_engine_commit", "new_engine_commit",
+        "engine_ref", "schema_transition", "old_engine_commit", "new_engine_commit",
         "old_build_operation", "new_build_operation", "old_binary_sha256",
         "new_binary_sha256", "old_builder_receipt_sha256",
         "new_builder_receipt_sha256", "controller_public_commit",
@@ -1727,6 +1861,8 @@ def validate_promotion_intent(value):
         raise InstanceAuthorityError("engine promotion intent action is invalid")
     if value.get("engine_repository") != CANONICAL_ENGINE_REPOSITORY or value.get("engine_ref") != CANONICAL_ENGINE_REF:
         raise InstanceAuthorityError("engine promotion intent repository or ref is invalid")
+    if value.get("schema_transition") not in SCHEMA_TRANSITIONS:
+        raise InstanceAuthorityError("engine promotion intent schema transition is unsupported")
     for field in ("old_engine_commit", "new_engine_commit", "controller_public_commit", "private_base_commit"):
         if not HEAD_RE.fullmatch(value.get(field, "")):
             raise InstanceAuthorityError(f"engine promotion intent {field} is invalid")
@@ -1805,14 +1941,20 @@ def cmd_promotion_preflight(args):
                 args, active_binding, source, state
             )
             new_commit = activation.get("previous_engine_commit", "")
+            rollback_transition = activation.get("rollback_schema_transition")
         else:
             pending = pending_promotion_binding(
                 args, old_commit, base_tree, source, state
             )
             promotion, old_build, new_build = validate_pending_promotion(args, pending)
             new_commit = promotion.get("old_engine_commit", "")
+            rollback_transition = inverse_schema_transition(
+                promotion.get("schema_transition")
+            )
         if envelope["new_engine_commit"] != new_commit or not HEAD_RE.fullmatch(new_commit):
             raise InstanceAuthorityError("rollback target is not the previous activated engine")
+        if envelope["schema_transition"] != rollback_transition:
+            raise InstanceAuthorityError("rollback candidate does not use the recorded reverse schema transition")
     validate_candidate_tree(args, envelope, old_build, new_build)
     if envelope["private_base_commit"] != base_commit or envelope["private_base_tree"] != base_tree:
         raise InstanceAuthorityError("candidate base changed during promotion preflight")
@@ -1824,6 +1966,7 @@ def cmd_promotion_preflight(args):
         "action": envelope["action"],
         "engine_repository": CANONICAL_ENGINE_REPOSITORY,
         "engine_ref": CANONICAL_ENGINE_REF,
+        "schema_transition": envelope["schema_transition"],
         "old_engine_commit": old_commit,
         "new_engine_commit": new_commit,
         "old_build_operation": old_build["operation"],
@@ -2012,6 +2155,10 @@ def cmd_promotion_activate(args):
         "promotion_receipt_sha256": promotion_digest,
         "engine_repository": CANONICAL_ENGINE_REPOSITORY,
         "engine_ref": CANONICAL_ENGINE_REF,
+        "schema_transition": promotion["schema_transition"],
+        "rollback_schema_transition": inverse_schema_transition(
+            promotion["schema_transition"]
+        ),
         "engine_commit": args.engine_commit,
         "build_operation": build["operation"],
         "binary_sha256": build["binary_sha256"],
@@ -2062,6 +2209,7 @@ def cmd_engine_status(args):
             "candidate_tree": args.candidate_tree,
             "private_base_commit": commit,
             "private_base_tree": tree,
+            "schema_transition": promotion["schema_transition"],
             "promotion_receipt_sha256": promotion["receipt_sha256"],
             "promotion_receipt_path": str(path),
             "source_receipt_sha256": source_receipt["receipt_sha256"],
@@ -2104,6 +2252,8 @@ def cmd_engine_status(args):
             "build_operation": activation["build_operation"],
             "previous_engine_commit": activation["previous_engine_commit"],
             "previous_build_operation": activation["previous_build_operation"],
+            "schema_transition": activation["schema_transition"],
+            "rollback_schema_transition": activation["rollback_schema_transition"],
             "activation_receipt_sha256": activation["receipt_sha256"],
             "activation_receipt_path": str(path),
         })
@@ -2113,6 +2263,10 @@ def cmd_engine_status(args):
             "build_operation": promotion["new_build_operation"],
             "previous_engine_commit": promotion["old_engine_commit"],
             "previous_build_operation": promotion["old_build_operation"],
+            "schema_transition": promotion["schema_transition"],
+            "rollback_schema_transition": inverse_schema_transition(
+                promotion["schema_transition"]
+            ),
             "promotion_receipt_sha256": promotion["receipt_sha256"],
             "promotion_receipt_path": str(path),
         })

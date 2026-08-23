@@ -359,23 +359,30 @@ expected.
 
 Status: `implemented`. Live MacBook and controller acceptance is pending.
 
-Version 1 promotes only between schema-compatible commits on canonical
-`https://github.com/klokast/klokast-box` `main`. The airunner authors and
+Version 1 promotes only on canonical
+`https://github.com/klokast/klokast-box` `main`. It supports metadata-only
+promotion and one closed, reversible Instance v1 transition from the legacy
+top-level site form to the current inline box-metadata form. The airunner authors and
 pushes public implementation code. The active controller tests and builds the
 exact public commit. The human selects the engine, approves it with the
 existing `human-private-instance` Touch ID signer, and pushes the private
 commit. The private Git commit is the engine-selection authority. Promotion
 and activation receipts are immutable evidence. They do not select an engine.
 
-One promotion can change only these values:
+Metadata-only promotion can change only these values:
 
 - `klokast-instance.json` `$schema` commit;
 - `klokast.lock.json` `$schema` commit;
 - `klokast.lock.json` `engine.commit`.
 
-All other private JSON values, support files, the engine repository, and the
-engine ref must stay equal. Schema migration, custom repositories, and an
-arbitrary downgrade are outside this milestone.
+The legacy Instance v1 transition additionally renames `tailnet` to
+`tailscale`, renames each box `connectivity-profiles` field to `connectivity`,
+copies each referenced site's country and description into its boxes, and
+removes the redundant instance ID and top-level site map. The controller
+reconstructs the candidate independently, requires every legacy site to be
+used, and proves the inverse transform equals the exact base document. No
+private value can change. Other schema migrations, custom repositories, and
+an arbitrary downgrade are outside this milestone.
 
 The trusted MacBook command is
 `klokast-dev/bin/promote-private-instance-engine`. It requires clean and
@@ -400,8 +407,9 @@ rollback form.
 The canonical 10-minute signed intent binds both engine commits, both build
 operations, both binary and builder-receipt hashes, the controller public
 commit, private repository hash and numeric ID, private base commit and tree,
-candidate and rollback trees, source-receipt hash, signer, nonce, issue time,
-and expiry. The installed `ksa-instance` wrapper verifies the scoped signer,
+candidate and rollback trees, the exact schema-transition identifier,
+source-receipt hash, signer, nonce, issue time, and expiry. The installed
+`ksa-instance` wrapper verifies the scoped signer,
 consumes the nonce, audits the action, and stores an immutable promotion
 receipt. Promotion and activation directories are root-owned, readable and
 traversable by `smith`, and mode `0750`. Receipts are root-owned,
@@ -424,8 +432,9 @@ deployment checkout, not the unborn seed. It requires a fresh source receipt
 and an exact MacBook, GitHub, and controller base. It resolves the engine from
 the private lock and its activation receipt. The bootstrap session and its
 hard-coded build remain valid only for repository creation and initial
-publication. A later normal update can change only `klokast-instance.json` and
-must also pass the recorded rollback engine.
+publication. A later normal update can change only `klokast-instance.json`.
+The controller uses the recorded inverse schema transition to reconstruct its
+rollback form, which must also pass the recorded rollback engine.
 
 Rollback is a new forward private commit. `--rollback` can select only the
 previous engine in the active activation receipt. It reconstructs the current
@@ -531,7 +540,7 @@ complete.
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is implemented as read-only evidence. Exact per-scope authority-coverage hardening remains. |
 | Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Live verification requires controlled promotion to an engine commit that contains these changes. |
-| Engine promotion | `implemented` | The canonical schema-compatible promotion, immutable evidence, active-engine publication, and forward rollback workflow are checked in. Real MacBook Touch ID promotion and controller activation remain the live-verification gate. |
+| Engine promotion | `implemented` | Canonical metadata-only promotion, the closed reversible legacy Instance v1 transition, immutable evidence, active-engine publication, and forward rollback are checked in. Real MacBook Touch ID promotion and controller activation remain the live-verification gate. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 

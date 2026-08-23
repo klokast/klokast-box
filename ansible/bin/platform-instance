@@ -30,6 +30,14 @@ COMPATIBILITY_REGISTRY = PRIVATE_ROOT / "platform-resources.yml"
 COMPATIBILITY_CONTROLLER_HA = PRIVATE_ROOT / "controller-ha.yml"
 MAXIMUM_VALUES_SIZE = 64 * 1024
 ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+SCHEMA_TRANSITION_METADATA_ONLY = "metadata-only"
+SCHEMA_TRANSITION_LEGACY_TO_CURRENT = "instance-v1-legacy-to-current"
+SCHEMA_TRANSITION_CURRENT_TO_LEGACY = "instance-v1-current-to-legacy"
+SCHEMA_TRANSITIONS = {
+    SCHEMA_TRANSITION_METADATA_ONLY,
+    SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
+    SCHEMA_TRANSITION_CURRENT_TO_LEGACY,
+}
 TAILNET_DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
 MEMBER_LOGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PLACEHOLDER_DNS = "REPLACE_WITH_TAILNET_DNS_NAME"
@@ -778,6 +786,8 @@ def validate_deployment_base(args):
             raise InstanceError(f"active engine evidence does not match candidate field: {field}")
     if not re.fullmatch(r"[0-9a-f]{64}", status.get("source_receipt_sha256", "")):
         raise InstanceError("active engine status has no fresh source receipt")
+    if status.get("rollback_schema_transition") not in SCHEMA_TRANSITIONS:
+        raise InstanceError("active engine status has no valid rollback schema transition")
     return DEPLOYMENT_CHECKOUT, status
 
 
@@ -849,6 +859,96 @@ def parse_compatibility_result(completed):
     return {"conflict": conflict, "unsupported": unsupported}
 
 
+def schema_url(commit, name):
+    return (
+        "https://raw.githubusercontent.com/klokast/klokast-box/"
+        f"{commit}/schemas/{name}"
+    )
+
+
+def transition_instance_v1(instance, transition, target_commit):
+    if transition not in SCHEMA_TRANSITIONS:
+        raise InstanceError("active engine evidence has an unsupported rollback schema transition")
+    value = copy.deepcopy(instance)
+    value["$schema"] = schema_url(target_commit, "klokast-instance-v1.schema.json")
+    if transition == SCHEMA_TRANSITION_METADATA_ONLY:
+        return value
+    legacy_keys = {
+        "$schema", "schema-version", "instance", "tailnet", "sites",
+        "boxes", "controllers", "airunners", "apps",
+    }
+    current_keys = {
+        "$schema", "schema-version", "tailscale", "boxes", "controllers",
+        "airunners", "apps",
+    }
+    if transition == SCHEMA_TRANSITION_LEGACY_TO_CURRENT:
+        if set(value) != legacy_keys or value.get("instance") != {"id": "klokast-instance"}:
+            raise InstanceError("legacy Instance v1 candidate cannot be converted without data loss")
+        sites = value.get("sites")
+        boxes = value.get("boxes")
+        if not isinstance(sites, dict) or not isinstance(boxes, dict) or not boxes:
+            raise InstanceError("legacy Instance v1 candidate has invalid site or box data")
+        migrated = {}
+        referenced = set()
+        for box, document in boxes.items():
+            if not isinstance(document, dict) or set(document) != {"site", "connectivity-profiles"}:
+                raise InstanceError("legacy Instance v1 candidate has an unsupported box shape")
+            site = document.get("site")
+            metadata = sites.get(site) if isinstance(site, str) else None
+            if not isinstance(metadata, dict) or set(metadata) != {"country", "description"}:
+                raise InstanceError("legacy Instance v1 candidate has invalid site metadata")
+            referenced.add(site)
+            migrated[box] = {
+                "site": site,
+                "country": metadata["country"],
+                "description": metadata["description"],
+                "connectivity": document["connectivity-profiles"],
+            }
+        if referenced != set(sites):
+            raise InstanceError("legacy Instance v1 candidate has unused site metadata")
+        return {
+            "$schema": value["$schema"],
+            "schema-version": value["schema-version"],
+            "tailscale": value["tailnet"],
+            "boxes": migrated,
+            "controllers": value["controllers"],
+            "airunners": value["airunners"],
+            "apps": value["apps"],
+        }
+    if set(value) != current_keys:
+        raise InstanceError("current Instance v1 candidate cannot be converted to the legacy shape")
+    boxes = value.get("boxes")
+    if not isinstance(boxes, dict) or not boxes:
+        raise InstanceError("current Instance v1 candidate has invalid box data")
+    legacy_boxes = {}
+    sites = {}
+    for box, document in boxes.items():
+        if not isinstance(document, dict) or set(document) != {"site", "country", "description", "connectivity"}:
+            raise InstanceError("current Instance v1 candidate has an unsupported box shape")
+        site = document.get("site")
+        if not isinstance(site, str):
+            raise InstanceError("current Instance v1 candidate has an invalid site")
+        metadata = {"country": document["country"], "description": document["description"]}
+        if site in sites and sites[site] != metadata:
+            raise InstanceError("candidate boxes with one site have inconsistent metadata")
+        sites[site] = metadata
+        legacy_boxes[box] = {
+            "site": site,
+            "connectivity-profiles": document["connectivity"],
+        }
+    return {
+        "$schema": value["$schema"],
+        "schema-version": value["schema-version"],
+        "instance": {"id": "klokast-instance"},
+        "tailnet": value["tailscale"],
+        "sites": sites,
+        "boxes": legacy_boxes,
+        "controllers": value["controllers"],
+        "airunners": value["airunners"],
+        "apps": value["apps"],
+    }
+
+
 def check_candidate(args):
     binary = verify_configure_engine(args)
     if (DEPLOYMENT_CHECKOUT / ".git").is_dir():
@@ -917,11 +1017,14 @@ def check_candidate(args):
             rollback_lock_path = candidate / "klokast.lock.json"
             active_lock_content = rollback_lock_path.read_bytes()
             rollback_lock = json.loads(active_lock_content)
+            rollback_transition = engine_status.get("rollback_schema_transition", "")
+            rollback_instance = transition_instance_v1(
+                rollback_instance, rollback_transition, previous_commit
+            )
             prefix = (
                 "https://raw.githubusercontent.com/klokast/klokast-box/"
                 f"{previous_commit}/schemas/"
             )
-            rollback_instance["$schema"] = prefix + "klokast-instance-v1.schema.json"
             rollback_lock["$schema"] = prefix + "klokast-lock-v1.schema.json"
             rollback_lock["engine"]["commit"] = previous_commit
             instance_path.write_text(json.dumps(rollback_instance, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -213,6 +213,43 @@ raise SystemExit(0 if valid else 1)
         ):
             self.run_candidate(self.candidate())
 
+    def test_rollback_schema_transition_reconstructs_legacy_instance_v1(self):
+        current = {
+            "$schema": self.mod.schema_url(ENGINE_COMMIT, "klokast-instance-v1.schema.json"),
+            "schema-version": 1,
+            "tailscale": {
+                "tailnet-dns-name": "example.ts.net",
+                "members": {"human@example.invalid": {"roles": ["operator", "family"]}},
+            },
+            "boxes": {
+                "boxa": {
+                    "site": "site-a", "country": "XA", "description": "",
+                    "connectivity": ["tailscale"],
+                },
+                "boxb": {
+                    "site": "site-b", "country": "XB", "description": "Example",
+                    "connectivity": ["local-ap-direct-egress", "tailscale"],
+                },
+            },
+            "controllers": {"active": "boxa", "standby": "boxb"},
+            "airunners": ["boxa-ops-airunner"],
+            "apps": {},
+        }
+        previous = "b" * 40
+        legacy = self.mod.transition_instance_v1(
+            current, self.mod.SCHEMA_TRANSITION_CURRENT_TO_LEGACY, previous
+        )
+        self.assertIn("tailnet", legacy)
+        self.assertIn("sites", legacy)
+        self.assertEqual(
+            legacy["boxes"]["boxb"]["connectivity-profiles"],
+            ["local-ap-direct-egress", "tailscale"],
+        )
+        reconstructed = self.mod.transition_instance_v1(
+            legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, ENGINE_COMMIT
+        )
+        self.assertEqual(reconstructed, current)
+
 
 if __name__ == "__main__":
     unittest.main()
