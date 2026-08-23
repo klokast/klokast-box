@@ -462,8 +462,8 @@ Confirm these points locally:
 - no `instance` object or instance ID is present;
 - each private box ID contains its private site, country, description, and
   `connectivity` set, and there is no top-level `sites` object;
-- each box selects `tailscale`, and only the applicable box selects
-  `local-ap-direct-egress`;
+- each box includes `overlay` and selects only the applicable elementary
+  connectivity capabilities;
 - the active and optional standby controller box IDs are exact;
 - each listed airunner is an installed desired runtime in priority order;
 - no absent or destroyed airunner is listed;
@@ -474,7 +474,7 @@ Confirm these points locally:
   field.
 
 See `doc/klokast-instance-specification.md` in the public repository for
-placement, app, feature, data, and connectivity-profile rules.
+placement, app, feature, data, and connectivity-capability rules.
 
 ### 10.3 Validate the review
 
@@ -684,7 +684,10 @@ either the two schema URLs and lock commit, or the closed legacy Instance v1
 transition that it identifies in the intent. That transition renames the
 legacy Tailnet and connectivity keys, inlines referenced site metadata, and
 removes only the redundant instance ID and site map. Confirm that no private
-value changes. Run the same command without `--check`, review the 10-minute
+value changes. A later connectivity transition maps `tailscale` to `overlay`
+and maps `local-ap-direct-egress` to the adjacent `local-ap-uplink` and
+`direct-wan-egress` pair. Its inverse refuses partial or non-invertible sets.
+Run the same command without `--check`, review the 10-minute
 intent, answer `y`, and approve Touch ID. The helper commits and pushes from
 the MacBook, synchronizes the controller read-only checkout, and creates
 immutable promotion and activation receipts.
@@ -701,6 +704,77 @@ klokast-dev/bin/promote-private-instance-engine \
 After activation, later `publish-private-instance` runs resolve the active
 controller from the private HA registry. They use the active engine evidence
 instead of the bootstrap engine and build pins.
+
+## 15. Align elementary connectivity capabilities
+
+Use this section only for the controlled capability migration. It does not
+apply resources or change an application runtime.
+
+On the trusted MacBook, stage `klokast-instance.json` with
+`"connectivity": ["overlay"]` on each current box. Keep applications absent
+and preserve the intended Music `library` data declaration. Do not publish.
+
+In an interactive `smith` shell on the active controller, create an owner-only
+backup of the resource registry and record its hash:
+
+```sh
+cd ~/src/klokast/klokast-box
+umask 077
+REG=~/private/klokast/platform-resources.yml
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP="$REG.$STAMP.elementary-connectivity.bak"
+cp -- "$REG" "$BACKUP"
+chmod 0600 "$BACKUP"
+sha256sum "$BACKUP"
+```
+
+Edit only the active registry. Set every legacy app entry to `enabled: false`.
+Keep placement, resource, cleanup, and retained metadata. Give every box this
+exact access declaration and delete the box `policy` field:
+
+```yaml
+access:
+  available_capabilities: [overlay]
+  enabled_capabilities: [overlay]
+  prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
+```
+
+Run lint only:
+
+```sh
+ansible/bin/platform-resources --registry "$REG" lint
+```
+
+Do not run `apply`, `verify`, Ansible, a service command, or an app command.
+On the MacBook, run `publish-private-instance --check`. If it fails before
+publication, restore the exact backup and confirm its recorded SHA-256. If it
+passes, publish through the same helper and synchronize the controller
+checkout.
+
+For acceptance, use the active controller. Verify source and activation
+receipts, refresh the Platform map without repair, export a fresh owner-only
+Observation v1, and call `platform-plan` with the exact sealed build directory
+and all three private compatibility inputs. Keep the immutable Plan path that
+the command reports. Verify its SHA-256, root ownership, directory mode
+`0750`, and file mode `0440`.
+
+The Plan must report:
+
+```text
+valid: true
+compatible: true
+substrate_healthy: true
+deployable: true
+authority_ready: true
+refusals: 0
+conflict: 0
+unsupported: 0
+legacy_removal_ready: false
+```
+
+The human must review every compatibility-only finding and confirm its one
+continuing authority. Only then mark this migration and read-only acceptance
+`live-verified`.
 
 ## Troubleshooting
 

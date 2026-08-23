@@ -132,13 +132,7 @@ boxes:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 apps:
   nextcloud:
     enabled: false
@@ -216,7 +210,7 @@ func mainInstanceValues() string {
     "tailnet-dns-name": "example.ts.net",
     "members": {"admin@example.com": {"roles": ["operator", "family"]}}
   },
-  "boxes": {"boxa": {"site": "site-b", "country": "XB", "description": "Example home", "connectivity": ["tailscale"]}},
+  "boxes": {"boxa": {"site": "site-b", "country": "XB", "description": "Example home", "connectivity": ["overlay"]}},
   "controllers": {"active": "boxa"},
   "airunners": ["boxa-ops-airunner"],
   "apps": {}

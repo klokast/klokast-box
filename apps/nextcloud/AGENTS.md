@@ -13,7 +13,8 @@ The Platform backend VM suffix is still `-bak`.
 - Active master:
   - `<box>-bak`: Nextcloud backend containers.
   - `<box>-dmz`: private Tailscale ingress and optional Cloudflare Tunnel
-    connector.
+    connector. Instance Specification selects it with the semantic
+    `public-ingress: cloudflare-tunnel` feature.
 - Passive backup:
   - `<box>-bak`: same backend stack installed, but stopped until promotion.
   - `<box>-dmz`: same private ingress and optional tunnel connector installed,
@@ -89,8 +90,8 @@ Required install environment:
 - `NEXTCLOUD_RESTIC_PASSWORD`
 - `NEXTCLOUD_RESTIC_REPOSITORY`
 
-Required only when the deployment registry enables
-`cloudflare-tunnel-egress`:
+Required only when the semantic public-ingress feature enables
+`cloudflare-tunnel-egress` and both placement boxes enable `edge-ingress`:
 
 - `NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE`
 - `NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE`

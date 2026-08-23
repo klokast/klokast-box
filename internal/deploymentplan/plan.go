@@ -65,6 +65,8 @@ type ObservationReference struct {
 
 type AuthorityAssignment struct {
 	ID           string `json:"id"`
+	FindingID    string `json:"finding_id,omitempty"`
+	Authority    string `json:"authority,omitempty"`
 	Scope        string `json:"scope"`
 	Disposition  string `json:"disposition"`
 	SourceSHA256 string `json:"source_sha256,omitempty"`
@@ -72,14 +74,16 @@ type AuthorityAssignment struct {
 }
 
 type Action struct {
-	ID              string   `json:"id"`
-	Operation       string   `json:"operation"`
-	Scope           string   `json:"scope"`
-	AuthorityBefore string   `json:"authority_before"`
-	AuthorityAfter  string   `json:"authority_after"`
-	Executor        string   `json:"executor"`
-	Preconditions   []string `json:"preconditions"`
-	Rollback        Rollback `json:"rollback"`
+	ID                    string   `json:"id"`
+	FindingID             string   `json:"finding_id,omitempty"`
+	AuthorityAssignmentID string   `json:"authority_assignment_id,omitempty"`
+	Operation             string   `json:"operation"`
+	Scope                 string   `json:"scope"`
+	AuthorityBefore       string   `json:"authority_before"`
+	AuthorityAfter        string   `json:"authority_after"`
+	Executor              string   `json:"executor"`
+	Preconditions         []string `json:"preconditions"`
+	Rollback              Rollback `json:"rollback"`
 }
 
 type Rollback struct {
@@ -181,6 +185,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			}
 			artifact.Actions = append(artifact.Actions, retainedAction(finding, digests[finding.Authority]))
 		case "conflict", "unsupported":
+			artifact.Actions = append(artifact.Actions, refusalAction(finding))
 			artifact.Refusals = append(artifact.Refusals, refusal("compatibility."+finding.Class, finding.Path, finding.Message))
 		default:
 			artifact.Refusals = append(artifact.Refusals, refusal("compatibility.class", finding.Path, "the compatibility finding class is not supported"))
@@ -204,6 +209,8 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		Preconditions: []string{"fresh_observation", "active_controller_source", "exact_projection_hash"},
 		Rollback: Rollback{Strategy: "no_mutation", Authority: "observation_v1", SourceSHA256: health.ObservationGeneration},
 	})
+	coverageReady, coverageRefusals := exactCoverage(artifact, digests)
+	artifact.Refusals = append(artifact.Refusals, coverageRefusals...)
 	sort.Slice(artifact.Actions, func(i, j int) bool { return artifact.Actions[i].ID < artifact.Actions[j].ID })
 	sort.Slice(artifact.Refusals, func(i, j int) bool {
 		if artifact.Refusals[i].Scope != artifact.Refusals[j].Scope {
@@ -214,7 +221,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 
 	artifact.Valid = true
 	artifact.Deployable = report.Repository.Clean && report.Repository.HeadCommit != "" && artifact.InstanceSource.ReceiptSHA256 != "" && artifact.Compatible && artifact.SubstrateHealthy && len(artifact.Refusals) == 0
-	artifact.AuthorityReady = artifact.Deployable && everyScopeAssigned(artifact)
+	artifact.AuthorityReady = artifact.Deployable && coverageReady
 	artifact.LegacyRemovalReady = artifact.AuthorityReady && artifact.Compatibility.Summary.CompatibilityOnly == 0
 	artifact.PlanSHA256, err = Hash(artifact)
 	if err != nil {
@@ -269,12 +276,14 @@ func authorityAssignments(artifact Artifact, digests map[string]string) []Author
 		{ID: "legacy_engine_inventory", Scope: "execution_inventory", Disposition: "continuing", SourceCommit: artifact.Engine.Commit},
 		{ID: "observation_v1", Scope: "standard_substrate_health", Disposition: "evidence", SourceSHA256: artifact.Observation.GenerationSHA256},
 	}
-	for _, value := range []struct{ id, scope string }{
-		{"legacy_controller_ha", "controller_selection"},
-		{"legacy_deployment", "deployment_topology"},
-		{"legacy_platform_resources", "platform_resources"},
-	} {
-		result = append(result, AuthorityAssignment{ID: value.id, Scope: value.scope, Disposition: "continuing", SourceSHA256: digests[value.id]})
+	for _, finding := range artifact.Compatibility.Findings {
+		if finding.Class != "compatibility_only" {
+			continue
+		}
+		result = append(result, AuthorityAssignment{
+			ID: assignmentID(finding), FindingID: finding.ID, Authority: finding.Authority,
+			Scope: finding.Path, Disposition: "continuing", SourceSHA256: digests[finding.Authority],
+		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
@@ -282,7 +291,7 @@ func authorityAssignments(artifact Artifact, digests map[string]string) []Author
 
 func adoptionAction(finding planner.Finding, before, digest string) Action {
 	return Action{
-		ID: actionID("adopt_instance_specification", finding.Path), Operation: "adopt_instance_specification", Scope: finding.Path,
+		ID: actionID("adopt_instance_specification", finding.ID), FindingID: finding.ID, Operation: "adopt_instance_specification", Scope: finding.Path,
 		AuthorityBefore: before, AuthorityAfter: "instance_specification_v1", Executor: "future_authorized_apply",
 		Preconditions: []string{"active_controller_fenced", "exact_plan_revalidated", "rollback_prepared"},
 		Rollback: Rollback{Strategy: "restore_authority", Authority: before, SourceSHA256: digest},
@@ -291,10 +300,19 @@ func adoptionAction(finding planner.Finding, before, digest string) Action {
 
 func retainedAction(finding planner.Finding, digest string) Action {
 	return Action{
-		ID: actionID("retain_legacy", finding.Path), Operation: "retain_legacy", Scope: finding.Path,
+		ID: actionID("retain_legacy", finding.ID), FindingID: finding.ID, AuthorityAssignmentID: assignmentID(finding), Operation: "retain_legacy", Scope: finding.Path,
 		AuthorityBefore: finding.Authority, AuthorityAfter: finding.Authority, Executor: "none",
 		Preconditions: []string{"legacy_authority_remains_active"},
 		Rollback: Rollback{Strategy: "no_mutation", Authority: finding.Authority, SourceSHA256: digest},
+	}
+}
+
+func refusalAction(finding planner.Finding) Action {
+	return Action{
+		ID: actionID("refuse", finding.ID), FindingID: finding.ID, Operation: "refuse", Scope: finding.Path,
+		AuthorityBefore: sourceAuthority(finding), AuthorityAfter: sourceAuthority(finding), Executor: "none",
+		Preconditions: []string{"compatibility_refusal_resolved"},
+		Rollback: Rollback{Strategy: "no_mutation", Authority: sourceAuthority(finding)},
 	}
 }
 
@@ -308,16 +326,81 @@ func sourceAuthority(finding planner.Finding) string {
 	return "legacy_platform_resources"
 }
 
-func everyScopeAssigned(artifact Artifact) bool {
+func exactCoverage(artifact Artifact, digests map[string]string) (bool, []Refusal) {
+	refusals := []Refusal{}
+	add := func(code, scope, message string) { refusals = append(refusals, refusal(code, scope, message)) }
 	if len(artifact.CompatibilityInputs) != 3 || artifact.Observation.GenerationSHA256 == "" {
-		return false
+		add("coverage.inputs", "plan.coverage", "exact compatibility inputs and observation evidence are required")
 	}
+	seenInputs := map[string]bool{}
 	for _, input := range artifact.CompatibilityInputs {
-		if input.Name == "" || input.SHA256 == "" {
-			return false
+		if input.Name == "" || input.SHA256 == "" || seenInputs[input.Name] {
+			add("coverage.input", "plan.coverage", "compatibility input names and digests must be non-empty and unique")
+		}
+		seenInputs[input.Name] = true
+	}
+	findings := map[string]planner.Finding{}
+	for _, finding := range artifact.Compatibility.Findings {
+		if finding.ID == "" || finding.ID != planner.CanonicalFindingID(finding) || findings[finding.ID].ID != "" {
+			add("coverage.finding-id", finding.Path, "compatibility finding IDs must be non-empty and unique")
+			continue
+		}
+		findings[finding.ID] = finding
+	}
+	actions := map[string][]Action{}
+	for _, action := range artifact.Actions {
+		if action.FindingID == "" {
+			continue
+		}
+		if findings[action.FindingID].ID == "" {
+			add("coverage.action-extra", action.Scope, "an action references an unknown compatibility finding")
+		}
+		actions[action.FindingID] = append(actions[action.FindingID], action)
+	}
+	assignments := map[string][]AuthorityAssignment{}
+	assignmentIDs := map[string]bool{}
+	for _, assignment := range artifact.Authorities {
+		if assignmentIDs[assignment.ID] {
+			add("coverage.authority-id", assignment.Scope, "authority assignment IDs must be unique")
+		}
+		assignmentIDs[assignment.ID] = true
+		if assignment.FindingID == "" {
+			continue
+		}
+		if findings[assignment.FindingID].ID == "" {
+			add("coverage.authority-extra", assignment.Scope, "an authority assignment references an unknown finding")
+		}
+		assignments[assignment.FindingID] = append(assignments[assignment.FindingID], assignment)
+	}
+	for id, finding := range findings {
+		if len(actions[id]) != 1 {
+			add("coverage.action-count", finding.Path, "each compatibility finding must bind to exactly one action")
+			continue
+		}
+		action := actions[id][0]
+		if action.Scope != finding.Path {
+			add("coverage.action-scope", finding.Path, "the finding action scope does not match the finding path")
+		}
+		if finding.Class != "compatibility_only" {
+			if len(assignments[id]) != 0 {
+				add("coverage.authority-extra", finding.Path, "only compatibility-only findings can bind continuing authority")
+			}
+			continue
+		}
+		if len(assignments[id]) != 1 {
+			add("coverage.authority-count", finding.Path, "each compatibility-only finding must bind to exactly one continuing authority")
+			continue
+		}
+		assignment := assignments[id][0]
+		expectedDigest := digests[finding.Authority]
+		if finding.Authority == "" || expectedDigest == "" || assignment.Authority != finding.Authority ||
+			assignment.Disposition != "continuing" || assignment.Scope != finding.Path || assignment.SourceSHA256 != expectedDigest ||
+			action.AuthorityAssignmentID != assignment.ID || action.AuthorityBefore != finding.Authority ||
+			action.AuthorityAfter != finding.Authority || action.Rollback.SourceSHA256 != expectedDigest {
+			add("coverage.authority-mismatch", finding.Path, "continuing authority coverage must match the finding and exact source digest")
 		}
 	}
-	return true
+	return len(refusals) == 0, refusals
 }
 
 func refusal(code, scope, message string) Refusal {
@@ -327,4 +410,9 @@ func refusal(code, scope, message string) Refusal {
 func actionID(operation, scope string) string {
 	digest := sha256.Sum256([]byte(operation + "\x00" + scope))
 	return fmt.Sprintf("%s-%x", operation, digest[:8])
+}
+
+func assignmentID(finding planner.Finding) string {
+	digest := sha256.Sum256([]byte("continuing_authority\x00" + finding.ID))
+	return fmt.Sprintf("authority-%x", digest[:8])
 }

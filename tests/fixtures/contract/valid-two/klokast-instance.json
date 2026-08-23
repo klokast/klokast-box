@@ -20,8 +20,9 @@
   "boxes": {
     "boxa": {
       "connectivity": [
-        "local-ap-direct-egress",
-        "tailscale"
+        "direct-wan-egress",
+        "local-ap-uplink",
+        "overlay"
       ],
       "country": "XA",
       "description": "",
@@ -29,7 +30,7 @@
     },
     "boxb": {
       "connectivity": [
-        "tailscale"
+        "overlay"
       ],
       "country": "XB",
       "description": "",

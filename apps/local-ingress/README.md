@@ -7,8 +7,8 @@ DMZ-local HTTPS ingress for the dumb AP design.
 - Runs nginx on `<box>-dmz`.
 - Listens on TCP 443 for `music.<domain>`, `nextcloud.<domain>`, and `immich.<domain>`.
 - Uses a controller-provided wildcard certificate/key for `*.<domain>`.
-- Proxies to the backend VM on exact app upstream ports selected by access
-  policy.
+- Proxies to the backend VM on exact app upstream ports declared by the app
+  manifest.
 - Household Wi-Fi clients reach it only through router/app-resource policy.
 
 Enable in the private platform-resource registry:
@@ -19,8 +19,6 @@ boxes:
     access:
       available_capabilities: [overlay, local-lan]
       enabled_capabilities: [overlay, local-lan]
-      policy:
-        local-presence-control: local-lan
 apps:
   local-ingress:
     enabled: true
@@ -29,9 +27,8 @@ apps:
     resources: {}
 ```
 
-This enables the LAN music control path. Add
-`private-service-ingress: local-lan` only when Nextcloud/Immich should also be
-reachable from the AP-local LAN.
+This enables all required local-ingress resources. The app manifest, not the
+box capability list, selects the exact application flows.
 
 Deploy from the controller as `smith`:
 

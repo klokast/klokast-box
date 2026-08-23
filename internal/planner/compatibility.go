@@ -248,7 +248,9 @@ func sortCompatibility(result *Compatibility) {
 		return result.Findings[i].Code < result.Findings[j].Code
 	})
 	result.Summary = FindingSummary{}
-	for _, finding := range result.Findings {
+	for index := range result.Findings {
+		finding := &result.Findings[index]
+		finding.ID = CanonicalFindingID(*finding)
 		switch finding.Class {
 		case "matched":
 			result.Summary.Matched++
@@ -262,6 +264,12 @@ func sortCompatibility(result *Compatibility) {
 			result.Summary.Unsupported++
 		}
 	}
+}
+
+// CanonicalFindingID returns the stable Plan v1 identity for one compatibility finding.
+func CanonicalFindingID(finding Finding) string {
+	digest := sha256.Sum256([]byte(finding.Path + "\x00" + finding.Class + "\x00" + finding.Code))
+	return fmt.Sprintf("finding-%x", digest[:12])
 }
 
 func projectionTailnetSuffix(projection Projection) string {

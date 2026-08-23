@@ -224,6 +224,14 @@ reviewed Alpine release-upgrade canary. The dom0 Tailscale role also disables
 Tailscale self-update so that it cannot bypass this package policy. Do not
 restore `latest-stable` or enable Tailscale self-update on dom0.
 
+# 2026-08-23 - restore the app store routing document
+
+The root agent instructions require `apps/STORE.md` before app work, but that
+file does not exist. `apps/README.md` contains the current supported-app list
+and routing rules. Create `apps/STORE.md` or change the root instruction to
+name the existing authority. Do not keep two app catalogs with different
+content.
+
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 
 The first boxa dom0 policy canary showed that the live Alpine 3.23 repository

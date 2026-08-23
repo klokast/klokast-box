@@ -19,7 +19,7 @@ runtime authority
 ```
 
 The public `klokast-box` repository owns implementation, schemas, app
-manifests, connectivity profiles, automation, and neutral tests. The private instance
+manifests, connectivity capabilities, automation, and neutral tests. The private instance
 repository owns deployment intent and the engine lock. It must not contain
 secrets, generated state, live status, or user data.
 
@@ -91,13 +91,13 @@ publication.
       "site": "site-a",
       "country": "XA",
       "description": "",
-      "connectivity": ["local-ap-direct-egress", "tailscale"]
+      "connectivity": ["local-ap-uplink", "direct-wan-egress", "overlay"]
     },
     "boxb": {
       "site": "site-b",
       "country": "XB",
       "description": "",
-      "connectivity": ["tailscale"]
+      "connectivity": ["overlay"]
     }
   },
   "controllers": {
@@ -170,27 +170,26 @@ The public [cloud provider catalog](../cloud-providers.json) defines supported
 unknown providers, other suffixes, name collisions, duplicate items, and the
 old placement object.
 
-## Connectivity profiles
+## Connectivity capabilities
 
-The instance selects profiles. It does not repeat low-level developed
-capabilities or access policy. Version 1 has these profiles:
+The `connectivity` array is a unique set of available and enabled box
+capabilities. It does not select an application flow or a box-wide access
+policy. Version 1 accepts only these values:
 
-- `tailscale`: private ingress, upload, and control use the Tailscale overlay.
-  Household WAN egress and public ingress are not enabled.
-- `local-ap-direct-egress`: the box has a local access-point uplink and can
-  send household traffic through direct WAN egress. Public ingress and
-  residential-gateway LAN ingress are not enabled.
+- `overlay`: the box has the selected overlay transport.
+- `local-ap-uplink`: the box has a local access-point uplink.
+- `direct-wan-egress`: the box can use direct WAN egress.
+- `edge-tunnel-ingress`: the box can use an outbound edge tunnel for ingress.
+- `direct-wan-ingress`: the box can receive direct WAN ingress.
 
-Profiles are a set. In the example, `boxa` uses both profiles and `boxb`
-uses only `tailscale`.
-Every version 1 box must select `tailscale`. This profile supplies the current
-private control path. Another overlay provider requires a later specification
-change before it can replace this profile.
-The public engine resolves profiles to current capability and policy fields
-when it compares the instance with the legacy platform-resource registry.
+Every version 1 box must include `overlay`. The top-level `tailscale` object
+selects Tailscale as the only supported version 1 overlay provider. Nebula and
+multiple overlay providers are deferred.
 
-The name `tailscale` identifies the current provider. A later version can add
-another profile for Nebula, Cloudflare, or another overlay implementation.
+The compatibility adapter maps the five values to `overlay`, `ap-uplink`,
+`direct-egress`, `edge-ingress`, and `direct-ingress`. It derives prohibited
+capabilities as the exact complement across the supported legacy capability
+vocabulary. The legacy box-wide `policy` field is not accepted.
 
 ## Application and data lifecycle
 
@@ -216,6 +215,16 @@ selects one active box and one different passive box.
 The public app manifest defines the supported placement mode, feature names,
 feature types, and data IDs. Version 1 features are Boolean values or values
 from a manifest-defined string enumeration.
+
+For example, Nextcloud can select optional public ingress with:
+
+```json
+"features": {"public-ingress": "cloudflare-tunnel"}
+```
+
+Omission means that optional public ingress is disabled. The manifest binds
+this value to the `cloudflare-tunnel-egress` resource. The resource requires
+`edge-tunnel-ingress` on every placement box.
 
 Data belongs to its app. It is not a top-level catalog. A data entry names one
 manifest-defined logical dataset, one box, and `"retention": "preserve"`.
@@ -297,10 +306,14 @@ branch.
 
 The human changes the selected engine only through
 `promote-private-instance-engine`. A metadata-only promotion changes the two
-`$schema` commits and `engine.commit`. The one supported legacy Instance v1
-transition also converts `tailnet` to `tailscale`, converts each box
+`$schema` commits and `engine.commit`. The structural legacy Instance v1
+transition converts `tailnet` to `tailscale`, converts each box
 `connectivity-profiles` field to `connectivity`, moves referenced site
 metadata into each box, and removes the redundant instance ID and site map.
+The connectivity transition converts `tailscale` to `overlay` and converts
+`local-ap-direct-egress` to the adjacent `local-ap-uplink` and
+`direct-wan-egress` pair. Its inverse rejects partial pairs and all
+non-invertible capabilities.
 The controller independently reconstructs this closed transform and its exact
 inverse. Promotion uses a canonical `klokast/klokast-box` `main` descendant,
 exact sealed old and new builds, one short-lived Touch ID approval, a forward
@@ -361,6 +374,6 @@ evidence in `/var/lib/klokast`, and rebuildable artifacts in
 The [upstream/instance target architecture](upstream-instance-target-architecture.md)
 owns the ordered design work for engine promotion, Plan hardening, authorized
 apply, migration, and legacy removal. Later specification versions can add
-more connectivity profiles, app feature types, data operations, and site
+more connectivity providers, app feature types, data operations, and site
 executors. Version 1 does not give an app or an airunner authority to grant
 itself resources or delete undeclared data.

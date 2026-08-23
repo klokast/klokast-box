@@ -34,6 +34,7 @@ resources:
     - id: cloudflare-tunnel-egress
       type: wan_egress
       required: true
+      requires_capability: edge-ingress
       rationale: >-
         Allows the DMZ-hosted Cloudflare Tunnel connector to publish the static
         site without exposing residential WAN ports.

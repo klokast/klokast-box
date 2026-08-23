@@ -112,12 +112,6 @@ type Access struct {
 	LegacyAvailable []string        `json:"legacy_available_capabilities"`
 	Enabled         []string        `json:"enabled_capabilities"`
 	Prohibited      []string        `json:"prohibited_capabilities"`
-	Policy          []PolicyBinding `json:"policy"`
-}
-
-type PolicyBinding struct {
-	Intent     string `json:"intent"`
-	Capability string `json:"capability"`
 }
 
 type ControlPlane struct {
@@ -185,6 +179,7 @@ type FindingSummary struct {
 }
 
 type Finding struct {
+	ID        string `json:"id"`
 	Path      string `json:"path"`
 	Class     string `json:"class"`
 	Code      string `json:"code"`
@@ -194,6 +189,13 @@ type Finding struct {
 
 type manifest struct {
 	PlacementMode string
+	Features      map[string]manifestFeature
+}
+
+type manifestFeature struct {
+	Kind             string
+	Values           map[string]bool
+	ResourceBindings map[string][]string
 }
 
 type registry struct {
@@ -372,7 +374,7 @@ func Resolve(snapshot contract.Snapshot) Projection {
 				Dom0: prefix + "-dom0", Router: prefix + "-router", Backup: prefix + "-bak",
 				DMZ: prefix + "-dmz", IoT: prefix + "-iot", Ops: prefix + "-ops",
 			},
-			Access: accessForProfiles(box.Connectivity),
+			Access: accessForCapabilities(box.Connectivity),
 		})
 	}
 	active := snapshot.Instance.Controllers.Active
@@ -471,26 +473,25 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 				"available_capabilities":  box.Access.LegacyAvailable,
 				"enabled_capabilities":    box.Access.Enabled,
 				"prohibited_capabilities": box.Access.Prohibited,
-				"policy":                  policyMap(box.Access.Policy),
 			}
-			for _, field := range []string{"available_capabilities", "enabled_capabilities", "prohibited_capabilities", "policy"} {
+			for _, field := range []string{"available_capabilities", "enabled_capabilities", "prohibited_capabilities"} {
 				matches := equivalent(expected[field], access[field])
-				if field != "policy" {
-					matches = equivalentStringSet(expected[field], access[field])
-				}
+				matches = equivalentStringSet(expected[field], access[field])
 				if matches {
-					add(path+".access."+field, "matched", "access.profile", "the connectivity profile resolves to the legacy access field")
+					add(path+".access."+field, "matched", "access.capability", "the connectivity capabilities resolve to the legacy access field")
 				} else {
-					add(path+".access."+field, "conflict", "access.mismatch", "the connectivity profile does not resolve to the legacy access field")
+					add(path+".access."+field, "conflict", "access.mismatch", "the connectivity capabilities do not resolve to the legacy access field")
 				}
 			}
 			for _, field := range sortedKeys(access) {
-				if field != "available_capabilities" && field != "enabled_capabilities" && field != "prohibited_capabilities" && field != "policy" {
+				if field == "policy" {
+					add(path+".access."+field, "unsupported", "access.policy-removed", "the legacy box-wide access policy is not accepted")
+				} else if field != "available_capabilities" && field != "enabled_capabilities" && field != "prohibited_capabilities" {
 					add(path+".access."+field, "unsupported", "access.field", "the legacy access field is not accepted by the compatibility adapter")
 				}
 			}
 		}
-		add(path+".connectivity", "derived", "connectivity.profile", "the Instance Specification selects upstream connectivity profiles")
+		add(path+".connectivity", "derived", "connectivity.capabilities", "the Instance Specification declares provider-neutral connectivity capabilities")
 		for _, field := range sortedKeys(legacyBox) {
 			if field != "access" {
 				add(path+"."+field, "compatibility_only", "box.compatibility", "the legacy box field has no Instance Specification v1 representation and must be retained outside the projection")
@@ -556,10 +557,8 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 		}
 		actualResources := legacyApp["resources"]
 		if app.Enabled {
-			expectedResources := resourceMap(app.Resources)
-			if actualResources == nil {
-				actualResources = map[string]any{}
-			}
+			expectedResources := resourceMapForManifest(manifests[app.ID], app.Resources)
+			actualResources = normalizedLegacyResourceFlags(actualResources)
 			if equivalent(expectedResources, actualResources) {
 				add(path+".features", "matched", "features.match", "the Instance Specification features match legacy resource selections")
 			} else {
@@ -614,6 +613,20 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 
 	result := Compatibility{RegistrySHA256: legacy.digest, Findings: findings}
 	sortCompatibility(&result)
+	return result
+}
+
+func normalizedLegacyResourceFlags(value any) map[string]any {
+	result := map[string]any{}
+	resources, ok := value.(map[string]any)
+	if !ok {
+		return result
+	}
+	for id, selected := range resources {
+		if enabled, ok := selected.(bool); ok && enabled {
+			result[id] = true
+		}
+	}
 	return result
 }
 
@@ -729,7 +742,30 @@ func loadManifests() (map[string]manifest, error) {
 			return nil, fmt.Errorf("%s has no app ID", path)
 		}
 		mode, _ := object["placement_mode"].(string)
-		result[id] = manifest{PlacementMode: mode}
+		item := manifest{PlacementMode: mode, Features: map[string]manifestFeature{}}
+		if features, ok := object["features"].([]any); ok {
+			for _, rawFeature := range features {
+				feature, ok := rawFeature.(map[string]any)
+				if !ok {
+					continue
+				}
+				featureID, _ := feature["id"].(string)
+				kind, _ := feature["type"].(string)
+				definition := manifestFeature{Kind: kind, Values: map[string]bool{}, ResourceBindings: map[string][]string{}}
+				for _, value := range stringsFromAny(feature["values"]) {
+					definition.Values[value] = true
+				}
+				if bindings, ok := feature["resource_bindings"].(map[string]any); ok {
+					for value, rawResources := range bindings {
+						definition.ResourceBindings[value] = stringsFromAny(rawResources)
+					}
+				}
+				if featureID != "" {
+					item.Features[featureID] = definition
+				}
+			}
+		}
+		result[id] = item
 	}
 	return result, nil
 }
@@ -754,55 +790,39 @@ func sameInputs(left, right []contract.Input) bool {
 	return true
 }
 
-func legacyAvailable(declared, prohibited []string) []string {
-	blocked := map[string]bool{}
-	for _, value := range prohibited {
-		blocked[value] = true
+func accessForCapabilities(capabilities []string) Access {
+	legacyVocabulary := []string{
+		"ap-uplink", "direct-egress", "direct-ingress", "edge-ingress",
+		"local-lan", "overlay", "rg-lan", "vpn-egress",
 	}
-	result := make([]string, 0, len(declared))
-	for _, value := range declared {
-		if !blocked[value] {
-			result = append(result, value)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
-func accessForProfiles(profiles []string) Access {
-	declared := map[string]bool{
-		"overlay": true, "rg-lan": true, "direct-egress": true, "direct-ingress": true,
-	}
+	declared := map[string]bool{}
 	enabled := map[string]bool{}
-	for _, profile := range profiles {
-		switch profile {
-		case "tailscale":
+	for _, capability := range capabilities {
+		switch capability {
+		case "overlay":
 			enabled["overlay"] = true
-		case "local-ap-direct-egress":
-			declared["ap-uplink"] = true
+		case "local-ap-uplink":
 			enabled["ap-uplink"] = true
+		case "direct-wan-egress":
 			enabled["direct-egress"] = true
+		case "edge-tunnel-ingress":
+			enabled["edge-ingress"] = true
+		case "direct-wan-ingress":
+			enabled["direct-ingress"] = true
 		}
 	}
 	prohibited := map[string]bool{}
-	for capability := range declared {
+	for _, capability := range legacyVocabulary {
 		if !enabled[capability] {
 			prohibited[capability] = true
 		}
 	}
-	policy := map[string]string{
-		"local-presence-control": "overlay",
-		"private-service-ingress": "overlay",
-		"file-upload": "overlay",
-		"household-wan-egress": "none",
-		"public-ingress": "none",
-	}
-	if enabled["direct-egress"] {
-		policy["household-wan-egress"] = "direct-egress"
+	for capability := range enabled {
+		declared[capability] = true
 	}
 	return Access{
-		Declared: sortedBoolKeys(declared), LegacyAvailable: legacyAvailable(sortedBoolKeys(declared), sortedBoolKeys(prohibited)),
-		Enabled: sortedBoolKeys(enabled), Prohibited: sortedBoolKeys(prohibited), Policy: policyBindings(policy),
+		Declared: sortedCopy(capabilities), LegacyAvailable: sortedBoolKeys(declared),
+		Enabled: sortedBoolKeys(enabled), Prohibited: sortedBoolKeys(prohibited),
 	}
 }
 
@@ -815,22 +835,6 @@ func sortedBoolKeys(values map[string]bool) []string {
 	return result
 }
 
-func policyBindings(values map[string]string) []PolicyBinding {
-	result := make([]PolicyBinding, 0, len(values))
-	for _, key := range sortedKeys(values) {
-		result = append(result, PolicyBinding{Intent: key, Capability: values[key]})
-	}
-	return result
-}
-
-func policyMap(values []PolicyBinding) map[string]any {
-	result := make(map[string]any, len(values))
-	for _, value := range values {
-		result[value.Intent] = value.Capability
-	}
-	return result
-}
-
 func resourceBindings(values map[string]any) []ResourceBinding {
 	result := make([]ResourceBinding, 0, len(values))
 	for _, key := range sortedKeys(values) {
@@ -839,10 +843,38 @@ func resourceBindings(values map[string]any) []ResourceBinding {
 	return result
 }
 
-func resourceMap(values []ResourceBinding) map[string]any {
-	result := make(map[string]any, len(values))
-	for _, value := range values {
-		result[value.ID] = value.Value
+func resourceMapForManifest(manifest manifest, values []ResourceBinding) map[string]any {
+	result := map[string]any{}
+	for _, binding := range values {
+		definition, ok := manifest.Features[binding.ID]
+		if !ok {
+			continue
+		}
+		if boolean, ok := binding.Value.(bool); ok {
+			if !boolean {
+				continue
+			}
+			for _, resource := range definition.ResourceBindings["true"] {
+				result[resource] = true
+			}
+			continue
+		}
+		if value, ok := binding.Value.(string); ok {
+			for _, resource := range definition.ResourceBindings[value] {
+				result[resource] = true
+			}
+		}
+	}
+	return result
+}
+
+func stringsFromAny(value any) []string {
+	items, _ := value.([]any)
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			result = append(result, text)
+		}
 	}
 	return result
 }

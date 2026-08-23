@@ -36,6 +36,9 @@ apps:
     resources: {}
 ```
 
+The selected box must enable `edge-ingress`. Static Site always requires the
+Cloudflare Tunnel resource.
+
 Apply platform resources from the controller as `smith`.
 
 The target flow uses the controller Secret Authority instead of exporting raw

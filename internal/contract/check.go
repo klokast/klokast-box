@@ -57,14 +57,21 @@ type Engine struct {
 }
 
 type featureDefinition struct {
-	Kind   string
-	Values map[string]bool
+	Kind      string
+	Values    map[string]bool
+	Resources map[string][]string
 }
 
 type appManifest struct {
 	PlacementMode string
 	Features      map[string]featureDefinition
 	Data          map[string]bool
+	Resources     map[string]resourceDefinition
+}
+
+type resourceDefinition struct {
+	Required   bool
+	Capability string
 }
 
 type checker struct {
@@ -311,8 +318,8 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 		} else if !ok {
 			sites[value.Site] = value
 		}
-		if !hasConnectivityProfile(value, "tailscale") {
-			c.add(InstancePath+"$.boxes."+box+".connectivity", "connectivity.tailscale", "an Instance Specification v1 box must use the tailscale connectivity profile")
+		if !hasConnectivityProfile(value, "overlay") {
+			c.add(InstancePath+"$.boxes."+box+".connectivity", "connectivity.overlay", "an Instance Specification v1 box must enable the overlay capability")
 		}
 		for _, suffix := range reservedRuntimeSuffixes {
 			if box == suffix || strings.HasSuffix(box, "-"+suffix) {
@@ -400,6 +407,46 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 				c.add(location+".features."+feature, "feature.value", "feature must use one declared value")
 			}
 		}
+		if app.DesiredState == "present" && app.Placement != nil {
+			selected := map[string]bool{}
+			for resourceID, resource := range manifest.Resources {
+				if resource.Required {
+					selected[resourceID] = true
+				}
+			}
+			for featureID, value := range app.Features {
+				definition, ok := manifest.Features[featureID]
+				if !ok {
+					continue
+				}
+				binding := ""
+				if boolean, ok := value.(bool); ok && boolean {
+					binding = "true"
+				} else if text, ok := value.(string); ok {
+					binding = text
+				}
+				for _, resourceID := range definition.Resources[binding] {
+					selected[resourceID] = true
+				}
+			}
+			for resourceID := range selected {
+				resource := manifest.Resources[resourceID]
+				if resource.Capability == "" {
+					continue
+				}
+				requiredCapability, supported := instanceCapability(resource.Capability)
+				if !supported {
+					c.add(location+".placement", "resource.capability", fmt.Sprintf("resource %s requires capability %s, which Instance Specification v1 cannot enable", resourceID, resource.Capability))
+					continue
+				}
+				for _, boxID := range placementBoxes(*app.Placement) {
+					box, ok := instance.Boxes[boxID]
+					if ok && !hasConnectivityProfile(box, requiredCapability) {
+						c.add(location+".placement", "resource.capability", fmt.Sprintf("resource %s requires %s on placement box %s", resourceID, requiredCapability, boxID))
+					}
+				}
+			}
+		}
 		for dataID, data := range app.Data {
 			if !manifest.Data[dataID] {
 				c.add(location+".data."+dataID, "data.unknown", "data ID is not declared by the embedded public manifest")
@@ -465,6 +512,7 @@ func loadAppManifests() (map[string]appManifest, error) {
 			PlacementMode: strings.ReplaceAll(placement, "_", "-"),
 			Features:      map[string]featureDefinition{},
 			Data:          map[string]bool{},
+			Resources:     map[string]resourceDefinition{},
 		}
 		if values, ok := object["features"].([]any); ok {
 			for _, raw := range values {
@@ -474,9 +522,14 @@ func loadAppManifests() (map[string]appManifest, error) {
 				}
 				id, _ := entry["id"].(string)
 				kind, _ := entry["type"].(string)
-				definition := featureDefinition{Kind: kind, Values: map[string]bool{}}
+				definition := featureDefinition{Kind: kind, Values: map[string]bool{}, Resources: map[string][]string{}}
 				for _, value := range asStrings(entry["values"]) {
 					definition.Values[value] = true
+				}
+				if bindings, ok := entry["resource_bindings"].(map[string]any); ok {
+					for value, rawResources := range bindings {
+						definition.Resources[value] = asStrings(rawResources)
+					}
 				}
 				if id != "" {
 					manifest.Features[id] = definition
@@ -488,6 +541,28 @@ func loadAppManifests() (map[string]appManifest, error) {
 				if entry, ok := raw.(map[string]any); ok {
 					if id, ok := entry["id"].(string); ok && id != "" {
 						manifest.Data[id] = true
+					}
+				}
+			}
+		}
+		if resources, ok := object["resources"].(map[string]any); ok {
+			for _, section := range []string{"compute", "network", "tailnet", "artifacts"} {
+				for _, raw := range asAnySlice(resources[section]) {
+					entry, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					id, _ := entry["id"].(string)
+					capability, _ := entry["requires_capability"].(string)
+					if capability == "" {
+						if access, ok := entry["access"].(map[string]any); ok {
+							capability, _ = access["capability"].(string)
+						}
+					}
+					required, _ := entry["required"].(bool)
+					enabledByDefault, _ := entry["enabled_by_default"].(bool)
+					if id != "" {
+						manifest.Resources[id] = resourceDefinition{Required: required || enabledByDefault || section == "compute" || section == "artifacts", Capability: capability}
 					}
 				}
 			}
@@ -509,6 +584,20 @@ func asStrings(value any) []string {
 		}
 	}
 	return result
+}
+
+func asAnySlice(value any) []any {
+	items, _ := value.([]any)
+	return items
+}
+
+func instanceCapability(legacy string) (string, bool) {
+	value, ok := map[string]string{
+		"overlay": "overlay", "ap-uplink": "local-ap-uplink",
+		"direct-egress": "direct-wan-egress", "edge-ingress": "edge-tunnel-ingress",
+		"direct-ingress": "direct-wan-ingress",
+	}[legacy]
+	return value, ok
 }
 
 func decodeUniqueJSON(content []byte) (any, string, error) {

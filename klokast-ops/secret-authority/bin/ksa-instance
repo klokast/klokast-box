@@ -46,10 +46,14 @@ CANONICAL_ENGINE_REF = "main"
 SCHEMA_TRANSITION_METADATA_ONLY = "metadata-only"
 SCHEMA_TRANSITION_LEGACY_TO_CURRENT = "instance-v1-legacy-to-current"
 SCHEMA_TRANSITION_CURRENT_TO_LEGACY = "instance-v1-current-to-legacy"
+SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES = "instance-v1-connectivity-profiles-to-capabilities"
+SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES = "instance-v1-connectivity-capabilities-to-profiles"
 SCHEMA_TRANSITIONS = {
     SCHEMA_TRANSITION_METADATA_ONLY,
     SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
     SCHEMA_TRANSITION_CURRENT_TO_LEGACY,
+    SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES,
+    SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
 }
 BUILD_ROOT = Path("/var/lib/klokast/builds/klokast-cli")
 MAX_PROMOTION_ENVELOPE_BYTES = 256 * 1024
@@ -1448,6 +1452,8 @@ def inverse_schema_transition(transition):
         SCHEMA_TRANSITION_METADATA_ONLY: SCHEMA_TRANSITION_METADATA_ONLY,
         SCHEMA_TRANSITION_LEGACY_TO_CURRENT: SCHEMA_TRANSITION_CURRENT_TO_LEGACY,
         SCHEMA_TRANSITION_CURRENT_TO_LEGACY: SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
+        SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES: SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
+        SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES: SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES,
     }
     try:
         return inverse[transition]
@@ -1471,6 +1477,47 @@ def transition_instance_v1(instance, transition, target_commit):
         "$schema", "schema-version", "tailscale", "boxes", "controllers",
         "airunners", "apps",
     }
+    if transition in {
+        SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES,
+        SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
+    }:
+        if set(value) != current_keys:
+            raise InstanceAuthorityError("Instance v1 connectivity transition requires the exact current document shape")
+        boxes = value.get("boxes")
+        if not isinstance(boxes, dict) or not boxes:
+            raise InstanceAuthorityError("Instance v1 connectivity transition requires box data")
+        for document in boxes.values():
+            expected = {"site", "country", "description", "connectivity"}
+            if not isinstance(document, dict) or set(document) != expected:
+                raise InstanceAuthorityError("Instance v1 connectivity transition requires the exact box shape")
+            connectivity = document.get("connectivity")
+            if not isinstance(connectivity, list) or not connectivity or len(set(connectivity)) != len(connectivity):
+                raise InstanceAuthorityError("Instance v1 connectivity values must be a non-empty unique list")
+            converted = []
+            if transition == SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES:
+                for item in connectivity:
+                    if item == "tailscale":
+                        converted.append("overlay")
+                    elif item == "local-ap-direct-egress":
+                        converted.extend(["local-ap-uplink", "direct-wan-egress"])
+                    else:
+                        raise InstanceAuthorityError("legacy Instance v1 connectivity contains an unknown profile")
+            else:
+                index = 0
+                while index < len(connectivity):
+                    item = connectivity[index]
+                    if item == "overlay":
+                        converted.append("tailscale")
+                        index += 1
+                    elif item == "local-ap-uplink" and index + 1 < len(connectivity) and connectivity[index + 1] == "direct-wan-egress":
+                        converted.append("local-ap-direct-egress")
+                        index += 2
+                    else:
+                        raise InstanceAuthorityError("connectivity capabilities are not exactly invertible to legacy profiles")
+            if len(set(converted)) != len(converted):
+                raise InstanceAuthorityError("Instance v1 connectivity transition would create duplicates")
+            document["connectivity"] = converted
+        return value
     if transition == SCHEMA_TRANSITION_LEGACY_TO_CURRENT:
         if set(value) != legacy_keys or value.get("instance") != {"id": "klokast-instance"}:
             raise InstanceAuthorityError("legacy Instance v1 document cannot be migrated without data loss")

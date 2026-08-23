@@ -429,7 +429,7 @@ Persistence uses separate assets with separate authority:
 
 Klokast Instance Specification v1 contains only `klokast-instance.json` and
 `klokast.lock.json` as authoritative inputs. The instance file owns private
-topology, membership, connectivity-profile, controller, airunner, app, and
+topology, membership, connectivity-capability, controller, airunner, app, and
 retained-data intent. It has no secrets, generated state, observed status,
 inventory, or site-executor interface. The
 [Klokast Instance Specification v1](klokast-instance-specification.md) owns

@@ -99,7 +99,8 @@ box-owned values.
 The document has no instance ID. The private repository identity and the
 source receipt identify the desired-state source. A second free-form ID would
 not add authority. The root Tailscale object is `tailscale`, and each box uses
-`connectivity` for its set of connectivity-profile names.
+`connectivity` for its set of provider-neutral capabilities. Every box
+includes `overlay`.
 
 Public code, documents, examples, and test fixtures use neutral box, site, and
 country values. A public bootstrap template can describe a two-box shape, but
@@ -150,7 +151,7 @@ deployable binary.
 ## 5. Deterministic projection and legacy compatibility
 
 The resolver is offline and deterministic. It uses only the two checked JSON
-documents and the embedded public manifests and connectivity profiles. It has
+documents and the embedded public manifests and connectivity capabilities. It has
 no host discovery, network access, environment-dependent defaults, or current
 runtime input.
 
@@ -289,6 +290,7 @@ The artifact converts findings into sorted, closed action descriptions:
   `instance_specification_v1`.
 - `retain_legacy` keeps a compatibility-only scope under its named legacy
   authority and performs no mutation.
+- `refuse` binds a conflict or unsupported finding to a non-executable action.
 - `verify_substrate` records the read-only `standard_substrate_v1` check.
 
 These are proposed actions. The current `future_authorized_apply` executor
@@ -344,16 +346,15 @@ The gates have distinct meanings:
   matches it, the compatibility and limited health evidence is complete,
   every finding has a proposed action or named continuing authority, and no
   refusal exists. It does not authorize execution.
-- `authority_ready` means that every compatibility scope has exactly one
-  proposed or continuing authority.
+- `authority_ready` means that every finding has one canonical ID and exactly
+  one action. Each compatibility-only finding also has exactly one continuing
+  authority assignment with the matching source digest.
 - `legacy_removal_ready` means that no field retains legacy authority.
 
-The current Plan v1 implementation is read-only and implements the evidence
-artifact. Its `authority_ready` calculation does not yet prove exact action and
-authority coverage for each compatibility scope. Until that check is hardened,
-a human must confirm that every `compatibility_only` finding names one
-continuing authority. A current `legacy_removal_ready: false` result is
-expected.
+The current Plan v1 implementation is read-only. It rejects duplicate,
+missing, mismatched, and extra finding coverage. A human still reviews each
+compatibility-only finding and confirms its continuing authority.
+`legacy_removal_ready: false` is expected while any such authority remains.
 
 ## 9. Engine promotion decision
 
@@ -361,7 +362,7 @@ Status: `implemented`. Live MacBook and controller acceptance is pending.
 
 Version 1 promotes only on canonical
 `https://github.com/klokast/klokast-box` `main`. It supports metadata-only
-promotion and one closed, reversible Instance v1 transition from the legacy
+promotion and closed, reversible Instance v1 transitions from the legacy
 top-level site form to the current inline box-metadata form. The airunner authors and
 pushes public implementation code. The active controller tests and builds the
 exact public commit. The human selects the engine, approves it with the
@@ -381,7 +382,11 @@ copies each referenced site's country and description into its boxes, and
 removes the redundant instance ID and top-level site map. The controller
 reconstructs the candidate independently, requires every legacy site to be
 used, and proves the inverse transform equals the exact base document. No
-private value can change. Other schema migrations, custom repositories, and
+private value can change. The connectivity transition maps `tailscale` to
+`overlay` and maps `local-ap-direct-egress` to the adjacent
+`local-ap-uplink`, `direct-wan-egress` pair. Its inverse accepts only
+`overlay` and that complete pair. It rejects partial pairs, unknown values,
+edge ingress, and direct ingress. Other schema migrations, custom repositories, and
 an arbitrary downgrade are outside this milestone.
 
 The trusted MacBook command is
@@ -538,9 +543,10 @@ complete.
 | Sealed builder | `implemented` | The networkless controller-managed CLI build and receipt path is implemented. |
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
-| Plan v1 | `implemented` | The hashed artifact is implemented as read-only evidence. Exact per-scope authority-coverage hardening remains. |
+| Plan v1 | `implemented` | The hashed artifact is read-only evidence with exact finding, action, and continuing-authority coverage. |
 | Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Live verification requires controlled promotion to an engine commit that contains these changes. |
-| Engine promotion | `implemented` | Canonical metadata-only promotion, the closed reversible legacy Instance v1 transition, immutable evidence, active-engine publication, and forward rollback are checked in. Real MacBook Touch ID promotion and controller activation remain the live-verification gate. |
+| Engine promotion | `implemented` | Canonical metadata-only promotion, the closed reversible structural and connectivity transitions, immutable evidence, active-engine publication, and forward rollback are checked in. Real MacBook Touch ID promotion and controller activation remain the live-verification gate. |
+| Elementary connectivity capabilities | `implemented` | The schema, projection, compatibility adapter, app feature binding, compiler gates, and reversible promotion transition are checked in. Mark this `live-verified` only after controlled promotion, private-state alignment, read-only acceptance, and human authority review. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
@@ -658,13 +664,11 @@ The ordered design work queue is:
 
 1. Specify canonical engine-commit promotion. Keep custom engine repositories
    outside version 1.
-2. Correct `authority_ready` so that it proves one action and one authority for
-   every compatibility scope.
-3. Define closed executor and rollback types, including refusal, test, audit,
+2. Define closed executor and rollback types, including refusal, test, audit,
    and recovery behavior.
-4. Design one narrow apply pilot from a real Plan scope that is not
+3. Design one narrow apply pilot from a real Plan scope that is not
    legacy-only.
-5. Use successful pilot evidence to design staged scope migration and the
+4. Use successful pilot evidence to design staged scope migration and the
    later legacy-removal gate.
 
 After the exact implementation commit is promoted through the controlled

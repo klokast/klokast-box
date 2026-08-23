@@ -6,13 +6,7 @@ boxes:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
     dom0_bridge_ports:
       lan: [eth-example]
     dhcp_reservations:

@@ -43,11 +43,27 @@ func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
 	if strings.Join(box.Access.LegacyAvailable, ",") != "overlay" {
 		t.Fatalf("unexpected legacy capabilities: %#v", box.Access)
 	}
+	if strings.Join(box.Access.Prohibited, ",") != "ap-uplink,direct-egress,direct-ingress,edge-ingress,local-lan,rg-lan,vpn-egress" {
+		t.Fatalf("unexpected prohibited complement: %#v", box.Access)
+	}
 	if len(result.Inputs) != 2 || len(result.ProjectionHash) != 64 || len(result.Compatibility.RegistrySHA256) != 64 {
 		t.Fatalf("missing provenance: %#v", result)
 	}
 	if result.Compatibility.Summary.Conflict != 0 || result.Compatibility.Summary.Unsupported != 0 || result.Compatibility.Summary.CompatibilityOnly != 0 {
 		t.Fatalf("unexpected compatibility findings: %#v", result.Compatibility)
+	}
+}
+
+func TestConnectivityCapabilityMapping(t *testing.T) {
+	access := accessForCapabilities([]string{
+		"overlay", "local-ap-uplink", "direct-wan-egress",
+		"edge-tunnel-ingress", "direct-wan-ingress",
+	})
+	if strings.Join(access.Enabled, ",") != "ap-uplink,direct-egress,direct-ingress,edge-ingress,overlay" {
+		t.Fatalf("elementary capabilities did not map exactly: %#v", access)
+	}
+	if strings.Join(access.Prohibited, ",") != "local-lan,rg-lan,vpn-egress" {
+		t.Fatalf("prohibited capabilities are not the exact complement: %#v", access)
 	}
 }
 
@@ -165,6 +181,12 @@ func TestConflictsAndUnsupportedFieldsFailCompatibility(t *testing.T) {
 			path:     "unknown",
 			class:    "unsupported",
 		},
+		{
+			name:     "removed-box-policy",
+			registry: strings.Replace(canonicalRegistry(), "      enabled_capabilities: [overlay]\n", "      enabled_capabilities: [overlay]\n      policy: {public-ingress: none}\n", 1),
+			path:     "boxes.boxa.access.policy",
+			class:    "unsupported",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -196,6 +218,33 @@ func TestEnabledAppMustMatchLegacyManifestPlacement(t *testing.T) {
 	}
 	if result.Compatible || !hasCode(result, "placement.mismatch") {
 		t.Fatalf("legacy placement-mode conflict is absent: %#v", result.Compatibility)
+	}
+}
+
+func TestSemanticFeatureBindsLegacyResourceFlag(t *testing.T) {
+	root := prepareTwoBoxInstance(t, func(root string) {
+		replaceInFile(t, filepath.Join(root, contract.InstancePath), `"apps": {`, `"apps": {
+    "nextcloud": {
+      "desired-state": "present",
+      "placement": {"mode": "active-passive", "active": "boxa", "passive": "boxb"},
+      "features": {"public-ingress": "cloudflare-tunnel"}
+    },`)
+	})
+	legacy := canonicalTwoBoxRegistry()
+	legacy = strings.ReplaceAll(legacy, "available_capabilities: [overlay", "available_capabilities: [edge-ingress, overlay")
+	legacy = strings.ReplaceAll(legacy, "enabled_capabilities: [overlay", "enabled_capabilities: [edge-ingress, overlay")
+	legacy = strings.ReplaceAll(legacy, "direct-ingress, edge-ingress, ", "direct-ingress, ")
+	legacy = strings.Replace(legacy, "enabled: false", "enabled: true", 1)
+	legacy = strings.Replace(legacy, `active_master: ""
+      passive_backup: ""`, `active_master: boxa
+      passive_backup: boxb`, 1)
+	legacy = strings.Replace(legacy, "cloudflare-tunnel-egress: false", "cloudflare-tunnel-egress: true", 1)
+	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Compatible || !hasCode(result, "features.match") {
+		t.Fatalf("semantic feature did not bind the legacy resource: %#v", result.Compatibility)
 	}
 }
 
@@ -353,13 +402,7 @@ boxes:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 apps:
   nextcloud:
     enabled: false
@@ -379,24 +422,12 @@ boxes:
     access:
       available_capabilities: [overlay, ap-uplink, direct-egress]
       enabled_capabilities: [overlay, ap-uplink, direct-egress]
-      prohibited_capabilities: [rg-lan, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: direct-egress
-        public-ingress: none
+      prohibited_capabilities: [direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
   boxb:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 apps:
   nextcloud:
     enabled: false

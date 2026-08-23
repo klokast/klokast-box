@@ -10,7 +10,8 @@
 - Put `site`, `country`, and `description` directly in each box. Do not add a
   top-level site catalog. Boxes that use the same site label must use identical
   site metadata.
-- Select only connectivity profiles that the locked public engine defines.
+- Select only connectivity capabilities that the locked public engine defines.
+- Include `overlay` on every box.
 - Bind only apps, placement modes, features, and data IDs that public app
   manifests define.
 - Use `desired-state: absent` only with declared retained data. Remove the app

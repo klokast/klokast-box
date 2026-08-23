@@ -23,7 +23,7 @@ prohibit the paths that are never intended:
 boxes:
   boxb:
     access:
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 ```
 
 Validate the live baseline:
@@ -38,8 +38,7 @@ ansible/bin/platform-check --box boxb --target router
 Expected baseline:
 
 - `boxb` compiles as `available=overlay enabled=overlay`.
-- `local-presence-control`, `private-service-ingress`, and `file-upload` select
-  `overlay`.
+- Application manifests select their own flows.
 - The router has no DHCP range for `household` or `admin`.
 - Router nftables has no direct household/admin-to-WAN rule and no old
   `lan-wan-web-egress-tcp`.
@@ -66,8 +65,8 @@ Do not attach the AP to the residential gateway LAN for this design.
 
 ## Enable Local Music Control
 
-Edit the private registry on the controller. The minimal local-presence setup
-enables only LAN music control; upload remains overlay-only:
+Edit the private registry on the controller. This setup enables the required
+local-ingress flows. Upload remains available through the overlay:
 
 ```yaml
 boxes:
@@ -75,13 +74,7 @@ boxes:
     access:
       available_capabilities: [overlay, local-lan]
       enabled_capabilities: [overlay, local-lan]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: local-lan
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, rg-lan, vpn-egress]
 apps:
   local-ingress:
     enabled: true
@@ -130,8 +123,8 @@ Client checks from the AP:
 - `https://boxb-music-upload.<tailnet>` remains the upload path.
 - Internet egress from AP clients is unavailable unless `vpn-egress` is enabled.
 
-Only remove the old `<box>-music` overlay ingress after local playback has been
-verified from the AP. Do not remove `<box>-music-upload`.
+Keep the overlay ingress and upload identities. A box capability does not
+select or remove an application flow.
 
 ## Optional Household VPN Egress
 
@@ -143,13 +136,7 @@ boxes:
     access:
       available_capabilities: [overlay, local-lan, vpn-egress]
       enabled_capabilities: [overlay, local-lan, vpn-egress]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: local-lan
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: vpn-egress
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, rg-lan]
 apps:
   household-vpn:
     enabled: true
@@ -191,13 +178,7 @@ boxes:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 ```
 
 Then run:

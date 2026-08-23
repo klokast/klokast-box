@@ -3,6 +3,14 @@ schema_version: 1
 app: nextcloud
 risk_class: private_service
 default_isolation: zone_vm_rootless_podman
+features:
+  - id: public-ingress
+    type: enum
+    values:
+      - cloudflare-tunnel
+    resource_bindings:
+      cloudflare-tunnel:
+        - cloudflare-tunnel-egress
 resources:
   compute:
     - id: backend
@@ -32,6 +40,7 @@ resources:
       type: wan_egress
       required: false
       enabled_by_default: false
+      requires_capability: edge-ingress
       rationale: >-
         Allows optional outbound Cloudflare Tunnel transport from the DMZ. This
         is disabled by default because private trusted-user ingress uses

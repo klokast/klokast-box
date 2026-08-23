@@ -186,6 +186,55 @@ class EnginePromotionTest(unittest.TestCase):
                 legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, NEW_COMMIT
             )
 
+    def test_connectivity_transition_is_exact_and_reversible(self):
+        legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
+        current = self.mod.transition_instance_v1(
+            legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, OLD_COMMIT
+        )
+        current["boxes"]["boxb"]["connectivity"] = [
+            "local-ap-direct-egress", "tailscale"
+        ]
+        migrated = self.mod.transition_instance_v1(
+            current,
+            self.mod.SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES,
+            NEW_COMMIT,
+        )
+        self.assertEqual(migrated["boxes"]["boxa"]["connectivity"], ["overlay"])
+        self.assertEqual(
+            migrated["boxes"]["boxb"]["connectivity"],
+            ["local-ap-uplink", "direct-wan-egress", "overlay"],
+        )
+        reconstructed = self.mod.transition_instance_v1(
+            migrated,
+            self.mod.SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
+            OLD_COMMIT,
+        )
+        self.assertEqual(reconstructed, current)
+
+    def test_connectivity_inverse_rejects_noninvertible_values_and_partial_pairs(self):
+        legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
+        current = self.mod.transition_instance_v1(
+            legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, OLD_COMMIT
+        )
+        for connectivity in (
+            ["overlay", "local-ap-uplink"],
+            ["overlay", "direct-wan-egress"],
+            ["overlay", "edge-tunnel-ingress"],
+            ["overlay", "direct-wan-ingress"],
+            ["overlay", "unknown"],
+        ):
+            with self.subTest(connectivity=connectivity):
+                candidate = json.loads(json.dumps(current))
+                candidate["boxes"]["boxa"]["connectivity"] = connectivity
+                with self.assertRaisesRegex(
+                    self.mod.InstanceAuthorityError, "not exactly invertible"
+                ):
+                    self.mod.transition_instance_v1(
+                        candidate,
+                        self.mod.SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
+                        OLD_COMMIT,
+                    )
+
     def test_candidate_allows_recorded_inverse_transition(self):
         legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
         current = self.mod.transition_instance_v1(

@@ -57,8 +57,8 @@ resource policy is compiled only from `platform-resources.yml`.
 This document describes the current deployed compiler registry. It still uses
 runtime box names and `available_capabilities`. Instance Specification v1 is a
 separate logical desired-state interface. Its instance file uses stable box
-IDs and upstream connectivity profiles. It does not repeat the capability
-catalog or low-level policy. The compiler must not read that file directly.
+IDs and provider-neutral connectivity capabilities. The compiler must not
+read that file directly.
 The read-only `klokast plan` compatibility resolver projects reviewed Instance
 Specification v1 intent into the deployed registry format. Keep the current
 private registry and inventory inputs until an authorized apply path replaces
@@ -127,9 +127,8 @@ access:
   capability: local-lan
 ```
 
-The private registry records observed and approved box capabilities. Discovery
-may update `available_capabilities`, but only `enabled_capabilities` and
-`policy` are authority for compilation:
+The private registry records available, enabled, and prohibited box
+capabilities. A capability does not select an application flow:
 
 ```yaml
 boxes:
@@ -137,17 +136,11 @@ boxes:
     access:
       available_capabilities: [overlay, local-lan]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 ```
 
 For an AP such as a Flint whose uplink port is cabled to a box-local LAN
-bridge, approve the physical port separately from the flow policy:
+bridge, approve the physical port separately:
 
 ```yaml
 boxes:
@@ -155,9 +148,7 @@ boxes:
     access:
       available_capabilities: [overlay, ap-uplink, direct-egress]
       enabled_capabilities: [overlay, ap-uplink, direct-egress]
-      prohibited_capabilities: [rg-lan, direct-ingress]
-      policy:
-        household-wan-egress: direct-egress
+      prohibited_capabilities: [direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
     dom0_bridge_ports:
       lan:
         - eth2
@@ -175,15 +166,35 @@ app-owned `realm_to_zone_tcp` resources also compile.
 The default for boxes without `access` is overlay-only with no explicit
 prohibited list. AP-only resources such as LAN music control, local HTTPS
 ingress, and household VPN egress compile only after the controller-approved
-registry enables the matching capability and policy. A capability listed in
+registry enables the matching capability. A capability listed in
 `prohibited_capabilities` must not appear in `available_capabilities`,
-`enabled_capabilities`, or any selected `policy` value.
+or `enabled_capabilities`. The removed box-wide `policy` field is rejected.
+
+An app resource can use `requires_capability`. Required and selected resources
+must have that capability on every placement box. The compiler refuses the
+whole app when one placement box does not have it. It does not silently omit
+the resource.
 
 The trusted topology source is `ansible/inventory/group_vars/all.yml` under
 `platform_zones` and `platform_network_realms`. The compiler resolves app
 zones through that data into router interfaces, VM roles, and IP addresses.
 
 ## Manifest Shape
+
+A manifest can bind one semantic feature value to one or more legacy resource
+flags. For example:
+
+```yaml
+features:
+  - id: public-ingress
+    type: enum
+    values: [cloudflare-tunnel]
+    resource_bindings:
+      cloudflare-tunnel: [cloudflare-tunnel-egress]
+```
+
+An omitted feature and an explicit `false` optional legacy resource flag both
+mean that the optional resource is disabled.
 
 ```yaml
 schema_version: 1

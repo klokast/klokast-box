@@ -45,7 +45,13 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": ["tailscale", "local-ap-direct-egress"]
+            "enum": [
+              "overlay",
+              "local-ap-uplink",
+              "direct-wan-egress",
+              "edge-tunnel-ingress",
+              "direct-wan-ingress"
+            ]
           }
         }
       }

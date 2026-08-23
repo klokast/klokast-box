@@ -61,12 +61,90 @@ func TestBuildProducesStableDeployablePlanWithRetainedAuthority(t *testing.T) {
 		t.Fatalf("instance source provenance is incomplete or disclosed its repository name: %#v", first.InstanceSource)
 	}
 	for _, finding := range first.Compatibility.Findings {
+		if finding.ID == "" {
+			t.Fatalf("compatibility finding has no canonical ID: %#v", finding)
+		}
 		if finding.Class == "compatibility_only" && finding.Authority == "" {
 			t.Fatalf("compatibility-only finding has no authority: %#v", finding)
 		}
 	}
 	if !hasOperation(first, "retain_legacy") || !hasOperation(first, "verify_substrate") {
 		t.Fatalf("required actions are absent: %#v", first.Actions)
+	}
+}
+
+func TestExactFindingActionAuthorityCoverageRejectsTampering(t *testing.T) {
+	instance := prepareInstance(t)
+	artifact, err := Build(compatibilityOptions(t, instance), testEngine)
+	if err != nil || !artifact.AuthorityReady {
+		t.Fatalf("baseline plan is not authority-ready: err=%v artifact=%#v", err, artifact)
+	}
+	digests := compatibilityDigests(artifact.CompatibilityInputs)
+	compatibilityFindingID := ""
+	for _, finding := range artifact.Compatibility.Findings {
+		if finding.Class == "compatibility_only" {
+			compatibilityFindingID = finding.ID
+			break
+		}
+	}
+	if compatibilityFindingID == "" {
+		t.Fatal("baseline plan has no compatibility-only finding")
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Artifact)
+	}{
+		{"duplicate-action", func(value *Artifact) {
+			for _, action := range value.Actions {
+				if action.FindingID == compatibilityFindingID {
+					value.Actions = append(value.Actions, action)
+					return
+				}
+			}
+		}},
+		{"missing-action", func(value *Artifact) {
+			filtered := []Action{}
+			for _, action := range value.Actions {
+				if action.FindingID != compatibilityFindingID {
+					filtered = append(filtered, action)
+				}
+			}
+			value.Actions = filtered
+		}},
+		{"wrong-digest", func(value *Artifact) {
+			for index := range value.Authorities {
+				if value.Authorities[index].FindingID == compatibilityFindingID {
+					value.Authorities[index].SourceSHA256 = strings.Repeat("f", 64)
+				}
+			}
+		}},
+		{"altered-finding-id", func(value *Artifact) {
+			for index := range value.Compatibility.Findings {
+				if value.Compatibility.Findings[index].ID == compatibilityFindingID {
+					value.Compatibility.Findings[index].ID = "finding-altered"
+				}
+			}
+		}},
+		{"extra-authority", func(value *Artifact) {
+			value.Authorities = append(value.Authorities, AuthorityAssignment{
+				ID: "extra", FindingID: compatibilityFindingID, Authority: "legacy_platform_resources",
+				Scope: "extra", Disposition: "continuing", SourceSHA256: strings.Repeat("e", 64),
+			})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, _ := json.Marshal(artifact)
+			var candidate Artifact
+			if err := json.Unmarshal(encoded, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&candidate)
+			ready, refusals := exactCoverage(candidate, digests)
+			if ready || len(refusals) == 0 {
+				t.Fatalf("tampered coverage was accepted: %#v", candidate)
+			}
+		})
 	}
 }
 
@@ -105,13 +183,7 @@ boxes:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
-      prohibited_capabilities: [rg-lan, direct-egress, direct-ingress]
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
 apps:
   nextcloud:
     enabled: false

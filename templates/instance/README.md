@@ -3,7 +3,7 @@
 This private repository declares the desired state of one Klokast instance.
 It has two authoritative files:
 
-- `klokast-instance.json`: private topology, membership, connectivity-profile,
+- `klokast-instance.json`: private topology, membership, connectivity-capability,
   controller, airunner, application, and retained-data intent;
 - `klokast.lock.json`: the exact public engine repository, branch, commit, and
   commit-pinned schema.

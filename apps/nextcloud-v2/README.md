@@ -3,6 +3,10 @@
 Nextcloud v2 is the first target-local reconciler version of the app. It lives
 beside the current `apps/nextcloud` implementation and does not replace it yet.
 
+Optional public ingress uses the semantic Instance Specification feature
+`public-ingress: cloudflare-tunnel`. It requires `edge-ingress` on both
+placement boxes.
+
 ## Flow
 
 ```sh

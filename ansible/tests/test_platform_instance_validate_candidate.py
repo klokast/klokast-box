@@ -224,11 +224,11 @@ raise SystemExit(0 if valid else 1)
             "boxes": {
                 "boxa": {
                     "site": "site-a", "country": "XA", "description": "",
-                    "connectivity": ["tailscale"],
+                    "connectivity": ["overlay"],
                 },
                 "boxb": {
                     "site": "site-b", "country": "XB", "description": "Example",
-                    "connectivity": ["local-ap-direct-egress", "tailscale"],
+                    "connectivity": ["local-ap-uplink", "direct-wan-egress", "overlay"],
                 },
             },
             "controllers": {"active": "boxa", "standby": "boxb"},
@@ -243,7 +243,7 @@ raise SystemExit(0 if valid else 1)
         self.assertIn("sites", legacy)
         self.assertEqual(
             legacy["boxes"]["boxb"]["connectivity-profiles"],
-            ["local-ap-direct-egress", "tailscale"],
+            ["local-ap-uplink", "direct-wan-egress", "overlay"],
         )
         reconstructed = self.mod.transition_instance_v1(
             legacy, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, ENGINE_COMMIT

@@ -18,9 +18,6 @@ boxes:
     access:
       available_capabilities: [overlay, local-lan, vpn-egress]
       enabled_capabilities: [overlay, local-lan, vpn-egress]
-      policy:
-        local-presence-control: local-lan
-        household-wan-egress: vpn-egress
 apps:
   household-vpn:
     enabled: true

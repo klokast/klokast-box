@@ -39,7 +39,10 @@ Install and remove also use the ops Tailscale device lifecycle wrappers
 `/usr/local/sbin/ts-device-delete-stale` to reclaim the stable
 `next.<tailnet>` private identity when an offline stale device blocks it.
 
-If the deployment registry enables `cloudflare-tunnel-egress`, also set:
+If Instance Specification selects
+`"features": {"public-ingress": "cloudflare-tunnel"}`, the compatibility
+registry enables `cloudflare-tunnel-egress`. Both placement boxes must enable
+`edge-ingress`. Also set:
 
 ```sh
 export NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE='...'

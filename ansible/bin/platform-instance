@@ -33,10 +33,14 @@ ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SCHEMA_TRANSITION_METADATA_ONLY = "metadata-only"
 SCHEMA_TRANSITION_LEGACY_TO_CURRENT = "instance-v1-legacy-to-current"
 SCHEMA_TRANSITION_CURRENT_TO_LEGACY = "instance-v1-current-to-legacy"
+SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES = "instance-v1-connectivity-profiles-to-capabilities"
+SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES = "instance-v1-connectivity-capabilities-to-profiles"
 SCHEMA_TRANSITIONS = {
     SCHEMA_TRANSITION_METADATA_ONLY,
     SCHEMA_TRANSITION_LEGACY_TO_CURRENT,
     SCHEMA_TRANSITION_CURRENT_TO_LEGACY,
+    SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES,
+    SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
 }
 TAILNET_DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
 MEMBER_LOGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -312,13 +316,13 @@ def build_instance_values(engine_commit, dns_name, member_login):
                 "site": "site-a",
                 "country": "XA",
                 "description": "",
-                "connectivity": ["local-ap-direct-egress", "tailscale"],
+                "connectivity": ["local-ap-uplink", "direct-wan-egress", "overlay"],
             },
             "boxb": {
                 "site": "site-b",
                 "country": "XB",
                 "description": "",
-                "connectivity": ["tailscale"],
+                "connectivity": ["overlay"],
             },
         },
         "controllers": {"active": "boxb", "standby": "boxa"},
@@ -881,6 +885,47 @@ def transition_instance_v1(instance, transition, target_commit):
         "$schema", "schema-version", "tailscale", "boxes", "controllers",
         "airunners", "apps",
     }
+    if transition in {
+        SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES,
+        SCHEMA_TRANSITION_CAPABILITIES_TO_PROFILES,
+    }:
+        if set(value) != current_keys:
+            raise InstanceError("Instance v1 connectivity transition requires the exact current document shape")
+        boxes = value.get("boxes")
+        if not isinstance(boxes, dict) or not boxes:
+            raise InstanceError("Instance v1 connectivity transition requires box data")
+        for document in boxes.values():
+            expected = {"site", "country", "description", "connectivity"}
+            if not isinstance(document, dict) or set(document) != expected:
+                raise InstanceError("Instance v1 connectivity transition requires the exact box shape")
+            connectivity = document.get("connectivity")
+            if not isinstance(connectivity, list) or not connectivity or len(set(connectivity)) != len(connectivity):
+                raise InstanceError("Instance v1 connectivity values must be a non-empty unique list")
+            converted = []
+            if transition == SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES:
+                for item in connectivity:
+                    if item == "tailscale":
+                        converted.append("overlay")
+                    elif item == "local-ap-direct-egress":
+                        converted.extend(["local-ap-uplink", "direct-wan-egress"])
+                    else:
+                        raise InstanceError("legacy Instance v1 connectivity contains an unknown profile")
+            else:
+                index = 0
+                while index < len(connectivity):
+                    item = connectivity[index]
+                    if item == "overlay":
+                        converted.append("tailscale")
+                        index += 1
+                    elif item == "local-ap-uplink" and index + 1 < len(connectivity) and connectivity[index + 1] == "direct-wan-egress":
+                        converted.append("local-ap-direct-egress")
+                        index += 2
+                    else:
+                        raise InstanceError("connectivity capabilities are not exactly invertible to legacy profiles")
+            if len(set(converted)) != len(converted):
+                raise InstanceError("Instance v1 connectivity transition would create duplicates")
+            document["connectivity"] = converted
+        return value
     if transition == SCHEMA_TRANSITION_LEGACY_TO_CURRENT:
         if set(value) != legacy_keys or value.get("instance") != {"id": "klokast-instance"}:
             raise InstanceError("legacy Instance v1 candidate cannot be converted without data loss")

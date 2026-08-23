@@ -12,14 +12,11 @@ boxes:
         - ap-uplink
         - direct-egress
       prohibited_capabilities:
-        - rg-lan
         - direct-ingress
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: direct-egress
-        public-ingress: none
+        - edge-ingress
+        - local-lan
+        - rg-lan
+        - vpn-egress
     dom0_bridge_ports:
       lan:
         - eth2
@@ -34,15 +31,13 @@ boxes:
       enabled_capabilities:
         - overlay
       prohibited_capabilities:
-        - rg-lan
+        - ap-uplink
         - direct-egress
         - direct-ingress
-      policy:
-        local-presence-control: overlay
-        private-service-ingress: overlay
-        file-upload: overlay
-        household-wan-egress: none
-        public-ingress: none
+        - edge-ingress
+        - local-lan
+        - rg-lan
+        - vpn-egress
     dom0_bridge_ports:
       iot:
         - eth3

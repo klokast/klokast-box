@@ -105,8 +105,9 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
                 "country": "XA",
                 "description": "",
                 "connectivity": [
-                    "local-ap-direct-egress",
-                    "tailscale",
+                    "local-ap-uplink",
+                    "direct-wan-egress",
+                    "overlay",
                 ],
             },
         )
@@ -116,7 +117,7 @@ class PlatformInstanceConfigureValuesTest(unittest.TestCase):
                 "site": "site-b",
                 "country": "XB",
                 "description": "",
-                "connectivity": ["tailscale"],
+                "connectivity": ["overlay"],
             },
         )
         self.assertIn("Example boxes: boxa at site-a (XA); boxb at site-b (XB)", stderr)

@@ -117,9 +117,12 @@ MANIFEST_TOP_LEVEL_FIELDS = {
     "default_isolation",
     "placement_mode",
     "datasets",
+    "features",
     "resources",
     "_manifest_path",
 }
+FEATURE_FIELDS = {"id", "type", "values", "resource_bindings"}
+FEATURE_TYPES = {"boolean", "enum"}
 DATASET_FIELDS = {
     "id",
     "type",
@@ -142,6 +145,7 @@ COMPUTE_COMMON_FIELDS = {
     "isolation",
     "cleanup_required",
     "access",
+    "requires_capability",
 }
 COMPUTE_FIELDS_BY_TYPE = {
     "podman_workload": COMPUTE_COMMON_FIELDS,
@@ -183,6 +187,7 @@ NETWORK_COMMON_FIELDS = {
     "exclusive",
     "rationale",
     "access",
+    "requires_capability",
 }
 NETWORK_FIELDS_BY_TYPE = {
     "interzone_tcp": NETWORK_COMMON_FIELDS
@@ -209,6 +214,7 @@ TAILNET_RESOURCE_FIELDS = {
     "tag_pattern",
     "grants",
     "access",
+    "requires_capability",
 }
 TAILNET_GRANT_FIELDS = {
     "src",
@@ -247,18 +253,12 @@ ACCESS_CAPABILITIES = (
     "direct-egress",
     "direct-ingress",
 )
-ACCESS_NONE = "none"
 ACCESS_POLICY_INTENTS = (
     "local-presence-control",
     "private-service-ingress",
     "file-upload",
     "household-wan-egress",
     "public-ingress",
-)
-ACCESS_DEFAULT_OVERLAY_INTENTS = (
-    "local-presence-control",
-    "private-service-ingress",
-    "file-upload",
 )
 ACCESS_RESOURCE_FIELDS = {
     "intent",
@@ -268,7 +268,6 @@ ACCESS_BOX_FIELDS = {
     "available_capabilities",
     "enabled_capabilities",
     "prohibited_capabilities",
-    "policy",
 }
 BOX_CONFIG_FIELDS = {
     "access",
@@ -660,10 +659,8 @@ def reject_unknown_fields(value, allowed, field):
         )
 
 
-def validate_access_capability(value, field, allow_none=False):
+def validate_access_capability(value, field):
     valid = set(ACCESS_CAPABILITIES)
-    if allow_none:
-        valid.add(ACCESS_NONE)
     if value not in valid:
         choices = sorted(valid)
         die(f"{field} must be one of: {', '.join(choices)}")
@@ -691,19 +688,7 @@ def default_box_access():
         "available_capabilities": ["overlay"],
         "enabled_capabilities": enabled,
         "prohibited_capabilities": [],
-        "policy": default_access_policy(enabled),
     }
-
-
-def default_access_policy(enabled_capabilities):
-    enabled = set(enabled_capabilities or [])
-    policy = {}
-    for intent in ACCESS_POLICY_INTENTS:
-        if intent in ACCESS_DEFAULT_OVERLAY_INTENTS and "overlay" in enabled:
-            policy[intent] = "overlay"
-        else:
-            policy[intent] = ACCESS_NONE
-    return policy
 
 
 def normalize_box_access(access, field):
@@ -738,31 +723,17 @@ def normalize_box_access(access, field):
         if capability in prohibited_set:
             die(f"{field}.enabled_capabilities contains prohibited capability: {capability}")
 
-    policy_input = access.get("policy") or {}
-    if not isinstance(policy_input, dict):
-        die(f"{field}.policy must be a mapping")
-    unknown_intents = sorted(set(policy_input) - set(ACCESS_POLICY_INTENTS))
-    if unknown_intents:
-        die(f"{field}.policy contains unsupported intent(s): {', '.join(unknown_intents)}")
-    policy = default_access_policy(enabled)
-    for intent, capability in policy_input.items():
-        validate_access_intent(intent, f"{field}.policy")
-        validate_access_capability(capability, f"{field}.policy.{intent}", allow_none=True)
-        if capability != ACCESS_NONE and capability not in enabled:
-            die(f"{field}.policy.{intent} selects disabled capability: {capability}")
-        if capability in prohibited_set:
-            die(f"{field}.policy.{intent} selects prohibited capability: {capability}")
-        policy[intent] = capability
-
     return {
         "available_capabilities": available,
         "enabled_capabilities": enabled,
         "prohibited_capabilities": prohibited,
-        "policy": policy,
     }
 
 
 def validate_resource_access(resource, field):
+    required_capability = resource.get("requires_capability")
+    if required_capability is not None:
+        validate_access_capability(required_capability, f"{field}.requires_capability")
     access = resource.get("access")
     if access is None:
         return
@@ -792,16 +763,12 @@ def box_config_for(box_configs, box):
 
 
 def resource_access_allowed(resource, box_config):
-    access = resource.get("access")
-    if not access:
+    access = resource.get("access") or {}
+    capability = resource.get("requires_capability") or access.get("capability")
+    if not capability:
         return True
     box_access = (box_config or default_box_config()).get("access") or default_box_access()
-    capability = access.get("capability")
-    intent = access.get("intent")
-    return (
-        capability in set(box_access.get("enabled_capabilities") or [])
-        and (box_access.get("policy") or {}).get(intent, ACCESS_NONE) == capability
-    )
+    return capability in set(box_access.get("enabled_capabilities") or [])
 
 
 def resource_access_allowed_for_any_box(resource, box_configs, boxes):
@@ -1297,6 +1264,46 @@ def validate_artifact_resource_shape(app_name, resource):
 
 def validate_manifest_resources(app_name, manifest, topology):
     reject_unknown_fields(manifest, MANIFEST_TOP_LEVEL_FIELDS, app_name)
+    features = manifest.get("features") or []
+    if not isinstance(features, list):
+        die(f"{manifest['_manifest_path']} features must be a list")
+    feature_ids = set()
+    raw_resources = manifest.get("resources") or {}
+    resource_sections = raw_resources.values() if isinstance(raw_resources, dict) else []
+    all_resource_ids = {
+        resource.get("id")
+        for section in resource_sections
+        if isinstance(section, list)
+        for resource in section
+        if isinstance(resource, dict)
+    }
+    for index, feature in enumerate(features):
+        field = f"{app_name}.features[{index}]"
+        reject_unknown_fields(feature, FEATURE_FIELDS, field)
+        feature_id = feature.get("id")
+        validate_id(feature_id, f"{field}.id")
+        if feature_id in feature_ids:
+            die(f"{app_name}.features contains duplicate id: {feature_id}")
+        feature_ids.add(feature_id)
+        feature_type = feature.get("type")
+        if feature_type not in FEATURE_TYPES:
+            die(f"{field}.type must be one of: {', '.join(sorted(FEATURE_TYPES))}")
+        values = feature.get("values") or []
+        if feature_type == "enum" and (not isinstance(values, list) or not values):
+            die(f"{field}.values must be a non-empty list")
+        bindings = feature.get("resource_bindings") or {}
+        if not isinstance(bindings, dict):
+            die(f"{field}.resource_bindings must be a mapping")
+        allowed_values = set(values) if feature_type == "enum" else {"true"}
+        unknown_values = sorted(set(bindings) - allowed_values)
+        if unknown_values:
+            die(f"{field}.resource_bindings contains unsupported value(s): {', '.join(unknown_values)}")
+        for value, resource_ids in bindings.items():
+            if not isinstance(resource_ids, list) or not resource_ids:
+                die(f"{field}.resource_bindings.{value} must be a non-empty list")
+            for resource_id in resource_ids:
+                if resource_id not in all_resource_ids:
+                    die(f"{field}.resource_bindings.{value} references unknown resource: {resource_id}")
     datasets = manifest.get("datasets") or []
     if not isinstance(datasets, list):
         die(f"{manifest['_manifest_path']} datasets must be a list")
@@ -1369,6 +1376,40 @@ def validate_manifest_resources(app_name, manifest, topology):
         if not isinstance(resource, dict):
             die(f"{manifest['_manifest_path']} artifact resources must be mappings")
         validate_artifact_resource_shape(app_name, resource)
+
+
+def validate_selected_resource_capabilities(app_name, manifest, entry, boxes, box_configs):
+    if not bool(entry.get("enabled")):
+        return
+    resource_flags = entry.get("resources") or {}
+    if not isinstance(resource_flags, dict):
+        die(f"apps.{app_name}.resources must be a mapping")
+    resources = manifest.get("resources") or {}
+    all_resources = []
+    resource_ids = set()
+    for section in ("compute", "network", "tailnet", "artifacts"):
+        for resource in resources.get(section) or []:
+            if isinstance(resource, dict):
+                all_resources.append(resource)
+                resource_ids.add(resource.get("id"))
+    unknown = sorted(set(resource_flags) - resource_ids)
+    if unknown:
+        die(f"apps.{app_name}.resources contains unknown resource(s): {', '.join(unknown)}")
+    for resource_id, selected in resource_flags.items():
+        if not isinstance(selected, bool):
+            die(f"apps.{app_name}.resources.{resource_id} must be Boolean")
+    for resource in all_resources:
+        if not resource_enabled(resource, entry):
+            continue
+        capability = resource.get("requires_capability") or (resource.get("access") or {}).get("capability")
+        if not capability:
+            continue
+        for box in boxes:
+            if not resource_access_allowed(resource, box_config_for(box_configs, box)):
+                die(
+                    f"apps.{app_name} resource {resource['id']} requires enabled "
+                    f"capability {capability} on placement box {box}"
+                )
 
 
 def selected_tailnet_resources(manifest, entry):
@@ -2616,6 +2657,9 @@ def compile_registry(registry_path, app_filter):
         validate_manifest_resources(app_name, manifest, topology)
         validate_privileged_runtime(app_name, manifest, entry)
         app_boxes = selected_boxes(app_name, manifest, entry)
+        validate_selected_resource_capabilities(
+            app_name, manifest, entry, app_boxes, box_configs
+        )
         validate_shared_guest_app_compatibility(
             app_name, manifest, entry, app_boxes, box_configs, topology
         )

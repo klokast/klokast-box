@@ -417,6 +417,8 @@ def inverse_transition(transition):
         "metadata-only": "metadata-only",
         "instance-v1-legacy-to-current": "instance-v1-current-to-legacy",
         "instance-v1-current-to-legacy": "instance-v1-legacy-to-current",
+        "instance-v1-connectivity-profiles-to-capabilities": "instance-v1-connectivity-capabilities-to-profiles",
+        "instance-v1-connectivity-capabilities-to-profiles": "instance-v1-connectivity-profiles-to-capabilities",
     }[transition]
 
 def transition_instance(value, transition, target_commit):
@@ -432,6 +434,47 @@ def transition_instance(value, transition, target_commit):
         "$schema", "schema-version", "tailscale", "boxes", "controllers",
         "airunners", "apps",
     }
+    if transition in {
+        "instance-v1-connectivity-profiles-to-capabilities",
+        "instance-v1-connectivity-capabilities-to-profiles",
+    }:
+        if set(value) != current_keys:
+            raise SystemExit("Instance v1 connectivity transition requires the exact current document shape")
+        boxes = value.get("boxes")
+        if not isinstance(boxes, dict) or not boxes:
+            raise SystemExit("Instance v1 connectivity transition requires box data")
+        for document in boxes.values():
+            expected = {"site", "country", "description", "connectivity"}
+            if not isinstance(document, dict) or set(document) != expected:
+                raise SystemExit("Instance v1 connectivity transition requires the exact box shape")
+            connectivity = document.get("connectivity")
+            if not isinstance(connectivity, list) or not connectivity or len(set(connectivity)) != len(connectivity):
+                raise SystemExit("Instance v1 connectivity values must be a non-empty unique list")
+            converted = []
+            if transition == "instance-v1-connectivity-profiles-to-capabilities":
+                for item in connectivity:
+                    if item == "tailscale":
+                        converted.append("overlay")
+                    elif item == "local-ap-direct-egress":
+                        converted.extend(["local-ap-uplink", "direct-wan-egress"])
+                    else:
+                        raise SystemExit("legacy Instance v1 connectivity contains an unknown profile")
+            else:
+                index = 0
+                while index < len(connectivity):
+                    item = connectivity[index]
+                    if item == "overlay":
+                        converted.append("tailscale")
+                        index += 1
+                    elif item == "local-ap-uplink" and index + 1 < len(connectivity) and connectivity[index + 1] == "direct-wan-egress":
+                        converted.append("local-ap-direct-egress")
+                        index += 2
+                    else:
+                        raise SystemExit("connectivity capabilities are not exactly invertible to legacy profiles")
+            if len(set(converted)) != len(converted):
+                raise SystemExit("Instance v1 connectivity transition would create duplicates")
+            document["connectivity"] = converted
+        return value
     if transition == "instance-v1-legacy-to-current":
         if set(value) != legacy_keys or value.get("instance") != {"id": "klokast-instance"}:
             raise SystemExit("legacy Instance v1 document cannot be migrated without data loss")
@@ -524,13 +567,24 @@ if requested_transition:
 elif set(instance) == legacy_keys:
     transition = "instance-v1-legacy-to-current"
 elif set(instance) == current_keys:
-    transition = "metadata-only"
+    connectivity_values = {
+        item
+        for document in instance.get("boxes", {}).values()
+        if isinstance(document, dict)
+        for item in document.get("connectivity", [])
+    }
+    if connectivity_values and connectivity_values <= {"tailscale", "local-ap-direct-egress"}:
+        transition = "instance-v1-connectivity-profiles-to-capabilities"
+    else:
+        transition = "metadata-only"
 else:
     raise SystemExit("private Instance v1 document has no supported promotion shape")
 if transition not in {
     "metadata-only",
     "instance-v1-legacy-to-current",
     "instance-v1-current-to-legacy",
+    "instance-v1-connectivity-profiles-to-capabilities",
+    "instance-v1-connectivity-capabilities-to-profiles",
 }:
     raise SystemExit("requested schema transition is unsupported")
 migrated_instance = transition_instance(instance, transition, new_commit)

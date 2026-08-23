@@ -7,7 +7,7 @@
   "boxes": {
     "boxa": {
       "connectivity": [
-        "tailscale"
+        "overlay"
       ],
       "country": "XB",
       "description": "Example home",

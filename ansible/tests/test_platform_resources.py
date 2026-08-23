@@ -175,6 +175,15 @@ class PlatformResourcesTest(unittest.TestCase):
         path = self.write_registry(
             {
                 "schema_version": 1,
+                "boxes": {
+                    box: {
+                        "access": {
+                            "available_capabilities": ["overlay", "edge-ingress"],
+                            "enabled_capabilities": ["overlay", "edge-ingress"],
+                        }
+                    }
+                    for box in ("boxa", "boxb")
+                },
                 "apps": {
                     "nextcloud": {
                         "enabled": True,
@@ -211,6 +220,14 @@ class PlatformResourcesTest(unittest.TestCase):
         path = self.write_registry(
             {
                 "schema_version": 1,
+                "boxes": {
+                    "boxa": {
+                        "access": {
+                            "available_capabilities": ["overlay", "edge-ingress"],
+                            "enabled_capabilities": ["overlay", "edge-ingress"],
+                        }
+                    }
+                },
                 "apps": {
                     "nextcloud": {
                         "enabled": False,
@@ -242,6 +259,79 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             ],
         )
+
+    def test_optional_false_and_omission_are_the_same_disabled_state(self):
+        compiled_results = []
+        for resources in ({}, {"cloudflare-tunnel-egress": False}):
+            path = self.write_registry(
+                {
+                    "schema_version": 1,
+                    "apps": {
+                        "nextcloud": {
+                            "enabled": True,
+                            "placement": {"active_master": "boxa", "passive_backup": "boxb"},
+                            "resources": resources,
+                        }
+                    },
+                }
+            )
+            compiled_results.append(self.mod.compile_registry(path, ["nextcloud"]))
+        self.assertEqual(
+            compiled_results[0]["apps"]["nextcloud"]["resources"],
+            compiled_results[1]["apps"]["nextcloud"]["resources"],
+        )
+        self.assertNotIn(
+            "app-nextcloud-cloudflare-tunnel-egress-tcp",
+            self.claim_comments(compiled_results[0]),
+        )
+
+    def test_selected_capability_is_required_on_every_placement_box(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "boxes": {
+                    "boxa": {
+                        "access": {
+                            "available_capabilities": ["overlay", "edge-ingress"],
+                            "enabled_capabilities": ["overlay", "edge-ingress"],
+                        }
+                    },
+                    "boxb": {
+                        "access": {
+                            "available_capabilities": ["overlay"],
+                            "enabled_capabilities": ["overlay"],
+                        }
+                    },
+                },
+                "apps": {
+                    "nextcloud": {
+                        "enabled": True,
+                        "placement": {"active_master": "boxa", "passive_backup": "boxb"},
+                        "resources": {"cloudflare-tunnel-egress": True},
+                    }
+                },
+            }
+        )
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                self.mod.compile_registry(path, ["nextcloud"])
+
+    def test_required_capability_fails_closed(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "apps": {
+                    "static-site": {
+                        "enabled": True,
+                        "placement": {"active_master": "boxa"},
+                        "resources": {},
+                    }
+                },
+            }
+        )
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                self.mod.compile_registry(path, ["static-site"])
 
     def test_shared_guest_runtime_state_compiles_for_platform_map(self):
         path = self.write_registry(
@@ -471,6 +561,14 @@ class PlatformResourcesTest(unittest.TestCase):
         path = self.write_registry(
             {
                 "schema_version": 1,
+                "boxes": {
+                    "boxa": {
+                        "access": {
+                            "available_capabilities": ["overlay", "edge-ingress"],
+                            "enabled_capabilities": ["overlay", "edge-ingress"],
+                        }
+                    }
+                },
                 "apps": {
                     "static-site": {
                         "enabled": True,
@@ -691,11 +789,6 @@ class PlatformResourcesTest(unittest.TestCase):
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay", "local-lan"],
-                            "policy": {
-                                "local-presence-control": "local-lan",
-                                "private-service-ingress": "local-lan",
-                                "file-upload": "overlay",
-                            },
                         }
                     }
                 },
@@ -732,7 +825,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(music_upstream["normalized"]["destination"], "192.168.100.10")
         self.assertEqual(music_upstream["normalized"]["ports"], [18082])
 
-    def test_local_ingress_music_only_when_private_services_stay_overlay(self):
+    def test_local_ingress_capability_enables_all_required_local_lan_resources(self):
         path = self.write_registry(
             {
                 "schema_version": 1,
@@ -741,11 +834,6 @@ class PlatformResourcesTest(unittest.TestCase):
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay", "local-lan"],
-                            "policy": {
-                                "local-presence-control": "local-lan",
-                                "private-service-ingress": "overlay",
-                                "file-upload": "overlay",
-                            },
                         }
                     }
                 },
@@ -760,13 +848,13 @@ class PlatformResourcesTest(unittest.TestCase):
         compiled = self.mod.compile_registry(path, ["local-ingress"])
         self.assertEqual(
             compiled["apps"]["local-ingress"]["resources"],
-            ["household-https", "music-upstream"],
+            ["household-https", "music-upstream", "nextcloud-upstream", "immich-upstream"],
         )
         comments = self.claim_comments(compiled)
         self.assertIn("app-local-ingress-household-https-router", comments)
         self.assertIn("app-local-ingress-music-upstream-router", comments)
-        self.assertNotIn("app-local-ingress-nextcloud-upstream-router", comments)
-        self.assertNotIn("app-local-ingress-immich-upstream-router", comments)
+        self.assertIn("app-local-ingress-nextcloud-upstream-router", comments)
+        self.assertIn("app-local-ingress-immich-upstream-router", comments)
 
     def test_local_ingress_does_not_compile_when_local_lan_is_only_available(self):
         path = self.write_registry(
@@ -777,7 +865,6 @@ class PlatformResourcesTest(unittest.TestCase):
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay"],
-                            "policy": {"local-presence-control": "overlay"},
                         }
                     }
                 },
@@ -789,11 +876,11 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["local-ingress"])
-        self.assertEqual(compiled["apps"]["local-ingress"]["resources"], [])
-        self.assertEqual(compiled["app_resource_claims"], [])
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                self.mod.compile_registry(path, ["local-ingress"])
 
-    def test_music_local_lan_control_removes_overlay_ui_but_keeps_upload(self):
+    def test_music_capabilities_do_not_select_box_wide_access_policy(self):
         path = self.write_registry(
             {
                 "schema_version": 1,
@@ -802,10 +889,6 @@ class PlatformResourcesTest(unittest.TestCase):
                         "access": {
                             "available_capabilities": ["overlay", "local-lan"],
                             "enabled_capabilities": ["overlay", "local-lan"],
-                            "policy": {
-                                "local-presence-control": "local-lan",
-                                "file-upload": "overlay",
-                            },
                         }
                     }
                 },
@@ -827,10 +910,10 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
         compiled = self.mod.compile_registry(path, ["music"])
-        self.assertEqual(compiled["apps"]["music"]["tailnet_resources"], ["upload-ingress"])
+        self.assertEqual(compiled["apps"]["music"]["tailnet_resources"], ["private-ui", "upload-ingress"])
         self.assertEqual(
             [item["hostname"] for item in compiled["tailnet_resources"]],
-            ["boxb-music-upload"],
+            ["boxb-music", "boxb-music-upload"],
         )
 
     def test_print_server_compiles_backend_to_iot_printer_resources(self):
@@ -932,9 +1015,6 @@ class PlatformResourcesTest(unittest.TestCase):
                                 "ap-uplink",
                                 "direct-egress",
                             ],
-                            "policy": {
-                                "household-wan-egress": "direct-egress",
-                            },
                         },
                         "dom0_bridge_ports": {"lan": ["eth2"]},
                     }
@@ -948,10 +1028,7 @@ class PlatformResourcesTest(unittest.TestCase):
             compiled["box_configs"]["boxa"]["access"]["enabled_capabilities"],
             ["overlay", "ap-uplink", "direct-egress"],
         )
-        self.assertEqual(
-            compiled["box_configs"]["boxa"]["access"]["policy"]["household-wan-egress"],
-            "direct-egress",
-        )
+        self.assertNotIn("policy", compiled["box_configs"]["boxa"]["access"])
         self.assertEqual(
             compiled["box_configs"]["boxa"]["dom0_bridge_ports"],
             {"lan": ["eth2"]},
@@ -978,16 +1055,15 @@ class PlatformResourcesTest(unittest.TestCase):
             with redirect_stderr(io.StringIO()):
                 self.mod.compile_registry(path, [])
 
-    def test_box_access_rejects_prohibited_policy_capability(self):
+    def test_box_access_rejects_removed_policy_field(self):
         path = self.write_registry(
             {
                 "schema_version": 1,
                 "boxes": {
                     "boxb": {
                         "access": {
-                            "available_capabilities": ["overlay", "direct-ingress"],
+                            "available_capabilities": ["overlay"],
                             "enabled_capabilities": ["overlay"],
-                            "prohibited_capabilities": ["direct-ingress"],
                             "policy": {"public-ingress": "direct-ingress"},
                         }
                     }
@@ -1518,10 +1594,6 @@ class PlatformResourcesTest(unittest.TestCase):
                                 "local-lan",
                                 "vpn-egress",
                             ],
-                            "policy": {
-                                "local-presence-control": "local-lan",
-                                "household-wan-egress": "vpn-egress",
-                            },
                         }
                     }
                 },

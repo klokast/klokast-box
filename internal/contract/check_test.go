@@ -191,13 +191,13 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 		}, "identity.airunner"},
 		{"non-controller-box", func(value map[string]any) {
 			value["boxes"].(map[string]any)["k003"] = map[string]any{
-				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"tailscale"},
+				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"overlay"},
 			}
 			value["airunners"] = []any{"k003-ops-airunner"}
 		}, "reference.controller"},
 		{"box-cloud-collision", func(value map[string]any) {
 			value["boxes"].(map[string]any)["vultr"] = map[string]any{
-				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"tailscale"},
+				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"overlay"},
 			}
 			value["airunners"] = []any{"vultr-ops"}
 		}, "identity.cloud-collision"},
@@ -234,18 +234,40 @@ func TestEmbeddedCloudProviderCatalog(t *testing.T) {
 	}
 }
 
-func TestVersionOneBoxRequiresTailscaleConnectivity(t *testing.T) {
-	root := prepareInstance(t, "two", func(root string) {
-		replaceInFile(t, filepath.Join(root, InstancePath),
-			`"connectivity": [
-        "local-ap-direct-egress",
-        "tailscale"
-      ]`,
-			`"connectivity": [
-        "local-ap-direct-egress"
-      ]`)
+func TestVersionOneConnectivityCapabilities(t *testing.T) {
+	t.Run("accept-five-capabilities", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
+				box["connectivity"] = []any{
+					"overlay", "local-ap-uplink", "direct-wan-egress",
+					"edge-tunnel-ingress", "direct-wan-ingress",
+				}
+			})
+		})
+		report, err := Check(root, testEngine)
+		if err != nil || !report.Valid {
+			t.Fatalf("exact capability set was rejected: err=%v diagnostics=%#v", err, report.Diagnostics)
+		}
 	})
-	requireCode(t, root, "connectivity.tailscale")
+	t.Run("missing-overlay", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
+				box["connectivity"] = []any{"local-ap-uplink", "direct-wan-egress"}
+			})
+		})
+		requireCode(t, root, "connectivity.overlay")
+	})
+	t.Run("old-profile", func(t *testing.T) {
+		root := prepareInstance(t, "single", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
+				box["connectivity"] = []any{"tailscale"}
+			})
+		})
+		requireCode(t, root, "schema.invalid")
+	})
 }
 
 func TestAppLifecycleAndDataRules(t *testing.T) {
@@ -277,6 +299,57 @@ func TestAppLifecycleAndDataRules(t *testing.T) {
 			replaceInFile(t, filepath.Join(root, InstancePath), `"box": "boxb",`, `"box": "missing",`)
 		})
 		requireCode(t, root, "reference.box")
+	})
+}
+
+func TestSemanticPublicIngressFeature(t *testing.T) {
+	base := func(value map[string]any) map[string]any {
+		value["apps"].(map[string]any)["nextcloud"] = map[string]any{
+			"desired-state": "present",
+			"placement": map[string]any{"mode": "active-passive", "active": "boxa", "passive": "boxb"},
+			"features": map[string]any{"public-ingress": "cloudflare-tunnel"},
+		}
+		return value
+	}
+	t.Run("valid-provider", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				base(value)
+				for _, rawBox := range value["boxes"].(map[string]any) {
+					box := rawBox.(map[string]any)
+					box["connectivity"] = append(box["connectivity"].([]any), "edge-tunnel-ingress")
+				}
+			})
+		})
+		report, err := Check(root, testEngine)
+		if err != nil || !report.Valid {
+			t.Fatalf("semantic public ingress was rejected: err=%v diagnostics=%#v", err, report.Diagnostics)
+		}
+	})
+	t.Run("missing-placement-capability", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) { base(value) })
+		})
+		requireCode(t, root, "resource.capability")
+	})
+	t.Run("unknown-provider", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				base(value)["apps"].(map[string]any)["nextcloud"].(map[string]any)["features"].(map[string]any)["public-ingress"] = "unknown"
+			})
+		})
+		requireCode(t, root, "feature.value")
+	})
+	t.Run("required-static-ingress", func(t *testing.T) {
+		root := prepareInstance(t, "two", func(root string) {
+			mutateInstanceJSON(t, root, func(value map[string]any) {
+				value["apps"].(map[string]any)["static-site"] = map[string]any{
+					"desired-state": "present",
+					"placement": map[string]any{"mode": "single-box", "box": "boxa"},
+				}
+			})
+		})
+		requireCode(t, root, "resource.capability")
 	})
 }
 
