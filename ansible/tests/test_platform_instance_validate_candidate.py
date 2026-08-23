@@ -41,6 +41,7 @@ class PlatformInstanceValidateCandidateTest(unittest.TestCase):
         self.seed.mkdir(mode=0o700)
         self.mod.PRIVATE_ROOT = self.private_root
         self.mod.SEED_PATH = self.seed
+        self.mod.DEPLOYMENT_CHECKOUT = self.private_root / "instance"
         self.make_seed()
         self.checker = self.make_checker()
         self.args = argparse.Namespace(

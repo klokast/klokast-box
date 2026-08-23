@@ -1043,6 +1043,7 @@ def git_checkout(args, paths, expected_head):
     if head != expected_head or run([*git, "status", "--porcelain=v1", "--untracked-files=all"], capture=True, env=environment).stdout:
         raise InstanceAuthorityError("private instance checkout did not converge cleanly to remote main")
     user = pwd.getpwnam(args.infra_user)
+    os.chmod(checkout, 0o700)
     for current, directories, files in os.walk(checkout):
         os.lchown(current, user.pw_uid, user.pw_gid)
         for name in directories + files:
