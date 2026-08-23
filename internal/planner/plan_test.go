@@ -305,6 +305,46 @@ func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
 	}
 }
 
+func TestEmptyLegacyDeploymentBoxesClaimNoBoxAuthority(t *testing.T) {
+	root := prepareTwoBoxInstance(t, nil)
+	snapshot, report, err := contract.Load(root, testEngine)
+	if err != nil || !report.Valid {
+		t.Fatalf("cannot load fixture: report=%#v err=%v", report, err)
+	}
+	result := compareDeployment(Resolve(snapshot), compatibilityDocument{root: map[string]any{
+		"schema_version": 1,
+		"boxes":          map[string]any{},
+	}})
+	for _, finding := range result.Findings {
+		if finding.Code == "box.missing" {
+			t.Fatalf("empty legacy box map claimed authority: %#v", result.Findings)
+		}
+	}
+}
+
+func TestPartialLegacyDeploymentBoxesKeepMissingBoxConflict(t *testing.T) {
+	root := prepareTwoBoxInstance(t, nil)
+	snapshot, report, err := contract.Load(root, testEngine)
+	if err != nil || !report.Valid {
+		t.Fatalf("cannot load fixture: report=%#v err=%v", report, err)
+	}
+	result := compareDeployment(Resolve(snapshot), compatibilityDocument{root: map[string]any{
+		"schema_version": 1,
+		"boxes": map[string]any{
+			"boxa": map[string]any{},
+		},
+	}})
+	found := false
+	for _, finding := range result.Findings {
+		if finding.Path == "deployment.boxes.boxb" && finding.Code == "box.missing" && finding.Class == "conflict" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("partial legacy box map did not preserve the missing-box conflict: %#v", result.Findings)
+	}
+}
+
 func canonicalRegistry() string {
 	return `---
 schema_version: 1

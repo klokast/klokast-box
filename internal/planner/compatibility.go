@@ -129,6 +129,9 @@ func compareDeployment(projection Projection, legacy compatibilityDocument) Comp
 		expected := map[string]bool{}
 		for _, box := range projection.Boxes {
 			expected[box.HostnamePrefix] = true
+			if len(boxes) == 0 {
+				continue
+			}
 			path := "boxes." + box.HostnamePrefix
 			legacyBox, ok := asMap(boxes[box.HostnamePrefix])
 			if !ok {

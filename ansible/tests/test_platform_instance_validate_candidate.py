@@ -46,6 +46,7 @@ class PlatformInstanceValidateCandidateTest(unittest.TestCase):
         self.args = argparse.Namespace(
             engine_commit=ENGINE_COMMIT,
             build_dir=str(self.root / "build"),
+            require_compatible=False,
         )
 
     def tearDown(self):
@@ -166,6 +167,49 @@ raise SystemExit(0 if valid else 1)
         target.unlink()
         target.symlink_to("AGENTS.md")
         with self.assertRaisesRegex(self.mod.InstanceError, "symbolic link"):
+            self.run_candidate(self.candidate())
+
+    def test_required_compatibility_uses_all_private_inputs(self):
+        self.args.require_compatible = True
+        planned = {
+            "valid": True,
+            "compatible": True,
+            "compatibility": {"summary": {"conflict": 0, "unsupported": 0}},
+        }
+        completed = subprocess.CompletedProcess([], 0, json.dumps(planned), "")
+        commands = []
+
+        original_run = self.mod.run
+        def dispatch(argv, **kwargs):
+            if len(argv) > 1 and argv[1] == "plan":
+                commands.append(argv)
+                return completed
+            return original_run(argv, **kwargs)
+
+        with mock.patch.object(self.mod, "run", side_effect=dispatch):
+            result = self.run_candidate(self.candidate())
+        self.assertTrue(result["compatible"])
+        command = [str(item) for item in commands[0]]
+        self.assertIn(str(self.mod.COMPATIBILITY_DEPLOYMENT), command)
+        self.assertIn(str(self.mod.COMPATIBILITY_REGISTRY), command)
+        self.assertIn(str(self.mod.COMPATIBILITY_CONTROLLER_HA), command)
+        self.assertNotIn("--observation", command)
+
+    def test_required_compatibility_refuses_conflict(self):
+        self.args.require_compatible = True
+        planned = {
+            "valid": True,
+            "compatible": False,
+            "compatibility": {"summary": {"conflict": 2, "unsupported": 0}},
+        }
+        original_run = self.mod.run
+        def dispatch(argv, **kwargs):
+            if len(argv) > 1 and argv[1] == "plan":
+                return subprocess.CompletedProcess(argv, 2, json.dumps(planned), "")
+            return original_run(argv, **kwargs)
+        with mock.patch.object(self.mod, "run", side_effect=dispatch), self.assertRaisesRegex(
+            self.mod.InstanceError, "2 conflict"
+        ):
             self.run_candidate(self.candidate())
 
 

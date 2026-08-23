@@ -281,11 +281,15 @@ only `klokast-instance.json` on the trusted MacBook and stages that file. The
 human does not edit `klokast.lock.json` or the support files. The MacBook
 publication helper sends only the edited instance document through standard
 input to the active controller. The controller creates a temporary owner-only
-copy of the seed, checks the candidate with the pinned sealed binary, returns
-the checked Git tree, and removes the temporary copy. The helper commits only
-when that tree equals the staged MacBook tree. For a later update, it also
-requires GitHub `main` to equal the local commit on which the edit is based.
-It does not merge or overwrite a changed remote branch.
+copy of the seed, checks the candidate with the pinned sealed binary, and
+compares it with the exact three controller-private legacy inputs. It returns
+the checked Git tree only when there is no `conflict` or `unsupported`
+finding, and it removes the temporary copy. The helper commits only when that
+tree equals the staged MacBook tree. For a later update, it also requires
+GitHub `main` to equal the local commit on which the edit is based.
+`publish-private-instance --check` performs the same check without a commit,
+push, or publication. The helper does not merge or overwrite a changed remote
+branch.
 
 ## Projection, compatibility, and observation
 
@@ -309,7 +313,12 @@ a hashed Plan v1 artifact. It does not apply changes. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy
 resources do not become desired state. `doctor` checks every listed airunner
 for presence, online state, and its required tag. It does not select a runner,
-implement failover, or check a separate airunner Xen guest.
+implement failover, or check a separate airunner Xen guest. The router and
+controller guests must be online, configured, running, and set to start
+automatically. The shared `bak`, `dmz`, and `iot` guests must keep their
+Tailnet identity and tag and their Xen configuration, but they can be stopped,
+offline, and without autostart. Doctor does not infer shared-guest runtime
+intent from a compatibility-only registry.
 
 Generated and observed data is output. It is never another Git authority.
 

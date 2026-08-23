@@ -206,20 +206,27 @@ ansible/bin/platform-instance seed \
 ansible/bin/platform-instance validate-candidate \
   --engine-commit ENGINE-COMMIT \
   --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION \
+  --require-compatible \
   <klokast-instance.json
 ```
 
 `validate-candidate` accepts at most one 64 KiB instance document through
 standard input. It copies the owner-only unborn seed to a temporary private
 directory, replaces only `klokast-instance.json`, checks it with the sealed
-binary, returns the checked Git tree, and removes the temporary directory.
-It does not change the seed or values file.
+binary, and compares it with the fixed private `deployment.yml`,
+`platform-resources.yml`, and `controller-ha.yml` inputs. It returns the
+checked Git tree only when there is no `conflict` or `unsupported` finding,
+and removes the temporary directory. It does not use an Observation, create a
+Plan, or change the seed or values file.
 
 Review and publish the transferred worktree with the MacBook helper:
 
 ```sh
 klokast-dev/bin/publish-private-instance
 ```
+
+Use `publish-private-instance --check` to run the same sealed contract and
+compatibility validation without a commit, push, or publication.
 
 The helper commits and pushes `main` with the human private-repository
 identity. It can also publish a later staged `klokast-instance.json` update

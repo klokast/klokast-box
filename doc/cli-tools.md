@@ -109,9 +109,10 @@ Source: `klokast-dev/bin/`.
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
+| `install-controller-ha-config` | laptop | Installs the migration-only private controller HA registry on the MacBook and one explicit active controller, with an exact terminal confirmation and file rollback. |
 | `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
 | `prepare-private-instance-worktree` | laptop | Runs the guided owner-only values setup on the active controller, seeds with the pinned sealed build, streams the generated repository to the MacBook, and verifies its initial Git state without copying private values into arguments or the redacted journal. |
-| `publish-private-instance` | laptop | Publishes the initial seed or a later staged `klokast-instance.json` edit after sealed controller validation, exact remote-base checks, human diff approval, and private `main` verification. |
+| `publish-private-instance` | laptop | Checks or publishes the initial seed or a later staged `klokast-instance.json` edit after sealed contract and compatibility validation, exact remote-base checks, human diff approval, and private `main` verification. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
 | `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
 | `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |

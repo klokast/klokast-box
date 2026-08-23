@@ -17,7 +17,7 @@ UPDATE_COMMIT_MESSAGE="Update Klokast instance"
 
 usage() {
   cat <<EOF
-Usage: $0
+Usage: $0 [--check]
 
 Run this helper in an interactive terminal on the trusted MacBook after
 prepare-private-instance-worktree succeeds. It accepts the exact generated
@@ -29,6 +29,8 @@ the human GitHub credential, and verifies the remote commit.
 The helper can resume an exact local initial commit after a failed push. It
 also publishes later staged instance-document updates when GitHub main equals
 the local base commit.
+With --check, it validates the staged tree and current compatibility only. It
+does not commit, push, publish, or change private desired state.
 It does not give the controller or an airunner write access.
 EOF
 }
@@ -81,6 +83,9 @@ refresh_checkout_and_reexec() {
     fi
     printf 'Restarting the updated helper before private repository inspection.\n'
     export KLOKAST_PRIVATE_PUBLISH_REEXEC_COUNT=1
+    if [ "$CHECK_ONLY" = true ]; then
+      exec "$SCRIPT_DIR/publish-private-instance" --check
+    fi
     exec "$SCRIPT_DIR/publish-private-instance" || \
       ksa_die "cannot restart the updated publication helper"
   fi
@@ -341,7 +346,7 @@ SH
 validate_controller_candidate() {
   local remote_command=""
 
-  remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance validate-candidate --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION"
+  remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance validate-candidate --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION --require-compatible"
   tailscale ssh "$SSH_TARGET" "$remote_command" \
     <"$PRIVATE_WORKTREE/klokast-instance.json"
 }
@@ -381,6 +386,7 @@ read_remote_state() {
   esac
 }
 
+CHECK_ONLY=false
 case "${1:-}" in
   -h|--help)
     [ "$#" -eq 1 ] || ksa_die "--help does not accept other arguments"
@@ -389,6 +395,10 @@ case "${1:-}" in
     ;;
   "")
     [ "$#" -eq 0 ] || ksa_die "this helper does not accept arguments"
+    ;;
+  --check)
+    [ "$#" -eq 1 ] || ksa_die "--check does not accept other arguments"
+    CHECK_ONLY=true
     ;;
   *)
     usage >&2
@@ -441,12 +451,9 @@ validate_remote_configuration
 
 CONTROLLER_TREE="$(controller_seed_tree)" || \
   ksa_die "the sealed controller seed could not be verified"
-if [ "$CONTROLLER_TREE" = "$LOCAL_TREE" ]; then
-  TREE_VALIDATION="exact sealed seed"
-else
-  candidate_result="$(validate_controller_candidate)" || \
-    ksa_die "the edited instance document did not pass sealed controller validation"
-  candidate_tree="$(printf '%s\n' "$candidate_result" | python3 -c '
+candidate_result="$(validate_controller_candidate)" || \
+  ksa_die "the instance document did not pass sealed compatibility validation"
+candidate_tree="$(printf '%s\n' "$candidate_result" | python3 -c '
 import json
 import re
 import sys
@@ -454,14 +461,27 @@ expected_engine = sys.argv[1]
 value = json.load(sys.stdin)
 tree = value.get("tree", "")
 if (value.get("schema_version") != 1 or value.get("valid") is not True
+        or value.get("compatible") is not True
         or value.get("engine_commit") != expected_engine
         or not re.fullmatch(r"[0-9a-f]{40,64}", tree)):
-    raise SystemExit("controller returned an invalid candidate-validation result")
+    raise SystemExit("controller returned an invalid compatible candidate result")
 print(tree)
 ' "$ENGINE_COMMIT")" || ksa_die "cannot verify the controller candidate result"
-  [ "$candidate_tree" = "$LOCAL_TREE" ] || \
-    ksa_die "the staged tree differs from the tree checked by the sealed controller"
-  TREE_VALIDATION="human-edited instance document accepted by sealed checker"
+[ "$candidate_tree" = "$LOCAL_TREE" ] || \
+  ksa_die "the staged tree differs from the tree checked by the sealed controller"
+
+if [ "$CONTROLLER_TREE" = "$LOCAL_TREE" ]; then
+  TREE_VALIDATION="exact sealed seed"
+else
+  TREE_VALIDATION="human-edited instance document accepted by sealed compatibility check"
+fi
+
+if [ "$CHECK_ONLY" = true ]; then
+  printf 'Private instance compatibility check passed.\n'
+  printf '  Engine: %s\n' "$ENGINE_COMMIT"
+  printf '  Tree: %s (%s)\n' "$LOCAL_TREE" "$TREE_VALIDATION"
+  printf 'No commit, push, or publication was performed.\n'
+  exit 0
 fi
 
 read_remote_state

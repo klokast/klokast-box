@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TOOL_NAME=install-controller-ha-config
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+DESTINATION="$HOME/.config/klokast/controller-ha.yml"
+CONFIRMATION='install transitional controller HA config'
+
+usage() {
+  cat <<EOF
+Usage: $0 --candidate PATH --controller HOST
+
+Install the migration-only controller HA registry on the trusted MacBook and
+one explicitly named active controller. The helper archives the prior file,
+uses owner-only atomic writes, validates the active-controller marker, and
+restores the prior file when validation fails.
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$TOOL_NAME" "$*" >&2
+  exit 2
+}
+
+valid_controller() {
+  case "$1" in
+    ""|*[!a-z0-9-]*|*-ops-ops) return 1 ;;
+    *-ops) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+candidate=
+controller=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --candidate)
+      [ "$#" -ge 2 ] || die "--candidate needs a path"
+      candidate=$2
+      shift 2
+      ;;
+    --controller)
+      [ "$#" -ge 2 ] || die "--controller needs a host"
+      controller=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$candidate" ] || die "--candidate is required"
+valid_controller "$controller" || die "--controller must be one exact <box>-ops host"
+[ -t 0 ] && [ -t 1 ] || die "run this helper in an interactive terminal on the trusted MacBook"
+[ "$(uname -s)" = Darwin ] || die "run this helper on the trusted MacBook"
+[ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -r "$candidate" ] || \
+  die "the candidate must be one readable regular file"
+for command in base64 git install mktemp python3 tailscale; do
+  command -v "$command" >/dev/null 2>&1 || die "$command not found"
+done
+
+"$REPO_ROOT/ansible/bin/ops-controller-ha" --config "$candidate" validate-config >/dev/null
+python3 - "$candidate" "$controller" <<'PY'
+import sys
+import yaml
+
+path, controller = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    value = yaml.safe_load(handle)
+hosts = [entry["hostname"] for entry in value["controllers"]]
+if controller not in hosts:
+    raise SystemExit("the active controller is not declared in the candidate")
+PY
+
+printf 'Transitional controller HA registry installation\n'
+printf '  MacBook destination: %s\n' "$DESTINATION"
+printf '  Active controller: %s\n' "$controller"
+printf 'Type exactly: %s\n> ' "$CONFIRMATION"
+IFS= read -r answer || die "input ended before confirmation"
+[ "$answer" = "$CONFIRMATION" ] || die "confirmation did not match; no file changed"
+
+destination_dir="${DESTINATION%/*}"
+mkdir -p "$destination_dir"
+chmod 0700 "$destination_dir"
+local_tmp="$(mktemp "$destination_dir/.controller-ha.XXXXXX")"
+remote_tmp=
+local_had_prior=false
+cleanup() {
+  rm -f "$local_tmp"
+  if [ -n "$remote_tmp" ]; then
+    tailscale ssh "smith@$controller" "rm -f '$remote_tmp'" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+install -m 0600 "$candidate" "$local_tmp"
+if [ -e "$DESTINATION" ]; then
+  [ -f "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || die "the existing MacBook registry is unsafe"
+  install -m 0600 "$DESTINATION" "$DESTINATION.previous"
+  local_had_prior=true
+fi
+mv "$local_tmp" "$DESTINATION"
+local_tmp="$(mktemp "$destination_dir/.controller-ha.XXXXXX")"
+
+remote_tmp="$(tailscale ssh "smith@$controller" 'mktemp /home/smith/private/klokast/.controller-ha-upload.XXXXXX')" || {
+  if [ "$local_had_prior" = true ]; then
+    install -m 0600 "$DESTINATION.previous" "$DESTINATION"
+  else
+    rm -f "$DESTINATION"
+  fi
+  die "cannot create the controller transfer file; the MacBook file was restored"
+}
+case "$remote_tmp" in
+  /home/smith/private/klokast/.controller-ha-upload.*) ;;
+  *) die "the controller returned an unsafe transfer path" ;;
+esac
+base64 < "$DESTINATION" | \
+  tailscale ssh "smith@$controller" "umask 077; base64 -d > '$remote_tmp'" || {
+    if [ "$local_had_prior" = true ]; then
+      install -m 0600 "$DESTINATION.previous" "$DESTINATION"
+    else
+      rm -f "$DESTINATION"
+    fi
+    die "transfer failed; the MacBook file was restored"
+  }
+
+if ! tailscale ssh "smith@$controller" sh -s -- "$remote_tmp" "$controller" <<'SH'
+set -eu
+source_file=$1
+expected_hostname=$2
+destination=/home/smith/private/klokast/controller-ha.yml
+previous=/home/smith/private/klokast/controller-ha.yml.previous
+repo=/home/smith/src/klokast/klokast-box
+had_prior=false
+
+rollback() {
+  if [ "$had_prior" = true ]; then
+    install -m 0600 "$previous" "$destination"
+  else
+    rm -f "$destination"
+  fi
+}
+
+[ -f "$source_file" ] && [ ! -L "$source_file" ]
+if [ -e "$destination" ]; then
+  [ -f "$destination" ] && [ ! -L "$destination" ]
+  install -m 0600 "$destination" "$previous"
+  had_prior=true
+fi
+install -m 0600 "$source_file" "$destination"
+if ! "$repo/ansible/bin/ops-controller-ha" --config "$destination" validate-config >/dev/null; then
+  rollback
+  exit 1
+fi
+if ! /usr/local/sbin/klokast-controller-guard --require-active --status --json |
+    python3 -c 'import json,sys
+value=json.load(sys.stdin)
+expected=sys.argv[1]
+if value.get("hostname") != expected or value.get("active") is not True:
+    raise SystemExit("the selected controller is not the active controller")' "$expected_hostname"; then
+  rollback
+  exit 1
+fi
+SH
+then
+  if [ "$local_had_prior" = true ]; then
+    install -m 0600 "$DESTINATION.previous" "$DESTINATION"
+  else
+    rm -f "$DESTINATION"
+  fi
+  die "controller validation failed; the prior MacBook and controller files were restored"
+fi
+
+printf 'The transitional controller HA registry is installed and validated.\n'
+printf '  MacBook: %s\n' "$DESTINATION"
+printf '  Controller: smith@%s:/home/smith/private/klokast/controller-ha.yml\n' "$controller"

@@ -305,22 +305,35 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 			add(path, code, message)
 		}
 	}
-	checkMachine := func(hostname, tag string) {
+	checkMachineIdentity := func(hostname, tag string) (TailnetMachine, bool) {
 		machine, present := machines[hostname]
 		check(present, "tailnet."+hostname, "tailnet.missing", "required Tailnet identity is absent")
 		if !present {
+			return TailnetMachine{}, false
+		}
+		check(contains(machine.Tags, tag), "tailnet."+hostname, "tailnet.tag", "required Tailnet identity does not have its role tag")
+		return machine, true
+	}
+	checkMachine := func(hostname, tag string) {
+		machine, present := checkMachineIdentity(hostname, tag)
+		if present {
+			check(machine.Online, "tailnet."+hostname, "tailnet.offline", "required Tailnet identity is offline")
+		}
+	}
+	checkGuestConfiguration := func(box ObservedBox, boxPresent bool, prefix, guest string) {
+		if !boxPresent {
 			return
 		}
-		check(machine.Online, "tailnet."+hostname, "tailnet.offline", "required Tailnet identity is offline")
-		check(contains(machine.Tags, tag), "tailnet."+hostname, "tailnet.tag", "required Tailnet identity does not have its role tag")
+		path := "boxes." + prefix + ".guests." + guest
+		check(contains(box.ConfiguredGuests, guest), path, "xen.not-configured", "required Xen guest configuration is absent")
 	}
 	checkGuest := func(box ObservedBox, boxPresent bool, prefix, guest string) {
+		checkGuestConfiguration(box, boxPresent, prefix, guest)
 		if !boxPresent {
 			return
 		}
 		path := "boxes." + prefix + ".guests." + guest
 		check(contains(box.RunningGuests, guest), path, "xen.not-running", "required Xen guest is not running")
-		check(contains(box.ConfiguredGuests, guest), path, "xen.not-configured", "required Xen guest configuration is absent")
 		check(contains(box.AutostartGuests, guest), path, "xen.no-autostart", "required Xen guest has no autostart entry")
 	}
 
@@ -332,12 +345,14 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 		box, present := boxes[prefix]
 		check(present, "boxes."+prefix, "box.missing", "Instance Specification box is absent from the observation")
 		checkMachine(projectedBox.Runtime.Dom0, "tag:dom0")
+		checkMachine(projectedBox.Runtime.Router, "tag:vm")
+		checkGuest(box, present, prefix, "router")
 		for _, role := range []struct{ hostname, guest string }{
-			{projectedBox.Runtime.Router, "router"}, {projectedBox.Runtime.Backup, "bak"},
+			{projectedBox.Runtime.Backup, "bak"},
 			{projectedBox.Runtime.DMZ, "dmz"}, {projectedBox.Runtime.IoT, "iot"},
 		} {
-			checkMachine(role.hostname, "tag:vm")
-			checkGuest(box, present, prefix, role.guest)
+			checkMachineIdentity(role.hostname, "tag:vm")
+			checkGuestConfiguration(box, present, prefix, role.guest)
 		}
 		if present {
 			check(box.Dom0Reachable, "boxes."+prefix+".dom0", "dom0.unreachable", "dom0 was not reachable during observation")

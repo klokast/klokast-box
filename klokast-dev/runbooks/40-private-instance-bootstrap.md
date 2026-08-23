@@ -494,6 +494,34 @@ step. The publication helper runs the sealed checker on that staged content.
 Continue to Step 11 only when the two JSON files contain the exact intended
 state.
 
+For a migration from legacy authority, first install the exact transitional
+controller HA registry. Create an owner-only candidate on the MacBook with the
+closed shape shown in `ops/controller-ha.example.yml`. Use only the real one
+or two controller identities, keep the active controller first, and run:
+
+```sh
+cd "$HOME/src/klokast/klokast-box"
+klokast-dev/bin/install-controller-ha-config \
+  --candidate /owner-only/path/controller-ha.yml \
+  --controller <active-box>-ops
+```
+
+The helper requires the exact terminal phrase that it displays. It archives
+the prior MacBook and controller files, installs mode `0600` files atomically,
+and restores the prior files if the selected controller is not active. This
+development migration does not use Touch ID. Do not put the HA registry in
+the private instance repository or on an airunner.
+
+Run the no-publication compatibility check before the final review:
+
+```sh
+klokast-dev/bin/publish-private-instance --check
+```
+
+The check uses the sealed engine and the exact controller-private deployment,
+platform-resource, and HA files. It succeeds only when there is no `conflict`
+or `unsupported` finding. It does not derive or rewrite private intent.
+
 ## 11. Commit and push as the human
 
 Run the MacBook publication helper from the public `klokast-box` checkout:
@@ -507,7 +535,8 @@ The helper rechecks the exact five-file staged tree, engine pins, local Git
 state, registered repository, and sealed controller seed. If the human edited
 only `klokast-instance.json`, it sends that one document through standard
 input to a temporary owner-only controller check. The sealed checker validates
-it, the controller removes the temporary check directory, and the helper
+it and requires compatibility with the three controller-private legacy
+inputs. The controller removes the temporary check directory, and the helper
 requires the checked Git tree to equal the staged MacBook tree. Support files
 and `klokast.lock.json` must still equal the seed. The helper displays the
 complete private diff only in the current MacBook terminal and asks before it
@@ -544,10 +573,12 @@ cd "$HOME/src/klokast/klokast-box"
 klokast-dev/bin/publish-private-instance
 ```
 
-The helper refuses unstaged changes, changes to another file, and remote
-divergence. It validates the exact staged tree with the sealed controller
-checker before it displays the private diff and asks for approval. After the
-push, synchronize and validate the controller read-only checkout again.
+The helper refuses unstaged changes, changes to another file, remote
+divergence, and incompatible current legacy intent. Run it first with
+`--check` when you want a no-publication result. It validates the exact staged
+tree with the sealed controller checker before it displays the private diff
+and asks for approval. After the push, synchronize and validate the controller
+read-only checkout again.
 
 ## 12. Remove repository access from the temporary App
 

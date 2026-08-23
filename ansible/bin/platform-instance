@@ -25,6 +25,9 @@ PRIVATE_ROOT = Path("/home/smith/private/klokast")
 DEPLOYMENT_CHECKOUT = PRIVATE_ROOT / "instance"
 VALUES_PATH = PRIVATE_ROOT / "init-values.json"
 SEED_PATH = PRIVATE_ROOT / "instance-seed"
+COMPATIBILITY_DEPLOYMENT = PRIVATE_ROOT / "deployment.yml"
+COMPATIBILITY_REGISTRY = PRIVATE_ROOT / "platform-resources.yml"
+COMPATIBILITY_CONTROLLER_HA = PRIVATE_ROOT / "controller-ha.yml"
 MAXIMUM_VALUES_SIZE = 64 * 1024
 ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 TAILNET_DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
@@ -768,6 +771,33 @@ def parse_checker_result(completed):
     raise InstanceError("\n".join(messages))
 
 
+def parse_compatibility_result(completed):
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise InstanceError("sealed compatibility planner returned invalid result JSON") from error
+    if not isinstance(result, dict) or result.get("valid") is not True:
+        raise InstanceError("sealed compatibility planner did not return valid evidence")
+    compatibility = result.get("compatibility")
+    summary = compatibility.get("summary") if isinstance(compatibility, dict) else None
+    if not isinstance(summary, dict):
+        raise InstanceError("sealed compatibility planner returned an invalid summary")
+    conflict = summary.get("conflict")
+    unsupported = summary.get("unsupported")
+    if not isinstance(conflict, int) or isinstance(conflict, bool) or conflict < 0:
+        raise InstanceError("sealed compatibility planner returned an invalid conflict count")
+    if not isinstance(unsupported, int) or isinstance(unsupported, bool) or unsupported < 0:
+        raise InstanceError("sealed compatibility planner returned an invalid unsupported count")
+    if result.get("compatible") is not True or conflict != 0 or unsupported != 0:
+        raise InstanceError(
+            "candidate conflicts with current private compatibility authority "
+            f"({conflict} conflict, {unsupported} unsupported); review the private findings on the controller"
+        )
+    if completed.returncode != 0:
+        raise InstanceError("sealed compatibility planner refused a compatible candidate")
+    return {"conflict": conflict, "unsupported": unsupported}
+
+
 def check_candidate(args):
     binary = verify_configure_engine(args)
     validate_unborn_seed()
@@ -806,15 +836,37 @@ def check_candidate(args):
             check=False,
         )
         parse_checker_result(completed)
+        compatibility_summary = None
+        if getattr(args, "require_compatible", False):
+            completed = run(
+                [
+                    binary,
+                    "plan",
+                    "--instance", candidate,
+                    "--compatibility-deployment", COMPATIBILITY_DEPLOYMENT,
+                    "--compatibility-registry", COMPATIBILITY_REGISTRY,
+                    "--compatibility-controller-ha", COMPATIBILITY_CONTROLLER_HA,
+                    "--json",
+                ],
+                capture=True,
+                check=False,
+            )
+            if completed.returncode not in (0, 2):
+                raise InstanceError("sealed compatibility planner failed operationally")
+            compatibility_summary = parse_compatibility_result(completed)
         tree = run(["git", "-C", candidate, "write-tree"], capture=True).stdout.strip()
         if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
             raise InstanceError("validated candidate returned an invalid Git tree")
-        print(json.dumps({
+        result = {
             "schema_version": 1,
             "valid": True,
             "engine_commit": args.engine_commit,
             "tree": tree,
-        }, sort_keys=True))
+        }
+        if compatibility_summary is not None:
+            result["compatible"] = True
+            result["compatibility_summary"] = compatibility_summary
+        print(json.dumps(result, sort_keys=True))
     finally:
         shutil.rmtree(validation_root)
 
@@ -845,6 +897,7 @@ def parse_args(argv):
     candidate_parser = commands.add_parser("validate-candidate")
     candidate_parser.add_argument("--engine-commit", required=True)
     candidate_parser.add_argument("--build-dir", required=True)
+    candidate_parser.add_argument("--require-compatible", action="store_true")
     seed_parser = commands.add_parser("seed")
     seed_parser.add_argument("--build-dir", required=True)
     seed_parser.add_argument("--values", required=True)

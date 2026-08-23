@@ -54,7 +54,11 @@ installs a clean public clone. It never resets or deletes the old checkout.
 ## Active/Standby Controller HA
 
 The Platform uses one active controller at a time. Runtime markers, not a
-preferred controller in Git, identify the active controller. Inspect them with:
+preferred controller in Git, identify the active controller. The exact
+transitional registry is private at
+`~/private/klokast/controller-ha.yml`. The checked-in
+`ops/controller-ha.example.yml` is not live input. Inspect the private set and
+runtime markers with:
 
 ```sh
 ansible/bin/ops-controller-ha status

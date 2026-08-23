@@ -466,7 +466,7 @@ complete.
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is implemented as read-only evidence. Exact per-scope authority-coverage hardening remains. |
-| Read-only acceptance alignment | `decided` | The private HA custody, compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are decided below. Implement and live-verify this design before engine promotion. |
+| Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Complete the MacBook and active-controller acceptance flow before engine promotion. |
 | Engine promotion | `proposed` | It is not implemented. Complete the canonical engine-commit promotion design next. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |

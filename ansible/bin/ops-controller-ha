@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import getpass
 import json
 import os
 import re
@@ -14,7 +15,11 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = REPO_ROOT / "ops" / "controller-ha.yml"
+CONFIG_ENV = "KLOKAST_CONTROLLER_HA_CONFIG"
+CONTROLLER_CONFIG = Path("/home/smith/private/klokast/controller-ha.yml")
+MAC_CONFIG = Path.home() / ".config" / "klokast" / "controller-ha.yml"
+FIXED_REMOTE_USER = "smith"
+FIXED_REPO_DIR = "~/src/klokast/klokast-box"
 GUARD = "/usr/local/sbin/klokast-controller-guard"
 MARKER = "/etc/klokast/controller-ha.json"
 PROVIDER_SECRET_PATHS = [
@@ -41,34 +46,64 @@ def valid_box(value):
 
 
 def load_config(path):
-    with path.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError) as error:
+        die(f"cannot read controller HA config {path}: {error}")
+    if not isinstance(data, dict):
+        die("controller HA config root must be an object")
+    allowed_root = {"schema_version", "remote_user", "repo_dir", "controllers"}
+    unknown_root = sorted(set(data) - allowed_root)
+    if unknown_root:
+        die(f"controller HA config has unknown field: {unknown_root[0]}")
     if data.get("schema_version") != 1:
         die("controller HA config schema_version must be 1")
-    controllers = data.get("controllers") or []
-    if not isinstance(controllers, list) or not controllers:
-        die("controller HA config must list controllers")
+    if data.get("remote_user") != FIXED_REMOTE_USER:
+        die(f"controller HA remote_user must be {FIXED_REMOTE_USER}")
+    if data.get("repo_dir") != FIXED_REPO_DIR:
+        die(f"controller HA repo_dir must be {FIXED_REPO_DIR}")
+    controllers = data.get("controllers")
+    if not isinstance(controllers, list) or not 1 <= len(controllers) <= 2:
+        die("controller HA config must list one or two controllers")
     by_box = {}
     for item in controllers:
+        if not isinstance(item, dict):
+            die("each controller HA entry must be an object")
+        unknown_entry = sorted(set(item) - {"box", "hostname"})
+        if unknown_entry:
+            die(f"controller HA entry has unknown field: {unknown_entry[0]}")
         box = str(item.get("box", ""))
         hostname = str(item.get("hostname", ""))
         if not valid_box(box):
             die(f"invalid controller box: {box}")
         if hostname != f"{box}-ops":
             die(f"controller hostname for {box} must be {box}-ops")
+        if box in by_box:
+            die(f"duplicate controller box: {box}")
         by_box[box] = {"box": box, "hostname": hostname}
-    remote_user = data.get("remote_user") or "smith"
-    legacy_remote_users = [str(item) for item in (data.get("legacy_remote_users") or [])]
-    remote_users = []
-    for user in [remote_user, *legacy_remote_users]:
-        if user and user not in remote_users:
-            remote_users.append(user)
     return {
-        "remote_user": remote_user,
-        "remote_users": remote_users,
-        "repo_dir": data.get("repo_dir") or "~/src/klokast/klokast-box",
+        "remote_user": FIXED_REMOTE_USER,
+        "remote_users": [FIXED_REMOTE_USER],
+        "repo_dir": FIXED_REPO_DIR,
         "controllers": by_box,
     }
+
+
+def resolve_config_path(explicit=None):
+    if explicit is not None:
+        return explicit.expanduser().resolve()
+    configured = os.environ.get(CONFIG_ENV, "")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if getpass.getuser() == "smith":
+        return CONTROLLER_CONFIG
+    if sys.platform == "darwin":
+        return MAC_CONFIG
+    die(
+        "no controller HA config is available at this execution locus; "
+        "use --config, set KLOKAST_CONTROLLER_HA_CONFIG, or name the controller explicitly"
+    )
 
 
 def target(config, box):
@@ -504,13 +539,15 @@ def reseed(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Manage active/passive Klokast ops controllers")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--config", type=Path)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     status = subparsers.add_parser("status")
     status.add_argument("--json", action="store_true")
 
     subparsers.add_parser("resolve-active")
+
+    subparsers.add_parser("validate-config")
 
     bootstrap = subparsers.add_parser("bootstrap-standby")
     bootstrap.add_argument("--box", required=True)
@@ -552,12 +589,22 @@ def main(argv=None):
     reseed_parser.add_argument("--controller", required=True)
 
     args = parser.parse_args(argv)
-    args.config = args.config.resolve()
+    args.config = resolve_config_path(args.config)
     config = load_config(args.config)
     if args.command == "status":
         print_status(config, args.json)
     elif args.command == "resolve-active":
         resolve_active(config)
+    elif args.command == "validate-config":
+        print(json.dumps({
+            "schema_version": 1,
+            "valid": True,
+            "path": str(args.config),
+            "controllers": [
+                config["controllers"][box]["hostname"]
+                for box in sorted(config["controllers"])
+            ],
+        }, sort_keys=True))
     elif args.command == "bootstrap-standby":
         bootstrap_standby(config, args)
     elif args.command == "sync":

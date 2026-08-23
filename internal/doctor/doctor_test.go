@@ -140,6 +140,43 @@ func TestExtraLegacyResourcesDoNotAffectAuthorityDecision(t *testing.T) {
 	}
 }
 
+func TestStoppedSharedGuestRemainsHealthyWhenIdentityAndConfigExist(t *testing.T) {
+	observation := singleBoxObservation()
+	machineForTest(t, &observation, "boxa-iot").Online = false
+	observation.Boxes[0].RunningGuests = remove(observation.Boxes[0].RunningGuests, "iot")
+	observation.Boxes[0].AutostartGuests = remove(observation.Boxes[0].AutostartGuests, "iot")
+	result, err := Doctor(Options{
+		InstancePath: prepareInstance(t, false),
+		ObservationPath: writeObservation(t, observation),
+		Now: func() time.Time { return testNow },
+	}, testEngine)
+	if err != nil || !result.Valid || !result.Healthy {
+		t.Fatalf("stopped shared guest must remain healthy: result=%#v err=%v", result, err)
+	}
+}
+
+func TestSharedGuestStillRequiresIdentityTagAndXenConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		mutate func(*Observation)
+		code string
+	}{
+		{"missing-identity", func(o *Observation) { o.TailnetMachines = removeMachine(o.TailnetMachines, "boxa-iot") }, "tailnet.missing"},
+		{"wrong-tag", func(o *Observation) { machineForTest(t, o, "boxa-iot").Tags = []string{"tag:infra"} }, "tailnet.tag"},
+		{"missing-config", func(o *Observation) { o.Boxes[0].ConfiguredGuests = remove(o.Boxes[0].ConfiguredGuests, "iot") }, "xen.not-configured"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := singleBoxObservation()
+			test.mutate(&observation)
+			result, err := Doctor(Options{InstancePath: prepareInstance(t, false), ObservationPath: writeObservation(t, observation), Now: func() time.Time { return testNow }}, testEngine)
+			if err != nil || !result.Valid || result.Healthy || !hasFinding(result, test.code) {
+				t.Fatalf("shared guest custody drift was not reported: result=%#v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestObservationValidation(t *testing.T) {
 	tests := []struct {
 		name string

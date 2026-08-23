@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import importlib.util
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +15,7 @@ GUARD = REPO_ROOT / "ansible" / "roles" / "ops-controller" / "files" / "klokast-
 HA = REPO_ROOT / "ansible" / "bin" / "ops-controller-ha"
 AUTHKEY = REPO_ROOT / "klokast-ops" / "tailscale" / "bin" / "ts-authkey-mint"
 HA_SOURCE = HA.read_text(encoding="utf-8")
+EXAMPLE_CONFIG = REPO_ROOT / "ops" / "controller-ha.example.yml"
 OPS_CONTROLLER_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "main.yml"
 ).read_text(encoding="utf-8")
@@ -98,7 +102,7 @@ class OpsControllerHaTest(unittest.TestCase):
             [
                 str(HA),
                 "--config",
-                str(REPO_ROOT / "ops" / "controller-ha.yml"),
+                str(EXAMPLE_CONFIG),
                 "bootstrap-standby",
                 "--box",
                 "boxa",
@@ -126,8 +130,54 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertNotIn("rm -rf /home/smith/src/klokast/klokast-box", HA_SOURCE)
 
     def test_controller_ha_has_no_static_active_controller(self):
-        config = (REPO_ROOT / "ops" / "controller-ha.yml").read_text(encoding="utf-8")
+        config = EXAMPLE_CONFIG.read_text(encoding="utf-8")
         self.assertNotIn("preferred_active:", config)
+
+    def test_checked_in_config_is_only_an_explicit_example(self):
+        self.assertFalse((REPO_ROOT / "ops" / "controller-ha.yml").exists())
+        self.assertIn("controller-ha.example.yml", str(EXAMPLE_CONFIG))
+        self.assertNotIn("DEFAULT_CONFIG", HA_SOURCE)
+
+    def test_strict_config_rejects_unknown_and_duplicate_fields(self):
+        for content, message in (
+            (
+                "schema_version: 1\nremote_user: smith\nrepo_dir: ~/src/klokast/klokast-box\n"
+                "preferred_active: boxa\ncontrollers: [{box: boxa, hostname: boxa-ops}]\n",
+                "unknown field: preferred_active",
+            ),
+            (
+                "schema_version: 1\nremote_user: smith\nrepo_dir: ~/src/klokast/klokast-box\n"
+                "controllers: [{box: boxa, hostname: boxa-ops}, {box: boxa, hostname: boxa-ops}]\n",
+                "duplicate controller box: boxa",
+            ),
+        ):
+            with self.subTest(message=message), tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8"
+            ) as config:
+                config.write(content)
+                config.flush()
+                result = subprocess.run(
+                    [str(HA), "--config", config.name, "validate-config"],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(message, result.stderr)
+
+    def test_airunner_has_no_implicit_public_config(self):
+        environment = os.environ.copy()
+        environment.pop("KLOKAST_CONTROLLER_HA_CONFIG", None)
+        with mock.patch.dict(os.environ, environment, clear=True):
+            loader = SourceFileLoader("ops_controller_ha_resolution_test", str(HA))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            with mock.patch.object(module.getpass, "getuser", return_value="agent"), \
+                    mock.patch.object(module.sys, "platform", "linux"):
+                with self.assertRaises(SystemExit):
+                    module.resolve_config_path()
 
     def test_planned_switchover_is_fail_closed(self):
         self.assertIn('subparsers.add_parser("switchover")', HA_SOURCE)
