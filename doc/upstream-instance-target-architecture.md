@@ -193,10 +193,12 @@ scope.
 
 `klokast doctor` is offline and read-only. It verifies the observation hash,
 freshness, active-controller source, projection hash, required Tailnet
-identities and tags, dom0 reachability, Xen availability, and the running,
-configured, and autostart state of the standard router, `bak`, `dmz`, `iot`,
-and controller guests. It checks each declared airrunner identity for
-presence, online state, and its required tag.
+identities and tags, dom0 reachability, and Xen availability. The router and
+controller guests must be present, online, configured, running, and set to
+start automatically. The shared `bak`, `dmz`, and `iot` guests must have the
+expected Tailnet identity and tag and a Xen configuration. They can be
+intentionally stopped, offline, and not set to start automatically. Each
+declared airunner identity must be present, online, and have its required tag.
 
 The health scope is exactly `standard_substrate_v1`. It does not claim any of
 these health properties:
@@ -265,7 +267,8 @@ Plan v1 is a deterministic, read-only evidence artifact. Its exact inputs are:
    sealed-builder receipt.
 3. The legacy deployment document.
 4. The legacy platform-resource registry.
-5. The legacy controller HA registry.
+5. The exact private legacy controller HA registry from the controller's
+   private state.
 6. A fresh Observation v1 document from the declared active controller.
 7. A fresh, root-owned Instance Source Receipt v1 that matches the checked
    instance branch and commit.
@@ -463,22 +466,110 @@ complete.
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is implemented as read-only evidence. Exact per-scope authority-coverage hardening remains. |
+| Read-only acceptance alignment | `decided` | The private HA custody, compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are decided below. Implement and live-verify this design before engine promotion. |
 | Engine promotion | `proposed` | It is not implemented. Complete the canonical engine-commit promotion design next. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
+### Read-only acceptance alignment decision
+
 The first four items in the ordered design work queue remain gated by a
 successful read-only acceptance Plan. A contract-valid private instance and a
-successful source synchronization do not satisfy that gate. Before a retry,
-the human must review private desired state against each exact current legacy
-authority. The process must not rewrite desired state from an observation or
-weaken a `conflict` finding to make the Plan pass.
+successful source synchronization do not satisfy that gate. The following
+design is `decided` for this gate.
 
-The exact current legacy controller HA desired-state document needs a defined
-controller-private custody and provenance path. A checked-in neutral example
-is not a valid live compatibility input. This design item is `proposed`; decide
-its authority, creation, update, rollback, test, and recovery behavior before
-the next acceptance attempt.
+Authority and custody are as follows:
+
+- The existing legacy deployment document remains authoritative for its
+  represented legacy scopes.
+- The existing private platform-resource registry remains authoritative for
+  its represented legacy scopes.
+- The human owns the transitional legacy controller HA registry on the
+  trusted MacBook at `~/.config/klokast/controller-ha.yml`. The active
+  controller holds the operational copy at
+  `~/private/klokast/controller-ha.yml`. Existing private-state
+  synchronization can copy it to a standby controller.
+- The two-file private instance repository does not contain the transitional
+  HA registry. The airunner does not hold it.
+- `ops/controller-ha.example.yml` is only a neutral example. It is never live
+  compatibility evidence and there is no fallback from a missing private
+  registry to that example.
+
+The HA registry has a closed root and closed controller entries. It declares
+one or two unique controllers. Each controller name has the exact
+`<box>-ops` form, uses account `smith`, and uses the fixed public-engine
+checkout path. It does not declare a preferred active controller. Resolution
+uses an explicit command option first, then
+`KLOKAST_CONTROLLER_HA_CONFIG`, then the controller-private or MacBook path
+for the local execution locus. It fails when no valid registry is available.
+An airunner command must name the controller explicitly because the airunner
+has no private HA input.
+
+A development-only MacBook installer creates or replaces the MacBook registry
+and copies it to an explicitly named active controller. Its inputs are the
+candidate file and exact active-controller identity. Before installation, it
+shows the target and requires an interactive terminal user to enter the exact
+phrase `install transitional controller HA config`. This development
+deployment does not require a cryptographic Touch ID signature for this
+transitional file. The installer validates the closed schema, writes mode
+`0600` atomically, archives the prior file, and validates the active-controller
+markers after transfer. A validation failure restores the prior file. The
+recovery path is a reinstall from the human-held MacBook copy through an
+explicitly named controller. Mature deployments start with private-instance
+authority and do not use this migration-only registry.
+
+Compatibility input and output rules are as follows:
+
+- A legacy deployment `boxes` map with no entries claims no box authority.
+  It does not conflict with boxes in the private instance. A non-empty partial
+  map continues to produce a conflict for each missing projected box.
+- Controller candidate validation can require compatibility. It uses the
+  exact sealed engine and the controller-private deployment, resource, and HA
+  files. It returns checked compatibility evidence and refuses malformed
+  input or any `conflict` or `unsupported` finding. It does not consume an
+  Observation, create a Plan, or change any state.
+- `publish-private-instance --check` sends the staged private JSON to that
+  validation path and reports whether it is compatible. It does not commit,
+  push, publish, rewrite desired state, or disclose private findings to the
+  public repository. Publication uses the same required compatibility check.
+- The human explicitly edits only private `klokast-instance.json` to mirror
+  the current enabled applications, placement, typed features, retained-data
+  intent, and connectivity intent. No tool derives or rewrites that intent
+  from an observation.
+
+The shared-guest health rule in section 6 is part of this decision. Doctor
+does not read the legacy resource registry to decide whether a shared guest
+must run. This keeps the health scope independent of compatibility-only
+runtime intent and does not change the Plan schema.
+
+The implementation must refuse an absent or invalid private HA file, an
+ambiguous controller registry, an inactive transfer target, changed or
+unapproved sealed engine evidence, incompatible private intent, a changed
+publication base, or any non-interactive attempt to install the transitional
+HA file. It must not repair a Platform resource or relax a compatibility
+finding.
+
+Repository tests must cover HA resolution and strict validation, installer
+archive and rollback behavior, empty and partial legacy box maps, a stopped
+shared guest, candidate compatibility refusal, and publication check mode.
+The focused contract, Plan, source-custody, MacBook-helper, Touch ID, and
+cloud-runner tests must pass. The active controller's sealed builder must test
+and build the exact committed engine.
+
+Rollback is file-local. Restore the archived private HA registry if its
+installation fails. Do not publish a failed candidate instance update. If a
+published private update does not pass the later read-only Plan gate, publish
+a human-reviewed corrective private commit or revert it through the same
+preflight. No rollback action changes Platform runtime or application data.
+
+Live verification must install and synchronize the private HA registry, run
+the MacBook check and publication flow, synchronize the controller checkout,
+refresh the Platform map, export a fresh Observation v1, and store a Plan v1.
+The Plan must be valid, compatible, substrate healthy, deployable, and
+authority ready. It must have no refusal and no `conflict` or `unsupported`
+finding. Each `compatibility_only` finding must have exactly one continuing
+authority. `legacy_removal_ready: false` remains expected. The controller
+keeps all private inputs, findings, observations, and Plan artifacts.
 
 The ordered design work queue is:
 
