@@ -358,7 +358,8 @@ compatibility-only finding and confirms its continuing authority.
 
 ## 9. Engine promotion decision
 
-Status: `implemented`. Live MacBook and controller acceptance is pending.
+Status: `live-verified`. The real MacBook Touch ID promotion and controller
+activation passed on 2026-08-24.
 
 Version 1 promotes only on canonical
 `https://github.com/klokast/klokast-box` `main`. It supports metadata-only
@@ -535,18 +536,18 @@ complete.
 
 | Milestone | State | Current status and next gate |
 | --- | --- | --- |
-| JSON contract | `implemented` | The two-file Instance Specification v1 is implemented and remains unreleased. Its current shape uses `tailscale`, box `connectivity`, and no instance ID. Public fixtures contain no deployment-specific values. |
+| JSON contract | `implemented` | The two-file Instance Specification v1 is implemented and remains unreleased. Its current shape uses the top-level `tailscale` object as the v1 overlay-provider selection, elementary box connectivity capabilities, and no instance ID. Public fixtures contain no deployment-specific values. |
 | `klokast init` | `implemented` | Deterministic offline repository creation is implemented. |
 | `klokast check` | `implemented` | Closed JSON and repository validation is implemented. |
 | Compatibility planner | `implemented` | The deterministic comparison with all three legacy inputs is implemented. |
 | `klokast doctor` and Observation v1 | `implemented` | The limited `standard_substrate_v1` read-only health check is implemented. |
 | Sealed builder | `implemented` | The networkless controller-managed CLI build and receipt path is implemented. |
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
-| MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. Real macOS and Touch ID acceptance remains an external verification item. |
+| MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. The real MacBook publication and Touch ID engine-promotion paths are verified. Initial-bootstrap recovery remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is read-only evidence with exact finding, action, and continuing-authority coverage. |
-| Read-only acceptance alignment | `implemented` | Private HA custody, sealed compatibility preflight, empty legacy box-map semantics, and shared-guest health rules are implemented. Live verification requires controlled promotion to an engine commit that contains these changes. |
-| Engine promotion | `implemented` | Canonical metadata-only promotion, the closed reversible structural and connectivity transitions, immutable evidence, active-engine publication, and forward rollback are checked in. Real MacBook Touch ID promotion and controller activation remain the live-verification gate. |
-| Elementary connectivity capabilities | `implemented` | The schema, projection, compatibility adapter, app feature binding, compiler gates, and reversible promotion transition are checked in. Mark this `live-verified` only after controlled promotion, private-state alignment, read-only acceptance, and human authority review. |
+| Read-only acceptance alignment | `live-verified` | On 2026-08-24, the active controller verified source and activation custody, refreshed observations without repair, and stored an immutable deployable Plan with exact finding, action, and continuing-authority coverage. The human confirmed every compatibility-only continuing authority. Legacy removal stays blocked. |
+| Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
+| Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 

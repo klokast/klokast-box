@@ -13,16 +13,17 @@ inspection now sets `GIT_OPTIONAL_LOCKS=0`. Keep this invariant when adding
 source-status or receipt checks so a read-only authority check cannot change
 the controller-owned checkout.
 
-# 2026-08-22 - live-verify private compatibility alignment
+# 2026-08-22 - private compatibility alignment live verification
 
 The design for controller-private HA custody, compatibility preflight, and
 the limited shared-guest health scope is decided in
 [the upstream/instance target architecture](upstream-instance-target-architecture.md#read-only-acceptance-alignment-decision).
-Run the controlled engine promotion first, then run the real MacBook and
-active-controller acceptance flow. The refused baseline Plan permits
-engine-promotion work. A successful read-only Plan is required before apply
-work, not before promotion. Keep all private inputs, findings, observations,
-and Plan artifacts on the controller.
+This gate passed on 2026-08-24 after controlled engine promotion and the real
+MacBook and active-controller acceptance flow. The deployable read-only Plan
+had exact finding, action, and continuing-authority coverage. The human
+confirmed each continuing authority. Keep all private inputs, findings,
+observations, and Plan artifacts on the controller. This acceptance does not
+authorize apply work or legacy-authority removal.
 
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 
@@ -93,18 +94,15 @@ showed that canonical private `main` still selected the legacy top-level site
 shape. The workflow now includes one closed reversible legacy-to-current
 Instance v1 transform and records its inverse for rollback validation. This
 prevents future work from relying on the incorrect schema-compatible
-assumption. Keep the controller and airunner without
-private-repository push authority. Complete its real MacBook and active
-controller acceptance. See
+assumption. Keep the controller and airunner without private-repository push
+authority. Real MacBook Touch ID promotion and active-controller acceptance
+passed on 2026-08-24. See
 [the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-decision).
 
-This workflow now blocks live verification of the implemented read-only
-acceptance corrections. The private lock correctly selects the earlier sealed
-engine, while the corrected planner and Doctor behavior is in a later verified
-engine commit. Do not run the later binary against the earlier lock, edit the
-lock directly, or weaken the engine identity check. Use the refused baseline
-Plan as input to the promotion design, promote through the decided workflow,
-and then rerun the complete read-only acceptance flow.
+The fixed-engine mismatch initially blocked live verification of the read-only
+acceptance corrections. The controlled workflow resolved it without direct
+lock edits or an unbound binary. Keep the prohibition against running a later
+binary against an earlier lock or weakening the engine identity check.
 
 # 2026-08-21 - self-updating bootstrap helper continued old shell functions
 
