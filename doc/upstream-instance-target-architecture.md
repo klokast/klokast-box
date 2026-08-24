@@ -551,12 +551,23 @@ complete.
 | Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
-### Read-only acceptance alignment decision
+### Current work queue
 
-The apply, migration, and legacy-removal work in the ordered design queue
-remains gated by a successful read-only acceptance Plan. A contract-valid
-private instance and a successful source synchronization do not satisfy that
-gate. The following design is `decided` for this gate.
+1. Define closed executor and rollback types, including refusal, test, audit,
+   authorization, and recovery behavior.
+2. Design one narrow apply pilot from a real Plan scope that is not
+   compatibility-only.
+3. Implement and live-verify the pilot, including rollback and idempotence.
+4. Use successful pilot evidence to design staged scope migration and the
+   later legacy-removal gate.
+
+### Completed read-only acceptance alignment design
+
+Apply, migration, and legacy-removal work remains gated by a successful
+read-only acceptance Plan. The current gate is `live-verified`. A
+contract-valid private instance and a successful source synchronization do not
+satisfy this gate by themselves. The following `decided` design records the
+completed acceptance and remains the baseline for future revalidation.
 
 The baseline acceptance attempt used the currently locked sealed engine and
 identified generic planner and Doctor defects. The corrected behavior is part
@@ -661,20 +672,9 @@ finding. Each `compatibility_only` finding must have exactly one continuing
 authority. `legacy_removal_ready: false` remains expected. The controller
 keeps all private inputs, findings, observations, and Plan artifacts.
 
-The ordered design work queue is:
-
-1. Specify canonical engine-commit promotion. Keep custom engine repositories
-   outside version 1.
-2. Define closed executor and rollback types, including refusal, test, audit,
-   and recovery behavior.
-3. Design one narrow apply pilot from a real Plan scope that is not
-   legacy-only.
-4. Use successful pilot evidence to design staged scope migration and the
-   later legacy-removal gate.
-
-After the exact implementation commit is promoted through the controlled
-engine-promotion workflow, the active controller must rerun the existing
-private-instance read-only acceptance flow. The flow must verify
+After each future engine promotion, the active controller must rerun the
+private-instance read-only acceptance flow before apply, migration, or
+legacy-removal work continues. The flow must verify
 redacted bootstrap retirement and source status, stop for human completion if
 the temporary App still has authority, synchronize the read-only checkout,
 refresh the Platform map, export a fresh owner-only Observation v1, and store a

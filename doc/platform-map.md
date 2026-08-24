@@ -20,7 +20,7 @@ Typical use:
 ansible/bin/platform-map refresh --boxes boxa,boxb
 ansible/bin/platform-map refresh \
   --boxes boxa \
-  --resources-registry /home/codex/private/klokast/platform-resources.yml \
+  --resources-registry ~/private/klokast/platform-resources.yml \
   --remote-scope dom0
 ansible/bin/platform-map show
 ansible/bin/platform-map validate
