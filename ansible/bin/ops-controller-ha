@@ -11,7 +11,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    print(
+        "ops-controller-ha: Python PyYAML is missing; run "
+        "klokast-dev/bin/kk doctor --install on the MacBook",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

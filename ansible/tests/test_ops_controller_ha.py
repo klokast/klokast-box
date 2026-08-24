@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -42,6 +43,20 @@ class OpsControllerHaTest(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=False,
         )
+
+    def test_missing_pyyaml_has_an_expressive_error(self):
+        result = subprocess.run(
+            [sys.executable, "-S", str(HA), "--help"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Python PyYAML is missing", result.stderr)
+        self.assertIn("kk doctor --install", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_missing_marker_is_legacy_active_for_rollout(self):
         result = self.run_guard(

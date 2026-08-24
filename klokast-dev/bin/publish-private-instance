@@ -416,6 +416,8 @@ fi
 for command in git python3 tailscale; do
   ksa_need_command "$command"
 done
+python3 -c 'import yaml' >/dev/null 2>&1 || \
+  ksa_die "Python PyYAML is missing; run klokast-dev/bin/kk doctor --install and retry"
 
 refresh_checkout_and_reexec
 

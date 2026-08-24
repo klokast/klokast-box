@@ -5,6 +5,7 @@ TAILNET_SUFFIX="${KLOKAST_TAILNET_SUFFIX:-example.ts.net}"
 DEFAULT_MUSIC_REMOTE_DIR="/music/library"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYYAML_VERSION="6.0.3"
 
 usage() {
   cat <<EOF
@@ -138,6 +139,7 @@ doctor() {
   local sc_auth_help=""
   local ssh_keygen_help=""
   local ssh_add_help=""
+  local pip_args=()
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -188,6 +190,40 @@ doctor() {
     printf 'ok: python3 found\n'
   else
     printf 'missing: python3\n' >&2
+    missing=true
+  fi
+
+  if command -v python3 >/dev/null 2>&1 && \
+      python3 -c 'import yaml' >/dev/null 2>&1; then
+    printf 'ok: Python PyYAML module found\n'
+  elif [ "$(uname -s)" = "Darwin" ] && [ "$install_missing" = true ]; then
+    need_command brew
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+      printf 'Installing Homebrew Python for the PyYAML module...\n'
+      brew install python
+      hash -r
+    fi
+    pip_args=(
+      install
+      --user
+      --disable-pip-version-check
+      --only-binary=:all:
+    )
+    if python3 - <<'PY'
+import pathlib
+import sysconfig
+raise SystemExit(0 if (pathlib.Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").exists() else 1)
+PY
+    then
+      pip_args+=(--break-system-packages)
+    fi
+    printf 'Installing PyYAML %s for controller HA helpers...\n' "$PYYAML_VERSION"
+    python3 -m pip "${pip_args[@]}" "PyYAML==$PYYAML_VERSION"
+    python3 -c 'import yaml' >/dev/null 2>&1 || \
+      die "PyYAML installation completed, but the yaml module is not importable"
+    printf 'ok: Python PyYAML module found\n'
+  else
+    printf 'missing: Python PyYAML module. Run klokast-dev/bin/kk doctor --install.\n' >&2
     missing=true
   fi
 

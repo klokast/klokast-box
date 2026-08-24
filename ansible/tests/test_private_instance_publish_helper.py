@@ -105,6 +105,13 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_helper_checks_pyyaml_before_controller_resolution(self):
+        source = HELPER.read_text(encoding="utf-8")
+        module_check = source.index("python3 -c 'import yaml'")
+        controller_resolution = source.index('ops-controller-ha\" resolve-active')
+        self.assertLess(module_check, controller_resolution)
+        self.assertIn("kk doctor --install", source[module_check:controller_resolution])
+
     @staticmethod
     def git(*arguments, check=True):
         return subprocess.run(

@@ -26,6 +26,10 @@ From a checkout of this repo on the MacBook:
 klokast-dev/bin/kk doctor --install
 ```
 
+The doctor installs and verifies Python and the pinned PyYAML module used by
+the controller HA and private publication helpers. Run the doctor again after
+a Python replacement or upgrade.
+
 The Secret Authority signer uses Apple's native CryptoTokenKit identity
 commands, system OpenSSH, and `/usr/lib/ssh-keychain.dylib`. It uses a private
 Apple `ssh-agent` only for one signing operation. The check fails if this macOS
