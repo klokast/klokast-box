@@ -245,6 +245,24 @@ wrapper with the active controller checkout. Give the operator the exact
 tagged convergence command when the files differ. Do not let the promotion
 continue with different transition vocabularies.
 
+# 2026-08-24 - report the MacBook dependency supply chain
+
+After a successful check, `klokast-dev/bin/kk doctor` must print a short list
+of the direct software dependencies that Klokast requires on the MacBook. For
+each dependency, show its resolved version, verified provider or acquisition
+source, installation method, and the narrow Klokast function that requires it.
+Distinguish Apple-provided components from Homebrew packages and pinned PyPI
+binary wheels. Report unknown provenance as unknown; do not infer provenance
+only from a filesystem path.
+
+Keep the list limited to direct Klokast requirements so that it is useful for
+a quick human review. Add a machine-readable form for tests and audits. Record
+and verify package or wheel hashes where the package system supports them.
+Fail the dependency review when an installed component does not match its
+declared source or version. Use this report to control software bloat, reduce
+the MacBook attack surface, and review software supply-chain changes before
+installation.
+
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 
 The first boxa dom0 policy canary showed that the live Alpine 3.23 repository
