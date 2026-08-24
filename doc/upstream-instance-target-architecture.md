@@ -674,18 +674,18 @@ complete.
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. The real MacBook publication and Touch ID engine-promotion paths are verified. Initial-bootstrap recovery remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is read-only evidence with exact finding, action, and continuing-authority coverage. |
+| Plan v2 | `implemented` | Plan v2 binds the active authority state, exact controller toolchain, and atomic Tailnet action group. Apply refuses Plan v1. |
 | Read-only acceptance alignment | `live-verified` | On 2026-08-24, the active controller verified source and activation custody, refreshed observations without repair, and stored an immutable deployable Plan with exact finding, action, and continuing-authority coverage. The human confirmed every compatibility-only continuing authority. Legacy removal stays blocked. |
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
-| Authorized apply | `decided` | The byte-preserving three-scope Tailnet pilot has a closed executor, authority-state model, authorization, rollback, recovery, refusal, and acceptance contract. Implementation and live verification are next. |
+| Authorized apply | `implemented` | The byte-preserving three-scope Tailnet pilot, source-recovery rehearsal, dedicated signer, closed root executor, forward rollback, and deterministic refusal tests are implemented. Controller installation and live Touch ID acceptance are next. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
 ### Current work queue
 
-1. Implement and repository-test the decided Tailnet authority pilot.
-2. Install and live-verify the pilot, including rollback, re-adoption,
+1. Install and live-verify the pilot, including rollback, re-adoption,
    idempotence, recovery rehearsal, and replay refusal.
-3. Use successful pilot evidence to design staged scope migration and the
+2. Use successful pilot evidence to design staged scope migration and the
    later legacy-removal gate.
 
 ### Completed read-only acceptance alignment design
@@ -792,7 +792,7 @@ preflight. No rollback action changes Platform runtime or application data.
 
 Live verification must install and synchronize the private HA registry, run
 the MacBook check and publication flow, synchronize the controller checkout,
-refresh the Platform map, export a fresh Observation v1, and store a Plan v1.
+refresh the Platform map, export a fresh Observation v1, and store a Plan v2.
 The Plan must be valid, compatible, substrate healthy, deployable, and
 authority ready. It must have no refusal and no `conflict` or `unsupported`
 finding. Each `compatibility_only` finding must have exactly one continuing
@@ -805,7 +805,8 @@ legacy-removal work continues. The flow must verify
 redacted bootstrap retirement and source status, stop for human completion if
 the temporary App still has authority, synchronize the read-only checkout,
 refresh the Platform map, export a fresh owner-only Observation v1, and store a
-Plan v1 made with the currently locked sealed engine. The result must have no
+Plan v2 made with the currently locked sealed engine and the active authority
+state and controller toolchain receipts. The result must have no
 `conflict` or `unsupported` finding. A human must confirm one continuing
 authority for each `compatibility_only` finding.
 `legacy_removal_ready: false` is expected. The controller keeps the Plan and

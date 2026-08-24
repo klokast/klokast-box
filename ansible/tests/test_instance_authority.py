@@ -902,10 +902,12 @@ class InstanceAuthorityTest(unittest.TestCase):
             REPO_ROOT / "klokast-dev" / "lib" / "approval-common.sh"
         ).read_text(encoding="utf-8")
         source = installer.read_text(encoding="utf-8")
-        self.assertIn("--purpose private-instance|static-site", source)
+        self.assertIn("--purpose private-instance|static-site|platform-apply", source)
         self.assertIn("--finalize-migration", source)
         self.assertIn("allowed-signers-private-instance", source)
         self.assertIn("allowed-signers-static-site", source)
+        self.assertIn("allowed-signers-platform-apply", source)
+        self.assertIn("klokast-platform-apply", source)
         self.assertIn("Touch ID approved. Sending the public signer check", source)
         self.assertIn("Touch ID approved. Verifying the installed", source)
         self.assertIn("KSA_CTK_SC_AUTH=/usr/sbin/sc_auth", common)
@@ -925,6 +927,10 @@ class InstanceAuthorityTest(unittest.TestCase):
         )
         self.assertLess(
             source.index('verify_installed_purpose private-instance'),
+            source.index('doas rm -f /etc/klokast/secret-authority/allowed-signers'),
+        )
+        self.assertLess(
+            source.index('verify_installed_purpose platform-apply'),
             source.index('doas rm -f /etc/klokast/secret-authority/allowed-signers'),
         )
         completed = subprocess.run(
@@ -1085,6 +1091,8 @@ class PlatformInstanceTest(unittest.TestCase):
         args = mock.Mock(action="sync", repo_owner="family", repo_name="klokast-instance")
         completed = mock.Mock(returncode=0)
         with mock.patch.object(self.mod, "require_controller_user"), mock.patch.object(
+            self.mod, "require_installed_authority_matches_source"
+        ), mock.patch.object(
             self.mod.Path, "is_file", return_value=True
         ), mock.patch.object(self.mod.os, "access", return_value=True), mock.patch.object(
             self.mod, "run", return_value=completed

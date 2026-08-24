@@ -40,6 +40,7 @@ PROVIDER_SECRET_PATHS = [
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.pem",
     "/etc/klokast/secret-authority/allowed-signers-private-instance",
     "/etc/klokast/secret-authority/allowed-signers-static-site",
+    "/etc/klokast/secret-authority/allowed-signers-platform-apply",
     "/etc/klokast/private-instance/github-readonly",
 ]
 
@@ -383,10 +384,19 @@ for path in \
   home/smith/private/klokast/terraform \
   var/lib/klokast/approved-state \
   var/lib/klokast/secret-authority \
+  var/lib/klokast/authority-states \
+  var/lib/klokast/active-authority-state \
+  var/lib/klokast/controller-toolchains \
+  var/lib/klokast/private-source-recoveries \
+  var/lib/klokast/apply-executions \
+  var/lib/klokast/apply-rollback-material \
+  var/lib/klokast/apply-used-nonces \
   var/log/klokast/secret-authority.jsonl \
+  var/log/klokast/platform-apply.jsonl \
   etc/klokast/secret-authority/allowed-signers \
   etc/klokast/secret-authority/allowed-signers-private-instance \
-  etc/klokast/secret-authority/allowed-signers-static-site
+  etc/klokast/secret-authority/allowed-signers-static-site \
+  etc/klokast/secret-authority/allowed-signers-platform-apply
 do
   [ ! -e "/$path" ] || set -- "$@" "$path"
 done
@@ -493,6 +503,7 @@ doas rm -f \
   /etc/klokast/secret-authority/allowed-signers \
   /etc/klokast/secret-authority/allowed-signers-private-instance \
   /etc/klokast/secret-authority/allowed-signers-static-site \
+  /etc/klokast/secret-authority/allowed-signers-platform-apply \
   /etc/klokast/private-instance/github-readonly
 '''
     controller_sh(config, args.box, script)

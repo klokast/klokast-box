@@ -1,10 +1,11 @@
 # Touch ID Secret Authority Signers
 
-Use this runbook on the trusted `og` MacBook. It creates two separate Apple
+Use this runbook on the trusted `og` MacBook. It creates three separate Apple
 CryptoTokenKit identities:
 
 - `Klokast private-instance approval` for private-instance repository actions;
-- `Klokast static-site approval` for static-site actions.
+- `Klokast static-site approval` for static-site actions;
+- `Klokast platform apply approval` for the closed Platform Apply executor.
 
 Each identity uses a non-exportable P-256 Secure Enclave key with biometric
 protection. The local Klokast profile contains the public key and identity
@@ -58,23 +59,35 @@ klokast-dev/bin/install-secret-authority-approval-signer \
 Use Touch ID for this separate identity. The command installs only the public
 key on the controller as `human-static-site`.
 
+## 4. Install The Platform Apply Signer
+
+```sh
+klokast-dev/bin/install-secret-authority-approval-signer \
+  --controller boxb-ops \
+  --purpose platform-apply
+```
+
+Use Touch ID for this third identity. The command installs only the public key
+on the controller as `human-platform-apply`.
+
 If an earlier attempt stopped at `id_ecdsa_sk_rk already exists`, run the same
 command again. Do not delete either CryptoTokenKit identity. The command shows
 the existing static-site identity hash and SSH fingerprint. Approve recovery
 of its incomplete local Klokast profile. The private key is not regenerated.
 
-The two local profiles are under:
+The three local profiles are under:
 
 ```text
 ~/.local/share/klokast/approval-signers/private-instance/
 ~/.local/share/klokast/approval-signers/static-site/
+~/.local/share/klokast/approval-signers/platform-apply/
 ```
 
 Do not copy these directories to another computer as an identity backup. The
 public keys are not secret, but the matching private keys exist only on this
 Mac.
 
-## 4. Deploy The Scoped Controller Verification
+## 5. Deploy The Scoped Controller Verification
 
 ```sh
 tailscale ssh smith@boxb-ops
@@ -85,12 +98,13 @@ ansible/bin/converge-ops-controller --box boxb
 
 The private-instance authority now reads only
 `allowed-signers-private-instance`. The static-site authority reads only
-`allowed-signers-static-site`.
+`allowed-signers-static-site`. Platform Apply reads only
+`allowed-signers-platform-apply`.
 
-## 5. Retire The Legacy Signer File
+## 6. Retire The Legacy Signer File
 
 Return to the MacBook. Finalization asks for one Touch ID approval from each
-identity. It also checks that the deployed controller wrappers report the two
+identity. It also checks that the deployed controller wrappers report the three
 new signer scopes. It removes the old generic signer file only after all checks
 pass.
 

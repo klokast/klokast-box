@@ -159,9 +159,13 @@ ansible/bin/render-tailscale-policy \
   --output ~/private/klokast/tailscale-policy.hujson
 doas -n /usr/local/sbin/ts-policy-validate \
   /home/smith/private/klokast/tailscale-policy.hujson
-doas -n /usr/local/sbin/ts-policy-apply \
-  /home/smith/private/klokast/tailscale-policy.hujson
 ```
+
+Stop after validation. The infra account has no direct policy-mutation
+privilege. The current authorized Apply executor accepts only the three
+private Tailnet identity inputs and cannot apply a public-template change.
+Do not bypass this boundary during NanoKVM recovery. Use the local console
+path, or complete a separate architecture decision for topology mutation.
 
 After apply, test `https://oob.<tailnet>.ts.net/` from an operator-owned
 device. A request from `tag:ops` or `tag:airunner` is not an equivalent test

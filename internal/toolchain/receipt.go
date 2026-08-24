@@ -87,12 +87,22 @@ func Validate(receipt Receipt, engineCommit string) error {
 }
 
 func Hash(receipt Receipt) (string, error) {
-	receipt.ReceiptSHA256 = ""
 	content, err := json.Marshal(receipt)
 	if err != nil {
 		return "", fmt.Errorf("encode controller toolchain receipt: %w", err)
 	}
-	sum := sha256.Sum256(content)
+	var value map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return "", fmt.Errorf("canonicalize controller toolchain receipt: %w", err)
+	}
+	delete(value, "receipt_sha256")
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize controller toolchain receipt: %w", err)
+	}
+	sum := sha256.Sum256(canonical)
 	return fmt.Sprintf("%x", sum[:]), nil
 }
 

@@ -26,7 +26,7 @@ an ambient controller command.
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline Instance Specification v1 repository from one complete strict JSON instance file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
-| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With a fresh Observation v1 input and Instance Source Receipt v1, it emits a hashed, provenance-aware Plan v1 artifact. It does not apply changes. |
+| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With fresh observation, source, authority-state, and controller-toolchain evidence, it emits a hashed Plan v2 artifact. It does not apply changes. |
 
 ## Platform And Controller Wrappers
 
@@ -49,9 +49,11 @@ Source: `ansible/bin/`.
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
 | `platform-instance` | active controller | Guides and validates private initialization, seeds with a sealed-builder binary, maintains the root-custodied read-only source, and performs controlled engine promotion preflight, approval, activation, and status checks. |
+| `platform-apply` | active controller | Runs the closed Tailnet policy-input preflight, execution, or forward rollback through the installed root Apply boundary. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
-| `platform-plan` | active controller | Verifies one sealed-builder CLI receipt and one root-owned instance source receipt, creates Plan v1 from controller-private inputs, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
+| `platform-plan` | active controller | Verifies the sealed engine and bound source, authority-state, and toolchain receipts, creates Plan v2, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
+| `controller-toolchain-receipt` | active controller | Verifies a clean public checkout and exact installed Apply tool bytes, then stores one immutable controller-toolchain receipt. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |
@@ -87,7 +89,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | `ts-authkey-streamer` | root wrapper | Calls `ts-authkey-mint --purpose streamer` for Raspberry Pi streamer identities. |
 | `ts-policy-pull` | root wrapper | Downloads the live Tailscale policy to the approved repo policy path. |
 | `ts-policy-validate` | root wrapper | Validates the repo Tailnet policy file through the Tailscale API. |
-| `ts-policy-apply` | active-controller root wrapper | Validates then applies the repo Tailnet policy through the Tailscale API. |
+| `ts-policy-mutate-internal` | Apply root boundary only | Performs fixed GET, validate, and conditional POST operations for one root-owned Apply work directory. It is not installed in sudoers. |
 | `ts-devices-list` | root wrapper | Lists Tailnet devices through the scoped devices OAuth client. |
 | `ts-device-delete-stale` | active-controller root wrapper | Deletes one stale offline Tailnet device only after re-fetching and matching id, hostname, tag, and offline status. |
 
@@ -97,6 +99,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | --- | --- | --- | --- |
 | `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles static-site Secret Authority intents and approved actions for GitHub App and Cloudflare token storage. |
 | `ksa-instance` | `klokast-ops/secret-authority/bin/` | root wrapper | Verifies and registers the human-created private repository, registers its read-only deploy key, retires the temporary GitHub App, and synchronizes root-custodied instance source evidence. |
+| `ksa-apply` | `klokast-ops/secret-authority/bin/` | root wrapper | Enforces the closed Tailnet policy-input preflight, signed execution, recovery, and forward rollback contract. |
 | `klokast-controller-guard` | `ansible/roles/ops-controller/files/` | controller target | Checks the controller HA marker and exits nonzero unless the local controller is active. |
 
 ## Laptop And Developer Convenience Tools
@@ -114,6 +117,7 @@ Source: `klokast-dev/bin/`.
 | `prepare-private-instance-worktree` | laptop | Runs the guided owner-only values setup on the active controller, seeds with the pinned sealed build, streams the generated repository to the MacBook, and verifies its initial Git state without copying private values into arguments or the redacted journal. |
 | `publish-private-instance` | laptop | Checks or publishes the initial seed or a later staged `klokast-instance.json` edit after sealed contract and compatibility validation, exact remote-base checks, human diff approval, and private `main` verification. |
 | `promote-private-instance-engine` | laptop | Checks or publishes one canonical engine promotion, including the closed reversible legacy Instance v1 transition when required, obtains Touch ID approval, activates the exact private tree on the read-only controller, and supports receipt-bound forward rollback. |
+| `apply-platform-intent` | laptop | Displays and checks one exact Apply intent, gets purpose-specific Touch ID approval, and transfers only the intent and signature for execution. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
 | `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
 | `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |

@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Create one immutable receipt for the installed controller Apply toolchain."""
+
+import argparse
+import getpass
+import hashlib
+import importlib.util
+import json
+import os
+import pwd
+import subprocess
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve()
+REPO_ROOT = SCRIPT.parents[2]
+PLATFORM_PLAN = SCRIPT.with_name("platform-plan")
+RECEIPT_ROOT = Path("/var/lib/klokast/controller-toolchains")
+COMPONENTS = [
+    ("controller_guard", REPO_ROOT / "ansible/roles/ops-controller/files/klokast-controller-guard", Path("/usr/local/sbin/klokast-controller-guard")),
+    ("ksa_apply", REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
+    ("ksa_instance", REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance", Path("/usr/local/sbin/ksa-instance")),
+    ("policy_mutation_helper", REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")),
+    ("policy_renderer", REPO_ROOT / "ansible/bin/render-tailscale-policy", Path("/usr/local/sbin/render-tailscale-policy")),
+    ("policy_template", REPO_ROOT / "klokast-ops/tailscale/policy.hujson.j2", Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")),
+]
+
+
+class ToolchainError(Exception):
+    pass
+
+
+def run(argv, *, capture=False, check=True):
+    result = subprocess.run(
+        [str(item) for item in argv],
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise ToolchainError(f"command failed: {argv[0]}")
+    return result
+
+
+def load_plan_wrapper():
+    loader = SourceFileLoader("klokast_platform_plan_toolchain", str(PLATFORM_PLAN))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def sha256(path):
+    if path.is_symlink() or not path.is_file():
+        raise ToolchainError(f"toolchain component is missing or unsafe: {path.name}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def verify_checkout(commit):
+    if getpass.getuser() != "smith":
+        raise ToolchainError("run as smith on the active controller")
+    head = run(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture=True).stdout.strip()
+    branch = run(["git", "-C", REPO_ROOT, "branch", "--show-current"], capture=True).stdout.strip()
+    dirty = run(["git", "-C", REPO_ROOT, "status", "--porcelain"], capture=True).stdout
+    if head != commit or branch != "main" or dirty:
+        raise ToolchainError("public controller checkout must be clean on main at the selected engine commit")
+
+
+def build_receipt(build_dir):
+    plan = load_plan_wrapper()
+    try:
+        plan.require_active_controller()
+        directory, commit = plan.resolve_build_directory(build_dir)
+        build_receipt, binary = plan.verify_build_directory(directory, commit)
+        plan.verify_binary_version(binary, build_receipt)
+    except plan.PlanError as error:
+        raise ToolchainError(f"sealed engine verification failed: {error}") from error
+    verify_checkout(commit)
+    components = []
+    for name, source, installed in COMPONENTS:
+        source_digest = sha256(source)
+        installed_digest = sha256(installed)
+        if source_digest != installed_digest:
+            raise ToolchainError(f"installed {name} differs from its checked-in source")
+        components.append({
+            "name": name,
+            "source_sha256": source_digest,
+            "installed_sha256": installed_digest,
+        })
+    binary_digest = sha256(binary)
+    components.append({
+        "name": "sealed_engine",
+        "source_sha256": binary_digest,
+        "installed_sha256": binary_digest,
+    })
+    receipt = {
+        "schema_version": 1,
+        "kind": "klokast.controller-toolchain.v1",
+        "engine_commit": commit,
+        "public_checkout_clean": True,
+        "public_checkout_commit": commit,
+        "components": components,
+    }
+    receipt["receipt_sha256"] = hashlib.sha256(canonical(receipt)).hexdigest()
+    return receipt
+
+
+def store(receipt):
+    try:
+        group = str(pwd.getpwnam("smith").pw_gid)
+    except KeyError as error:
+        raise ToolchainError("controller account smith is missing") from error
+    directory = RECEIPT_ROOT / receipt["engine_commit"]
+    destination = directory / f"{receipt['receipt_sha256']}.json"
+    content = canonical(receipt) + b"\n"
+    run(["doas", "install", "-d", "-o", "root", "-g", group, "-m", "0750", RECEIPT_ROOT])
+    run(["doas", "install", "-d", "-o", "root", "-g", group, "-m", "0750", directory])
+    if destination.exists():
+        if destination.read_bytes() != content:
+            raise ToolchainError("immutable controller toolchain path contains different bytes")
+        return destination
+    with tempfile.NamedTemporaryFile(prefix="klokast-toolchain-", delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(content)
+    target_temporary = directory / f".{receipt['receipt_sha256']}.{os.getpid()}.tmp"
+    try:
+        run(["doas", "install", "-o", "root", "-g", group, "-m", "0440", temporary, target_temporary])
+        linked = run(["doas", "ln", target_temporary, destination], check=False)
+        if linked.returncode != 0 and (not destination.exists() or destination.read_bytes() != content):
+            raise ToolchainError("cannot create immutable controller toolchain receipt")
+    finally:
+        run(["doas", "rm", "-f", target_temporary], check=False)
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-dir", required=True)
+    args = parser.parse_args(argv)
+    try:
+        receipt = build_receipt(args.build_dir)
+        destination = store(receipt)
+    except ToolchainError as error:
+        print(f"controller-toolchain-receipt: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps({
+        "schema_version": 1,
+        "valid": True,
+        "engine_commit": receipt["engine_commit"],
+        "receipt_sha256": receipt["receipt_sha256"],
+        "path": str(destination),
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

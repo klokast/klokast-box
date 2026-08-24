@@ -27,6 +27,7 @@ SIGNATURE_NAMESPACE = "klokast-secret-authority"
 SOURCE_KIND = "klokast.instance-source.v1"
 PROMOTION_KIND = "klokast.engine-promotion.v1"
 ACTIVATION_KIND = "klokast.engine-activation.v1"
+SOURCE_RECOVERY_KIND = "klokast.private-source-recovery.v1"
 DEFAULT_REPO_ROOT = "/home/smith/src/klokast/klokast-box"
 DEFAULT_INFRA_USER = "smith"
 DEFAULT_CONFIG_ROOT = "/etc/klokast/secret-authority/instance-bootstrap"
@@ -35,6 +36,7 @@ DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority/instance"
 DEFAULT_RECEIPT_ROOT = "/var/lib/klokast/instance-sources"
 DEFAULT_PROMOTION_ROOT = "/var/lib/klokast/engine-promotions"
 DEFAULT_ACTIVATION_ROOT = "/var/lib/klokast/engine-activations"
+DEFAULT_RECOVERY_ROOT = "/var/lib/klokast/private-source-recoveries"
 DEFAULT_CHECKOUT = "/home/smith/private/klokast/instance"
 DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
 DEFAULT_ALLOWED_SIGNERS = "/etc/klokast/secret-authority/allowed-signers-private-instance"
@@ -624,6 +626,27 @@ def require_active_controller():
         raise InstanceAuthorityError("controller guard rejected this inactive controller")
 
 
+def require_installed_source_match(args):
+    installed = Path(__file__).resolve()
+    expected_installed = Path("/usr/local/sbin/ksa-instance")
+    if installed != expected_installed:
+        return
+    source = Path(args.repo_root) / "klokast-ops" / "secret-authority" / "bin" / "ksa-instance"
+    try:
+        matches = source.read_bytes() == installed.read_bytes()
+    except OSError:
+        matches = False
+    if matches:
+        return
+    hostname = run(["hostname", "-s"], capture=True, check=False).stdout.strip()
+    box = hostname[:-4] if hostname.endswith("-ops") else "BOX"
+    raise InstanceAuthorityError(
+        "installed ksa-instance differs from its checked-in source; repair it with: "
+        f"ansible/bin/converge-ops-controller --box {box} -- "
+        "--tags ops-controller-secret-authority-wrappers"
+    )
+
+
 def source_paths(args):
     root = Path(args.source_root)
     return {
@@ -1105,6 +1128,102 @@ def cmd_source_sync(args):
           repository_id=state["repository_id"], commit=commit, receipt_sha256=receipt["receipt_sha256"])
     print(canonical_json({"schema_version": 1, "synchronized": True, "commit": commit,
                           "receipt_sha256": receipt["receipt_sha256"], "receipt_path": str(path)}), end="")
+
+
+def cmd_source_recovery_check(args):
+    require_root()
+    require_active_controller()
+    paths, source, state = load_registered_source_identity(args)
+    canonical_root, canonical_commit, canonical_tree = checkout_state(args.checkout)
+    if canonical_commit != args.private_commit:
+        raise InstanceAuthorityError("private source recovery commit does not match the canonical checkout")
+    receipt = validate_source_receipt_binding(
+        args,
+        canonical_commit,
+        args.source_receipt_sha256,
+        source["repository_sha256"],
+        state["repository_id"],
+    )
+    if receipt.get("remote_ref") != "refs/heads/main":
+        raise InstanceAuthorityError("private source receipt does not bind the active branch")
+    if remote_head(args, paths) != canonical_commit:
+        raise InstanceAuthorityError("private source remote changed after the source receipt")
+    build = verify_sealed_build(args.engine_commit, args.build_operation)
+    temporary_parent = Path(args.recovery_root).parent / ".private-source-recovery"
+    ensure_private_dir(temporary_parent, 0o700)
+    temporary = Path(tempfile.mkdtemp(prefix="checkout.", dir=temporary_parent))
+    try:
+        run(
+            [
+                "git", "clone", "--quiet", "--branch", "main", "--single-branch",
+                remote_url(args.repo_owner, args.repo_name), temporary,
+            ],
+            capture=True,
+            env=git_environment(paths),
+        )
+        fetched_root, fetched_commit, fetched_tree = checkout_state(temporary)
+        if fetched_root != temporary or fetched_commit != canonical_commit or fetched_tree != canonical_tree:
+            raise InstanceAuthorityError("temporary private source tree does not match the canonical checkout")
+        lock = decode_closed_json(
+            read_bounded_regular(temporary / "klokast.lock.json", 64 * 1024, "private engine lock"),
+            "private engine lock",
+        )
+        engine = lock.get("engine") if isinstance(lock, dict) else None
+        if (
+            not isinstance(engine, dict)
+            or engine.get("repository") != CANONICAL_ENGINE_REPOSITORY
+            or engine.get("ref") != CANONICAL_ENGINE_REF
+            or engine.get("commit") != args.engine_commit
+        ):
+            raise InstanceAuthorityError("temporary private source lock does not select the sealed engine")
+        checked = run(
+            [build["binary_path"], "check", "--instance", temporary, "--json"],
+            capture=True,
+            check=False,
+        )
+        try:
+            check_result = json.loads(checked.stdout)
+        except json.JSONDecodeError as error:
+            raise InstanceAuthorityError("sealed engine returned invalid private source verification") from error
+        if checked.returncode != 0 or check_result.get("valid") is not True:
+            raise InstanceAuthorityError("sealed engine rejected the temporary private source")
+    finally:
+        shutil.rmtree(temporary)
+    after_root, after_commit, after_tree = checkout_state(args.checkout)
+    if (after_root, after_commit, after_tree) != (canonical_root, canonical_commit, canonical_tree):
+        raise InstanceAuthorityError("source recovery check changed the canonical private checkout")
+    evidence = {
+        "schema_version": 1,
+        "kind": SOURCE_RECOVERY_KIND,
+        "repository_sha256": source["repository_sha256"],
+        "repository_id": state["repository_id"],
+        "private_commit": canonical_commit,
+        "private_tree": canonical_tree,
+        "source_receipt_sha256": args.source_receipt_sha256,
+        "engine_commit": args.engine_commit,
+        "build_operation": build["operation"],
+        "binary_sha256": build["binary_sha256"],
+        "builder_receipt_sha256": build["receipt_sha256"],
+        "checked_at": format_utc(now_utc()),
+    }
+    path, stored = write_group_receipt(
+        args, args.recovery_root, canonical_commit, evidence
+    )
+    audit(
+        args,
+        "instance.source.recovery-checked",
+        repository_sha256=source["repository_sha256"],
+        repository_id=state["repository_id"],
+        commit=canonical_commit,
+        receipt_sha256=stored["receipt_sha256"],
+    )
+    print(canonical_json({
+        "schema_version": 1,
+        "verified": True,
+        "private_commit": canonical_commit,
+        "receipt_sha256": stored["receipt_sha256"],
+        "receipt_path": str(path),
+    }), end="")
 
 
 def app_repository_ids(args, token):
@@ -2374,6 +2493,7 @@ def build_parser():
     parser.add_argument("--receipt-root", default=os.environ.get("KSA_INSTANCE_RECEIPT_ROOT", DEFAULT_RECEIPT_ROOT))
     parser.add_argument("--promotion-root", default=os.environ.get("KSA_ENGINE_PROMOTION_ROOT", DEFAULT_PROMOTION_ROOT))
     parser.add_argument("--activation-root", default=os.environ.get("KSA_ENGINE_ACTIVATION_ROOT", DEFAULT_ACTIVATION_ROOT))
+    parser.add_argument("--recovery-root", default=os.environ.get("KSA_INSTANCE_RECOVERY_ROOT", DEFAULT_RECOVERY_ROOT))
     parser.add_argument("--checkout", default=os.environ.get("KSA_INSTANCE_CHECKOUT", DEFAULT_CHECKOUT))
     parser.add_argument("--audit-log", default=os.environ.get("KSA_AUDIT_LOG", DEFAULT_AUDIT_LOG))
     commands = parser.add_subparsers(dest="command", required=True)
@@ -2385,6 +2505,11 @@ def build_parser():
     for action in ("prepare", "sync"):
         action_parser = source_actions.add_parser(action)
         add_repository_args(action_parser)
+    recovery_check = source_actions.add_parser("recovery-check")
+    recovery_check.add_argument("--private-commit", required=True)
+    recovery_check.add_argument("--source-receipt-sha256", required=True)
+    recovery_check.add_argument("--engine-commit", required=True)
+    recovery_check.add_argument("--build-operation", required=True)
     status = source_actions.add_parser("status")
     status.add_argument("--redacted", action="store_true")
     engine = commands.add_parser("engine")
@@ -2410,12 +2535,15 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     args.allowed_signers = DEFAULT_ALLOWED_SIGNERS
     try:
+        require_installed_source_match(args)
         if args.command == "intent":
             print(canonical_json(build_intent(args)), end="")
         elif args.command == "source" and args.source_action == "prepare":
             cmd_source_prepare(args)
         elif args.command == "source" and args.source_action == "sync":
             cmd_source_sync(args)
+        elif args.command == "source" and args.source_action == "recovery-check":
+            cmd_source_recovery_check(args)
         elif args.command == "source" and args.source_action == "status":
             cmd_status(args)
         elif args.command == "engine" and args.engine_action == "promotion-preflight":

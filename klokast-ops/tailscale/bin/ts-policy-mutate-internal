@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+
+operation=${1:-}
+work_id=${2:-}
+case "$operation" in
+  get-before|get-after|get-recovery|validate-candidate|post-candidate|post-preimage) ;;
+  *) echo "ts-policy-mutate-internal: unsupported closed operation" >&2; exit 2 ;;
+esac
+case "$work_id" in
+  ""|*[!a-zA-Z0-9_-]*) echo "ts-policy-mutate-internal: invalid work identity" >&2; exit 2 ;;
+esac
+if [ "${#work_id}" -lt 12 ] || [ "${#work_id}" -gt 128 ]; then
+  echo "ts-policy-mutate-internal: invalid work identity length" >&2
+  exit 2
+fi
+
+work_root=/run/klokast/apply
+work_dir=$work_root/$work_id
+if [ -L "$work_root" ] || [ ! -d "$work_root" ]; then
+  echo "ts-policy-mutate-internal: apply runtime root is unsafe" >&2
+  exit 2
+fi
+if [ -L "$work_dir" ] || [ ! -d "$work_dir" ]; then
+  echo "ts-policy-mutate-internal: apply work directory is unsafe" >&2
+  exit 2
+fi
+[ "$(stat -c '%u:%a' "$work_dir")" = "0:700" ] || {
+  echo "ts-policy-mutate-internal: apply work directory metadata is unsafe" >&2
+  exit 2
+}
+
+secret_file=/etc/klokast/tailscale-policy.env
+if [ -L "$secret_file" ] || [ ! -f "$secret_file" ] || [ "$(stat -c '%u:%a' "$secret_file")" != "0:600" ]; then
+  echo "ts-policy-mutate-internal: policy credential file is unsafe" >&2
+  exit 2
+fi
+# shellcheck disable=SC1090
+. "$secret_file"
+if [ -z "${TS_OAUTH_CLIENT_ID:-}" ] || [ -z "${TS_OAUTH_CLIENT_SECRET:-}" ] || [ -z "${TAILNET_ID:-}" ]; then
+  echo "ts-policy-mutate-internal: policy credential is incomplete" >&2
+  exit 2
+fi
+
+token=$(
+  /usr/bin/curl -fsS \
+    -u "$TS_OAUTH_CLIENT_ID:$TS_OAUTH_CLIENT_SECRET" \
+    -d grant_type=client_credentials \
+    -d scope=policy_file \
+    https://api.tailscale.com/api/v2/oauth/token \
+  | /usr/bin/jq -er .access_token
+)
+api="https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/acl"
+
+get_policy() {
+  prefix=$1
+  header=$work_dir/$prefix.headers
+  body=$work_dir/$prefix.body
+  etag_file=$work_dir/$prefix.etag
+  umask 077
+  status=$(
+    /usr/bin/curl -sS \
+      -H "Authorization: Bearer $token" \
+      -H 'Accept: application/hujson' \
+      -D "$header" -o "$body" -w '%{http_code}' "$api"
+  )
+  [ "$status" = 200 ] || {
+    echo "ts-policy-mutate-internal: policy GET failed with HTTP $status" >&2
+    exit 1
+  }
+  etag=$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*\([^[:space:]].*\)\r$/\1/p' "$header")
+  if [ -z "$etag" ] || [ "$(printf '%s\n' "$etag" | wc -l)" -ne 1 ]; then
+    echo "ts-policy-mutate-internal: policy GET returned no unique ETag" >&2
+    exit 1
+  fi
+  printf '%s\n' "$etag" >"$etag_file"
+  chmod 0600 "$body" "$etag_file"
+}
+
+post_policy() {
+  body=$1
+  etag_file=$2
+  if [ -L "$body" ] || [ ! -f "$body" ] || [ ! -s "$body" ]; then
+    echo "ts-policy-mutate-internal: bounded policy body is missing" >&2
+    exit 2
+  fi
+  [ "$(wc -c <"$body")" -le 1048576 ] || {
+    echo "ts-policy-mutate-internal: policy body exceeds one MiB" >&2
+    exit 2
+  }
+  IFS= read -r etag <"$etag_file"
+  [ -n "$etag" ] || {
+    echo "ts-policy-mutate-internal: policy ETag is missing" >&2
+    exit 2
+  }
+  status=$(
+    /usr/bin/curl -sS \
+      -H "Authorization: Bearer $token" \
+      -H 'Content-Type: application/hujson' \
+      -H 'Accept: application/hujson' \
+      -H "If-Match: $etag" \
+      --data-binary "@$body" \
+      -o "$work_dir/post-response.body" -w '%{http_code}' "$api"
+  )
+  printf '%s\n' "$status" >"$work_dir/post-status"
+  chmod 0600 "$work_dir/post-status"
+  [ "$status" = 200 ] || {
+    if [ "$status" = 412 ]; then
+      echo "ts-policy-mutate-internal: policy ETag changed; HTTP 412" >&2
+    else
+      echo "ts-policy-mutate-internal: policy POST failed with HTTP $status" >&2
+    fi
+    exit 1
+  }
+}
+
+case "$operation" in
+  get-before) get_policy live ;;
+  get-after) get_policy after ;;
+  get-recovery) get_policy recovery ;;
+  validate-candidate)
+    candidate=$work_dir/candidate.body
+    if [ -L "$candidate" ] || [ ! -s "$candidate" ]; then
+      echo "ts-policy-mutate-internal: candidate policy is missing" >&2
+      exit 2
+    fi
+    status=$(
+      /usr/bin/curl -sS \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/hujson' \
+        --data-binary "@$candidate" \
+        -o "$work_dir/validation-response.body" -w '%{http_code}' "$api/validate"
+    )
+    [ "$status" = 200 ] || {
+      echo "ts-policy-mutate-internal: policy validation failed with HTTP $status" >&2
+      exit 1
+    }
+    ;;
+  post-candidate) post_policy "$work_dir/candidate.body" "$work_dir/live.etag" ;;
+  post-preimage) post_policy "$work_dir/preimage.body" "$work_dir/recovery.etag" ;;
+esac

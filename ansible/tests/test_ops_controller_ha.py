@@ -230,6 +230,9 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("/etc/klokast/secret-authority/instance-bootstrap/github-app.pem", HA_SOURCE)
         self.assertIn("/etc/klokast/secret-authority/allowed-signers-private-instance", HA_SOURCE)
         self.assertIn("/etc/klokast/secret-authority/allowed-signers-static-site", HA_SOURCE)
+        self.assertIn("/etc/klokast/secret-authority/allowed-signers-platform-apply", HA_SOURCE)
+        self.assertIn("var/lib/klokast/authority-states", HA_SOURCE)
+        self.assertIn("var/lib/klokast/active-authority-state", HA_SOURCE)
         self.assertIn("/etc/klokast/private-instance/github-readonly", HA_SOURCE)
 
 

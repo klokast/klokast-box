@@ -21,6 +21,7 @@ SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[2]
 PLATFORM_PLAN = SCRIPT.with_name("platform-plan")
 INSTALLED_AUTHORITY = Path("/usr/local/sbin/ksa-instance")
+SOURCE_AUTHORITY = REPO_ROOT / "klokast-ops" / "secret-authority" / "bin" / "ksa-instance"
 PRIVATE_ROOT = Path("/home/smith/private/klokast")
 DEPLOYMENT_CHECKOUT = PRIVATE_ROOT / "instance"
 VALUES_PATH = PRIVATE_ROOT / "init-values.json"
@@ -85,6 +86,23 @@ def load_plan_wrapper():
 def require_controller_user():
     if getpass.getuser() != "smith":
         raise InstanceError("run as smith on the active controller")
+
+
+def require_installed_authority_matches_source():
+    try:
+        source = SOURCE_AUTHORITY.read_bytes()
+        installed = INSTALLED_AUTHORITY.read_bytes()
+    except OSError as error:
+        raise InstanceError("installed instance Secret Authority wrapper is missing") from error
+    if source == installed:
+        return
+    hostname = run(["hostname", "-s"], capture=True, check=False).stdout.strip()
+    box = hostname[:-4] if hostname.endswith("-ops") else "BOX"
+    raise InstanceError(
+        "installed ksa-instance differs from its checked-in source; repair it with:\n"
+        f"  ansible/bin/converge-ops-controller --box {box} -- "
+        "--tags ops-controller-secret-authority-wrappers"
+    )
 
 
 def require_reviewed_engine(engine_commit):
@@ -1120,11 +1138,21 @@ def check_candidate(args):
 
 def authority(args):
     require_controller_user()
+    require_installed_authority_matches_source()
     if not INSTALLED_AUTHORITY.is_file() or not os.access(INSTALLED_AUTHORITY, os.X_OK):
         raise InstanceError("installed instance Secret Authority wrapper is missing")
     command = ["sudo", "-n", INSTALLED_AUTHORITY, "--repo-root", REPO_ROOT, "source", args.action]
     if args.action in {"prepare", "sync"}:
         command.extend(["--repo-owner", args.repo_owner, "--repo-name", args.repo_name])
+    elif args.action == "source-recovery-check":
+        command = [
+            "sudo", "-n", INSTALLED_AUTHORITY, "--repo-root", REPO_ROOT,
+            "source", "recovery-check",
+            "--private-commit", args.private_commit,
+            "--source-receipt-sha256", args.source_receipt_sha256,
+            "--engine-commit", args.engine_commit,
+            "--build-operation", args.build_operation,
+        ]
     else:
         command.append("--redacted")
     completed = run(command, check=False)
@@ -1200,6 +1228,11 @@ def parse_args(argv):
         source.add_argument("--repo-owner", required=True)
         source.add_argument("--repo-name", required=True)
     commands.add_parser("status")
+    recovery = commands.add_parser("source-recovery-check")
+    recovery.add_argument("--private-commit", required=True)
+    recovery.add_argument("--source-receipt-sha256", required=True)
+    recovery.add_argument("--engine-commit", required=True)
+    recovery.add_argument("--build-operation", required=True)
     promotion_preflight = commands.add_parser("promotion-preflight")
     promotion_preflight.add_argument("--new-engine-commit")
     promotion_preflight.add_argument("--build-operation")

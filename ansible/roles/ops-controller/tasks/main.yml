@@ -29,6 +29,10 @@
       - ops_controller_tailscale_wrappers | default([]) | length > 0
       - ops_controller_secret_authority_wrapper_source_root | default('') | length > 0
       - ops_controller_secret_authority_wrappers | default([]) | length > 0
+      - ops_controller_apply_mutation_helper_source | default('') | length > 0
+      - ops_controller_apply_renderer_source | default('') | length > 0
+      - ops_controller_apply_policy_template_source | default('') | length > 0
+      - ops_controller_initial_authority_state_sha256 | default('') is match('^[0-9a-f]{64}$')
       - ops_secret_authority_root | default('') is match('^/')
       - ops_secret_authority_state_root | default('') is match('^/')
       - ops_secret_authority_audit_log | default('') is match('^/')
@@ -443,6 +447,97 @@
   loop: "{{ ops_controller_secret_authority_wrappers }}"
   tags:
     - ops-controller-secret-authority-wrappers
+
+- name: Create installed Apply tool directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /usr/local/libexec/klokast
+    - /usr/local/share/klokast/tailscale
+  tags:
+    - ops-controller-apply
+
+- name: Install the root-only Tailnet policy mutation helper
+  ansible.builtin.copy:
+    src: "{{ ops_controller_apply_mutation_helper_source }}"
+    dest: /usr/local/libexec/klokast/ts-policy-mutate-internal
+    owner: root
+    group: root
+    mode: "0700"
+  tags:
+    - ops-controller-apply
+
+- name: Install the checked Tailnet policy renderer
+  ansible.builtin.copy:
+    src: "{{ ops_controller_apply_renderer_source }}"
+    dest: /usr/local/sbin/render-tailscale-policy
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - ops-controller-apply
+
+- name: Install the fixed Tailnet policy template
+  ansible.builtin.copy:
+    src: "{{ ops_controller_apply_policy_template_source }}"
+    dest: /usr/local/share/klokast/tailscale/policy.hujson.j2
+    owner: root
+    group: root
+    mode: "0644"
+  tags:
+    - ops-controller-apply
+
+- name: Remove the retired direct Tailnet policy mutation wrapper
+  ansible.builtin.file:
+    path: /usr/local/sbin/ts-policy-apply
+    state: absent
+  tags:
+    - ops-controller-apply
+
+- name: Create immutable Apply evidence directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /var/lib/klokast/authority-states, group: "{{ ops_infra_user }}", mode: "0750"}
+    - {path: /var/lib/klokast/controller-toolchains, group: "{{ ops_infra_user }}", mode: "0750"}
+    - {path: /var/lib/klokast/private-source-recoveries, group: "{{ ops_infra_user }}", mode: "0750"}
+    - {path: /var/lib/klokast/apply-preflights, group: root, mode: "0700"}
+    - {path: /var/lib/klokast/apply-executions, group: "{{ ops_infra_user }}", mode: "0750"}
+    - {path: /var/lib/klokast/apply-rollback-material, group: root, mode: "0700"}
+    - {path: /var/lib/klokast/apply-used-nonces, group: root, mode: "0700"}
+  tags:
+    - ops-controller-apply
+
+- name: Install the immutable initial authority state
+  ansible.builtin.copy:
+    dest: "/var/lib/klokast/authority-states/{{ ops_controller_initial_authority_state_sha256 }}.json"
+    owner: root
+    group: "{{ ops_infra_user }}"
+    mode: "0440"
+    force: false
+    content: |
+      {"authority_state_sha256":"{{ ops_controller_initial_authority_state_sha256 }}","kind":"klokast.authority-state.v1","prior_state_sha256":"","resulting_authorities":[],"schema_version":1,"signed_intent_sha256":"","transition_id":"initial","transitioned_scopes":[]}
+  tags:
+    - ops-controller-apply
+
+- name: Select the initial authority state only when no active pointer exists
+  ansible.builtin.copy:
+    dest: /var/lib/klokast/active-authority-state
+    owner: root
+    group: root
+    mode: "0444"
+    force: false
+    content: "{{ ops_controller_initial_authority_state_sha256 }}\n"
+  tags:
+    - ops-controller-apply
 
 - name: Remove retired Cloudflare guardian controller wrapper
   ansible.builtin.file:

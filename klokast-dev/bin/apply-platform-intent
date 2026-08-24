@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KSA_TOOL_NAME="apply-platform-intent"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+
+controller="${KLOKAST_OPS_CONTROLLER:-}"
+check_only=false
+rollback_execution=""
+plan=""
+authority_state=""
+toolchain=""
+source_recovery=""
+source_receipt=""
+observation=""
+build_dir=""
+
+usage() {
+  cat <<EOF
+Usage: $0 --controller HOST --plan FILE --authority-state FILE \
+  --controller-toolchain-receipt FILE --source-recovery-receipt FILE \
+  --instance-source-receipt FILE --observation FILE --build-dir DIR [--check]
+
+Add --rollback-execution-receipt FILE to prepare and approve the closed
+forward rollback instead of adoption or verification.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --controller) controller=$2; shift 2 ;;
+    --plan) plan=$2; shift 2 ;;
+    --authority-state) authority_state=$2; shift 2 ;;
+    --controller-toolchain-receipt) toolchain=$2; shift 2 ;;
+    --source-recovery-receipt) source_recovery=$2; shift 2 ;;
+    --instance-source-receipt) source_receipt=$2; shift 2 ;;
+    --observation) observation=$2; shift 2 ;;
+    --build-dir) build_dir=$2; shift 2 ;;
+    --rollback-execution-receipt) rollback_execution=$2; shift 2 ;;
+    --check) check_only=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) ksa_die "unknown argument: $1" ;;
+  esac
+done
+
+ksa_valid_controller "$controller" || ksa_die "--controller is required and must be safe"
+controller="$(ksa_resolve_controller "$controller")"
+for required in "$plan" "$authority_state" "$toolchain" "$source_recovery" "$source_receipt" "$observation" "$build_dir"; do
+  [ -n "$required" ] || ksa_die "all controller evidence paths are required"
+done
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  ksa_die "run this command in an interactive terminal on the trusted MacBook"
+fi
+[ "$(uname -s)" = Darwin ] || ksa_die "run this command on the trusted MacBook"
+ksa_need_command mktemp
+ksa_need_command python3
+ksa_need_command tailscale
+
+umask 077
+work="$(mktemp -d /tmp/klokast-platform-apply.XXXXXX)"
+intent="$work/intent.json"
+remote_dir=""
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ -n "$remote_dir" ]; then
+    tailscale ssh "smith@$controller" "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$work"
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+if [ -n "$rollback_execution" ]; then
+  tailscale ssh "smith@$controller" sh -s -- \
+    "$rollback_execution" "$plan" "$authority_state" "$toolchain" \
+    "$source_recovery" "$source_receipt" "$observation" "$build_dir" >"$intent" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply rollback --prepare \
+  --execution-receipt "$1" --plan "$2" --authority-state "$3" \
+  --controller-toolchain-receipt "$4" --source-recovery-receipt "$5" \
+  --instance-source-receipt "$6" --observation "$7" --build-dir "$8"
+SH
+else
+  tailscale ssh "smith@$controller" sh -s -- \
+    "$plan" "$authority_state" "$toolchain" "$source_recovery" \
+    "$source_receipt" "$observation" "$build_dir" >"$intent" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply preflight \
+  --plan "$1" --authority-state "$2" --controller-toolchain-receipt "$3" \
+  --source-recovery-receipt "$4" --instance-source-receipt "$5" \
+  --observation "$6" --build-dir "$7"
+SH
+fi
+
+python3 - "$intent" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+if value.get("kind") != "klokast.apply-intent.v1" or value.get("schema_version") != 1:
+    raise SystemExit("controller did not return an Apply intent v1")
+if value.get("executor") != "tailnet_policy_inputs_v1":
+    raise SystemExit("controller returned an unknown Apply executor")
+if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"}:
+    raise SystemExit("controller returned an unknown Apply action")
+print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+PY
+
+if [ "$check_only" = true ]; then
+  printf '\nCheck complete. No signature was made and no Platform state changed.\n'
+  exit 0
+fi
+
+printf '\nReview the exact Apply intent above. Touch ID will authorize only these bytes.\n' >&2
+printf 'Type "approve platform apply" to continue: ' >&2
+IFS= read -r confirmation
+[ "$confirmation" = "approve platform apply" ] || ksa_die "approval cancelled"
+"$SCRIPT_DIR/sign-secret-authority-intent" --purpose platform-apply --intent "$intent"
+
+remote_dir="$(tailscale ssh "smith@$controller" 'mktemp -d /tmp/klokast-platform-apply.XXXXXX')"
+case "$remote_dir" in /tmp/klokast-platform-apply.*) ;; *) ksa_die "controller returned an unsafe temporary path" ;; esac
+tailscale ssh "smith@$controller" "cat > '$remote_dir/intent.json'" <"$intent"
+tailscale ssh "smith@$controller" "cat > '$remote_dir/intent.json.sig'" <"$intent.sig"
+
+if [ -n "$rollback_execution" ]; then
+  tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply rollback \
+  --approval-intent "$1/intent.json" --approval-signature "$1/intent.json.sig" \
+  --signer-id human-platform-apply
+SH
+else
+  tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply execute \
+  --approval-intent "$1/intent.json" --approval-signature "$1/intent.json.sig" \
+  --signer-id human-platform-apply
+SH
+fi

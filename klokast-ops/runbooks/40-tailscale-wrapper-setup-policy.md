@@ -1,4 +1,8 @@
-This runbook explains how user `neo` should set up the deployment server so user `codex` can safely pull, validate, and optionally apply the Tailscale tailnet policy, and mint validated one-off machine auth keys, without directly accessing the Tailscale OAuth secret.
+This runbook explains how to set up the active controller so the infra account
+can pull and validate the Tailscale policy and mint validated one-use machine
+auth keys without access to the Tailscale OAuth secret. The infra account must
+not have a direct policy-mutation command. Policy mutation uses the authorized
+root Apply boundary.
 
 In short:
 - user `neo` creates the secrets file root-only in the deployment server: `/etc/klokast/tailscale-policy.env`.
@@ -74,8 +78,6 @@ sudo install -o root -g root -m 0755 tailscale/bin/ts-policy-pull /usr/local/sbi
 
 sudo install -o root -g root -m 0755 tailscale/bin/ts-policy-validate /usr/local/sbin/ts-policy-validate
 
-sudo install -o root -g root -m 0755 tailscale/bin/ts-policy-apply /usr/local/sbin/ts-policy-apply
-
 sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-mint /usr/local/sbin/ts-authkey-mint
 sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-bootstrap /usr/local/sbin/ts-authkey-bootstrap
 sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-dom0 /usr/local/sbin/ts-authkey-dom0
@@ -95,7 +97,6 @@ sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-print /usr/local/s
 Verify: `ls -l /usr/local/sbin/ts-policy-* /usr/local/sbin/ts-authkey-*`
 Expected output:
 ```
--rwxr-xr-x 1 root root ... /usr/local/sbin/ts-policy-apply
 -rwxr-xr-x 1 root root ... /usr/local/sbin/ts-policy-pull
 -rwxr-xr-x 1 root root ... /usr/local/sbin/ts-policy-validate
 ```
@@ -107,7 +108,6 @@ Expected output:
 ```
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-pull
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-validate /home/smith/private/klokast/tailscale-policy.hujson
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-apply /home/smith/private/klokast/tailscale-policy.hujson
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-bootstrap *
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-dom0 *
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-vm *
@@ -143,7 +143,6 @@ codex ALL=(root) NOPASSWD: ALL
 ```
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-pull
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-validate /home/smith/private/klokast/tailscale-policy.hujson
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-apply /home/smith/private/klokast/tailscale-policy.hujson
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-ops *
 codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-infra *
 ```

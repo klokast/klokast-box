@@ -1,0 +1,849 @@
+#!/usr/bin/env python3
+"""Root boundary for the closed Tailnet policy-input authority pilot."""
+
+import argparse
+import datetime as dt
+import hashlib
+import importlib.util
+import json
+import os
+import pwd
+import re
+import secrets
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+KIND_PLAN = "klokast.plan.v2"
+KIND_INTENT = "klokast.apply-intent.v1"
+KIND_AUTHORITY = "klokast.authority-state.v1"
+KIND_RECOVERY = "klokast.private-source-recovery.v1"
+KIND_TOOLCHAIN = "klokast.controller-toolchain.v1"
+EXECUTOR = "tailnet_policy_inputs_v1"
+ROLLBACK_TYPE = "tailnet_policy_preimage_v1"
+SIGNER_ID = "human-platform-apply"
+SIGNATURE_NAMESPACE = "klokast-platform-apply"
+SCOPES = [
+    "deployment.tailnet.groups.family",
+    "deployment.tailnet.groups.operators",
+    "deployment.tailnet.magicdns_suffix",
+]
+COMPONENTS = [
+    "controller_guard", "ksa_apply", "ksa_instance", "policy_mutation_helper",
+    "policy_renderer", "policy_template", "sealed_engine",
+]
+REPO_ROOT = Path("/home/smith/src/klokast/klokast-box")
+PRIVATE_ROOT = Path("/home/smith/private/klokast")
+INSTANCE = PRIVATE_ROOT / "instance"
+DEPLOYMENT = PRIVATE_ROOT / "deployment.yml"
+REGISTRY = PRIVATE_ROOT / "platform-resources.yml"
+CONTROLLER_HA = PRIVATE_ROOT / "controller-ha.yml"
+PLATFORM_PLAN = REPO_ROOT / "ansible/bin/platform-plan"
+PLAN_ROOT = Path("/var/lib/klokast/plans")
+AUTHORITY_ROOT = Path("/var/lib/klokast/authority-states")
+AUTHORITY_POINTER = Path("/var/lib/klokast/active-authority-state")
+TOOLCHAIN_ROOT = Path("/var/lib/klokast/controller-toolchains")
+SOURCE_ROOT = Path("/var/lib/klokast/instance-sources")
+RECOVERY_ROOT = Path("/var/lib/klokast/private-source-recoveries")
+PREFLIGHT_ROOT = Path("/var/lib/klokast/apply-preflights")
+EXECUTION_ROOT = Path("/var/lib/klokast/apply-executions")
+ROLLBACK_ROOT = Path("/var/lib/klokast/apply-rollback-material")
+NONCE_ROOT = Path("/var/lib/klokast/apply-used-nonces")
+AUDIT_LOG = Path("/var/log/klokast/platform-apply.jsonl")
+RUNTIME_ROOT = Path("/run/klokast/apply")
+ALLOWED_SIGNERS = Path("/etc/klokast/secret-authority/allowed-signers-platform-apply")
+MUTATION_HELPER = Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")
+RENDERER = Path("/usr/local/sbin/render-tailscale-policy")
+POLICY_TEMPLATE = Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")
+CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
+MAX_JSON = 16 * 1024 * 1024
+
+
+class ApplyError(Exception):
+    pass
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def sha256_bytes(content):
+    return hashlib.sha256(content).hexdigest()
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def now_utc():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def format_utc(value):
+    return value.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_utc(value, label):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ApplyError(f"{label} must be an ISO-8601 UTC timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise ApplyError(f"{label} must be an ISO-8601 UTC timestamp") from error
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ApplyError("JSON evidence contains a duplicate key")
+        result[key] = value
+    return result
+
+
+def read_regular(path, maximum=MAX_JSON):
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ApplyError(f"required evidence is missing: {path.name}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0 or metadata.st_size > maximum:
+        raise ApplyError(f"required evidence is not one bounded regular file: {path.name}")
+    return path.read_bytes()
+
+
+def load_json(path, maximum=MAX_JSON):
+    try:
+        return json.loads(read_regular(path, maximum), object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ApplyError(f"required evidence is not valid JSON: {Path(path).name}") from error
+
+
+def run(argv, *, capture=False, check=True, input_text=None):
+    result = subprocess.run(
+        [str(item) for item in argv],
+        text=True,
+        input=input_text,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"},
+    )
+    if check and result.returncode != 0:
+        raise ApplyError(f"closed helper failed: {Path(str(argv[0])).name}")
+    return result
+
+
+def load_plan_module():
+    loader = SourceFileLoader("klokast_apply_platform_plan", str(PLATFORM_PLAN))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def require_root_active():
+    if os.geteuid() != 0:
+        raise ApplyError("this operation must run as root through the checked wrapper")
+    result = run([CONTROLLER_GUARD, "--status", "--json", "--require-active"], capture=True, check=False)
+    if result.returncode != 0:
+        raise ApplyError("controller guard rejected this inactive controller")
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ApplyError("controller guard returned invalid status JSON") from error
+    if status.get("configured") is not True or status.get("active") is not True:
+        raise ApplyError("Apply requires the explicitly active controller")
+    return status
+
+
+def repair_command():
+    hostname = run(["hostname", "-s"], capture=True, check=False).stdout.strip()
+    box = hostname[:-4] if hostname.endswith("-ops") else "BOX"
+    return (
+        f"ansible/bin/converge-ops-controller --box {box} -- "
+        "--tags ops-controller-secret-authority-wrappers"
+    )
+
+
+def require_self_match():
+    installed = Path(__file__).resolve()
+    source = REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply"
+    if installed != Path("/usr/local/sbin/ksa-apply"):
+        return
+    try:
+        same = installed.read_bytes() == source.read_bytes()
+    except OSError:
+        same = False
+    if not same:
+        raise ApplyError(f"installed ksa-apply differs from its checked-in source; repair it with: {repair_command()}")
+
+
+def resolve_hashed(path, root, hash_field, *, nested=False):
+    supplied = Path(path)
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = supplied.resolve(strict=True)
+        relative = resolved.relative_to(resolved_root)
+    except (OSError, ValueError) as error:
+        raise ApplyError("evidence path is outside its immutable controller root") from error
+    if supplied != resolved or len(relative.parts) != (2 if nested else 1):
+        raise ApplyError("evidence path is not canonical")
+    digest = relative.parts[-1].removesuffix(".json")
+    if relative.parts[-1] != f"{digest}.json" or not DIGEST_RE.fullmatch(digest):
+        raise ApplyError("evidence path is not content-addressed")
+    document = load_json(resolved)
+    if document.get(hash_field) != digest:
+        raise ApplyError("evidence hash does not match its immutable path")
+    return resolved, document
+
+
+def verify_plan(path):
+    resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
+    if plan.get("kind") != KIND_PLAN or plan.get("schema_version") != 2:
+        raise ApplyError("Apply refuses Plan v1 and every unsupported Plan kind")
+    supplied = plan.pop("plan_sha256")
+    actual = sha256_bytes(canonical(plan).encode("utf-8"))
+    plan["plan_sha256"] = supplied
+    if actual != supplied or plan.get("valid") is not True or plan.get("deployable") is not True or plan.get("authority_ready") is not True or plan.get("refusals") != []:
+        raise ApplyError("Plan v2 is not canonical, deployable, and authority-ready")
+    group = plan.get("atomic_action_group")
+    if not isinstance(group, dict) or set(group) != {"id", "operation", "scopes", "executor", "rollback_type"}:
+        raise ApplyError("Plan v2 atomic action group has an open schema")
+    if group != {
+        "id": "tailnet-policy-inputs-v1",
+        "operation": group.get("operation"),
+        "scopes": SCOPES,
+        "executor": EXECUTOR,
+        "rollback_type": ROLLBACK_TYPE,
+    } or group["operation"] not in {"adopt_instance_specification", "verify_instance_authority"}:
+        raise ApplyError("Plan v2 does not contain the exact Tailnet action group")
+    actions = [item for item in plan.get("actions", []) if item.get("executor") == EXECUTOR]
+    compatibility = {
+        item.get("name"): item.get("sha256")
+        for item in plan.get("compatibility_inputs", [])
+        if isinstance(item, dict)
+    }
+    legacy_digest = compatibility.get("legacy_deployment")
+    before = "legacy_deployment" if group["operation"] == "adopt_instance_specification" else "instance_specification_v1"
+    after = "instance_specification_v1"
+    if (
+        len(actions) != 3
+        or sorted(item.get("scope") for item in actions) != SCOPES
+        or any(item.get("operation") != group["operation"] for item in actions)
+        or any(item.get("authority_before") != before for item in actions)
+        or any(item.get("authority_after") != after for item in actions)
+        or any(item.get("preconditions") != [
+            "active_controller_fenced", "exact_plan_v2_revalidated",
+            "byte_equal_policy", "tailnet_policy_preimage_prepared",
+        ] for item in actions)
+        or any(item.get("rollback") != {
+            "strategy": ROLLBACK_TYPE,
+            "authority": "legacy_deployment",
+            "source_sha256": legacy_digest,
+        } for item in actions)
+        or not DIGEST_RE.fullmatch(legacy_digest or "")
+    ):
+        raise ApplyError("Plan v2 action coverage is partial or unknown")
+    return resolved, plan
+
+
+def authority_hash(state):
+    candidate = dict(state)
+    candidate["authority_state_sha256"] = ""
+    return sha256_bytes(canonical(candidate).encode("utf-8"))
+
+
+def validate_authority(path, plan):
+    resolved, state = resolve_hashed(path, AUTHORITY_ROOT, "authority_state_sha256")
+    expected = {
+        "schema_version", "kind", "prior_state_sha256", "transitioned_scopes",
+        "resulting_authorities", "signed_intent_sha256", "transition_id",
+        "authority_state_sha256",
+    }
+    if set(state) != expected or state.get("schema_version") != 1 or state.get("kind") != KIND_AUTHORITY or authority_hash(state) != state.get("authority_state_sha256"):
+        raise ApplyError("authority state is invalid")
+    pointer = read_regular(AUTHORITY_POINTER, 66)
+    if pointer != (state["authority_state_sha256"] + "\n").encode("ascii"):
+        raise ApplyError("authority state is not active")
+    if plan.get("authority_state", {}).get("authority_state_sha256") != state["authority_state_sha256"]:
+        raise ApplyError("Plan v2 binds another authority state")
+    authorities = state["resulting_authorities"]
+    if not authorities:
+        if (
+            state.get("transition_id") != "initial"
+            or state.get("prior_state_sha256") != ""
+            or state.get("signed_intent_sha256") != ""
+            or state.get("transitioned_scopes") != []
+        ):
+            raise ApplyError("initial authority state contains transition data")
+    elif (
+        state.get("transitioned_scopes") != SCOPES
+        or not DIGEST_RE.fullmatch(state.get("prior_state_sha256", ""))
+        or not DIGEST_RE.fullmatch(state.get("signed_intent_sha256", ""))
+        or not NONCE_RE.fullmatch(state.get("transition_id", ""))
+    ):
+        raise ApplyError("authority transition binding is incomplete")
+    authority = "legacy_deployment" if not authorities else authorities[0].get("authority")
+    if authorities and (
+        [item.get("scope") for item in authorities] != SCOPES
+        or len({item.get("authority") for item in authorities}) != 1
+    ):
+        raise ApplyError("authority state splits the atomic Tailnet group")
+    expected_operation = "adopt_instance_specification" if authority == "legacy_deployment" else "verify_instance_authority"
+    if authority not in {"legacy_deployment", "instance_specification_v1"} or plan["atomic_action_group"]["operation"] != expected_operation:
+        raise ApplyError("Plan v2 action does not match current Tailnet authority")
+    return resolved, state
+
+
+def component_paths(build_binary):
+    return {
+        "controller_guard": (REPO_ROOT / "ansible/roles/ops-controller/files/klokast-controller-guard", CONTROLLER_GUARD),
+        "ksa_apply": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
+        "ksa_instance": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance", Path("/usr/local/sbin/ksa-instance")),
+        "policy_mutation_helper": (REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", MUTATION_HELPER),
+        "policy_renderer": (REPO_ROOT / "ansible/bin/render-tailscale-policy", RENDERER),
+        "policy_template": (REPO_ROOT / "klokast-ops/tailscale/policy.hujson.j2", POLICY_TEMPLATE),
+        "sealed_engine": (build_binary, build_binary),
+    }
+
+
+def validate_toolchain(path, plan, build_binary):
+    resolved, receipt = resolve_hashed(path, TOOLCHAIN_ROOT, "receipt_sha256", nested=True)
+    if receipt.get("kind") != KIND_TOOLCHAIN or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True:
+        raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
+    entries = receipt.get("components")
+    if not isinstance(entries, list) or [item.get("name") for item in entries] != COMPONENTS:
+        raise ApplyError("controller toolchain receipt has an unknown component set")
+    paths = component_paths(build_binary)
+    for item in entries:
+        source, installed = paths[item["name"]]
+        source_hash, installed_hash = sha256_file(source), sha256_file(installed)
+        if item.get("source_sha256") != source_hash or item.get("installed_sha256") != installed_hash or source_hash != installed_hash:
+            raise ApplyError(f"controller toolchain component changed: {item['name']}")
+    candidate = dict(receipt)
+    supplied = candidate.pop("receipt_sha256")
+    if sha256_bytes(canonical(candidate).encode("utf-8")) != supplied or plan.get("controller_toolchain", {}).get("receipt_sha256") != supplied:
+        raise ApplyError("controller toolchain receipt hash or Plan binding changed")
+    return resolved, receipt
+
+
+def validate_source_recovery(path, plan):
+    resolved, receipt = resolve_hashed(path, RECOVERY_ROOT, "receipt_sha256", nested=True)
+    expected = {
+        "schema_version", "kind", "repository_sha256", "repository_id",
+        "private_commit", "private_tree", "source_receipt_sha256",
+        "engine_commit", "build_operation", "binary_sha256",
+        "builder_receipt_sha256", "checked_at", "receipt_sha256",
+    }
+    candidate = dict(receipt)
+    supplied = candidate.pop("receipt_sha256", None)
+    if (
+        set(receipt) != expected
+        or supplied != sha256_bytes(canonical(candidate).encode("utf-8"))
+        or receipt.get("kind") != KIND_RECOVERY
+        or receipt.get("schema_version") != 1
+        or receipt.get("private_commit") != plan.get("instance", {}).get("commit")
+        or receipt.get("engine_commit") != plan.get("engine", {}).get("commit")
+    ):
+        raise ApplyError("private source recovery receipt does not match Plan v2")
+    checked = parse_utc(receipt.get("checked_at"), "source recovery checked_at")
+    if checked > now_utc() + dt.timedelta(minutes=1) or now_utc() - checked > dt.timedelta(hours=24):
+        raise ApplyError("private source recovery receipt is stale")
+    return resolved, receipt
+
+
+def validate_inputs(args):
+    status = require_root_active()
+    require_self_match()
+    plan_path, plan = verify_plan(args.plan)
+    plan_module = load_plan_module()
+    try:
+        build_dir, build_commit = plan_module.resolve_build_directory(args.build_dir)
+        build_receipt, binary = plan_module.verify_build_directory(build_dir, build_commit)
+        plan_module.verify_binary_version(binary, build_receipt)
+    except plan_module.PlanError as error:
+        raise ApplyError(f"sealed engine verification failed: {error}") from error
+    if build_commit != plan.get("engine", {}).get("commit"):
+        raise ApplyError("sealed engine commit differs from Plan v2")
+    authority_path, state = validate_authority(args.authority_state, plan)
+    toolchain_path, toolchain = validate_toolchain(args.controller_toolchain_receipt, plan, binary)
+    recovery_path, recovery = validate_source_recovery(args.source_recovery_receipt, plan)
+    source_path, source = resolve_hashed(args.instance_source_receipt, SOURCE_ROOT, "receipt_sha256", nested=True)
+    if source.get("commit") != plan.get("instance", {}).get("commit") or source.get("receipt_sha256") != plan.get("instance_source", {}).get("receipt_sha256") or recovery.get("source_receipt_sha256") != source.get("receipt_sha256"):
+        raise ApplyError("instance source evidence does not match Plan v2")
+    observation = load_json(args.observation)
+    if observation.get("generation_sha256") != plan.get("observation", {}).get("generation_sha256") or observation.get("source_controller") != status.get("hostname"):
+        raise ApplyError("Observation v1 changed or came from another controller")
+    command = [
+        binary, "plan", "--instance", INSTANCE,
+        "--compatibility-deployment", DEPLOYMENT,
+        "--compatibility-registry", REGISTRY,
+        "--compatibility-controller-ha", CONTROLLER_HA,
+        "--observation", args.observation,
+        "--instance-source-receipt", source_path,
+        "--authority-state", authority_path,
+        "--controller-toolchain-receipt", toolchain_path,
+        "--json",
+    ]
+    rerun = run(command, capture=True, check=False)
+    try:
+        rerun_plan = json.loads(rerun.stdout)
+    except json.JSONDecodeError as error:
+        raise ApplyError("sealed engine returned invalid Plan v2 JSON") from error
+    if rerun.returncode != 0 or rerun_plan != plan:
+        raise ApplyError("Plan v2 inputs changed during exact revalidation")
+    return {
+        "plan_path": str(plan_path), "plan": plan, "state": state,
+        "authority_path": str(authority_path), "toolchain_path": str(toolchain_path),
+        "source_path": str(source_path), "recovery_path": str(recovery_path),
+        "observation": str(Path(args.observation).resolve()), "build_dir": str(build_dir),
+        "binary_sha256": build_receipt["binary_sha256"],
+        "builder_receipt_sha256": sha256_file(build_dir / "receipt.json"),
+    }
+
+
+def ensure_dir(path, mode=0o700):
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise ApplyError("controller evidence directory is unsafe")
+    os.chmod(path, mode)
+
+
+def smith_gid():
+    try:
+        return pwd.getpwnam("smith").pw_gid
+    except KeyError as error:
+        raise ApplyError("controller account smith is missing") from error
+
+
+def new_work(nonce):
+    ensure_dir(RUNTIME_ROOT)
+    work = RUNTIME_ROOT / nonce
+    work.mkdir(mode=0o700)
+    if work.is_symlink():
+        raise ApplyError("Apply runtime directory is unsafe")
+    return work
+
+
+def render_policies(work):
+    run([RENDERER, "--instance", INSTANCE / "klokast-instance.json", "--template", POLICY_TEMPLATE, "--output", work / "candidate.body"])
+    run([RENDERER, "--deployment-config", DEPLOYMENT, "--template", POLICY_TEMPLATE, "--output", work / "legacy.body"])
+    candidate = read_regular(work / "candidate.body", 1024 * 1024)
+    legacy = read_regular(work / "legacy.body", 1024 * 1024)
+    if candidate != legacy:
+        raise ApplyError("instance and dormant legacy policy renderings differ byte for byte")
+    return candidate
+
+
+def append_audit(event, **fields):
+    ensure_dir(AUDIT_LOG.parent)
+    record = {"ts": format_utc(now_utc()), "event": event, **fields}
+    descriptor = os.open(AUDIT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(descriptor, (canonical(record) + "\n").encode("utf-8"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def preflight(args):
+    binding = validate_inputs(args)
+    nonce = secrets.token_urlsafe(18)
+    work = new_work(nonce)
+    try:
+        candidate = render_policies(work)
+        run([MUTATION_HELPER, "get-before", nonce])
+        live = read_regular(work / "live.body", 1024 * 1024)
+        if live != candidate:
+            raise ApplyError("live, instance, and dormant legacy policies differ byte for byte")
+        run([MUTATION_HELPER, "validate-candidate", nonce])
+        etag = (work / "live.etag").read_text(encoding="utf-8").strip()
+        plan = binding["plan"]
+        compatibility = {item["name"]: item["sha256"] for item in plan["compatibility_inputs"]}
+        issued = now_utc()
+        intent = {
+            "schema_version": 1, "kind": KIND_INTENT,
+            "action": plan["atomic_action_group"]["operation"],
+            "plan_sha256": plan["plan_sha256"],
+            "authority_state_sha256": plan["authority_state"]["authority_state_sha256"],
+            "source_recovery_receipt_sha256": Path(binding["recovery_path"]).stem,
+            "source_receipt_sha256": plan["instance_source"]["receipt_sha256"],
+            "observation_sha256": plan["observation"]["generation_sha256"],
+            "private_commit": plan["instance"]["commit"],
+            "private_instance_sha256": next(item["sha256"] for item in plan["inputs"] if item["path"] == "klokast-instance.json"),
+            "legacy_deployment_sha256": compatibility["legacy_deployment"],
+            "legacy_registry_sha256": compatibility["legacy_platform_resources"],
+            "legacy_controller_ha_sha256": compatibility["legacy_controller_ha"],
+            "engine_commit": plan["engine"]["commit"],
+            "binary_sha256": binding["binary_sha256"],
+            "builder_receipt_sha256": binding["builder_receipt_sha256"],
+            "toolchain_receipt_sha256": plan["controller_toolchain"]["receipt_sha256"],
+            "action_set": SCOPES, "executor": EXECUTOR, "rollback_type": ROLLBACK_TYPE,
+            "live_policy_sha256": sha256_bytes(live), "live_etag": etag,
+            "candidate_policy_sha256": sha256_bytes(candidate),
+            "nonce": nonce, "issued_at": format_utc(issued),
+            "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+        }
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        (directory / "intent.json").write_text(canonical(intent) + "\n", encoding="utf-8")
+        shutil.copyfile(work / "candidate.body", directory / "candidate.body")
+        shutil.copyfile(work / "live.body", directory / "preimage.body")
+        binding.pop("plan")
+        (directory / "binding.json").write_text(canonical(binding) + "\n", encoding="utf-8")
+        for item in directory.iterdir():
+            item.chmod(0o600)
+        append_audit("apply.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], action=intent["action"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def validate_intent(intent):
+    expected = {
+        "schema_version", "kind", "action", "plan_sha256", "authority_state_sha256",
+        "source_recovery_receipt_sha256", "source_receipt_sha256", "observation_sha256",
+        "private_commit", "private_instance_sha256", "legacy_deployment_sha256",
+        "legacy_registry_sha256", "legacy_controller_ha_sha256", "engine_commit",
+        "binary_sha256", "builder_receipt_sha256", "toolchain_receipt_sha256",
+        "action_set", "executor", "rollback_type", "live_policy_sha256", "live_etag",
+        "candidate_policy_sha256", "nonce", "issued_at", "expires_at",
+    }
+    if intent.get("action") == "rollback_to_legacy":
+        expected.add("rollback_execution_receipt_sha256")
+    if set(intent) != expected or intent.get("schema_version") != 1 or intent.get("kind") != KIND_INTENT:
+        raise ApplyError("Apply intent fields do not match the closed schema")
+    if intent.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"} or intent.get("action_set") != SCOPES or intent.get("executor") != EXECUTOR or intent.get("rollback_type") != ROLLBACK_TYPE:
+        raise ApplyError("Apply intent contains a partial or unknown action")
+    for field in expected - {"schema_version", "kind", "action", "action_set", "executor", "rollback_type", "live_etag", "nonce", "issued_at", "expires_at", "private_commit", "engine_commit"}:
+        if not DIGEST_RE.fullmatch(intent.get(field, "")):
+            raise ApplyError(f"Apply intent digest is invalid: {field}")
+    if not NONCE_RE.fullmatch(intent.get("nonce", "")) or not COMMIT_RE.fullmatch(intent.get("private_commit", "")) or not COMMIT_RE.fullmatch(intent.get("engine_commit", "")) or not isinstance(intent.get("live_etag"), str) or not intent["live_etag"]:
+        raise ApplyError("Apply intent identity is invalid")
+    issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+        raise ApplyError("Apply intent is expired or has an invalid lifetime")
+
+
+def verify_signature(args, intent):
+    if args.signer_id != SIGNER_ID:
+        raise ApplyError(f"platform Apply requires signer ID {SIGNER_ID}")
+    result = run(
+        ["ssh-keygen", "-Y", "verify", "-f", ALLOWED_SIGNERS, "-I", SIGNER_ID,
+         "-n", SIGNATURE_NAMESPACE, "-s", args.approval_signature],
+        capture=True, check=False, input_text=canonical(intent) + "\n",
+    )
+    if result.returncode != 0:
+        raise ApplyError("platform Apply signature verification failed")
+
+
+def consume_nonce(intent):
+    ensure_dir(NONCE_ROOT)
+    path = NONCE_ROOT / intent["nonce"]
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as error:
+        raise ApplyError("Apply intent nonce was already used") from error
+    try:
+        os.write(descriptor, (intent["plan_sha256"] + "\n").encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def store_authority_transition(prior, intent, authority):
+    assignments = [{"scope": scope, "authority": authority} for scope in SCOPES]
+    state = {
+        "schema_version": 1, "kind": KIND_AUTHORITY,
+        "prior_state_sha256": prior["authority_state_sha256"],
+        "transitioned_scopes": SCOPES,
+        "resulting_authorities": assignments,
+        "signed_intent_sha256": sha256_bytes((canonical(intent) + "\n").encode("utf-8")),
+        "transition_id": intent["nonce"], "authority_state_sha256": "",
+    }
+    state["authority_state_sha256"] = authority_hash(state)
+    ensure_dir(AUTHORITY_ROOT, 0o750)
+    path = AUTHORITY_ROOT / f"{state['authority_state_sha256']}.json"
+    content = (canonical(state) + "\n").encode("utf-8")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
+    try:
+        os.write(descriptor, content)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chown(path, 0, smith_gid())
+    temporary = AUTHORITY_POINTER.with_name(f".{AUTHORITY_POINTER.name}.{os.getpid()}.tmp")
+    temporary.write_text(state["authority_state_sha256"] + "\n", encoding="ascii")
+    temporary.chmod(0o444)
+    os.replace(temporary, AUTHORITY_POINTER)
+    return state
+
+
+def store_execution(intent, result, authority_state_sha256, recovery_result="not_needed"):
+    receipt = {
+        "schema_version": 1, "kind": "klokast.apply-execution.v1",
+        "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode("utf-8")),
+        "plan_sha256": intent["plan_sha256"], "nonce": intent["nonce"],
+        "action": intent["action"], "executor": EXECUTOR, "rollback_type": ROLLBACK_TYPE,
+        "result": result, "recovery_result": recovery_result,
+        "authority_state_sha256": authority_state_sha256,
+        "finished_at": format_utc(now_utc()),
+    }
+    digest = sha256_bytes(canonical(receipt).encode("utf-8"))
+    receipt["receipt_sha256"] = digest
+    directory = EXECUTION_ROOT / intent["nonce"]
+    ensure_dir(EXECUTION_ROOT, 0o750)
+    directory.mkdir(mode=0o750)
+    os.chown(directory, 0, smith_gid())
+    path = directory / f"{digest}.json"
+    path.write_text(canonical(receipt) + "\n", encoding="utf-8")
+    path.chmod(0o440)
+    os.chown(path, 0, smith_gid())
+    return path, receipt
+
+
+def execute(args):
+    require_root_active()
+    require_self_match()
+    intent = load_json(args.approval_intent, 64 * 1024)
+    validate_intent(intent)
+    verify_signature(args, intent)
+    preflight_dir = PREFLIGHT_ROOT / intent["nonce"]
+    stored_intent = load_json(preflight_dir / "intent.json", 64 * 1024)
+    if stored_intent != intent:
+        raise ApplyError("signed Apply intent does not match controller preflight evidence")
+    binding = load_json(preflight_dir / "binding.json", 64 * 1024)
+    if intent["action"] == "rollback_to_legacy":
+        execution_path, execution = resolve_hashed(
+            binding.get("rollback_execution_path", ""), EXECUTION_ROOT,
+            "receipt_sha256", nested=True,
+        )
+        if (
+            execution.get("result") != "success"
+            or execution.get("action") != "adopt_instance_specification"
+            or execution.get("receipt_sha256") != intent.get("rollback_execution_receipt_sha256")
+            or str(execution_path) != binding.get("rollback_execution_path")
+        ):
+            raise ApplyError("rollback execution evidence is invalid or did not adopt instance authority")
+    namespace = argparse.Namespace(
+        plan=binding["plan_path"], authority_state=binding["authority_path"],
+        controller_toolchain_receipt=binding["toolchain_path"],
+        source_recovery_receipt=binding["recovery_path"],
+        instance_source_receipt=binding["source_path"], observation=binding["observation"],
+        build_dir=binding["build_dir"],
+    )
+    current = validate_inputs(namespace)
+    if current["plan"]["plan_sha256"] != intent["plan_sha256"]:
+        raise ApplyError("Plan v2 changed after authorization")
+    work = new_work(intent["nonce"])
+    try:
+        candidate = render_policies(work)
+        if sha256_bytes(candidate) != intent["candidate_policy_sha256"] or candidate != read_regular(preflight_dir / "candidate.body", 1024 * 1024):
+            raise ApplyError("candidate policy changed after authorization")
+        run([MUTATION_HELPER, "get-before", intent["nonce"]])
+        live = read_regular(work / "live.body", 1024 * 1024)
+        etag = (work / "live.etag").read_text(encoding="utf-8").strip()
+        if sha256_bytes(live) != intent["live_policy_sha256"] or etag != intent["live_etag"] or live != candidate:
+            raise ApplyError("live policy body or ETag changed after authorization")
+        consume_nonce(intent)
+        if intent["action"] == "verify_instance_authority":
+            path, receipt = store_execution(intent, "verified", current["state"]["authority_state_sha256"])
+            append_audit("apply.executed", nonce=intent["nonce"], result="verified", receipt_sha256=receipt["receipt_sha256"])
+            print(canonical({"schema_version": 1, "result": "verified", "receipt_path": str(path)}))
+            return
+        rollback_dir = ROLLBACK_ROOT / intent["nonce"]
+        ensure_dir(ROLLBACK_ROOT, 0o700)
+        rollback_dir.mkdir(mode=0o700)
+        shutil.copyfile(work / "live.body", rollback_dir / "preimage.body")
+        (rollback_dir / "preimage.body").chmod(0o600)
+        try:
+            run([MUTATION_HELPER, "post-candidate", intent["nonce"]])
+            run([MUTATION_HELPER, "get-after", intent["nonce"]])
+            if read_regular(work / "after.body", 1024 * 1024) != candidate:
+                raise ApplyError("post-write policy verification failed")
+        except ApplyError as mutation_error:
+            recovery_result = "not_needed"
+            post_status = work / "post-status"
+            if post_status.is_file() and read_regular(post_status, 16) == b"200\n":
+                try:
+                    run([MUTATION_HELPER, "get-recovery", intent["nonce"]])
+                    shutil.copyfile(rollback_dir / "preimage.body", work / "preimage.body")
+                    run([MUTATION_HELPER, "post-preimage", intent["nonce"]])
+                    run([MUTATION_HELPER, "get-after", intent["nonce"]])
+                    if read_regular(work / "after.body", 1024 * 1024) != read_regular(rollback_dir / "preimage.body", 1024 * 1024):
+                        raise ApplyError("restored policy did not verify")
+                    recovery_result = "restored"
+                except ApplyError:
+                    recovery_result = "recovery_required"
+            path, receipt = store_execution(intent, "failed", current["state"]["authority_state_sha256"], recovery_result)
+            append_audit("apply.executed", nonce=intent["nonce"], result="failed", recovery_result=recovery_result, receipt_sha256=receipt["receipt_sha256"])
+            if recovery_result == "recovery_required":
+                raise ApplyError(f"policy restoration could not be verified; recovery_required; evidence: {path}") from mutation_error
+            raise
+        target_authority = (
+            "legacy_deployment"
+            if intent["action"] == "rollback_to_legacy"
+            else "instance_specification_v1"
+        )
+        state = store_authority_transition(current["state"], intent, target_authority)
+        path, receipt = store_execution(intent, "success", state["authority_state_sha256"])
+        append_audit("apply.executed", nonce=intent["nonce"], result="success", receipt_sha256=receipt["receipt_sha256"], authority_state_sha256=state["authority_state_sha256"])
+        print(canonical({
+            "schema_version": 1, "result": "success", "receipt_path": str(path),
+            "authority_state_sha256": state["authority_state_sha256"],
+        }))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def rollback_prepare(args):
+    binding = validate_inputs(args)
+    plan = binding["plan"]
+    if plan["atomic_action_group"]["operation"] != "verify_instance_authority":
+        raise ApplyError("rollback requires a fresh Plan v2 that verifies instance authority")
+    execution_path, execution = resolve_hashed(
+        args.execution_receipt, EXECUTION_ROOT, "receipt_sha256", nested=True
+    )
+    candidate_receipt = dict(execution)
+    supplied_execution_hash = candidate_receipt.pop("receipt_sha256", None)
+    if (
+        supplied_execution_hash != sha256_bytes(canonical(candidate_receipt).encode("utf-8"))
+        or execution.get("kind") != "klokast.apply-execution.v1"
+        or execution.get("result") != "success"
+        or execution.get("action") != "adopt_instance_specification"
+        or execution.get("authority_state_sha256") != binding["state"]["authority_state_sha256"]
+    ):
+        raise ApplyError("rollback requires the successful adoption execution for the active authority state")
+    original_nonce = execution.get("nonce", "")
+    if not NONCE_RE.fullmatch(original_nonce):
+        raise ApplyError("adoption execution has an invalid nonce")
+    preimage_path = ROLLBACK_ROOT / original_nonce / "preimage.body"
+    preimage = read_regular(preimage_path, 1024 * 1024)
+    nonce = secrets.token_urlsafe(18)
+    work = new_work(nonce)
+    try:
+        rendered = render_policies(work)
+        if rendered != preimage:
+            raise ApplyError("stored Tailnet policy preimage differs from the byte-preserving shadow")
+        run([MUTATION_HELPER, "get-before", nonce])
+        live = read_regular(work / "live.body", 1024 * 1024)
+        if live != rendered:
+            raise ApplyError("live policy changed before rollback authorization")
+        run([MUTATION_HELPER, "validate-candidate", nonce])
+        etag = (work / "live.etag").read_text(encoding="utf-8").strip()
+        compatibility = {item["name"]: item["sha256"] for item in plan["compatibility_inputs"]}
+        issued = now_utc()
+        intent = {
+            "schema_version": 1, "kind": KIND_INTENT, "action": "rollback_to_legacy",
+            "plan_sha256": plan["plan_sha256"],
+            "authority_state_sha256": plan["authority_state"]["authority_state_sha256"],
+            "source_recovery_receipt_sha256": Path(binding["recovery_path"]).stem,
+            "source_receipt_sha256": plan["instance_source"]["receipt_sha256"],
+            "observation_sha256": plan["observation"]["generation_sha256"],
+            "private_commit": plan["instance"]["commit"],
+            "private_instance_sha256": next(item["sha256"] for item in plan["inputs"] if item["path"] == "klokast-instance.json"),
+            "legacy_deployment_sha256": compatibility["legacy_deployment"],
+            "legacy_registry_sha256": compatibility["legacy_platform_resources"],
+            "legacy_controller_ha_sha256": compatibility["legacy_controller_ha"],
+            "engine_commit": plan["engine"]["commit"],
+            "binary_sha256": binding["binary_sha256"],
+            "builder_receipt_sha256": binding["builder_receipt_sha256"],
+            "toolchain_receipt_sha256": plan["controller_toolchain"]["receipt_sha256"],
+            "rollback_execution_receipt_sha256": execution["receipt_sha256"],
+            "action_set": SCOPES, "executor": EXECUTOR, "rollback_type": ROLLBACK_TYPE,
+            "live_policy_sha256": sha256_bytes(live), "live_etag": etag,
+            "candidate_policy_sha256": sha256_bytes(preimage),
+            "nonce": nonce, "issued_at": format_utc(issued),
+            "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+        }
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        (directory / "intent.json").write_text(canonical(intent) + "\n", encoding="utf-8")
+        shutil.copyfile(preimage_path, directory / "candidate.body")
+        shutil.copyfile(preimage_path, directory / "preimage.body")
+        binding.pop("plan")
+        binding["rollback_execution_path"] = str(execution_path)
+        (directory / "binding.json").write_text(canonical(binding) + "\n", encoding="utf-8")
+        for item in directory.iterdir():
+            item.chmod(0o600)
+        append_audit("apply.rollback-preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], execution_receipt_sha256=execution["receipt_sha256"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="operation", required=True)
+    preflight_parser = commands.add_parser("preflight")
+    for name in (
+        "plan", "authority-state", "controller-toolchain-receipt",
+        "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir",
+    ):
+        preflight_parser.add_argument(f"--{name}", required=True)
+    execute_parser = commands.add_parser("execute")
+    execute_parser.add_argument("--approval-intent", required=True)
+    execute_parser.add_argument("--approval-signature", required=True)
+    execute_parser.add_argument("--signer-id", required=True)
+    rollback_parser = commands.add_parser("rollback")
+    rollback_parser.add_argument("--prepare", action="store_true")
+    rollback_parser.add_argument("--execution-receipt")
+    for name in (
+        "plan", "authority-state", "controller-toolchain-receipt",
+        "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir",
+    ):
+        rollback_parser.add_argument(f"--{name}")
+    rollback_parser.add_argument("--approval-intent")
+    rollback_parser.add_argument("--approval-signature")
+    rollback_parser.add_argument("--signer-id")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        if args.operation == "preflight":
+            preflight(args)
+        elif args.operation == "execute":
+            execute(args)
+        elif args.operation == "rollback" and args.prepare:
+            required = [
+                args.execution_receipt, args.plan, args.authority_state,
+                args.controller_toolchain_receipt, args.source_recovery_receipt,
+                args.instance_source_receipt, args.observation, args.build_dir,
+            ]
+            if any(not item for item in required) or any(
+                item for item in (args.approval_intent, args.approval_signature, args.signer_id)
+            ):
+                raise ApplyError("rollback preparation requires only complete fresh evidence")
+            rollback_prepare(args)
+        elif args.operation == "rollback" and not args.prepare:
+            if not args.approval_intent or not args.approval_signature or not args.signer_id:
+                raise ApplyError("rollback execution requires the signed prepared intent")
+            execute(args)
+        else:
+            raise ApplyError("unsupported rollback operation")
+    except ApplyError as error:
+        print(f"ksa-apply: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

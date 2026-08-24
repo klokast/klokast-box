@@ -267,7 +267,7 @@ The implemented offline commands are:
 ```text
 klokast init --instance PATH --values FILE [--json]
 klokast check --instance PATH [--json]
-klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json]
+klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]
 klokast doctor --instance PATH --observation FILE [--json]
 ```
 
@@ -329,7 +329,7 @@ airunner identities, app placement, features, and retained data. It sorts maps
 and sets before it creates the projection hash. It preserves the `airunners`
 order, and a priority change changes the projection hash.
 
-Plan v1 emits `control_plane.airunners` as the same ordered string array. It
+Plan v2 emits `control_plane.airunners` as the same ordered string array. It
 does not emit airunner kinds, placement fields, or derived airunner objects.
 
 The compatibility planner compares this projection with the current private
@@ -338,8 +338,10 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 `unsupported`. A disabled legacy app that is omitted from `apps` resolves to
 absent. An enabled legacy app must have explicit present intent.
 
-With a fresh Observation v1 file and Instance Source Receipt v1, `plan` emits
-a hashed Plan v1 artifact. It does not apply changes. `doctor` uses the same
+With fresh Observation v1, Instance Source Receipt v1, Authority State v1,
+and Controller Toolchain v1 evidence, `plan` emits a hashed Plan v2 artifact.
+It does not apply changes. Plan v1 remains read-only historical evidence and
+cannot authorize Apply. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy
 resources do not become desired state. `doctor` checks every listed airunner
 for presence, online state, and its required tag. It does not select a runner,

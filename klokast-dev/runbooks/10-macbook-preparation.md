@@ -44,4 +44,4 @@ ambient agent.
 
 Configure Touch ID for the current Mac user. Then follow
 `klokast-dev/runbooks/15-touchid-secret-authority.md` to create the separate
-private-instance and static-site approval identities.
+private-instance, static-site, and platform-apply approval identities.

@@ -305,7 +305,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	artifact.Valid = true
 	artifact.Deployable = report.Repository.Clean && report.Repository.HeadCommit != "" && artifact.InstanceSource.ReceiptSHA256 != "" && artifact.AuthorityState.AuthorityStateSHA256 != "" && artifact.ControllerToolchain.ReceiptSHA256 != "" && artifact.Compatible && artifact.SubstrateHealthy && len(artifact.Refusals) == 0
 	artifact.AuthorityReady = artifact.Deployable && coverageReady
-	artifact.LegacyRemovalReady = artifact.AuthorityReady && artifact.Compatibility.Summary.CompatibilityOnly == 0
+	// The pilot retains the complete legacy shadow even when every compatibility
+	// finding is otherwise representable. Removal is a later authorization.
+	artifact.LegacyRemovalReady = false
 	artifact.PlanSHA256, err = Hash(artifact)
 	if err != nil {
 		return Artifact{}, err

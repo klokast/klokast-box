@@ -48,7 +48,7 @@ def load_deployment(path):
             die(f"tailnet.groups.{name} must be a non-empty list")
         if any(not isinstance(item, str) or not LOGIN_RE.fullmatch(item) for item in members):
             die(f"tailnet.groups.{name} contains an invalid login")
-        normalized[name] = list(dict.fromkeys(members))
+        normalized[name] = sorted(set(members))
     operator_test_login = next(
         (login for login in normalized["operators"] if login in normalized["family"]),
         None,
@@ -63,6 +63,60 @@ def load_deployment(path):
         "groups": normalized,
         "operator_test_login": operator_test_login,
         "boxes": boxes,
+    }
+
+
+def load_instance(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        die(f"cannot read Instance Specification v1: {error}")
+    if not isinstance(data, dict) or data.get("schema-version") != 1:
+        die("instance must use schema-version 1")
+    tailscale = data.get("tailscale")
+    if not isinstance(tailscale, dict):
+        die("instance tailscale must be an object")
+    if set(tailscale) != {"tailnet-dns-name", "members"}:
+        die("instance tailscale fields do not match the closed v1 policy input")
+    suffix = tailscale.get("tailnet-dns-name")
+    if not isinstance(suffix, str) or not SUFFIX_RE.fullmatch(suffix):
+        die("tailscale.tailnet-dns-name must be a MagicDNS *.ts.net suffix")
+    members = tailscale.get("members")
+    if not isinstance(members, dict) or not members:
+        die("tailscale.members must be a non-empty object")
+    groups = {"operators": [], "family": []}
+    for login, membership in members.items():
+        if not isinstance(login, str) or not LOGIN_RE.fullmatch(login):
+            die("tailscale.members contains an invalid login")
+        if not isinstance(membership, dict) or set(membership) != {"roles"}:
+            die("tailscale member fields do not match the closed v1 input")
+        roles = membership.get("roles")
+        if (
+            not isinstance(roles, list)
+            or not roles
+            or any(role not in {"operator", "family"} for role in roles)
+            or len(set(roles)) != len(roles)
+        ):
+            die("tailscale member roles must be unique operator or family values")
+        if "operator" in roles:
+            groups["operators"].append(login)
+        if "family" in roles:
+            groups["family"].append(login)
+    if not groups["operators"] or not groups["family"]:
+        die("instance must define non-empty operator and family groups")
+    for name in groups:
+        groups[name].sort()
+    operator_test_login = next(
+        (login for login in groups["operators"] if login in groups["family"]),
+        None,
+    )
+    if operator_test_login is None:
+        die("one operator must also be a family member for combined policy tests")
+    return {
+        "magicdns_suffix": suffix,
+        "groups": groups,
+        "operator_test_login": operator_test_login,
+        "boxes": {},
     }
 
 
@@ -113,11 +167,17 @@ def atomic_write(path, content):
 
 def main():
     parser = argparse.ArgumentParser(description="Render a family-specific Tailscale policy")
-    parser.add_argument("--deployment-config", type=Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--deployment-config", type=Path)
+    inputs.add_argument("--instance", type=Path)
     parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    deployment = load_deployment(args.deployment_config)
+    deployment = (
+        load_deployment(args.deployment_config)
+        if args.deployment_config is not None
+        else load_instance(args.instance)
+    )
     atomic_write(args.output, render(args.template, deployment))
     print(args.output)
 

@@ -38,7 +38,7 @@ permissions needed by the static-site pilot: repository administration write for
 repo creation/deploy keys and contents write for the initial `bootstrap-repo`
 push.
 
-The MacBook uses two separate Apple-native Secure Enclave identities. The
+The MacBook uses three separate Apple-native Secure Enclave identities. The
 static-site signer file contains only:
 
 ```text
@@ -46,14 +46,17 @@ human-static-site namespaces="klokast-secret-authority" sk-ecdsa-sha2-nistp256@o
 ```
 
 The private-instance signer is stored separately as `human-private-instance`.
+Platform Apply uses `human-platform-apply` and the separate
+`klokast-platform-apply` signature namespace.
 Use `klokast-dev/runbooks/15-touchid-secret-authority.md` to create and install
-both signers. Do not write either signer file by hand.
+all signers. Do not write a signer file by hand.
 
 The controller paths are:
 
 ```text
 /etc/klokast/secret-authority/allowed-signers-static-site
 /etc/klokast/secret-authority/allowed-signers-private-instance
+/etc/klokast/secret-authority/allowed-signers-platform-apply
 ```
 
 Generate an approval intent from the controller checkout:

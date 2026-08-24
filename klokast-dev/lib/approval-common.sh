@@ -109,8 +109,13 @@ ksa_select_touchid_profile() {
       ctk_label='Klokast static-site approval'
       allowed_signers_path=/etc/klokast/secret-authority/allowed-signers-static-site
       ;;
+    platform-apply)
+      signer_id=human-platform-apply
+      ctk_label='Klokast platform-apply approval'
+      allowed_signers_path=/etc/klokast/secret-authority/allowed-signers-platform-apply
+      ;;
     *)
-      ksa_die "approval purpose must be private-instance or static-site"
+      ksa_die "approval purpose must be private-instance, static-site, or platform-apply"
       ;;
   esac
   profile_dir="$KSA_APPROVAL_PROFILE_ROOT/$approval_purpose"

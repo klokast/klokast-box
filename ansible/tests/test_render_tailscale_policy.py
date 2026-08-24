@@ -120,6 +120,34 @@ class RenderTailscalePolicyTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 MODULE.load_deployment(path)
 
+    def test_instance_and_legacy_render_exact_same_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            deployment = MODULE.load_deployment(self.deployment(root))
+            instance_path = root / "klokast-instance.json"
+            instance_path.write_text(
+                """{
+  "schema-version": 1,
+  "tailscale": {
+    "tailnet-dns-name": "example.ts.net",
+    "members": {
+      "family@example.com": {"roles": ["family"]},
+      "admin@example.com": {"roles": ["operator", "family"]}
+    }
+  }
+}\n""",
+                encoding="utf-8",
+            )
+            instance = MODULE.load_instance(instance_path)
+            self.assertEqual(
+                MODULE.render(MODULE.DEFAULT_TEMPLATE, deployment),
+                MODULE.render(MODULE.DEFAULT_TEMPLATE, instance),
+            )
+
+    def test_cli_inputs_are_mutually_exclusive(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("add_mutually_exclusive_group(required=True)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

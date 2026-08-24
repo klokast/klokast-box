@@ -196,7 +196,6 @@ ops_controller_tailscale_wrappers:
   - ts-authkey-music
   - ts-authkey-music-upload
   - ts-authkey-print
-  - ts-policy-apply
   - ts-policy-pull
   - ts-policy-validate
   - ts-devices-list
@@ -206,6 +205,12 @@ ops_controller_secret_authority_wrapper_source_root: "{{ playbook_dir }}/../../k
 ops_controller_secret_authority_wrappers:
   - ksa-static-site
   - ksa-instance
+  - ksa-apply
+
+ops_controller_apply_mutation_helper_source: "{{ playbook_dir }}/../../klokast-ops/tailscale/bin/ts-policy-mutate-internal"
+ops_controller_apply_renderer_source: "{{ playbook_dir }}/../bin/render-tailscale-policy"
+ops_controller_apply_policy_template_source: "{{ playbook_dir }}/../../klokast-ops/tailscale/policy.hujson.j2"
+ops_controller_initial_authority_state_sha256: e3d17aed704e4f11ac2fdf420920831bbfa5e0de8eaa2267ffe4ba666727d64c
 
 ops_airunner_enabled: false
 ops_airunner_user: agent

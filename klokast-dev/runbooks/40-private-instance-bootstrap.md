@@ -23,7 +23,8 @@ an airunner, authors and pushes the first private commit.
 ## 0. Pre-requisites
 
 Complete `klokast-dev/runbooks/15-touchid-secret-authority.md` before Step 1.
-That migration installs the separate private-instance and static-site signers
+That migration installs the separate private-instance, static-site, and
+platform-apply signers
 and deploys their scope enforcement to the active controller.
 
 ## 1. Prepare the MacBook
@@ -659,8 +660,9 @@ The temporary App is deleted.
 ```
 
 The agent can then run `platform-instance sync`, create a fresh Observation
-v1 file, and generate the live read-only Plan v1 artifact. Legacy deployment
-and registry authority stays active. No apply action is part of this runbook.
+v1 file, and generate a read-only Plan v2 artifact with the active authority
+state and exact controller toolchain receipt. Legacy deployment authority
+stays active until a separate platform-apply approval changes it.
 
 ## 14. Promote the active engine
 

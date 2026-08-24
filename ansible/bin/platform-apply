@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Invoke the closed root Apply boundary from the active controller account."""
+
+import argparse
+import getpass
+import subprocess
+import sys
+from pathlib import Path
+
+
+INSTALLED = Path("/usr/local/sbin/ksa-apply")
+
+
+def common_evidence(parser):
+    parser.add_argument("--plan", required=True)
+    parser.add_argument("--authority-state", required=True)
+    parser.add_argument("--controller-toolchain-receipt", required=True)
+    parser.add_argument("--source-recovery-receipt", required=True)
+    parser.add_argument("--instance-source-receipt", required=True)
+    parser.add_argument("--observation", required=True)
+    parser.add_argument("--build-dir", required=True)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="operation", required=True)
+    preflight = commands.add_parser("preflight")
+    common_evidence(preflight)
+    execute = commands.add_parser("execute")
+    execute.add_argument("--approval-intent", required=True)
+    execute.add_argument("--approval-signature", required=True)
+    execute.add_argument("--signer-id", default="human-platform-apply")
+    rollback = commands.add_parser("rollback")
+    rollback.add_argument("--prepare", action="store_true")
+    rollback.add_argument("--execution-receipt")
+    rollback.add_argument("--approval-intent")
+    rollback.add_argument("--approval-signature")
+    rollback.add_argument("--signer-id", default="human-platform-apply")
+    for name in (
+        "plan", "authority-state", "controller-toolchain-receipt",
+        "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir",
+    ):
+        rollback.add_argument(f"--{name}")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if getpass.getuser() != "smith":
+        print("platform-apply: run as smith on the active controller", file=sys.stderr)
+        return 1
+    if not INSTALLED.is_file():
+        print("platform-apply: installed ksa-apply is missing", file=sys.stderr)
+        return 1
+    command = ["sudo", "-n", INSTALLED, args.operation]
+    if args.operation == "preflight":
+        for name in (
+            "plan", "authority_state", "controller_toolchain_receipt",
+            "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
+        ):
+            command.extend(["--" + name.replace("_", "-"), getattr(args, name)])
+    elif args.operation == "execute":
+        command.extend([
+            "--approval-intent", args.approval_intent,
+            "--approval-signature", args.approval_signature,
+            "--signer-id", args.signer_id,
+        ])
+    elif args.prepare:
+        command.extend(["--prepare", "--execution-receipt", args.execution_receipt])
+        for name in (
+            "plan", "authority_state", "controller_toolchain_receipt",
+            "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
+        ):
+            value = getattr(args, name)
+            if not value:
+                print(f"platform-apply: rollback --prepare requires --{name.replace('_', '-')}", file=sys.stderr)
+                return 2
+            command.extend(["--" + name.replace("_", "-"), value])
+    else:
+        if not args.approval_intent or not args.approval_signature:
+            print("platform-apply: rollback requires --prepare or a signed intent", file=sys.stderr)
+            return 2
+        command.extend([
+            "--approval-intent", args.approval_intent,
+            "--approval-signature", args.approval_signature,
+            "--signer-id", args.signer_id,
+        ])
+    return subprocess.run([str(item) for item in command], check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

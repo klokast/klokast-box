@@ -4,7 +4,7 @@
 
 - to remove stale devices from the Tailscale network, run `/usr/local/sbin/ts-device-delete-stale`
 
-- To update Tailscale Access Control policy:
+- To update public Tailscale Access Control topology:
   1. Read Tailscale API documentation on `https://tailscale.com/api`.
   2. Edit public topology and grants in `policy.hujson.j2`; keep family
      identities in `~/private/klokast/deployment.yml`.
@@ -13,8 +13,11 @@
      ~/private/klokast/tailscale-policy.hujson`.
   4. Validate with `sudo /usr/local/sbin/ts-policy-validate
      /home/smith/private/klokast/tailscale-policy.hujson`.
-  5. Apply only after review with `sudo /usr/local/sbin/ts-policy-apply
-     /home/smith/private/klokast/tailscale-policy.hujson`.
+  5. Do not apply with a direct policy wrapper. The infra account can pull and
+     validate policy, but it cannot mutate policy. Use the closed
+     `tailnet_policy_inputs_v1` Apply flow for the three migrated private
+     inputs. A later architecture decision must authorize any public-template
+     mutation flow.
   6. `sudo /usr/local/sbin/ts-policy-pull` imports the live API policy into
      that private path for comparison; it never writes identities into Git.
 
@@ -38,7 +41,8 @@
 The git repository, in `klokast/klokast-box/klokast-ops/tailscale/bin`, contains the editable source code of the Tailscale wrappers.
 - `ts-devices-list`
 - `ts-device-delete-stale`
-- `ts-policy-apply`
+- `ts-policy-mutate-internal` (root-only internal Apply helper; never use it
+  directly)
 - `ts-policy-pull`
 - `ts-policy-validate`
 - `ts-authkey-mint`
