@@ -71,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
 	return 2
 }
 
@@ -129,15 +129,17 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	controllerPath := flags.String("compatibility-controller-ha", "", "path to the transitional controller HA document")
 	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
 	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
+	authorityState := flags.String("authority-state", "", "path to an Authority State v1 JSON document")
+	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v1 receipt")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
-		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE] [--json]")
+		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--json]")
 		return 2
 	}
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
 	if *observationPath == "" {
-		if *instanceSourceReceipt != "" {
-			fmt.Fprintln(stderr, "klokast plan: --instance-source-receipt requires --observation")
+		if *instanceSourceReceipt != "" || *authorityState != "" || *controllerToolchainReceipt != "" {
+			fmt.Fprintln(stderr, "klokast plan: Plan v2 evidence flags require --observation")
 			return 2
 		}
 		return runCompatibilityPlan(planner.Options{
@@ -145,17 +147,19 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 			CompatibilityRegistry: *registryPath, CompatibilityControllerHA: *controllerPath,
 		}, engine, *jsonOutput, stdout, stderr)
 	}
-	if *instanceSourceReceipt == "" {
-		fmt.Fprintln(stderr, "klokast plan: --instance-source-receipt is required with --observation")
+	if *instanceSourceReceipt == "" || *authorityState == "" || *controllerToolchainReceipt == "" {
+		fmt.Fprintln(stderr, "klokast plan: --instance-source-receipt, --authority-state, and --controller-toolchain-receipt are required with --observation")
 		return 2
 	}
 	result, err := deploymentplan.Build(deploymentplan.Options{
-		InstancePath: *instancePath,
-		CompatibilityDeployment: *deploymentPath,
-		CompatibilityRegistry: *registryPath,
-		CompatibilityControllerHA: *controllerPath,
-		ObservationPath: *observationPath,
-		InstanceSourceReceipt: *instanceSourceReceipt,
+		InstancePath:               *instancePath,
+		CompatibilityDeployment:    *deploymentPath,
+		CompatibilityRegistry:      *registryPath,
+		CompatibilityControllerHA:  *controllerPath,
+		ObservationPath:            *observationPath,
+		InstanceSourceReceipt:      *instanceSourceReceipt,
+		AuthorityState:             *authorityState,
+		ControllerToolchainReceipt: *controllerToolchainReceipt,
 	}, engine)
 	if err != nil {
 		if *jsonOutput {

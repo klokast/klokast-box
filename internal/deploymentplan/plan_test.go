@@ -14,8 +14,10 @@ import (
 	"time"
 
 	klokastbox "klokast-box"
+	"klokast-box/internal/authoritystate"
 	"klokast-box/internal/contract"
 	"klokast-box/internal/doctor"
+	"klokast-box/internal/toolchain"
 )
 
 const testCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -161,6 +163,49 @@ func TestBuildRefusesCompatibilityConflict(t *testing.T) {
 	}
 }
 
+func TestBuildUsesVerificationActionsAfterAdoption(t *testing.T) {
+	instance := prepareInstance(t)
+	options := compatibilityOptions(t, instance)
+	initial, err := authoritystate.Initial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := authoritystate.Transition(
+		initial, authoritystate.InstanceAuthority, strings.Repeat("d", 64), "adopt-test",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := json.Marshal(adopted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.AuthorityState, append(content, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := Build(options, testEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artifact.Deployable || artifact.AtomicActionGroup.Operation != "verify_instance_authority" {
+		t.Fatalf("migrated Plan v2 did not become verification-only: %#v", artifact.AtomicActionGroup)
+	}
+	for _, scope := range authoritystate.TailnetScopes {
+		found := false
+		for _, action := range artifact.Actions {
+			if action.Scope == scope {
+				found = true
+				if action.Operation != "verify_instance_authority" || action.AuthorityBefore != authoritystate.InstanceAuthority || action.AuthorityAfter != authoritystate.InstanceAuthority {
+					t.Fatalf("scope %s proposed another adoption: %#v", scope, action)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("scope %s has no verification action", scope)
+		}
+	}
+}
+
 func compatibilityOptions(t *testing.T, instance string) Options {
 	t.Helper()
 	directory := t.TempDir()
@@ -204,9 +249,49 @@ controllers:
 	return Options{
 		InstancePath: instance, CompatibilityDeployment: deployment,
 		CompatibilityRegistry: registry, CompatibilityControllerHA: controller,
-		ObservationPath: writeObservation(t, directory),
-		InstanceSourceReceipt: writeSourceReceipt(t, directory, instance),
+		ObservationPath:            writeObservation(t, directory),
+		InstanceSourceReceipt:      writeSourceReceipt(t, directory, instance),
+		AuthorityState:             writeAuthorityState(t, directory),
+		ControllerToolchainReceipt: writeToolchainReceipt(t, directory),
 	}
+}
+
+func writeAuthorityState(t *testing.T, directory string) string {
+	t.Helper()
+	state, err := authoritystate.Initial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeFile(t, directory, "authority-state.json", string(content)+"\n")
+}
+
+func writeToolchainReceipt(t *testing.T, directory string) string {
+	t.Helper()
+	receipt := toolchain.Receipt{
+		SchemaVersion: 1, Kind: toolchain.Kind, EngineCommit: testCommit,
+		PublicCheckoutClean: true, PublicCheckoutCommit: testCommit,
+		Components: []toolchain.Component{},
+	}
+	for index, name := range toolchain.Components {
+		digest := fmt.Sprintf("%064x", index+1)
+		receipt.Components = append(receipt.Components, toolchain.Component{
+			Name: name, SourceSHA256: digest, InstalledSHA256: digest,
+		})
+	}
+	digest, err := toolchain.Hash(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.ReceiptSHA256 = digest
+	content, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeFile(t, directory, "controller-toolchain.json", string(content)+"\n")
 }
 
 func writeSourceReceipt(t *testing.T, directory, instance string) string {
@@ -215,16 +300,16 @@ func writeSourceReceipt(t *testing.T, directory, instance string) string {
 	repository := "family/klokast"
 	repositoryDigest := sha256.Sum256([]byte(repository))
 	value := map[string]any{
-		"schema_version": 1,
-		"kind": "klokast.instance-source.v1",
-		"repository": repository,
-		"repository_sha256": fmt.Sprintf("%x", repositoryDigest[:]),
-		"repository_id": 123456,
-		"remote_ref": "refs/heads/main",
-		"commit": commit,
-		"fetched_at": time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+		"schema_version":         1,
+		"kind":                   "klokast.instance-source.v1",
+		"repository":             repository,
+		"repository_sha256":      fmt.Sprintf("%x", repositoryDigest[:]),
+		"repository_id":          123456,
+		"remote_ref":             "refs/heads/main",
+		"commit":                 commit,
+		"fetched_at":             time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
 		"deploy_key_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGH123456",
-		"anonymous_readable": false,
+		"anonymous_readable":     false,
 		"authenticated_readable": true,
 	}
 	canonical, err := json.Marshal(value)
@@ -309,7 +394,9 @@ func writeObservation(t *testing.T, directory string) string {
 			RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...),
 		}},
 	}
-	sort.Slice(observation.TailnetMachines, func(i, j int) bool { return observation.TailnetMachines[i].Hostname < observation.TailnetMachines[j].Hostname })
+	sort.Slice(observation.TailnetMachines, func(i, j int) bool {
+		return observation.TailnetMachines[i].Hostname < observation.TailnetMachines[j].Hostname
+	})
 	content, err := json.Marshal(observation)
 	if err != nil {
 		t.Fatal(err)

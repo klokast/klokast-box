@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"klokast-box/internal/authoritystate"
+	"klokast-box/internal/toolchain"
 )
 
 func TestVersionJSON(t *testing.T) {
@@ -172,6 +175,8 @@ controllers:
 	}
 	observation := writeMainObservation(t, parent)
 	sourceReceipt := writeMainSourceReceipt(t, parent, instancePath)
+	authorityState := writeMainAuthorityState(t, parent)
+	toolchainReceipt := writeMainToolchainReceipt(t, parent)
 	arguments := []string{
 		"plan", "--instance", instancePath,
 		"--compatibility-deployment", deployment,
@@ -179,14 +184,16 @@ controllers:
 		"--compatibility-controller-ha", controller,
 		"--observation", observation,
 		"--instance-source-receipt", sourceReceipt, "--json",
+		"--authority-state", authorityState,
+		"--controller-toolchain-receipt", toolchainReceipt,
 	}
 	if got := run(arguments, &stdout, &stderr); got != 2 {
 		t.Fatalf("run(plan) = %d, want non-deployable status 2; stderr=%q, stdout=%q", got, stderr.String(), stdout.String())
 	}
 	var result struct {
-		Valid      bool `json:"valid"`
-		Compatible bool `json:"compatible"`
-		Deployable bool `json:"deployable"`
+		Valid      bool   `json:"valid"`
+		Compatible bool   `json:"compatible"`
+		Deployable bool   `json:"deployable"`
 		PlanSHA256 string `json:"plan_sha256"`
 		Projection struct {
 			ControlPlane struct {
@@ -200,6 +207,52 @@ controllers:
 	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0] != "boxa-ops-airunner" {
 		t.Fatalf("unexpected plan result: %#v", result)
 	}
+}
+
+func writeMainAuthorityState(t *testing.T, directory string) string {
+	t.Helper()
+	state, err := authoritystate.Initial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "authority-state.json")
+	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeMainToolchainReceipt(t *testing.T, directory string) string {
+	t.Helper()
+	receipt := toolchain.Receipt{
+		SchemaVersion: 1, Kind: toolchain.Kind,
+		EngineCommit: engineCommit, PublicCheckoutCommit: engineCommit,
+		PublicCheckoutClean: true,
+	}
+	for index, name := range toolchain.Components {
+		digest := fmt.Sprintf("%064x", index+1)
+		receipt.Components = append(receipt.Components, toolchain.Component{
+			Name: name, SourceSHA256: digest, InstalledSHA256: digest,
+		})
+	}
+	digest, err := toolchain.Hash(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.ReceiptSHA256 = digest
+	content, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "controller-toolchain.json")
+	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func mainInstanceValues() string {
@@ -230,16 +283,16 @@ func writeMainSourceReceipt(t *testing.T, directory, instancePath string) string
 	repository := "family/klokast"
 	repositoryDigest := sha256.Sum256([]byte(repository))
 	value := map[string]any{
-		"schema_version": 1,
-		"kind": "klokast.instance-source.v1",
-		"repository": repository,
-		"repository_sha256": fmt.Sprintf("%x", repositoryDigest[:]),
-		"repository_id": 123456,
-		"remote_ref": "refs/heads/main",
-		"commit": commit,
-		"fetched_at": time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+		"schema_version":         1,
+		"kind":                   "klokast.instance-source.v1",
+		"repository":             repository,
+		"repository_sha256":      fmt.Sprintf("%x", repositoryDigest[:]),
+		"repository_id":          123456,
+		"remote_ref":             "refs/heads/main",
+		"commit":                 commit,
+		"fetched_at":             time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
 		"deploy_key_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGH123456",
-		"anonymous_readable": false,
+		"anonymous_readable":     false,
 		"authenticated_readable": true,
 	}
 	canonical, marshalErr := json.Marshal(value)
@@ -263,8 +316,8 @@ func writeMainObservation(t *testing.T, directory string) string {
 	t.Helper()
 	guests := []any{"bak", "dmz", "iot", "ops", "router"}
 	value := map[string]any{
-		"schema_version": 1,
-		"observed_at": time.Now().UTC().Format(time.RFC3339),
+		"schema_version":    1,
+		"observed_at":       time.Now().UTC().Format(time.RFC3339),
 		"source_controller": "boxa-ops",
 		"source_map_sha256": strings.Repeat("b", 64),
 		"tailnet_machines": []any{

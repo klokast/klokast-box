@@ -1,4 +1,4 @@
-// Package deploymentplan creates a deterministic, read-only Plan v1 artifact.
+// Package deploymentplan creates a deterministic, read-only Plan v2 artifact.
 package deploymentplan
 
 import (
@@ -11,19 +11,23 @@ import (
 	"strings"
 	"time"
 
+	"klokast-box/internal/authoritystate"
 	"klokast-box/internal/contract"
 	"klokast-box/internal/doctor"
 	"klokast-box/internal/instancesource"
 	"klokast-box/internal/planner"
+	"klokast-box/internal/toolchain"
 )
 
 type Options struct {
-	InstancePath              string
-	CompatibilityDeployment  string
-	CompatibilityRegistry    string
-	CompatibilityControllerHA string
-	ObservationPath           string
-	InstanceSourceReceipt     string
+	InstancePath               string
+	CompatibilityDeployment    string
+	CompatibilityRegistry      string
+	CompatibilityControllerHA  string
+	ObservationPath            string
+	InstanceSourceReceipt      string
+	AuthorityState             string
+	ControllerToolchainReceipt string
 }
 
 type Artifact struct {
@@ -38,18 +42,39 @@ type Artifact struct {
 	HealthScope         string                       `json:"health_scope"`
 	Engine              planner.Engine               `json:"engine"`
 	Instance            InstanceIdentity             `json:"instance"`
-	InstanceSource      instancesource.Reference      `json:"instance_source"`
+	InstanceSource      instancesource.Reference     `json:"instance_source"`
+	AuthorityState      AuthorityStateReference      `json:"authority_state"`
+	ControllerToolchain ToolchainReference           `json:"controller_toolchain"`
 	Inputs              []planner.InputDigest        `json:"inputs"`
 	CompatibilityInputs []planner.CompatibilityInput `json:"compatibility_inputs"`
 	Projection          *planner.Projection          `json:"projection,omitempty"`
 	ProjectionHash      string                       `json:"projection_sha256,omitempty"`
 	Observation         ObservationReference         `json:"observation"`
-	Compatibility       *planner.Compatibility        `json:"compatibility,omitempty"`
+	Compatibility       *planner.Compatibility       `json:"compatibility,omitempty"`
 	Authorities         []AuthorityAssignment        `json:"authorities"`
 	Actions             []Action                     `json:"actions"`
+	AtomicActionGroup   AtomicActionGroup            `json:"atomic_action_group"`
 	Refusals            []Refusal                    `json:"refusals"`
 	Diagnostics         []contract.Diagnostic        `json:"diagnostics"`
 	PlanSHA256          string                       `json:"plan_sha256,omitempty"`
+}
+
+type AuthorityStateReference struct {
+	AuthorityStateSHA256 string `json:"authority_state_sha256"`
+	TailnetAuthority     string `json:"tailnet_authority"`
+}
+
+type ToolchainReference struct {
+	ReceiptSHA256 string `json:"receipt_sha256"`
+	EngineCommit  string `json:"engine_commit"`
+}
+
+type AtomicActionGroup struct {
+	ID           string   `json:"id"`
+	Operation    string   `json:"operation"`
+	Scopes       []string `json:"scopes"`
+	Executor     string   `json:"executor"`
+	RollbackType string   `json:"rollback_type"`
 }
 
 type InstanceIdentity struct {
@@ -100,8 +125,8 @@ type Refusal struct {
 
 func Build(options Options, engine contract.Engine) (Artifact, error) {
 	artifact := Artifact{
-		SchemaVersion: 1,
-		Kind:          "klokast.plan.v1",
+		SchemaVersion: 2,
+		Kind:          "klokast.plan.v2",
 		HealthScope:   "standard_substrate_v1",
 		Engine:        planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
 		Inputs:        []planner.InputDigest{}, CompatibilityInputs: []planner.CompatibilityInput{},
@@ -109,9 +134,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		Diagnostics: []contract.Diagnostic{},
 	}
 	plannerOptions := planner.Options{
-		InstancePath: options.InstancePath,
-		CompatibilityDeployment: options.CompatibilityDeployment,
-		CompatibilityRegistry: options.CompatibilityRegistry,
+		InstancePath:              options.InstancePath,
+		CompatibilityDeployment:   options.CompatibilityDeployment,
+		CompatibilityRegistry:     options.CompatibilityRegistry,
 		CompatibilityControllerHA: options.CompatibilityControllerHA,
 	}
 	report, err := planner.Plan(plannerOptions, engine)
@@ -121,6 +146,26 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	if !report.Valid {
 		artifact.Diagnostics = report.Diagnostics
 		return artifact, nil
+	}
+	state, err := authoritystate.Load(options.AuthorityState)
+	if err != nil {
+		return Artifact{}, err
+	}
+	tailnetAuthority, err := authoritystate.Authority(state)
+	if err != nil {
+		return Artifact{}, err
+	}
+	toolchainReceipt, err := toolchain.Load(options.ControllerToolchainReceipt, engine.Commit)
+	if err != nil {
+		return Artifact{}, err
+	}
+	artifact.AuthorityState = AuthorityStateReference{
+		AuthorityStateSHA256: state.AuthorityStateSHA256,
+		TailnetAuthority:     tailnetAuthority,
+	}
+	artifact.ControllerToolchain = ToolchainReference{
+		ReceiptSHA256: toolchainReceipt.ReceiptSHA256,
+		EngineCommit:  toolchainReceipt.EngineCommit,
 	}
 
 	artifact.Engine = report.Engine
@@ -170,7 +215,12 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 
 	digests := compatibilityDigests(artifact.CompatibilityInputs)
 	artifact.Authorities = authorityAssignments(artifact, digests)
+	tailnetFindings := map[string]planner.Finding{}
 	for _, finding := range artifact.Compatibility.Findings {
+		if isTailnetPilotScope(finding.Path) {
+			tailnetFindings[finding.Path] = finding
+			continue
+		}
 		switch finding.Class {
 		case "matched", "derived":
 			before := sourceAuthority(finding)
@@ -191,6 +241,39 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			artifact.Refusals = append(artifact.Refusals, refusal("compatibility.class", finding.Path, "the compatibility finding class is not supported"))
 		}
 	}
+	pilotOperation := "adopt_instance_specification"
+	if tailnetAuthority == authoritystate.InstanceAuthority {
+		pilotOperation = "verify_instance_authority"
+	}
+	artifact.AtomicActionGroup = AtomicActionGroup{
+		ID:           "tailnet-policy-inputs-v1",
+		Operation:    pilotOperation,
+		Scopes:       append([]string{}, authoritystate.TailnetScopes...),
+		Executor:     "tailnet_policy_inputs_v1",
+		RollbackType: "tailnet_policy_preimage_v1",
+	}
+	legacyDigest := digests[authoritystate.LegacyAuthority]
+	for _, scope := range authoritystate.TailnetScopes {
+		finding, present := tailnetFindings[scope]
+		if !present || finding.Class != "matched" || legacyDigest == "" {
+			artifact.Refusals = append(artifact.Refusals, refusal(
+				"tailnet-pilot.not-matched", scope,
+				"the complete Tailnet pilot requires matched legacy deployment evidence",
+			))
+			continue
+		}
+		before, after := authoritystate.LegacyAuthority, authoritystate.InstanceAuthority
+		if pilotOperation == "verify_instance_authority" {
+			before, after = authoritystate.InstanceAuthority, authoritystate.InstanceAuthority
+		}
+		artifact.Actions = append(artifact.Actions, Action{
+			ID: actionID(pilotOperation, finding.ID), FindingID: finding.ID,
+			Operation: pilotOperation, Scope: scope, AuthorityBefore: before,
+			AuthorityAfter: after, Executor: "tailnet_policy_inputs_v1",
+			Preconditions: []string{"active_controller_fenced", "exact_plan_v2_revalidated", "byte_equal_policy", "tailnet_policy_preimage_prepared"},
+			Rollback:      Rollback{Strategy: "tailnet_policy_preimage_v1", Authority: authoritystate.LegacyAuthority, SourceSHA256: legacyDigest},
+		})
+	}
 	for _, finding := range health.Findings {
 		artifact.Refusals = append(artifact.Refusals, refusal("observation."+finding.Code, finding.Path, finding.Message))
 	}
@@ -207,7 +290,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		ID: "verify-standard-substrate", Operation: "verify_substrate", Scope: "standard_substrate_v1",
 		AuthorityBefore: "observation_v1", AuthorityAfter: "observation_v1", Executor: "read_only_doctor",
 		Preconditions: []string{"fresh_observation", "active_controller_source", "exact_projection_hash"},
-		Rollback: Rollback{Strategy: "no_mutation", Authority: "observation_v1", SourceSHA256: health.ObservationGeneration},
+		Rollback:      Rollback{Strategy: "no_mutation", Authority: "observation_v1", SourceSHA256: health.ObservationGeneration},
 	})
 	coverageReady, coverageRefusals := exactCoverage(artifact, digests)
 	artifact.Refusals = append(artifact.Refusals, coverageRefusals...)
@@ -220,7 +303,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	})
 
 	artifact.Valid = true
-	artifact.Deployable = report.Repository.Clean && report.Repository.HeadCommit != "" && artifact.InstanceSource.ReceiptSHA256 != "" && artifact.Compatible && artifact.SubstrateHealthy && len(artifact.Refusals) == 0
+	artifact.Deployable = report.Repository.Clean && report.Repository.HeadCommit != "" && artifact.InstanceSource.ReceiptSHA256 != "" && artifact.AuthorityState.AuthorityStateSHA256 != "" && artifact.ControllerToolchain.ReceiptSHA256 != "" && artifact.Compatible && artifact.SubstrateHealthy && len(artifact.Refusals) == 0
 	artifact.AuthorityReady = artifact.Deployable && coverageReady
 	artifact.LegacyRemovalReady = artifact.AuthorityReady && artifact.Compatibility.Summary.CompatibilityOnly == 0
 	artifact.PlanSHA256, err = Hash(artifact)
@@ -234,19 +317,19 @@ func Hash(artifact Artifact) (string, error) {
 	artifact.PlanSHA256 = ""
 	encoded, err := json.Marshal(artifact)
 	if err != nil {
-		return "", fmt.Errorf("encode Plan v1 artifact: %w", err)
+		return "", fmt.Errorf("encode Plan v2 artifact: %w", err)
 	}
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
-		return "", fmt.Errorf("canonicalize Plan v1 artifact: %w", err)
+		return "", fmt.Errorf("canonicalize Plan v2 artifact: %w", err)
 	}
 	var canonical bytes.Buffer
 	encoder := json.NewEncoder(&canonical)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
-		return "", fmt.Errorf("canonicalize Plan v1 artifact: %w", err)
+		return "", fmt.Errorf("canonicalize Plan v2 artifact: %w", err)
 	}
 	content := bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'})
 	digest := sha256.Sum256(content)
@@ -268,6 +351,15 @@ func compatibilityDigests(inputs []planner.CompatibilityInput) map[string]string
 		result[input.Name] = input.SHA256
 	}
 	return result
+}
+
+func isTailnetPilotScope(scope string) bool {
+	for _, candidate := range authoritystate.TailnetScopes {
+		if scope == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func authorityAssignments(artifact Artifact, digests map[string]string) []AuthorityAssignment {
@@ -294,7 +386,7 @@ func adoptionAction(finding planner.Finding, before, digest string) Action {
 		ID: actionID("adopt_instance_specification", finding.ID), FindingID: finding.ID, Operation: "adopt_instance_specification", Scope: finding.Path,
 		AuthorityBefore: before, AuthorityAfter: "instance_specification_v1", Executor: "future_authorized_apply",
 		Preconditions: []string{"active_controller_fenced", "exact_plan_revalidated", "rollback_prepared"},
-		Rollback: Rollback{Strategy: "restore_authority", Authority: before, SourceSHA256: digest},
+		Rollback:      Rollback{Strategy: "restore_authority", Authority: before, SourceSHA256: digest},
 	}
 }
 
@@ -303,7 +395,7 @@ func retainedAction(finding planner.Finding, digest string) Action {
 		ID: actionID("retain_legacy", finding.ID), FindingID: finding.ID, AuthorityAssignmentID: assignmentID(finding), Operation: "retain_legacy", Scope: finding.Path,
 		AuthorityBefore: finding.Authority, AuthorityAfter: finding.Authority, Executor: "none",
 		Preconditions: []string{"legacy_authority_remains_active"},
-		Rollback: Rollback{Strategy: "no_mutation", Authority: finding.Authority, SourceSHA256: digest},
+		Rollback:      Rollback{Strategy: "no_mutation", Authority: finding.Authority, SourceSHA256: digest},
 	}
 }
 
@@ -312,7 +404,7 @@ func refusalAction(finding planner.Finding) Action {
 		ID: actionID("refuse", finding.ID), FindingID: finding.ID, Operation: "refuse", Scope: finding.Path,
 		AuthorityBefore: sourceAuthority(finding), AuthorityAfter: sourceAuthority(finding), Executor: "none",
 		Preconditions: []string{"compatibility_refusal_resolved"},
-		Rollback: Rollback{Strategy: "no_mutation", Authority: sourceAuthority(finding)},
+		Rollback:      Rollback{Strategy: "no_mutation", Authority: sourceAuthority(finding)},
 	}
 }
 
