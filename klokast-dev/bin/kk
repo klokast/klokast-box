@@ -133,6 +133,21 @@ valid_box() {
   [[ ! "$1" =~ -(bak|dmz|iot|router|dom0|ops|agent)$ ]]
 }
 
+print_macbook_dependency_inventory() {
+  cat <<'EOF'
+
+Direct MacBook software dependencies (declared acquisition classes):
+- macOS shell and base utilities | Apple-provided | Run local wrappers, file operations, archives, and proxy checks.
+- Git | Apple Command Line Tools | Synchronize checkouts and publish private-instance repositories.
+- Apple OpenSSH and CryptoTokenKit | Apple-provided | Provide SSH transport and Touch ID approval signatures.
+- rsync | Apple-provided | Upload music libraries.
+- Tailscale | Standalone vendor .pkg | Provide Tailnet access and dispatch commands to the controller.
+- Homebrew | Official Homebrew installer | Install Python during MacBook setup.
+- Python 3 | Homebrew package | Process JSON and configuration data in MacBook helpers.
+- PyYAML | PyPI binary wheel | Parse controller HA and private-instance YAML.
+EOF
+}
+
 doctor() {
   local install_missing=false
   local missing=false
@@ -286,6 +301,7 @@ PY
   if [ "$missing" = true ]; then
     exit 2
   fi
+  print_macbook_dependency_inventory
   printf 'kk doctor ok\n'
 }
 

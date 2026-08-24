@@ -30,6 +30,11 @@ The doctor installs and verifies Python and the pinned PyYAML module used by
 the controller HA and private publication helpers. Run the doctor again after
 a Python replacement or upgrade.
 
+After a successful check, the doctor prints the short list of direct software
+dependencies that Klokast uses on the MacBook. The declared acquisition
+classes are informational. The doctor does not yet verify resolved versions,
+acquisition provenance, or package hashes.
+
 The Secret Authority signer uses Apple's native CryptoTokenKit identity
 commands, system OpenSSH, and `/usr/lib/ssh-keychain.dylib`. It uses a private
 Apple `ssh-agent` only for one signing operation. The check fails if this macOS
