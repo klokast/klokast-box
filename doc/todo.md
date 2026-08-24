@@ -232,6 +232,19 @@ and routing rules. Create `apps/STORE.md` or change the root instruction to
 name the existing authority. Do not keep two app catalogs with different
 content.
 
+# 2026-08-24 - verify the installed authority before engine promotion
+
+The elementary connectivity promotion initially failed because the controller
+checkout contained the new schema transition but the root-owned installed
+`ksa-instance` wrapper was older. The tagged controller convergence repaired
+the mismatch, but the MacBook helper reported only that the transition was
+unsupported.
+
+Add a read-only promotion prerequisite that compares the installed authority
+wrapper with the active controller checkout. Give the operator the exact
+tagged convergence command when the files differ. Do not let the promotion
+continue with different transition vocabularies.
+
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 
 The first boxa dom0 policy canary showed that the live Alpine 3.23 repository

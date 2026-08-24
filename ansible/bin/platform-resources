@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 
-COMPILER_VERSION = 23
+COMPILER_VERSION = 24
 TAILSCALE_WIREGUARD_PORT = 41641
 ROLE_SUFFIXES = ("router", "bak", "dmz", "iot")
 CLEANUP_HOST_ROLES = ("router", "backend", "dmz", "iot")
@@ -2652,8 +2652,18 @@ def compile_registry(registry_path, app_filter):
             continue
         if not isinstance(entry, dict):
             die(f"apps.{app_name} must be a mapping")
-        manifest = app_manifest(app_name)
-        manifest_paths[app_name] = manifest["_manifest_path"]
+        app_enabled = bool(entry.get("enabled"))
+        manifest_path = REPO_ROOT / "apps" / app_name / "platform-resources.yml"
+        if not app_enabled and not manifest_path.is_file():
+            manifest = {
+                "schema_version": 1,
+                "app": app_name,
+                "resources": {},
+                "_manifest_path": f"compatibility-only://apps/{app_name}",
+            }
+        else:
+            manifest = app_manifest(app_name)
+            manifest_paths[app_name] = manifest["_manifest_path"]
         validate_manifest_resources(app_name, manifest, topology)
         validate_privileged_runtime(app_name, manifest, entry)
         app_boxes = selected_boxes(app_name, manifest, entry)
@@ -2663,7 +2673,6 @@ def compile_registry(registry_path, app_filter):
         validate_shared_guest_app_compatibility(
             app_name, manifest, entry, app_boxes, box_configs, topology
         )
-        app_enabled = bool(entry.get("enabled"))
         app_users = selected_users(app_name, manifest, entry, topology)
         app_box_vms = (
             selected_app_vms(app_name, manifest, entry, app_boxes, topology, box_configs)

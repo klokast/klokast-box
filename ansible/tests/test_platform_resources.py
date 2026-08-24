@@ -260,6 +260,55 @@ class PlatformResourcesTest(unittest.TestCase):
             ],
         )
 
+    def test_disabled_legacy_app_without_manifest_compiles_cleanup_only(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "apps": {
+                    "retained-legacy-app": {
+                        "enabled": False,
+                        "placement": {
+                            "active_master": "boxa",
+                            "passive_backup": "boxb",
+                        },
+                        "resources": {"retained-resource": True},
+                        "cleanup": {"required": True},
+                    }
+                },
+            }
+        )
+
+        compiled = self.mod.compile_registry(path, [])
+
+        self.assertNotIn("retained-legacy-app", compiled["manifest_paths"])
+        self.assertEqual(
+            compiled["apps"]["retained-legacy-app"],
+            {
+                "enabled": False,
+                "runtime_state": "stopped",
+                "boxes": ["boxa", "boxb"],
+                "placement": {
+                    "active_master": "boxa",
+                    "passive_backup": "boxb",
+                },
+                "resources": [],
+                "tailnet_resources": [],
+                "isolation": "",
+                "resource_flags": {"retained-resource": True},
+                "controls": {},
+                "users": [],
+                "app_vms": [],
+                "managed_iot_devices": [],
+            },
+        )
+        self.assertEqual(len(compiled["app_resource_cleanup_scopes"]), 2)
+        self.assertEqual(compiled["app_resource_claims"], [])
+        self.assertEqual(compiled["app_resource_effective_files"], [])
+        self.assertEqual(compiled["tailnet_resources"], [])
+        self.assertEqual(compiled["tailnet_policy_resources"], [])
+        self.assertEqual(compiled["app_vm_specs"], [])
+        self.assertEqual(compiled["managed_iot_devices"], [])
+
     def test_optional_false_and_omission_are_the_same_disabled_state(self):
         compiled_results = []
         for resources in ({}, {"cloudflare-tunnel-egress": False}):
