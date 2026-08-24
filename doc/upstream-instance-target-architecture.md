@@ -460,37 +460,166 @@ tree mismatch. Live acceptance must test interruption and resume boundaries,
 forward rollback, later publication without bootstrap pins, receipt modes and
 hashes, focused contracts, and the exact controller-sealed build.
 
-## 10. Authorized apply target design
+## 10. Authorized apply decision
 
-Authorized apply is not implemented. A later apply must consume one immutable,
-deployable Plan artifact. It must not recompute an open-ended operation from
-ambient controller state.
+Status: `decided`. This section authorizes implementation of the byte-preserving
+Tailnet authority pilot. It does not authorize live execution before the code,
+tests, controller installation, source-recovery rehearsal, and human approval
+gates pass.
 
-The apply boundary requires all of these controls:
+Apply consumes one immutable, deployable Plan v2 artifact. It does not
+recompute an open-ended operation from ambient controller state. Plan v1 stays
+valid as read-only historical evidence, but Apply always refuses Plan v1 and a
+Plan without the two v2 bindings below.
 
-- active-controller fencing before any mutation;
-- exact revalidation of the sealed engine binary and receipt, private instance
-  commit and input hashes, Plan hash, source receipt, and Observation v1
-  generation;
-- a closed set of typed executors and inputs, with no generic shell or
-  arbitrary playbook escape;
-- one action-specific rollback preparation before each mutation;
-- separate, explicit human authorization bound to the exact Plan and action
-  set;
-- immutable execution receipts that record the authorization, executor,
-  before and after authorities, input hashes, result, and rollback material;
-- live post-apply observation and verification against the declared action
-  result.
+### 10.1 Authority state and Plan v2
 
-Apply must refuse stale observation, changed desired state, changed legacy
-inputs, incomplete authority coverage, unavailable rollback, inactive
-controller status, unknown executor or action type, and any scope not present
-in the authorized Plan. A failed post-apply verification must stop later
-actions and use the prepared action-specific recovery path.
+`klokast.authority-state.v1` is immutable, canonical JSON. Its hash is the
+SHA-256 digest of its canonical bytes. States are stored without replacement
+at `/var/lib/klokast/authority-states/<sha256>.json`. One root-owned pointer is
+replaced atomically and contains only the active hash and a newline.
 
-The first pilot must use one narrow, real Plan scope that is not
-compatibility-only. It must not delete application data, remove a legacy
-authority, add site executors, or expand the application schema.
+The initial state has no migrated scopes. Each later state records the prior
+state hash, the exact transitioned scopes, the resulting authority for each
+scope, the signed Apply intent hash, and a unique transition identifier. A
+rollback creates a new forward state that assigns the scopes to the legacy
+deployment authority. It never edits or deletes earlier evidence. A state is
+invalid if its schema, hash, prior link, scopes, authorities, intent hash, or
+transition identifier is absent, duplicated, unknown, or inconsistent.
+
+Plan v2 adds the following required inputs and bindings to Plan v1:
+
+- `--authority-state FILE`, bound by its canonical content hash and active
+  state hash;
+- `--controller-toolchain-receipt FILE`, bound by its canonical content hash;
+- one atomic action group containing exactly
+  `deployment.tailnet.magicdns_suffix`,
+  `deployment.tailnet.groups.operators`, and
+  `deployment.tailnet.groups.family`.
+
+Each scope must have a `matched` compatibility finding and the expected legacy
+deployment source digest. An unmigrated scope has the action
+`adopt_instance_specification`. A migrated scope has
+`verify_instance_authority`; it does not propose adoption again. Mixed
+authority across the three scopes, a partial group, another action, or another
+executor is a refusal. Plan v2 remains read-only evidence.
+
+`klokast.controller-toolchain.v1` proves that the controller has a clean public
+checkout at the selected engine commit. It binds the exact checked-in and
+installed SHA-256 hashes for the sealed engine, `ksa-instance`, `ksa-apply`,
+the active-controller guard, policy renderer, fixed policy template, and the
+internal Tailnet policy mutation helper. Missing, extra, dirty, mismatched, or
+non-regular inputs are refusals. `platform-instance` and installed root
+wrappers also compare their own installed bytes with the checked-in source.
+They refuse drift and print the exact tagged `converge-ops-controller` command
+that repairs the selected controller.
+
+### 10.2 Source recovery and authorization
+
+`platform-instance source-recovery-check` uses the existing controller-held
+read-only deploy credential. It fetches the active private branch and exact
+commit into a fresh owner-only temporary directory. It verifies the fetched
+tree, engine lock, source receipt, and sealed engine. It does not change the
+canonical checkout, Git remote, credential, or private desired state. It
+removes the temporary checkout and stores a redacted, immutable
+`klokast.private-source-recovery.v1` receipt.
+
+Apply uses a separate Touch ID purpose. The principal is
+`human-platform-apply`, and the controller allowed-signers file is
+`/etc/klokast/secret-authority/allowed-signers-platform-apply`. The signer is
+installed, checked, used, and synchronized as a separate controller-HA item.
+The broader private-instance signer cannot authorize Apply.
+
+Preflight creates canonical `klokast.apply-intent.v1` bytes. The intent is
+single-use and expires ten minutes after issue. It binds the Plan, authority
+state, source-recovery receipt, source receipt, Observation, private commit,
+legacy hashes, sealed engine, toolchain receipt, exact three-scope action set,
+executor, rollback type, live policy body hash, live ETag, candidate hash,
+nonce, issue time, and expiry. The MacBook helper displays those exact bytes.
+Its `--check` mode is non-mutating. Normal mode signs only those bytes through
+the `human-platform-apply` Touch ID identity and transfers only the intent and
+signature.
+
+### 10.3 Closed executor and preflight
+
+The only Apply executor is `tailnet_policy_inputs_v1`. It accepts exactly the
+three Tailnet scopes as one atomic action set. Its only rollback type is
+`tailnet_policy_preimage_v1`. It has no generic command, path, playbook, scope,
+or executor input and no extension field that can create such an escape.
+
+Preflight revalidates the active controller, Plan v2, authority state, private
+source-recovery receipt, Observation freshness and source, private commit,
+legacy hashes, sealed engine, source receipt, and controller toolchain receipt.
+For adoption, all three findings must be `matched`, unmigrated, and controlled
+by the expected legacy deployment source. For rollback, all three must be
+migrated together and controlled by Instance Specification v1.
+
+The fixed public template is rendered independently with the private-instance
+inputs and with the unchanged legacy deployment shadow. The renderer accepts
+exactly one of those input modes. Preflight gets the live policy and ETag and
+requires byte equality of instance-rendered, legacy-rendered, and live policy.
+It validates the candidate through the Tailnet policy validation endpoint.
+Any mismatch refuses the pilot; there is no normalization or weaker semantic
+comparison.
+
+### 10.4 Execution, rollback, and recovery
+
+The root `/usr/local/sbin/ksa-apply` boundary exposes only `preflight`,
+`execute`, and `rollback`. Execution rejects an inactive controller, a stale or
+replayed nonce, an expired or incorrectly signed intent, a partial or unknown
+action, a wrong executor or rollback type, and every changed bound input.
+
+Immediately before mutation, execution gets the live policy again and requires
+the signed body hash and ETag. It saves the exact body and ETag as immutable
+rollback material. It posts the exact candidate with `If-Match` set to that
+ETag. An HTTP 412 or any ETag conflict fails closed, as required by the
+Tailscale policy API concurrency contract. It then gets the policy and verifies
+the exact candidate bytes before it creates and activates the new forward
+authority state.
+
+Execution stores immutable intent, signature, execution, rollback-material,
+audit, and authority-transition evidence. Evidence contains hashes and
+redacted identifiers, not private policy values. Nonce consumption is atomic
+and occurs before the first mutation attempt, so an uncertain result cannot be
+replayed.
+
+If verification fails after the post, the executor gets the new ETag, restores
+the exact saved preimage with `If-Match`, and gets and verifies the restored
+bytes. A verified restoration records a failed execution with restored runtime
+and unchanged authority. If restoration cannot be verified, the result is
+`recovery_required`, the authority state does not advance, later actions stop,
+and a human must inspect the live policy from the active controller. Recovery
+uses the immutable preimage and the same closed rollback operation; it does not
+permit a supplied policy body or generic API call.
+
+A human-authorized rollback is also a new forward transition. It applies the
+stored exact preimage, verifies it, assigns all three scopes to the legacy
+deployment authority, and keeps the unchanged legacy values as the active
+source. Re-adoption requires a new Plan and new approval.
+
+### 10.5 Privilege, refusal, and acceptance
+
+The infrastructure account keeps read-only policy pull and validation access.
+It has no direct passwordless access to `ts-policy-apply` or another policy
+mutation helper. Policy mutation is reachable only through the authorized
+root Apply boundary and its internal fixed helper.
+
+Apply refuses stale observation or recovery evidence, changed private or
+legacy input, a wrong or inactive authority state, unknown or partial scope,
+wrong action, executor, or rollback, expired or replayed intent, wrong signer,
+mismatched toolchain, changed live body, changed ETag, HTTP 412, and failed
+post-write verification. Deterministic tests must cover each refusal, canonical
+hashing, state transitions, forward rollback, wrapper installation, signer
+separation and HA preservation, privilege removal, and temporary recovery
+without canonical-checkout mutation or private-value logging.
+
+Live acceptance is complete only after adoption, a fresh verification-only
+Plan, one real forward rollback, re-adoption, final idempotence, and replay
+refusal all pass with immutable evidence. The final authority is Instance
+Specification v1 for all three scopes. The legacy values remain unchanged as a
+dormant rollback and drift-detection shadow. A later shadow difference is a
+refusal, not a second authority. Application deployment, data operations,
+schema expansion, site executors, and legacy removal are outside this pilot.
 
 ## 11. Staged migration and legacy removal
 
@@ -548,17 +677,15 @@ complete.
 | Read-only acceptance alignment | `live-verified` | On 2026-08-24, the active controller verified source and activation custody, refreshed observations without repair, and stored an immutable deployable Plan with exact finding, action, and continuing-authority coverage. The human confirmed every compatibility-only continuing authority. Legacy removal stays blocked. |
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
-| Authorized apply | `proposed` | It is not implemented. Design closed executors and rollback types before the pilot. |
+| Authorized apply | `decided` | The byte-preserving three-scope Tailnet pilot has a closed executor, authority-state model, authorization, rollback, recovery, refusal, and acceptance contract. Implementation and live verification are next. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
 ### Current work queue
 
-1. Define closed executor and rollback types, including refusal, test, audit,
-   authorization, and recovery behavior.
-2. Design one narrow apply pilot from a real Plan scope that is not
-   compatibility-only.
-3. Implement and live-verify the pilot, including rollback and idempotence.
-4. Use successful pilot evidence to design staged scope migration and the
+1. Implement and repository-test the decided Tailnet authority pilot.
+2. Install and live-verify the pilot, including rollback, re-adoption,
+   idempotence, recovery rehearsal, and replay refusal.
+3. Use successful pilot evidence to design staged scope migration and the
    later legacy-removal gate.
 
 ### Completed read-only acceptance alignment design
