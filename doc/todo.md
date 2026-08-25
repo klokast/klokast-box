@@ -11,6 +11,12 @@ of the one-router action. Add bounded per-host connection timeouts or reuse a
 fresh prior non-target VM observation so one offline VM cannot delay a narrow
 router source change.
 
+A later dom0-only refresh and one-router check also took several minutes while
+`k001-dom0` and `k001-router` remained reachable. Each Ansible task opened a
+new connection across the household link. Investigate safe connection reuse
+or a narrow, bounded remote verifier so read-only acceptance does not incur
+the connection delay once for every task.
+
 # 2026-08-25 - failed Apply preflights need a retention policy
 
 The first Authority State v1 conversion attempt stopped after signature

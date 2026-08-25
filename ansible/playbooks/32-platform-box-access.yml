@@ -25,6 +25,7 @@
     - name: Verify the selected router configuration and declared paths
       ansible.builtin.import_role:
         name: router-verification
+      check_mode: false
 
     - name: Check direct controller reachability to the selected router
       ansible.builtin.command: "tailscale ping --c 1 {{ ansible_host }}"
@@ -32,6 +33,7 @@
       become: false
       register: platform_box_access_controller_ping
       changed_when: false
+      check_mode: false
 
     - name: Require a direct controller path to the selected router
       ansible.builtin.assert:

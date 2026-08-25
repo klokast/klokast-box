@@ -2310,6 +2310,26 @@ all:
         self.assertIn("--check", command)
         self.assertEqual(command[command.index("--limit") + 1], "boxb-router")
 
+    def test_box_access_check_mode_runs_read_only_verification(self):
+        playbook = yaml.safe_load(
+            (REPO_ROOT / "ansible" / "playbooks" / "32-platform-box-access.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        tasks = playbook[0]["tasks"]
+        verification = next(
+            task
+            for task in tasks
+            if task.get("name") == "Verify the selected router configuration and declared paths"
+        )
+        controller_ping = next(
+            task
+            for task in tasks
+            if task.get("name") == "Check direct controller reachability to the selected router"
+        )
+        self.assertIs(verification["check_mode"], False)
+        self.assertIs(controller_ping["check_mode"], False)
+
 
 if __name__ == "__main__":
     unittest.main()
