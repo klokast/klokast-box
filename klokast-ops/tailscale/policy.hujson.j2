@@ -1,7 +1,7 @@
 {
 	"groups": {
-		// Source of truth for Tailscale ACL and Grants is the Tailscale API.
-		// The file `ops/tailscale-config.json` in the git repository is copied from that API output, and might be out of date.
+		// The live Tailscale API is observed runtime state. This public template
+		// and the private instance are the sources for intended policy inputs.
 		//
 		// `group:operator` is the developer of the Platform, connecting from his laptop.
 		"group:operators": {{ operators_json }},

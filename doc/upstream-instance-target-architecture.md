@@ -579,10 +579,11 @@ the exact candidate bytes before it creates and activates the new forward
 authority state.
 
 Execution stores immutable intent, signature, execution, rollback-material,
-audit, and authority-transition evidence. Evidence contains hashes and
-redacted identifiers, not private policy values. Nonce consumption is atomic
-and occurs before the first mutation attempt, so an uncertain result cannot be
-replayed.
+audit, and authority-transition evidence. Receipts and logs contain hashes and
+redacted identifiers, not private policy values. Exact policy preimages stay
+only in root-only rollback storage because recovery needs them. Nonce
+consumption is atomic and occurs before the first mutation attempt, so an
+uncertain result cannot be replayed.
 
 If verification fails after the post, the executor gets the new ETag, restores
 the exact saved preimage with `If-Match`, and gets and verifies the restored
@@ -647,6 +648,91 @@ observation period, recovery documentation, and explicit human approval.
 Application-data deletion always remains a separate, typed, human-authorized
 operation.
 
+## 11.1 First box connectivity source migration
+
+Status: `decided`. This change moves one box connectivity group from the old
+private Platform resource registry to `klokast-instance.json`. It does not
+change the declared values. It does not move the box that hosts the active
+controller. The human must make a later explicit decision before the second
+box can move. There is no elapsed-time condition.
+
+The root Apply program must not import or execute Python from the
+`smith`-owned public checkout. It contains the sealed-build checks that it
+needs. It runs the sealed, read-only Plan command as `smith`. Apply rejects
+duplicate JSON keys, trailing JSON, unknown fields, and non-canonical bytes in
+stored JSON evidence.
+
+`klokast.controller-toolchain.v2` binds the installed root Apply program, the
+active-controller guard, the fixed Tailscale helpers, the policy renderer and
+template, `platform-resources`, and the sealed engine. Apply checks the public
+checkout commit and clean state again immediately before an approved action.
+
+`klokast.authority-state.v2` is a new immutable chain. Each state links to the
+prior Authority State v1 or v2 hash. It contains only approved setting groups
+and one source for every complete group. The allowed sources are the old
+private file and `klokast-instance.json`. Validation rejects unknown groups,
+changed or incomplete scope lists, duplicate scopes, and mixed group
+ownership. One separately approved, non-network conversion creates the first
+v2 state from the active v1 state. It preserves the current Tailnet source and
+sets each box connectivity group to the old registry. It does not change the
+v1 evidence chain or network state.
+
+`klokast.plan.v3` has a sorted `action_groups` list. The completed Tailnet
+group stays verification-only. Each box has one `box_connectivity_v1` group
+with exactly these five findings:
+
+- the box mapping that the resource compiler uses;
+- the connectivity methods declared by the instance;
+- the available connection methods;
+- the enabled connection methods;
+- the forbidden connection methods.
+
+All other findings keep the unimplemented-action marker. Plans v1 and v2
+cannot authorize a box connectivity action. Plan selects the unique instance
+box that does not host the active controller. Planning refuses an absent or
+ambiguous selection.
+
+Before approval, Apply copies the old registry to root-owned temporary
+storage. It replaces only the selected box access lists with values derived
+from the instance. It preserves bridge ports, DHCP reservations, shared-guest
+state, applications, and all other old fields. It compiles the old and
+effective registries. The comparison removes only `registry_path` and
+`registry_sha256`. Every other compiled field and the selected router variable
+document must be equal. The signed request binds both input hashes.
+
+The only new executor is `box_connectivity_v1`. It accepts one exact Plan
+group and the automatically selected box. It has no command, playbook, path,
+application, second-box, or arbitrary-scope input. The existing
+`human-platform-apply` Touch ID signer authorizes the action. The
+`platform-resources` Apply and verification operations target the selected
+router only. They do not operate on applications, shared guests, other boxes,
+Tailnet policy, or application data.
+
+Execution revalidates the active controller, Plan v3, Authority State v2,
+private commit, old files, observation, source-recovery receipt, sealed engine,
+toolchain, public checkout, and both compiler results. It stores rollback
+material before the source transition. It creates a new v2 state that assigns
+the selected group to the instance. It then applies and verifies the selected
+router from the effective input. It verifies controller access and the
+declared network paths.
+
+On failure, Apply creates another forward v2 state that restores the old
+registry as the selected group source. It runs the same one-router operation
+with the old input and verifies the restored state. It reports
+`recovery_required` if it cannot prove restoration. The old network values
+stay unchanged as a rollback copy. A later difference between the instance
+and that copy stops normal Apply until a separate content-change design is
+approved.
+
+Repository acceptance must cover Authority State v2 and v1 conversion, Plan
+v3, complete closed groups, strict canonical JSON, effective-registry parity,
+unique non-controller selection, narrow router commands, stale or changed
+inputs, wrong box or signer, replay, and failed restoration. Live acceptance
+must include one check, adoption, verification-only Plan, real forward
+rollback, re-adoption, final verification-only Plan, and signed-request replay
+refusal. Controller identity, applications, the second box, old-file removal,
+and application data remain outside this change.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -680,19 +766,15 @@ complete.
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
-| Migration and legacy removal | `proposed` | The Tailnet pilot is complete. The next gate is a decided staged-migration design. Legacy removal still requires its separate observation, recovery, and explicit-approval gates. |
+| First box connectivity migration | `decided` | The exact one-router source transition, authority, authorization, comparison, rollback, recovery, and acceptance contracts are closed in section 11.1. Implementation is the next gate. |
+| Migration and legacy removal | `proposed` | The Tailnet pilot is complete. Only the first non-controller box migration is decided. The second box and legacy removal still require separate explicit decisions. |
 
 ### Current work queue
 
-1. Inventory the remaining instance and legacy scopes. Group them only where
-   one executor, authority transition, rollback, and observation contract can
-   cover the complete atomic set.
-2. Decide the next smallest migration. Record its closed executor, exact
-   inputs, authorization, refusal cases, recovery, rollback, tests, and live
-   acceptance before code work starts.
-3. Define the post-migration observation period and evidence needed for a
-   later legacy-removal decision. Keep legacy removal `proposed` until that
-   separate gate has explicit human approval.
+1. Implement and live-verify the decided first non-controller box migration.
+2. Report that result to the human. Do not infer approval for the second box.
+3. Keep legacy removal `proposed` until its separate recovery and explicit
+   approval gates are complete.
 
 ### Completed read-only acceptance alignment design
 
