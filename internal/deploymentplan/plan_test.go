@@ -1,6 +1,7 @@
 package deploymentplan
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"klokast-box/internal/authoritystate"
 	"klokast-box/internal/contract"
 	"klokast-box/internal/doctor"
+	"klokast-box/internal/planner"
 	"klokast-box/internal/toolchain"
 )
 
@@ -41,6 +43,17 @@ func TestBuildProducesStableDeployablePlanWithRetainedAuthority(t *testing.T) {
 	}
 	if !first.Valid || !first.Compatible || !first.SubstrateHealthy || !first.Deployable || !first.AuthorityReady {
 		t.Fatalf("unexpected plan gates: %#v", first)
+	}
+	if first.SchemaVersion != 3 || first.Kind != "klokast.plan.v3" || first.SelectedBox != "boxb" {
+		t.Fatalf("Plan v3 did not select the unique non-controller box: %#v", first)
+	}
+	selectedGroup := actionGroup(first, authoritystate.BoxConnectivityPrefix+"boxb")
+	if selectedGroup.Operation != "adopt_instance_specification" || selectedGroup.Executor != "box_connectivity_v1" || !equalStrings(selectedGroup.Scopes, authoritystate.BoxConnectivityScopes("boxb")) {
+		t.Fatalf("selected box group is not closed: %#v", selectedGroup)
+	}
+	controllerGroup := actionGroup(first, authoritystate.BoxConnectivityPrefix+"boxa")
+	if controllerGroup.Operation != "retain_legacy" || controllerGroup.Executor != "none" {
+		t.Fatalf("active-controller box was exposed to Apply: %#v", controllerGroup)
 	}
 	if first.LegacyRemovalReady {
 		t.Fatal("legacy removal became ready while controller compatibility fields remain")
@@ -72,6 +85,30 @@ func TestBuildProducesStableDeployablePlanWithRetainedAuthority(t *testing.T) {
 	}
 	if !hasOperation(first, "retain_legacy") || !hasOperation(first, "verify_substrate") {
 		t.Fatalf("required actions are absent: %#v", first.Actions)
+	}
+}
+
+func TestSelectNonControllerBoxRefusesAbsentAndAmbiguousChoices(t *testing.T) {
+	one := &planner.Projection{
+		Boxes:        []planner.Box{{ID: "boxa"}},
+		ControlPlane: planner.ControlPlane{ActiveController: planner.Controller{BoxID: "boxa"}},
+	}
+	if selected := selectNonControllerBox(one); selected != "" {
+		t.Fatalf("one-box projection selected %q", selected)
+	}
+	two := &planner.Projection{
+		Boxes:        []planner.Box{{ID: "boxa"}, {ID: "boxb"}},
+		ControlPlane: planner.ControlPlane{ActiveController: planner.Controller{BoxID: "boxa"}},
+	}
+	if selected := selectNonControllerBox(two); selected != "boxb" {
+		t.Fatalf("two-box projection selected %q", selected)
+	}
+	three := &planner.Projection{
+		Boxes:        []planner.Box{{ID: "boxa"}, {ID: "boxb"}, {ID: "boxc"}},
+		ControlPlane: planner.ControlPlane{ActiveController: planner.Controller{BoxID: "boxa"}},
+	}
+	if selected := selectNonControllerBox(three); selected != "" {
+		t.Fatalf("ambiguous projection selected %q", selected)
 	}
 }
 
@@ -163,34 +200,32 @@ func TestBuildRefusesCompatibilityConflict(t *testing.T) {
 	}
 }
 
-func TestBuildUsesVerificationActionsAfterAdoption(t *testing.T) {
+func TestBuildUsesVerificationActionsAfterBoxAdoption(t *testing.T) {
 	instance := prepareInstance(t)
 	options := compatibilityOptions(t, instance)
-	initial, err := authoritystate.Initial()
+	state, err := authoritystate.LoadV2(options.AuthorityState)
 	if err != nil {
 		t.Fatal(err)
 	}
-	adopted, err := authoritystate.Transition(
-		initial, authoritystate.InstanceAuthority, strings.Repeat("d", 64), "adopt-test",
+	adopted, err := authoritystate.TransitionGroup(
+		state, authoritystate.BoxConnectivityPrefix+"boxb",
+		authoritystate.InstanceAuthority, strings.Repeat("d", 64), "adopt-test",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err := json.Marshal(adopted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(options.AuthorityState, append(content, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, adopted), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	artifact, err := Build(options, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !artifact.Deployable || artifact.AtomicActionGroup.Operation != "verify_instance_authority" {
-		t.Fatalf("migrated Plan v2 did not become verification-only: %#v", artifact.AtomicActionGroup)
+	group := actionGroup(artifact, authoritystate.BoxConnectivityPrefix+"boxb")
+	if !artifact.Deployable || group.Operation != "verify_instance_authority" {
+		t.Fatalf("migrated Plan v3 did not become verification-only: %#v", group)
 	}
-	for _, scope := range authoritystate.TailnetScopes {
+	for _, scope := range authoritystate.BoxConnectivityScopes("boxb") {
 		found := false
 		for _, action := range artifact.Actions {
 			if action.Scope == scope {
@@ -220,11 +255,19 @@ boxes:
   boxa:
     site: site-001
     physical_location: Example location
+  boxb:
+    site: site-002
+    physical_location: Second example location
 `)
 	registry := writeFile(t, directory, "platform-resources.yml", `---
 schema_version: 1
 boxes:
   boxa:
+    access:
+      available_capabilities: [overlay]
+      enabled_capabilities: [overlay]
+      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
+  boxb:
     access:
       available_capabilities: [overlay]
       enabled_capabilities: [overlay]
@@ -262,11 +305,19 @@ func writeAuthorityState(t *testing.T, directory string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err := json.Marshal(state)
+	state, err = authoritystate.Transition(
+		state, authoritystate.InstanceAuthority, strings.Repeat("a", 64), "tailnet-adopt",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return writeFile(t, directory, "authority-state.json", string(content)+"\n")
+	converted, err := authoritystate.ConvertV1(
+		state, []string{"boxa", "boxb"}, strings.Repeat("b", 64), "convert-v2",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeFile(t, directory, "authority-state.json", string(canonicalTestJSON(t, converted)))
 }
 
 func writeToolchainReceipt(t *testing.T, directory string) string {
@@ -287,11 +338,7 @@ func writeToolchainReceipt(t *testing.T, directory string) string {
 		t.Fatal(err)
 	}
 	receipt.ReceiptSHA256 = digest
-	content, err := json.Marshal(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return writeFile(t, directory, "controller-toolchain.json", string(content)+"\n")
+	return writeFile(t, directory, "controller-toolchain.json", string(canonicalTestJSON(t, receipt)))
 }
 
 func writeSourceReceipt(t *testing.T, directory, instance string) string {
@@ -352,7 +399,16 @@ func prepareInstance(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, root, contract.InstancePath, string(content))
+	var instance map[string]any
+	if err := json.Unmarshal(content, &instance); err != nil {
+		t.Fatal(err)
+	}
+	boxes := instance["boxes"].(map[string]any)
+	boxes["boxb"] = map[string]any{
+		"site": "site-c", "country": "XC", "description": "Second example home",
+		"connectivity": []any{"overlay"},
+	}
+	writeFile(t, root, contract.InstancePath, string(canonicalTestJSON(t, instance)))
 	writeFile(t, root, contract.LockPath, fmt.Sprintf(`{
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/%s/schemas/klokast-lock-v1.schema.json",
   "engine": {"commit": "%s", "ref": "main", "repository": "https://github.com/klokast/klokast-box"},
@@ -384,15 +440,28 @@ func writeObservation(t *testing.T, directory string) string {
 		{Hostname: "boxa-ops", Online: true, Tags: []string{"tag:ops"}},
 		{Hostname: "boxa-ops-airunner", Online: true, Tags: []string{"tag:airunner"}},
 		{Hostname: "boxa-router", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxb-bak", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxb-dmz", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxb-dom0", Online: true, Tags: []string{"tag:dom0"}},
+		{Hostname: "boxb-iot", Online: true, Tags: []string{"tag:vm"}},
+		{Hostname: "boxb-router", Online: true, Tags: []string{"tag:vm"}},
 	}
 	guests := []string{"bak", "dmz", "iot", "ops", "router"}
 	observation := doctor.Observation{
 		SchemaVersion: 1, ObservedAt: time.Now().UTC().Format(time.RFC3339), SourceController: "boxa-ops",
 		SourceMapSHA256: strings.Repeat("b", 64), TailnetMachines: machines,
-		Boxes: []doctor.ObservedBox{{
-			HostnamePrefix: "boxa", Dom0Reachable: true, XenAvailable: true,
-			RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...),
-		}},
+		Boxes: []doctor.ObservedBox{
+			{
+				HostnamePrefix: "boxa", Dom0Reachable: true, XenAvailable: true,
+				RunningGuests: append([]string{}, guests...), ConfiguredGuests: append([]string{}, guests...), AutostartGuests: append([]string{}, guests...),
+			},
+			{
+				HostnamePrefix: "boxb", Dom0Reachable: true, XenAvailable: true,
+				RunningGuests:    []string{"bak", "dmz", "iot", "router"},
+				ConfiguredGuests: []string{"bak", "dmz", "iot", "router"},
+				AutostartGuests:  []string{"bak", "dmz", "iot", "router"},
+			},
+		},
 	}
 	sort.Slice(observation.TailnetMachines, func(i, j int) bool {
 		return observation.TailnetMachines[i].Hostname < observation.TailnetMachines[j].Hostname
@@ -467,4 +536,44 @@ func hasOperation(artifact Artifact, operation string) bool {
 		}
 	}
 	return false
+}
+
+func actionGroup(artifact Artifact, id string) ActionGroup {
+	for _, group := range artifact.ActionGroups {
+		if group.ID == id {
+			return group
+		}
+	}
+	return ActionGroup{}
+}
+
+func canonicalTestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	content, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generic any
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&generic); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(canonical, '\n')
+}
+
+func equalStrings(first, second []string) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
 }

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"klokast-box/internal/strictjson"
 )
 
 const Kind = "klokast.controller-toolchain.v2"
@@ -52,10 +54,8 @@ func Load(path string, engineCommit string) (Receipt, error) {
 	if err != nil {
 		return Receipt{}, fmt.Errorf("read controller toolchain receipt: %w", err)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.DisallowUnknownFields()
 	var receipt Receipt
-	if err := decoder.Decode(&receipt); err != nil {
+	if err := strictjson.Decode(content, &receipt, true); err != nil {
 		return Receipt{}, fmt.Errorf("decode controller toolchain receipt: %w", err)
 	}
 	if err := Validate(receipt, engineCommit); err != nil {

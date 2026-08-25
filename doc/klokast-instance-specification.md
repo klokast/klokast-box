@@ -329,7 +329,7 @@ airunner identities, app placement, features, and retained data. It sorts maps
 and sets before it creates the projection hash. It preserves the `airunners`
 order, and a priority change changes the projection hash.
 
-Plan v2 emits `control_plane.airunners` as the same ordered string array. It
+Plan v3 emits `control_plane.airunners` as the same ordered string array. It
 does not emit airunner kinds, placement fields, or derived airunner objects.
 
 The compatibility planner compares this projection with the current private
@@ -338,8 +338,8 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 `unsupported`. A disabled legacy app that is omitted from `apps` resolves to
 absent. An enabled legacy app must have explicit present intent.
 
-With fresh Observation v1, Instance Source Receipt v1, Authority State v1,
-and Controller Toolchain v1 evidence, `plan` emits a hashed Plan v2 artifact.
+With fresh Observation v1, Instance Source Receipt v1, Authority State v2,
+and Controller Toolchain v2 evidence, `plan` emits a hashed Plan v3 artifact.
 It does not apply changes. Plan v1 remains read-only historical evidence and
 cannot authorize Apply. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy

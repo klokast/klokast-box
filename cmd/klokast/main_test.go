@@ -215,12 +215,20 @@ func writeMainAuthorityState(t *testing.T, directory string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err := json.Marshal(state)
+	state, err = authoritystate.Transition(
+		state, authoritystate.InstanceAuthority, strings.Repeat("a", 64), "tailnet-adopt",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := authoritystate.ConvertV1(
+		state, []string{"boxa"}, strings.Repeat("b", 64), "convert-v2",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(directory, "authority-state.json")
-	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(path, canonicalMainJSON(t, converted), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -244,15 +252,30 @@ func writeMainToolchainReceipt(t *testing.T, directory string) string {
 		t.Fatal(err)
 	}
 	receipt.ReceiptSHA256 = digest
-	content, err := json.Marshal(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(directory, "controller-toolchain.json")
-	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(path, canonicalMainJSON(t, receipt), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func canonicalMainJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	content, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generic any
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&generic); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(canonical, '\n')
 }
 
 func mainInstanceValues() string {

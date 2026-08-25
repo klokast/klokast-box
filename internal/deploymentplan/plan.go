@@ -1,4 +1,4 @@
-// Package deploymentplan creates a deterministic, read-only Plan v2 artifact.
+// Package deploymentplan creates a deterministic, read-only Plan v3 artifact.
 package deploymentplan
 
 import (
@@ -53,15 +53,23 @@ type Artifact struct {
 	Compatibility       *planner.Compatibility       `json:"compatibility,omitempty"`
 	Authorities         []AuthorityAssignment        `json:"authorities"`
 	Actions             []Action                     `json:"actions"`
-	AtomicActionGroup   AtomicActionGroup            `json:"atomic_action_group"`
+	ActionGroups        []ActionGroup                `json:"action_groups"`
+	SelectedBox         string                       `json:"selected_box,omitempty"`
 	Refusals            []Refusal                    `json:"refusals"`
 	Diagnostics         []contract.Diagnostic        `json:"diagnostics"`
 	PlanSHA256          string                       `json:"plan_sha256,omitempty"`
 }
 
 type AuthorityStateReference struct {
-	AuthorityStateSHA256 string `json:"authority_state_sha256"`
-	TailnetAuthority     string `json:"tailnet_authority"`
+	AuthorityStateSHA256 string                  `json:"authority_state_sha256"`
+	Kind                 string                  `json:"kind"`
+	SettingGroups        []SettingGroupReference `json:"setting_groups"`
+}
+
+type SettingGroupReference struct {
+	ID     string   `json:"id"`
+	Scopes []string `json:"scopes"`
+	Source string   `json:"source"`
 }
 
 type ToolchainReference struct {
@@ -69,12 +77,13 @@ type ToolchainReference struct {
 	EngineCommit  string `json:"engine_commit"`
 }
 
-type AtomicActionGroup struct {
+type ActionGroup struct {
 	ID           string   `json:"id"`
 	Operation    string   `json:"operation"`
 	Scopes       []string `json:"scopes"`
 	Executor     string   `json:"executor"`
 	RollbackType string   `json:"rollback_type"`
+	Box          string   `json:"box,omitempty"`
 }
 
 type InstanceIdentity struct {
@@ -125,12 +134,12 @@ type Refusal struct {
 
 func Build(options Options, engine contract.Engine) (Artifact, error) {
 	artifact := Artifact{
-		SchemaVersion: 2,
-		Kind:          "klokast.plan.v2",
+		SchemaVersion: 3,
+		Kind:          "klokast.plan.v3",
 		HealthScope:   "standard_substrate_v1",
 		Engine:        planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
 		Inputs:        []planner.InputDigest{}, CompatibilityInputs: []planner.CompatibilityInput{},
-		Authorities: []AuthorityAssignment{}, Actions: []Action{}, Refusals: []Refusal{},
+		Authorities: []AuthorityAssignment{}, Actions: []Action{}, ActionGroups: []ActionGroup{}, Refusals: []Refusal{},
 		Diagnostics: []contract.Diagnostic{},
 	}
 	plannerOptions := planner.Options{
@@ -147,11 +156,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		artifact.Diagnostics = report.Diagnostics
 		return artifact, nil
 	}
-	state, err := authoritystate.Load(options.AuthorityState)
-	if err != nil {
-		return Artifact{}, err
-	}
-	tailnetAuthority, err := authoritystate.Authority(state)
+	state, err := authoritystate.LoadV2(options.AuthorityState)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -161,7 +166,14 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	}
 	artifact.AuthorityState = AuthorityStateReference{
 		AuthorityStateSHA256: state.AuthorityStateSHA256,
-		TailnetAuthority:     tailnetAuthority,
+		Kind:                 state.Kind,
+		SettingGroups:        []SettingGroupReference{},
+	}
+	for _, group := range state.SettingGroups {
+		artifact.AuthorityState.SettingGroups = append(
+			artifact.AuthorityState.SettingGroups,
+			SettingGroupReference{ID: group.ID, Scopes: append([]string{}, group.Scopes...), Source: group.Source},
+		)
 	}
 	artifact.ControllerToolchain = ToolchainReference{
 		ReceiptSHA256: toolchainReceipt.ReceiptSHA256,
@@ -176,6 +188,12 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	artifact.Compatibility = report.Compatibility
 	artifact.CompatibilityInputs = report.Compatibility.Inputs
 	artifact.Compatible = report.Compatible
+	if !authorityGroupsMatchProjection(state, artifact.Projection) {
+		artifact.Refusals = append(artifact.Refusals, refusal(
+			"authority-state.groups", "authority_state.setting_groups",
+			"Authority State v2 groups do not match the complete instance box set",
+		))
+	}
 	receipt, sourceDiagnostics, err := instancesource.Load(options.InstanceSourceReceipt, time.Now().UTC())
 	if err != nil {
 		return Artifact{}, err
@@ -215,10 +233,20 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 
 	digests := compatibilityDigests(artifact.CompatibilityInputs)
 	artifact.Authorities = authorityAssignments(artifact, digests)
-	tailnetFindings := map[string]planner.Finding{}
+	groupFindings := map[string]planner.Finding{}
+	groupScopes := map[string]string{}
+	for _, scope := range authoritystate.TailnetScopes {
+		groupScopes[scope] = authoritystate.TailnetGroupID
+	}
+	for _, box := range artifact.Projection.Boxes {
+		groupID := authoritystate.BoxConnectivityPrefix + box.ID
+		for _, scope := range authoritystate.BoxConnectivityScopes(box.ID) {
+			groupScopes[scope] = groupID
+		}
+	}
 	for _, finding := range artifact.Compatibility.Findings {
-		if isTailnetPilotScope(finding.Path) {
-			tailnetFindings[finding.Path] = finding
+		if _, grouped := groupScopes[finding.Path]; grouped {
+			groupFindings[finding.Path] = finding
 			continue
 		}
 		switch finding.Class {
@@ -241,38 +269,95 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			artifact.Refusals = append(artifact.Refusals, refusal("compatibility.class", finding.Path, "the compatibility finding class is not supported"))
 		}
 	}
-	pilotOperation := "adopt_instance_specification"
-	if tailnetAuthority == authoritystate.InstanceAuthority {
-		pilotOperation = "verify_instance_authority"
+	tailnetSource, err := authoritystate.GroupSource(state, authoritystate.TailnetGroupID)
+	if err != nil {
+		return Artifact{}, err
 	}
-	artifact.AtomicActionGroup = AtomicActionGroup{
-		ID:           "tailnet-policy-inputs-v1",
-		Operation:    pilotOperation,
+	artifact.ActionGroups = append(artifact.ActionGroups, ActionGroup{
+		ID:           authoritystate.TailnetGroupID,
+		Operation:    "verify_instance_authority",
 		Scopes:       append([]string{}, authoritystate.TailnetScopes...),
 		Executor:     "tailnet_policy_inputs_v1",
 		RollbackType: "tailnet_policy_preimage_v1",
-	}
+	})
 	legacyDigest := digests[authoritystate.LegacyAuthority]
 	for _, scope := range authoritystate.TailnetScopes {
-		finding, present := tailnetFindings[scope]
-		if !present || finding.Class != "matched" || legacyDigest == "" {
+		finding, present := groupFindings[scope]
+		if !present || finding.Class != "matched" || legacyDigest == "" || tailnetSource != authoritystate.InstanceAuthority {
 			artifact.Refusals = append(artifact.Refusals, refusal(
-				"tailnet-pilot.not-matched", scope,
-				"the complete Tailnet pilot requires matched legacy deployment evidence",
+				"tailnet-group.not-verifiable", scope,
+				"the completed Tailnet group requires matched evidence and instance authority",
 			))
 			continue
 		}
-		before, after := authoritystate.LegacyAuthority, authoritystate.InstanceAuthority
-		if pilotOperation == "verify_instance_authority" {
-			before, after = authoritystate.InstanceAuthority, authoritystate.InstanceAuthority
-		}
 		artifact.Actions = append(artifact.Actions, Action{
-			ID: actionID(pilotOperation, finding.ID), FindingID: finding.ID,
-			Operation: pilotOperation, Scope: scope, AuthorityBefore: before,
-			AuthorityAfter: after, Executor: "tailnet_policy_inputs_v1",
-			Preconditions: []string{"active_controller_fenced", "exact_plan_v2_revalidated", "byte_equal_policy", "tailnet_policy_preimage_prepared"},
+			ID: actionID("verify_instance_authority", finding.ID), FindingID: finding.ID,
+			Operation: "verify_instance_authority", Scope: scope,
+			AuthorityBefore: authoritystate.InstanceAuthority,
+			AuthorityAfter:  authoritystate.InstanceAuthority, Executor: "tailnet_policy_inputs_v1",
+			Preconditions: []string{"active_controller_fenced", "exact_plan_v3_revalidated", "byte_equal_policy", "tailnet_policy_preimage_prepared"},
 			Rollback:      Rollback{Strategy: "tailnet_policy_preimage_v1", Authority: authoritystate.LegacyAuthority, SourceSHA256: legacyDigest},
 		})
+	}
+	artifact.SelectedBox = selectNonControllerBox(artifact.Projection)
+	if artifact.SelectedBox == "" {
+		artifact.Refusals = append(artifact.Refusals, refusal(
+			"box-connectivity.selection", "boxes",
+			"the first connectivity action requires one unique box that does not host the active controller",
+		))
+	}
+	registryDigest := digests[authoritystate.LegacyRegistrySource]
+	for _, box := range artifact.Projection.Boxes {
+		groupID := authoritystate.BoxConnectivityPrefix + box.ID
+		source, sourceErr := authoritystate.GroupSource(state, groupID)
+		if sourceErr != nil {
+			artifact.Refusals = append(artifact.Refusals, refusal("box-connectivity.authority", groupID, sourceErr.Error()))
+			continue
+		}
+		operation, executor := "retain_legacy", "none"
+		if box.ID == artifact.SelectedBox {
+			operation, executor = "adopt_instance_specification", "box_connectivity_v1"
+			if source == authoritystate.InstanceAuthority {
+				operation = "verify_instance_authority"
+			}
+		}
+		artifact.ActionGroups = append(artifact.ActionGroups, ActionGroup{
+			ID: groupID, Operation: operation,
+			Scopes: authoritystate.BoxConnectivityScopes(box.ID), Executor: executor,
+			RollbackType: "box_connectivity_registry_v1", Box: box.ID,
+		})
+		for _, scope := range authoritystate.BoxConnectivityScopes(box.ID) {
+			finding, present := groupFindings[scope]
+			expectedClass := "matched"
+			if scope == "boxes."+box.ID || scope == "boxes."+box.ID+".connectivity" {
+				expectedClass = "derived"
+			}
+			if !present || finding.Class != expectedClass || registryDigest == "" {
+				artifact.Refusals = append(artifact.Refusals, refusal(
+					"box-connectivity.not-matched", scope,
+					"the complete box connectivity group requires exact legacy registry evidence",
+				))
+				continue
+			}
+			before, after := source, source
+			if operation == "adopt_instance_specification" || operation == "verify_instance_authority" {
+				after = authoritystate.InstanceAuthority
+			}
+			artifact.Actions = append(artifact.Actions, Action{
+				ID: actionID(operation, finding.ID), FindingID: finding.ID,
+				Operation: operation, Scope: scope, AuthorityBefore: before,
+				AuthorityAfter: after, Executor: executor,
+				Preconditions: []string{
+					"active_controller_fenced", "exact_plan_v3_revalidated",
+					"effective_registry_compiles_equal", "one_router_rollback_prepared",
+				},
+				Rollback: Rollback{
+					Strategy:     "box_connectivity_registry_v1",
+					Authority:    authoritystate.LegacyRegistrySource,
+					SourceSHA256: registryDigest,
+				},
+			})
+		}
 	}
 	for _, finding := range health.Findings {
 		artifact.Refusals = append(artifact.Refusals, refusal("observation."+finding.Code, finding.Path, finding.Message))
@@ -295,6 +380,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	coverageReady, coverageRefusals := exactCoverage(artifact, digests)
 	artifact.Refusals = append(artifact.Refusals, coverageRefusals...)
 	sort.Slice(artifact.Actions, func(i, j int) bool { return artifact.Actions[i].ID < artifact.Actions[j].ID })
+	sort.Slice(artifact.ActionGroups, func(i, j int) bool { return artifact.ActionGroups[i].ID < artifact.ActionGroups[j].ID })
 	sort.Slice(artifact.Refusals, func(i, j int) bool {
 		if artifact.Refusals[i].Scope != artifact.Refusals[j].Scope {
 			return artifact.Refusals[i].Scope < artifact.Refusals[j].Scope
@@ -319,19 +405,19 @@ func Hash(artifact Artifact) (string, error) {
 	artifact.PlanSHA256 = ""
 	encoded, err := json.Marshal(artifact)
 	if err != nil {
-		return "", fmt.Errorf("encode Plan v2 artifact: %w", err)
+		return "", fmt.Errorf("encode Plan v3 artifact: %w", err)
 	}
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
-		return "", fmt.Errorf("canonicalize Plan v2 artifact: %w", err)
+		return "", fmt.Errorf("canonicalize Plan v3 artifact: %w", err)
 	}
 	var canonical bytes.Buffer
 	encoder := json.NewEncoder(&canonical)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
-		return "", fmt.Errorf("canonicalize Plan v2 artifact: %w", err)
+		return "", fmt.Errorf("canonicalize Plan v3 artifact: %w", err)
 	}
 	content := bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'})
 	digest := sha256.Sum256(content)
@@ -364,6 +450,45 @@ func isTailnetPilotScope(scope string) bool {
 	return false
 }
 
+func selectNonControllerBox(projection *planner.Projection) string {
+	if projection == nil {
+		return ""
+	}
+	selected := ""
+	for _, box := range projection.Boxes {
+		if box.ID == projection.ControlPlane.ActiveController.BoxID {
+			continue
+		}
+		if selected != "" {
+			return ""
+		}
+		selected = box.ID
+	}
+	return selected
+}
+
+func authorityGroupsMatchProjection(state authoritystate.StateV2, projection *planner.Projection) bool {
+	if projection == nil {
+		return false
+	}
+	expected := map[string][]string{
+		authoritystate.TailnetGroupID: authoritystate.TailnetScopes,
+	}
+	for _, box := range projection.Boxes {
+		expected[authoritystate.BoxConnectivityPrefix+box.ID] = authoritystate.BoxConnectivityScopes(box.ID)
+	}
+	if len(state.SettingGroups) != len(expected) {
+		return false
+	}
+	for _, group := range state.SettingGroups {
+		scopes, present := expected[group.ID]
+		if !present || !reflect.DeepEqual(group.Scopes, scopes) {
+			return false
+		}
+	}
+	return true
+}
+
 func authorityAssignments(artifact Artifact, digests map[string]string) []AuthorityAssignment {
 	result := []AuthorityAssignment{
 		{ID: "instance_specification_v1", Scope: "candidate_desired_state", Disposition: "candidate", SourceCommit: artifact.Instance.Commit},
@@ -386,7 +511,7 @@ func authorityAssignments(artifact Artifact, digests map[string]string) []Author
 func adoptionAction(finding planner.Finding, before, digest string) Action {
 	return Action{
 		ID: actionID("adopt_instance_specification", finding.ID), FindingID: finding.ID, Operation: "adopt_instance_specification", Scope: finding.Path,
-		AuthorityBefore: before, AuthorityAfter: "instance_specification_v1", Executor: "future_authorized_apply",
+		AuthorityBefore: before, AuthorityAfter: "instance_specification_v1", Executor: "unimplemented_action",
 		Preconditions: []string{"active_controller_fenced", "exact_plan_revalidated", "rollback_prepared"},
 		Rollback:      Rollback{Strategy: "restore_authority", Authority: before, SourceSHA256: digest},
 	}

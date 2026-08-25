@@ -129,8 +129,8 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	controllerPath := flags.String("compatibility-controller-ha", "", "path to the transitional controller HA document")
 	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
 	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
-	authorityState := flags.String("authority-state", "", "path to an Authority State v1 JSON document")
-	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v1 receipt")
+	authorityState := flags.String("authority-state", "", "path to an Authority State v2 JSON document")
+	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v2 receipt")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
 		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--json]")
@@ -139,7 +139,7 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
 	if *observationPath == "" {
 		if *instanceSourceReceipt != "" || *authorityState != "" || *controllerToolchainReceipt != "" {
-			fmt.Fprintln(stderr, "klokast plan: Plan v2 evidence flags require --observation")
+			fmt.Fprintln(stderr, "klokast plan: Plan v3 evidence flags require --observation")
 			return 2
 		}
 		return runCompatibilityPlan(planner.Options{

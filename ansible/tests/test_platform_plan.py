@@ -118,8 +118,8 @@ class PlatformPlanTest(unittest.TestCase):
 
     def test_plan_hash_is_canonical_and_tamper_evident(self):
         plan = {
-            "schema_version": 2,
-            "kind": "klokast.plan.v2",
+            "schema_version": 3,
+            "kind": "klokast.plan.v3",
             "valid": True,
             "deployable": False,
             "instance": {"commit": "b" * 40},
@@ -138,22 +138,23 @@ class PlatformPlanTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.PlanError, "hash"):
             self.mod.verify_plan(json.dumps(plan).encode("utf-8"))
 
-    def test_plan_v1_is_historical_evidence_only(self):
-        plan = {
-            "schema_version": 1,
-            "kind": "klokast.plan.v1",
-            "valid": True,
-            "deployable": True,
-            "instance": {"commit": "b" * 40},
-        }
-        plan["plan_sha256"] = hashlib.sha256(self.mod.canonical_plan(plan)).hexdigest()
-        with self.assertRaisesRegex(self.mod.PlanError, "unsupported plan"):
-            self.mod.verify_plan(json.dumps(plan).encode("utf-8"))
+    def test_plan_v1_and_v2_are_historical_evidence_only(self):
+        for version in (1, 2):
+            plan = {
+                "schema_version": version,
+                "kind": f"klokast.plan.v{version}",
+                "valid": True,
+                "deployable": True,
+                "instance": {"commit": "b" * 40},
+            }
+            plan["plan_sha256"] = hashlib.sha256(self.mod.canonical_plan(plan)).hexdigest()
+            with self.assertRaisesRegex(self.mod.PlanError, "unsupported plan"):
+                self.mod.verify_plan(json.dumps(plan).encode("utf-8"))
 
     def test_non_deployable_plan_is_valid_audit_output(self):
         plan = {
-            "schema_version": 2,
-            "kind": "klokast.plan.v2",
+            "schema_version": 3,
+            "kind": "klokast.plan.v3",
             "valid": True,
             "deployable": False,
             "instance": {"commit": "b" * 40},

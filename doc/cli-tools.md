@@ -26,7 +26,7 @@ an ambient controller command.
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline Instance Specification v1 repository from one complete strict JSON instance file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
-| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With fresh observation, source, authority-state, and controller-toolchain evidence, it emits a hashed Plan v2 artifact. It does not apply changes. |
+| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With fresh observation, source, Authority State v2, and Controller Toolchain v2 evidence, it emits a hashed Plan v3 artifact. It does not apply changes. |
 
 ## Platform And Controller Wrappers
 
@@ -52,7 +52,7 @@ Source: `ansible/bin/`.
 | `platform-apply` | active controller | Runs the closed Tailnet policy-input preflight, execution, or forward rollback through the installed root Apply boundary. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
-| `platform-plan` | active controller | Verifies the sealed engine and bound source, authority-state, and toolchain receipts, creates Plan v2, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
+| `platform-plan` | active controller | Verifies the sealed engine and bound source, Authority State v2, and Controller Toolchain v2 receipts, creates Plan v3, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
 | `controller-toolchain-receipt` | active controller | Verifies a clean public checkout and exact installed Apply tool bytes, then stores one immutable controller-toolchain receipt. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
