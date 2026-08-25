@@ -131,6 +131,7 @@ class Dom0ApkPolicyTest(unittest.TestCase):
 
         self.assertEqual(len(repositories), 2)
         self.assertTrue(all(value.startswith("https://") for value in repositories))
+        self.assertTrue(all("dl-cdn.alpinelinux.org" in value for value in repositories))
         self.assertTrue(all("{{ alpine_release_branch }}" in value for value in repositories))
         self.assertTrue(all("latest-stable" not in value for value in repositories))
 
