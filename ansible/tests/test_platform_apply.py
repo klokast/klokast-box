@@ -188,6 +188,30 @@ class PlatformApplyTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.ApplyError, "already used"):
                 self.mod.consume_nonce(intent)
 
+    def test_conversion_nonce_binds_authority_state_without_a_plan(self):
+        intent = {
+            "kind": self.mod.KIND_CONVERSION_INTENT,
+            "nonce": "conversion_nonce_123",
+            "authority_state_sha256": "a" * 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            self.mod, "NONCE_ROOT", Path(temporary) / "nonces"
+        ):
+            self.mod.consume_nonce(intent)
+            evidence = self.mod.NONCE_ROOT / intent["nonce"]
+            self.assertEqual(evidence.read_text(encoding="ascii"), "a" * 64 + "\n")
+            with self.assertRaisesRegex(self.mod.ApplyError, "already used"):
+                self.mod.consume_nonce(intent)
+
+    def test_nonce_rejects_an_unknown_intent_kind_before_creating_evidence(self):
+        intent = {"kind": "unknown", "nonce": "unknown_nonce_123"}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            self.mod, "NONCE_ROOT", Path(temporary) / "nonces"
+        ):
+            with self.assertRaisesRegex(self.mod.ApplyError, "no nonce evidence binding"):
+                self.mod.consume_nonce(intent)
+            self.assertFalse(self.mod.NONCE_ROOT.exists())
+
     def test_macbook_replay_proof_is_closed(self):
         source = MACBOOK_APPLY.read_text(encoding="utf-8")
         self.assertIn("--prove-replay-refusal", source)

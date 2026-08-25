@@ -2,6 +2,15 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - failed Apply preflights need a retention policy
+
+The first Authority State v1 conversion attempt stopped after signature
+verification because nonce evidence incorrectly required a Plan hash. The
+corrected Apply program binds a conversion nonce to its Authority State hash.
+The failed attempt left an immutable preflight directory and an empty,
+consumed nonce file. Keep both as failure evidence. Define a root-owned
+retention and archival policy before these evidence directories need cleanup.
+
 # 2026-08-25 - infra-agent has no Ansible executable
 
 The infra-agent can run the Python and shell checks, but it cannot run

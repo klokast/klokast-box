@@ -1311,6 +1311,12 @@ def verify_signature(args, intent):
 
 
 def consume_nonce(intent):
+    if intent.get("kind") == KIND_CONVERSION_INTENT:
+        binding_sha256 = intent["authority_state_sha256"]
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT}:
+        binding_sha256 = intent["plan_sha256"]
+    else:
+        raise ApplyError("Apply intent kind has no nonce evidence binding")
     ensure_dir(NONCE_ROOT)
     path = NONCE_ROOT / intent["nonce"]
     try:
@@ -1318,7 +1324,7 @@ def consume_nonce(intent):
     except FileExistsError as error:
         raise ApplyError("Apply intent nonce was already used") from error
     try:
-        os.write(descriptor, (intent["plan_sha256"] + "\n").encode("ascii"))
+        os.write(descriptor, (binding_sha256 + "\n").encode("ascii"))
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
