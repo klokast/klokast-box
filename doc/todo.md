@@ -2,6 +2,19 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - one-box verification requires a direct Tailnet path
+
+The first signed box-connectivity adoption did not reach Ansible because the
+root Apply program passed a root-only rollback file to the `smith`-owned
+compiler process. The corrected program keeps rollback storage root-only and
+makes exact, read-only copies in its short-lived execution directory.
+
+During recovery inspection, one controller ping reached `k001-router` only
+through the Hong Kong DERP relay. A later closed legacy verification
+established a direct peer-to-peer path and passed all checks. If the relay-only
+condition becomes frequent, investigate the endpoint and NAT state. Do not
+weaken the direct-path requirement to complete the source migration.
+
 # 2026-08-25 - sealed builder cleanup depends on one Alpine mirror
 
 Sealed build operations `0fdb18748cee` and `447ed5802533` compiled and cleaned
@@ -37,12 +50,13 @@ The failed attempt left an immutable preflight directory and an empty,
 consumed nonce file. Keep both as failure evidence. Define a root-owned
 retention and archival policy before these evidence directories need cleanup.
 
-# 2026-08-25 - infra-agent has no Ansible executable
+# 2026-08-25 - infra-agent has no Go or Ansible executable
 
 The infra-agent can run the Python and shell checks, but it cannot run
-`ansible-playbook --syntax-check` because Ansible is not installed. Run the
-syntax check on the active controller as the runbook specifies. Do not install
-Ansible on the infra-agent only to duplicate the controller check.
+the Go tests or `ansible-playbook --syntax-check` because Go and Ansible are
+not installed. Run both checks on the active controller as the runbook
+specifies. Do not install these tools on the infra-agent only to duplicate the
+controller checks.
 
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 

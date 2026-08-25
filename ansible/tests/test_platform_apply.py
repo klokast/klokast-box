@@ -671,11 +671,35 @@ class PlatformApplyTest(unittest.TestCase):
     def test_box_failure_path_has_forward_restoration_and_terminal_refusal(self):
         source = KSA_APPLY.read_text(encoding="utf-8")
         function = source[source.index("def box_execute"):source.index("def execute_tailnet")]
+        self.assertIn("stage_box_registry_for_controller(", function)
         self.assertIn('source=restore_source', function)
         self.assertIn('restore_registry, box, "apply-box-access"', function)
         self.assertIn('recovery_result = "recovery_required"', function)
         self.assertIn('recovery_result = "restored"', function)
         self.assertIn('box restoration could not be verified; recovery_required', function)
+        self.assertIn('initial failure: {mutation_error}', function)
+        self.assertIn('restoration failure: ', function)
+
+    def test_box_registry_staging_keeps_rollback_material_root_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "rollback.yml"
+            source.write_bytes(b"schema_version: 1\n")
+            source.chmod(0o600)
+            work = root / "work"
+            work.mkdir()
+            with patch.object(self.mod, "smith_gid", return_value=123), patch.object(
+                self.mod.os, "chown"
+            ) as chown:
+                staged = self.mod.stage_box_registry_for_controller(
+                    source, work, "target-registry.yml"
+                )
+            self.assertEqual(staged.read_bytes(), source.read_bytes())
+            self.assertEqual(source.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(staged.stat().st_mode & 0o777, 0o440)
+            chown.assert_called_once_with(staged, 0, 123)
+            with self.assertRaisesRegex(self.mod.ApplyError, "name is not closed"):
+                self.mod.stage_box_registry_for_controller(source, work, "other.yml")
 
     def test_source_recovery_is_temporary_and_redacted(self):
         source = (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance").read_text(encoding="utf-8")

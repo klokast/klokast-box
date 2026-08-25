@@ -711,10 +711,12 @@ Tailnet policy, or application data.
 Execution revalidates the active controller, Plan v3, Authority State v2,
 private commit, old files, observation, source-recovery receipt, sealed engine,
 toolchain, public checkout, and both compiler results. It stores rollback
-material before the source transition. It creates a new v2 state that assigns
-the selected group to the instance. It then applies and verifies the selected
-router from the effective input. It verifies controller access and the
-declared network paths.
+material before the source transition. The immutable rollback copies stay
+root-only. Apply makes exact, read-only copies in its short-lived work
+directory for the `smith`-owned compiler process, and removes those copies
+when execution ends. It creates a new v2 state that assigns the selected group
+to the instance. It then applies and verifies the selected router from the
+effective input. It verifies controller access and the declared network paths.
 
 On failure, Apply creates another forward v2 state that restores the old
 registry as the selected group source. It runs the same one-router operation

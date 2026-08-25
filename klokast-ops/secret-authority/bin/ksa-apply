@@ -1649,6 +1649,16 @@ def store_box_rollback_material(intent, binding):
     return directory
 
 
+def stage_box_registry_for_controller(source, work, name):
+    if name not in {"target-registry.yml", "restore-registry.yml"}:
+        raise ApplyError("box registry staging name is not closed")
+    target = work / name
+    target.write_bytes(read_regular(source))
+    os.chown(target, 0, smith_gid())
+    os.chmod(target, 0o440)
+    return target
+
+
 def box_execute(args, intent):
     validate_box_intent(intent)
     verify_signature(args, intent)
@@ -1717,7 +1727,7 @@ def box_execute(args, intent):
             if intent["action"] == "rollback_to_legacy"
             else "instance_specification_v1"
         )
-        target_registry = (
+        target_material = (
             rollback_material / "old-registry.yml"
             if target_source == LEGACY_REGISTRY_SOURCE
             else rollback_material / "effective-registry.yml"
@@ -1727,21 +1737,27 @@ def box_execute(args, intent):
             if target_source == LEGACY_REGISTRY_SOURCE
             else LEGACY_REGISTRY_SOURCE
         )
-        restore_registry = (
+        restore_material = (
             rollback_material / "effective-registry.yml"
             if restore_source == "instance_specification_v1"
             else rollback_material / "old-registry.yml"
         )
-        if sha256_file(target_registry) != (
+        if sha256_file(target_material) != (
             intent["old_registry_sha256"]
             if target_source == LEGACY_REGISTRY_SOURCE
             else intent["effective_registry_sha256"]
-        ) or sha256_file(restore_registry) != (
+        ) or sha256_file(restore_material) != (
             intent["effective_registry_sha256"]
             if restore_source == "instance_specification_v1"
             else intent["old_registry_sha256"]
         ):
             raise ApplyError("box rollback material changed")
+        target_registry = stage_box_registry_for_controller(
+            target_material, work, "target-registry.yml"
+        )
+        restore_registry = stage_box_registry_for_controller(
+            restore_material, work, "restore-registry.yml"
+        )
         transitioned = make_authority_v2(
             current["state"], intent, group_id=intent["action_group_id"],
             source=target_source,
@@ -1757,6 +1773,7 @@ def box_execute(args, intent):
             )
         except ApplyError as mutation_error:
             recovery_result = "recovery_required"
+            restoration_error = None
             active_digest = transitioned["authority_state_sha256"]
             try:
                 restored = make_authority_v2(
@@ -1773,8 +1790,8 @@ def box_execute(args, intent):
                     restore_registry, box, "verify-box-access", magicdns_suffix
                 )
                 recovery_result = "restored"
-            except ApplyError:
-                pass
+            except ApplyError as error:
+                restoration_error = error
             path, receipt = store_box_execution(
                 intent, "failed", active_digest, recovery_result,
             )
@@ -1785,7 +1802,9 @@ def box_execute(args, intent):
             )
             if recovery_result == "recovery_required":
                 raise ApplyError(
-                    f"box restoration could not be verified; recovery_required; evidence: {path}"
+                    "box restoration could not be verified; recovery_required; "
+                    f"initial failure: {mutation_error}; restoration failure: "
+                    f"{restoration_error}; evidence: {path}"
                 ) from mutation_error
             raise mutation_error
         path, receipt = store_box_execution(
