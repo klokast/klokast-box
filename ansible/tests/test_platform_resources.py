@@ -2208,6 +2208,82 @@ all:
             with redirect_stderr(io.StringIO()):
                 self.mod.validate_box("boxa-ops", "apps.example.placement.active_master")
 
+    def test_box_access_requires_one_exact_configured_box(self):
+        compiled = {"box_configs": {"boxa": {}}}
+        self.assertEqual(
+            self.mod.selected_box_access_box(compiled, ["boxa"]), "boxa"
+        )
+        for requested in ([], ["boxa", "boxb"], ["boxb"]):
+            with self.subTest(requested=requested):
+                with self.assertRaises(SystemExit):
+                    with redirect_stderr(io.StringIO()):
+                        self.mod.selected_box_access_box(compiled, requested)
+
+    def test_box_access_router_vars_contain_only_selected_router_inputs(self):
+        compiled = {
+            "compiler_version": self.mod.COMPILER_VERSION,
+            "registry_sha256": "a" * 64,
+            "managed_iot_devices": [],
+            "box_configs": {
+                "boxa": {
+                    "access": {
+                        "available_capabilities": ["overlay"],
+                        "enabled_capabilities": ["overlay"],
+                        "prohibited_capabilities": ["local-lan"],
+                    },
+                    "dhcp_reservations": [
+                        {
+                            "hostname": "device-a",
+                            "mac": "02:00:00:00:00:01",
+                            "ipv4_address": "192.0.2.1",
+                        }
+                    ],
+                },
+                "boxb": {
+                    "access": self.mod.default_box_access(),
+                    "dhcp_reservations": [],
+                },
+            },
+        }
+        value = self.mod.box_access_router_vars(compiled, "boxa")
+        self.assertEqual(set(value), {
+            "platform_resources_box_access", "router_managed_dhcp_hosts",
+        })
+        self.assertEqual(set(value["platform_resources_box_access"]), {"boxa"})
+        self.assertEqual(
+            {item["node"] for item in value["router_managed_dhcp_hosts"]},
+            {"boxa"},
+        )
+
+    def test_box_access_runs_only_one_router_playbook(self):
+        compiled = {
+            "compiler_version": self.mod.COMPILER_VERSION,
+            "registry_sha256": "a" * 64,
+            "managed_iot_devices": [],
+            "box_configs": {
+                "boxa": {
+                    "access": self.mod.default_box_access(),
+                    "dhcp_reservations": [],
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".run" / "platform-resources").mkdir(parents=True)
+            with patch.object(self.mod, "REPO_ROOT", root), patch.object(
+                self.mod, "render_inventory"
+            ), patch.object(self.mod.subprocess, "run") as runner:
+                self.mod.run_box_access(
+                    "apply", compiled, "boxa", "example.ts.net", "b" * 40
+                )
+        command = runner.call_args.args[0]
+        self.assertIn(str(root / "ansible" / "playbooks" / "32-platform-box-access.yml"), command)
+        self.assertEqual(command[command.index("--limit") + 1], "boxa-router")
+        joined = " ".join(command)
+        self.assertNotIn("platform-resources.yml", joined)
+        self.assertNotIn("shared-guests", joined)
+        self.assertNotIn("dom0", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

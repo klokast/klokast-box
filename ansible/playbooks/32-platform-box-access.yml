@@ -1,0 +1,42 @@
+---
+- name: Apply or verify one selected router access configuration
+  hosts: router
+  gather_facts: true
+  tasks:
+    - name: Require one closed box access operation
+      ansible.builtin.assert:
+        that:
+          - platform_box_access_operation in ['apply', 'verify']
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == node_name ~ '-router'
+        fail_msg: >-
+          The box access workflow requires one exact router and an apply or
+          verify operation.
+
+    - name: Apply the selected router access configuration
+      ansible.builtin.import_role:
+        name: router
+      when: platform_box_access_operation == 'apply'
+
+    - name: Flush router handlers before access verification
+      ansible.builtin.meta: flush_handlers
+      when: platform_box_access_operation == 'apply'
+
+    - name: Verify the selected router configuration and declared paths
+      ansible.builtin.import_role:
+        name: router-verification
+
+    - name: Check direct controller reachability to the selected router
+      ansible.builtin.command: "tailscale ping --c 1 {{ ansible_host }}"
+      delegate_to: localhost
+      become: false
+      register: platform_box_access_controller_ping
+      changed_when: false
+
+    - name: Require a direct controller path to the selected router
+      ansible.builtin.assert:
+        that:
+          - "'via DERP' not in platform_box_access_controller_ping.stdout"
+        fail_msg: >-
+          The controller cannot reach the selected router through a direct
+          Tailnet path.

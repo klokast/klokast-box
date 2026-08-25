@@ -357,6 +357,18 @@ def parse_args():
         "verify-shared-guests",
         help="Verify compiled shared-guest runtime intent on dom0.",
     )
+    subparsers.add_parser(
+        "show-box-access-vars",
+        help="Print the closed router variable document for exactly one box.",
+    )
+    subparsers.add_parser(
+        "apply-box-access",
+        help="Apply access intent on exactly one selected router.",
+    )
+    subparsers.add_parser(
+        "verify-box-access",
+        help="Verify access intent on exactly one selected router.",
+    )
     return parser.parse_args()
 
 
@@ -3314,6 +3326,85 @@ def selected_shared_guest_boxes(compiled, requested_boxes):
     return selected
 
 
+def selected_box_access_box(compiled, requested_boxes):
+    if len(requested_boxes) != 1:
+        die("box access operations require exactly one --box")
+    box = requested_boxes[0]
+    validate_box(box, "--box")
+    if box not in (compiled.get("box_configs") or {}):
+        die(f"registry has no boxes.{box} configuration")
+    return box
+
+
+def box_access_router_vars(compiled, box):
+    selected = selected_box_access_box(compiled, [box])
+    return {
+        "platform_resources_box_access": {
+            selected: (
+                compiled["box_configs"][selected].get("access")
+                or default_box_access()
+            )
+        },
+        "router_managed_dhcp_hosts": [
+            item
+            for item in router_managed_dhcp_hosts(compiled)
+            if item.get("node") == selected
+        ],
+    }
+
+
+def run_box_access(command, compiled, box, magicdns_suffix, approved_commit=""):
+    if command not in {"apply", "verify"}:
+        die("box access operation must be apply or verify")
+    selected = selected_box_access_box(compiled, [box])
+    run_root = REPO_ROOT / ".run" / "platform-resources"
+    run_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f"box-access-{command}-", dir=run_root)
+    )
+    inventory_path = temporary / f"{selected}.yml"
+    vars_path = temporary / "extra-vars.yml"
+    render_inventory(
+        selected,
+        inventory_path,
+        magicdns_suffix,
+        compiled.get("box_configs"),
+    )
+    vars_payload = box_access_router_vars(compiled, selected)
+    vars_payload["platform_box_access_operation"] = command
+    vars_payload["platform_resources_approved_commit"] = approved_commit
+    vars_payload["platform_resources_registry_sha256"] = compiled["registry_sha256"]
+    vars_payload["platform_resources_compiler_version"] = compiled["compiler_version"]
+    vars_path.write_text(
+        yaml.safe_dump(vars_payload, sort_keys=True), encoding="utf-8"
+    )
+    environment = os.environ.copy()
+    environment["ANSIBLE_CONFIG"] = str(REPO_ROOT / "ansible" / "ansible.cfg")
+    environment["ANSIBLE_ROLES_PATH"] = str(REPO_ROOT / "ansible" / "roles")
+    environment["ANSIBLE_SSH_COMMON_ARGS"] = (
+        "-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile={temporary / 'known_hosts'}"
+    )
+    subprocess.run(
+        [
+            "ansible-playbook",
+            "-vv",
+            "-i",
+            str(REPO_ROOT / "ansible" / "inventory" / "hosts.yml"),
+            "-i",
+            str(inventory_path),
+            str(REPO_ROOT / "ansible" / "playbooks" / "32-platform-box-access.yml"),
+            "--limit",
+            f"{selected}-router",
+            "-e",
+            f"@{vars_path}",
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        check=True,
+    )
+
+
 def run_shared_guests(
     command,
     compiled,
@@ -3836,6 +3927,13 @@ def show_diff(compiled):
 def assert_command_scope(args):
     if args.command == "grant" and len(args.app) != 1:
         die("grant requires exactly one --app")
+    if args.command in {
+        "show-box-access-vars", "apply-box-access", "verify-box-access"
+    }:
+        if len(args.box) != 1:
+            die("box access operations require exactly one --box")
+        if args.app or args.shared_guest_role:
+            die("box access operations do not accept app or shared-guest scope")
 
 
 def requested_apps_present(compiled, app_filter):
@@ -3855,6 +3953,9 @@ def main():
         "show-box-configs",
         "apply-shared-guests",
         "verify-shared-guests",
+        "show-box-access-vars",
+        "apply-box-access",
+        "verify-box-access",
     }
     compiled = (
         compile_box_registry_plan(registry_path)
@@ -3870,6 +3971,10 @@ def main():
         return
     if args.command == "show-box-configs":
         print(json.dumps(compiled, indent=2, sort_keys=True))
+        return
+    if args.command == "show-box-access-vars":
+        box = selected_box_access_box(compiled, args.box)
+        print(json.dumps(box_access_router_vars(compiled, box), indent=2, sort_keys=True))
         return
     if args.command == "diff":
         show_diff(compiled)
@@ -3904,6 +4009,16 @@ def main():
             requested_boxes=args.box,
             requested_roles=args.shared_guest_role,
         )
+        return
+    if args.command == "apply-box-access":
+        assert_approved_commit(args.approved_commit)
+        require_active_controller()
+        box = selected_box_access_box(compiled, args.box)
+        run_box_access("apply", compiled, box, args.magicdns_suffix, args.approved_commit)
+        return
+    if args.command == "verify-box-access":
+        box = selected_box_access_box(compiled, args.box)
+        run_box_access("verify", compiled, box, args.magicdns_suffix)
         return
     if args.command == "apply":
         assert_approved_commit(args.approved_commit)
