@@ -253,6 +253,19 @@ class PlatformApplyTest(unittest.TestCase):
         self.assertNotIn("ts-policy-mutate-internal\n  -", OPS_VARS)
         self.assertIn("/usr/local/libexec/klokast/ts-policy-mutate-internal", OPS_TASKS)
 
+    def test_exact_plan_revalidation_drops_to_controller_checkout_owner(self):
+        command = [Path("/sealed/klokast"), "plan", "--json"]
+        completed = Mock(returncode=0, stdout="{}", stderr="")
+        with patch.object(self.mod, "run", return_value=completed) as runner:
+            self.assertIs(self.mod.run_plan_as_controller(command), completed)
+        runner.assert_called_once_with(
+            [self.mod.DOAS, "-u", self.mod.CONTROLLER_USER, *command],
+            capture=True,
+            check=False,
+        )
+        source = KSA_APPLY.read_text(encoding="utf-8")
+        self.assertIn("rerun = run_plan_as_controller(command)", source)
+
     def test_ansible_requires_exact_apply_toolchain_bytes(self):
         self.assertIn("Require exact checked and installed Apply toolchain bytes", OPS_VERIFY)
         for name in (

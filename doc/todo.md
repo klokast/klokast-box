@@ -2,6 +2,16 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - root Apply revalidation used the wrong Git identity
+
+The first live MacBook Apply check stopped during exact Plan v2 revalidation.
+The same sealed planner output matched as `smith`, but the root Apply process
+reported `git.repository` because the private checkout correctly belongs to
+`smith`. The Apply boundary now keeps root for evidence and policy checks and
+uses the fixed `/usr/bin/doas -u smith` argument vector only for the sealed,
+read-only planner rerun. Do not change the private checkout owner to root or
+weaken its Git ownership validation.
+
 # 2026-08-25 - root-only Apply helper blocked toolchain receipt hashing
 
 The first live Tailnet pilot rehearsal verified private-source recovery, but

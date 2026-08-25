@@ -61,6 +61,8 @@ MUTATION_HELPER = Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")
 RENDERER = Path("/usr/local/sbin/render-tailscale-policy")
 POLICY_TEMPLATE = Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")
 CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+DOAS = Path("/usr/bin/doas")
+CONTROLLER_USER = "smith"
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
@@ -145,6 +147,14 @@ def run(argv, *, capture=False, check=True, input_text=None):
     if check and result.returncode != 0:
         raise ApplyError(f"closed helper failed: {Path(str(argv[0])).name}")
     return result
+
+
+def run_plan_as_controller(command):
+    return run(
+        [DOAS, "-u", CONTROLLER_USER, *command],
+        capture=True,
+        check=False,
+    )
 
 
 def load_plan_module():
@@ -399,7 +409,10 @@ def validate_inputs(args):
         "--controller-toolchain-receipt", toolchain_path,
         "--json",
     ]
-    rerun = run(command, capture=True, check=False)
+    # The private checkout belongs to the controller account. Keep root for
+    # evidence and policy checks, but drop privilege for the read-only sealed
+    # planner so its Git ownership validation uses the canonical owner.
+    rerun = run_plan_as_controller(command)
     try:
         rerun_plan = json.loads(rerun.stdout)
     except json.JSONDecodeError as error:
