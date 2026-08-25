@@ -2,6 +2,16 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - root-only Apply helper blocked toolchain receipt hashing
+
+The first live Tailnet pilot rehearsal verified private-source recovery, but
+the controller toolchain receipt stopped when its unprivileged process tried
+to read the mode-`0700` internal policy mutation helper. Do not make that
+helper readable by the controller user. The receipt workflow now hashes only
+the fixed installed-component allowlist through `doas sha256sum`, validates
+the exact returned path and digest, and checks the clean selected engine again
+after hashing. Keep a regression test for path escape and invalid hash output.
+
 # 2026-08-23 - root Git inspection changed private checkout index ownership
 
 The first live publication check after engine activation found that

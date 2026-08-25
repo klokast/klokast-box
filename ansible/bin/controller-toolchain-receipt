@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,8 @@ COMPONENTS = [
     ("policy_renderer", REPO_ROOT / "ansible/bin/render-tailscale-policy", Path("/usr/local/sbin/render-tailscale-policy")),
     ("policy_template", REPO_ROOT / "klokast-ops/tailscale/policy.hujson.j2", Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")),
 ]
+INSTALLED_COMPONENT_PATHS = frozenset(installed for _name, _source, installed in COMPONENTS)
+SHA256SUM = Path("/usr/bin/sha256sum")
 
 
 class ToolchainError(Exception):
@@ -64,6 +67,22 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def installed_sha256(path):
+    path = Path(path)
+    if path not in INSTALLED_COMPONENT_PATHS:
+        raise ToolchainError("installed toolchain hash path is not in the closed component set")
+    if path.is_symlink() or not path.is_file():
+        raise ToolchainError(f"installed toolchain component is missing or unsafe: {path.name}")
+    result = run(["doas", SHA256SUM, path], capture=True)
+    lines = result.stdout.splitlines()
+    if len(lines) != 1:
+        raise ToolchainError(f"installed toolchain hash is invalid: {path.name}")
+    match = re.fullmatch(r"([0-9a-f]{64})  (/.+)", lines[0])
+    if match is None or match.group(2) != str(path):
+        raise ToolchainError(f"installed toolchain hash is invalid: {path.name}")
+    return match.group(1)
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -91,7 +110,7 @@ def build_receipt(build_dir):
     components = []
     for name, source, installed in COMPONENTS:
         source_digest = sha256(source)
-        installed_digest = sha256(installed)
+        installed_digest = installed_sha256(installed)
         if source_digest != installed_digest:
             raise ToolchainError(f"installed {name} differs from its checked-in source")
         components.append({
@@ -100,6 +119,7 @@ def build_receipt(build_dir):
             "installed_sha256": installed_digest,
         })
     binary_digest = sha256(binary)
+    verify_checkout(commit)
     components.append({
         "name": "sealed_engine",
         "source_sha256": binary_digest,

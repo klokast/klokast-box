@@ -37,6 +37,34 @@ class ControllerToolchainReceiptTest(unittest.TestCase):
             with self.assertRaises(self.mod.ToolchainError):
                 self.mod.sha256(link)
 
+    def test_installed_component_hash_uses_closed_privileged_reader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            installed = Path(temporary) / "installed"
+            installed.write_bytes(b"root-only")
+            digest = hashlib.sha256(b"root-only").hexdigest()
+            output = Mock(stdout=f"{digest}  {installed}\n")
+            with patch.object(self.mod, "INSTALLED_COMPONENT_PATHS", frozenset({installed})), patch.object(
+                self.mod, "run", return_value=output
+            ) as privileged_run:
+                self.assertEqual(self.mod.installed_sha256(installed), digest)
+            privileged_run.assert_called_once_with(
+                ["doas", self.mod.SHA256SUM, installed], capture=True
+            )
+
+    def test_installed_component_hash_refuses_path_escape_and_bad_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "installed"
+            unknown = root / "unknown"
+            installed.write_bytes(b"root-only")
+            unknown.write_bytes(b"not-allowed")
+            with patch.object(self.mod, "INSTALLED_COMPONENT_PATHS", frozenset({installed})):
+                with self.assertRaisesRegex(self.mod.ToolchainError, "closed component set"):
+                    self.mod.installed_sha256(unknown)
+                with patch.object(self.mod, "run", return_value=Mock(stdout="not-a-hash\n")):
+                    with self.assertRaisesRegex(self.mod.ToolchainError, "hash is invalid"):
+                        self.mod.installed_sha256(installed)
+
     def test_checkout_must_equal_selected_clean_engine(self):
         commit = "a" * 40
         results = [
@@ -98,8 +126,9 @@ class ControllerToolchainReceiptTest(unittest.TestCase):
             with patch.object(self.mod, "load_plan_wrapper", return_value=Plan), patch.object(
                 self.mod, "verify_checkout"
             ), patch.object(self.mod, "COMPONENTS", [("changed", source, installed)]):
-                with self.assertRaisesRegex(self.mod.ToolchainError, "differs"):
-                    self.mod.build_receipt(root)
+                with patch.object(self.mod, "installed_sha256", return_value=hashlib.sha256(b"changed").hexdigest()):
+                    with self.assertRaisesRegex(self.mod.ToolchainError, "differs"):
+                        self.mod.build_receipt(root)
 
 
 if __name__ == "__main__":
