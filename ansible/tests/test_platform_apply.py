@@ -67,9 +67,25 @@ class PlatformApplyTest(unittest.TestCase):
             "schema_version": 2,
             "kind": self.mod.KIND_PLAN,
             "valid": True,
+            "compatible": True,
+            "substrate_healthy": True,
             "deployable": True,
             "authority_ready": True,
+            "legacy_removal_ready": False,
+            "health_scope": "standard_substrate_v1",
+            "engine": {},
+            "instance": {},
+            "instance_source": {},
+            "authority_state": {},
+            "controller_toolchain": {},
+            "inputs": [],
             "refusals": [],
+            "diagnostics": [],
+            "projection": {},
+            "projection_sha256": "1" * 64,
+            "observation": {},
+            "compatibility": {},
+            "authorities": [],
             "compatibility_inputs": [
                 {"name": "legacy_deployment", "sha256": legacy_digest},
             ],
@@ -180,11 +196,11 @@ class PlatformApplyTest(unittest.TestCase):
             directory.mkdir()
             digest = "b" * 64
             path = directory / f"{digest}.json"
-            path.write_text(json.dumps({
+            path.write_text(self.mod.canonical({
                 "schema_version": 1,
                 "kind": "klokast.plan.v1",
                 "plan_sha256": digest,
-            }), encoding="utf-8")
+            }) + "\n", encoding="utf-8")
             with patch.object(self.mod, "PLAN_ROOT", root):
                 with self.assertRaisesRegex(self.mod.ApplyError, "Plan v1"):
                     self.mod.verify_plan(path)
@@ -323,11 +339,43 @@ class PlatformApplyTest(unittest.TestCase):
     def test_ansible_requires_exact_apply_toolchain_bytes(self):
         self.assertIn("Require exact checked and installed Apply toolchain bytes", OPS_VERIFY)
         for name in (
-            "controller_guard", "ksa_apply", "ksa_instance",
+            "controller_guard", "ksa_apply", "platform_resources",
             "policy_mutation_helper", "policy_renderer", "policy_template",
         ):
             self.assertIn(f"name: {name}_source", OPS_VERIFY)
             self.assertIn(f"name: {name}_installed", OPS_VERIFY)
+
+    def test_root_apply_does_not_load_checkout_python(self):
+        source = KSA_APPLY.read_text(encoding="utf-8")
+        self.assertNotIn("SourceFileLoader", source)
+        self.assertNotIn("importlib", source)
+        self.assertNotIn("PLATFORM_PLAN", source)
+        self.assertNotIn("load_plan_module", source)
+        self.assertIn("def verify_build_directory", source)
+        self.assertIn("rerun = run_plan_as_controller(command)", source)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "executed"
+            malicious = Path(temporary) / "platform-plan"
+            malicious.write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('root code ran')\n",
+                encoding="utf-8",
+            )
+            load()
+            self.assertFalse(marker.exists())
+
+    def test_strict_json_rejects_duplicate_and_noncanonical_stored_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "evidence.json"
+            path.write_text('{"a":1,"a":2}\n', encoding="utf-8")
+            with self.assertRaisesRegex(self.mod.ApplyError, "duplicate"):
+                self.mod.load_json(path)
+            path.write_text('{ "a": 1 }\n', encoding="utf-8")
+            with self.assertRaisesRegex(self.mod.ApplyError, "not canonical"):
+                self.mod.load_json(path, canonical_stored=True)
+            path.write_text('{"a":1}\n{}\n', encoding="utf-8")
+            with self.assertRaisesRegex(self.mod.ApplyError, "not valid JSON"):
+                self.mod.load_json(path)
 
     def test_source_recovery_is_temporary_and_redacted(self):
         source = (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance").read_text(encoding="utf-8")

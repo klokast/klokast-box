@@ -87,7 +87,7 @@ class ControllerToolchainReceiptTest(unittest.TestCase):
         self.assertEqual(
             [name for name, _source, _installed in self.mod.COMPONENTS] + ["sealed_engine"],
             [
-                "controller_guard", "ksa_apply", "ksa_instance",
+                "controller_guard", "ksa_apply", "platform_resources",
                 "policy_mutation_helper", "policy_renderer", "policy_template",
                 "sealed_engine",
             ],

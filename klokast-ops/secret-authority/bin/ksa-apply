@@ -4,7 +4,6 @@
 import argparse
 import datetime as dt
 import hashlib
-import importlib.util
 import json
 import os
 import pwd
@@ -15,7 +14,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
@@ -23,7 +21,7 @@ KIND_PLAN = "klokast.plan.v2"
 KIND_INTENT = "klokast.apply-intent.v1"
 KIND_AUTHORITY = "klokast.authority-state.v1"
 KIND_RECOVERY = "klokast.private-source-recovery.v1"
-KIND_TOOLCHAIN = "klokast.controller-toolchain.v1"
+KIND_TOOLCHAIN = "klokast.controller-toolchain.v2"
 EXECUTOR = "tailnet_policy_inputs_v1"
 ROLLBACK_TYPE = "tailnet_policy_preimage_v1"
 SIGNER_ID = "human-platform-apply"
@@ -34,7 +32,7 @@ SCOPES = [
     "deployment.tailnet.magicdns_suffix",
 ]
 COMPONENTS = [
-    "controller_guard", "ksa_apply", "ksa_instance", "policy_mutation_helper",
+    "controller_guard", "ksa_apply", "platform_resources", "policy_mutation_helper",
     "policy_renderer", "policy_template", "sealed_engine",
 ]
 REPO_ROOT = Path("/home/smith/src/klokast/klokast-box")
@@ -43,7 +41,7 @@ INSTANCE = PRIVATE_ROOT / "instance"
 DEPLOYMENT = PRIVATE_ROOT / "deployment.yml"
 REGISTRY = PRIVATE_ROOT / "platform-resources.yml"
 CONTROLLER_HA = PRIVATE_ROOT / "controller-ha.yml"
-PLATFORM_PLAN = REPO_ROOT / "ansible/bin/platform-plan"
+BUILD_ROOT = Path("/var/lib/klokast/builds/klokast-cli")
 PLAN_ROOT = Path("/var/lib/klokast/plans")
 AUTHORITY_ROOT = Path("/var/lib/klokast/authority-states")
 AUTHORITY_POINTER = Path("/var/lib/klokast/active-authority-state")
@@ -61,12 +59,16 @@ MUTATION_HELPER = Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")
 RENDERER = Path("/usr/local/sbin/render-tailscale-policy")
 POLICY_TEMPLATE = Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")
 CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+PLATFORM_RESOURCES = Path("/usr/local/sbin/platform-resources")
 DOAS = Path("/usr/bin/doas")
 CONTROLLER_USER = "smith"
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
 MAX_JSON = 16 * 1024 * 1024
+MAX_BINARY = 64 * 1024 * 1024
+ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
+OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
 class ApplyError(Exception):
@@ -127,11 +129,19 @@ def read_regular(path, maximum=MAX_JSON):
     return path.read_bytes()
 
 
-def load_json(path, maximum=MAX_JSON):
+def load_json(path, maximum=MAX_JSON, *, expected_fields=None, canonical_stored=False):
+    content = read_regular(path, maximum)
     try:
-        return json.loads(read_regular(path, maximum), object_pairs_hook=unique_object)
+        value = json.loads(content, object_pairs_hook=unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ApplyError(f"required evidence is not valid JSON: {Path(path).name}") from error
+    if not isinstance(value, dict):
+        raise ApplyError(f"required evidence is not one JSON object: {Path(path).name}")
+    if expected_fields is not None and set(value) != set(expected_fields):
+        raise ApplyError(f"required evidence has unknown or missing fields: {Path(path).name}")
+    if canonical_stored and content != (canonical(value) + "\n").encode("utf-8"):
+        raise ApplyError(f"stored evidence is not canonical JSON: {Path(path).name}")
+    return value
 
 
 def run(argv, *, capture=False, check=True, input_text=None):
@@ -155,14 +165,6 @@ def run_plan_as_controller(command):
         capture=True,
         check=False,
     )
-
-
-def load_plan_module():
-    loader = SourceFileLoader("klokast_apply_platform_plan", str(PLATFORM_PLAN))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
 
 
 def require_root_active():
@@ -215,16 +217,101 @@ def resolve_hashed(path, root, hash_field, *, nested=False):
     digest = relative.parts[-1].removesuffix(".json")
     if relative.parts[-1] != f"{digest}.json" or not DIGEST_RE.fullmatch(digest):
         raise ApplyError("evidence path is not content-addressed")
-    document = load_json(resolved)
+    document = load_json(resolved, canonical_stored=True)
     if document.get(hash_field) != digest:
         raise ApplyError("evidence hash does not match its immutable path")
     return resolved, document
+
+
+def resolve_build_directory(value):
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise ApplyError("--build-dir must be an absolute path")
+    try:
+        build_root = BUILD_ROOT.resolve(strict=True)
+        resolved = supplied.resolve(strict=True)
+        relative = resolved.relative_to(build_root)
+    except (OSError, ValueError) as error:
+        raise ApplyError("--build-dir must be under the verified klokast-cli build root") from error
+    if supplied != resolved or len(relative.parts) != 2:
+        raise ApplyError("--build-dir must identify one canonical commit and operation")
+    commit, operation = relative.parts
+    if not COMMIT_RE.fullmatch(commit) or not OPERATION_RE.fullmatch(operation):
+        raise ApplyError("--build-dir has an invalid commit or operation identity")
+    current = build_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ApplyError("--build-dir must not contain symbolic links")
+    return resolved, commit
+
+
+def verify_build_directory(directory, expected_commit):
+    receipt_path = directory / "receipt.json"
+    binary_path = directory / "klokast"
+    receipt_fields = {
+        "schema_version", "operation_id", "source_repository", "source_ref",
+        "source_commit", "source_archive_sha256", "image_manifest_digest",
+        "image_archive_sha256", "toolchain", "toolchain_sha256", "test_result",
+        "build_result", "binary_sha256", "started_at", "finished_at",
+    }
+    receipt = load_json(
+        receipt_path, 64 * 1024, expected_fields=receipt_fields,
+        canonical_stored=True,
+    )
+    read_regular(binary_path, MAX_BINARY)
+    required = {
+        "schema_version": 1,
+        "source_repository": ENGINE_REPOSITORY,
+        "source_commit": expected_commit,
+        "test_result": "success",
+        "build_result": "success",
+    }
+    for field, wanted in required.items():
+        if receipt.get(field) != wanted:
+            raise ApplyError(f"builder receipt {field} does not match the required value")
+    if not isinstance(receipt.get("source_ref"), str) or not receipt["source_ref"]:
+        raise ApplyError("builder receipt source_ref is invalid")
+    binary_digest = receipt.get("binary_sha256")
+    if not isinstance(binary_digest, str) or not DIGEST_RE.fullmatch(binary_digest):
+        raise ApplyError("builder receipt binary_sha256 is invalid")
+    if sha256_file(binary_path) != binary_digest or not os.access(binary_path, os.X_OK):
+        raise ApplyError("builder-approved binary does not match its receipt")
+    return receipt, binary_path
+
+
+def verify_binary_version(binary_path, receipt):
+    completed = run([binary_path, "version", "--json"], capture=True)
+    try:
+        version = json.loads(completed.stdout, object_pairs_hook=unique_object)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ApplyError("builder-approved binary returned invalid version JSON") from error
+    expected_fields = {"name", "version", "engine_repository", "engine_ref", "engine_commit"}
+    if not isinstance(version, dict) or set(version) != expected_fields:
+        raise ApplyError("builder-approved binary returned an open version schema")
+    expected = {
+        "engine_repository": receipt["source_repository"],
+        "engine_ref": receipt["source_ref"],
+        "engine_commit": receipt["source_commit"],
+    }
+    if any(version.get(field) != wanted for field, wanted in expected.items()) or version.get("name") != "klokast" or not isinstance(version.get("version"), str) or not version["version"]:
+        raise ApplyError("builder-approved binary identity does not match its receipt")
 
 
 def verify_plan(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
     if plan.get("kind") != KIND_PLAN or plan.get("schema_version") != 2:
         raise ApplyError("Apply refuses Plan v1 and every unsupported Plan kind")
+    expected = {
+        "schema_version", "kind", "valid", "compatible", "substrate_healthy",
+        "deployable", "authority_ready", "legacy_removal_ready", "health_scope",
+        "engine", "instance", "instance_source", "authority_state",
+        "controller_toolchain", "inputs", "compatibility_inputs", "projection",
+        "projection_sha256", "observation", "compatibility", "authorities",
+        "actions", "atomic_action_group", "refusals", "diagnostics", "plan_sha256",
+    }
+    if set(plan) != expected:
+        raise ApplyError("Plan v2 contains unknown or missing fields")
     supplied = plan.pop("plan_sha256")
     actual = sha256_bytes(canonical(plan).encode("utf-8"))
     plan["plan_sha256"] = supplied
@@ -323,7 +410,7 @@ def component_paths(build_binary):
     return {
         "controller_guard": (REPO_ROOT / "ansible/roles/ops-controller/files/klokast-controller-guard", CONTROLLER_GUARD),
         "ksa_apply": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
-        "ksa_instance": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance", Path("/usr/local/sbin/ksa-instance")),
+        "platform_resources": (REPO_ROOT / "ansible/bin/platform-resources", PLATFORM_RESOURCES),
         "policy_mutation_helper": (REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", MUTATION_HELPER),
         "policy_renderer": (REPO_ROOT / "ansible/bin/render-tailscale-policy", RENDERER),
         "policy_template": (REPO_ROOT / "klokast-ops/tailscale/policy.hujson.j2", POLICY_TEMPLATE),
@@ -331,9 +418,25 @@ def component_paths(build_binary):
     }
 
 
+def verify_public_checkout(expected_commit):
+    checks = (
+        (["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], expected_commit),
+        (["git", "-C", REPO_ROOT, "branch", "--show-current"], "main"),
+        (["git", "-C", REPO_ROOT, "status", "--porcelain"], ""),
+    )
+    for command, wanted in checks:
+        result = run_plan_as_controller(command)
+        if result.returncode != 0 or result.stdout.strip() != wanted:
+            raise ApplyError("public controller checkout changed or is not clean main")
+
+
 def validate_toolchain(path, plan, build_binary):
     resolved, receipt = resolve_hashed(path, TOOLCHAIN_ROOT, "receipt_sha256", nested=True)
-    if receipt.get("kind") != KIND_TOOLCHAIN or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True:
+    expected = {
+        "schema_version", "kind", "engine_commit", "public_checkout_clean",
+        "public_checkout_commit", "components", "receipt_sha256",
+    }
+    if set(receipt) != expected or receipt.get("schema_version") != 2 or receipt.get("kind") != KIND_TOOLCHAIN or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
     entries = receipt.get("components")
     if not isinstance(entries, list) or [item.get("name") for item in entries] != COMPONENTS:
@@ -348,6 +451,7 @@ def validate_toolchain(path, plan, build_binary):
     supplied = candidate.pop("receipt_sha256")
     if sha256_bytes(canonical(candidate).encode("utf-8")) != supplied or plan.get("controller_toolchain", {}).get("receipt_sha256") != supplied:
         raise ApplyError("controller toolchain receipt hash or Plan binding changed")
+    verify_public_checkout(receipt["engine_commit"])
     return resolved, receipt
 
 
@@ -380,12 +484,11 @@ def validate_inputs(args):
     status = require_root_active()
     require_self_match()
     plan_path, plan = verify_plan(args.plan)
-    plan_module = load_plan_module()
     try:
-        build_dir, build_commit = plan_module.resolve_build_directory(args.build_dir)
-        build_receipt, binary = plan_module.verify_build_directory(build_dir, build_commit)
-        plan_module.verify_binary_version(binary, build_receipt)
-    except plan_module.PlanError as error:
+        build_dir, build_commit = resolve_build_directory(args.build_dir)
+        build_receipt, binary = verify_build_directory(build_dir, build_commit)
+        verify_binary_version(binary, build_receipt)
+    except ApplyError as error:
         raise ApplyError(f"sealed engine verification failed: {error}") from error
     if build_commit != plan.get("engine", {}).get("commit"):
         raise ApplyError("sealed engine commit differs from Plan v2")
@@ -393,9 +496,23 @@ def validate_inputs(args):
     toolchain_path, toolchain = validate_toolchain(args.controller_toolchain_receipt, plan, binary)
     recovery_path, recovery = validate_source_recovery(args.source_recovery_receipt, plan)
     source_path, source = resolve_hashed(args.instance_source_receipt, SOURCE_ROOT, "receipt_sha256", nested=True)
+    source_fields = {
+        "schema_version", "kind", "repository", "repository_sha256",
+        "repository_id", "remote_ref", "commit", "fetched_at",
+        "deploy_key_fingerprint", "anonymous_readable",
+        "authenticated_readable", "receipt_sha256",
+    }
+    if set(source) != source_fields:
+        raise ApplyError("instance source receipt has unknown or missing fields")
     if source.get("commit") != plan.get("instance", {}).get("commit") or source.get("receipt_sha256") != plan.get("instance_source", {}).get("receipt_sha256") or recovery.get("source_receipt_sha256") != source.get("receipt_sha256"):
         raise ApplyError("instance source evidence does not match Plan v2")
-    observation = load_json(args.observation)
+    observation = load_json(
+        args.observation,
+        expected_fields={
+            "schema_version", "observed_at", "source_controller",
+            "source_map_sha256", "tailnet_machines", "boxes", "generation_sha256",
+        },
+    )
     if observation.get("generation_sha256") != plan.get("observation", {}).get("generation_sha256") or observation.get("source_controller") != status.get("hostname"):
         raise ApplyError("Observation v1 changed or came from another controller")
     command = [
@@ -414,8 +531,8 @@ def validate_inputs(args):
     # planner so its Git ownership validation uses the canonical owner.
     rerun = run_plan_as_controller(command)
     try:
-        rerun_plan = json.loads(rerun.stdout)
-    except json.JSONDecodeError as error:
+        rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
+    except (TypeError, json.JSONDecodeError) as error:
         raise ApplyError("sealed engine returned invalid Plan v2 JSON") from error
     if rerun.returncode != 0 or rerun_plan != plan:
         raise ApplyError("Plan v2 inputs changed during exact revalidation")
@@ -641,14 +758,27 @@ def store_execution(intent, result, authority_state_sha256, recovery_result="not
 def execute(args):
     require_root_active()
     require_self_match()
-    intent = load_json(args.approval_intent, 64 * 1024)
+    intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     validate_intent(intent)
     verify_signature(args, intent)
     preflight_dir = PREFLIGHT_ROOT / intent["nonce"]
-    stored_intent = load_json(preflight_dir / "intent.json", 64 * 1024)
+    stored_intent = load_json(
+        preflight_dir / "intent.json", 64 * 1024, canonical_stored=True
+    )
     if stored_intent != intent:
         raise ApplyError("signed Apply intent does not match controller preflight evidence")
-    binding = load_json(preflight_dir / "binding.json", 64 * 1024)
+    binding = load_json(
+        preflight_dir / "binding.json", 64 * 1024, canonical_stored=True
+    )
+    binding_fields = {
+        "plan_path", "state", "authority_path", "toolchain_path", "source_path",
+        "recovery_path", "observation", "build_dir", "binary_sha256",
+        "builder_receipt_sha256",
+    }
+    if intent["action"] == "rollback_to_legacy":
+        binding_fields.add("rollback_execution_path")
+    if set(binding) != binding_fields:
+        raise ApplyError("stored Apply binding has unknown or missing fields")
     if intent["action"] == "rollback_to_legacy":
         execution_path, execution = resolve_hashed(
             binding.get("rollback_execution_path", ""), EXECUTION_ROOT,

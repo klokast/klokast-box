@@ -42,7 +42,12 @@ IFACE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,32}")
 TAG_RE = re.compile(r"tag:[A-Za-z0-9][A-Za-z0-9_-]*")
 LOGIN_RE = re.compile(r"[^@\s]+@[^@\s]+")
 MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
-REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_PATH = Path(__file__).resolve()
+REPO_ROOT = (
+    Path("/home/smith/src/klokast/klokast-box")
+    if SCRIPT_PATH == Path("/usr/local/sbin/platform-resources")
+    else SCRIPT_PATH.parents[2]
+)
 TOPOLOGY_PATH = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
 WORKLOAD_ROLES = ("backend", "dmz", "iot", "usr")
 DEBIAN_APP_VM_SECURITY_MIRROR = "http://security.debian.org/debian-security"

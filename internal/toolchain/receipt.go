@@ -9,12 +9,12 @@ import (
 	"os"
 )
 
-const Kind = "klokast.controller-toolchain.v1"
+const Kind = "klokast.controller-toolchain.v2"
 
 var Components = []string{
 	"controller_guard",
 	"ksa_apply",
-	"ksa_instance",
+	"platform_resources",
 	"policy_mutation_helper",
 	"policy_renderer",
 	"policy_template",
@@ -65,7 +65,7 @@ func Load(path string, engineCommit string) (Receipt, error) {
 }
 
 func Validate(receipt Receipt, engineCommit string) error {
-	if receipt.SchemaVersion != 1 || receipt.Kind != Kind || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
+	if receipt.SchemaVersion != 2 || receipt.Kind != Kind || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
 		return fmt.Errorf("controller toolchain receipt identity does not match the selected clean engine commit")
 	}
 	if len(receipt.Components) != len(Components) {

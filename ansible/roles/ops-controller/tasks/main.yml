@@ -481,6 +481,16 @@
   tags:
     - ops-controller-apply
 
+- name: Install the checked Platform resource compiler
+  ansible.builtin.copy:
+    src: "{{ ops_controller_apply_platform_resources_source }}"
+    dest: /usr/local/sbin/platform-resources
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - ops-controller-apply
+
 - name: Install the fixed Tailnet policy template
   ansible.builtin.copy:
     src: "{{ ops_controller_apply_policy_template_source }}"

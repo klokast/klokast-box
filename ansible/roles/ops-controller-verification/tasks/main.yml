@@ -218,8 +218,8 @@
     - {name: controller_guard_installed, path: /usr/local/sbin/klokast-controller-guard}
     - {name: ksa_apply_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/secret-authority/bin/ksa-apply"}
     - {name: ksa_apply_installed, path: /usr/local/sbin/ksa-apply}
-    - {name: ksa_instance_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/secret-authority/bin/ksa-instance"}
-    - {name: ksa_instance_installed, path: /usr/local/sbin/ksa-instance}
+    - {name: platform_resources_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-resources"}
+    - {name: platform_resources_installed, path: /usr/local/sbin/platform-resources}
     - {name: policy_mutation_helper_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/tailscale/bin/ts-policy-mutate-internal"}
     - {name: policy_mutation_helper_installed, path: /usr/local/libexec/klokast/ts-policy-mutate-internal}
     - {name: policy_renderer_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/render-tailscale-policy"}
