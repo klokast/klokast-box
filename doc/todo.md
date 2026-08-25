@@ -15,6 +15,19 @@ established a direct peer-to-peer path and passed all checks. If the relay-only
 condition becomes frequent, investigate the endpoint and NAT state. Do not
 weaken the direct-path requirement to complete the source migration.
 
+The condition occurred again during the unsigned adoption preflight. Both
+peers reported working UDP and stable NAT mappings. The checked live router
+verification also proved that the managed controller-side firewall allowed
+the fixed Tailscale source port, STUN, established return traffic, and WAN
+masquerade. Tailscale endpoint history then showed that the selected router
+still used an obsolete public UDP mapping for the controller. The unprivileged
+`tailscale debug restun` command failed closed because endpoint refresh needs
+root. The human ran the command on both peers, and the direct path recovered
+immediately. Add a narrow, checked, audited endpoint-refresh diagnostic that
+can operate on exactly the active controller and one selected router. It must
+not grant general root access, change Tailnet policy, or weaken the direct-path
+acceptance check.
+
 # 2026-08-25 - sealed builder cleanup depends on one Alpine mirror
 
 Sealed build operations `0fdb18748cee` and `447ed5802533` compiled and cleaned
