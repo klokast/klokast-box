@@ -678,14 +678,18 @@ complete.
 | Read-only acceptance alignment | `live-verified` | On 2026-08-24, the active controller verified source and activation custody, refreshed observations without repair, and stored an immutable deployable Plan with exact finding, action, and continuing-authority coverage. The human confirmed every compatibility-only continuing authority. Legacy removal stays blocked. |
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
-| Authorized apply | `implemented` | The byte-preserving three-scope Tailnet pilot, source-recovery rehearsal, dedicated signer, closed root executor, forward rollback, and deterministic refusal tests are implemented. Controller installation and live Touch ID acceptance are next. |
+| Authorized apply | `implemented` | The byte-preserving three-scope Tailnet pilot, source-recovery rehearsal, dedicated signer, closed root executor, forward rollback, and deterministic refusal tests are implemented. On 2026-08-25, live preflight passed exact Plan v2 revalidation and then refused because the equal instance and legacy renderings differed from the live policy bytes. No intent, signature, policy mutation, or authority transition occurred. Design review of the policy representation is the next gate. |
 | Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
 
 ### Current work queue
 
-1. Install and live-verify the pilot, including rollback, re-adoption,
-   idempotence, recovery rehearsal, and replay refusal.
-2. Use successful pilot evidence to design staged scope migration and the
+1. Review the refused live policy comparison. Determine whether the fixed
+   public template is stale or whether the Tailnet API changes HuJSON
+   representation. Keep the exact byte-equality gate until a new decision is
+   complete.
+2. Live-verify the pilot, including rollback, re-adoption, idempotence,
+   recovery rehearsal, and replay refusal.
+3. Use successful pilot evidence to design staged scope migration and the
    later legacy-removal gate.
 
 ### Completed read-only acceptance alignment design

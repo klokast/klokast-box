@@ -2,6 +2,34 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - Tailnet Apply pilot stopped at byte equality
+
+The live Apply preflight on `k002-ops` used engine commit
+`684aa291ef831e29c6e3ad64d1ab0765d70570ef`. Exact Plan v2 revalidation
+passed. The private-instance rendering and the dormant legacy rendering were
+identical: 22,338 bytes with SHA-256
+`7c59a385867874caef8893b7163caaa4d85b17ca77930a3a0bed94bb5ee87267`.
+The live API response was 22,309 bytes with SHA-256
+`f83add11a151ef8a9beb5d09d16bef1eed78f800ddfe67d03165cbc349e3854a`.
+It was also the exact content of the approved controller policy pull path.
+Line-ending, trailing-space, and collapsed-whitespace comparisons did not make
+the files equal.
+
+The preflight stopped before it created an Apply intent. It did not request a
+signature, post a policy, or change the authority state. This is the required
+result because the decided pilot permits only an exact byte-preserving
+transition.
+
+The Tailscale API contract defines HuJSON responses, ETags, `If-Match`, and
+HTTP 412 conflict handling. It does not state that a GET response must keep
+the exact bytes submitted by a prior POST. Before another live attempt,
+compare the live and rendered policy structures without exposing private
+identities. Decide whether the fixed public template is stale or whether API
+HuJSON serialization prevents exact round-trip verification. Update the
+architecture decision before changing the equality or post-write verification
+contract. Do not weaken the current gate or update the live policy as a
+workaround.
+
 # 2026-08-25 - root Apply revalidation used the wrong Git identity
 
 The first live MacBook Apply check stopped during exact Plan v2 revalidation.
