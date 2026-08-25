@@ -854,6 +854,21 @@ def instance_box_access(plan, box):
     }
 
 
+def plan_magicdns_suffix(plan):
+    projection = plan.get("projection")
+    tailnet = projection.get("tailnet") if isinstance(projection, dict) else None
+    value = tailnet.get("magicdns_suffix") if isinstance(tailnet, dict) else None
+    if (
+        not isinstance(value, str)
+        or len(value) > 253
+        or value.endswith(".")
+        or len(value.split(".")) < 2
+        or any(not BOX_RE.fullmatch(label) for label in value.split("."))
+    ):
+        raise ApplyError("Plan v3 has no valid closed MagicDNS suffix")
+    return value
+
+
 def run_platform_resources_as_controller(registry, arguments):
     return run_plan_as_controller([
         PLATFORM_RESOURCES, "--registry", registry, *arguments,
@@ -1217,8 +1232,10 @@ def box_binding_for_storage(binding, directory):
     return stored
 
 
-def run_box_resource(registry, box, command, engine_commit=None, *, check=False):
-    arguments = ["--box", box]
+def run_box_resource(
+    registry, box, command, magicdns_suffix, engine_commit=None, *, check=False
+):
+    arguments = ["--box", box, "--magicdns-suffix", magicdns_suffix]
     if engine_commit:
         arguments.extend(["--approved-commit", engine_commit])
     if check:
@@ -1226,7 +1243,22 @@ def run_box_resource(registry, box, command, engine_commit=None, *, check=False)
     arguments.append(command)
     result = run_platform_resources_as_controller(registry, arguments)
     if result.returncode != 0:
-        raise ApplyError(f"one-router {command} failed for {box}")
+        lines = [
+            line.strip()
+            for stream in (result.stderr, result.stdout)
+            for line in stream.splitlines()
+            if line.strip()
+        ]
+        diagnostic = next(
+            (
+                line for line in lines
+                if "[ERROR]" in line or "UNREACHABLE!" in line or "FAILED!" in line
+            ),
+            lines[-1] if lines else "no helper diagnostic",
+        )
+        raise ApplyError(
+            f"one-router {command} failed for {box}: {diagnostic[:512]}"
+        )
 
 
 def box_preflight(args):
@@ -1235,15 +1267,17 @@ def box_preflight(args):
     try:
         binding = validate_inputs_v3(args, work)
         operation = binding["group"]["operation"]
+        magicdns_suffix = plan_magicdns_suffix(binding["plan"])
         if operation == "adopt_instance_specification":
             run_box_resource(
                 binding["effective_registry_path"], binding["group"]["box"],
-                "apply-box-access", binding["plan"]["engine"]["commit"], check=True,
+                "apply-box-access", magicdns_suffix,
+                binding["plan"]["engine"]["commit"], check=True,
             )
         else:
             run_box_resource(
                 binding["effective_registry_path"], binding["group"]["box"],
-                "verify-box-access",
+                "verify-box-access", magicdns_suffix,
             )
         issued = now_utc()
         intent = box_intent_common(binding, operation, nonce, issued)
@@ -1654,9 +1688,13 @@ def box_execute(args, intent):
         consume_nonce(intent)
         box = intent["selected_box"]
         commit = intent["engine_commit"]
+        magicdns_suffix = plan_magicdns_suffix(current["plan"])
         if intent["action"] == "verify_instance_authority":
             verify_public_checkout(commit)
-            run_box_resource(binding["effective_registry_path"], box, "verify-box-access")
+            run_box_resource(
+                binding["effective_registry_path"], box, "verify-box-access",
+                magicdns_suffix,
+            )
             path, receipt = store_box_execution(
                 intent, "verified", current["state"]["authority_state_sha256"]
             )
@@ -1711,8 +1749,12 @@ def box_execute(args, intent):
         write_authority_v2(transitioned)
         try:
             verify_public_checkout(commit)
-            run_box_resource(target_registry, box, "apply-box-access", commit)
-            run_box_resource(target_registry, box, "verify-box-access")
+            run_box_resource(
+                target_registry, box, "apply-box-access", magicdns_suffix, commit
+            )
+            run_box_resource(
+                target_registry, box, "verify-box-access", magicdns_suffix
+            )
         except ApplyError as mutation_error:
             recovery_result = "recovery_required"
             active_digest = transitioned["authority_state_sha256"]
@@ -1724,8 +1766,12 @@ def box_execute(args, intent):
                 write_authority_v2(restored)
                 active_digest = restored["authority_state_sha256"]
                 verify_public_checkout(commit)
-                run_box_resource(restore_registry, box, "apply-box-access", commit)
-                run_box_resource(restore_registry, box, "verify-box-access")
+                run_box_resource(
+                    restore_registry, box, "apply-box-access", magicdns_suffix, commit
+                )
+                run_box_resource(
+                    restore_registry, box, "verify-box-access", magicdns_suffix
+                )
                 recovery_result = "restored"
             except ApplyError:
                 pass
@@ -1992,6 +2038,7 @@ def box_rollback_prepare(args):
             raise ApplyError("box rollback material is invalid or stale")
         run_box_resource(
             old_path, binding["group"]["box"], "apply-box-access",
+            plan_magicdns_suffix(binding["plan"]),
             binding["plan"]["engine"]["commit"], check=True,
         )
         issued = now_utc()

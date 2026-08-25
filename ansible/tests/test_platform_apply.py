@@ -593,6 +593,50 @@ class PlatformApplyTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.mod.ApplyError, "compiler output changed"):
                     self.mod.prepare_registry_comparison(work, plan, "boxb")
 
+    def test_one_router_helper_uses_the_plan_magicdns_suffix(self):
+        plan = {
+            "projection": {
+                "tailnet": {"magicdns_suffix": "tail1234.ts.net"},
+            },
+        }
+        result = Mock(returncode=0, stdout="", stderr="")
+        with patch.object(
+            self.mod, "run_platform_resources_as_controller", return_value=result
+        ) as helper:
+            self.mod.run_box_resource(
+                "/effective.yml", "boxa", "apply-box-access",
+                self.mod.plan_magicdns_suffix(plan), "a" * 40, check=True,
+            )
+        helper.assert_called_once_with(
+            "/effective.yml",
+            [
+                "--box", "boxa", "--magicdns-suffix", "tail1234.ts.net",
+                "--approved-commit", "a" * 40, "--check", "apply-box-access",
+            ],
+        )
+
+    def test_one_router_helper_rejects_bad_dns_and_reports_bounded_failure(self):
+        for suffix in (None, "example", ".ts.net", "bad_.ts.net", "a" * 64 + ".ts.net"):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(
+                self.mod.ApplyError, "valid closed MagicDNS suffix"
+            ):
+                self.mod.plan_magicdns_suffix({
+                    "projection": {"tailnet": {"magicdns_suffix": suffix}},
+                })
+        result = Mock(
+            returncode=4,
+            stdout="fatal: [boxa-router]: UNREACHABLE! => hidden\n",
+            stderr="[ERROR]: precise bounded failure\n",
+        )
+        with patch.object(
+            self.mod, "run_platform_resources_as_controller", return_value=result
+        ), self.assertRaisesRegex(
+            self.mod.ApplyError, "precise bounded failure"
+        ):
+            self.mod.run_box_resource(
+                "/effective.yml", "boxa", "verify-box-access", "tail1234.ts.net"
+            )
+
     def test_box_execute_rejects_stale_plan_and_compiler_hashes(self):
         intent = self.valid_box_intent()
         binding = {
@@ -628,7 +672,7 @@ class PlatformApplyTest(unittest.TestCase):
         source = KSA_APPLY.read_text(encoding="utf-8")
         function = source[source.index("def box_execute"):source.index("def execute_tailnet")]
         self.assertIn('source=restore_source', function)
-        self.assertIn('run_box_resource(restore_registry', function)
+        self.assertIn('restore_registry, box, "apply-box-access"', function)
         self.assertIn('recovery_result = "recovery_required"', function)
         self.assertIn('recovery_result = "restored"', function)
         self.assertIn('box restoration could not be verified; recovery_required', function)

@@ -2,6 +2,15 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - Platform map refresh is slow when one VM is unreachable
+
+The first box-connectivity observation refresh took several minutes because
+`k001-iot` did not answer Tailscale SSH. The refresh correctly recorded the
+VM as unreachable and completed, and Plan v3 kept the unrelated finding out
+of the one-router action. Add bounded per-host connection timeouts or reuse a
+fresh prior non-target VM observation so one offline VM cannot delay a narrow
+router source change.
+
 # 2026-08-25 - failed Apply preflights need a retention policy
 
 The first Authority State v1 conversion attempt stopped after signature
