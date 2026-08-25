@@ -301,6 +301,25 @@ class PlatformApplyTest(unittest.TestCase):
         source = KSA_APPLY.read_text(encoding="utf-8")
         self.assertIn("rerun = run_plan_as_controller(command)", source)
 
+    def test_policy_renderer_output_is_captured_from_apply_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+
+            def render(argv, **kwargs):
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_bytes(b"fixed policy bytes\n")
+                return Mock(returncode=0, stdout=f"{output}\n", stderr="")
+
+            with patch.object(self.mod, "run", side_effect=render) as runner:
+                self.assertEqual(
+                    self.mod.render_policies(work),
+                    b"fixed policy bytes\n",
+                )
+
+        self.assertEqual(runner.call_count, 2)
+        for call in runner.call_args_list:
+            self.assertTrue(call.kwargs.get("capture"))
+
     def test_ansible_requires_exact_apply_toolchain_bytes(self):
         self.assertIn("Require exact checked and installed Apply toolchain bytes", OPS_VERIFY)
         for name in (

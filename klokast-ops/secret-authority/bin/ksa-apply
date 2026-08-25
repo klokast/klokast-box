@@ -453,8 +453,16 @@ def new_work(nonce):
 
 
 def render_policies(work):
-    run([RENDERER, "--instance", INSTANCE / "klokast-instance.json", "--template", POLICY_TEMPLATE, "--output", work / "candidate.body"])
-    run([RENDERER, "--deployment-config", DEPLOYMENT, "--template", POLICY_TEMPLATE, "--output", work / "legacy.body"])
+    # The renderer reports its output path on stdout. Capture that diagnostic so
+    # the closed Apply operations return only their documented JSON result.
+    run(
+        [RENDERER, "--instance", INSTANCE / "klokast-instance.json", "--template", POLICY_TEMPLATE, "--output", work / "candidate.body"],
+        capture=True,
+    )
+    run(
+        [RENDERER, "--deployment-config", DEPLOYMENT, "--template", POLICY_TEMPLATE, "--output", work / "legacy.body"],
+        capture=True,
+    )
     candidate = read_regular(work / "candidate.body", 1024 * 1024)
     legacy = read_regular(work / "legacy.body", 1024 * 1024)
     if candidate != legacy:
