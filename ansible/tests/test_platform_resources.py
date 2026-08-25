@@ -2284,6 +2284,32 @@ all:
         self.assertNotIn("shared-guests", joined)
         self.assertNotIn("dom0", joined)
 
+    def test_box_access_check_mode_is_limited_to_the_same_router_playbook(self):
+        compiled = {
+            "compiler_version": self.mod.COMPILER_VERSION,
+            "registry_sha256": "a" * 64,
+            "managed_iot_devices": [],
+            "box_configs": {
+                "boxb": {
+                    "access": self.mod.default_box_access(),
+                    "dhcp_reservations": [],
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".run" / "platform-resources").mkdir(parents=True)
+            with patch.object(self.mod, "REPO_ROOT", root), patch.object(
+                self.mod, "render_inventory"
+            ), patch.object(self.mod.subprocess, "run") as runner:
+                self.mod.run_box_access(
+                    "apply", compiled, "boxb", "example.ts.net", "b" * 40,
+                    check_mode=True,
+                )
+        command = runner.call_args.args[0]
+        self.assertIn("--check", command)
+        self.assertEqual(command[command.index("--limit") + 1], "boxb-router")
+
 
 if __name__ == "__main__":
     unittest.main()

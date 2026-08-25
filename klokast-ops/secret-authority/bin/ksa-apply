@@ -16,12 +16,23 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 
 KIND_PLAN = "klokast.plan.v2"
 KIND_INTENT = "klokast.apply-intent.v1"
 KIND_AUTHORITY = "klokast.authority-state.v1"
 KIND_RECOVERY = "klokast.private-source-recovery.v1"
 KIND_TOOLCHAIN = "klokast.controller-toolchain.v2"
+KIND_PLAN_V3 = "klokast.plan.v3"
+KIND_AUTHORITY_V2 = "klokast.authority-state.v2"
+KIND_CONVERSION_INTENT = "klokast.authority-conversion-intent.v1"
+KIND_BOX_INTENT = "klokast.box-connectivity-intent.v1"
+BOX_EXECUTOR = "box_connectivity_v1"
+BOX_ROLLBACK_TYPE = "box_connectivity_registry_v1"
+BOX_GROUP_PREFIX = "box-connectivity-v1:"
+TAILNET_GROUP_ID = "tailnet-policy-inputs-v1"
+LEGACY_REGISTRY_SOURCE = "legacy_platform_resources"
 EXECUTOR = "tailnet_policy_inputs_v1"
 ROLLBACK_TYPE = "tailnet_policy_preimage_v1"
 SIGNER_ID = "human-platform-apply"
@@ -54,6 +65,7 @@ ROLLBACK_ROOT = Path("/var/lib/klokast/apply-rollback-material")
 NONCE_ROOT = Path("/var/lib/klokast/apply-used-nonces")
 AUDIT_LOG = Path("/var/log/klokast/platform-apply.jsonl")
 RUNTIME_ROOT = Path("/run/klokast/apply")
+BOX_RUNTIME_ROOT = Path("/run/klokast/apply-box")
 ALLOWED_SIGNERS = Path("/etc/klokast/secret-authority/allowed-signers-platform-apply")
 MUTATION_HELPER = Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")
 RENDERER = Path("/usr/local/sbin/render-tailscale-policy")
@@ -69,6 +81,7 @@ MAX_JSON = 16 * 1024 * 1024
 MAX_BINARY = 64 * 1024 * 1024
 ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
 OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
+BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class ApplyError(Exception):
@@ -358,10 +371,194 @@ def verify_plan(path):
     return resolved, plan
 
 
+def box_scopes(box):
+    base = f"boxes.{box}"
+    return [
+        base,
+        f"{base}.access.available_capabilities",
+        f"{base}.access.enabled_capabilities",
+        f"{base}.access.prohibited_capabilities",
+        f"{base}.connectivity",
+    ]
+
+
+def verify_plan_v3(path):
+    resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
+    if plan.get("kind") != KIND_PLAN_V3 or plan.get("schema_version") != 3:
+        raise ApplyError("box connectivity Apply requires Plan v3")
+    expected = {
+        "schema_version", "kind", "valid", "compatible", "substrate_healthy",
+        "deployable", "authority_ready", "legacy_removal_ready", "health_scope",
+        "engine", "instance", "instance_source", "authority_state",
+        "controller_toolchain", "inputs", "compatibility_inputs", "projection",
+        "projection_sha256", "observation", "compatibility", "authorities",
+        "actions", "action_groups", "selected_box", "refusals", "diagnostics",
+        "plan_sha256",
+    }
+    if set(plan) != expected:
+        raise ApplyError("Plan v3 contains unknown or missing fields")
+    supplied = plan.pop("plan_sha256")
+    actual = sha256_bytes(canonical(plan).encode("utf-8"))
+    plan["plan_sha256"] = supplied
+    if actual != supplied or plan.get("valid") is not True or plan.get("deployable") is not True or plan.get("authority_ready") is not True or plan.get("refusals") != []:
+        raise ApplyError("Plan v3 is not canonical, deployable, and authority-ready")
+    box = plan.get("selected_box")
+    if not isinstance(box, str) or not BOX_RE.fullmatch(box):
+        raise ApplyError("Plan v3 did not select one box")
+    projected_boxes = [
+        item.get("id") for item in plan.get("projection", {}).get("boxes", [])
+        if isinstance(item, dict)
+    ]
+    active_box = (
+        plan.get("projection", {}).get("control_plane", {})
+        .get("active_controller", {}).get("box_id")
+    )
+    non_active = [item for item in projected_boxes if item != active_box]
+    if (
+        len(projected_boxes) != len(plan.get("projection", {}).get("boxes", []))
+        or len(set(projected_boxes)) != len(projected_boxes)
+        or active_box not in projected_boxes
+        or non_active != [box]
+    ):
+        raise ApplyError("Plan v3 selected box is not the unique non-active-controller box")
+    expected_group_id = BOX_GROUP_PREFIX + box
+    groups = plan.get("action_groups")
+    if not isinstance(groups, list) or groups != sorted(groups, key=lambda item: item.get("id", "")):
+        raise ApplyError("Plan v3 action groups must be a sorted closed list")
+    expected_group_ids = {TAILNET_GROUP_ID} | {
+        BOX_GROUP_PREFIX + item for item in projected_boxes
+    }
+    group_ids = [
+        item.get("id") for item in groups if isinstance(item, dict)
+    ]
+    if (
+        len(group_ids) != len(groups)
+        or any(not isinstance(item, str) for item in group_ids)
+        or len(groups) != len(expected_group_ids)
+        or set(group_ids) != expected_group_ids
+    ):
+        raise ApplyError("Plan v3 action group set changed from the projected boxes")
+    for candidate in groups:
+        if not isinstance(candidate, dict):
+            raise ApplyError("Plan v3 action group is not an object")
+        if candidate.get("id") == TAILNET_GROUP_ID:
+            if set(candidate) != {"id", "operation", "scopes", "executor", "rollback_type"} or candidate != {
+                "id": TAILNET_GROUP_ID,
+                "operation": "verify_instance_authority",
+                "scopes": SCOPES,
+                "executor": EXECUTOR,
+                "rollback_type": ROLLBACK_TYPE,
+            }:
+                raise ApplyError("Plan v3 Tailnet verification group is not closed")
+            continue
+        candidate_box = candidate.get("id", "").removeprefix(BOX_GROUP_PREFIX)
+        selected = candidate_box == box
+        if set(candidate) != {"id", "operation", "scopes", "executor", "rollback_type", "box"} or candidate != {
+            "id": BOX_GROUP_PREFIX + candidate_box,
+            "operation": candidate.get("operation") if selected else "retain_legacy",
+            "scopes": box_scopes(candidate_box),
+            "executor": BOX_EXECUTOR if selected else "none",
+            "rollback_type": BOX_ROLLBACK_TYPE,
+            "box": candidate_box,
+        }:
+            raise ApplyError("Plan v3 box action group is not closed")
+    matching = [item for item in groups if isinstance(item, dict) and item.get("id") == expected_group_id]
+    if len(matching) != 1:
+        raise ApplyError("Plan v3 does not contain the selected box group")
+    group = matching[0]
+    if set(group) != {"id", "operation", "scopes", "executor", "rollback_type", "box"} or group != {
+        "id": expected_group_id,
+        "operation": group.get("operation"),
+        "scopes": box_scopes(box),
+        "executor": BOX_EXECUTOR,
+        "rollback_type": BOX_ROLLBACK_TYPE,
+        "box": box,
+    } or group["operation"] not in {"adopt_instance_specification", "verify_instance_authority"}:
+        raise ApplyError("Plan v3 selected box group is partial or unknown")
+    actions = [item for item in plan.get("actions", []) if isinstance(item, dict) and item.get("executor") == BOX_EXECUTOR]
+    state_groups = {
+        item.get("id"): item
+        for item in plan.get("authority_state", {}).get("setting_groups", [])
+        if isinstance(item, dict)
+    }
+    source = (state_groups.get(expected_group_id) or {}).get("source")
+    expected_before = (
+        LEGACY_REGISTRY_SOURCE
+        if group["operation"] == "adopt_instance_specification"
+        else "instance_specification_v1"
+    )
+    compatibility = {
+        item.get("name"): item.get("sha256")
+        for item in plan.get("compatibility_inputs", [])
+        if isinstance(item, dict)
+    }
+    registry_digest = compatibility.get(LEGACY_REGISTRY_SOURCE)
+    if (
+        source != expected_before
+        or len(actions) != 5
+        or sorted(item.get("scope") for item in actions) != box_scopes(box)
+        or any(item.get("operation") != group["operation"] for item in actions)
+        or any(item.get("authority_before") != expected_before for item in actions)
+        or any(item.get("authority_after") != "instance_specification_v1" for item in actions)
+        or any(item.get("preconditions") != [
+            "active_controller_fenced", "exact_plan_v3_revalidated",
+            "effective_registry_compiles_equal", "one_router_rollback_prepared",
+        ] for item in actions)
+        or any(item.get("rollback") != {
+            "strategy": BOX_ROLLBACK_TYPE,
+            "authority": LEGACY_REGISTRY_SOURCE,
+            "source_sha256": registry_digest,
+        } for item in actions)
+        or not DIGEST_RE.fullmatch(registry_digest or "")
+    ):
+        raise ApplyError("Plan v3 selected box action coverage is partial or unknown")
+    return resolved, plan, group
+
+
 def authority_hash(state):
     candidate = dict(state)
     candidate["authority_state_sha256"] = ""
     return sha256_bytes(canonical(candidate).encode("utf-8"))
+
+
+def validate_authority_v1_document(state):
+    expected = {
+        "schema_version", "kind", "prior_state_sha256", "transitioned_scopes",
+        "resulting_authorities", "signed_intent_sha256", "transition_id",
+        "authority_state_sha256",
+    }
+    if set(state) != expected or state.get("schema_version") != 1 or state.get("kind") != KIND_AUTHORITY or authority_hash(state) != state.get("authority_state_sha256"):
+        raise ApplyError("Authority State v1 is invalid")
+    authorities = state.get("resulting_authorities")
+    if not isinstance(authorities, list):
+        raise ApplyError("Authority State v1 authorities are invalid")
+    if not authorities:
+        if state.get("transition_id") != "initial" or state.get("prior_state_sha256") != "" or state.get("signed_intent_sha256") != "" or state.get("transitioned_scopes") != []:
+            raise ApplyError("initial Authority State v1 contains transition data")
+        return "legacy_deployment"
+    if (
+        state.get("transitioned_scopes") != SCOPES
+        or [item.get("scope") for item in authorities if isinstance(item, dict)] != SCOPES
+        or any(set(item) != {"scope", "authority"} for item in authorities if isinstance(item, dict))
+        or len(authorities) != len(SCOPES)
+        or len({item.get("authority") for item in authorities if isinstance(item, dict)}) != 1
+        or not DIGEST_RE.fullmatch(state.get("prior_state_sha256", ""))
+        or not DIGEST_RE.fullmatch(state.get("signed_intent_sha256", ""))
+        or not NONCE_RE.fullmatch(state.get("transition_id", ""))
+    ):
+        raise ApplyError("Authority State v1 transition binding is incomplete")
+    source = authorities[0].get("authority")
+    if source not in {"legacy_deployment", "instance_specification_v1"}:
+        raise ApplyError("Authority State v1 contains an unknown source")
+    return source
+
+
+def load_active_authority_v1(path):
+    resolved, state = resolve_hashed(path, AUTHORITY_ROOT, "authority_state_sha256")
+    source = validate_authority_v1_document(state)
+    if read_regular(AUTHORITY_POINTER, 66) != (state["authority_state_sha256"] + "\n").encode("ascii"):
+        raise ApplyError("authority state is not active")
+    return resolved, state, source
 
 
 def validate_authority(path, plan):
@@ -403,6 +600,87 @@ def validate_authority(path, plan):
     expected_operation = "adopt_instance_specification" if authority == "legacy_deployment" else "verify_instance_authority"
     if authority not in {"legacy_deployment", "instance_specification_v1"} or plan["atomic_action_group"]["operation"] != expected_operation:
         raise ApplyError("Plan v2 action does not match current Tailnet authority")
+    return resolved, state
+
+
+def instance_box_ids():
+    document = load_json(INSTANCE / "klokast-instance.json")
+    boxes = document.get("boxes")
+    if not isinstance(boxes, dict) or not boxes:
+        raise ApplyError("private instance must contain a non-empty box mapping")
+    result = sorted(boxes)
+    if any(not isinstance(box, str) or not BOX_RE.fullmatch(box) for box in result):
+        raise ApplyError("private instance contains an invalid box identity")
+    return result
+
+
+def authority_v2_hash(state):
+    candidate = dict(state)
+    candidate["authority_state_sha256"] = ""
+    return sha256_bytes(canonical(candidate).encode("utf-8"))
+
+
+def validate_authority_v2_document(state, expected_boxes=None):
+    expected = {
+        "schema_version", "kind", "prior_state_kind", "prior_state_sha256",
+        "setting_groups", "signed_intent_sha256", "transition_id",
+        "authority_state_sha256",
+    }
+    if set(state) != expected or state.get("schema_version") != 2 or state.get("kind") != KIND_AUTHORITY_V2 or authority_v2_hash(state) != state.get("authority_state_sha256"):
+        raise ApplyError("Authority State v2 is invalid")
+    if state.get("prior_state_kind") not in {KIND_AUTHORITY, KIND_AUTHORITY_V2} or not DIGEST_RE.fullmatch(state.get("prior_state_sha256", "")) or not DIGEST_RE.fullmatch(state.get("signed_intent_sha256", "")) or not NONCE_RE.fullmatch(state.get("transition_id", "")):
+        raise ApplyError("Authority State v2 transition binding is incomplete")
+    groups = state.get("setting_groups")
+    if not isinstance(groups, list) or len(groups) < 2 or groups != sorted(groups, key=lambda item: item.get("id", "")):
+        raise ApplyError("Authority State v2 groups are incomplete or unsorted")
+    seen = set()
+    boxes = []
+    for group in groups:
+        if not isinstance(group, dict) or set(group) != {"id", "scopes", "source"}:
+            raise ApplyError("Authority State v2 group fields are not closed")
+        group_id = group.get("id")
+        if group_id in seen:
+            raise ApplyError("Authority State v2 groups are mixed or duplicated")
+        seen.add(group_id)
+        if group_id == TAILNET_GROUP_ID:
+            if group.get("scopes") != SCOPES or group.get("source") not in {"legacy_deployment", "instance_specification_v1"}:
+                raise ApplyError("Authority State v2 Tailnet group is incomplete or mixed")
+            continue
+        if not isinstance(group_id, str) or not group_id.startswith(BOX_GROUP_PREFIX):
+            raise ApplyError("Authority State v2 contains an unknown group")
+        box = group_id.removeprefix(BOX_GROUP_PREFIX)
+        if not BOX_RE.fullmatch(box) or group.get("scopes") != box_scopes(box) or group.get("source") not in {LEGACY_REGISTRY_SOURCE, "instance_specification_v1"}:
+            raise ApplyError("Authority State v2 box group is incomplete or mixed")
+        boxes.append(box)
+    if TAILNET_GROUP_ID not in seen or not boxes:
+        raise ApplyError("Authority State v2 group set is incomplete")
+    if expected_boxes is not None and sorted(boxes) != sorted(expected_boxes):
+        raise ApplyError("Authority State v2 box groups changed from the instance scope")
+
+
+def validate_authority_v2(path, plan, group):
+    resolved, state = resolve_hashed(path, AUTHORITY_ROOT, "authority_state_sha256")
+    boxes = [item.get("id") for item in plan.get("projection", {}).get("boxes", [])]
+    if any(not isinstance(item, str) for item in boxes):
+        raise ApplyError("Plan v3 box projection is invalid")
+    validate_authority_v2_document(state, boxes)
+    pointer = read_regular(AUTHORITY_POINTER, 66)
+    if pointer != (state["authority_state_sha256"] + "\n").encode("ascii"):
+        raise ApplyError("authority state is not active")
+    reference = plan.get("authority_state") or {}
+    if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != KIND_AUTHORITY_V2 or reference.get("setting_groups") != state["setting_groups"]:
+        raise ApplyError("Plan v3 binds another Authority State v2")
+    current = next(
+        (item for item in state["setting_groups"] if item["id"] == group["id"]),
+        None,
+    )
+    expected_source = (
+        LEGACY_REGISTRY_SOURCE
+        if group["operation"] == "adopt_instance_specification"
+        else "instance_specification_v1"
+    )
+    if current is None or current["source"] != expected_source:
+        raise ApplyError("Plan v3 action does not match current box authority")
     return resolved, state
 
 
@@ -473,7 +751,7 @@ def validate_source_recovery(path, plan):
         or receipt.get("private_commit") != plan.get("instance", {}).get("commit")
         or receipt.get("engine_commit") != plan.get("engine", {}).get("commit")
     ):
-        raise ApplyError("private source recovery receipt does not match Plan v2")
+        raise ApplyError("private source recovery receipt does not match the selected Plan")
     checked = parse_utc(receipt.get("checked_at"), "source recovery checked_at")
     if checked > now_utc() + dt.timedelta(minutes=1) or now_utc() - checked > dt.timedelta(hours=24):
         raise ApplyError("private source recovery receipt is stale")
@@ -546,6 +824,204 @@ def validate_inputs(args):
     }
 
 
+def new_box_work(nonce):
+    BOX_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    if BOX_RUNTIME_ROOT.is_symlink() or not BOX_RUNTIME_ROOT.is_dir():
+        raise ApplyError("box Apply runtime root is unsafe")
+    os.chown(BOX_RUNTIME_ROOT, 0, smith_gid())
+    os.chmod(BOX_RUNTIME_ROOT, 0o750)
+    work = BOX_RUNTIME_ROOT / nonce
+    work.mkdir(mode=0o750)
+    os.chown(work, 0, smith_gid())
+    return work
+
+
+def instance_box_access(plan, box):
+    projection_boxes = plan.get("projection", {}).get("boxes", [])
+    matches = [item for item in projection_boxes if item.get("id") == box]
+    if len(matches) != 1:
+        raise ApplyError("selected box is absent from the Plan v3 projection")
+    access = matches[0].get("access")
+    if not isinstance(access, dict) or set(access) != {
+        "declared_capabilities", "legacy_available_capabilities",
+        "enabled_capabilities", "prohibited_capabilities",
+    }:
+        raise ApplyError("Plan v3 selected box access projection is not closed")
+    return {
+        "available_capabilities": access["legacy_available_capabilities"],
+        "enabled_capabilities": access["enabled_capabilities"],
+        "prohibited_capabilities": access["prohibited_capabilities"],
+    }
+
+
+def run_platform_resources_as_controller(registry, arguments):
+    return run_plan_as_controller([
+        PLATFORM_RESOURCES, "--registry", registry, *arguments,
+    ])
+
+
+def decode_helper_json(result, label):
+    if result.returncode != 0:
+        raise ApplyError(f"installed platform-resources failed to {label}")
+    try:
+        value = json.loads(result.stdout, object_pairs_hook=unique_object)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ApplyError(f"installed platform-resources returned invalid {label} JSON") from error
+    if not isinstance(value, dict):
+        raise ApplyError(f"installed platform-resources returned non-object {label} JSON")
+    return value
+
+
+def prepare_registry_comparison(work, plan, box):
+    expected_registry_hash = {
+        item.get("name"): item.get("sha256")
+        for item in plan.get("compatibility_inputs", [])
+        if isinstance(item, dict)
+    }.get(LEGACY_REGISTRY_SOURCE)
+    old_content = read_regular(REGISTRY)
+    old_hash = sha256_bytes(old_content)
+    if old_hash != expected_registry_hash:
+        raise ApplyError("old Platform resource registry changed from Plan v3")
+    old_path = work / "old-registry.yml"
+    old_path.write_bytes(old_content)
+    os.chown(old_path, 0, smith_gid())
+    os.chmod(old_path, 0o440)
+    try:
+        registry = yaml.safe_load(old_content)
+    except yaml.YAMLError as error:
+        raise ApplyError("old Platform resource registry is invalid YAML") from error
+    if not isinstance(registry, dict) or not isinstance(registry.get("boxes"), dict):
+        raise ApplyError("old Platform resource registry has no box mapping")
+    selected = registry["boxes"].get(box)
+    if not isinstance(selected, dict) or not isinstance(selected.get("access"), dict):
+        raise ApplyError("old Platform resource registry has no selected box access")
+    derived_access = instance_box_access(plan, box)
+    if selected["access"] != derived_access:
+        raise ApplyError("instance connectivity differs from the dormant old registry copy")
+    selected["access"] = {
+        field: list(derived_access[field])
+        for field in (
+            "available_capabilities", "enabled_capabilities",
+            "prohibited_capabilities",
+        )
+    }
+    effective_path = work / "effective-registry.yml"
+    effective_path.write_text(
+        yaml.safe_dump(registry, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    os.chown(effective_path, 0, smith_gid())
+    os.chmod(effective_path, 0o440)
+    effective_hash = sha256_file(effective_path)
+    old_compiled = decode_helper_json(
+        run_platform_resources_as_controller(old_path, ["show-box-configs"]),
+        "compile the old registry",
+    )
+    effective_compiled = decode_helper_json(
+        run_platform_resources_as_controller(effective_path, ["show-box-configs"]),
+        "compile the effective registry",
+    )
+    old_comparison = dict(old_compiled)
+    effective_comparison = dict(effective_compiled)
+    for value in (old_comparison, effective_comparison):
+        if "registry_path" not in value or "registry_sha256" not in value:
+            raise ApplyError("compiled registry output lacks exact input provenance")
+        value.pop("registry_path")
+        value.pop("registry_sha256")
+    if old_comparison != effective_comparison:
+        raise ApplyError("effective registry compiler output changed outside input provenance")
+    old_router_vars = decode_helper_json(
+        run_platform_resources_as_controller(
+            old_path, ["--box", box, "show-box-access-vars"]
+        ),
+        "render old selected router variables",
+    )
+    effective_router_vars = decode_helper_json(
+        run_platform_resources_as_controller(
+            effective_path, ["--box", box, "show-box-access-vars"]
+        ),
+        "render effective selected router variables",
+    )
+    if old_router_vars != effective_router_vars:
+        raise ApplyError("selected router variables changed between old and effective inputs")
+    return {
+        "old_registry_path": str(old_path),
+        "effective_registry_path": str(effective_path),
+        "old_registry_sha256": old_hash,
+        "effective_registry_sha256": effective_hash,
+        "compiled_sha256": sha256_bytes(canonical(old_comparison).encode("utf-8")),
+        "router_vars_sha256": sha256_bytes(canonical(old_router_vars).encode("utf-8")),
+    }
+
+
+def validate_inputs_v3(args, work=None):
+    status = require_root_active()
+    require_self_match()
+    plan_path, plan, group = verify_plan_v3(args.plan)
+    try:
+        build_dir, build_commit = resolve_build_directory(args.build_dir)
+        build_receipt, binary = verify_build_directory(build_dir, build_commit)
+        verify_binary_version(binary, build_receipt)
+    except ApplyError as error:
+        raise ApplyError(f"sealed engine verification failed: {error}") from error
+    if build_commit != plan.get("engine", {}).get("commit"):
+        raise ApplyError("sealed engine commit differs from Plan v3")
+    authority_path, state = validate_authority_v2(args.authority_state, plan, group)
+    toolchain_path, _toolchain = validate_toolchain(
+        args.controller_toolchain_receipt, plan, binary
+    )
+    recovery_path, recovery = validate_source_recovery(args.source_recovery_receipt, plan)
+    source_path, source = resolve_hashed(
+        args.instance_source_receipt, SOURCE_ROOT, "receipt_sha256", nested=True
+    )
+    source_fields = {
+        "schema_version", "kind", "repository", "repository_sha256",
+        "repository_id", "remote_ref", "commit", "fetched_at",
+        "deploy_key_fingerprint", "anonymous_readable",
+        "authenticated_readable", "receipt_sha256",
+    }
+    if set(source) != source_fields or source.get("commit") != plan.get("instance", {}).get("commit") or source.get("receipt_sha256") != plan.get("instance_source", {}).get("receipt_sha256") or recovery.get("source_receipt_sha256") != source.get("receipt_sha256"):
+        raise ApplyError("instance source evidence does not match Plan v3")
+    observation = load_json(
+        args.observation,
+        expected_fields={
+            "schema_version", "observed_at", "source_controller",
+            "source_map_sha256", "tailnet_machines", "boxes", "generation_sha256",
+        },
+    )
+    if observation.get("generation_sha256") != plan.get("observation", {}).get("generation_sha256") or observation.get("source_controller") != status.get("hostname"):
+        raise ApplyError("Observation v1 changed or came from another controller")
+    command = [
+        binary, "plan", "--instance", INSTANCE,
+        "--compatibility-deployment", DEPLOYMENT,
+        "--compatibility-registry", REGISTRY,
+        "--compatibility-controller-ha", CONTROLLER_HA,
+        "--observation", args.observation,
+        "--instance-source-receipt", source_path,
+        "--authority-state", authority_path,
+        "--controller-toolchain-receipt", toolchain_path,
+        "--json",
+    ]
+    rerun = run_plan_as_controller(command)
+    try:
+        rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ApplyError("sealed engine returned invalid Plan v3 JSON") from error
+    if rerun.returncode != 0 or rerun_plan != plan:
+        raise ApplyError("Plan v3 inputs changed during exact revalidation")
+    comparison = prepare_registry_comparison(work, plan, group["box"]) if work else {}
+    return {
+        "plan_path": str(plan_path), "plan": plan, "group": group,
+        "state": state, "authority_path": str(authority_path),
+        "toolchain_path": str(toolchain_path), "source_path": str(source_path),
+        "recovery_path": str(recovery_path),
+        "observation": str(Path(args.observation).resolve()),
+        "build_dir": str(build_dir), "binary_sha256": build_receipt["binary_sha256"],
+        "builder_receipt_sha256": sha256_file(build_dir / "receipt.json"),
+        **comparison,
+    }
+
+
 def ensure_dir(path, mode=0o700):
     path.mkdir(parents=True, exist_ok=True)
     if path.is_symlink() or not path.is_dir():
@@ -598,7 +1074,7 @@ def append_audit(event, **fields):
         os.close(descriptor)
 
 
-def preflight(args):
+def preflight_tailnet(args):
     binding = validate_inputs(args)
     nonce = secrets.token_urlsafe(18)
     work = new_work(nonce)
@@ -647,6 +1123,150 @@ def preflight(args):
         for item in directory.iterdir():
             item.chmod(0o600)
         append_audit("apply.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], action=intent["action"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def box_intent_common(binding, action, nonce, issued):
+    plan = binding["plan"]
+    compatibility = {
+        item["name"]: item["sha256"] for item in plan["compatibility_inputs"]
+    }
+    return {
+        "schema_version": 1,
+        "kind": KIND_BOX_INTENT,
+        "action": action,
+        "plan_sha256": plan["plan_sha256"],
+        "authority_state_sha256": binding["state"]["authority_state_sha256"],
+        "source_recovery_receipt_sha256": Path(binding["recovery_path"]).stem,
+        "source_receipt_sha256": plan["instance_source"]["receipt_sha256"],
+        "observation_sha256": plan["observation"]["generation_sha256"],
+        "private_commit": plan["instance"]["commit"],
+        "private_instance_sha256": next(
+            item["sha256"] for item in plan["inputs"]
+            if item["path"] == "klokast-instance.json"
+        ),
+        "legacy_deployment_sha256": compatibility["legacy_deployment"],
+        "legacy_registry_sha256": compatibility[LEGACY_REGISTRY_SOURCE],
+        "legacy_controller_ha_sha256": compatibility["legacy_controller_ha"],
+        "engine_commit": plan["engine"]["commit"],
+        "binary_sha256": binding["binary_sha256"],
+        "builder_receipt_sha256": binding["builder_receipt_sha256"],
+        "toolchain_receipt_sha256": plan["controller_toolchain"]["receipt_sha256"],
+        "selected_box": binding["group"]["box"],
+        "action_group_id": binding["group"]["id"],
+        "action_set": binding["group"]["scopes"],
+        "executor": BOX_EXECUTOR,
+        "rollback_type": BOX_ROLLBACK_TYPE,
+        "old_registry_sha256": binding["old_registry_sha256"],
+        "effective_registry_sha256": binding["effective_registry_sha256"],
+        "compiled_sha256": binding["compiled_sha256"],
+        "router_vars_sha256": binding["router_vars_sha256"],
+        "nonce": nonce,
+        "issued_at": format_utc(issued),
+        "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+    }
+
+
+def validate_box_intent(intent):
+    expected = {
+        "schema_version", "kind", "action", "plan_sha256",
+        "authority_state_sha256", "source_recovery_receipt_sha256",
+        "source_receipt_sha256", "observation_sha256", "private_commit",
+        "private_instance_sha256", "legacy_deployment_sha256",
+        "legacy_registry_sha256", "legacy_controller_ha_sha256",
+        "engine_commit", "binary_sha256", "builder_receipt_sha256",
+        "toolchain_receipt_sha256", "selected_box", "action_group_id",
+        "action_set", "executor", "rollback_type", "old_registry_sha256",
+        "effective_registry_sha256", "compiled_sha256", "router_vars_sha256",
+        "nonce", "issued_at", "expires_at",
+    }
+    if intent.get("action") == "rollback_to_legacy":
+        expected.add("rollback_execution_receipt_sha256")
+    if set(intent) != expected or intent.get("schema_version") != 1 or intent.get("kind") != KIND_BOX_INTENT:
+        raise ApplyError("box connectivity intent fields do not match the closed schema")
+    if intent.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"} or intent.get("executor") != BOX_EXECUTOR or intent.get("rollback_type") != BOX_ROLLBACK_TYPE:
+        raise ApplyError("box connectivity intent contains an unknown action")
+    box = intent.get("selected_box")
+    if not isinstance(box, str) or not BOX_RE.fullmatch(box) or intent.get("action_group_id") != BOX_GROUP_PREFIX + box or intent.get("action_set") != box_scopes(box):
+        raise ApplyError("box connectivity intent contains a partial or wrong box group")
+    non_digests = {
+        "schema_version", "kind", "action", "private_commit", "engine_commit",
+        "selected_box", "action_group_id", "action_set", "executor",
+        "rollback_type", "nonce", "issued_at", "expires_at",
+    }
+    for field in expected - non_digests:
+        if not DIGEST_RE.fullmatch(intent.get(field, "")):
+            raise ApplyError(f"box connectivity intent digest is invalid: {field}")
+    if not COMMIT_RE.fullmatch(intent.get("private_commit", "")) or not COMMIT_RE.fullmatch(intent.get("engine_commit", "")) or not NONCE_RE.fullmatch(intent.get("nonce", "")):
+        raise ApplyError("box connectivity intent identity is invalid")
+    issued = parse_utc(intent.get("issued_at"), "issued_at")
+    expires = parse_utc(intent.get("expires_at"), "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+        raise ApplyError("box connectivity intent is expired or has an invalid lifetime")
+
+
+def box_binding_for_storage(binding, directory):
+    stored = {
+        key: value for key, value in binding.items()
+        if key not in {"plan", "group", "state"}
+    }
+    stored["old_registry_path"] = str(directory / "old-registry.yml")
+    stored["effective_registry_path"] = str(directory / "effective-registry.yml")
+    return stored
+
+
+def run_box_resource(registry, box, command, engine_commit=None, *, check=False):
+    arguments = ["--box", box]
+    if engine_commit:
+        arguments.extend(["--approved-commit", engine_commit])
+    if check:
+        arguments.append("--check")
+    arguments.append(command)
+    result = run_platform_resources_as_controller(registry, arguments)
+    if result.returncode != 0:
+        raise ApplyError(f"one-router {command} failed for {box}")
+
+
+def box_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    work = new_box_work(nonce)
+    try:
+        binding = validate_inputs_v3(args, work)
+        operation = binding["group"]["operation"]
+        if operation == "adopt_instance_specification":
+            run_box_resource(
+                binding["effective_registry_path"], binding["group"]["box"],
+                "apply-box-access", binding["plan"]["engine"]["commit"], check=True,
+            )
+        else:
+            run_box_resource(
+                binding["effective_registry_path"], binding["group"]["box"],
+                "verify-box-access",
+            )
+        issued = now_utc()
+        intent = box_intent_common(binding, operation, nonce, issued)
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        shutil.copyfile(binding["old_registry_path"], directory / "old-registry.yml")
+        shutil.copyfile(
+            binding["effective_registry_path"], directory / "effective-registry.yml"
+        )
+        (directory / "intent.json").write_text(
+            canonical(intent) + "\n", encoding="utf-8"
+        )
+        stored = box_binding_for_storage(binding, directory)
+        (directory / "binding.json").write_text(
+            canonical(stored) + "\n", encoding="utf-8"
+        )
+        for item in directory.iterdir():
+            item.chmod(0o600)
+        append_audit(
+            "box-apply.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"],
+            selected_box=intent["selected_box"], action=intent["action"],
+        )
         print(canonical(intent))
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -732,6 +1352,149 @@ def store_authority_transition(prior, intent, authority):
     return state
 
 
+def write_authority_v2(state):
+    validate_authority_v2_document(state)
+    ensure_dir(AUTHORITY_ROOT, 0o750)
+    path = AUTHORITY_ROOT / f"{state['authority_state_sha256']}.json"
+    content = (canonical(state) + "\n").encode("utf-8")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
+    try:
+        os.write(descriptor, content)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chown(path, 0, smith_gid())
+    temporary = AUTHORITY_POINTER.with_name(
+        f".{AUTHORITY_POINTER.name}.{os.getpid()}.tmp"
+    )
+    temporary.write_text(state["authority_state_sha256"] + "\n", encoding="ascii")
+    temporary.chmod(0o444)
+    os.replace(temporary, AUTHORITY_POINTER)
+    return path
+
+
+def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
+    intent_digest = sha256_bytes((canonical(intent) + "\n").encode("utf-8"))
+    if prior.get("kind") == KIND_AUTHORITY:
+        if group_id is not None or source is not None or not boxes:
+            raise ApplyError("Authority State v1 conversion request is incomplete")
+        tailnet_source = validate_authority_v1_document(prior)
+        groups = [{"id": TAILNET_GROUP_ID, "scopes": SCOPES, "source": tailnet_source}]
+        groups.extend({
+            "id": BOX_GROUP_PREFIX + box,
+            "scopes": box_scopes(box),
+            "source": LEGACY_REGISTRY_SOURCE,
+        } for box in sorted(boxes))
+        prior_kind = KIND_AUTHORITY
+    else:
+        validate_authority_v2_document(prior)
+        if group_id is None or source not in {LEGACY_REGISTRY_SOURCE, "instance_specification_v1"}:
+            raise ApplyError("Authority State v2 transition request is incomplete")
+        if not any(item["id"] == group_id for item in prior["setting_groups"]):
+            raise ApplyError("Authority State v2 transition group is not approved")
+        groups = [
+            {
+                "id": item["id"],
+                "scopes": list(item["scopes"]),
+                "source": source if item["id"] == group_id else item["source"],
+            }
+            for item in prior["setting_groups"]
+        ]
+        prior_kind = KIND_AUTHORITY_V2
+    state = {
+        "schema_version": 2,
+        "kind": KIND_AUTHORITY_V2,
+        "prior_state_kind": prior_kind,
+        "prior_state_sha256": prior["authority_state_sha256"],
+        "setting_groups": sorted(groups, key=lambda item: item["id"]),
+        "signed_intent_sha256": intent_digest,
+        "transition_id": intent["nonce"],
+        "authority_state_sha256": "",
+    }
+    state["authority_state_sha256"] = authority_v2_hash(state)
+    validate_authority_v2_document(state, boxes if boxes else None)
+    return state
+
+
+def validate_conversion_intent(intent):
+    expected = {
+        "schema_version", "kind", "action", "authority_state_sha256",
+        "private_instance_sha256", "boxes", "nonce", "issued_at", "expires_at",
+    }
+    if set(intent) != expected or intent.get("schema_version") != 1 or intent.get("kind") != KIND_CONVERSION_INTENT or intent.get("action") != "convert_authority_state_v1_to_v2":
+        raise ApplyError("Authority conversion intent fields do not match the closed schema")
+    if not DIGEST_RE.fullmatch(intent.get("authority_state_sha256", "")) or not DIGEST_RE.fullmatch(intent.get("private_instance_sha256", "")) or not NONCE_RE.fullmatch(intent.get("nonce", "")):
+        raise ApplyError("Authority conversion intent identity is invalid")
+    boxes = intent.get("boxes")
+    if not isinstance(boxes, list) or not boxes or boxes != sorted(set(boxes)) or any(not isinstance(box, str) or not BOX_RE.fullmatch(box) for box in boxes):
+        raise ApplyError("Authority conversion intent box list is invalid")
+    issued = parse_utc(intent.get("issued_at"), "issued_at")
+    expires = parse_utc(intent.get("expires_at"), "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+        raise ApplyError("Authority conversion intent is expired or has an invalid lifetime")
+
+
+def authority_conversion_prepare(args):
+    require_root_active()
+    require_self_match()
+    authority_path, state, _source = load_active_authority_v1(args.authority_state)
+    boxes = instance_box_ids()
+    issued = now_utc()
+    intent = {
+        "schema_version": 1,
+        "kind": KIND_CONVERSION_INTENT,
+        "action": "convert_authority_state_v1_to_v2",
+        "authority_state_sha256": state["authority_state_sha256"],
+        "private_instance_sha256": sha256_file(INSTANCE / "klokast-instance.json"),
+        "boxes": boxes,
+        "nonce": secrets.token_urlsafe(18),
+        "issued_at": format_utc(issued),
+        "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+    }
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    ensure_dir(PREFLIGHT_ROOT)
+    directory.mkdir(mode=0o700)
+    (directory / "intent.json").write_text(canonical(intent) + "\n", encoding="utf-8")
+    (directory / "binding.json").write_text(
+        canonical({"authority_path": str(authority_path)}) + "\n", encoding="utf-8"
+    )
+    for item in directory.iterdir():
+        item.chmod(0o600)
+    append_audit(
+        "authority-v2.preflight", nonce=intent["nonce"],
+        authority_state_sha256=state["authority_state_sha256"],
+    )
+    print(canonical(intent))
+
+
+def authority_conversion_execute(args, intent):
+    validate_conversion_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed conversion intent does not match controller preflight evidence")
+    binding = load_json(
+        directory / "binding.json", expected_fields={"authority_path"},
+        canonical_stored=True,
+    )
+    _path, state, _source = load_active_authority_v1(binding["authority_path"])
+    if state["authority_state_sha256"] != intent["authority_state_sha256"] or sha256_file(INSTANCE / "klokast-instance.json") != intent["private_instance_sha256"] or instance_box_ids() != intent["boxes"]:
+        raise ApplyError("Authority conversion inputs changed after authorization")
+    consume_nonce(intent)
+    converted = make_authority_v2(state, intent, boxes=intent["boxes"])
+    path = write_authority_v2(converted)
+    append_audit(
+        "authority-v2.converted", nonce=intent["nonce"],
+        authority_state_sha256=converted["authority_state_sha256"],
+    )
+    print(canonical({
+        "schema_version": 1,
+        "result": "success",
+        "authority_state_path": str(path),
+        "authority_state_sha256": converted["authority_state_sha256"],
+    }))
+
+
 def store_execution(intent, result, authority_state_sha256, recovery_result="not_needed"):
     receipt = {
         "schema_version": 1, "kind": "klokast.apply-execution.v1",
@@ -755,7 +1518,242 @@ def store_execution(intent, result, authority_state_sha256, recovery_result="not
     return path, receipt
 
 
-def execute(args):
+def store_box_execution(intent, result, authority_state_sha256, recovery_result="not_needed"):
+    receipt = {
+        "schema_version": 2,
+        "kind": "klokast.apply-execution.v2",
+        "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode("utf-8")),
+        "plan_sha256": intent["plan_sha256"],
+        "nonce": intent["nonce"],
+        "action": intent["action"],
+        "executor": BOX_EXECUTOR,
+        "rollback_type": BOX_ROLLBACK_TYPE,
+        "selected_box": intent["selected_box"],
+        "action_group_id": intent["action_group_id"],
+        "old_registry_sha256": intent["old_registry_sha256"],
+        "effective_registry_sha256": intent["effective_registry_sha256"],
+        "result": result,
+        "recovery_result": recovery_result,
+        "authority_state_sha256": authority_state_sha256,
+        "finished_at": format_utc(now_utc()),
+    }
+    receipt["receipt_sha256"] = sha256_bytes(canonical(receipt).encode("utf-8"))
+    directory = EXECUTION_ROOT / intent["nonce"]
+    ensure_dir(EXECUTION_ROOT, 0o750)
+    directory.mkdir(mode=0o750)
+    os.chown(directory, 0, smith_gid())
+    path = directory / f"{receipt['receipt_sha256']}.json"
+    path.write_text(canonical(receipt) + "\n", encoding="utf-8")
+    path.chmod(0o440)
+    os.chown(path, 0, smith_gid())
+    return path, receipt
+
+
+def box_revalidate(binding, intent):
+    namespace = argparse.Namespace(
+        plan=binding["plan_path"], authority_state=binding["authority_path"],
+        controller_toolchain_receipt=binding["toolchain_path"],
+        source_recovery_receipt=binding["recovery_path"],
+        instance_source_receipt=binding["source_path"],
+        observation=binding["observation"], build_dir=binding["build_dir"],
+    )
+    work = new_box_work(intent["nonce"] + "-execute")
+    try:
+        current = validate_inputs_v3(namespace, work)
+        checks = {
+            "plan_sha256": current["plan"]["plan_sha256"],
+            "authority_state_sha256": current["state"]["authority_state_sha256"],
+            "selected_box": current["group"]["box"],
+            "action_group_id": current["group"]["id"],
+            "action_set": current["group"]["scopes"],
+            "old_registry_sha256": current["old_registry_sha256"],
+            "effective_registry_sha256": current["effective_registry_sha256"],
+            "compiled_sha256": current["compiled_sha256"],
+            "router_vars_sha256": current["router_vars_sha256"],
+            "binary_sha256": current["binary_sha256"],
+            "builder_receipt_sha256": current["builder_receipt_sha256"],
+        }
+        if any(intent.get(field) != value for field, value in checks.items()):
+            raise ApplyError("box connectivity inputs changed after authorization")
+        if read_regular(binding["old_registry_path"]) != read_regular(current["old_registry_path"]) or read_regular(binding["effective_registry_path"]) != read_regular(current["effective_registry_path"]):
+            raise ApplyError("stored box connectivity input differs from exact revalidation")
+        return current, work
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+
+
+def store_box_rollback_material(intent, binding):
+    ensure_dir(ROLLBACK_ROOT, 0o700)
+    directory = ROLLBACK_ROOT / intent["nonce"]
+    directory.mkdir(mode=0o700)
+    for name, source in (
+        ("old-registry.yml", binding["old_registry_path"]),
+        ("effective-registry.yml", binding["effective_registry_path"]),
+    ):
+        shutil.copyfile(source, directory / name)
+        (directory / name).chmod(0o600)
+    manifest = {
+        "schema_version": 1,
+        "kind": "klokast.box-connectivity-rollback.v1",
+        "selected_box": intent["selected_box"],
+        "action_group_id": intent["action_group_id"],
+        "old_registry_sha256": intent["old_registry_sha256"],
+        "effective_registry_sha256": intent["effective_registry_sha256"],
+        "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode("utf-8")),
+    }
+    (directory / "manifest.json").write_text(
+        canonical(manifest) + "\n", encoding="utf-8"
+    )
+    (directory / "manifest.json").chmod(0o600)
+    return directory
+
+
+def box_execute(args, intent):
+    validate_box_intent(intent)
+    verify_signature(args, intent)
+    preflight_dir = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(preflight_dir / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed box intent does not match controller preflight evidence")
+    binding = load_json(preflight_dir / "binding.json", canonical_stored=True)
+    required_binding = {
+        "plan_path", "authority_path", "toolchain_path", "source_path",
+        "recovery_path", "observation", "build_dir", "binary_sha256",
+        "builder_receipt_sha256", "old_registry_path", "effective_registry_path",
+        "old_registry_sha256", "effective_registry_sha256", "compiled_sha256",
+        "router_vars_sha256",
+    }
+    if intent["action"] == "rollback_to_legacy":
+        required_binding.add("rollback_execution_path")
+    if set(binding) != required_binding:
+        raise ApplyError("stored box Apply binding has unknown or missing fields")
+    current, work = box_revalidate(binding, intent)
+    try:
+        if intent["action"] != "rollback_to_legacy" and current["group"]["operation"] != intent["action"]:
+            raise ApplyError("Plan v3 action changed after authorization")
+        if intent["action"] == "rollback_to_legacy":
+            execution_path, execution = resolve_hashed(
+                binding["rollback_execution_path"], EXECUTION_ROOT,
+                "receipt_sha256", nested=True,
+            )
+            if (
+                execution.get("kind") != "klokast.apply-execution.v2"
+                or execution.get("result") != "success"
+                or execution.get("action") != "adopt_instance_specification"
+                or execution.get("selected_box") != intent["selected_box"]
+                or execution.get("receipt_sha256") != intent.get("rollback_execution_receipt_sha256")
+                or str(execution_path) != binding["rollback_execution_path"]
+            ):
+                raise ApplyError("box rollback execution evidence is invalid")
+        consume_nonce(intent)
+        box = intent["selected_box"]
+        commit = intent["engine_commit"]
+        if intent["action"] == "verify_instance_authority":
+            verify_public_checkout(commit)
+            run_box_resource(binding["effective_registry_path"], box, "verify-box-access")
+            path, receipt = store_box_execution(
+                intent, "verified", current["state"]["authority_state_sha256"]
+            )
+            append_audit(
+                "box-apply.executed", nonce=intent["nonce"], result="verified",
+                selected_box=box, receipt_sha256=receipt["receipt_sha256"],
+            )
+            print(canonical({
+                "schema_version": 1, "result": "verified",
+                "receipt_path": str(path),
+            }))
+            return
+        rollback_material = (
+            ROLLBACK_ROOT / execution["nonce"]
+            if intent["action"] == "rollback_to_legacy"
+            else store_box_rollback_material(intent, binding)
+        )
+        target_source = (
+            LEGACY_REGISTRY_SOURCE
+            if intent["action"] == "rollback_to_legacy"
+            else "instance_specification_v1"
+        )
+        target_registry = (
+            rollback_material / "old-registry.yml"
+            if target_source == LEGACY_REGISTRY_SOURCE
+            else rollback_material / "effective-registry.yml"
+        )
+        restore_source = (
+            "instance_specification_v1"
+            if target_source == LEGACY_REGISTRY_SOURCE
+            else LEGACY_REGISTRY_SOURCE
+        )
+        restore_registry = (
+            rollback_material / "effective-registry.yml"
+            if restore_source == "instance_specification_v1"
+            else rollback_material / "old-registry.yml"
+        )
+        if sha256_file(target_registry) != (
+            intent["old_registry_sha256"]
+            if target_source == LEGACY_REGISTRY_SOURCE
+            else intent["effective_registry_sha256"]
+        ) or sha256_file(restore_registry) != (
+            intent["effective_registry_sha256"]
+            if restore_source == "instance_specification_v1"
+            else intent["old_registry_sha256"]
+        ):
+            raise ApplyError("box rollback material changed")
+        transitioned = make_authority_v2(
+            current["state"], intent, group_id=intent["action_group_id"],
+            source=target_source,
+        )
+        write_authority_v2(transitioned)
+        try:
+            verify_public_checkout(commit)
+            run_box_resource(target_registry, box, "apply-box-access", commit)
+            run_box_resource(target_registry, box, "verify-box-access")
+        except ApplyError as mutation_error:
+            recovery_result = "recovery_required"
+            active_digest = transitioned["authority_state_sha256"]
+            try:
+                restored = make_authority_v2(
+                    transitioned, intent, group_id=intent["action_group_id"],
+                    source=restore_source,
+                )
+                write_authority_v2(restored)
+                active_digest = restored["authority_state_sha256"]
+                verify_public_checkout(commit)
+                run_box_resource(restore_registry, box, "apply-box-access", commit)
+                run_box_resource(restore_registry, box, "verify-box-access")
+                recovery_result = "restored"
+            except ApplyError:
+                pass
+            path, receipt = store_box_execution(
+                intent, "failed", active_digest, recovery_result,
+            )
+            append_audit(
+                "box-apply.executed", nonce=intent["nonce"], result="failed",
+                recovery_result=recovery_result, selected_box=box,
+                receipt_sha256=receipt["receipt_sha256"],
+            )
+            if recovery_result == "recovery_required":
+                raise ApplyError(
+                    f"box restoration could not be verified; recovery_required; evidence: {path}"
+                ) from mutation_error
+            raise mutation_error
+        path, receipt = store_box_execution(
+            intent, "success", transitioned["authority_state_sha256"]
+        )
+        append_audit(
+            "box-apply.executed", nonce=intent["nonce"], result="success",
+            selected_box=box, receipt_sha256=receipt["receipt_sha256"],
+            authority_state_sha256=transitioned["authority_state_sha256"],
+        )
+        print(canonical({
+            "schema_version": 1, "result": "success",
+            "receipt_path": str(path),
+            "authority_state_sha256": transitioned["authority_state_sha256"],
+        }))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def execute_tailnet(args):
     require_root_active()
     require_self_match()
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
@@ -862,7 +1860,7 @@ def execute(args):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def rollback_prepare(args):
+def rollback_prepare_tailnet(args):
     binding = validate_inputs(args)
     plan = binding["plan"]
     if plan["atomic_action_group"]["operation"] != "verify_instance_authority":
@@ -939,6 +1937,119 @@ def rollback_prepare(args):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def box_rollback_prepare(args):
+    nonce = secrets.token_urlsafe(18)
+    work = new_box_work(nonce)
+    try:
+        binding = validate_inputs_v3(args, work)
+        if binding["group"]["operation"] != "verify_instance_authority":
+            raise ApplyError("box rollback requires a fresh verification-only Plan v3")
+        execution_path, execution = resolve_hashed(
+            args.execution_receipt, EXECUTION_ROOT, "receipt_sha256", nested=True
+        )
+        candidate = dict(execution)
+        supplied = candidate.pop("receipt_sha256", None)
+        if (
+            supplied != sha256_bytes(canonical(candidate).encode("utf-8"))
+            or execution.get("kind") != "klokast.apply-execution.v2"
+            or execution.get("result") != "success"
+            or execution.get("action") != "adopt_instance_specification"
+            or execution.get("selected_box") != binding["group"]["box"]
+            or execution.get("action_group_id") != binding["group"]["id"]
+            or execution.get("authority_state_sha256") != binding["state"]["authority_state_sha256"]
+            or execution.get("old_registry_sha256") != binding["old_registry_sha256"]
+            or execution.get("effective_registry_sha256") != binding["effective_registry_sha256"]
+        ):
+            raise ApplyError("box rollback requires the successful active adoption execution")
+        original_nonce = execution.get("nonce", "")
+        if not NONCE_RE.fullmatch(original_nonce):
+            raise ApplyError("box adoption execution has an invalid nonce")
+        material = ROLLBACK_ROOT / original_nonce
+        old_path = material / "old-registry.yml"
+        effective_path = material / "effective-registry.yml"
+        manifest = load_json(
+            material / "manifest.json",
+            expected_fields={
+                "schema_version", "kind", "selected_box", "action_group_id",
+                "old_registry_sha256", "effective_registry_sha256", "intent_sha256",
+            },
+            canonical_stored=True,
+        )
+        if (
+            manifest.get("schema_version") != 1
+            or manifest.get("kind") != "klokast.box-connectivity-rollback.v1"
+            or manifest.get("selected_box") != binding["group"]["box"]
+            or manifest.get("action_group_id") != binding["group"]["id"]
+            or sha256_file(old_path) != binding["old_registry_sha256"]
+            or sha256_file(effective_path) != binding["effective_registry_sha256"]
+        ):
+            raise ApplyError("box rollback material is invalid or stale")
+        run_box_resource(
+            old_path, binding["group"]["box"], "apply-box-access",
+            binding["plan"]["engine"]["commit"], check=True,
+        )
+        issued = now_utc()
+        intent = box_intent_common(
+            binding, "rollback_to_legacy", nonce, issued
+        )
+        intent["rollback_execution_receipt_sha256"] = execution["receipt_sha256"]
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        shutil.copyfile(old_path, directory / "old-registry.yml")
+        shutil.copyfile(effective_path, directory / "effective-registry.yml")
+        stored = box_binding_for_storage(binding, directory)
+        stored["rollback_execution_path"] = str(execution_path)
+        (directory / "intent.json").write_text(
+            canonical(intent) + "\n", encoding="utf-8"
+        )
+        (directory / "binding.json").write_text(
+            canonical(stored) + "\n", encoding="utf-8"
+        )
+        for item in directory.iterdir():
+            item.chmod(0o600)
+        append_audit(
+            "box-apply.rollback-preflight", nonce=nonce,
+            plan_sha256=intent["plan_sha256"], selected_box=intent["selected_box"],
+            execution_receipt_sha256=execution["receipt_sha256"],
+        )
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def evidence_kind(path):
+    return load_json(path).get("kind")
+
+
+def preflight(args):
+    if evidence_kind(args.plan) == KIND_PLAN_V3:
+        box_preflight(args)
+    else:
+        preflight_tailnet(args)
+
+
+def rollback_prepare(args):
+    if evidence_kind(args.plan) == KIND_PLAN_V3:
+        box_rollback_prepare(args)
+    else:
+        rollback_prepare_tailnet(args)
+
+
+def execute(args):
+    require_root_active()
+    require_self_match()
+    intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
+    if intent.get("kind") == KIND_CONVERSION_INTENT:
+        authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_BOX_INTENT:
+        box_execute(args, intent)
+    elif intent.get("kind") == KIND_INTENT:
+        execute_tailnet(args)
+    else:
+        raise ApplyError("signed intent kind is not supported")
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
@@ -952,6 +2063,12 @@ def parse_args(argv):
     execute_parser.add_argument("--approval-intent", required=True)
     execute_parser.add_argument("--approval-signature", required=True)
     execute_parser.add_argument("--signer-id", required=True)
+    conversion_parser = commands.add_parser("authority-convert")
+    conversion_parser.add_argument("--prepare", action="store_true")
+    conversion_parser.add_argument("--authority-state")
+    conversion_parser.add_argument("--approval-intent")
+    conversion_parser.add_argument("--approval-signature")
+    conversion_parser.add_argument("--signer-id")
     rollback_parser = commands.add_parser("rollback")
     rollback_parser.add_argument("--prepare", action="store_true")
     rollback_parser.add_argument("--execution-receipt")
@@ -972,6 +2089,22 @@ def main(argv=None):
         if args.operation == "preflight":
             preflight(args)
         elif args.operation == "execute":
+            execute(args)
+        elif args.operation == "authority-convert" and args.prepare:
+            if not args.authority_state or any(
+                item for item in (
+                    args.approval_intent, args.approval_signature, args.signer_id,
+                )
+            ):
+                raise ApplyError(
+                    "authority conversion preparation requires only --authority-state"
+                )
+            authority_conversion_prepare(args)
+        elif args.operation == "authority-convert" and not args.prepare:
+            if not args.approval_intent or not args.approval_signature or not args.signer_id or args.authority_state:
+                raise ApplyError(
+                    "authority conversion execution requires one signed prepared intent"
+                )
             execute(args)
         elif args.operation == "rollback" and args.prepare:
             required = [

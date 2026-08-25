@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 controller="${KLOKAST_OPS_CONTROLLER:-}"
 check_only=false
 prove_replay_refusal=false
+convert_authority=false
 rollback_execution=""
 plan=""
 authority_state=""
@@ -23,6 +24,9 @@ Usage: $0 --controller HOST --plan FILE --authority-state FILE \
   --controller-toolchain-receipt FILE --source-recovery-receipt FILE \
   --instance-source-receipt FILE --observation FILE --build-dir DIR \
   [--check | --prove-replay-refusal]
+
+Use --convert-authority-state with only --controller and --authority-state to
+approve the one-time Authority State v1 to v2 conversion.
 
 Add --rollback-execution-receipt FILE to prepare and approve the closed
 forward rollback instead of adoption or verification.
@@ -43,6 +47,7 @@ while [ "$#" -gt 0 ]; do
     --observation) observation=$2; shift 2 ;;
     --build-dir) build_dir=$2; shift 2 ;;
     --rollback-execution-receipt) rollback_execution=$2; shift 2 ;;
+    --convert-authority-state) convert_authority=true; shift ;;
     --check) check_only=true; shift ;;
     --prove-replay-refusal) prove_replay_refusal=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -56,12 +61,22 @@ fi
 if [ -n "$rollback_execution" ] && [ "$prove_replay_refusal" = true ]; then
   ksa_die "--prove-replay-refusal accepts only adoption or verification"
 fi
+if [ "$convert_authority" = true ] && { [ -n "$rollback_execution" ] || [ "$prove_replay_refusal" = true ]; }; then
+  ksa_die "--convert-authority-state does not accept rollback or replay options"
+fi
 
 ksa_valid_controller "$controller" || ksa_die "--controller is required and must be safe"
 controller="$(ksa_resolve_controller "$controller")"
-for required in "$plan" "$authority_state" "$toolchain" "$source_recovery" "$source_receipt" "$observation" "$build_dir"; do
-  [ -n "$required" ] || ksa_die "all controller evidence paths are required"
-done
+if [ "$convert_authority" = true ]; then
+  [ -n "$authority_state" ] || ksa_die "--authority-state is required for conversion"
+  for absent in "$plan" "$toolchain" "$source_recovery" "$source_receipt" "$observation" "$build_dir"; do
+    [ -z "$absent" ] || ksa_die "authority conversion accepts only controller and authority-state evidence"
+  done
+else
+  for required in "$plan" "$authority_state" "$toolchain" "$source_recovery" "$source_receipt" "$observation" "$build_dir"; do
+    [ -n "$required" ] || ksa_die "all controller evidence paths are required"
+  done
+fi
 if [ ! -t 0 ] || [ ! -t 1 ]; then
   ksa_die "run this command in an interactive terminal on the trusted MacBook"
 fi
@@ -85,7 +100,13 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if [ -n "$rollback_execution" ]; then
+if [ "$convert_authority" = true ]; then
+  tailscale ssh "smith@$controller" sh -s -- "$authority_state" >"$intent" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply authority-convert --prepare --authority-state "$1"
+SH
+elif [ -n "$rollback_execution" ]; then
   tailscale ssh "smith@$controller" sh -s -- \
     "$rollback_execution" "$plan" "$authority_state" "$toolchain" \
     "$source_recovery" "$source_receipt" "$observation" "$build_dir" >"$intent" <<'SH'
@@ -114,12 +135,22 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
-if value.get("kind") != "klokast.apply-intent.v1" or value.get("schema_version") != 1:
-    raise SystemExit("controller did not return an Apply intent v1")
-if value.get("executor") != "tailnet_policy_inputs_v1":
-    raise SystemExit("controller returned an unknown Apply executor")
-if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"}:
-    raise SystemExit("controller returned an unknown Apply action")
+if value.get("schema_version") != 1:
+    raise SystemExit("controller did not return a version 1 approval intent")
+kind = value.get("kind")
+if kind == "klokast.authority-conversion-intent.v1":
+    if value.get("action") != "convert_authority_state_v1_to_v2":
+        raise SystemExit("controller returned an unknown authority conversion")
+elif kind == "klokast.box-connectivity-intent.v1":
+    if value.get("executor") != "box_connectivity_v1":
+        raise SystemExit("controller returned an unknown box Apply executor")
+    if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"}:
+        raise SystemExit("controller returned an unknown box Apply action")
+elif kind == "klokast.apply-intent.v1":
+    if value.get("executor") != "tailnet_policy_inputs_v1":
+        raise SystemExit("controller returned an unknown Tailnet Apply executor")
+else:
+    raise SystemExit("controller returned an unknown Apply intent kind")
 print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
 PY
 
@@ -148,9 +179,14 @@ tailscale ssh "smith@$controller" "cat > '$remote_dir/intent.json'" <"$intent"
 tailscale ssh "smith@$controller" "cat > '$remote_dir/intent.json.sig'" <"$intent.sig"
 
 run_remote_execute() {
-  tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
+  tailscale ssh "smith@$controller" sh -s -- "$remote_dir" "$convert_authority" <<'SH'
 set -eu
 cd "$HOME/src/klokast/klokast-box"
+if [ "$2" = true ]; then
+  exec ansible/bin/platform-apply authority-convert \
+    --approval-intent "$1/intent.json" --approval-signature "$1/intent.json.sig" \
+    --signer-id human-platform-apply
+fi
 exec ansible/bin/platform-apply execute \
   --approval-intent "$1/intent.json" --approval-signature "$1/intent.json.sig" \
   --signer-id human-platform-apply
@@ -179,7 +215,12 @@ expected = "verified" if intent["action"] == "verify_instance_authority" else "s
 if (
     result.get("schema_version") != 1
     or result.get("result") != expected
-    or not isinstance(result.get("receipt_path"), str)
+    or not isinstance(
+        result.get("authority_state_path")
+        if intent["kind"] == "klokast.authority-conversion-intent.v1"
+        else result.get("receipt_path"),
+        str,
+    )
 ):
     raise SystemExit("controller returned an invalid Apply execution result")
 print(json.dumps(result, ensure_ascii=False, sort_keys=True))

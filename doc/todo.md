@@ -2,6 +2,13 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - infra-agent has no Ansible executable
+
+The infra-agent can run the Python and shell checks, but it cannot run
+`ansible-playbook --syntax-check` because Ansible is not installed. Run the
+syntax check on the active controller as the runbook specifies. Do not install
+Ansible on the infra-agent only to duplicate the controller check.
+
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 
 GitHub rejects removal when a repository is the last selected repository of

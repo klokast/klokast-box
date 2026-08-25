@@ -650,7 +650,7 @@ operation.
 
 ## 11.1 First box connectivity source migration
 
-Status: `decided`. This change moves one box connectivity group from the old
+Status: `implemented`; live acceptance is pending. This change moves one box connectivity group from the old
 private Platform resource registry to `klokast-instance.json`. It does not
 change the declared values. It does not move the box that hosts the active
 controller. The human must make a later explicit decision before the second
@@ -761,12 +761,13 @@ complete.
 | Private source custody | `implemented` | Private repository bootstrap, read-only deployment checkout, and source receipts are implemented. Live instance state is not recorded in the public repository. |
 | MacBook bootstrap, publication, and updates | `implemented` | Helpers and deterministic tests are implemented. The real MacBook publication and Touch ID engine-promotion paths are verified. Initial-bootstrap recovery remains an external verification item. |
 | Plan v1 | `implemented` | The hashed artifact is read-only evidence with exact finding, action, and continuing-authority coverage. |
-| Plan v2 | `implemented` | Plan v2 binds the active authority state, exact controller toolchain, and atomic Tailnet action group. Apply refuses Plan v1. |
+| Plan v2 | `historical` | Plan v2 binds the completed atomic Tailnet action group. Its artifacts stay immutable. It cannot authorize box connectivity. |
+| Authority State v2 and Plan v3 | `implemented` | Authority State v2 closes source ownership by setting group. Plan v3 selects only the unique box that does not host the active controller and authorizes its exact five-scope connectivity group. |
 | Read-only acceptance alignment | `live-verified` | On 2026-08-24, the active controller verified source and activation custody, refreshed observations without repair, and stored an immutable deployable Plan with exact finding, action, and continuing-authority coverage. The human confirmed every compatibility-only continuing authority. Legacy removal stays blocked. |
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
-| First box connectivity migration | `decided` | The exact one-router source transition, authority, authorization, comparison, rollback, recovery, and acceptance contracts are closed in section 11.1. Implementation is the next gate. |
+| First box connectivity migration | `implemented` | The exact one-router source transition, authority, authorization, comparison, rollback, and recovery contracts are implemented. Controller acceptance is the remaining gate. |
 | Migration and legacy removal | `proposed` | The Tailnet pilot is complete. Only the first non-controller box migration is decided. The second box and legacy removal still require separate explicit decisions. |
 
 ### Current work queue

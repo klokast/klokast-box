@@ -30,6 +30,12 @@ def parse_args(argv):
     execute.add_argument("--approval-intent", required=True)
     execute.add_argument("--approval-signature", required=True)
     execute.add_argument("--signer-id", default="human-platform-apply")
+    conversion = commands.add_parser("authority-convert")
+    conversion.add_argument("--prepare", action="store_true")
+    conversion.add_argument("--authority-state")
+    conversion.add_argument("--approval-intent")
+    conversion.add_argument("--approval-signature")
+    conversion.add_argument("--signer-id", default="human-platform-apply")
     rollback = commands.add_parser("rollback")
     rollback.add_argument("--prepare", action="store_true")
     rollback.add_argument("--execution-receipt")
@@ -59,6 +65,26 @@ def main(argv=None):
             "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
         ):
             command.extend(["--" + name.replace("_", "-"), getattr(args, name)])
+    elif args.operation == "authority-convert" and args.prepare:
+        if not args.authority_state or args.approval_intent or args.approval_signature:
+            print(
+                "platform-apply: authority-convert --prepare requires only --authority-state",
+                file=sys.stderr,
+            )
+            return 2
+        command.extend(["--prepare", "--authority-state", args.authority_state])
+    elif args.operation == "authority-convert":
+        if not args.approval_intent or not args.approval_signature or args.authority_state:
+            print(
+                "platform-apply: authority-convert requires one signed prepared intent",
+                file=sys.stderr,
+            )
+            return 2
+        command.extend([
+            "--approval-intent", args.approval_intent,
+            "--approval-signature", args.approval_signature,
+            "--signer-id", args.signer_id,
+        ])
     elif args.operation == "execute":
         command.extend([
             "--approval-intent", args.approval_intent,

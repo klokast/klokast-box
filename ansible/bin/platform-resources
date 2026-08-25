@@ -319,6 +319,11 @@ def parse_args():
         help="Required for apply; must equal the checked-out HEAD commit.",
     )
     parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Run the closed one-box apply action in Ansible check mode.",
+    )
+    parser.add_argument(
         "--inventory-output",
         default="",
         help="Write the compiled app-VM Ansible inventory to this path.",
@@ -3353,7 +3358,9 @@ def box_access_router_vars(compiled, box):
     }
 
 
-def run_box_access(command, compiled, box, magicdns_suffix, approved_commit=""):
+def run_box_access(
+    command, compiled, box, magicdns_suffix, approved_commit="", check_mode=False
+):
     if command not in {"apply", "verify"}:
         die("box access operation must be apply or verify")
     selected = selected_box_access_box(compiled, [box])
@@ -3385,8 +3392,7 @@ def run_box_access(command, compiled, box, magicdns_suffix, approved_commit=""):
         "-o StrictHostKeyChecking=accept-new "
         f"-o UserKnownHostsFile={temporary / 'known_hosts'}"
     )
-    subprocess.run(
-        [
+    command_line = [
             "ansible-playbook",
             "-vv",
             "-i",
@@ -3398,7 +3404,11 @@ def run_box_access(command, compiled, box, magicdns_suffix, approved_commit=""):
             f"{selected}-router",
             "-e",
             f"@{vars_path}",
-        ],
+        ]
+    if check_mode:
+        command_line.append("--check")
+    subprocess.run(
+        command_line,
         cwd=REPO_ROOT,
         env=environment,
         check=True,
@@ -3925,6 +3935,8 @@ def show_diff(compiled):
 
 
 def assert_command_scope(args):
+    if getattr(args, "check", False) and args.command != "apply-box-access":
+        die("--check is accepted only with apply-box-access")
     if args.command == "grant" and len(args.app) != 1:
         die("grant requires exactly one --app")
     if args.command in {
@@ -4014,7 +4026,10 @@ def main():
         assert_approved_commit(args.approved_commit)
         require_active_controller()
         box = selected_box_access_box(compiled, args.box)
-        run_box_access("apply", compiled, box, args.magicdns_suffix, args.approved_commit)
+        run_box_access(
+            "apply", compiled, box, args.magicdns_suffix,
+            args.approved_commit, check_mode=args.check,
+        )
         return
     if args.command == "verify-box-access":
         box = selected_box_access_box(compiled, args.box)

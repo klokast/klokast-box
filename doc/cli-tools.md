@@ -49,7 +49,7 @@ Source: `ansible/bin/`.
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
 | `platform-instance` | active controller | Guides and validates private initialization, seeds with a sealed-builder binary, maintains the root-custodied read-only source, and performs controlled engine promotion preflight, approval, activation, and status checks. |
-| `platform-apply` | active controller | Runs the closed Tailnet policy-input preflight, execution, or forward rollback through the installed root Apply boundary. |
+| `platform-apply` | active controller | Runs the closed Authority State conversion, Tailnet verification, or one-box connectivity preflight, execution, and forward rollback through the installed root Apply boundary. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
 | `platform-plan` | active controller | Verifies the sealed engine and bound source, Authority State v2, and Controller Toolchain v2 receipts, creates Plan v3, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |

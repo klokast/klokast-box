@@ -119,6 +119,39 @@ class PlatformApplyTest(unittest.TestCase):
             })
         return plan
 
+    def valid_box_intent(self, *, action="adopt_instance_specification", box="boxb"):
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        value = {
+            "schema_version": 1,
+            "kind": self.mod.KIND_BOX_INTENT,
+            "action": action,
+            "private_commit": "a" * 40,
+            "engine_commit": "b" * 40,
+            "selected_box": box,
+            "action_group_id": self.mod.BOX_GROUP_PREFIX + box,
+            "action_set": self.mod.box_scopes(box),
+            "executor": self.mod.BOX_EXECUTOR,
+            "rollback_type": self.mod.BOX_ROLLBACK_TYPE,
+            "nonce": "box_nonce_123456",
+            "issued_at": self.mod.format_utc(now),
+            "expires_at": self.mod.format_utc(now + dt.timedelta(minutes=10)),
+        }
+        digest_fields = {
+            "plan_sha256", "authority_state_sha256",
+            "source_recovery_receipt_sha256", "source_receipt_sha256",
+            "observation_sha256", "private_instance_sha256",
+            "legacy_deployment_sha256", "legacy_registry_sha256",
+            "legacy_controller_ha_sha256", "binary_sha256",
+            "builder_receipt_sha256", "toolchain_receipt_sha256",
+            "old_registry_sha256", "effective_registry_sha256",
+            "compiled_sha256", "router_vars_sha256",
+        }
+        for index, field in enumerate(sorted(digest_fields)):
+            value[field] = f"{index + 1:064x}"
+        if action == "rollback_to_legacy":
+            value["rollback_execution_receipt_sha256"] = "f" * 64
+        return value
+
     def store_plan(self, root, plan):
         digest = self.mod.sha256_bytes(self.mod.canonical(plan).encode("utf-8"))
         plan["plan_sha256"] = digest
@@ -376,6 +409,205 @@ class PlatformApplyTest(unittest.TestCase):
             path.write_text('{"a":1}\n{}\n', encoding="utf-8")
             with self.assertRaisesRegex(self.mod.ApplyError, "not valid JSON"):
                 self.mod.load_json(path)
+
+    def test_authority_v1_conversion_preserves_tailnet_and_closes_box_groups(self):
+        prior = {
+            "schema_version": 1,
+            "kind": self.mod.KIND_AUTHORITY,
+            "prior_state_sha256": "1" * 64,
+            "transitioned_scopes": list(self.mod.SCOPES),
+            "resulting_authorities": [
+                {"scope": scope, "authority": "instance_specification_v1"}
+                for scope in self.mod.SCOPES
+            ],
+            "signed_intent_sha256": "2" * 64,
+            "transition_id": "tailnet_nonce_123",
+            "authority_state_sha256": "",
+        }
+        prior["authority_state_sha256"] = self.mod.authority_hash(prior)
+        intent = {
+            "nonce": "convert_nonce_123",
+        }
+        state = self.mod.make_authority_v2(
+            prior, intent, boxes=["boxb", "boxa"]
+        )
+        self.mod.validate_authority_v2_document(state, ["boxa", "boxb"])
+        groups = {item["id"]: item for item in state["setting_groups"]}
+        self.assertEqual(
+            groups[self.mod.TAILNET_GROUP_ID]["source"],
+            "instance_specification_v1",
+        )
+        self.assertEqual(
+            groups[self.mod.BOX_GROUP_PREFIX + "boxa"]["source"],
+            self.mod.LEGACY_REGISTRY_SOURCE,
+        )
+
+    def test_box_intent_rejects_partial_group_wrong_box_and_wrong_executor(self):
+        intent = self.valid_box_intent()
+        self.mod.validate_box_intent(intent)
+        partial = dict(intent)
+        partial["action_set"] = partial["action_set"][:-1]
+        with self.assertRaisesRegex(self.mod.ApplyError, "partial or wrong"):
+            self.mod.validate_box_intent(partial)
+        wrong_box = dict(intent)
+        wrong_box["selected_box"] = "boxa"
+        with self.assertRaisesRegex(self.mod.ApplyError, "partial or wrong"):
+            self.mod.validate_box_intent(wrong_box)
+        wrong_executor = dict(intent)
+        wrong_executor["executor"] = "shell"
+        with self.assertRaisesRegex(self.mod.ApplyError, "unknown action"):
+            self.mod.validate_box_intent(wrong_executor)
+
+    def test_effective_registry_preserves_every_field_and_ignores_only_provenance(self):
+        access = {
+            "available_capabilities": ["overlay"],
+            "enabled_capabilities": ["overlay"],
+            "prohibited_capabilities": [],
+        }
+        registry = {
+            "schema_version": 1,
+            "boxes": {
+                "boxa": {"access": access, "dom0_bridge_ports": {"lan": ["eth2"]}},
+                "boxb": {"access": access, "dhcp_reservations": [{"name": "kept"}]},
+            },
+            "apps": {"kept": {"enabled": False}},
+        }
+        plan = {
+            "compatibility_inputs": [],
+            "projection": {"boxes": [{
+                "id": "boxb",
+                "access": {
+                    "declared_capabilities": ["overlay"],
+                    "legacy_available_capabilities": ["overlay"],
+                    "enabled_capabilities": ["overlay"],
+                    "prohibited_capabilities": [],
+                },
+            }]},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = root / "platform-resources.yml"
+            old.write_text(
+                self.mod.yaml.safe_dump(registry, sort_keys=False), encoding="utf-8"
+            )
+            plan["compatibility_inputs"] = [{
+                "name": self.mod.LEGACY_REGISTRY_SOURCE,
+                "sha256": self.mod.sha256_file(old),
+            }]
+
+            def compile_result(registry_path, arguments):
+                if arguments[-1] == "show-box-configs":
+                    return Mock(
+                        returncode=0,
+                        stdout=self.mod.canonical({
+                            "registry_path": str(registry_path),
+                            "registry_sha256": self.mod.sha256_file(Path(registry_path)),
+                            "box_configs": {"unchanged": True},
+                        }),
+                    )
+                return Mock(returncode=0, stdout='{"router":"unchanged"}')
+
+            with patch.object(self.mod, "REGISTRY", old), patch.object(
+                self.mod, "smith_gid", return_value=0
+            ), patch.object(
+                self.mod.os, "chown"
+            ), patch.object(
+                self.mod, "run_platform_resources_as_controller",
+                side_effect=compile_result,
+            ):
+                work = root / "work"
+                work.mkdir()
+                result = self.mod.prepare_registry_comparison(work, plan, "boxb")
+            effective = self.mod.yaml.safe_load(
+                Path(result["effective_registry_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(effective, registry)
+            self.assertEqual(result["old_registry_sha256"], self.mod.sha256_file(old))
+            self.assertEqual(
+                result["effective_registry_sha256"],
+                self.mod.sha256_file(Path(result["effective_registry_path"])),
+            )
+
+    def test_effective_registry_rejects_changed_compiler_output(self):
+        access = {
+            "available_capabilities": ["overlay"],
+            "enabled_capabilities": ["overlay"],
+            "prohibited_capabilities": [],
+        }
+        plan = {
+            "projection": {"boxes": [{"id": "boxb", "access": {
+                "declared_capabilities": ["overlay"],
+                "legacy_available_capabilities": ["overlay"],
+                "enabled_capabilities": ["overlay"],
+                "prohibited_capabilities": [],
+            }}]},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = root / "registry.yml"
+            old.write_text(self.mod.yaml.safe_dump({
+                "schema_version": 1, "boxes": {"boxb": {"access": access}}, "apps": {},
+            }), encoding="utf-8")
+            plan["compatibility_inputs"] = [{
+                "name": self.mod.LEGACY_REGISTRY_SOURCE,
+                "sha256": self.mod.sha256_file(old),
+            }]
+            calls = iter([
+                Mock(returncode=0, stdout='{"registry_path":"old","registry_sha256":"a","value":1}'),
+                Mock(returncode=0, stdout='{"registry_path":"new","registry_sha256":"b","value":2}'),
+            ])
+            with patch.object(self.mod, "REGISTRY", old), patch.object(
+                self.mod, "smith_gid", return_value=0
+            ), patch.object(
+                self.mod.os, "chown"
+            ), patch.object(
+                self.mod, "run_platform_resources_as_controller",
+                side_effect=lambda *_args: next(calls),
+            ):
+                work = root / "work"
+                work.mkdir()
+                with self.assertRaisesRegex(self.mod.ApplyError, "compiler output changed"):
+                    self.mod.prepare_registry_comparison(work, plan, "boxb")
+
+    def test_box_execute_rejects_stale_plan_and_compiler_hashes(self):
+        intent = self.valid_box_intent()
+        binding = {
+            "plan_path": "/plan", "authority_path": "/authority",
+            "toolchain_path": "/toolchain", "recovery_path": "/recovery",
+            "source_path": "/source", "observation": "/observation",
+            "build_dir": "/build", "old_registry_path": "/old",
+            "effective_registry_path": "/effective",
+        }
+        current = {
+            "plan": {"plan_sha256": "f" * 64},
+            "state": {"authority_state_sha256": intent["authority_state_sha256"]},
+            "group": {
+                "box": "boxb", "id": self.mod.BOX_GROUP_PREFIX + "boxb",
+                "scopes": self.mod.box_scopes("boxb"),
+            },
+            "old_registry_sha256": intent["old_registry_sha256"],
+            "effective_registry_sha256": intent["effective_registry_sha256"],
+            "compiled_sha256": "e" * 64,
+            "router_vars_sha256": intent["router_vars_sha256"],
+            "binary_sha256": intent["binary_sha256"],
+            "builder_receipt_sha256": intent["builder_receipt_sha256"],
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            self.mod, "new_box_work", return_value=Path(temporary)
+        ), patch.object(
+            self.mod, "validate_inputs_v3", return_value=current
+        ):
+            with self.assertRaisesRegex(self.mod.ApplyError, "inputs changed"):
+                self.mod.box_revalidate(binding, intent)
+
+    def test_box_failure_path_has_forward_restoration_and_terminal_refusal(self):
+        source = KSA_APPLY.read_text(encoding="utf-8")
+        function = source[source.index("def box_execute"):source.index("def execute_tailnet")]
+        self.assertIn('source=restore_source', function)
+        self.assertIn('run_box_resource(restore_registry', function)
+        self.assertIn('recovery_result = "recovery_required"', function)
+        self.assertIn('recovery_result = "restored"', function)
+        self.assertIn('box restoration could not be verified; recovery_required', function)
 
     def test_source_recovery_is_temporary_and_redacted(self):
         source = (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance").read_text(encoding="utf-8")
