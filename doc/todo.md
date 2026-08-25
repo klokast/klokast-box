@@ -2,6 +2,16 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-25 - sealed builder cleanup depends on one Alpine mirror
+
+Sealed build operation `0fdb18748cee` compiled and cleaned up its temporary
+guest, but the enclosing playbook refused the build when the configured Alpine
+mirror returned an I/O error during mandatory dom0 package reconciliation.
+The dom0 maintenance unlock was removed, and no failed build artifact became
+eligible for promotion. Add a reviewed repository fallback or use the cached
+indexes for this final reconciliation without weakening the exact package
+policy or accepting stale package sources silently.
+
 # 2026-08-25 - Platform map refresh is slow when one VM is unreachable
 
 The first box-connectivity observation refresh took several minutes because
