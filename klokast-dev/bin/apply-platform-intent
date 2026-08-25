@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
 controller="${KLOKAST_OPS_CONTROLLER:-}"
 check_only=false
+prove_replay_refusal=false
 rollback_execution=""
 plan=""
 authority_state=""
@@ -20,10 +21,14 @@ usage() {
   cat <<EOF
 Usage: $0 --controller HOST --plan FILE --authority-state FILE \
   --controller-toolchain-receipt FILE --source-recovery-receipt FILE \
-  --instance-source-receipt FILE --observation FILE --build-dir DIR [--check]
+  --instance-source-receipt FILE --observation FILE --build-dir DIR \
+  [--check | --prove-replay-refusal]
 
 Add --rollback-execution-receipt FILE to prepare and approve the closed
 forward rollback instead of adoption or verification.
+
+--prove-replay-refusal repeats the exact signed adoption or verification
+intent after success and requires the controller to refuse it.
 EOF
 }
 
@@ -39,10 +44,18 @@ while [ "$#" -gt 0 ]; do
     --build-dir) build_dir=$2; shift 2 ;;
     --rollback-execution-receipt) rollback_execution=$2; shift 2 ;;
     --check) check_only=true; shift ;;
+    --prove-replay-refusal) prove_replay_refusal=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) ksa_die "unknown argument: $1" ;;
   esac
 done
+
+if [ "$check_only" = true ] && [ "$prove_replay_refusal" = true ]; then
+  ksa_die "--check and --prove-replay-refusal are mutually exclusive"
+fi
+if [ -n "$rollback_execution" ] && [ "$prove_replay_refusal" = true ]; then
+  ksa_die "--prove-replay-refusal accepts only adoption or verification"
+fi
 
 ksa_valid_controller "$controller" || ksa_die "--controller is required and must be safe"
 controller="$(ksa_resolve_controller "$controller")"
@@ -110,6 +123,14 @@ if value.get("action") not in {"adopt_instance_specification", "verify_instance_
 print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
 PY
 
+intent_action="$(python3 - "$intent" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["action"])
+PY
+)"
+
 if [ "$check_only" = true ]; then
   printf '\nCheck complete. No signature was made and no Platform state changed.\n'
   exit 0
@@ -126,6 +147,16 @@ case "$remote_dir" in /tmp/klokast-platform-apply.*) ;; *) ksa_die "controller r
 tailscale ssh "smith@$controller" "cat > '$remote_dir/intent.json'" <"$intent"
 tailscale ssh "smith@$controller" "cat > '$remote_dir/intent.json.sig'" <"$intent.sig"
 
+run_remote_execute() {
+  tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply execute \
+  --approval-intent "$1/intent.json" --approval-signature "$1/intent.json.sig" \
+  --signer-id human-platform-apply
+SH
+}
+
 if [ -n "$rollback_execution" ]; then
   tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
 set -eu
@@ -135,11 +166,45 @@ exec ansible/bin/platform-apply rollback \
   --signer-id human-platform-apply
 SH
 else
-  tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
-set -eu
-cd "$HOME/src/klokast/klokast-box"
-exec ansible/bin/platform-apply execute \
-  --approval-intent "$1/intent.json" --approval-signature "$1/intent.json.sig" \
-  --signer-id human-platform-apply
-SH
+  execution_result="$work/execution-result.json"
+  run_remote_execute >"$execution_result"
+  python3 - "$intent" "$execution_result" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    intent = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    result = json.load(handle)
+expected = "verified" if intent["action"] == "verify_instance_authority" else "success"
+if (
+    result.get("schema_version") != 1
+    or result.get("result") != expected
+    or not isinstance(result.get("receipt_path"), str)
+):
+    raise SystemExit("controller returned an invalid Apply execution result")
+print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+PY
+
+  if [ "$prove_replay_refusal" = true ]; then
+    replay_stdout="$work/replay.stdout"
+    replay_stderr="$work/replay.stderr"
+    if run_remote_execute >"$replay_stdout" 2>"$replay_stderr"; then
+      ksa_die "controller accepted a replayed Apply intent"
+    fi
+    case "$intent_action" in
+      adopt_instance_specification)
+        expected_refusal="ksa-apply: authority state is not active"
+        ;;
+      verify_instance_authority)
+        expected_refusal="ksa-apply: Apply intent nonce was already used"
+        ;;
+      *)
+        ksa_die "--prove-replay-refusal received an unsupported intent action"
+        ;;
+    esac
+    if ! grep -Fq "$expected_refusal" "$replay_stderr"; then
+      ksa_die "controller returned an unexpected replay refusal"
+    fi
+    printf 'Replay refusal confirmed for the exact signed Apply intent.\n'
+  fi
 fi

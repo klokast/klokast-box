@@ -2,6 +2,7 @@
 import datetime as dt
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -11,6 +12,7 @@ from unittest.mock import Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KSA_APPLY = REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply"
+MACBOOK_APPLY = REPO_ROOT / "klokast-dev/bin/apply-platform-intent"
 MUTATION = REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal"
 OPS_VARS = (REPO_ROOT / "ansible/inventory/group_vars/ops.yml").read_text(encoding="utf-8")
 OPS_TASKS = (REPO_ROOT / "ansible/roles/ops-controller/tasks/main.yml").read_text(encoding="utf-8")
@@ -136,6 +138,39 @@ class PlatformApplyTest(unittest.TestCase):
             self.mod.consume_nonce(intent)
             with self.assertRaisesRegex(self.mod.ApplyError, "already used"):
                 self.mod.consume_nonce(intent)
+
+    def test_macbook_replay_proof_is_closed(self):
+        source = MACBOOK_APPLY.read_text(encoding="utf-8")
+        self.assertIn("--prove-replay-refusal", source)
+        self.assertIn("run_remote_execute", source)
+        self.assertIn("ksa-apply: authority state is not active", source)
+        self.assertIn("ksa-apply: Apply intent nonce was already used", source)
+        self.assertIn("controller accepted a replayed Apply intent", source)
+
+        combined = subprocess.run(
+            [str(MACBOOK_APPLY), "--check", "--prove-replay-refusal"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(combined.returncode, 0)
+        self.assertIn("mutually exclusive", combined.stderr)
+
+        rollback = subprocess.run(
+            [
+                str(MACBOOK_APPLY),
+                "--rollback-execution-receipt",
+                "/tmp/execution.json",
+                "--prove-replay-refusal",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(rollback.returncode, 0)
+        self.assertIn("only adoption or verification", rollback.stderr)
 
     def test_apply_refuses_plan_v1(self):
         with tempfile.TemporaryDirectory() as temporary:

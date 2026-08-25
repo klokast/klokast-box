@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import importlib.machinery
 import importlib.util
 import re
@@ -11,6 +12,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "ansible" / "bin" / "render-tailscale-policy"
+TEMPLATE = REPO_ROOT / "klokast-ops" / "tailscale" / "policy.hujson.j2"
 LOADER = importlib.machinery.SourceFileLoader("render_tailscale_policy", str(SCRIPT))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -18,6 +20,12 @@ LOADER.exec_module(MODULE)
 
 
 class RenderTailscalePolicyTest(unittest.TestCase):
+    def test_byte_preserving_pilot_template_is_fixed(self):
+        self.assertEqual(
+            hashlib.sha256(TEMPLATE.read_bytes()).hexdigest(),
+            "2019e7a3641873891e94c86054c7653b8b8565dcd4991b1885e041673f60ddad",
+        )
+
     def deployment(self, root):
         path = root / "deployment.yml"
         path.write_text(
@@ -49,9 +57,9 @@ class RenderTailscalePolicyTest(unittest.TestCase):
             '"group:family": ["admin@example.com", "family@example.com"]',
             rendered,
         )
-        self.assertEqual(rendered.count('"src":    "admin@example.com"'), 3)
+        self.assertEqual(rendered.count('"src":    "admin@example.com"'), 2)
         self.assertEqual(rendered.count('"src":   "admin@example.com"'), 4)
-        self.assertEqual(rendered.count('"src": "admin@example.com"'), 2)
+        self.assertEqual(rendered.count('"src": "admin@example.com"'), 3)
         self.assertNotIn("{{", rendered)
 
     def test_rejects_groups_without_an_operator_family_test_login(self):

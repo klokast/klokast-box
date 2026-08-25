@@ -140,9 +140,10 @@ authority state and restores the exact saved policy preimage. It does not edit
 or delete old evidence.
 
 Create a fresh Plan v2. It must propose the same three-scope adoption again.
-Run the helper and approve the third Apply action. Create one final Plan v2.
-It must use verification actions, and replay of any prior signed intent must
-fail.
+Run the helper with `--prove-replay-refusal` and approve the third Apply
+action. The helper must complete re-adoption and then confirm that the
+controller refuses the same signed intent. Create one final Plan v2. It must
+use verification actions.
 
 Keep all authority states, source-recovery receipts, Plans, intents,
 executions, rollback material, toolchain receipts, and audit records. Remove

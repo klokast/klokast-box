@@ -260,20 +260,20 @@
 			"checkPeriod": "12h0m0s",
 		},
 		// Connection of the admin to ops controllers.
-			// Hetzner `codex` and `vultr-ops` `agent` remain AI runners;
-			// in-Platform, `<box>-ops` uses `smith` and `minion`.
+		// Hetzner `codex` and `vultr-ops` `agent` remain AI runners;
+		// in-Platform, `<box>-ops` uses `smith` and `minion`.
 		{
 			"src": ["group:operators"],
 			"dst": ["tag:ops"],
 
 			"users": [
-					"neo",
-					"codex",
-					"smith",
-					"minion",
-					"klokast-infra",
-					"klokast-app",
-					"agent",
+				"neo",
+				"codex",
+				"smith",
+				"minion",
+				"klokast-infra",
+				"klokast-app",
+				"agent",
 			],
 
 			"action":      "check",
@@ -317,7 +317,7 @@
 		{
 			"src":    ["tag:infra", "tag:infra-agent"],
 			"dst":    ["tag:ops"],
-				"users":  ["smith", "klokast-infra"],
+			"users":  ["smith", "klokast-infra"],
 			"action": "accept",
 		},
 		// Remote-terminal path from an in-Platform AI runner container to the
@@ -325,7 +325,7 @@
 		{
 			"src":    ["tag:airunner"],
 			"dst":    ["tag:ops"],
-				"users":  ["smith", "klokast-infra"],
+			"users":  ["smith", "klokast-infra"],
 			"action": "accept",
 		},
 		// Migration and break-glass controller-to-controller access. This lets
@@ -333,7 +333,7 @@
 		{
 			"src":    ["tag:ops"],
 			"dst":    ["tag:ops"],
-				"users":  ["smith", "klokast-infra"],
+			"users":  ["smith", "klokast-infra"],
 			"action": "accept",
 		},
 		// Connection from the admin to the mini PC host during bootstrap phase, usually for tests only,
@@ -490,7 +490,7 @@
 				"tag:usr:22",
 				"tag:usr:80",
 				"tag:usr:443",
-				"tag:usr:60010"
+				"tag:usr:60010",
 			],
 		},
 		{
@@ -731,8 +731,16 @@
 			],
 		},
 		{
-			"src":    {{ operator_test_login_json }},
-			"accept": ["tag:nextcloud:443", "tag:immich:443", "tag:music:443", "tag:music-upload:22", "tag:print:631", "tag:streamer:22", "tag:torrent:443"],
+			"src": {{ operator_test_login_json }},
+			"accept": [
+				"tag:nextcloud:443",
+				"tag:immich:443",
+				"tag:music:443",
+				"tag:music-upload:22",
+				"tag:print:631",
+				"tag:streamer:22",
+				"tag:torrent:443",
+			],
 
 			"deny": [
 				"tag:nextcloud:22",
@@ -781,12 +789,12 @@
 			"dst": ["tag:ops"],
 
 			"check": [
-					"neo",
-					"codex",
-					"smith",
-					"minion",
-					"klokast-infra",
-					"klokast-app",
+				"neo",
+				"codex",
+				"smith",
+				"minion",
+				"klokast-infra",
+				"klokast-app",
 			],
 
 			"deny": ["root", "xiaoju", "one"],
@@ -796,12 +804,12 @@
 			"dst":   ["tag:infra", "tag:infra-agent"],
 			"check": ["neo", "codex", "agent", "ml-agent"],
 
-				"deny": [
-					"root",
-					"smith",
-					"minion",
-					"klokast-infra",
-					"klokast-app",
+			"deny": [
+				"root",
+				"smith",
+				"minion",
+				"klokast-infra",
+				"klokast-app",
 				"xiaoju",
 				"one",
 			],
@@ -811,13 +819,13 @@
 			"dst":   ["tag:airunner"],
 			"check": ["neo", "agent"],
 
-				"deny": [
-					"root",
-					"codex",
-					"smith",
-					"minion",
-					"klokast-infra",
-					"klokast-app",
+			"deny": [
+				"root",
+				"codex",
+				"smith",
+				"minion",
+				"klokast-infra",
+				"klokast-app",
 				"ml-agent",
 				"xiaoju",
 				"one",
@@ -948,14 +956,14 @@
 		{
 			"src":    "tag:ops",
 			"dst":    ["tag:ops"],
-				"accept": ["smith", "klokast-infra"],
+			"accept": ["smith", "klokast-infra"],
 
 			"deny": [
 				"root",
-					"neo",
-					"codex",
-					"minion",
-					"klokast-app",
+				"neo",
+				"codex",
+				"minion",
+				"klokast-app",
 				"xiaoju",
 				"one",
 			],
@@ -969,11 +977,11 @@
 				"root",
 				"neo",
 				"codex",
-					"ml-agent",
-					"smith",
-					"minion",
-					"klokast-infra",
-					"klokast-app",
+				"ml-agent",
+				"smith",
+				"minion",
+				"klokast-infra",
+				"klokast-app",
 				"xiaoju",
 				"one",
 			],
@@ -987,11 +995,11 @@
 				"root",
 				"neo",
 				"codex",
-					"ml-agent",
-					"smith",
-					"minion",
-					"klokast-infra",
-					"klokast-app",
+				"ml-agent",
+				"smith",
+				"minion",
+				"klokast-infra",
+				"klokast-app",
 				"xiaoju",
 				"one",
 			],
@@ -999,14 +1007,14 @@
 		{
 			"src":    "tag:infra",
 			"dst":    ["tag:ops"],
-				"accept": ["smith", "klokast-infra"],
+			"accept": ["smith", "klokast-infra"],
 
 			"deny": [
 				"root",
-					"neo",
-					"codex",
-					"minion",
-					"klokast-app",
+				"neo",
+				"codex",
+				"minion",
+				"klokast-app",
 				"ml-agent",
 				"xiaoju",
 				"one",
@@ -1015,14 +1023,14 @@
 		{
 			"src":    "tag:airunner",
 			"dst":    ["tag:ops"],
-				"accept": ["smith", "klokast-infra"],
+			"accept": ["smith", "klokast-infra"],
 
 			"deny": [
 				"root",
-					"neo",
-					"codex",
-					"minion",
-					"klokast-app",
+				"neo",
+				"codex",
+				"minion",
+				"klokast-app",
 				"agent",
 				"ml-agent",
 				"xiaoju",
@@ -1032,14 +1040,14 @@
 		{
 			"src":    "tag:infra-agent",
 			"dst":    ["tag:ops"],
-				"accept": ["smith", "klokast-infra"],
+			"accept": ["smith", "klokast-infra"],
 
 			"deny": [
 				"root",
-					"neo",
-					"codex",
-					"minion",
-					"klokast-app",
+				"neo",
+				"codex",
+				"minion",
+				"klokast-app",
 				"ml-agent",
 				"xiaoju",
 				"one",
