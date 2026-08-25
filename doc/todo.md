@@ -2,77 +2,6 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
-# 2026-08-25 - Tailnet Apply pilot stopped at byte equality
-
-The live Apply preflight on `k002-ops` used engine commit
-`684aa291ef831e29c6e3ad64d1ab0765d70570ef`. Exact Plan v2 revalidation
-passed. The private-instance rendering and the dormant legacy rendering were
-identical: 22,338 bytes with SHA-256
-`7c59a385867874caef8893b7163caaa4d85b17ca77930a3a0bed94bb5ee87267`.
-The live API response was 22,309 bytes with SHA-256
-`f83add11a151ef8a9beb5d09d16bef1eed78f800ddfe67d03165cbc349e3854a`.
-It was also the exact content of the approved controller policy pull path.
-Line-ending, trailing-space, and collapsed-whitespace comparisons did not make
-the files equal.
-
-The preflight stopped before it created an Apply intent. It did not request a
-signature, post a policy, or change the authority state. This is the required
-result because the decided pilot permits only an exact byte-preserving
-transition.
-
-The Tailscale API contract defines HuJSON responses, ETags, `If-Match`, and
-HTTP 412 conflict handling. It does not state that a GET response must keep
-the exact bytes submitted by a prior POST. Before another live attempt,
-compare the live and rendered policy structures without exposing private
-identities. Decide whether the fixed public template is stale or whether API
-HuJSON serialization prevents exact round-trip verification. Update the
-architecture decision before changing the equality or post-write verification
-contract. Do not weaken the current gate or update the live policy as a
-workaround.
-
-# 2026-08-25 - root Apply revalidation used the wrong Git identity
-
-The first live MacBook Apply check stopped during exact Plan v2 revalidation.
-The same sealed planner output matched as `smith`, but the root Apply process
-reported `git.repository` because the private checkout correctly belongs to
-`smith`. The Apply boundary now keeps root for evidence and policy checks and
-uses the fixed `/usr/bin/doas -u smith` argument vector only for the sealed,
-read-only planner rerun. Do not change the private checkout owner to root or
-weaken its Git ownership validation.
-
-# 2026-08-25 - root-only Apply helper blocked toolchain receipt hashing
-
-The first live Tailnet pilot rehearsal verified private-source recovery, but
-the controller toolchain receipt stopped when its unprivileged process tried
-to read the mode-`0700` internal policy mutation helper. Do not make that
-helper readable by the controller user. The receipt workflow now hashes only
-the fixed installed-component allowlist through `doas sha256sum`, validates
-the exact returned path and digest, and checks the clean selected engine again
-after hashing. Keep a regression test for path escape and invalid hash output.
-
-# 2026-08-23 - root Git inspection changed private checkout index ownership
-
-The first live publication check after engine activation found that
-`.git/index` in the controller read-only private checkout belonged to `root`.
-The source authority had first synchronized and assigned the checkout to
-`smith`, but a later root-owned `git status` refreshed the optional index lock.
-The candidate validator correctly refused the mixed ownership. Root-owned Git
-inspection now sets `GIT_OPTIONAL_LOCKS=0`. Keep this invariant when adding
-source-status or receipt checks so a read-only authority check cannot change
-the controller-owned checkout.
-
-# 2026-08-22 - private compatibility alignment live verification
-
-The design for controller-private HA custody, compatibility preflight, and
-the limited shared-guest health scope is decided in
-[the upstream/instance target architecture](upstream-instance-target-architecture.md#read-only-acceptance-alignment-decision).
-This gate passed on 2026-08-24 after controlled engine promotion and the real
-MacBook and active-controller acceptance flow. The deployable read-only Plan
-had exact finding, action, and continuing-authority coverage. The human
-confirmed each continuing authority. Keep all private inputs, findings,
-observations, and Plan artifacts on the controller. This acceptance does not
-authorize apply work or legacy-authority removal.
-
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 
 GitHub rejects removal when a repository is the last selected repository of
@@ -84,13 +13,6 @@ proves that the installation ID no longer exists. The action must accept only
 an exact not-found result, require the dedicated App to have no other
 installation, verify the read-only deploy key, and then delete the controller
 credential.
-
-# 2026-08-22 - cloud-ops Ansible temporary directory ownership
-
-Controller-side syntax checks found an old mode-`0700`
-`/tmp/klokast-ops-ansible-local` owned by another account. The checked-in
-configuration now uses `~/.ansible/tmp`. Do not restore a fixed shared path in
-`/tmp`; it fails when a different controller account runs Ansible.
 
 # 2026-08-22 - Terraform static-test execution locus
 
@@ -126,43 +48,6 @@ design must make later connection modes easy to add.
 Or to another ticketing system, to industrialize the monitoring and resolution
 of tickets.
 
-# 2026-08-22 - controlled canonical engine-commit promotion
-
-Instance Specification v1 fixes `.engine.repository` to the canonical
-`https://github.com/klokast/klokast-box` upstream. The checker, schema, sealed
-builder, and controller wrappers reject another repository. Custom forks and
-self-hosted engine repositories are outside version 1.
-
-The controlled workflow for `.engine.commit` is implemented. It includes
-human review and Touch ID authorization, canonical ancestry checks, exact
-sealed builds, private lock publication, immutable evidence, refusal cases,
-and forward rollback. The first implementation assumed that the private lock
-already selected the later simplified Instance v1 shape. Live MacBook review
-showed that canonical private `main` still selected the legacy top-level site
-shape. The workflow now includes one closed reversible legacy-to-current
-Instance v1 transform and records its inverse for rollback validation. This
-prevents future work from relying on the incorrect schema-compatible
-assumption. Keep the controller and airunner without private-repository push
-authority. Real MacBook Touch ID promotion and active-controller acceptance
-passed on 2026-08-24. See
-[the upstream/instance target architecture](upstream-instance-target-architecture.md#9-engine-promotion-decision).
-
-The fixed-engine mismatch initially blocked live verification of the read-only
-acceptance corrections. The controlled workflow resolved it without direct
-lock edits or an unbound binary. Keep the prohibition against running a later
-binary against an earlier lock or weakening the engine identity check.
-
-# 2026-08-21 - self-updating bootstrap helper continued old shell functions
-
-`prepare-private-instance-bootstrap` previously ran `git pull --ff-only`
-after Bash had loaded its functions. A pull from `eb4b89b` to `8ac344f`
-updated the file on disk, but the process continued with the old controller
-commit equality check. The helper now updates before any settings prompt and
-uses `exec` when its commit changes. A two-commit Git fixture must continue to
-prove that only the updated helper runs after a pull. A helper version from
-before this correction still needs one separate `git pull --ff-only` to adopt
-the restart behavior.
-
 # 2026-08-21 - MacBook bootstrap wrappers require a real macOS integration run
 
 The infra-agent host cannot run the interactive private-instance wrappers
@@ -196,36 +81,6 @@ This change will probably require a signer migration or a new signature format
 because the current OpenSSH security-key format contains more flags and counter
 fields.
 
-# 2026-08-12 - validate native Touch ID signing on the MacBook
-
-The infra-agent host is Linux. It cannot execute Apple's `sc_auth`, access the
-Mac Secure Enclave, or load `/usr/lib/ssh-keychain.dylib`. Deterministic tests
-cover identity selection, profile custody, and OpenSSH command construction,
-but they cannot prove the real biometric prompt on the current Mac.
-
-The first real two-identity test found that Apple OpenSSH assigns
-`id_ecdsa_sk_rk` to both P-256 identities during `ssh-keygen -K`. The second
-key then asks to overwrite the first key handle. The current helper does not
-use resident-key file download for a new profile. It loads all identities into
-a private, short-lived Apple `ssh-agent`, selects the exact key by the SSH
-fingerprint from `sc_auth`, and stops the agent after the operation. Validate
-this revised path with both real identities on `og`. Do not accept an
-overwrite prompt as an identity-selection mechanism.
-
-The first revised run also found that Apple `ssh-add -?` groups short options
-as `[-cDdKkLlqvXx]`. Capability checks must recognize `K` inside this group;
-they must not require the separate text `-K` in the usage output.
-
-The infra-agent also has no Go toolchain or `ansible-playbook` command. Run Go
-tests, the Ansible syntax check, and the exact build through the active
-controller after the commit is pushed. The deployable binary must still come
-only from the networkless controller-managed sealed builder.
-
-Before the old approval signer is retired, run both purpose-specific signer
-setups and their controller verification round trips from `og`. Do not weaken
-the native capability checks or adopt an identity that has no matching Klokast
-profile metadata as a workaround.
-
 # 2026-08-09 - NanoKVM Tailscale Serve is runbook-managed
 
 The NanoKVM HTTPS listener presents a self-signed certificate with
@@ -242,34 +97,6 @@ also reported a Tailscale CLI version newer than the running daemon. Do not
 restart Tailscale synchronously over Tailscale SSH; use a console-safe or
 detached restart workflow.
 
-# 2026-08-09 - remote Tailscale restarts must outlive Tailscale SSH
-
-A synchronous `rc-service tailscale restart` on boxa stopped the daemon and
-therefore stopped its own Tailscale SSH transport before the remote shell could
-run the start action. The local console was required to start the service.
-
-The dom0 Tailscale role now launches restarts as detached Ansible async jobs,
-waits for reconnection, and verifies OpenRC, the backend state, and the daemon
-version. Do not run synchronous Tailscale stop or restart commands through
-Tailscale SSH. The incident also exposed a missing system DNS source. Managed
-`udhcpc` hooks now publish WAN DHCP resolvers to `openresolv` without replacing
-Tailscale-owned `/etc/resolv.conf`.
-
-# 2026-08-09 - keep dom0 package resolution on its Alpine release branch
-
-The boxa and boxb package-name comparison found `nghttp3` only on boxb. Its
-older `libcurl` package required it, while the newer `libcurl` on boxa did not.
-The common dom0 repository setting used `latest-stable`, which had moved from
-Alpine 3.23 to Alpine 3.24 during the rollout. An unrestricted upgrade would
-therefore have performed an unreviewed release upgrade.
-
-The dom0 APK policy now pins repositories to v3.23, refuses to run when the
-live release does not match that branch, and reconciles all installed packages
-to versions available from the branch. Keep the branch update coupled to a
-reviewed Alpine release-upgrade canary. The dom0 Tailscale role also disables
-Tailscale self-update so that it cannot bypass this package policy. Do not
-restore `latest-stable` or enable Tailscale self-update on dom0.
-
 # 2026-08-23 - restore the app store routing document
 
 The root agent instructions require `apps/STORE.md` before app work, but that
@@ -277,34 +104,6 @@ file does not exist. `apps/README.md` contains the current supported-app list
 and routing rules. Create `apps/STORE.md` or change the root instruction to
 name the existing authority. Do not keep two app catalogs with different
 content.
-
-# 2026-08-24 - verify the installed authority before engine promotion
-
-The elementary connectivity promotion initially failed because the controller
-checkout contained the new schema transition but the root-owned installed
-`ksa-instance` wrapper was older. The tagged controller convergence repaired
-the mismatch, but the MacBook helper reported only that the transition was
-unsupported.
-
-Add a read-only promotion prerequisite that compares the installed authority
-wrapper with the active controller checkout. Give the operator the exact
-tagged convergence command when the files differ. Do not let the promotion
-continue with different transition vocabularies.
-
-# 2026-08-24 - verify the MacBook dependency supply chain
-
-Extend the informational MacBook dependency inventory into a verified supply
-chain report. Show each resolved version, verified provider or acquisition
-source, installation method, and narrow Klokast function. Distinguish
-Apple-provided components from Homebrew packages and pinned PyPI binary wheels.
-Report unknown provenance as unknown; do not infer provenance only from a
-filesystem path.
-
-Add a machine-readable form for tests and audits. Record and verify package or
-wheel hashes where the package system supports them. Fail the dependency
-review when an installed component does not match its declared source or
-version. Use this report to control software bloat, reduce the MacBook attack
-surface, and review software supply-chain changes before installation.
 
 # 2026-08-09 - validate dom0 dependencies against the boot repository
 
@@ -335,14 +134,6 @@ with dom0 partition and filesystem tools. A replacement must start from a
 signed, controller-supplied builder template or another independently verified
 artifact. Dom0 must then only create or clone LVs, attach them, copy approved
 boot artifacts, render Xen configuration, and control guest runtime.
-
-# 2026-08-09 - infra-agent host lacks Ansible CLI
-
-The `vultr-ops` infra-agent checkout has Python and PyYAML but does not have
-`ansible-playbook`. Repository YAML and Python tests can run locally, but
-Ansible syntax checks must run from the active controller after the reviewed
-commit is pushed. Do not install Platform controller tooling or private state
-on the infra-agent host as a workaround.
 
 # 2026-08-09 - boxa ops controller cannot reliably reach GitHub
 

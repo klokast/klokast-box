@@ -293,8 +293,8 @@ The artifact converts findings into sorted, closed action descriptions:
 - `refuse` binds a conflict or unsupported finding to a non-executable action.
 - `verify_substrate` records the read-only `standard_substrate_v1` check.
 
-These are proposed actions. The current `future_authorized_apply` executor
-name is a marker, not an implemented executor.
+These Plan v1 actions are proposed. Its `future_authorized_apply` executor
+name remains a marker and is not accepted by the implemented Tailnet executor.
 
 A valid Plan v1 records refusals for:
 
@@ -462,10 +462,11 @@ hashes, focused contracts, and the exact controller-sealed build.
 
 ## 10. Authorized apply decision
 
-Status: `decided`. This section authorizes implementation of the byte-preserving
-Tailnet authority pilot. It does not authorize live execution before the code,
-tests, controller installation, source-recovery rehearsal, and human approval
-gates pass.
+Status: `live-verified`. On 2026-08-25, the byte-preserving Tailnet authority
+pilot passed adoption, verification-only planning, forward rollback,
+re-adoption, final verification-only planning, and exact signed-intent replay
+refusal. The final authority is Instance Specification v1 for all three
+scopes. The live policy bytes stayed unchanged.
 
 Apply consumes one immutable, deployable Plan v2 artifact. It does not
 recompute an open-ended operation from ambient controller state. Plan v1 stays
@@ -678,19 +679,20 @@ complete.
 | Read-only acceptance alignment | `live-verified` | On 2026-08-24, the active controller verified source and activation custody, refreshed observations without repair, and stored an immutable deployable Plan with exact finding, action, and continuing-authority coverage. The human confirmed every compatibility-only continuing authority. Legacy removal stays blocked. |
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
-| Authorized apply | `implemented` | The byte-preserving three-scope Tailnet pilot, source-recovery rehearsal, dedicated signer, closed root executor, forward rollback, and deterministic refusal tests are implemented. On 2026-08-25, live preflight passed exact Plan v2 revalidation and then refused because the equal instance and legacy renderings differed from the live policy bytes. No intent, signature, policy mutation, or authority transition occurred. Design review of the policy representation is the next gate. |
-| Migration and legacy removal | `proposed` | Work has not started. It follows promotion, authority hardening, and the apply pilot. |
+| Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
+| Migration and legacy removal | `proposed` | The Tailnet pilot is complete. The next gate is a decided staged-migration design. Legacy removal still requires its separate observation, recovery, and explicit-approval gates. |
 
 ### Current work queue
 
-1. Review the refused live policy comparison. Determine whether the fixed
-   public template is stale or whether the Tailnet API changes HuJSON
-   representation. Keep the exact byte-equality gate until a new decision is
-   complete.
-2. Live-verify the pilot, including rollback, re-adoption, idempotence,
-   recovery rehearsal, and replay refusal.
-3. Use successful pilot evidence to design staged scope migration and the
-   later legacy-removal gate.
+1. Inventory the remaining instance and legacy scopes. Group them only where
+   one executor, authority transition, rollback, and observation contract can
+   cover the complete atomic set.
+2. Decide the next smallest migration. Record its closed executor, exact
+   inputs, authorization, refusal cases, recovery, rollback, tests, and live
+   acceptance before code work starts.
+3. Define the post-migration observation period and evidence needed for a
+   later legacy-removal decision. Keep legacy removal `proposed` until that
+   separate gate has explicit human approval.
 
 ### Completed read-only acceptance alignment design
 
