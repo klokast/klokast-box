@@ -17,13 +17,18 @@ public commit, build the exact sealed engine, promote the private engine lock,
 install the controller tools, and create a Toolchain v2 receipt. Use the new
 public commit for all steps.
 
-On the controller, run the complete Go tests and Ansible syntax check before
-you create evidence:
+On the controller, run the Ansible syntax check before you create evidence.
+Set the repository-local configuration and role path explicitly:
 
 ```sh
-go test ./...
-ansible-playbook --syntax-check ansible/playbooks/32-platform-box-access.yml
+ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg" \
+ANSIBLE_ROLES_PATH="$PWD/ansible/roles" \
+  ansible-playbook --syntax-check ansible/playbooks/32-platform-box-access.yml
 ```
+
+The canonical engine build in section 1 runs `go test -mod=vendor
+-buildvcs=false ./...` inside the pinned builder image. The controller does not
+need a separate Go installation.
 
 ## 2. Convert Authority State V1
 

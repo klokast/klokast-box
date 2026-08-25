@@ -50,13 +50,14 @@ The failed attempt left an immutable preflight directory and an empty,
 consumed nonce file. Keep both as failure evidence. Define a root-owned
 retention and archival policy before these evidence directories need cleanup.
 
-# 2026-08-25 - infra-agent has no Go or Ansible executable
+# 2026-08-25 - Go tests run only in the sealed builder
 
-The infra-agent can run the Python and shell checks, but it cannot run
-the Go tests or `ansible-playbook --syntax-check` because Go and Ansible are
-not installed. Run both checks on the active controller as the runbook
-specifies. Do not install these tools on the infra-agent only to duplicate the
-controller checks.
+The infra-agent can run the Python and shell checks, but it has no Go or
+Ansible executable. The active controller has Ansible but also has no Go
+executable. The canonical engine build runs the complete vendored Go tests in
+its pinned builder image. Run Ansible syntax checks on the controller with the
+repository-local configuration and role path. Do not install extra build tools
+on the infra-agent or controller only to duplicate these checks.
 
 # 2026-08-22 - GitHub App cannot remove its last selected repository
 
