@@ -22,11 +22,14 @@ PLATFORM_PLAN = SCRIPT.with_name("platform-plan")
 RECEIPT_ROOT = Path("/var/lib/klokast/controller-toolchains")
 COMPONENTS = [
     ("controller_guard", REPO_ROOT / "ansible/roles/ops-controller/files/klokast-controller-guard", Path("/usr/local/sbin/klokast-controller-guard")),
+    ("freebox_broker", REPO_ROOT / "klokast-ops/secret-authority/bin/freebox-ipv6-broker", Path("/usr/local/sbin/freebox-ipv6-broker")),
     ("ksa_apply", REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
+    ("ops_network_helper", REPO_ROOT / "ansible/bin/overlay-ipv6-ops", Path("/usr/local/sbin/overlay-ipv6-ops")),
     ("platform_resources", REPO_ROOT / "ansible/bin/platform-resources", Path("/usr/local/sbin/platform-resources")),
     ("policy_mutation_helper", REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")),
     ("policy_renderer", REPO_ROOT / "ansible/bin/render-tailscale-policy", Path("/usr/local/sbin/render-tailscale-policy")),
     ("policy_template", REPO_ROOT / "klokast-ops/tailscale/policy.hujson.j2", Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")),
+    ("router_network_helper", REPO_ROOT / "ansible/bin/overlay-ipv6-router", Path("/usr/local/sbin/overlay-ipv6-router")),
 ]
 INSTALLED_COMPONENT_PATHS = frozenset(installed for _name, _source, installed in COMPONENTS)
 SHA256SUM = Path("/usr/bin/sha256sum")
@@ -126,8 +129,8 @@ def build_receipt(build_dir):
         "installed_sha256": binary_digest,
     })
     receipt = {
-        "schema_version": 2,
-        "kind": "klokast.controller-toolchain.v2",
+        "schema_version": 3,
+        "kind": "klokast.controller-toolchain.v3",
         "engine_commit": commit,
         "public_checkout_clean": True,
         "public_checkout_commit": commit,

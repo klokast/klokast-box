@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Run the closed ops-VM side of the ops-only IPv6 repair."""
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+SCRIPT = Path(__file__).resolve()
+REPO_ROOT = Path("/home/smith/src/klokast/klokast-box") if SCRIPT == Path("/usr/local/sbin/overlay-ipv6-ops") else SCRIPT.parents[2]
+RUN_ROOT = Path("/run/klokast/apply-box")
+BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+
+class HelperError(Exception):
+    pass
+
+
+def runtime_path(value, *, existing=False):
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise HelperError("ops evidence path must be absolute")
+    try:
+        supplied.parent.resolve(strict=True).relative_to(RUN_ROOT.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise HelperError("ops evidence path is outside the Apply runtime") from error
+    if supplied.parent.is_symlink() or supplied.is_symlink() or (existing and not supplied.is_file()) or (not existing and supplied.exists()):
+        raise HelperError("ops evidence path is unsafe")
+    return supplied
+
+
+def run_playbook(args, variables):
+    run_dir = REPO_ROOT / ".run" / "overlay-ipv6-ops"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix="run-", dir=run_dir))
+    try:
+        inventory = temporary / "inventory.yml"
+        rendered = subprocess.run([REPO_ROOT / "ansible/bin/render-node-inventory", "--node", args.box, "--magicdns-suffix", args.magicdns_suffix, "--output", inventory], cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if rendered.returncode != 0:
+            raise HelperError("checked inventory renderer failed")
+        vars_path = temporary / "vars.yml"
+        vars_path.write_text(yaml.safe_dump(variables, sort_keys=True), encoding="utf-8")
+        command = ["ansible-playbook", "-vv", "-i", REPO_ROOT / "ansible/inventory/hosts.yml", "-i", inventory, REPO_ROOT / "ansible/playbooks/84-overlay-ipv6-ops.yml", "--limit", f"{args.box}-ops", "-e", f"@{vars_path}"]
+        if args.check:
+            command.append("--check")
+        environment = os.environ.copy()
+        environment["ANSIBLE_CONFIG"] = str(REPO_ROOT / "ansible/ansible.cfg")
+        environment["ANSIBLE_ROLES_PATH"] = str(REPO_ROOT / "ansible/roles")
+        environment["ANSIBLE_SSH_COMMON_ARGS"] = f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={temporary / 'known_hosts'}"
+        completed = subprocess.run([str(item) for item in command], cwd=REPO_ROOT, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if completed.returncode != 0:
+            diagnostic = "\n".join((completed.stderr + "\n" + completed.stdout).splitlines()[-20:])
+            raise HelperError(f"ops Ansible operation failed:\n{diagnostic[:4096]}")
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("snapshot", "apply", "verify", "refresh-endpoint", "restore", "verify-recovery"))
+    parser.add_argument("--box", required=True)
+    parser.add_argument("--peer-box")
+    parser.add_argument("--magicdns-suffix", required=True)
+    parser.add_argument("--prefix")
+    parser.add_argument("--evidence-output")
+    parser.add_argument("--snapshot")
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if not BOX_RE.fullmatch(args.box or "") or not DNS_RE.fullmatch(args.magicdns_suffix or "") or len(args.magicdns_suffix) > 253:
+            raise HelperError("ops helper identity is invalid")
+        if args.peer_box and not BOX_RE.fullmatch(args.peer_box):
+            raise HelperError("peer box identity is invalid")
+        if args.command in {"verify", "verify-recovery"} and not args.peer_box:
+            raise HelperError("peer box is required for ops verification")
+        prefix = ""
+        if args.command in {"apply", "verify", "restore"}:
+            network = ipaddress.IPv6Network(args.prefix, strict=True)
+            if network.prefixlen != 64 or not network.is_global:
+                raise HelperError("ops helper requires one global /64")
+            prefix = str(network)
+        variables = {"overlay_ipv6_ops_operation": args.command, "overlay_ipv6_prefix": prefix, "overlay_ipv6_peer_box": args.peer_box or ""}
+        if args.command == "snapshot":
+            variables["overlay_ipv6_evidence_output"] = str(runtime_path(args.evidence_output))
+        if args.command == "restore":
+            snapshot = runtime_path(args.snapshot, existing=True)
+            value = json.loads(snapshot.read_text(encoding="utf-8"))
+            if value.get("kind") != "klokast.overlay-ipv6-ops-preimage.v1":
+                raise HelperError("ops snapshot kind is invalid")
+            variables["overlay_ipv6_ops_preimage"] = value
+        run_playbook(args, variables)
+        print(json.dumps({"schema_version": 1, "result": "check" if args.check else "success", "command": args.command, "box": args.box}, sort_keys=True))
+    except (HelperError, ValueError, json.JSONDecodeError) as error:
+        print(f"overlay-ipv6-ops: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

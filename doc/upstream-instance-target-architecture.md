@@ -662,7 +662,7 @@ needs. It runs the sealed, read-only Plan command as `smith`. Apply rejects
 duplicate JSON keys, trailing JSON, unknown fields, and non-canonical bytes in
 stored JSON evidence.
 
-`klokast.controller-toolchain.v2` binds the installed root Apply program, the
+`klokast.controller-toolchain.v3` binds the installed root Apply program, the
 active-controller guard, the fixed Tailscale helpers, the policy renderer and
 template, `platform-resources`, and the sealed engine. Apply checks the public
 checkout commit and clean state again immediately before an approved action.
@@ -735,6 +735,53 @@ rollback, re-adoption, final verification-only Plan, and signed-request replay
 refusal. Controller identity, applications, the second box, old-file removal,
 and application data remain outside this change.
 
+## 11.2 Ops-only overlay IPv6 repair
+
+Status: `implemented`; live acceptance is pending. This action repairs the
+existing overlay capability. It does not change Instance Specification,
+Authority State, Tailnet policy, source ownership, applications, or data.
+
+`klokast.overlay-direct-repair-intent.v1` is one closed action. It uses the
+existing `human-platform-apply` signer. A verification-only Plan v3 selects
+the active controller box and its unique peer. The intent binds the engine and
+private commits, Plan, Authority State, observation, source receipts, sealed
+engine, Controller Toolchain v3 receipt, Freebox gateway hash and API version,
+delegation slot and `/64`, stable router link-local next hop, both box IDs,
+Huawei prerequisite, and exact router and ops preimage hashes. It accepts no
+command, path, playbook, gateway, prefix, zone, or second action from the
+human.
+
+The root-owned Freebox broker has four operations: `inspect`,
+`configure-ops-delegation`, `verify`, and `restore`. A separate physical
+authorization installer stores the application token root-only. The broker
+uses the fixed local gateway endpoint and the documented Freebox challenge
+authentication. It rejects redirects, gateway or API drift, unknown response
+shapes, a delegation array other than eight `/64` slots, the first slot,
+collisions, prefix drift, and a next hop that is not link-local. It keeps the
+exact old delegation document only in root-only rollback storage. Logs and
+receipts use a gateway identity hash.
+
+IPv6 stays disabled by default. The repair installs one stable checked WAN
+link-local address on the active router, routes the selected `/64` only to its
+ops interface, sets WAN `accept_ra=2`, enables IPv6 forwarding, and advertises
+only that prefix. The ops VM adds persistent SLAAC without replacing or
+restarting IPv4. Router rules permit required ICMPv6, ops Tailscale UDP source
+port `41641`, STUN UDP `3478`, direct Tailscale UDP `41641` input, and
+established return traffic. Other zones remain IPv4-only.
+
+The Huawei gateway stays manual. A checked command prints the current peer
+router global IPv6 address and the exact UDP `41641` pinhole replacement. Apply
+requires the active router to reach the peer router directly through an IPv6
+endpoint before mutation. It then prepares the router, configures the Freebox,
+enables the ops prefix, refreshes only the active ops and peer router Tailscale
+endpoints, and requires `netcheck` IPv6 and a direct IPv6 ping.
+
+Apply stores exact Freebox, router, ops, sysctl, address, and live firewall
+preimages. Failure restores every preimage and verifies IPv4 controller and
+DERP-capable Tailnet recovery. An unproved restoration records
+`recovery_required`. The nonce is consumed before final live revalidation, so
+a failed, stale, or successful signed action cannot be replayed.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -770,13 +817,17 @@ complete.
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
 | First box connectivity migration | `implemented` | The exact one-router source transition, authority, authorization, comparison, rollback, and recovery contracts are implemented. Controller acceptance is the remaining gate. |
+| Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Physical pinhole change and signed live acceptance remain. |
 | Migration and legacy removal | `proposed` | The Tailnet pilot is complete. Only the first non-controller box migration is decided. The second box and legacy removal still require separate explicit decisions. |
 
 ### Current work queue
 
-1. Implement and live-verify the decided first non-controller box migration.
-2. Report that result to the human. Do not infer approval for the second box.
-3. Keep legacy removal `proposed` until its separate recovery and explicit
+1. Live-verify the ops-only overlay IPv6 repair after the human changes the
+   Huawei pinhole.
+2. Complete the real rollback and re-adoption acceptance for the first
+   non-controller box migration.
+3. Report that result to the human. Do not infer approval for the second box.
+4. Keep legacy removal `proposed` until its separate recovery and explicit
    approval gates are complete.
 
 ### Completed read-only acceptance alignment design

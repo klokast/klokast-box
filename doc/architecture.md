@@ -346,6 +346,13 @@ Examples of User Services:
 
 - Additional per-container Tailnet identities are possible for Infrastructure Services and User Services that need a separate ACL boundary.
 
+IPv6 downstream routing is disabled by default. One closed recovery action can
+route one residential-gateway `/64` only to the active controller's `ops`
+network. It does not enable IPv6 on `bak`, `dmz`, `iot`, `usr`, household, or
+admin networks. The action keeps IPv4 and Tailscale DERP available for
+recovery, and it requires a direct IPv6 path to the peer router before it can
+change the active site.
+
 # Special nodes
 
 ## 1. `og`

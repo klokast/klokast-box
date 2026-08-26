@@ -32,6 +32,8 @@
       - ops_controller_apply_mutation_helper_source | default('') | length > 0
       - ops_controller_apply_renderer_source | default('') | length > 0
       - ops_controller_apply_policy_template_source | default('') | length > 0
+      - ops_controller_apply_router_network_helper_source | default('') | length > 0
+      - ops_controller_apply_ops_network_helper_source | default('') | length > 0
       - ops_controller_initial_authority_state_sha256 | default('') is match('^[0-9a-f]{64}$')
       - ops_secret_authority_root | default('') is match('^/')
       - ops_secret_authority_state_root | default('') is match('^/')
@@ -491,6 +493,21 @@
   tags:
     - ops-controller-apply
 
+- name: Install the checked overlay IPv6 network helpers
+  ansible.builtin.copy:
+    src: "{{ item.source }}"
+    dest: "{{ item.destination }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - source: "{{ ops_controller_apply_router_network_helper_source }}"
+      destination: /usr/local/sbin/overlay-ipv6-router
+    - source: "{{ ops_controller_apply_ops_network_helper_source }}"
+      destination: /usr/local/sbin/overlay-ipv6-ops
+  tags:
+    - ops-controller-apply
+
 - name: Install the fixed Tailnet policy template
   ansible.builtin.copy:
     src: "{{ ops_controller_apply_policy_template_source }}"
@@ -523,6 +540,8 @@
     - {path: /var/lib/klokast/apply-executions, group: "{{ ops_infra_user }}", mode: "0750"}
     - {path: /var/lib/klokast/apply-rollback-material, group: root, mode: "0700"}
     - {path: /var/lib/klokast/apply-used-nonces, group: root, mode: "0700"}
+    - {path: /var/lib/klokast/freebox-ipv6, group: root, mode: "0700"}
+    - {path: /var/lib/klokast/freebox-ipv6/rollback, group: root, mode: "0700"}
   tags:
     - ops-controller-apply
 

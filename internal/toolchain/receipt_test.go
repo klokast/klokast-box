@@ -8,7 +8,7 @@ import (
 func validReceipt(t *testing.T) Receipt {
 	t.Helper()
 	commit := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	receipt := Receipt{SchemaVersion: 2, Kind: Kind, EngineCommit: commit, PublicCheckoutClean: true, PublicCheckoutCommit: commit}
+	receipt := Receipt{SchemaVersion: 3, Kind: Kind, EngineCommit: commit, PublicCheckoutClean: true, PublicCheckoutCommit: commit}
 	for index, name := range Components {
 		digest := fmt.Sprintf("%064x", index+1)
 		receipt.Components = append(receipt.Components, Component{Name: name, SourceSHA256: digest, InstalledSHA256: digest})

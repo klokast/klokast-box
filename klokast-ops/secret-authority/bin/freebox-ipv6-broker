@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""Root-only broker for one Freebox ops IPv6 delegation."""
+
+import argparse
+import datetime as dt
+import hashlib
+import hmac
+import http.client
+import ipaddress
+import json
+import os
+import re
+import socket
+import stat
+import sys
+from pathlib import Path
+
+
+APP_VERSION = "1.0"
+GATEWAY_HOST = "mafreebox.freebox.fr"
+GATEWAY_PORT = 80
+DISCOVERY_PATH = "/api_version"
+CREDENTIAL = Path("/etc/klokast/freebox-ipv6.json")
+STATE = Path("/var/lib/klokast/freebox-ipv6/ops-delegation.json")
+ROLLBACK_ROOT = Path("/var/lib/klokast/freebox-ipv6/rollback")
+AUDIT_LOG = Path("/var/log/klokast/freebox-ipv6.jsonl")
+CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+MAX_RESPONSE = 1024 * 1024
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+ROLLBACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
+UID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+class BrokerError(Exception):
+    pass
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def sha256_bytes(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise BrokerError("Freebox returned JSON with a duplicate key")
+        result[key] = value
+    return result
+
+
+def decode_json(content, label):
+    try:
+        value = json.loads(content, object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BrokerError(f"{label} is not valid JSON") from error
+    if not isinstance(value, dict):
+        raise BrokerError(f"{label} is not one JSON object")
+    return value
+
+
+def read_regular(path, maximum=64 * 1024, mode=None):
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise BrokerError(f"required root-only file is missing: {path.name}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0 or metadata.st_size > maximum:
+        raise BrokerError(f"required root-only file is unsafe: {path.name}")
+    if mode is not None and stat.S_IMODE(metadata.st_mode) != mode:
+        raise BrokerError(f"required root-only file has unsafe permissions: {path.name}")
+    return path.read_bytes()
+
+
+def ensure_root_dir(path, mode=0o700):
+    path.mkdir(parents=True, exist_ok=True)
+    metadata = path.lstat()
+    if path.is_symlink() or not path.is_dir() or metadata.st_uid != 0:
+        raise BrokerError("Freebox state directory is unsafe")
+    os.chmod(path, mode)
+
+
+def write_exclusive(path, content, mode=0o600):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.write(descriptor, content)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def replace_root_file(path, content, mode=0o600):
+    ensure_root_dir(path.parent)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    write_exclusive(temporary, content, mode)
+    os.replace(temporary, path)
+
+
+def now_utc():
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def require_root_active():
+    if os.geteuid() != 0:
+        raise BrokerError("run the Freebox broker as root through the checked Apply program")
+    result = __import__("subprocess").run(
+        [CONTROLLER_GUARD, "--status", "--json", "--require-active"],
+        text=True,
+        stdout=__import__("subprocess").PIPE,
+        stderr=__import__("subprocess").PIPE,
+        check=False,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"},
+    )
+    if result.returncode != 0:
+        raise BrokerError("Freebox operations require the explicitly active controller")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise BrokerError("controller guard returned invalid JSON") from error
+    if value.get("configured") is not True or value.get("active") is not True:
+        raise BrokerError("Freebox operations require the explicitly active controller")
+
+
+def resolve_local_gateway():
+    try:
+        answers = socket.getaddrinfo(GATEWAY_HOST, GATEWAY_PORT, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as error:
+        raise BrokerError("cannot resolve the fixed local Freebox endpoint") from error
+    addresses = sorted({answer[4][0] for answer in answers})
+    if len(addresses) != 1:
+        raise BrokerError("the fixed local Freebox endpoint did not resolve to one address")
+    address = ipaddress.ip_address(addresses[0])
+    if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local:
+        raise BrokerError("the fixed Freebox endpoint is not on the local private network")
+    return str(address)
+
+
+class Transport:
+    def __init__(self, address=None):
+        self.address = address or resolve_local_gateway()
+
+    def request(self, method, path, body=None, headers=None):
+        if method not in {"GET", "POST", "PUT"} or not isinstance(path, str) or not path.startswith("/") or "//" in path or "?" in path or "#" in path:
+            raise BrokerError("Freebox request is outside the closed local API surface")
+        encoded = None if body is None else canonical(body).encode("utf-8")
+        request_headers = {"Host": GATEWAY_HOST, "Accept": "application/json", "Connection": "close"}
+        if encoded is not None:
+            request_headers["Content-Type"] = "application/json; charset=utf-8"
+            request_headers["Content-Length"] = str(len(encoded))
+        request_headers.update(headers or {})
+        connection = http.client.HTTPConnection(self.address, GATEWAY_PORT, timeout=10)
+        try:
+            connection.request(method, path, body=encoded, headers=request_headers)
+            response = connection.getresponse()
+            if 300 <= response.status < 400:
+                raise BrokerError("Freebox API redirect was refused")
+            content = response.read(MAX_RESPONSE + 1)
+            if len(content) > MAX_RESPONSE:
+                raise BrokerError("Freebox API response is too large")
+            if response.status != 200:
+                raise BrokerError(f"Freebox API returned HTTP {response.status}")
+            content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise BrokerError("Freebox API returned an unexpected content type")
+            return decode_json(content, "Freebox API response")
+        except (OSError, http.client.HTTPException) as error:
+            raise BrokerError("fixed local Freebox API request failed") from error
+        finally:
+            connection.close()
+
+
+def validate_api_response(value, result_fields, label, optional_fields=frozenset()):
+    if set(value) != {"success", "result"} or value.get("success") is not True or not isinstance(value.get("result"), dict):
+        raise BrokerError(f"{label} has an unknown response shape")
+    fields = set(value["result"])
+    if not set(result_fields).issubset(fields) or not fields.issubset(set(result_fields) | set(optional_fields)):
+        raise BrokerError(f"{label} has an unknown result shape")
+    return value["result"]
+
+
+def discover(transport):
+    value = transport.request("GET", DISCOVERY_PATH)
+    required = {"uid", "device_name", "api_version", "api_base_url", "device_type", "api_domain", "https_available", "https_port"}
+    if set(value) != required:
+        raise BrokerError("Freebox discovery has an unknown response shape")
+    if not isinstance(value["uid"], str) or not UID_RE.fullmatch(value["uid"]):
+        raise BrokerError("Freebox discovery returned an invalid gateway identity")
+    match = re.fullmatch(r"([0-9]{1,2})\.([0-9]{1,3})", value.get("api_version", ""))
+    if match is None or int(match.group(1)) < 4:
+        raise BrokerError("Freebox discovery returned an unsupported API version")
+    if value.get("api_base_url") != "/api/" or not isinstance(value.get("device_name"), str) or not value["device_name"] or not isinstance(value.get("device_type"), str) or not value["device_type"]:
+        raise BrokerError("Freebox discovery returned an invalid gateway description")
+    if not isinstance(value.get("api_domain"), str) or not value["api_domain"] or not isinstance(value.get("https_available"), bool) or not isinstance(value.get("https_port"), int):
+        raise BrokerError("Freebox discovery returned invalid endpoint metadata")
+    return value
+
+
+def load_credential(discovery):
+    value = decode_json(read_regular(CREDENTIAL, mode=0o600), "Freebox credential")
+    expected = {"schema_version", "kind", "app_id", "app_token", "gateway_uid", "api_version", "api_major", "local_endpoint"}
+    if set(value) != expected or value.get("schema_version") != 1 or value.get("kind") != "klokast.freebox-credential.v1":
+        raise BrokerError("Freebox credential has an unknown shape")
+    if value.get("gateway_uid") != discovery["uid"] or value.get("api_version") != discovery["api_version"] or value.get("api_major") != int(discovery["api_version"].split(".", 1)[0]) or value.get("local_endpoint") != f"http://{GATEWAY_HOST}":
+        raise BrokerError("Freebox gateway identity, API version, or local endpoint drifted")
+    if not isinstance(value.get("app_id"), str) or not re.fullmatch(r"[A-Za-z0-9._-]{3,128}", value["app_id"]) or not isinstance(value.get("app_token"), str) or not value["app_token"] or len(value["app_token"]) > 4096:
+        raise BrokerError("Freebox credential identity is invalid")
+    return value
+
+
+def api_path(credential, suffix):
+    if not suffix.startswith("/"):
+        raise BrokerError("Freebox API suffix is invalid")
+    return f"/api/v{credential['api_major']}{suffix}"
+
+
+class Session:
+    def __init__(self, transport, credential):
+        self.transport = transport
+        self.credential = credential
+        login = validate_api_response(
+            transport.request("GET", api_path(credential, "/login/")),
+            {"logged_in", "challenge"}, "Freebox login", {"password_salt"},
+        )
+        if not isinstance(login.get("challenge"), str) or not login["challenge"] or len(login["challenge"]) > 4096:
+            raise BrokerError("Freebox login challenge is invalid")
+        password = hmac.new(
+            credential["app_token"].encode("utf-8"),
+            login["challenge"].encode("utf-8"), hashlib.sha1,
+        ).hexdigest()
+        opened = validate_api_response(
+            transport.request("POST", api_path(credential, "/login/session/"), {
+                "app_id": credential["app_id"], "app_version": APP_VERSION,
+                "password": password,
+            }),
+            {"session_token", "challenge", "permissions"},
+            "Freebox session", {"password_salt"},
+        )
+        if not isinstance(opened.get("session_token"), str) or not opened["session_token"] or len(opened["session_token"]) > 4096 or not isinstance(opened.get("permissions"), dict) or opened["permissions"].get("settings") is not True:
+            raise BrokerError("Freebox application lacks the settings permission")
+        self.header = {"X-Fbx-App-Auth": opened["session_token"]}
+
+    def request(self, method, suffix, body=None):
+        return self.transport.request(method, api_path(self.credential, suffix), body, self.header)
+
+    def close(self):
+        try:
+            self.request("POST", "/login/logout/", {})
+        except BrokerError:
+            pass
+
+
+def validate_delegation_document(value):
+    result = validate_api_response(
+        value, {"ipv6_enabled", "ipv6ll", "delegations"},
+        "Freebox IPv6 configuration",
+    )
+    if not isinstance(result["ipv6_enabled"], bool):
+        raise BrokerError("Freebox IPv6 enabled state is invalid")
+    try:
+        gateway_ll = ipaddress.IPv6Address(result["ipv6ll"])
+    except (ipaddress.AddressValueError, TypeError) as error:
+        raise BrokerError("Freebox link-local identity is invalid") from error
+    if not gateway_ll.is_link_local:
+        raise BrokerError("Freebox link-local identity is invalid")
+    delegations = result["delegations"]
+    if not isinstance(delegations, list) or len(delegations) != 8:
+        raise BrokerError("Freebox delegation array must contain exactly eight slots")
+    normalized = []
+    for item in delegations:
+        if not isinstance(item, dict) or set(item) != {"prefix", "next_hop"} or not isinstance(item["next_hop"], str):
+            raise BrokerError("Freebox delegation slot has an unknown shape")
+        try:
+            prefix = ipaddress.IPv6Network(item["prefix"], strict=True)
+        except (ipaddress.AddressValueError, TypeError) as error:
+            raise BrokerError("Freebox delegation prefix is invalid") from error
+        if prefix.prefixlen != 64 or not prefix.is_global:
+            raise BrokerError("Freebox delegation prefix is not one global /64")
+        if item["next_hop"]:
+            try:
+                next_hop = ipaddress.IPv6Address(item["next_hop"])
+            except ipaddress.AddressValueError as error:
+                raise BrokerError("Freebox delegation next hop is invalid") from error
+            if not next_hop.is_link_local:
+                raise BrokerError("Freebox delegation next hop is not link-local")
+        normalized.append({"prefix": str(prefix), "next_hop": item["next_hop"].lower()})
+    return {"ipv6_enabled": result["ipv6_enabled"], "ipv6ll": str(gateway_ll), "delegations": normalized}
+
+
+def load_recorded_state():
+    if not STATE.exists():
+        return None
+    value = decode_json(read_regular(STATE, mode=0o600), "recorded Freebox delegation")
+    expected = {"schema_version", "kind", "gateway_id_sha256", "api_version", "slot", "prefix", "next_hop"}
+    if set(value) != expected or value.get("schema_version") != 1 or value.get("kind") != "klokast.freebox-ops-delegation.v1" or not DIGEST_RE.fullmatch(value.get("gateway_id_sha256", "")) or not isinstance(value.get("slot"), int) or not 1 <= value["slot"] <= 7:
+        raise BrokerError("recorded Freebox delegation has an unknown shape")
+    return value
+
+
+def validate_next_hop(value):
+    try:
+        address = ipaddress.IPv6Address(value)
+    except (ipaddress.AddressValueError, TypeError) as error:
+        raise BrokerError("router next hop is invalid") from error
+    if not address.is_link_local:
+        raise BrokerError("router next hop must be a link-local IPv6 address")
+    return str(address)
+
+
+def select_slot(document, discovery, next_hop):
+    next_hop = validate_next_hop(next_hop)
+    gateway_hash = sha256_bytes(discovery["uid"].encode("utf-8"))
+    recorded = load_recorded_state()
+    matches = [index for index, item in enumerate(document["delegations"]) if item["next_hop"] == next_hop]
+    if len(matches) > 1:
+        raise BrokerError("router next hop occupies more than one Freebox delegation slot")
+    if recorded is not None:
+        if recorded["gateway_id_sha256"] != gateway_hash or recorded["api_version"] != discovery["api_version"] or recorded["next_hop"] != next_hop:
+            raise BrokerError("recorded Freebox gateway or next hop drifted")
+        slot = recorded["slot"]
+        item = document["delegations"][slot]
+        if item["prefix"] != recorded["prefix"]:
+            raise BrokerError("recorded Freebox delegation prefix drifted")
+        if item["next_hop"] not in {"", next_hop}:
+            raise BrokerError("recorded Freebox delegation slot is occupied")
+        if matches and matches != [slot]:
+            raise BrokerError("recorded Freebox next hop moved to another slot")
+    elif matches:
+        slot = matches[0]
+    else:
+        candidates = [index for index, item in enumerate(document["delegations"]) if index > 0 and item["next_hop"] == ""]
+        if not candidates:
+            raise BrokerError("Freebox has no unused non-first delegation slot")
+        slot = candidates[0]
+    return slot, document["delegations"][slot]["prefix"], next_hop, gateway_hash
+
+
+def inspect_gateway(session, discovery, next_hop):
+    raw = session.request("GET", "/connection/ipv6/config/")
+    document = validate_delegation_document(raw)
+    slot, prefix, next_hop, gateway_hash = select_slot(document, discovery, next_hop)
+    return document, {
+        "schema_version": 1,
+        "kind": "klokast.freebox-ops-delegation-inspection.v1",
+        "gateway_id_sha256": gateway_hash,
+        "api_version": discovery["api_version"],
+        "ipv6_enabled": document["ipv6_enabled"],
+        "slot": slot,
+        "prefix": prefix,
+        "next_hop": next_hop,
+        "configured": document["delegations"][slot]["next_hop"] == next_hop,
+        "delegation_document_sha256": sha256_bytes(canonical(document).encode("utf-8")),
+    }
+
+
+def append_audit(event, inspection, **fields):
+    ensure_root_dir(AUDIT_LOG.parent, 0o750)
+    record = {
+        "ts": now_utc(), "event": event,
+        "gateway_id_sha256": inspection["gateway_id_sha256"],
+        "api_version": inspection["api_version"],
+        "slot": inspection["slot"], "prefix": inspection["prefix"],
+        **fields,
+    }
+    descriptor = os.open(AUDIT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(descriptor, (canonical(record) + "\n").encode("utf-8"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def require_selection(args, inspection):
+    if args.slot != inspection["slot"] or str(ipaddress.IPv6Network(args.prefix, strict=True)) != inspection["prefix"] or validate_next_hop(args.next_hop) != inspection["next_hop"]:
+        raise BrokerError("requested Freebox delegation differs from the checked selection")
+
+
+def configure(args, session, discovery):
+    document, inspection = inspect_gateway(session, discovery, args.next_hop)
+    require_selection(args, inspection)
+    if not document["ipv6_enabled"]:
+        raise BrokerError("Freebox IPv6 is disabled")
+    if args.expected_preimage_sha256 != inspection["delegation_document_sha256"]:
+        raise BrokerError("Freebox delegation document changed after approval")
+    if args.check:
+        return {**inspection, "result": "check", "changed": False}
+    if not ROLLBACK_ID_RE.fullmatch(args.rollback_id or ""):
+        raise BrokerError("Freebox rollback identity is invalid")
+    ensure_root_dir(ROLLBACK_ROOT)
+    rollback = ROLLBACK_ROOT / args.rollback_id
+    rollback.mkdir(mode=0o700)
+    preimage = (canonical(document) + "\n").encode("utf-8")
+    write_exclusive(rollback / "delegation-preimage.json", preimage)
+    write_exclusive(rollback / "preimage.sha256", (inspection["delegation_document_sha256"] + "\n").encode("ascii"))
+    candidate = [dict(item) for item in document["delegations"]]
+    candidate[args.slot]["next_hop"] = inspection["next_hop"]
+    updated = validate_delegation_document(session.request("PUT", "/connection/ipv6/config/", {"delegations": candidate}))
+    if updated["delegations"] != candidate or updated["ipv6_enabled"] is not True:
+        raise BrokerError("Freebox did not apply the exact ops delegation")
+    state = {
+        "schema_version": 1, "kind": "klokast.freebox-ops-delegation.v1",
+        "gateway_id_sha256": inspection["gateway_id_sha256"],
+        "api_version": inspection["api_version"], "slot": args.slot,
+        "prefix": inspection["prefix"], "next_hop": inspection["next_hop"],
+    }
+    try:
+        replace_root_file(STATE, (canonical(state) + "\n").encode("utf-8"))
+    except Exception as state_error:
+        session.request("PUT", "/connection/ipv6/config/", {"delegations": document["delegations"]})
+        raise BrokerError("Freebox state recording failed and the delegation was restored") from state_error
+    append_audit("freebox.ops-delegation.configured", inspection, rollback_id_sha256=sha256_bytes(args.rollback_id.encode("utf-8")))
+    return {**inspection, "result": "configured", "changed": not inspection["configured"]}
+
+
+def verify(args, session, discovery):
+    document, inspection = inspect_gateway(session, discovery, args.next_hop)
+    require_selection(args, inspection)
+    if not document["ipv6_enabled"] or not inspection["configured"]:
+        raise BrokerError("Freebox ops delegation did not verify")
+    return {**inspection, "result": "verified"}
+
+
+def restore(args, session, discovery):
+    if not ROLLBACK_ID_RE.fullmatch(args.rollback_id or ""):
+        raise BrokerError("Freebox rollback identity is invalid")
+    rollback = ROLLBACK_ROOT / args.rollback_id
+    preimage_content = read_regular(rollback / "delegation-preimage.json", MAX_RESPONSE, mode=0o600)
+    preimage = decode_json(preimage_content, "Freebox delegation preimage")
+    if set(preimage) != {"ipv6_enabled", "ipv6ll", "delegations"}:
+        raise BrokerError("Freebox delegation preimage has an unknown shape")
+    preimage = validate_delegation_document({"success": True, "result": preimage})
+    preimage_hash = sha256_bytes(canonical(preimage).encode("utf-8"))
+    if args.expected_preimage_sha256 != preimage_hash or read_regular(rollback / "preimage.sha256", 66, mode=0o600) != (preimage_hash + "\n").encode("ascii"):
+        raise BrokerError("Freebox delegation preimage hash does not match")
+    _current, inspection = inspect_gateway(session, discovery, args.next_hop)
+    require_selection(args, inspection)
+    restored = validate_delegation_document(session.request("PUT", "/connection/ipv6/config/", {"delegations": preimage["delegations"]}))
+    if restored != preimage:
+        raise BrokerError("Freebox delegation restoration did not verify exactly")
+    append_audit("freebox.ops-delegation.restored", inspection, rollback_id_sha256=sha256_bytes(args.rollback_id.encode("utf-8")))
+    return {**inspection, "result": "restored", "restored_document_sha256": preimage_hash}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("--next-hop", required=True)
+    for name in ("configure-ops-delegation", "verify", "restore"):
+        command = commands.add_parser(name)
+        command.add_argument("--slot", type=int, required=True)
+        command.add_argument("--prefix", required=True)
+        command.add_argument("--next-hop", required=True)
+        if name in {"configure-ops-delegation", "restore"}:
+            command.add_argument("--expected-preimage-sha256", required=True)
+            command.add_argument("--rollback-id", required=True)
+        if name == "configure-ops-delegation":
+            command.add_argument("--check", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        require_root_active()
+        transport = Transport()
+        discovery = discover(transport)
+        credential = load_credential(discovery)
+        session = Session(transport, credential)
+        try:
+            if args.command == "inspect":
+                _document, result = inspect_gateway(session, discovery, args.next_hop)
+            elif args.command == "configure-ops-delegation":
+                result = configure(args, session, discovery)
+            elif args.command == "verify":
+                result = verify(args, session, discovery)
+            elif args.command == "restore":
+                result = restore(args, session, discovery)
+            else:
+                raise BrokerError("unsupported Freebox broker action")
+        finally:
+            session.close()
+        print(canonical(result))
+    except (BrokerError, ValueError) as error:
+        print(f"freebox-ipv6-broker: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

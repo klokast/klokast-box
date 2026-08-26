@@ -4,6 +4,7 @@
 import argparse
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import pwd
@@ -23,11 +24,14 @@ KIND_PLAN = "klokast.plan.v2"
 KIND_INTENT = "klokast.apply-intent.v1"
 KIND_AUTHORITY = "klokast.authority-state.v1"
 KIND_RECOVERY = "klokast.private-source-recovery.v1"
-KIND_TOOLCHAIN = "klokast.controller-toolchain.v2"
+KIND_TOOLCHAIN = "klokast.controller-toolchain.v3"
 KIND_PLAN_V3 = "klokast.plan.v3"
 KIND_AUTHORITY_V2 = "klokast.authority-state.v2"
 KIND_CONVERSION_INTENT = "klokast.authority-conversion-intent.v1"
 KIND_BOX_INTENT = "klokast.box-connectivity-intent.v1"
+KIND_OVERLAY_INTENT = "klokast.overlay-direct-repair-intent.v1"
+OVERLAY_EXECUTOR = "overlay_ipv6_direct_repair_v1"
+OVERLAY_ROLLBACK_TYPE = "overlay_ipv6_direct_preimages_v1"
 BOX_EXECUTOR = "box_connectivity_v1"
 BOX_ROLLBACK_TYPE = "box_connectivity_registry_v1"
 BOX_GROUP_PREFIX = "box-connectivity-v1:"
@@ -43,8 +47,9 @@ SCOPES = [
     "deployment.tailnet.magicdns_suffix",
 ]
 COMPONENTS = [
-    "controller_guard", "ksa_apply", "platform_resources", "policy_mutation_helper",
-    "policy_renderer", "policy_template", "sealed_engine",
+    "controller_guard", "freebox_broker", "ksa_apply", "ops_network_helper",
+    "platform_resources", "policy_mutation_helper", "policy_renderer",
+    "policy_template", "router_network_helper", "sealed_engine",
 ]
 REPO_ROOT = Path("/home/smith/src/klokast/klokast-box")
 PRIVATE_ROOT = Path("/home/smith/private/klokast")
@@ -72,6 +77,9 @@ RENDERER = Path("/usr/local/sbin/render-tailscale-policy")
 POLICY_TEMPLATE = Path("/usr/local/share/klokast/tailscale/policy.hujson.j2")
 CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 PLATFORM_RESOURCES = Path("/usr/local/sbin/platform-resources")
+FREEBOX_BROKER = Path("/usr/local/sbin/freebox-ipv6-broker")
+ROUTER_NETWORK_HELPER = Path("/usr/local/sbin/overlay-ipv6-router")
+OPS_NETWORK_HELPER = Path("/usr/local/sbin/overlay-ipv6-ops")
 DOAS = Path("/usr/bin/doas")
 CONTROLLER_USER = "smith"
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -687,11 +695,14 @@ def validate_authority_v2(path, plan, group):
 def component_paths(build_binary):
     return {
         "controller_guard": (REPO_ROOT / "ansible/roles/ops-controller/files/klokast-controller-guard", CONTROLLER_GUARD),
+        "freebox_broker": (REPO_ROOT / "klokast-ops/secret-authority/bin/freebox-ipv6-broker", FREEBOX_BROKER),
         "ksa_apply": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
+        "ops_network_helper": (REPO_ROOT / "ansible/bin/overlay-ipv6-ops", OPS_NETWORK_HELPER),
         "platform_resources": (REPO_ROOT / "ansible/bin/platform-resources", PLATFORM_RESOURCES),
         "policy_mutation_helper": (REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", MUTATION_HELPER),
         "policy_renderer": (REPO_ROOT / "ansible/bin/render-tailscale-policy", RENDERER),
         "policy_template": (REPO_ROOT / "klokast-ops/tailscale/policy.hujson.j2", POLICY_TEMPLATE),
+        "router_network_helper": (REPO_ROOT / "ansible/bin/overlay-ipv6-router", ROUTER_NETWORK_HELPER),
         "sealed_engine": (build_binary, build_binary),
     }
 
@@ -714,7 +725,7 @@ def validate_toolchain(path, plan, build_binary):
         "schema_version", "kind", "engine_commit", "public_checkout_clean",
         "public_checkout_commit", "components", "receipt_sha256",
     }
-    if set(receipt) != expected or receipt.get("schema_version") != 2 or receipt.get("kind") != KIND_TOOLCHAIN or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
+    if set(receipt) != expected or receipt.get("schema_version") != 3 or receipt.get("kind") != KIND_TOOLCHAIN or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
     entries = receipt.get("components")
     if not isinstance(entries, list) or [item.get("name") for item in entries] != COMPONENTS:
@@ -1347,7 +1358,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_OVERLAY_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -1824,6 +1835,434 @@ def box_execute(args, intent):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def overlay_boxes(plan, group):
+    boxes = [item.get("id") for item in plan.get("projection", {}).get("boxes", [])]
+    active = (
+        plan.get("projection", {}).get("control_plane", {})
+        .get("active_controller", {}).get("box_id")
+    )
+    if (
+        len(boxes) != 2
+        or len(set(boxes)) != 2
+        or active not in boxes
+        or group.get("operation") != "verify_instance_authority"
+    ):
+        raise ApplyError("overlay repair requires a verification-only two-box Plan v3")
+    peer = next(item for item in boxes if item != active)
+    if group.get("box") != peer:
+        raise ApplyError("overlay repair Plan selected the wrong peer box")
+    return active, peer
+
+
+def require_overlay_controller_box(active):
+    hostname = run(["hostname", "-s"], capture=True, check=False).stdout.strip()
+    if hostname != f"{active}-ops":
+        raise ApplyError("overlay repair Plan does not name this active controller box")
+
+
+def stable_router_next_hop(box):
+    digest = hashlib.sha256(("klokast-overlay-ipv6:" + box).encode("ascii")).digest()[:8]
+    value = int.from_bytes(digest, "big")
+    value &= ~(1 << 57)
+    value |= 1 << 56
+    address = ipaddress.IPv6Address(int(ipaddress.IPv6Address("fe80::")) | value)
+    return str(address)
+
+
+def overlay_action_set(active, peer):
+    return [
+        "freebox.ops-ipv6-delegation",
+        f"boxes.{active}.router.ops-ipv6-downstream",
+        f"boxes.{active}.ops.native-ipv6",
+        f"overlay.{active}-ops-to-{peer}-router.direct-ipv6",
+    ]
+
+
+def decode_closed_result(result, label, expected_kind=None):
+    if result.returncode != 0:
+        lines = [line.strip() for line in (result.stderr + "\n" + result.stdout).splitlines() if line.strip()]
+        raise ApplyError(f"{label} failed: {(lines[-1] if lines else 'no diagnostic')[:512]}")
+    try:
+        value = json.loads(result.stdout, object_pairs_hook=unique_object)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ApplyError(f"{label} returned invalid JSON") from error
+    if not isinstance(value, dict) or (expected_kind and value.get("kind") != expected_kind):
+        raise ApplyError(f"{label} returned an unknown result shape")
+    return value
+
+
+def run_overlay_helper(helper, command, active, peer, suffix, prefix=None, next_hop=None, output=None, snapshot=None, check=False):
+    if helper not in {ROUTER_NETWORK_HELPER, OPS_NETWORK_HELPER}:
+        raise ApplyError("overlay helper is outside the closed toolchain")
+    argv = [helper, command, "--box", active, "--magicdns-suffix", suffix]
+    if peer:
+        argv.extend(["--peer-box", peer])
+    if prefix:
+        argv.extend(["--prefix", prefix])
+    if next_hop and helper == ROUTER_NETWORK_HELPER:
+        argv.extend(["--next-hop", next_hop])
+    if output:
+        argv.extend(["--evidence-output", output])
+    if snapshot:
+        argv.extend(["--snapshot", snapshot])
+    if check:
+        argv.append("--check")
+    result = run_plan_as_controller(argv)
+    if result.returncode != 0:
+        lines = [line.strip() for line in (result.stderr + "\n" + result.stdout).splitlines() if line.strip()]
+        raise ApplyError(f"closed {helper.name} {command} failed: {(lines[-1] if lines else 'no diagnostic')[:512]}")
+    if command != "huawei-instructions":
+        value = decode_closed_result(result, f"closed {helper.name} {command}")
+        if set(value) != {"schema_version", "result", "command", "box"} or value.get("schema_version") != 1 or value.get("command") != command or value.get("box") != active:
+            raise ApplyError(f"closed {helper.name} {command} result is not exact")
+    return result
+
+
+def inspect_freebox(next_hop):
+    result = run([FREEBOX_BROKER, "inspect", "--next-hop", next_hop], capture=True, check=False)
+    value = decode_closed_result(result, "Freebox broker inspection", "klokast.freebox-ops-delegation-inspection.v1")
+    expected = {
+        "schema_version", "kind", "gateway_id_sha256", "api_version",
+        "ipv6_enabled", "slot", "prefix", "next_hop", "configured",
+        "delegation_document_sha256",
+    }
+    if set(value) != expected or value.get("schema_version") != 1 or value.get("ipv6_enabled") is not True or not DIGEST_RE.fullmatch(value.get("gateway_id_sha256", "")) or not DIGEST_RE.fullmatch(value.get("delegation_document_sha256", "")) or not isinstance(value.get("slot"), int) or not 1 <= value["slot"] <= 7 or value.get("next_hop") != next_hop:
+        raise ApplyError("Freebox broker returned an invalid closed inspection")
+    try:
+        prefix = ipaddress.IPv6Network(value["prefix"], strict=True)
+    except (ipaddress.AddressValueError, TypeError) as error:
+        raise ApplyError("Freebox broker returned an invalid delegated prefix") from error
+    if prefix.prefixlen != 64 or not prefix.is_global:
+        raise ApplyError("Freebox broker returned a non-global or non-/64 prefix")
+    return value
+
+
+def run_freebox_action(command, intent):
+    argv = [
+        FREEBOX_BROKER, command,
+        "--slot", str(intent["delegation_slot"]),
+        "--prefix", intent["delegated_prefix"],
+        "--next-hop", intent["router_next_hop"],
+    ]
+    if command in {"configure-ops-delegation", "restore"}:
+        argv.extend([
+            "--expected-preimage-sha256", intent["freebox_preimage_sha256"],
+            "--rollback-id", intent["nonce"],
+        ])
+    result = run(argv, capture=True, check=False)
+    value = decode_closed_result(result, f"Freebox broker {command}", "klokast.freebox-ops-delegation-inspection.v1")
+    if value.get("slot") != intent["delegation_slot"] or value.get("prefix") != intent["delegated_prefix"] or value.get("next_hop") != intent["router_next_hop"] or value.get("gateway_id_sha256") != intent["freebox_gateway_id_sha256"] or value.get("api_version") != intent["freebox_api_version"]:
+        raise ApplyError(f"Freebox broker {command} result changed the approved selection")
+    return value
+
+
+def overlay_binding_for_storage(binding, directory):
+    stored = {
+        key: value for key, value in binding.items()
+        if key not in {"plan", "group", "state"}
+    }
+    stored["router_preimage_path"] = str(directory / "router-preimage.json")
+    stored["ops_preimage_path"] = str(directory / "ops-preimage.json")
+    stored["huawei_prerequisite_path"] = str(directory / "huawei-prerequisite.json")
+    return stored
+
+
+def overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, issued):
+    plan = binding["plan"]
+    compatibility = {item["name"]: item["sha256"] for item in plan["compatibility_inputs"]}
+    return {
+        "schema_version": 1,
+        "kind": KIND_OVERLAY_INTENT,
+        "action": "repair_overlay_ipv6_direct",
+        "executor": OVERLAY_EXECUTOR,
+        "rollback_type": OVERLAY_ROLLBACK_TYPE,
+        "action_set": overlay_action_set(active, peer),
+        "active_controller_box": active,
+        "peer_box": peer,
+        "plan_sha256": plan["plan_sha256"],
+        "authority_state_sha256": binding["state"]["authority_state_sha256"],
+        "source_recovery_receipt_sha256": Path(binding["recovery_path"]).stem,
+        "source_receipt_sha256": plan["instance_source"]["receipt_sha256"],
+        "observation_sha256": plan["observation"]["generation_sha256"],
+        "private_commit": plan["instance"]["commit"],
+        "private_instance_sha256": next(item["sha256"] for item in plan["inputs"] if item["path"] == "klokast-instance.json"),
+        "legacy_deployment_sha256": compatibility["legacy_deployment"],
+        "legacy_registry_sha256": compatibility[LEGACY_REGISTRY_SOURCE],
+        "legacy_controller_ha_sha256": compatibility["legacy_controller_ha"],
+        "engine_commit": plan["engine"]["commit"],
+        "binary_sha256": binding["binary_sha256"],
+        "builder_receipt_sha256": binding["builder_receipt_sha256"],
+        "toolchain_receipt_sha256": plan["controller_toolchain"]["receipt_sha256"],
+        "freebox_gateway_id_sha256": inspection["gateway_id_sha256"],
+        "freebox_api_version": inspection["api_version"],
+        "delegation_slot": inspection["slot"],
+        "delegated_prefix": inspection["prefix"],
+        "router_next_hop": next_hop,
+        "freebox_preimage_sha256": inspection["delegation_document_sha256"],
+        "router_preimage_sha256": binding["router_preimage_sha256"],
+        "ops_preimage_sha256": binding["ops_preimage_sha256"],
+        "huawei_prerequisite_sha256": binding["huawei_prerequisite_sha256"],
+        "nonce": nonce,
+        "issued_at": format_utc(issued),
+        "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+    }
+
+
+def validate_overlay_intent(intent):
+    expected = {
+        "schema_version", "kind", "action", "executor", "rollback_type",
+        "action_set", "active_controller_box", "peer_box", "plan_sha256",
+        "authority_state_sha256", "source_recovery_receipt_sha256",
+        "source_receipt_sha256", "observation_sha256", "private_commit",
+        "private_instance_sha256", "legacy_deployment_sha256",
+        "legacy_registry_sha256", "legacy_controller_ha_sha256",
+        "engine_commit", "binary_sha256", "builder_receipt_sha256",
+        "toolchain_receipt_sha256", "freebox_gateway_id_sha256",
+        "freebox_api_version", "delegation_slot", "delegated_prefix",
+        "router_next_hop", "freebox_preimage_sha256",
+        "router_preimage_sha256", "ops_preimage_sha256",
+        "huawei_prerequisite_sha256", "nonce", "issued_at", "expires_at",
+    }
+    if set(intent) != expected or intent.get("schema_version") != 1 or intent.get("kind") != KIND_OVERLAY_INTENT or intent.get("action") != "repair_overlay_ipv6_direct" or intent.get("executor") != OVERLAY_EXECUTOR or intent.get("rollback_type") != OVERLAY_ROLLBACK_TYPE:
+        raise ApplyError("overlay direct repair intent fields do not match the closed schema")
+    active, peer = intent.get("active_controller_box"), intent.get("peer_box")
+    if not isinstance(active, str) or not BOX_RE.fullmatch(active) or not isinstance(peer, str) or not BOX_RE.fullmatch(peer) or active == peer or intent.get("action_set") != overlay_action_set(active, peer):
+        raise ApplyError("overlay direct repair intent has a wrong box or action set")
+    digest_fields = expected - {
+        "schema_version", "kind", "action", "executor", "rollback_type",
+        "action_set", "active_controller_box", "peer_box", "private_commit",
+        "engine_commit", "freebox_api_version", "delegation_slot",
+        "delegated_prefix", "router_next_hop", "nonce", "issued_at", "expires_at",
+    }
+    for field in digest_fields:
+        if not DIGEST_RE.fullmatch(intent.get(field, "")):
+            raise ApplyError(f"overlay direct repair digest is invalid: {field}")
+    if not COMMIT_RE.fullmatch(intent.get("private_commit", "")) or not COMMIT_RE.fullmatch(intent.get("engine_commit", "")) or not NONCE_RE.fullmatch(intent.get("nonce", "")) or not isinstance(intent.get("delegation_slot"), int) or not 1 <= intent["delegation_slot"] <= 7 or not re.fullmatch(r"[0-9]{1,2}\.[0-9]{1,3}", intent.get("freebox_api_version", "")):
+        raise ApplyError("overlay direct repair identity is invalid")
+    try:
+        prefix = ipaddress.IPv6Network(intent["delegated_prefix"], strict=True)
+        next_hop = ipaddress.IPv6Address(intent["router_next_hop"])
+    except (ipaddress.AddressValueError, TypeError) as error:
+        raise ApplyError("overlay direct repair IPv6 binding is invalid") from error
+    if prefix.prefixlen != 64 or not prefix.is_global or not next_hop.is_link_local or str(next_hop) != stable_router_next_hop(active):
+        raise ApplyError("overlay direct repair IPv6 binding is not the stable ops-only selection")
+    issued = parse_utc(intent["issued_at"], "issued_at")
+    expires = parse_utc(intent["expires_at"], "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+        raise ApplyError("overlay direct repair intent is expired or has an invalid lifetime")
+
+
+def collect_overlay_evidence(work, active, peer, suffix, prefix=None, next_hop=None, *, check=False):
+    router_path = work / "router-preimage.json"
+    ops_path = work / "ops-preimage.json"
+    huawei_path = work / "huawei-prerequisite.json"
+    run_overlay_helper(ROUTER_NETWORK_HELPER, "snapshot", active, None, suffix, output=router_path)
+    run_overlay_helper(OPS_NETWORK_HELPER, "snapshot", active, None, suffix, output=ops_path)
+    run_overlay_helper(ROUTER_NETWORK_HELPER, "verify-prerequisite", active, peer, suffix, output=huawei_path)
+    if check:
+        run_overlay_helper(ROUTER_NETWORK_HELPER, "prepare", active, None, suffix, prefix=prefix, next_hop=next_hop, check=True)
+        run_overlay_helper(ROUTER_NETWORK_HELPER, "apply", active, None, suffix, prefix=prefix, next_hop=next_hop, check=True)
+        run_overlay_helper(OPS_NETWORK_HELPER, "apply", active, None, suffix, prefix=prefix, check=True)
+    return {
+        "router_preimage_path": str(router_path),
+        "ops_preimage_path": str(ops_path),
+        "huawei_prerequisite_path": str(huawei_path),
+        "router_preimage_sha256": sha256_file(router_path),
+        "ops_preimage_sha256": sha256_file(ops_path),
+        "huawei_prerequisite_sha256": sha256_file(huawei_path),
+    }
+
+
+def overlay_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    work = new_box_work(nonce)
+    try:
+        binding = validate_inputs_v3(args)
+        active, peer = overlay_boxes(binding["plan"], binding["group"])
+        require_overlay_controller_box(active)
+        suffix = plan_magicdns_suffix(binding["plan"])
+        next_hop = stable_router_next_hop(active)
+        inspection = inspect_freebox(next_hop)
+        evidence = collect_overlay_evidence(
+            work, active, peer, suffix, inspection["prefix"], next_hop, check=True
+        )
+        binding.update(evidence)
+        issued = now_utc()
+        intent = overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, issued)
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        for name, source in (
+            ("router-preimage.json", evidence["router_preimage_path"]),
+            ("ops-preimage.json", evidence["ops_preimage_path"]),
+            ("huawei-prerequisite.json", evidence["huawei_prerequisite_path"]),
+        ):
+            shutil.copyfile(source, directory / name)
+        (directory / "intent.json").write_text(canonical(intent) + "\n", encoding="utf-8")
+        stored = overlay_binding_for_storage(binding, directory)
+        (directory / "binding.json").write_text(canonical(stored) + "\n", encoding="utf-8")
+        for item in directory.iterdir():
+            item.chmod(0o600)
+        append_audit("overlay-repair.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], active_controller_box=active, peer_box=peer, gateway_id_sha256=intent["freebox_gateway_id_sha256"], delegation_slot=intent["delegation_slot"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def store_overlay_execution(intent, result, recovery_result="not_needed"):
+    receipt = {
+        "schema_version": 3,
+        "kind": "klokast.apply-execution.v3",
+        "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode("utf-8")),
+        "plan_sha256": intent["plan_sha256"],
+        "nonce": intent["nonce"],
+        "action": intent["action"],
+        "executor": OVERLAY_EXECUTOR,
+        "rollback_type": OVERLAY_ROLLBACK_TYPE,
+        "active_controller_box": intent["active_controller_box"],
+        "peer_box": intent["peer_box"],
+        "freebox_gateway_id_sha256": intent["freebox_gateway_id_sha256"],
+        "delegation_slot": intent["delegation_slot"],
+        "delegated_prefix": intent["delegated_prefix"],
+        "result": result,
+        "recovery_result": recovery_result,
+        "authority_state_sha256": intent["authority_state_sha256"],
+        "finished_at": format_utc(now_utc()),
+    }
+    receipt["receipt_sha256"] = sha256_bytes(canonical(receipt).encode("utf-8"))
+    directory = EXECUTION_ROOT / intent["nonce"]
+    ensure_dir(EXECUTION_ROOT, 0o750)
+    directory.mkdir(mode=0o750)
+    os.chown(directory, 0, smith_gid())
+    path = directory / f"{receipt['receipt_sha256']}.json"
+    path.write_text(canonical(receipt) + "\n", encoding="utf-8")
+    path.chmod(0o440)
+    os.chown(path, 0, smith_gid())
+    return path, receipt
+
+
+def stage_overlay_snapshot(source, work, name):
+    if name not in {"router-preimage.json", "ops-preimage.json"}:
+        raise ApplyError("overlay snapshot staging name is not closed")
+    target = work / name
+    target.write_bytes(read_regular(source))
+    os.chown(target, 0, smith_gid())
+    os.chmod(target, 0o440)
+    return target
+
+
+def overlay_revalidate(binding, intent, work):
+    namespace = argparse.Namespace(
+        plan=binding["plan_path"], authority_state=binding["authority_path"],
+        controller_toolchain_receipt=binding["toolchain_path"],
+        source_recovery_receipt=binding["recovery_path"],
+        instance_source_receipt=binding["source_path"],
+        observation=binding["observation"], build_dir=binding["build_dir"],
+    )
+    current = validate_inputs_v3(namespace)
+    active, peer = overlay_boxes(current["plan"], current["group"])
+    require_overlay_controller_box(active)
+    suffix = plan_magicdns_suffix(current["plan"])
+    inspection = inspect_freebox(intent["router_next_hop"])
+    evidence = collect_overlay_evidence(work, active, peer, suffix)
+    checks = {
+        "plan_sha256": current["plan"]["plan_sha256"],
+        "authority_state_sha256": current["state"]["authority_state_sha256"],
+        "active_controller_box": active,
+        "peer_box": peer,
+        "freebox_gateway_id_sha256": inspection["gateway_id_sha256"],
+        "freebox_api_version": inspection["api_version"],
+        "delegation_slot": inspection["slot"],
+        "delegated_prefix": inspection["prefix"],
+        "freebox_preimage_sha256": inspection["delegation_document_sha256"],
+        "router_preimage_sha256": evidence["router_preimage_sha256"],
+        "ops_preimage_sha256": evidence["ops_preimage_sha256"],
+        "huawei_prerequisite_sha256": evidence["huawei_prerequisite_sha256"],
+        "binary_sha256": current["binary_sha256"],
+        "builder_receipt_sha256": current["builder_receipt_sha256"],
+    }
+    if any(intent.get(field) != value for field, value in checks.items()):
+        raise ApplyError("overlay direct repair evidence changed after authorization")
+    for field, current_path in (
+        ("router_preimage_path", evidence["router_preimage_path"]),
+        ("ops_preimage_path", evidence["ops_preimage_path"]),
+        ("huawei_prerequisite_path", evidence["huawei_prerequisite_path"]),
+    ):
+        if read_regular(binding[field]) != read_regular(current_path):
+            raise ApplyError("stored overlay repair evidence differs from exact revalidation")
+    return current, suffix
+
+
+def overlay_execute(args, intent):
+    validate_overlay_intent(intent)
+    verify_signature(args, intent)
+    preflight = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(preflight / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed overlay repair intent does not match controller preflight evidence")
+    binding = load_json(preflight / "binding.json", canonical_stored=True)
+    required = {
+        "plan_path", "authority_path", "toolchain_path", "source_path",
+        "recovery_path", "observation", "build_dir", "binary_sha256",
+        "builder_receipt_sha256", "router_preimage_path", "ops_preimage_path",
+        "huawei_prerequisite_path", "router_preimage_sha256",
+        "ops_preimage_sha256", "huawei_prerequisite_sha256",
+    }
+    if set(binding) != required:
+        raise ApplyError("stored overlay repair binding has unknown or missing fields")
+    consume_nonce(intent)
+    work = new_box_work(intent["nonce"] + "-execute")
+    mutation_started = False
+    freebox_configured = False
+    try:
+        current, suffix = overlay_revalidate(binding, intent, work)
+        verify_public_checkout(intent["engine_commit"])
+        router_snapshot = stage_overlay_snapshot(binding["router_preimage_path"], work, "router-preimage.json")
+        ops_snapshot = stage_overlay_snapshot(binding["ops_preimage_path"], work, "ops-preimage.json")
+        rollback = ROLLBACK_ROOT / intent["nonce"]
+        ensure_dir(ROLLBACK_ROOT, 0o700)
+        rollback.mkdir(mode=0o700)
+        for name, source in (("router-preimage.json", binding["router_preimage_path"]), ("ops-preimage.json", binding["ops_preimage_path"]), ("huawei-prerequisite.json", binding["huawei_prerequisite_path"])):
+            shutil.copyfile(source, rollback / name)
+            (rollback / name).chmod(0o600)
+        mutation_started = True
+        run_overlay_helper(ROUTER_NETWORK_HELPER, "prepare", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"])
+        run_freebox_action("configure-ops-delegation", intent)
+        freebox_configured = True
+        run_overlay_helper(ROUTER_NETWORK_HELPER, "apply", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"])
+        run_overlay_helper(OPS_NETWORK_HELPER, "apply", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"])
+        run_overlay_helper(OPS_NETWORK_HELPER, "refresh-endpoint", intent["active_controller_box"], None, suffix)
+        run_overlay_helper(ROUTER_NETWORK_HELPER, "refresh-endpoints", intent["active_controller_box"], intent["peer_box"], suffix)
+        run_freebox_action("verify", intent)
+        run_overlay_helper(ROUTER_NETWORK_HELPER, "verify", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"])
+        run_overlay_helper(OPS_NETWORK_HELPER, "verify", intent["active_controller_box"], intent["peer_box"], suffix, prefix=intent["delegated_prefix"])
+    except ApplyError as mutation_error:
+        recovery_result = "not_needed" if not mutation_started else "recovery_required"
+        restoration_error = None
+        if mutation_started:
+            try:
+                if freebox_configured:
+                    run_freebox_action("restore", intent)
+                router_snapshot = locals().get("router_snapshot") or stage_overlay_snapshot(binding["router_preimage_path"], work, "router-preimage.json")
+                ops_snapshot = locals().get("ops_snapshot") or stage_overlay_snapshot(binding["ops_preimage_path"], work, "ops-preimage.json")
+                run_overlay_helper(OPS_NETWORK_HELPER, "restore", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], snapshot=ops_snapshot)
+                run_overlay_helper(ROUTER_NETWORK_HELPER, "restore", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"], snapshot=router_snapshot)
+                run_overlay_helper(OPS_NETWORK_HELPER, "verify-recovery", intent["active_controller_box"], intent["peer_box"], suffix)
+                run_overlay_helper(ROUTER_NETWORK_HELPER, "verify-recovery", intent["active_controller_box"], intent["peer_box"], suffix)
+                recovery_result = "restored"
+            except ApplyError as error:
+                restoration_error = error
+        path, receipt = store_overlay_execution(intent, "failed", recovery_result)
+        append_audit("overlay-repair.executed", nonce=intent["nonce"], result="failed", recovery_result=recovery_result, receipt_sha256=receipt["receipt_sha256"])
+        if recovery_result == "recovery_required":
+            raise ApplyError(f"overlay restoration could not be verified; recovery_required; initial failure: {mutation_error}; restoration failure: {restoration_error}; evidence: {path}") from mutation_error
+        raise mutation_error
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    path, receipt = store_overlay_execution(intent, "success")
+    append_audit("overlay-repair.executed", nonce=intent["nonce"], result="success", receipt_sha256=receipt["receipt_sha256"], gateway_id_sha256=intent["freebox_gateway_id_sha256"], delegation_slot=intent["delegation_slot"])
+    print(canonical({"schema_version": 1, "result": "success", "receipt_path": str(path)}))
+
+
 def execute_tailnet(args):
     require_root_active()
     require_self_match()
@@ -2104,6 +2543,12 @@ def preflight(args):
         preflight_tailnet(args)
 
 
+def overlay_repair_prepare(args):
+    if evidence_kind(args.plan) != KIND_PLAN_V3:
+        raise ApplyError("overlay repair requires Plan v3")
+    overlay_preflight(args)
+
+
 def rollback_prepare(args):
     if evidence_kind(args.plan) == KIND_PLAN_V3:
         box_rollback_prepare(args)
@@ -2119,6 +2564,8 @@ def execute(args):
         authority_conversion_execute(args, intent)
     elif intent.get("kind") == KIND_BOX_INTENT:
         box_execute(args, intent)
+    elif intent.get("kind") == KIND_OVERLAY_INTENT:
+        overlay_execute(args, intent)
     elif intent.get("kind") == KIND_INTENT:
         execute_tailnet(args)
     else:
@@ -2138,6 +2585,13 @@ def parse_args(argv):
     execute_parser.add_argument("--approval-intent", required=True)
     execute_parser.add_argument("--approval-signature", required=True)
     execute_parser.add_argument("--signer-id", required=True)
+    overlay_parser = commands.add_parser("overlay-repair")
+    overlay_parser.add_argument("--prepare", action="store_true")
+    for name in (
+        "plan", "authority-state", "controller-toolchain-receipt",
+        "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir",
+    ):
+        overlay_parser.add_argument(f"--{name}")
     conversion_parser = commands.add_parser("authority-convert")
     conversion_parser.add_argument("--prepare", action="store_true")
     conversion_parser.add_argument("--authority-state")
@@ -2165,6 +2619,17 @@ def main(argv=None):
             preflight(args)
         elif args.operation == "execute":
             execute(args)
+        elif args.operation == "overlay-repair" and args.prepare:
+            required = [
+                args.plan, args.authority_state, args.controller_toolchain_receipt,
+                args.source_recovery_receipt, args.instance_source_receipt,
+                args.observation, args.build_dir,
+            ]
+            if any(not item for item in required):
+                raise ApplyError("overlay repair preparation requires complete fresh evidence")
+            overlay_repair_prepare(args)
+        elif args.operation == "overlay-repair":
+            raise ApplyError("overlay repair requires --prepare; signed execution uses execute")
         elif args.operation == "authority-convert" and args.prepare:
             if not args.authority_state or any(
                 item for item in (

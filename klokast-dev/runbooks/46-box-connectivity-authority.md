@@ -14,7 +14,7 @@ Do not run Platform commands on an infra-agent.
 Use section 1 of
 [`45-tailnet-authority-pilot.md`](45-tailnet-authority-pilot.md) to pull the
 public commit, build the exact sealed engine, promote the private engine lock,
-install the controller tools, and create a Toolchain v2 receipt. Use the new
+install the controller tools, and create a Toolchain v3 receipt. Use the new
 public commit for all steps.
 
 On the controller, run the Ansible syntax check before you create evidence.
@@ -58,7 +58,7 @@ Read the new active state path on the controller. Keep the old v1 file.
 Use section 2 of `45-tailnet-authority-pilot.md` to synchronize the private
 source, prove source recovery, refresh the Platform map, and export a fresh
 observation. Then run `platform-plan` with the active Authority State v2 and
-Toolchain v2 receipt:
+Toolchain v3 receipt:
 
 ```sh
 ansible/bin/platform-plan \

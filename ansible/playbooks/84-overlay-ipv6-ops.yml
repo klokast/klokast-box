@@ -1,0 +1,211 @@
+---
+- name: Run one closed ops VM IPv6 direct-path operation
+  hosts: ops
+  gather_facts: false
+  vars:
+    overlay_ipv6_ops_files:
+      - /etc/network/interfaces
+      - /etc/sysctl.d/91-klokast-ops-ipv6.conf
+      - /etc/klokast/overlay-ipv6-input.nft
+  tasks:
+    - name: Require one closed ops IPv6 operation
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_ops_operation in ['snapshot', 'apply', 'verify', 'refresh-endpoint', 'restore', 'verify-recovery']
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == node_name ~ '-ops'
+
+    - name: Inspect ops rollback files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ overlay_ipv6_ops_files }}"
+      register: overlay_ipv6_ops_file_stats
+      when: overlay_ipv6_ops_operation == 'snapshot'
+
+    - name: Read ops rollback files
+      ansible.builtin.slurp:
+        src: "{{ item.item }}"
+      loop: "{{ overlay_ipv6_ops_file_stats.results | default([]) }}"
+      register: overlay_ipv6_ops_file_contents
+      when:
+        - overlay_ipv6_ops_operation == 'snapshot'
+        - item.stat.exists | default(false)
+
+    - name: Read ops rollback runtime state
+      ansible.builtin.shell: |
+        set -eu
+        printf '%s\n' "accept_ra=$(sysctl -n net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.accept_ra)"
+        printf '%s\n' "autoconf=$(sysctl -n net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.autoconf)"
+        ip -o -4 address show dev {{ platform_control_zones.ops.vm_interface }}
+        ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }}
+      args:
+        executable: /bin/sh
+      register: overlay_ipv6_ops_runtime
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'snapshot'
+
+    - name: Read ops firewall rollback state
+      ansible.builtin.command: /usr/sbin/nft list ruleset
+      register: overlay_ipv6_ops_nft_preimage
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'snapshot'
+
+    - name: Store exact ops rollback evidence on the controller
+      ansible.builtin.copy:
+        dest: "{{ overlay_ipv6_evidence_output }}"
+        mode: "0600"
+        content: >-
+          {{ {
+            'schema_version': 1,
+            'kind': 'klokast.overlay-ipv6-ops-preimage.v1',
+            'box': node_name,
+            'files': dict(
+              overlay_ipv6_ops_files
+              | zip(
+                overlay_ipv6_ops_file_stats.results
+                | map(attribute='stat.exists')
+                | zip(
+                  overlay_ipv6_ops_file_contents.results
+                  | map(attribute='content', default='')
+                  , overlay_ipv6_ops_file_stats.results
+                  | map(attribute='stat.mode', default='0600')
+                )
+              )
+            ),
+            'runtime': overlay_ipv6_ops_runtime.stdout,
+            'nft_ruleset': overlay_ipv6_ops_nft_preimage.stdout,
+          } | to_nice_json }}
+      delegate_to: localhost
+      become: false
+      when: overlay_ipv6_ops_operation == 'snapshot'
+
+    - name: Persist ops SLAAC kernel settings
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/91-klokast-ops-ipv6.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.accept_ra = 1
+          net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.autoconf = 1
+      when: overlay_ipv6_ops_operation == 'apply'
+
+    - name: Apply ops SLAAC without restarting IPv4
+      ansible.builtin.command: sysctl -p /etc/sysctl.d/91-klokast-ops-ipv6.conf
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'apply'
+
+    - name: Permit only native IPv6 Tailscale input on the ops VM
+      ansible.builtin.copy:
+        dest: /etc/klokast/overlay-ipv6-input.nft
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          iifname "{{ platform_control_zones.ops.vm_interface }}" ip6 daddr {{ overlay_ipv6_prefix }} udp dport 41641 accept comment "ops-native-ipv6-tailscale-input"
+      when: overlay_ipv6_ops_operation == 'apply'
+
+    - name: Load the ops VM firewall with native IPv6 input
+      ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.nft
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'apply'
+
+    - name: Wait for one SLAAC address from the delegated prefix
+      ansible.builtin.shell: |
+        set -eu
+        attempt=0
+        while [ "$attempt" -lt 30 ]; do
+          if ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} scope global | awk '{print $4}' | grep -E '^{{ overlay_ipv6_prefix | regex_replace('::/64$', ':') | regex_escape }}' >/dev/null; then
+            exit 0
+          fi
+          sleep 2
+          attempt=$((attempt + 1))
+        done
+        exit 1
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'apply'
+
+    - name: Verify native IPv6 and direct peer routing
+      ansible.builtin.shell: |
+        set -eu
+        ip -4 route show default | grep -F 'via {{ platform_control_zones.ops.router_ipv4_address }}'
+        test "$(sysctl -n net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.accept_ra)" = 1
+        ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} scope global | grep -E '{{ overlay_ipv6_prefix | regex_replace('::/64$', ':') | regex_escape }}'
+        tailscale netcheck | grep -E 'IPv6:[[:space:]]+yes'
+        result=$(tailscale ping --c 3 {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }})
+        ! printf '%s\n' "$result" | grep -F 'via DERP'
+        printf '%s\n' "$result" | grep -E 'via \[[0-9A-Fa-f:]+\]:41641'
+        nft list ruleset | grep -F 'ops-native-ipv6-tailscale-input'
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'verify'
+
+    - name: Refresh the fixed active ops Tailscale endpoint
+      ansible.builtin.command: "tailscale debug {{ item }}"
+      loop:
+        - rebind
+        - restun
+      changed_when: true
+      when: overlay_ipv6_ops_operation == 'refresh-endpoint'
+
+    - name: Restore exact ops configuration files
+      ansible.builtin.copy:
+        dest: "{{ item.key }}"
+        content: "{{ item.value[1] | b64decode }}"
+        owner: root
+        group: root
+        mode: "{{ item.value[2] }}"
+      loop: "{{ overlay_ipv6_ops_preimage.files | dict2items }}"
+      when:
+        - overlay_ipv6_ops_operation == 'restore'
+        - item.value[0] | bool
+
+    - name: Remove ops files absent from the preimage
+      ansible.builtin.file:
+        path: "{{ item.key }}"
+        state: absent
+      loop: "{{ overlay_ipv6_ops_preimage.files | dict2items }}"
+      when:
+        - overlay_ipv6_ops_operation == 'restore'
+        - not (item.value[0] | bool)
+
+    - name: Restore ops runtime sysctl and delegated addresses
+      ansible.builtin.shell: |
+        set -eu
+        for address in $(ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} scope global | awk '{print $4}'); do
+          case "$address" in {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}*) ip -6 address del "$address" dev {{ platform_control_zones.ops.vm_interface }} ;; esac
+        done
+        accept_ra=$(printf '%s\n' {{ overlay_ipv6_ops_preimage.runtime | quote }} | sed -n 's/^accept_ra=//p')
+        autoconf=$(printf '%s\n' {{ overlay_ipv6_ops_preimage.runtime | quote }} | sed -n 's/^autoconf=//p')
+        sysctl -w net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.accept_ra="$accept_ra"
+        sysctl -w net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.autoconf="$autoconf"
+      args:
+        executable: /bin/sh
+      when: overlay_ipv6_ops_operation == 'restore'
+
+    - name: Restore exact ops firewall runtime state
+      ansible.builtin.shell: |
+        set -eu
+        temporary=$(mktemp /tmp/klokast-nft-restore.XXXXXX)
+        trap 'rm -f "$temporary"' EXIT HUP INT TERM
+        printf '%s\n' 'flush ruleset' >"$temporary"
+        printf '%s\n' {{ overlay_ipv6_ops_preimage.nft_ruleset | quote }} >>"$temporary"
+        nft -c -f "$temporary"
+        nft -f "$temporary"
+      args:
+        executable: /bin/sh
+      when: overlay_ipv6_ops_operation == 'restore'
+
+    - name: Verify controller IPv4 access and DERP-capable recovery
+      ansible.builtin.shell: |
+        set -eu
+        ip -4 route show default | grep -F 'via {{ platform_control_zones.ops.router_ipv4_address }}'
+        tailscale status --json | grep -E '"BackendState"[[:space:]]*:[[:space:]]*"Running"'
+        tailscale ping --c 1 {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'verify-recovery'

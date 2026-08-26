@@ -26,7 +26,7 @@ an ambient controller command.
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline Instance Specification v1 repository from one complete strict JSON instance file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
-| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With fresh observation, source, Authority State v2, and Controller Toolchain v2 evidence, it emits a hashed Plan v3 artifact. It does not apply changes. |
+| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With fresh observation, source, Authority State v2, and Controller Toolchain v3 evidence, it emits a hashed Plan v3 artifact. It does not apply changes. |
 
 ## Platform And Controller Wrappers
 
@@ -52,7 +52,7 @@ Source: `ansible/bin/`.
 | `platform-apply` | active controller | Runs the closed Authority State conversion, Tailnet verification, or one-box connectivity preflight, execution, and forward rollback through the installed root Apply boundary. |
 | `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
 | `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
-| `platform-plan` | active controller | Verifies the sealed engine and bound source, Authority State v2, and Controller Toolchain v2 receipts, creates Plan v3, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
+| `platform-plan` | active controller | Verifies the sealed engine and bound source, Authority State v2, and Controller Toolchain v3 receipts, creates Plan v3, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
 | `controller-toolchain-receipt` | active controller | Verifies a clean public checkout and exact installed Apply tool bytes, then stores one immutable controller-toolchain receipt. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
@@ -118,6 +118,9 @@ Source: `klokast-dev/bin/`.
 | `publish-private-instance` | laptop | Checks or publishes the initial seed or a later staged `klokast-instance.json` edit after sealed contract and compatibility validation, exact remote-base checks, human diff approval, and private `main` verification. |
 | `promote-private-instance-engine` | laptop | Checks or publishes one canonical engine promotion, including the closed reversible legacy Instance v1 transition when required, obtains Touch ID approval, activates the exact private tree on the read-only controller, and supports receipt-bound forward rollback. |
 | `apply-platform-intent` | laptop | Displays and checks one exact Apply intent, gets purpose-specific Touch ID approval, transfers only the intent and signature for execution, and can prove that the exact signed intent is refused on replay. |
+| `show-huawei-tailscale-pinhole` | active controller | Reads the peer router's current global IPv6 address and prints the exact manual Huawei UDP `41641` pinhole change. It does not change the Huawei gateway. |
+| `install-freebox-application` | active controller | Starts one physical Freebox application authorization and stores its root-only app token. It does not print the token. |
+| `freebox-ipv6-broker` | active controller root boundary | Inspects, configures, verifies, or restores only the selected ops IPv6 delegation. It rejects generic API requests and keeps exact delegation preimages root-only. |
 | `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
 | `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
 | `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |

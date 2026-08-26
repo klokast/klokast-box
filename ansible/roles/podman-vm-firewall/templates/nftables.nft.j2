@@ -11,6 +11,7 @@ table inet klokast_vm_filter {
         iifname "tailscale0" accept comment "tailscale-management-input"
         ip protocol icmp accept
         ip6 nexthdr icmpv6 accept
+        include "/etc/klokast/overlay-ipv6-input.nft"
         include "/etc/klokast/app-resources/vm-input.nft"
         include "/etc/klokast/app-resources/vm-input.d/*.nft"
         {% for rule in podman_vm_firewall_input_tcp_rules | default([]) %}

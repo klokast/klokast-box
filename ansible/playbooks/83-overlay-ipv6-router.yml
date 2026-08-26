@@ -1,0 +1,434 @@
+---
+- name: Run one closed router IPv6 direct-path operation
+  hosts: router
+  gather_facts: false
+  vars:
+    overlay_ipv6_router_files:
+      - /etc/network/interfaces
+      - /etc/dhcpcd.conf
+      - /etc/dnsmasq.conf
+      - /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
+      - /etc/klokast/overlay-ipv6.nft
+      - /etc/sysctl.d/91-klokast-ops-ipv6.conf
+      - /etc/network/if-up.d/91-klokast-ops-ipv6
+  tasks:
+    - name: Require one closed router operation
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_router_operation in ['huawei-instructions', 'verify-prerequisite', 'snapshot', 'prepare', 'apply', 'verify', 'refresh-endpoints', 'restore', 'verify-recovery']
+          - inventory_hostname in [overlay_ipv6_active_box ~ '-router', overlay_ipv6_peer_box ~ '-router']
+        fail_msg: The overlay IPv6 router operation or host selection is invalid.
+
+    - name: Inspect router rollback files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ overlay_ipv6_router_files }}"
+      register: overlay_ipv6_router_file_stats
+      when:
+        - overlay_ipv6_router_operation == 'snapshot'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Read router rollback files
+      ansible.builtin.slurp:
+        src: "{{ item.item }}"
+      loop: "{{ overlay_ipv6_router_file_stats.results | default([]) }}"
+      register: overlay_ipv6_router_file_contents
+      when:
+        - overlay_ipv6_router_operation == 'snapshot'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+        - item.stat.exists | default(false)
+
+    - name: Read router rollback runtime state
+      ansible.builtin.shell: |
+        set -eu
+        printf '%s\n' "forwarding=$(sysctl -n net.ipv6.conf.all.forwarding)"
+        printf '%s\n' "accept_ra=$(sysctl -n net.ipv6.conf.{{ router_wan_interface }}.accept_ra)"
+        printf '%s\n' 'wan_addresses_begin'
+        ip -o -6 address show dev {{ router_wan_interface }}
+        printf '%s\n' 'wan_addresses_end'
+        printf '%s\n' 'ops_addresses_begin'
+        ip -o -6 address show dev {{ router_ops_interface }}
+        printf '%s\n' 'ops_addresses_end'
+      args:
+        executable: /bin/sh
+      register: overlay_ipv6_router_runtime
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'snapshot'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Read router firewall rollback state
+      ansible.builtin.command: /usr/sbin/nft list ruleset
+      register: overlay_ipv6_router_nft_preimage
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'snapshot'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Store exact router rollback evidence on the controller
+      ansible.builtin.copy:
+        dest: "{{ overlay_ipv6_evidence_output }}"
+        mode: "0600"
+        content: >-
+          {{ {
+            'schema_version': 1,
+            'kind': 'klokast.overlay-ipv6-router-preimage.v1',
+            'box': overlay_ipv6_active_box,
+            'files': dict(
+              overlay_ipv6_router_files
+              | zip(
+                overlay_ipv6_router_file_stats.results
+                | map(attribute='stat.exists')
+                | zip(
+                  overlay_ipv6_router_file_contents.results
+                  | map(attribute='content', default='')
+                  , overlay_ipv6_router_file_stats.results
+                  | map(attribute='stat.mode', default='0600')
+                )
+              )
+            ),
+            'runtime': overlay_ipv6_router_runtime.stdout,
+            'nft_ruleset': overlay_ipv6_router_nft_preimage.stdout,
+          } | to_nice_json }}
+      delegate_to: localhost
+      become: false
+      when:
+        - overlay_ipv6_router_operation == 'snapshot'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Read the peer router global IPv6 address
+      ansible.builtin.shell: |
+        set -eu
+        ip -o -6 address show dev {{ router_wan_interface }} scope global | awk '{sub(/\/.*/, "", $4); print $4}' | sort -u
+      args:
+        executable: /bin/sh
+      register: overlay_ipv6_peer_global
+      changed_when: false
+      failed_when: overlay_ipv6_peer_global.stdout_lines | length != 1
+      when:
+        - overlay_ipv6_router_operation in ['huawei-instructions', 'verify-prerequisite']
+        - inventory_hostname == overlay_ipv6_peer_box ~ '-router'
+
+    - name: Prove the active router reaches the peer directly over IPv6
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - ping
+          - --c
+          - "3"
+          - "{{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}"
+      register: overlay_ipv6_router_direct_ping
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'verify-prerequisite'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Require the Huawei direct-path prerequisite
+      ansible.builtin.assert:
+        that:
+          - "'via DERP' not in overlay_ipv6_router_direct_ping.stdout"
+          - overlay_ipv6_router_direct_ping.stdout is search('via \\[[0-9A-Fa-f:]+\\]:41641')
+        fail_msg: The active router does not reach the peer router directly through an IPv6 UDP 41641 endpoint.
+      when:
+        - overlay_ipv6_router_operation == 'verify-prerequisite'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Store Huawei prerequisite evidence on the controller
+      ansible.builtin.copy:
+        dest: "{{ overlay_ipv6_evidence_output }}"
+        mode: "0600"
+        content: >-
+          {{ {
+            'schema_version': 1,
+            'kind': 'klokast.huawei-ipv6-pinhole-prerequisite.v1',
+            'active_router': overlay_ipv6_active_box ~ '-router',
+            'peer_router': overlay_ipv6_peer_box ~ '-router',
+            'peer_global_ipv6': hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout,
+            'udp_port': 41641,
+            'direct_ping': (
+              overlay_ipv6_router_direct_ping.stdout
+              if overlay_ipv6_router_operation == 'verify-prerequisite'
+              else ''
+            ),
+          } | to_nice_json }}
+      delegate_to: localhost
+      become: false
+      when:
+        - overlay_ipv6_router_operation in ['huawei-instructions', 'verify-prerequisite']
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Check the stable WAN next hop is not in use
+      ansible.builtin.shell: |
+        set -eu
+        address={{ overlay_ipv6_next_hop | quote }}
+        if ip -o -6 address show dev {{ router_wan_interface }} | awk '{print $4}' | cut -d/ -f1 | grep -Fqx "$address"; then
+          echo local
+          exit 0
+        fi
+        if ip -6 neigh show dev {{ router_wan_interface }} | awk '{print $1}' | grep -Fqx "$address"; then
+          echo occupied
+          exit 1
+        fi
+        if ping -6 -c 2 -W 1 -I {{ router_wan_interface }} "$address" >/dev/null 2>&1; then
+          echo occupied
+          exit 1
+        fi
+        echo unused
+      args:
+        executable: /bin/sh
+      register: overlay_ipv6_next_hop_collision
+      changed_when: false
+      check_mode: false
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Persist the stable WAN next hop without replacing WAN DHCPv6
+      ansible.builtin.copy:
+        dest: /etc/network/if-up.d/91-klokast-ops-ipv6
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          set -eu
+          if [ "${IFACE:-}" = "{{ router_wan_interface }}" ]; then
+            ip -6 address replace {{ overlay_ipv6_next_hop }}/64 dev {{ router_wan_interface }}
+          fi
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Add the stable WAN next hop without restarting IPv4
+      ansible.builtin.command: "ip -6 address add {{ overlay_ipv6_next_hop }}/64 dev {{ router_wan_interface }}"
+      register: overlay_ipv6_add_next_hop
+      changed_when: overlay_ipv6_add_next_hop.rc == 0
+      failed_when:
+        - overlay_ipv6_add_next_hop.rc != 0
+        - "'File exists' not in overlay_ipv6_add_next_hop.stderr"
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Require successful duplicate address detection for the stable next hop
+      ansible.builtin.shell: |
+        set -eu
+        sleep 2
+        state=$(ip -6 address show dev {{ router_wan_interface }} to {{ overlay_ipv6_next_hop }}/128)
+        printf '%s\n' "$state" | grep -F '{{ overlay_ipv6_next_hop }}/64'
+        ! printf '%s\n' "$state" | grep -E 'tentative|dadfailed'
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Install the narrow ops-only IPv6 forwarding rules
+      ansible.builtin.copy:
+        dest: /etc/klokast/overlay-ipv6.nft
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip6 saddr {{ overlay_ipv6_prefix }} udp sport 41641 accept comment "ops-ipv6-tailscale-source-egress"
+          iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip6 saddr {{ overlay_ipv6_prefix }} udp dport 3478 accept comment "ops-ipv6-tailscale-stun-egress"
+          iifname "{{ router_wan_interface }}" oifname "{{ router_ops_interface }}" ip6 daddr {{ overlay_ipv6_prefix }} udp dport 41641 accept comment "ops-ipv6-tailscale-input"
+          iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip6 saddr {{ overlay_ipv6_prefix }} meta l4proto ipv6-icmp accept comment "ops-ipv6-icmp-egress"
+          iifname "{{ router_wan_interface }}" oifname "{{ router_ops_interface }}" ip6 daddr {{ overlay_ipv6_prefix }} meta l4proto ipv6-icmp accept comment "ops-ipv6-icmp-input"
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Load the prepared IPv6 firewall rules
+      ansible.builtin.shell: |
+        set -eu
+        nft -c -f /etc/nftables.nft
+        nft -f /etc/nftables.nft
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Persist the ops delegated router address
+      ansible.builtin.copy:
+        dest: /etc/network/if-up.d/91-klokast-ops-ipv6
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          set -eu
+          case "${IFACE:-}" in
+            {{ router_wan_interface }})
+              ip -6 address replace {{ overlay_ipv6_next_hop }}/64 dev {{ router_wan_interface }}
+              ;;
+            {{ router_ops_interface }})
+              ip -6 address replace {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64 dev {{ router_ops_interface }}
+              ;;
+          esac
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Enable only the required IPv6 forwarding and WAN RA behavior
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/91-klokast-ops-ipv6.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          net.ipv6.conf.all.forwarding = 1
+          net.ipv6.conf.{{ router_wan_interface }}.accept_ra = 2
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Apply the ops IPv6 sysctl values
+      ansible.builtin.command: sysctl -p /etc/sysctl.d/91-klokast-ops-ipv6.conf
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Add the ops delegated router address without restarting IPv4
+      ansible.builtin.command: "ip -6 address add {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64 dev {{ router_ops_interface }}"
+      register: overlay_ipv6_add_ops_router
+      changed_when: overlay_ipv6_add_ops_router.rc == 0
+      failed_when:
+        - overlay_ipv6_add_ops_router.rc != 0
+        - "'File exists' not in overlay_ipv6_add_ops_router.stderr"
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Advertise only the delegated ops prefix
+      ansible.builtin.copy:
+        dest: /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          enable-ra
+          dhcp-range=::,constructor:{{ router_ops_interface }},ra-only,64,12h
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Validate the ops IPv6 router advertisement configuration
+      ansible.builtin.command: dnsmasq --test
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Restart dnsmasq to start ops router advertisements
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Collect the enabled ops IPv6 router state
+      ansible.builtin.shell: |
+        set -eu
+        ip -o -6 address show dev {{ router_wan_interface }} | grep -F '{{ overlay_ipv6_next_hop }}/64'
+        ip -o -6 address show dev {{ router_ops_interface }} | grep -F '{{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64'
+        test "$(sysctl -n net.ipv6.conf.all.forwarding)" = 1
+        test "$(sysctl -n net.ipv6.conf.{{ router_wan_interface }}.accept_ra)" = 2
+        grep -F 'constructor:{{ router_ops_interface }},ra-only,64' /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
+        nft list ruleset | grep -F 'ops-ipv6-tailscale-source-egress'
+        ! grep -R 'enable-ra' /etc/dnsmasq.d --exclude=91-klokast-ops-ipv6.conf
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'verify'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Refresh the fixed peer router Tailscale endpoint
+      ansible.builtin.command: "tailscale debug {{ item }}"
+      loop:
+        - rebind
+        - restun
+      changed_when: true
+      when:
+        - overlay_ipv6_router_operation == 'refresh-endpoints'
+        - inventory_hostname == overlay_ipv6_peer_box ~ '-router'
+
+    - name: Restore exact router configuration files
+      ansible.builtin.copy:
+        dest: "{{ item.key }}"
+        content: "{{ item.value[1] | b64decode }}"
+        owner: root
+        group: root
+        mode: "{{ item.value[2] }}"
+      loop: "{{ overlay_ipv6_router_preimage.files | dict2items }}"
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+        - item.value[0] | bool
+
+    - name: Remove router files absent from the preimage
+      ansible.builtin.file:
+        path: "{{ item.key }}"
+        state: absent
+      loop: "{{ overlay_ipv6_router_preimage.files | dict2items }}"
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+        - not (item.value[0] | bool)
+
+    - name: Restore router runtime sysctl and managed addresses
+      ansible.builtin.shell: |
+        set -eu
+        ip -6 address del {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64 dev {{ router_ops_interface }} 2>/dev/null || true
+        ip -6 address del {{ overlay_ipv6_next_hop }}/64 dev {{ router_wan_interface }} 2>/dev/null || true
+        forwarding=$(printf '%s\n' {{ overlay_ipv6_router_preimage.runtime | quote }} | sed -n 's/^forwarding=//p')
+        accept_ra=$(printf '%s\n' {{ overlay_ipv6_router_preimage.runtime | quote }} | sed -n 's/^accept_ra=//p')
+        sysctl -w net.ipv6.conf.all.forwarding="$forwarding"
+        sysctl -w net.ipv6.conf.{{ router_wan_interface }}.accept_ra="$accept_ra"
+      args:
+        executable: /bin/sh
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Restore exact router firewall runtime state
+      ansible.builtin.shell: |
+        set -eu
+        temporary=$(mktemp /tmp/klokast-nft-restore.XXXXXX)
+        trap 'rm -f "$temporary"' EXIT HUP INT TERM
+        printf '%s\n' 'flush ruleset' >"$temporary"
+        printf '%s\n' {{ overlay_ipv6_router_preimage.nft_ruleset | quote }} >>"$temporary"
+        nft -c -f "$temporary"
+        nft -f "$temporary"
+      args:
+        executable: /bin/sh
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Restart dnsmasq after exact router restoration
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Verify IPv4 and Tailnet recovery from the active router
+      ansible.builtin.shell: |
+        set -eu
+        ip -4 route show default | grep -F 'dev {{ router_wan_interface }}'
+        tailscale status --json | grep -E '"BackendState"[[:space:]]*:[[:space:]]*"Running"'
+        tailscale ping --c 1 {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}
+      args:
+        executable: /bin/sh
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'verify-recovery'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'

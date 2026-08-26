@@ -36,6 +36,14 @@
     validate: "dnsmasq --test --conf-file=%s"
   notify: Restart router dnsmasq
 
+- name: Ensure router dnsmasq include directory exists
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Ensure router app-resource include directory exists
   ansible.builtin.file:
     path: /etc/klokast/app-resources
@@ -70,6 +78,15 @@
     mode: "0644"
     force: false
 
+- name: Ensure the disabled overlay IPv6 include exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/overlay-ipv6.nft
+    content: "# Ops IPv6 downstream is disabled.\n"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+
 - name: Ensure router nftables configuration is present
   ansible.builtin.template:
     src: nftables.nft.j2
@@ -86,14 +103,21 @@
     state: present
     reload: true
 
-- name: Ensure IPv6 forwarding is disabled for now
+- name: Inspect the signed ops IPv6 downstream marker
+  ansible.builtin.stat:
+    path: /etc/sysctl.d/91-klokast-ops-ipv6.conf
+  register: router_ops_ipv6_downstream_marker
+
+- name: Ensure IPv6 forwarding is disabled when the ops-only mode is absent
   ansible.posix.sysctl:
     name: net.ipv6.conf.all.forwarding
     value: "0"
     sysctl_file: /etc/sysctl.conf
     state: present
     reload: true
-  when: not router_enable_ipv6_downstream
+  when:
+    - not router_enable_ipv6_downstream
+    - not (router_ops_ipv6_downstream_marker.stat.exists | default(false))
 
 - name: Check whether sysctl is in the boot runlevel
   ansible.builtin.shell: |
@@ -222,6 +246,11 @@
     - dnsmasq
     - nftables
     - tailscale
+
+- name: Reapply the signed ops IPv6 downstream sysctl mode when present
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/91-klokast-ops-ipv6.conf
+  changed_when: false
+  when: router_ops_ipv6_downstream_marker.stat.exists | default(false)
 
 - name: Apply the managed nftables ruleset to the live kernel state
   ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.nft

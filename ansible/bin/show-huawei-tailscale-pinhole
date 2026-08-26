@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Print the exact manual Huawei pinhole change for the peer router."""
+
+import getpass
+import json
+import subprocess
+import sys
+import os
+from pathlib import Path
+
+
+INSTANCE = Path("/home/smith/private/klokast/instance/klokast-instance.json")
+HELPER = Path("/usr/local/sbin/overlay-ipv6-router")
+GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+
+
+def main():
+    if getpass.getuser() != "smith":
+        print("show-huawei-tailscale-pinhole: run as smith on the active controller", file=sys.stderr)
+        return 1
+    guard = subprocess.run([GUARD, "--status", "--json", "--require-active"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if guard.returncode != 0:
+        print("show-huawei-tailscale-pinhole: this is not the active controller", file=sys.stderr)
+        return 1
+    try:
+        instance = json.loads(INSTANCE.read_text(encoding="utf-8"))
+        boxes = sorted(instance["boxes"])
+        active = instance["controllers"]["active"]
+        suffix = instance["tailscale"]["tailnet-dns-name"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        print("show-huawei-tailscale-pinhole: private instance shape is invalid", file=sys.stderr)
+        return 1
+    peers = [box for box in boxes if box != active]
+    if len(boxes) != 2 or len(peers) != 1:
+        print("show-huawei-tailscale-pinhole: the closed repair requires exactly two boxes", file=sys.stderr)
+        return 1
+    manual_root = Path("/home/smith/src/klokast/klokast-box/.run/overlay-ipv6-router/manual")
+    manual_root.mkdir(parents=True, exist_ok=True)
+    temporary = manual_root / str(os.getpid())
+    temporary.mkdir(mode=0o700)
+    try:
+        output = temporary / "evidence.json"
+        result = subprocess.run([
+            HELPER, "huawei-instructions", "--box", active,
+            "--peer-box", peers[0], "--magicdns-suffix", suffix,
+            "--evidence-output", output,
+        ], check=False)
+    finally:
+        if output.exists():
+            output.unlink()
+        temporary.rmdir()
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

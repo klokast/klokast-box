@@ -384,6 +384,9 @@ router_tailscale_udp_egress_rules:
 # setup added latency and return-path complexity without helping the current
 # direct Tailscale model.
 router_enable_ipv6_downstream: false
+# The signed overlay repair is the only workflow that can enable this mode.
+# It applies one delegated /64 to the active controller's ops network only.
+router_enable_ops_ipv6_downstream: false
 router_enable_dnsmasq: true
 
 router_base_internal_interfaces:

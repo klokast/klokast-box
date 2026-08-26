@@ -30,6 +30,9 @@ def parse_args(argv):
     execute.add_argument("--approval-intent", required=True)
     execute.add_argument("--approval-signature", required=True)
     execute.add_argument("--signer-id", default="human-platform-apply")
+    repair = commands.add_parser("overlay-repair")
+    repair.add_argument("--prepare", action="store_true")
+    common_evidence(repair)
     conversion = commands.add_parser("authority-convert")
     conversion.add_argument("--prepare", action="store_true")
     conversion.add_argument("--authority-state")
@@ -60,6 +63,16 @@ def main(argv=None):
         return 1
     command = ["sudo", "-n", INSTALLED, args.operation]
     if args.operation == "preflight":
+        for name in (
+            "plan", "authority_state", "controller_toolchain_receipt",
+            "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
+        ):
+            command.extend(["--" + name.replace("_", "-"), getattr(args, name)])
+    elif args.operation == "overlay-repair":
+        if not args.prepare:
+            print("platform-apply: overlay-repair requires --prepare", file=sys.stderr)
+            return 2
+        command.append("--prepare")
         for name in (
             "plan", "authority_state", "controller_toolchain_receipt",
             "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",

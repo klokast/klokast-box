@@ -130,7 +130,7 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
 	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
 	authorityState := flags.String("authority-state", "", "path to an Authority State v2 JSON document")
-	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v2 receipt")
+	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v3 receipt")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
 		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--json]")

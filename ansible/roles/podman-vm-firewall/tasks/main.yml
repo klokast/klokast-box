@@ -44,6 +44,15 @@
     mode: "0644"
     force: false
 
+- name: Ensure the disabled overlay IPv6 input include exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/overlay-ipv6-input.nft
+    content: "# Native IPv6 input is disabled.\n"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+
 - name: Render the Podman VM nftables policy
   ansible.builtin.template:
     src: nftables.nft.j2

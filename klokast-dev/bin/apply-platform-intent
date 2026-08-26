@@ -9,6 +9,7 @@ controller="${KLOKAST_OPS_CONTROLLER:-}"
 check_only=false
 prove_replay_refusal=false
 convert_authority=false
+repair_overlay=false
 rollback_execution=""
 plan=""
 authority_state=""
@@ -24,6 +25,9 @@ Usage: $0 --controller HOST --plan FILE --authority-state FILE \
   --controller-toolchain-receipt FILE --source-recovery-receipt FILE \
   --instance-source-receipt FILE --observation FILE --build-dir DIR \
   [--check | --prove-replay-refusal]
+
+Add --repair-overlay-ipv6-direct to prepare the one closed ops-only IPv6
+direct-path repair from a verification-only Plan v3.
 
 Use --convert-authority-state with only --controller and --authority-state to
 approve the one-time Authority State v1 to v2 conversion.
@@ -48,6 +52,7 @@ while [ "$#" -gt 0 ]; do
     --build-dir) build_dir=$2; shift 2 ;;
     --rollback-execution-receipt) rollback_execution=$2; shift 2 ;;
     --convert-authority-state) convert_authority=true; shift ;;
+    --repair-overlay-ipv6-direct) repair_overlay=true; shift ;;
     --check) check_only=true; shift ;;
     --prove-replay-refusal) prove_replay_refusal=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -63,6 +68,9 @@ if [ -n "$rollback_execution" ] && [ "$prove_replay_refusal" = true ]; then
 fi
 if [ "$convert_authority" = true ] && { [ -n "$rollback_execution" ] || [ "$prove_replay_refusal" = true ]; }; then
   ksa_die "--convert-authority-state does not accept rollback or replay options"
+fi
+if [ "$repair_overlay" = true ] && { [ "$convert_authority" = true ] || [ -n "$rollback_execution" ]; }; then
+  ksa_die "--repair-overlay-ipv6-direct does not accept authority conversion or box rollback"
 fi
 
 ksa_valid_controller "$controller" || ksa_die "--controller is required and must be safe"
@@ -117,6 +125,17 @@ exec ansible/bin/platform-apply rollback --prepare \
   --controller-toolchain-receipt "$4" --source-recovery-receipt "$5" \
   --instance-source-receipt "$6" --observation "$7" --build-dir "$8"
 SH
+elif [ "$repair_overlay" = true ]; then
+  tailscale ssh "smith@$controller" sh -s -- \
+    "$plan" "$authority_state" "$toolchain" "$source_recovery" \
+    "$source_receipt" "$observation" "$build_dir" >"$intent" <<'SH'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+exec ansible/bin/platform-apply overlay-repair --prepare \
+  --plan "$1" --authority-state "$2" --controller-toolchain-receipt "$3" \
+  --source-recovery-receipt "$4" --instance-source-receipt "$5" \
+  --observation "$6" --build-dir "$7"
+SH
 else
   tailscale ssh "smith@$controller" sh -s -- \
     "$plan" "$authority_state" "$toolchain" "$source_recovery" \
@@ -146,6 +165,11 @@ elif kind == "klokast.box-connectivity-intent.v1":
         raise SystemExit("controller returned an unknown box Apply executor")
     if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"}:
         raise SystemExit("controller returned an unknown box Apply action")
+elif kind == "klokast.overlay-direct-repair-intent.v1":
+    if value.get("executor") != "overlay_ipv6_direct_repair_v1":
+        raise SystemExit("controller returned an unknown overlay repair executor")
+    if value.get("action") != "repair_overlay_ipv6_direct":
+        raise SystemExit("controller returned an unknown overlay repair action")
 elif kind == "klokast.apply-intent.v1":
     if value.get("executor") != "tailnet_policy_inputs_v1":
         raise SystemExit("controller returned an unknown Tailnet Apply executor")
@@ -237,6 +261,9 @@ PY
         expected_refusal="ksa-apply: authority state is not active"
         ;;
       verify_instance_authority)
+        expected_refusal="ksa-apply: Apply intent nonce was already used"
+        ;;
+      repair_overlay_ipv6_direct)
         expected_refusal="ksa-apply: Apply intent nonce was already used"
         ;;
       *)

@@ -11,15 +11,18 @@ import (
 	"klokast-box/internal/strictjson"
 )
 
-const Kind = "klokast.controller-toolchain.v2"
+const Kind = "klokast.controller-toolchain.v3"
 
 var Components = []string{
 	"controller_guard",
+	"freebox_broker",
 	"ksa_apply",
+	"ops_network_helper",
 	"platform_resources",
 	"policy_mutation_helper",
 	"policy_renderer",
 	"policy_template",
+	"router_network_helper",
 	"sealed_engine",
 }
 
@@ -65,7 +68,7 @@ func Load(path string, engineCommit string) (Receipt, error) {
 }
 
 func Validate(receipt Receipt, engineCommit string) error {
-	if receipt.SchemaVersion != 2 || receipt.Kind != Kind || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
+	if receipt.SchemaVersion != 3 || receipt.Kind != Kind || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
 		return fmt.Errorf("controller toolchain receipt identity does not match the selected clean engine commit")
 	}
 	if len(receipt.Components) != len(Components) {

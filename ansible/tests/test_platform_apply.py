@@ -152,6 +152,43 @@ class PlatformApplyTest(unittest.TestCase):
             value["rollback_execution_receipt_sha256"] = "f" * 64
         return value
 
+    def valid_overlay_intent(self):
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        active, peer = "boxa", "boxb"
+        value = {
+            "schema_version": 1,
+            "kind": self.mod.KIND_OVERLAY_INTENT,
+            "action": "repair_overlay_ipv6_direct",
+            "executor": self.mod.OVERLAY_EXECUTOR,
+            "rollback_type": self.mod.OVERLAY_ROLLBACK_TYPE,
+            "action_set": self.mod.overlay_action_set(active, peer),
+            "active_controller_box": active,
+            "peer_box": peer,
+            "private_commit": "a" * 40,
+            "engine_commit": "b" * 40,
+            "freebox_api_version": "12.0",
+            "delegation_slot": 1,
+            "delegated_prefix": "2a01:e30:1234:1::/64",
+            "router_next_hop": self.mod.stable_router_next_hop(active),
+            "nonce": "overlay_nonce_123456",
+            "issued_at": self.mod.format_utc(now),
+            "expires_at": self.mod.format_utc(now + dt.timedelta(minutes=10)),
+        }
+        digest_fields = {
+            "plan_sha256", "authority_state_sha256",
+            "source_recovery_receipt_sha256", "source_receipt_sha256",
+            "observation_sha256", "private_instance_sha256",
+            "legacy_deployment_sha256", "legacy_registry_sha256",
+            "legacy_controller_ha_sha256", "binary_sha256",
+            "builder_receipt_sha256", "toolchain_receipt_sha256",
+            "freebox_gateway_id_sha256", "freebox_preimage_sha256",
+            "router_preimage_sha256", "ops_preimage_sha256",
+            "huawei_prerequisite_sha256",
+        }
+        for index, field in enumerate(sorted(digest_fields)):
+            value[field] = f"{index + 1:064x}"
+        return value
+
     def store_plan(self, root, plan):
         digest = self.mod.sha256_bytes(self.mod.canonical(plan).encode("utf-8"))
         plan["plan_sha256"] = digest
@@ -396,8 +433,9 @@ class PlatformApplyTest(unittest.TestCase):
     def test_ansible_requires_exact_apply_toolchain_bytes(self):
         self.assertIn("Require exact checked and installed Apply toolchain bytes", OPS_VERIFY)
         for name in (
-            "controller_guard", "ksa_apply", "platform_resources",
-            "policy_mutation_helper", "policy_renderer", "policy_template",
+            "controller_guard", "freebox_broker", "ksa_apply",
+            "ops_network_helper", "platform_resources", "policy_mutation_helper",
+            "policy_renderer", "policy_template", "router_network_helper",
         ):
             self.assertIn(f"name: {name}_source", OPS_VERIFY)
             self.assertIn(f"name: {name}_installed", OPS_VERIFY)
@@ -481,6 +519,105 @@ class PlatformApplyTest(unittest.TestCase):
         wrong_executor["executor"] = "shell"
         with self.assertRaisesRegex(self.mod.ApplyError, "unknown action"):
             self.mod.validate_box_intent(wrong_executor)
+
+    def test_overlay_intent_is_closed_to_stable_two_box_repair(self):
+        intent = self.valid_overlay_intent()
+        self.mod.validate_overlay_intent(intent)
+        wrong_box = dict(intent)
+        wrong_box["peer_box"] = "boxc"
+        with self.assertRaisesRegex(self.mod.ApplyError, "wrong box"):
+            self.mod.validate_overlay_intent(wrong_box)
+        arbitrary_prefix = dict(intent)
+        arbitrary_prefix["delegated_prefix"] = "2a01:e30:1234:9::/64"
+        # A different gateway-selected prefix is permitted only in a newly
+        # prepared intent. An unknown field or next hop is never accepted.
+        unknown = dict(intent)
+        unknown["command"] = "shell"
+        with self.assertRaisesRegex(self.mod.ApplyError, "closed schema"):
+            self.mod.validate_overlay_intent(unknown)
+        wrong_hop = dict(intent)
+        wrong_hop["router_next_hop"] = "fe80::99"
+        with self.assertRaisesRegex(self.mod.ApplyError, "stable ops-only"):
+            self.mod.validate_overlay_intent(wrong_hop)
+
+    def test_overlay_nonce_is_single_use_and_wrong_signer_is_refused(self):
+        intent = self.valid_overlay_intent()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            self.mod, "NONCE_ROOT", Path(temporary) / "nonces"
+        ):
+            self.mod.consume_nonce(intent)
+            with self.assertRaisesRegex(self.mod.ApplyError, "already used"):
+                self.mod.consume_nonce(intent)
+        with self.assertRaisesRegex(self.mod.ApplyError, "human-platform-apply"):
+            self.mod.verify_signature(Mock(signer_id="human-private-instance"), intent)
+        with patch.object(
+            self.mod, "run", return_value=Mock(stdout="boxb-ops\n", returncode=0)
+        ), self.assertRaisesRegex(self.mod.ApplyError, "active controller box"):
+            self.mod.require_overlay_controller_box("boxa")
+
+    def test_overlay_revalidation_refuses_stale_evidence(self):
+        intent = self.valid_overlay_intent()
+        binding = {
+            "plan_path": "/plan", "authority_path": "/authority",
+            "toolchain_path": "/toolchain", "source_path": "/source",
+            "recovery_path": "/recovery", "observation": "/observation",
+            "build_dir": "/build", "router_preimage_path": "/router",
+            "ops_preimage_path": "/ops", "huawei_prerequisite_path": "/huawei",
+        }
+        current = {
+            "plan": {
+                "plan_sha256": "f" * 64,
+                "projection": {
+                    "boxes": [{"id": "boxa"}, {"id": "boxb"}],
+                    "control_plane": {"active_controller": {"box_id": "boxa"}},
+                    "tailnet": {"magicdns_suffix": "example.ts.net"},
+                },
+            },
+            "group": {"operation": "verify_instance_authority", "box": "boxb"},
+            "state": {"authority_state_sha256": intent["authority_state_sha256"]},
+            "binary_sha256": intent["binary_sha256"],
+            "builder_receipt_sha256": intent["builder_receipt_sha256"],
+        }
+        inspection = {
+            "gateway_id_sha256": intent["freebox_gateway_id_sha256"],
+            "api_version": intent["freebox_api_version"],
+            "slot": intent["delegation_slot"],
+            "prefix": intent["delegated_prefix"],
+            "delegation_document_sha256": intent["freebox_preimage_sha256"],
+        }
+        evidence = {
+            "router_preimage_path": "/current-router",
+            "ops_preimage_path": "/current-ops",
+            "huawei_prerequisite_path": "/current-huawei",
+            "router_preimage_sha256": intent["router_preimage_sha256"],
+            "ops_preimage_sha256": intent["ops_preimage_sha256"],
+            "huawei_prerequisite_sha256": intent["huawei_prerequisite_sha256"],
+        }
+        with patch.object(self.mod, "validate_inputs_v3", return_value=current), patch.object(
+            self.mod, "inspect_freebox", return_value=inspection
+        ), patch.object(self.mod, "collect_overlay_evidence", return_value=evidence), patch.object(
+            self.mod, "require_overlay_controller_box"
+        ):
+            with self.assertRaisesRegex(self.mod.ApplyError, "evidence changed"):
+                self.mod.overlay_revalidate(binding, intent, Path("/tmp"))
+
+    def test_overlay_failure_path_restores_all_preimages_or_requires_recovery(self):
+        source = KSA_APPLY.read_text(encoding="utf-8")
+        function = source[source.index("def overlay_execute"):source.index("def execute_tailnet")]
+        self.assertIn('run_freebox_action("restore", intent)', function)
+        self.assertIn('OPS_NETWORK_HELPER, "restore"', function)
+        self.assertIn('ROUTER_NETWORK_HELPER, "restore"', function)
+        self.assertIn('"verify-recovery"', function)
+        self.assertIn("recovery_required", function)
+        self.assertIn("overlay restoration could not be verified", function)
+
+    def test_macbook_overlay_action_has_no_open_command_or_path(self):
+        source = MACBOOK_APPLY.read_text(encoding="utf-8")
+        self.assertIn("--repair-overlay-ipv6-direct", source)
+        self.assertIn("overlay-repair --prepare", source)
+        self.assertIn("klokast.overlay-direct-repair-intent.v1", source)
+        self.assertNotIn("--repair-command", source)
+        self.assertNotIn("--repair-prefix", source)
 
     def test_effective_registry_preserves_every_field_and_ignores_only_provenance(self):
         access = {

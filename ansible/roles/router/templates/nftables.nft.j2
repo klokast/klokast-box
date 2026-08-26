@@ -21,6 +21,7 @@ table inet filter {
 
         ct state { established, related } accept
         tcp flags syn tcp option maxseg size set rt mtu
+        include "/etc/klokast/overlay-ipv6.nft"
         include "/etc/klokast/app-resources/router-forward.nft"
         include "/etc/klokast/app-resources/router-forward.d/*.nft"
         {% for rule in router_interzone_tcp_rules | default([]) %}

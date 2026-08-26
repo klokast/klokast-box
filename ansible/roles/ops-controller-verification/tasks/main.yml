@@ -220,6 +220,12 @@
     - {name: ksa_apply_installed, path: /usr/local/sbin/ksa-apply}
     - {name: platform_resources_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-resources"}
     - {name: platform_resources_installed, path: /usr/local/sbin/platform-resources}
+    - {name: freebox_broker_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/secret-authority/bin/freebox-ipv6-broker"}
+    - {name: freebox_broker_installed, path: /usr/local/sbin/freebox-ipv6-broker}
+    - {name: router_network_helper_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/overlay-ipv6-router"}
+    - {name: router_network_helper_installed, path: /usr/local/sbin/overlay-ipv6-router}
+    - {name: ops_network_helper_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/overlay-ipv6-ops"}
+    - {name: ops_network_helper_installed, path: /usr/local/sbin/overlay-ipv6-ops}
     - {name: policy_mutation_helper_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/tailscale/bin/ts-policy-mutate-internal"}
     - {name: policy_mutation_helper_installed, path: /usr/local/libexec/klokast/ts-policy-mutate-internal}
     - {name: policy_renderer_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/render-tailscale-policy"}
@@ -251,6 +257,13 @@
     path: "{{ item }}"
   loop: "{{ ops_controller_root_secret_files | default([]) }}"
   register: ops_controller_check_secret_stats
+  no_log: true
+
+- name: Inspect optional active-controller root-only secret files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ ops_controller_optional_root_secret_files | default([]) }}"
+  register: ops_controller_check_optional_secret_stats
   no_log: true
 
 - name: Assert ops controller base health
@@ -333,6 +346,31 @@
       - not (item.stat.exists | default(false))
     fail_msg: "A standby controller still holds root-only provider credentials."
   loop: "{{ ops_controller_check_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+  when: not (ops_controller_check_ha.active | default(false) | bool)
+
+- name: Assert installed optional active-controller secrets are locked down
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.exists | default(false)) or item.stat.isreg | default(false)
+      - not (item.stat.exists | default(false)) or item.stat.pw_name == 'root'
+      - not (item.stat.exists | default(false)) or item.stat.gr_name == 'root'
+      - not (item.stat.exists | default(false)) or item.stat.mode == '0600'
+    fail_msg: An optional controller secret file has unsafe metadata.
+  loop: "{{ ops_controller_check_optional_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+  when: ops_controller_check_ha.active | default(false) | bool
+
+- name: Assert standby controller has no optional provider credentials
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.exists | default(false))
+    fail_msg: A standby controller still holds an optional provider credential.
+  loop: "{{ ops_controller_check_optional_secret_stats.results }}"
   loop_control:
     label: "{{ item.item }}"
   no_log: true

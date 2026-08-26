@@ -339,7 +339,7 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 absent. An enabled legacy app must have explicit present intent.
 
 With fresh Observation v1, Instance Source Receipt v1, Authority State v2,
-and Controller Toolchain v2 evidence, `plan` emits a hashed Plan v3 artifact.
+and Controller Toolchain v3 evidence, `plan` emits a hashed Plan v3 artifact.
 It does not apply changes. Plan v1 remains read-only historical evidence and
 cannot authorize Apply. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy

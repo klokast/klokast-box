@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Run the closed router side of the ops-only IPv6 repair."""
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+
+SCRIPT = Path(__file__).resolve()
+REPO_ROOT = Path("/home/smith/src/klokast/klokast-box") if SCRIPT == Path("/usr/local/sbin/overlay-ipv6-router") else SCRIPT.parents[2]
+RUN_ROOT = Path("/run/klokast/apply-box")
+BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+DNS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+
+class HelperError(Exception):
+    pass
+
+
+def validate_box(value):
+    if not BOX_RE.fullmatch(value or ""):
+        raise HelperError("box identity is invalid")
+
+
+def validate_suffix(value):
+    if not DNS_RE.fullmatch(value or "") or len(value) > 253:
+        raise HelperError("MagicDNS suffix is invalid")
+
+
+def validate_ipv6(prefix, next_hop):
+    try:
+        network = ipaddress.IPv6Network(prefix, strict=True)
+        address = ipaddress.IPv6Address(next_hop)
+    except (ipaddress.AddressValueError, TypeError) as error:
+        raise HelperError("IPv6 repair input is invalid") from error
+    if network.prefixlen != 64 or not network.is_global or not address.is_link_local:
+        raise HelperError("IPv6 repair requires one global /64 and one link-local next hop")
+    return str(network), str(address)
+
+
+def runtime_path(value, *, existing=False):
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise HelperError("evidence path must be absolute")
+    try:
+        supplied.parent.resolve(strict=True).relative_to(RUN_ROOT.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise HelperError("evidence path is outside the Apply runtime") from error
+    if supplied.parent.is_symlink() or supplied.is_symlink() or (existing and not supplied.is_file()) or (not existing and supplied.exists()):
+        raise HelperError("evidence path is unsafe")
+    return supplied
+
+
+def manual_output_path(value):
+    supplied = Path(value)
+    manual_root = REPO_ROOT / ".run" / "overlay-ipv6-router" / "manual"
+    try:
+        supplied.parent.resolve(strict=True).relative_to(manual_root.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise HelperError("manual evidence path is outside the checked run directory") from error
+    if supplied.is_symlink() or supplied.exists():
+        raise HelperError("manual evidence path is unsafe")
+    return supplied
+
+
+def run_playbook(args, variables, limit):
+    run_dir = REPO_ROOT / ".run" / "overlay-ipv6-router"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix="run-", dir=run_dir))
+    try:
+        inventories = []
+        for box in dict.fromkeys([args.box, args.peer_box] if args.peer_box else [args.box]):
+            inventory = temporary / f"{box}.yml"
+            rendered = subprocess.run([
+                REPO_ROOT / "ansible/bin/render-node-inventory", "--node", box,
+                "--magicdns-suffix", args.magicdns_suffix, "--output", inventory,
+            ], cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if rendered.returncode != 0:
+                raise HelperError("checked inventory renderer failed")
+            inventories.extend(["-i", inventory])
+        vars_path = temporary / "vars.yml"
+        vars_path.write_text(yaml.safe_dump(variables, sort_keys=True), encoding="utf-8")
+        command = ["ansible-playbook", "-vv", "-i", REPO_ROOT / "ansible/inventory/hosts.yml", *inventories, REPO_ROOT / "ansible/playbooks/83-overlay-ipv6-router.yml", "--limit", limit, "-e", f"@{vars_path}"]
+        if args.check:
+            command.append("--check")
+        environment = os.environ.copy()
+        environment["ANSIBLE_CONFIG"] = str(REPO_ROOT / "ansible/ansible.cfg")
+        environment["ANSIBLE_ROLES_PATH"] = str(REPO_ROOT / "ansible/roles")
+        environment["ANSIBLE_SSH_COMMON_ARGS"] = f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={temporary / 'known_hosts'}"
+        completed = subprocess.run([str(item) for item in command], cwd=REPO_ROOT, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if completed.returncode != 0:
+            diagnostic = "\n".join((completed.stderr + "\n" + completed.stdout).splitlines()[-20:])
+            raise HelperError(f"router Ansible operation failed:\n{diagnostic[:4096]}")
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("huawei-instructions", "verify-prerequisite", "snapshot", "prepare", "apply", "verify", "refresh-endpoints", "restore", "verify-recovery"))
+    parser.add_argument("--box", required=True)
+    parser.add_argument("--peer-box")
+    parser.add_argument("--magicdns-suffix", required=True)
+    parser.add_argument("--prefix")
+    parser.add_argument("--next-hop")
+    parser.add_argument("--evidence-output")
+    parser.add_argument("--snapshot")
+    parser.add_argument("--check", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        validate_box(args.box)
+        validate_suffix(args.magicdns_suffix)
+        if args.peer_box:
+            validate_box(args.peer_box)
+        if args.command in {"prepare", "apply", "verify", "restore"}:
+            args.prefix, args.next_hop = validate_ipv6(args.prefix, args.next_hop)
+        if args.command in {"huawei-instructions", "verify-prerequisite", "refresh-endpoints", "verify-recovery"} and not args.peer_box:
+            raise HelperError("peer box is required")
+        variables = {
+            "overlay_ipv6_router_operation": args.command,
+            "overlay_ipv6_active_box": args.box,
+            "overlay_ipv6_peer_box": args.peer_box or "",
+            "overlay_ipv6_prefix": args.prefix or "",
+            "overlay_ipv6_next_hop": args.next_hop or "",
+        }
+        if args.command in {"snapshot", "verify-prerequisite"}:
+            variables["overlay_ipv6_evidence_output"] = str(runtime_path(args.evidence_output))
+        if args.command == "huawei-instructions":
+            variables["overlay_ipv6_evidence_output"] = str(manual_output_path(args.evidence_output))
+        if args.command == "restore":
+            snapshot = runtime_path(args.snapshot, existing=True)
+            value = json.loads(snapshot.read_text(encoding="utf-8"))
+            if value.get("kind") != "klokast.overlay-ipv6-router-preimage.v1":
+                raise HelperError("router snapshot kind is invalid")
+            variables["overlay_ipv6_router_preimage"] = value
+        limit = f"{args.box}-router"
+        if args.command in {"huawei-instructions", "verify-prerequisite", "refresh-endpoints", "verify-recovery"}:
+            limit = f"{args.box}-router,{args.peer_box}-router"
+        run_playbook(args, variables, limit)
+        if args.command == "huawei-instructions":
+            evidence = json.loads(Path(args.evidence_output).read_text(encoding="utf-8"))
+            address = evidence["peer_global_ipv6"]
+            print("Remove or disable Huawei rule yii-jump-tailscale.")
+            print(f"Create rule {args.peer_box}-router-tailscale.")
+            print(f"Destination: {address}/128")
+            print("Protocol: UDP")
+            print("Port: 41641")
+        else:
+            print(json.dumps({"schema_version": 1, "result": "check" if args.check else "success", "command": args.command, "box": args.box}, sort_keys=True))
+    except (HelperError, ValueError, json.JSONDecodeError) as error:
+        print(f"overlay-ipv6-router: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

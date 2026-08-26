@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -un)" != smith ]; then
+  echo "install-freebox-application: run as smith on the active controller" >&2
+  exit 1
+fi
+if [ "$#" -ne 0 ]; then
+  echo "Usage: $0" >&2
+  exit 2
+fi
+exec sudo -n /usr/local/sbin/ksa-freebox-credential install
