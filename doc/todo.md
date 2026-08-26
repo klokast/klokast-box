@@ -6,8 +6,12 @@ Format of the first line: `# yyyy-mm-dd - title`
 
 The first signed box-connectivity adoption did not reach Ansible because the
 root Apply program passed a root-only rollback file to the `smith`-owned
-compiler process. The corrected program keeps rollback storage root-only and
-makes exact, read-only copies in its short-lived execution directory.
+compiler process. The adoption execution path was corrected to keep rollback
+storage root-only and make exact, read-only copies in its short-lived execution
+directory. A later authorized rollback found that its separate preflight path
+still passed the root-only file directly. That path now uses the same staged
+copy. Keep tests for each code path when a root action delegates a read-only
+operation to `smith`.
 
 During recovery inspection, one controller ping reached `k001-router` only
 through the Hong Kong DERP relay. A later closed legacy verification

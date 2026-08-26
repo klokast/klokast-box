@@ -2055,8 +2055,11 @@ def box_rollback_prepare(args):
             or sha256_file(effective_path) != binding["effective_registry_sha256"]
         ):
             raise ApplyError("box rollback material is invalid or stale")
+        staged_old_path = stage_box_registry_for_controller(
+            old_path, work, "target-registry.yml"
+        )
         run_box_resource(
-            old_path, binding["group"]["box"], "apply-box-access",
+            staged_old_path, binding["group"]["box"], "apply-box-access",
             plan_magicdns_suffix(binding["plan"]),
             binding["plan"]["engine"]["commit"], check=True,
         )

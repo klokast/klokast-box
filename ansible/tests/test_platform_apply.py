@@ -701,6 +701,118 @@ class PlatformApplyTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.ApplyError, "name is not closed"):
                 self.mod.stage_box_registry_for_controller(source, work, "other.yml")
 
+    def test_box_rollback_preflight_stages_root_only_registry_for_controller(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rollback_root = root / "rollback"
+            preflight_root = root / "preflight"
+            work = root / "work"
+            work.mkdir()
+            original_nonce = "adoption_nonce_123"
+            material = rollback_root / original_nonce
+            material.mkdir(parents=True)
+            old_path = material / "old-registry.yml"
+            effective_path = material / "effective-registry.yml"
+            old_path.write_bytes(b"schema_version: 1\nsource: legacy\n")
+            effective_path.write_bytes(b"schema_version: 1\nsource: instance\n")
+            old_path.chmod(0o600)
+            effective_path.chmod(0o600)
+            old_hash = self.mod.sha256_file(old_path)
+            effective_hash = self.mod.sha256_file(effective_path)
+            box = "boxb"
+            group_id = self.mod.BOX_GROUP_PREFIX + box
+            manifest = {
+                "schema_version": 1,
+                "kind": "klokast.box-connectivity-rollback.v1",
+                "selected_box": box,
+                "action_group_id": group_id,
+                "old_registry_sha256": old_hash,
+                "effective_registry_sha256": effective_hash,
+                "intent_sha256": "a" * 64,
+            }
+            (material / "manifest.json").write_text(
+                self.mod.canonical(manifest) + "\n", encoding="utf-8"
+            )
+            adoption = {
+                "kind": "klokast.apply-execution.v2",
+                "result": "success",
+                "action": "adopt_instance_specification",
+                "selected_box": box,
+                "action_group_id": group_id,
+                "authority_state_sha256": "b" * 64,
+                "old_registry_sha256": old_hash,
+                "effective_registry_sha256": effective_hash,
+                "nonce": original_nonce,
+            }
+            adoption["receipt_sha256"] = self.mod.sha256_bytes(
+                self.mod.canonical(adoption).encode("utf-8")
+            )
+            execution_path = root / "execution.json"
+            binding = {
+                "plan": {
+                    "engine": {"commit": "c" * 40},
+                    "projection": {
+                        "tailnet": {"magicdns_suffix": "tail1234.ts.net"},
+                    },
+                },
+                "group": {
+                    "operation": "verify_instance_authority",
+                    "box": box,
+                    "id": group_id,
+                },
+                "state": {"authority_state_sha256": "b" * 64},
+                "old_registry_sha256": old_hash,
+                "effective_registry_sha256": effective_hash,
+            }
+            intent = {
+                "schema_version": 1,
+                "kind": "test",
+                "plan_sha256": "d" * 64,
+                "selected_box": box,
+            }
+            args = Mock(execution_receipt=str(execution_path))
+            observed = {}
+
+            def capture_registry(path, *_args, **_kwargs):
+                registry = Path(path)
+                observed["path"] = registry
+                observed["content"] = registry.read_bytes()
+                observed["mode"] = registry.stat().st_mode & 0o777
+
+            with patch.object(
+                self.mod, "ROLLBACK_ROOT", rollback_root
+            ), patch.object(
+                self.mod, "PREFLIGHT_ROOT", preflight_root
+            ), patch.object(
+                self.mod, "new_box_work", return_value=work
+            ), patch.object(
+                self.mod, "validate_inputs_v3", return_value=binding
+            ), patch.object(
+                self.mod, "resolve_hashed", return_value=(execution_path, adoption)
+            ), patch.object(
+                self.mod, "box_intent_common", return_value=intent
+            ), patch.object(
+                self.mod, "append_audit"
+            ), patch(
+                "builtins.print"
+            ), patch.object(
+                self.mod, "smith_gid", return_value=123
+            ), patch.object(
+                self.mod.os, "chown"
+            ) as chown, patch.object(
+                self.mod, "run_box_resource", side_effect=capture_registry
+            ) as run_resource:
+                self.mod.box_rollback_prepare(args)
+
+            staged_path = work / "target-registry.yml"
+            self.assertEqual(observed["path"], staged_path)
+            self.assertNotEqual(observed["path"], old_path)
+            self.assertEqual(observed["content"], old_path.read_bytes())
+            self.assertEqual(old_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(observed["mode"], 0o440)
+            chown.assert_called_once_with(staged_path, 0, 123)
+            run_resource.assert_called_once()
+
     def test_source_recovery_is_temporary_and_redacted(self):
         source = (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-instance").read_text(encoding="utf-8")
         function = source[source.index("def cmd_source_recovery_check"):source.index("def app_repository_ids")]
