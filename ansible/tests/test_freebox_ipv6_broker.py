@@ -67,6 +67,34 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
             self.mod.Session(Transport(), credential)
         self.assertNotIn(token, str(caught.exception))
 
+    def test_login_accepts_valid_password_metadata_and_rejects_wrong_type(self):
+        credential = {"app_id": "org.klokast.test", "app_token": "secret", "api_major": 15}
+
+        class Transport:
+            password_set = True
+
+            def request(inner, method, path, body=None, headers=None):
+                if path.endswith("/login/"):
+                    return {"success": True, "result": {
+                        "logged_in": False,
+                        "challenge": "challenge",
+                        "password_salt": "salt",
+                        "password_set": inner.password_set,
+                    }}
+                if path.endswith("/login/session/"):
+                    return {"success": True, "result": {
+                        "session_token": "session",
+                        "challenge": "next-challenge",
+                        "permissions": {"settings": True},
+                    }}
+                return {"success": True, "result": {}}
+
+        self.mod.Session(Transport(), credential).close()
+        transport = Transport()
+        transport.password_set = "true"
+        with self.assertRaisesRegex(self.mod.BrokerError, "password metadata"):
+            self.mod.Session(transport, credential)
+
     def test_discovery_and_delegations_reject_unknown_shapes(self):
         transport = Mock()
         transport.request.return_value = {**self.discovery, "redirect": "attacker"}

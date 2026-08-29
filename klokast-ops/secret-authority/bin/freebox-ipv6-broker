@@ -26,6 +26,7 @@ RFC1918_NETWORKS = tuple(
 )
 DISCOVERY_PATH = "/api_version"
 CREDENTIAL = Path("/etc/klokast/freebox-ipv6.json")
+PENDING_CREDENTIAL = Path("/etc/klokast/freebox-ipv6.pending.json")
 STATE = Path("/var/lib/klokast/freebox-ipv6/ops-delegation.json")
 ROLLBACK_ROOT = Path("/var/lib/klokast/freebox-ipv6/rollback")
 AUDIT_LOG = Path("/var/log/klokast/freebox-ipv6.jsonl")
@@ -208,8 +209,9 @@ def discover(transport):
     return value
 
 
-def load_credential(discovery):
-    value = decode_json(read_regular(CREDENTIAL, mode=0o600), "Freebox credential")
+def load_credential(discovery, path=None):
+    path = CREDENTIAL if path is None else path
+    value = decode_json(read_regular(path, mode=0o600), "Freebox credential")
     expected = {"schema_version", "kind", "app_id", "app_token", "gateway_uid", "api_version", "api_major", "local_endpoint"}
     if set(value) != expected or value.get("schema_version") != 1 or value.get("kind") != "klokast.freebox-credential.v1":
         raise BrokerError("Freebox credential has an unknown shape")
@@ -232,10 +234,14 @@ class Session:
         self.credential = credential
         login = validate_api_response(
             transport.request("GET", api_path(credential, "/login/")),
-            {"logged_in", "challenge"}, "Freebox login", {"password_salt"},
+            {"logged_in", "challenge"}, "Freebox login", {"password_salt", "password_set"},
         )
         if not isinstance(login.get("challenge"), str) or not login["challenge"] or len(login["challenge"]) > 4096:
             raise BrokerError("Freebox login challenge is invalid")
+        if "password_salt" in login and (not isinstance(login["password_salt"], str) or len(login["password_salt"]) > 4096):
+            raise BrokerError("Freebox login password metadata is invalid")
+        if "password_set" in login and not isinstance(login["password_set"], bool):
+            raise BrokerError("Freebox login password metadata is invalid")
         password = hmac.new(
             credential["app_token"].encode("utf-8"),
             login["challenge"].encode("utf-8"), hashlib.sha1,
