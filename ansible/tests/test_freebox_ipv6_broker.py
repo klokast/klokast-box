@@ -160,6 +160,21 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.BrokerError, "redirect"):
                 self.mod.Transport("192.168.1.254").request("GET", "/api_version")
 
+    def test_gateway_resolver_accepts_only_local_service_addresses(self):
+        def answer(address):
+            return [(self.mod.socket.AF_INET, self.mod.socket.SOCK_STREAM, 6, "", (address, 80))]
+
+        for address in ("192.168.1.254", "212.27.38.253"):
+            with self.subTest(address=address), patch.object(
+                self.mod.socket, "getaddrinfo", return_value=answer(address)
+            ):
+                self.assertEqual(self.mod.resolve_local_gateway(), address)
+
+        with patch.object(
+            self.mod.socket, "getaddrinfo", return_value=answer("8.8.8.8")
+        ), self.assertRaisesRegex(self.mod.BrokerError, "approved local-service address"):
+            self.mod.resolve_local_gateway()
+
 
 if __name__ == "__main__":
     unittest.main()
