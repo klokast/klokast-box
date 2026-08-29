@@ -77,6 +77,19 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.BrokerError, "unknown shape"):
             self.mod.validate_delegation_document(bad)
 
+    def test_discovery_accepts_valid_model_metadata(self):
+        transport = Mock()
+        transport.request.return_value = {
+            **self.discovery,
+            "box_model": "fbxgw9-r1/full",
+            "box_model_name": "Freebox v9 (r1)",
+        }
+        self.assertEqual(self.mod.discover(transport), transport.request.return_value)
+
+        transport.request.return_value["box_model_name"] = "bad\nmodel"
+        with self.assertRaisesRegex(self.mod.BrokerError, "invalid model metadata"):
+            self.mod.discover(transport)
+
     def test_selects_lowest_unused_non_first_slot(self):
         document = self.mod.validate_delegation_document(self.response([
             "", "fe80::99", "", "", "", "", "", "",

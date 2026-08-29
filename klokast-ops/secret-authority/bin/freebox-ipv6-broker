@@ -190,7 +190,8 @@ def validate_api_response(value, result_fields, label, optional_fields=frozenset
 def discover(transport):
     value = transport.request("GET", DISCOVERY_PATH)
     required = {"uid", "device_name", "api_version", "api_base_url", "device_type", "api_domain", "https_available", "https_port"}
-    if set(value) != required:
+    model_fields = {"box_model", "box_model_name"}
+    if set(value) not in {frozenset(required), frozenset(required | model_fields)}:
         raise BrokerError("Freebox discovery has an unknown response shape")
     if not isinstance(value["uid"], str) or not UID_RE.fullmatch(value["uid"]):
         raise BrokerError("Freebox discovery returned an invalid gateway identity")
@@ -201,6 +202,9 @@ def discover(transport):
         raise BrokerError("Freebox discovery returned an invalid gateway description")
     if not isinstance(value.get("api_domain"), str) or not value["api_domain"] or not isinstance(value.get("https_available"), bool) or not isinstance(value.get("https_port"), int):
         raise BrokerError("Freebox discovery returned invalid endpoint metadata")
+    for field in model_fields & set(value):
+        if not isinstance(value[field], str) or not value[field] or len(value[field]) > 128 or any(ord(character) < 32 for character in value[field]):
+            raise BrokerError("Freebox discovery returned invalid model metadata")
     return value
 
 
