@@ -252,8 +252,12 @@ class Session:
                 "password": password,
             }),
             {"session_token", "challenge", "permissions"},
-            "Freebox session", {"password_salt"},
+            "Freebox session", {"password_salt", "password_set"},
         )
+        if "password_salt" in opened and (not isinstance(opened["password_salt"], str) or len(opened["password_salt"]) > 4096):
+            raise BrokerError("Freebox session password metadata is invalid")
+        if "password_set" in opened and not isinstance(opened["password_set"], bool):
+            raise BrokerError("Freebox session password metadata is invalid")
         if not isinstance(opened.get("session_token"), str) or not opened["session_token"] or len(opened["session_token"]) > 4096 or not isinstance(opened.get("permissions"), dict) or opened["permissions"].get("settings") is not True:
             raise BrokerError("Freebox application lacks the settings permission")
         self.header = {"X-Fbx-App-Auth": opened["session_token"]}
