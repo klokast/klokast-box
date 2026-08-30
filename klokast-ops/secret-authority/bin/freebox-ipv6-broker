@@ -98,8 +98,8 @@ def write_exclusive(path, content, mode=0o600):
         os.close(descriptor)
 
 
-def replace_root_file(path, content, mode=0o600):
-    ensure_root_dir(path.parent)
+def replace_root_file(path, content, mode=0o600, parent_mode=0o700):
+    ensure_root_dir(path.parent, mode=parent_mode)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     write_exclusive(temporary, content, mode)
     os.replace(temporary, path)

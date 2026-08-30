@@ -79,10 +79,11 @@ class FreeboxCredentialInstallerTest(unittest.TestCase):
             credential, pending, patches = self.common_patches(root)
             with patches[0], patches[1], patches[2], patches[3], patch.object(
                 self.broker, "Transport", return_value=Transport()
-            ), patches[5], patches[6], patch.object(
+            ), patches[5], patches[6] as ensure_root_dir, patch.object(
                 self.broker, "Session", side_effect=self.broker.BrokerError("session refused")
             ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(self.installer.main(["install"]), 1)
+            ensure_root_dir.assert_called_once_with(root, mode=0o755)
             self.assertFalse(credential.exists())
             self.assertEqual(pending.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(pending.read_text(encoding="utf-8")), self.credential())
