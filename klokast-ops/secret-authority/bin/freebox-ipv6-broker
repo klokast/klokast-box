@@ -274,17 +274,19 @@ class Session:
 
 def validate_delegation_document(value):
     result = validate_api_response(
-        value, {"ipv6_enabled", "ipv6ll", "delegations"},
-        "Freebox IPv6 configuration",
+        value, {"ipv6_enabled", "delegations"},
+        "Freebox IPv6 configuration", {"ipv6ll"},
     )
     if not isinstance(result["ipv6_enabled"], bool):
         raise BrokerError("Freebox IPv6 enabled state is invalid")
-    try:
-        gateway_ll = ipaddress.IPv6Address(result["ipv6ll"])
-    except (ipaddress.AddressValueError, TypeError) as error:
-        raise BrokerError("Freebox link-local identity is invalid") from error
-    if not gateway_ll.is_link_local:
-        raise BrokerError("Freebox link-local identity is invalid")
+    gateway_ll = None
+    if "ipv6ll" in result:
+        try:
+            gateway_ll = ipaddress.IPv6Address(result["ipv6ll"])
+        except (ipaddress.AddressValueError, TypeError) as error:
+            raise BrokerError("Freebox link-local identity is invalid") from error
+        if not gateway_ll.is_link_local:
+            raise BrokerError("Freebox link-local identity is invalid")
     delegations = result["delegations"]
     if not isinstance(delegations, list) or len(delegations) != 8:
         raise BrokerError("Freebox delegation array must contain exactly eight slots")
@@ -306,7 +308,10 @@ def validate_delegation_document(value):
             if not next_hop.is_link_local:
                 raise BrokerError("Freebox delegation next hop is not link-local")
         normalized.append({"prefix": str(prefix), "next_hop": item["next_hop"].lower()})
-    return {"ipv6_enabled": result["ipv6_enabled"], "ipv6ll": str(gateway_ll), "delegations": normalized}
+    document = {"ipv6_enabled": result["ipv6_enabled"], "delegations": normalized}
+    if gateway_ll is not None:
+        document["ipv6ll"] = str(gateway_ll)
+    return document
 
 
 def load_recorded_state():
@@ -448,7 +453,8 @@ def restore(args, session, discovery):
     rollback = ROLLBACK_ROOT / args.rollback_id
     preimage_content = read_regular(rollback / "delegation-preimage.json", MAX_RESPONSE, mode=0o600)
     preimage = decode_json(preimage_content, "Freebox delegation preimage")
-    if set(preimage) != {"ipv6_enabled", "ipv6ll", "delegations"}:
+    required = {"ipv6_enabled", "delegations"}
+    if set(preimage) not in {frozenset(required), frozenset(required | {"ipv6ll"})}:
         raise BrokerError("Freebox delegation preimage has an unknown shape")
     preimage = validate_delegation_document({"success": True, "result": preimage})
     preimage_hash = sha256_bytes(canonical(preimage).encode("utf-8"))
@@ -457,8 +463,10 @@ def restore(args, session, discovery):
     _current, inspection = inspect_gateway(session, discovery, args.next_hop)
     require_selection(args, inspection)
     restored = validate_delegation_document(session.request("PUT", "/connection/ipv6/config/", {"delegations": preimage["delegations"]}))
-    if restored != preimage:
+    if restored["ipv6_enabled"] != preimage["ipv6_enabled"] or restored["delegations"] != preimage["delegations"]:
         raise BrokerError("Freebox delegation restoration did not verify exactly")
+    if "ipv6ll" in preimage and "ipv6ll" in restored and restored["ipv6ll"] != preimage["ipv6ll"]:
+        raise BrokerError("Freebox delegation restoration changed the link-local identity")
     append_audit("freebox.ops-delegation.restored", inspection, rollback_id_sha256=sha256_bytes(args.rollback_id.encode("utf-8")))
     return {**inspection, "result": "restored", "restored_document_sha256": preimage_hash}
 

@@ -2,6 +2,16 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-31 - Freebox GET can omit read-only IPv6 metadata
+
+The first signed overlay-repair preflight authenticated to the Freebox but
+stopped because the IPv6 configuration response omitted `ipv6ll`. The
+official API defines this field as read-only, and its GET example also omits
+the field. The broker now accepts the field as optional, validates it as a
+link-local IPv6 address when it is present, and continues to reject every
+unknown field. Keep tests for both valid response forms. Do not make the
+delegation array, IPv6 enabled state, prefixes, or next hops optional.
+
 # 2026-08-31 - Huawei IPv6 pinhole can become stale after prefix changes
 
 A changing residential IPv6 prefix is a plausible cause of a later direct-path

@@ -111,6 +111,22 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
         bad["result"]["delegations"][1]["unknown"] = True
         with self.assertRaisesRegex(self.mod.BrokerError, "unknown shape"):
             self.mod.validate_delegation_document(bad)
+        unknown_result = self.response()
+        unknown_result["result"]["unknown"] = True
+        with self.assertRaisesRegex(self.mod.BrokerError, "unknown result shape"):
+            self.mod.validate_delegation_document(unknown_result)
+
+    def test_delegations_accept_optional_read_only_link_local_identity(self):
+        response = self.response()
+        del response["result"]["ipv6ll"]
+        document = self.mod.validate_delegation_document(response)
+        self.assertNotIn("ipv6ll", document)
+        self.assertEqual(document["delegations"][0]["prefix"], "2a01:e30:1234::/64")
+
+        bad = self.response()
+        bad["result"]["ipv6ll"] = "192.0.2.1"
+        with self.assertRaisesRegex(self.mod.BrokerError, "link-local identity"):
+            self.mod.validate_delegation_document(bad)
 
     def test_discovery_accepts_valid_model_metadata(self):
         transport = Mock()
@@ -199,6 +215,50 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
                 preimage = root / "rollback" / common["rollback_id"] / "delegation-preimage.json"
                 self.assertEqual(preimage.read_text(encoding="utf-8"), self.mod.canonical(original) + "\n")
                 self.assertEqual(preimage.stat().st_mode & 0o777, 0o600)
+
+    def test_restore_accepts_preimage_without_read_only_link_local_identity(self):
+        next_hop = "fe80::1234"
+        preimage_response = self.response()
+        del preimage_response["result"]["ipv6ll"]
+        preimage = self.mod.validate_delegation_document(preimage_response)
+        preimage_hash = self.mod.sha256_bytes(self.mod.canonical(preimage).encode())
+
+        class Session:
+            def request(inner, method, _suffix, body=None):
+                if method == "GET":
+                    hops = [""] * 8
+                    hops[1] = next_hop
+                    return self.response(hops)
+                self.assertEqual(body, {"delegations": preimage["delegations"]})
+                return self.response()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rollback = root / "rollback" / "rollback_nonce_123"
+            rollback.mkdir(parents=True)
+            (rollback / "delegation-preimage.json").write_text(
+                self.mod.canonical(preimage) + "\n", encoding="utf-8"
+            )
+            (rollback / "preimage.sha256").write_text(
+                preimage_hash + "\n", encoding="ascii"
+            )
+            (rollback / "delegation-preimage.json").chmod(0o600)
+            (rollback / "preimage.sha256").chmod(0o600)
+            args = SimpleNamespace(
+                slot=1,
+                prefix=self.prefixes[1],
+                next_hop=next_hop,
+                expected_preimage_sha256=preimage_hash,
+                rollback_id="rollback_nonce_123",
+            )
+            with patch.object(self.mod, "STATE", root / "state.json"), patch.object(
+                self.mod, "ROLLBACK_ROOT", root / "rollback"
+            ), patch.object(self.mod, "AUDIT_LOG", root / "audit.jsonl"), patch.object(
+                self.mod, "ensure_root_dir"
+            ):
+                restored = self.mod.restore(args, Session(), self.discovery)
+            self.assertEqual(restored["result"], "restored")
+            self.assertEqual(restored["restored_document_sha256"], preimage_hash)
 
     def test_transport_refuses_redirect_without_following_it(self):
         response = Mock(status=302)
