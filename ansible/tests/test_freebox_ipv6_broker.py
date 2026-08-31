@@ -113,8 +113,12 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
             self.mod.validate_delegation_document(bad)
         unknown_result = self.response()
         unknown_result["result"]["unknown"] = True
-        with self.assertRaisesRegex(self.mod.BrokerError, "unknown result shape"):
+        with self.assertRaisesRegex(self.mod.BrokerError, r"unknown result shape \(unknown=unknown\)"):
             self.mod.validate_delegation_document(unknown_result)
+        missing_result = self.response()
+        del missing_result["result"]["delegations"]
+        with self.assertRaisesRegex(self.mod.BrokerError, r"unknown result shape \(missing=delegations\)"):
+            self.mod.validate_delegation_document(missing_result)
 
     def test_delegations_accept_optional_read_only_link_local_identity(self):
         response = self.response()

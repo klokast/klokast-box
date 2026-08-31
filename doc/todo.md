@@ -4,13 +4,15 @@ Format of the first line: `# yyyy-mm-dd - title`
 
 # 2026-08-31 - Freebox GET can omit read-only IPv6 metadata
 
-The first signed overlay-repair preflight authenticated to the Freebox but
-stopped because the IPv6 configuration response omitted `ipv6ll`. The
-official API defines this field as read-only, and its GET example also omits
-the field. The broker now accepts the field as optional, validates it as a
-link-local IPv6 address when it is present, and continues to reject every
-unknown field. Keep tests for both valid response forms. Do not make the
-delegation array, IPv6 enabled state, prefixes, or next hops optional.
+The first overlay-repair preflight authenticated to the Freebox but stopped
+because the IPv6 configuration result differed from the closed schema. The
+official API defines `ipv6ll` as read-only, and its GET example omits that
+field. The broker now accepts `ipv6ll` as optional and validates it when it is
+present. A second preflight still found a schema difference. The broker now
+reports only missing and unknown field names, never response values or
+credentials, so the next preflight can identify the remaining difference.
+Accept a new field only after its type and effect are understood. Do not make
+the delegation array, IPv6 enabled state, prefixes, or next hops optional.
 
 # 2026-08-31 - Huawei IPv6 pinhole can become stale after prefix changes
 

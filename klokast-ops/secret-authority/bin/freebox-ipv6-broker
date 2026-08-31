@@ -183,8 +183,17 @@ def validate_api_response(value, result_fields, label, optional_fields=frozenset
     if set(value) != {"success", "result"} or value.get("success") is not True or not isinstance(value.get("result"), dict):
         raise BrokerError(f"{label} has an unknown response shape")
     fields = set(value["result"])
-    if not set(result_fields).issubset(fields) or not fields.issubset(set(result_fields) | set(optional_fields)):
-        raise BrokerError(f"{label} has an unknown result shape")
+    required = set(result_fields)
+    allowed = required | set(optional_fields)
+    missing = sorted(required - fields)
+    unknown = sorted(fields - allowed)
+    if missing or unknown:
+        details = []
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        if unknown:
+            details.append("unknown=" + ",".join(unknown))
+        raise BrokerError(f"{label} has an unknown result shape ({'; '.join(details)})")
     return value["result"]
 
 
