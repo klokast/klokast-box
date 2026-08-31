@@ -2,6 +2,25 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-08-31 - Huawei IPv6 pinhole does not follow ISP prefix changes
+
+A changing residential IPv6 prefix is a plausible cause of a later direct-path
+failure from `k002-router` to `k001-router`. The Huawei IPv6 virtual-host form
+stores the complete `k001-router` global address. Its device selector appears
+to fill that literal address; the form exposes no MAC, DHCPv6 DUID,
+interface-ID, or prefix-independent host binding. A new rule with the current
+`/128` produced a direct UDP `41641` endpoint. The prior address and endpoint
+state were not recorded, so this result does not prove that prefix drift was
+the sole cause of the earlier failure.
+
+The diagnosis and safe manual recovery are in
+`klokast-dev/runbooks/47-overlay-ipv6-direct-repair.md`. Do not broaden the
+destination, disable the Huawei IPv6 firewall, or automate its administration
+as a workaround. A future improvement needs authoritative documentation for
+the exact Huawei firmware and a checked renumbering test. If no stable host
+binding exists, design a narrow, audited, rollback-capable update boundary
+before any automation is added.
+
 # 2026-08-25 - one-box verification requires a direct Tailnet path
 
 The first signed box-connectivity adoption did not reach Ansible because the

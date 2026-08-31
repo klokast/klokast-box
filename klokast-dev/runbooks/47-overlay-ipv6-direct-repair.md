@@ -75,6 +75,48 @@ Use the current address in its output. In the Huawei IPv6 firewall:
 Do not disable the Huawei IPv6 firewall. Do not add another destination or
 port. Keep the old IPv4 and DERP paths.
 
+### Diagnose A Later Direct-Path Failure
+
+The Huawei rule contains the complete current global IPv6 address of the peer
+router. Treat this value as a literal `/128`. The device selector in the
+current Huawei form only fills the address field. The form has no field that
+binds the rule to a MAC address, DHCPv6 DUID, interface ID, or changing ISP
+prefix.
+
+The ISP can assign a new residential IPv6 prefix while the router keeps the
+same interface-ID suffix. This change makes the Huawei `/128` stale. It does
+not imply that UDP port `41641` changed or that the active box failed.
+
+If the direct path later uses DERP, keep IPv4 and DERP available and use this
+sequence:
+
+1. Run `ansible/bin/show-huawei-tailscale-pinhole` on the active controller.
+2. Open Huawei page **Application > Advanced NAT Configuration > IPv6 Virtual
+   Host Configuration**.
+3. Compare the complete address printed by the command with **Internal Host**
+   in `<peer-box>-router-tailscale`.
+4. If the addresses differ, replace the rule with the exact printed `/128`.
+   Keep the WAN selection, UDP protocol, and port `41641` unchanged.
+5. Run the signed repair preflight in check mode. Require its prerequisite to
+   report a direct endpoint in the form `[current-IPv6]:41641`, with no DERP.
+
+An address mismatch proves that the pinhole is stale. A successful direct
+check after the replacement is strong evidence that the stale pinhole was a
+cause of the failure. It does not prove that no other condition changed at the
+same time. If the addresses already match, do not assume prefix drift. Check
+that the rule is enabled, uses the Internet IPv6 WAN, permits UDP `41641`, and
+still targets only the peer router. Then investigate the peer IPv6 address and
+Tailscale endpoint state.
+
+The current Huawei form has no safe prefix-independent rule. Do not enter a
+whole `/64`, leave the destination unrestricted, use DMZ, or disable the IPv6
+firewall. Do not assume that selecting a device makes the saved rule follow a
+later address change. Use such a feature only if Huawei documents a stable
+host-identity binding for the exact installed firmware and a checked test
+proves that the rule follows an ISP prefix change. Automating Huawei changes
+would require a separate reviewed and rollback-capable authority boundary; it
+is not part of this repair.
+
 ## 4. Create Fresh Verification Evidence
 
 Create fresh source and source-recovery receipts. Refresh the Platform map,
