@@ -2,7 +2,7 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
-# 2026-08-31 - Huawei IPv6 pinhole does not follow ISP prefix changes
+# 2026-08-31 - Huawei IPv6 pinhole can become stale after prefix changes
 
 A changing residential IPv6 prefix is a plausible cause of a later direct-path
 failure from `k002-router` to `k001-router`. The Huawei IPv6 virtual-host form
