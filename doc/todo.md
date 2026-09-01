@@ -8,11 +8,14 @@ The first overlay-repair preflight authenticated to the Freebox but stopped
 because the IPv6 configuration result differed from the closed schema. The
 official API defines `ipv6ll` as read-only, and its GET example omits that
 field. The broker now accepts `ipv6ll` as optional and validates it when it is
-present. A second preflight still found a schema difference. The broker now
+present. A second preflight found `ipv6_firewall` and
+`ipv6_prefix_firewall`. The installed Freebox user interface defines both
+fields as Boolean checkboxes. The broker now accepts only the complete pair,
+validates both values as Booleans, binds them into rollback evidence, and
+refuses a configure or restore operation if either value changes. It still
 reports only missing and unknown field names, never response values or
-credentials, so the next preflight can identify the remaining difference.
-Accept a new field only after its type and effect are understood. Do not make
-the delegation array, IPv6 enabled state, prefixes, or next hops optional.
+credentials. Do not make the delegation array, IPv6 enabled state, prefixes,
+or next hops optional.
 
 # 2026-08-31 - Huawei IPv6 pinhole can become stale after prefix changes
 

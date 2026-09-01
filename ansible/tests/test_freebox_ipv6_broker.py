@@ -45,6 +45,8 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
             "result": {
                 "ipv6_enabled": True,
                 "ipv6ll": "fe80::1",
+                "ipv6_firewall": True,
+                "ipv6_prefix_firewall": False,
                 "delegations": [
                     {"prefix": prefix, "next_hop": hops[index]}
                     for index, prefix in enumerate(self.prefixes)
@@ -131,6 +133,76 @@ class FreeboxIPv6BrokerTest(unittest.TestCase):
         bad["result"]["ipv6ll"] = "192.0.2.1"
         with self.assertRaisesRegex(self.mod.BrokerError, "link-local identity"):
             self.mod.validate_delegation_document(bad)
+
+    def test_delegations_accept_only_complete_boolean_firewall_state(self):
+        response = self.response()
+        response["result"].update({
+            "ipv6_firewall": True,
+            "ipv6_prefix_firewall": False,
+        })
+        document = self.mod.validate_delegation_document(response)
+        self.assertIs(document["ipv6_firewall"], True)
+        self.assertIs(document["ipv6_prefix_firewall"], False)
+
+        incomplete = self.response()
+        del incomplete["result"]["ipv6_prefix_firewall"]
+        with self.assertRaisesRegex(self.mod.BrokerError, "firewall state is incomplete"):
+            self.mod.validate_delegation_document(incomplete)
+
+        wrong_type = self.response()
+        wrong_type["result"].update({
+            "ipv6_firewall": "true",
+            "ipv6_prefix_firewall": False,
+        })
+        with self.assertRaisesRegex(self.mod.BrokerError, "firewall state is invalid"):
+            self.mod.validate_delegation_document(wrong_type)
+
+    def test_firewall_state_must_remain_exactly_present_and_unchanged(self):
+        before = {"ipv6_firewall": True, "ipv6_prefix_firewall": False}
+        self.mod.require_preserved_firewall_state(before, dict(before), "configuration")
+        for after in (
+            {"ipv6_firewall": False, "ipv6_prefix_firewall": False},
+            {},
+        ):
+            with self.subTest(after=after), self.assertRaisesRegex(
+                self.mod.BrokerError, "changed the Freebox IPv6 firewall state"
+            ):
+                self.mod.require_preserved_firewall_state(before, after, "configuration")
+
+    def test_configure_refuses_changed_firewall_state(self):
+        next_hop = "fe80::1234"
+        original = self.mod.validate_delegation_document(self.response())
+        original_hash = self.mod.sha256_bytes(self.mod.canonical(original).encode())
+
+        class Session:
+            def request(inner, method, _suffix, body=None):
+                if method == "GET":
+                    return self.response()
+                hops = [""] * 8
+                hops[1] = next_hop
+                response = self.response(hops)
+                response["result"]["ipv6_firewall"] = False
+                return response
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "rollback").mkdir()
+            args = SimpleNamespace(
+                slot=1,
+                prefix=self.prefixes[1],
+                next_hop=next_hop,
+                expected_preimage_sha256=original_hash,
+                rollback_id="rollback_nonce_123",
+                check=False,
+            )
+            with patch.object(self.mod, "STATE", root / "state.json"), patch.object(
+                self.mod, "ROLLBACK_ROOT", root / "rollback"
+            ), patch.object(self.mod, "AUDIT_LOG", root / "audit.jsonl"), patch.object(
+                self.mod, "ensure_root_dir"
+            ), self.assertRaisesRegex(
+                self.mod.BrokerError, "changed the Freebox IPv6 firewall state"
+            ):
+                self.mod.configure(args, Session(), self.discovery)
 
     def test_discovery_accepts_valid_model_metadata(self):
         transport = Mock()

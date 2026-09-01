@@ -282,12 +282,18 @@ class Session:
 
 
 def validate_delegation_document(value):
+    firewall_fields = {"ipv6_firewall", "ipv6_prefix_firewall"}
     result = validate_api_response(
         value, {"ipv6_enabled", "delegations"},
-        "Freebox IPv6 configuration", {"ipv6ll"},
+        "Freebox IPv6 configuration", {"ipv6ll"} | firewall_fields,
     )
     if not isinstance(result["ipv6_enabled"], bool):
         raise BrokerError("Freebox IPv6 enabled state is invalid")
+    present_firewall_fields = firewall_fields & set(result)
+    if present_firewall_fields and present_firewall_fields != firewall_fields:
+        raise BrokerError("Freebox IPv6 firewall state is incomplete")
+    if present_firewall_fields and any(not isinstance(result[field], bool) for field in firewall_fields):
+        raise BrokerError("Freebox IPv6 firewall state is invalid")
     gateway_ll = None
     if "ipv6ll" in result:
         try:
@@ -320,7 +326,18 @@ def validate_delegation_document(value):
     document = {"ipv6_enabled": result["ipv6_enabled"], "delegations": normalized}
     if gateway_ll is not None:
         document["ipv6ll"] = str(gateway_ll)
+    for field in sorted(firewall_fields):
+        if field in result:
+            document[field] = result[field]
     return document
+
+
+def require_preserved_firewall_state(before, after, label):
+    for field in ("ipv6_firewall", "ipv6_prefix_firewall"):
+        if (field in before) != (field in after) or (
+            field in before and before[field] != after[field]
+        ):
+            raise BrokerError(f"{label} changed the Freebox IPv6 firewall state")
 
 
 def load_recorded_state():
@@ -433,6 +450,7 @@ def configure(args, session, discovery):
     updated = validate_delegation_document(session.request("PUT", "/connection/ipv6/config/", {"delegations": candidate}))
     if updated["delegations"] != candidate or updated["ipv6_enabled"] is not True:
         raise BrokerError("Freebox did not apply the exact ops delegation")
+    require_preserved_firewall_state(document, updated, "Freebox delegation configuration")
     state = {
         "schema_version": 1, "kind": "klokast.freebox-ops-delegation.v1",
         "gateway_id_sha256": inspection["gateway_id_sha256"],
@@ -463,7 +481,8 @@ def restore(args, session, discovery):
     preimage_content = read_regular(rollback / "delegation-preimage.json", MAX_RESPONSE, mode=0o600)
     preimage = decode_json(preimage_content, "Freebox delegation preimage")
     required = {"ipv6_enabled", "delegations"}
-    if set(preimage) not in {frozenset(required), frozenset(required | {"ipv6ll"})}:
+    allowed = required | {"ipv6ll", "ipv6_firewall", "ipv6_prefix_firewall"}
+    if not required.issubset(preimage) or not set(preimage).issubset(allowed):
         raise BrokerError("Freebox delegation preimage has an unknown shape")
     preimage = validate_delegation_document({"success": True, "result": preimage})
     preimage_hash = sha256_bytes(canonical(preimage).encode("utf-8"))
@@ -474,6 +493,7 @@ def restore(args, session, discovery):
     restored = validate_delegation_document(session.request("PUT", "/connection/ipv6/config/", {"delegations": preimage["delegations"]}))
     if restored["ipv6_enabled"] != preimage["ipv6_enabled"] or restored["delegations"] != preimage["delegations"]:
         raise BrokerError("Freebox delegation restoration did not verify exactly")
+    require_preserved_firewall_state(preimage, restored, "Freebox delegation restoration")
     if "ipv6ll" in preimage and "ipv6ll" in restored and restored["ipv6ll"] != preimage["ipv6ll"]:
         raise BrokerError("Freebox delegation restoration changed the link-local identity")
     append_audit("freebox.ops-delegation.restored", inspection, rollback_id_sha256=sha256_bytes(args.rollback_id.encode("utf-8")))

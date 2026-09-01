@@ -16,6 +16,9 @@ It keeps the application token under `/etc/klokast` with mode `0600`. It uses
 only the fixed local `mafreebox.freebox.fr` endpoint. It rejects redirects,
 gateway identity drift, API version drift, unknown response fields, occupied
 delegation slots, prefix drift, and a non-link-local next hop.
+It validates the two Freebox IPv6 firewall settings as Booleans, binds them
+into the rollback evidence, and refuses the operation if either setting
+changes.
 
 ## 1. Install The Exact Controller Toolchain
 
