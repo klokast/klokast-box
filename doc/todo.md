@@ -32,14 +32,24 @@ registry in a separate read-only diagnostic. The failed helper's stderr was
 not forwarded, and its temporary work directory was removed by the existing
 cleanup path.
 
-A later code change must set and verify the intended group traversal mode
-without granting write access to `smith` or exposing rollback storage. Test
-the actual directory and account boundary under a restrictive umask; the
-current tests mock `new_box_work` in the relevant execution paths. Also make
-compiler failures diagnosable without disclosing private configuration.
-Do not relax the caller's umask, change network settings, or replace the
-selected engine to force this acceptance attempt to pass. Preserve the
-controller-private failure log, baseline hashes, mode diagnostic, and Plan.
+The correction sets the final request-directory mode to `0750` after
+ownership changes. It grants group traversal without group write access or
+access for other users. A regression test uses the real directory-creation
+and registry-staging functions under umasks `022`, `077`, and `777`; it
+checks directory modes, ownership requests, unchanged rollback-file mode
+`0600`, and staged-file mode `0440`. Only ownership changes are mocked for
+the unprivileged test runner. The test failed against the old code and
+passes with the correction. Live account-boundary verification remains part
+of the resumed preflight. The existing Ansible wrapper installation carries
+the correction.
+
+The human authorized repair and resumption after the stopped attempt. Build
+and promote the corrected engine through the existing sealed and signed
+workflow before restarting acceptance with fresh evidence. Keep that new
+engine fixed during the new attempt. Do not relax the caller's umask or
+change network settings. Preserve the controller-private failure log,
+baseline hashes, mode diagnostic, and Plan. Compiler error reporting still
+needs a safe way to show the failed phase without private configuration.
 The [current work queue](upstream-instance-target-architecture.md#current-work-queue)
 owns resumption.
 

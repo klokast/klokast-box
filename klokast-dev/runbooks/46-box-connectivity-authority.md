@@ -22,9 +22,11 @@ direct-IPv6 repair just to satisfy this source-change workflow.
 
 Check the active controller, clean public checkout, private engine lock, and
 engine activation with the existing controller status workflows. Use the
-already built and activated engine. Do not rebuild or promote it for this
-acceptance. Keep the controller checkout and selected engine fixed until the
-final Plan is stored.
+already built and activated engine. If the human authorizes repair of a code
+defect found during acceptance, first use the existing
+[engine promotion workflow](40-private-instance-bootstrap.md#14-promote-the-active-engine)
+for the corrected commit. Then start a new acceptance attempt. Keep the
+controller checkout and selected engine fixed until the final Plan is stored.
 
 Install the matching wrappers and create a Toolchain v3 receipt:
 

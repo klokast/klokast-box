@@ -3,6 +3,7 @@ import datetime as dt
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -910,6 +911,39 @@ class PlatformApplyTest(unittest.TestCase):
             chown.assert_called_once_with(staged, 0, 123)
             with self.assertRaisesRegex(self.mod.ApplyError, "name is not closed"):
                 self.mod.stage_box_registry_for_controller(source, work, "other.yml")
+
+    def test_box_work_and_staged_registry_access_survive_restrictive_umask(self):
+        for mask in (0o022, 0o077, 0o777):
+            with self.subTest(umask=oct(mask)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                rollback = root / "rollback.yml"
+                rollback.write_bytes(b"schema_version: 1\n")
+                rollback.chmod(0o600)
+                runtime = root / "runtime"
+                previous_mask = os.umask(mask)
+                try:
+                    with patch.object(self.mod, "BOX_RUNTIME_ROOT", runtime), patch.object(
+                        self.mod, "smith_gid", return_value=123
+                    ), patch.object(self.mod.os, "chown") as chown:
+                        work = self.mod.new_box_work("verification_nonce")
+                        staged = self.mod.stage_box_registry_for_controller(
+                            rollback, work, "target-registry.yml"
+                        )
+                        self.assertEqual(runtime.stat().st_mode & 0o777, 0o750)
+                        self.assertEqual(work.stat().st_mode & 0o777, 0o750)
+                        self.assertEqual(staged.stat().st_mode & 0o777, 0o440)
+                        self.assertEqual(rollback.stat().st_mode & 0o777, 0o600)
+                        self.assertEqual(staged.read_bytes(), rollback.read_bytes())
+                        self.assertEqual(
+                            chown.call_args_list,
+                            [((runtime, 0, 123),), ((work, 0, 123),), ((staged, 0, 123),)],
+                        )
+                finally:
+                    os.umask(previous_mask)
+                    # A failing regression can leave the directory unsearchable.
+                    for directory in runtime, runtime / "verification_nonce":
+                        if directory.exists():
+                            directory.chmod(0o700)
 
     def test_box_rollback_preflight_stages_root_only_registry_for_controller(self):
         with tempfile.TemporaryDirectory() as temporary:

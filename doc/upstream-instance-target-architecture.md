@@ -650,9 +650,10 @@ operation.
 
 ## 11.1 First box connectivity source migration
 
-Status: `implemented`; forward verification acceptance stopped at the
-[controller preflight directory-mode failure](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077).
-Signed verification and replay refusal remain pending. This change
+Status: `implemented`; the
+[controller preflight directory-mode correction](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
+is implemented. Corrected-engine activation, signed verification, and replay
+refusal remain pending. This change
 moves one box connectivity group from the old private Platform resource
 registry to `klokast-instance.json`. It does not
 change the declared values. It does not move the box that hosts the active
@@ -752,8 +753,11 @@ unique non-controller selection, narrow router commands, stale or changed
 inputs, wrong box or signer, replay, and failed restoration.
 
 Development acceptance verifies the existing instance-owned first-box group.
-Do not repeat Authority State conversion, initial adoption, engine build, or
-engine promotion. Install the wrappers that match the selected, activated
+Do not repeat Authority State conversion or initial adoption. Reuse the
+selected engine's successful build and activation. If acceptance exposes a
+code defect and the human authorizes repair, complete the existing sealed
+build and signed promotion workflow before starting a new acceptance attempt.
+Install the wrappers that match the selected, activated
 engine and verify every required component in a Controller Toolchain v3
 receipt. Keep the public controller checkout clean and fixed at that engine
 throughout acceptance.
@@ -892,8 +896,9 @@ complete.
 
 ### Current work queue
 
-1. Resolve the [controller preflight directory-mode failure](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
-   before a new first-box acceptance attempt. Complete forward verification
+1. Activate the [controller preflight directory-mode correction](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
+   through the sealed build and signed promotion workflow before a new
+   first-box acceptance attempt. Complete forward verification
    and signed-request replay refusal under section 11.1, then report readiness
    for the next migration decision.
 2. Wait for a separate explicit decision before moving the controller box's

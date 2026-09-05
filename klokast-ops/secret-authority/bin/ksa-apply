@@ -844,6 +844,9 @@ def new_box_work(nonce):
     work = BOX_RUNTIME_ROOT / nonce
     work.mkdir(mode=0o750)
     os.chown(work, 0, smith_gid())
+    # mkdir applies the caller's umask. The compiler runs as smith and needs
+    # group traversal even when the caller protects other files with 0077.
+    os.chmod(work, 0o750)
     return work
 
 
