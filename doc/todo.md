@@ -2,6 +2,17 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - Ops IPv6 helper must use the controller local connection
+
+After the router snapshot handoff was corrected, the repair preflight failed
+because the ops helper tried to SSH from the active controller to itself.
+The same read-only snapshot succeeded with Ansible's local connection.
+The helper now requires the local hostname to match the selected ops host
+and sets the local connection, localhost address, and controller Python path
+explicitly, as controller convergence does. Tests must reject a different
+local host before invoking Ansible. This preflight failure did not change
+network configuration.
+
 # 2026-09-05 - Overlay snapshot output needs a separate writable directory
 
 The signed repair preflight passed Freebox inspection but failed when Ansible

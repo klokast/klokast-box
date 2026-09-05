@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 import unittest
+import importlib.util
+import tempfile
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +18,38 @@ ROUTER_NFT = (ROOT / "ansible/roles/router/templates/nftables.nft.j2").read_text
 
 
 class OverlayIPv6RoleTest(unittest.TestCase):
+    def load_ops_helper(self):
+        loader = SourceFileLoader("overlay_ops_test", str(ROOT / "ansible/bin/overlay-ipv6-ops"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
+    def test_ops_helper_uses_local_connection_only_on_selected_host(self):
+        module = self.load_ops_helper()
+        args = SimpleNamespace(box="boxa", magicdns_suffix="example.ts.net", check=True)
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == "ansible-playbook":
+                variables = yaml.safe_load(Path(command[command.index("-e") + 1][1:]).read_text())
+                self.assertEqual(variables["ansible_connection"], "local")
+                self.assertEqual(variables["ansible_host"], "localhost")
+                self.assertEqual(variables["ansible_python_interpreter"], "/usr/bin/python3")
+                self.assertEqual(command[command.index("--limit") + 1], "boxa-ops")
+                self.assertIn("--check", command)
+            return Mock(returncode=0)
+        with tempfile.TemporaryDirectory() as temporary, patch.object(module, "REPO_ROOT", Path(temporary)), patch.object(
+            module.socket, "gethostname", return_value="boxa-ops.example.ts.net"
+        ), patch.object(module.subprocess, "run", side_effect=run):
+            module.run_playbook(args, {"overlay_ipv6_ops_operation": "snapshot"})
+        self.assertEqual(len(calls), 2)
+        with patch.object(module.socket, "gethostname", return_value="boxb-ops"), patch.object(
+            module.subprocess, "run"
+        ) as run, self.assertRaisesRegex(module.HelperError, "selected controller host"):
+            module.run_playbook(args, {})
+        run.assert_not_called()
+
     def test_default_remains_ipv4_only(self):
         self.assertIn("router_enable_ipv6_downstream: false", ROUTER_VARS)
         self.assertIn("router_enable_ops_ipv6_downstream: false", ROUTER_VARS)

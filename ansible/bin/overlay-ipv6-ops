@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,14 @@ def runtime_path(value, *, existing=False):
 
 
 def run_playbook(args, variables):
+    if socket.gethostname().split(".", 1)[0] != f"{args.box}-ops":
+        raise HelperError("ops IPv6 operations must run on the selected controller host")
+    variables = {
+        **variables,
+        "ansible_connection": "local",
+        "ansible_host": "localhost",
+        "ansible_python_interpreter": "/usr/bin/python3",
+    }
     run_dir = REPO_ROOT / ".run" / "overlay-ipv6-ops"
     run_dir.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix="run-", dir=run_dir))
