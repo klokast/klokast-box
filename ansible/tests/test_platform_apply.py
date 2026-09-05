@@ -540,6 +540,48 @@ class PlatformApplyTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.ApplyError, "stable ops-only"):
             self.mod.validate_overlay_intent(wrong_hop)
 
+    def test_overlay_snapshots_use_separate_helper_output_and_read_only_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            content = b'{"snapshot":"test"}\n'
+            def helper(_helper, _command, _active, _peer, _suffix, **kwargs):
+                output = kwargs["output"]
+                self.assertEqual(output.parent, work / "overlay-output")
+                self.assertEqual(output.parent.stat().st_mode & 0o777, 0o700)
+                output.write_bytes(content)
+            with patch.object(self.mod, "run_overlay_helper", side_effect=helper), patch.object(
+                self.mod.pwd, "getpwnam", return_value=Mock(pw_uid=1234, pw_gid=1234)
+            ), patch.object(self.mod.os, "chown") as chown, patch.object(self.mod, "smith_gid", return_value=1234):
+                evidence = self.mod.collect_overlay_evidence(work, "boxa", "boxb", "example.ts.net")
+            chown.assert_any_call(work / "overlay-output", 1234, 1234)
+            chown.assert_any_call(work / "overlay-output", 0, 0)
+            self.assertFalse((work / "overlay-output").exists())
+            for key in ("router_preimage", "ops_preimage", "huawei_prerequisite"):
+                target = Path(evidence[key + "_path"])
+                self.assertEqual(target.parent, work)
+                self.assertEqual(target.read_bytes(), content)
+                self.assertEqual(target.stat().st_mode & 0o777, 0o440)
+                self.assertEqual(evidence[key + "_sha256"], self.mod.sha256_bytes(content))
+
+    def test_overlay_snapshot_refuses_linked_helper_output(self):
+        for link_type in ("symlink", "hardlink"):
+            with self.subTest(link_type=link_type), tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary)
+                source = work / "unrelated.json"
+                source.write_text('{"unrelated":true}\n')
+                def helper(_helper, _command, _active, _peer, _suffix, **kwargs):
+                    target = kwargs["output"]
+                    if link_type == "symlink":
+                        target.symlink_to(source)
+                    else:
+                        target.hardlink_to(source)
+                with patch.object(self.mod, "run_overlay_helper", side_effect=helper), patch.object(
+                    self.mod.pwd, "getpwnam", return_value=Mock(pw_uid=1234, pw_gid=1234)
+                ), patch.object(self.mod.os, "chown"), self.assertRaises((OSError, self.mod.ApplyError)):
+                    self.mod.collect_overlay_evidence(work, "boxa", "boxb", "example.ts.net")
+                self.assertFalse((work / "router-preimage.json").exists())
+                self.assertFalse((work / "overlay-output").exists())
+
     def test_overlay_nonce_is_single_use_and_wrong_signer_is_refused(self):
         intent = self.valid_overlay_intent()
         with tempfile.TemporaryDirectory() as temporary, patch.object(

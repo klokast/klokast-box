@@ -2,6 +2,21 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - Overlay snapshot output needs a separate writable directory
+
+The signed repair preflight passed Freebox inspection but failed when Ansible
+saved the router snapshot. Apply created its runtime directory as root with
+mode `0750`, while the snapshot helper ran as `smith`. The helper could read
+the directory but could not create its output there. A controller-local
+snapshot in a private `smith` directory succeeded and confirmed the cause.
+
+Apply now gives the helper a separate temporary output directory. It then
+removes helper access and copies bounded regular files into root-owned,
+read-only evidence before hashing them. Symlinks and hard links are refused.
+Keep a regression test for the output account boundary, as well as the
+existing tests for root-only rollback input handoff. The failed preflight
+did not change the Freebox delegation or network configuration.
+
 # 2026-08-31 - Freebox GET can omit read-only IPv6 metadata
 
 The first overlay-repair preflight authenticated to the Freebox but stopped

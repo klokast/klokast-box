@@ -2056,9 +2056,36 @@ def collect_overlay_evidence(work, active, peer, suffix, prefix=None, next_hop=N
     router_path = work / "router-preimage.json"
     ops_path = work / "ops-preimage.json"
     huawei_path = work / "huawei-prerequisite.json"
-    run_overlay_helper(ROUTER_NETWORK_HELPER, "snapshot", active, None, suffix, output=router_path)
-    run_overlay_helper(OPS_NETWORK_HELPER, "snapshot", active, None, suffix, output=ops_path)
-    run_overlay_helper(ROUTER_NETWORK_HELPER, "verify-prerequisite", active, peer, suffix, output=huawei_path)
+    # The helpers run as smith. Keep their writable output separate from the
+    # root-owned evidence used for approval and rollback.
+    staging = work / "overlay-output"
+    staging.mkdir(mode=0o700)
+    controller = pwd.getpwnam(CONTROLLER_USER)
+    os.chown(staging, controller.pw_uid, controller.pw_gid)
+    try:
+        for helper, command, selected_peer, target in (
+            (ROUTER_NETWORK_HELPER, "snapshot", None, router_path),
+            (OPS_NETWORK_HELPER, "snapshot", None, ops_path),
+            (ROUTER_NETWORK_HELPER, "verify-prerequisite", peer, huawei_path),
+        ):
+            run_overlay_helper(helper, command, active, selected_peer, suffix, output=staging / target.name)
+        os.chown(staging, 0, 0)
+        os.chmod(staging, 0o700)
+        for target in (router_path, ops_path, huawei_path):
+            descriptor = os.open(staging / target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or not 0 < metadata.st_size <= MAX_JSON:
+                    raise ApplyError("overlay helper output is not one bounded regular file")
+                content = stream.read(MAX_JSON + 1)
+            if not content or len(content) > MAX_JSON:
+                raise ApplyError("overlay helper output exceeds the evidence limit")
+            with target.open("xb") as stream:
+                stream.write(content)
+            os.chown(target, 0, smith_gid())
+            os.chmod(target, 0o440)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     if check:
         run_overlay_helper(ROUTER_NETWORK_HELPER, "prepare", active, None, suffix, prefix=prefix, next_hop=next_hop, check=True)
         run_overlay_helper(ROUTER_NETWORK_HELPER, "apply", active, None, suffix, prefix=prefix, next_hop=next_hop, check=True)
