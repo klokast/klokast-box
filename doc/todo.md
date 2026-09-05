@@ -2,6 +2,40 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - Overlay prerequisite rejects successful direct-path discovery
+
+Read-only diagnosis reproduced the repair refusal in the actual router
+playbook. Its `tailscale ping --c 3` command returned one DERP reply followed
+by the required direct IPv6 UDP `41641` reply, with exit code 0 in about
+1.5 seconds. The next assertion rejected the complete output because it
+contained `via DERP`. An immediate repeat against the same fully qualified
+peer name returned only the direct endpoint. A separate ten-packet sample
+after discovery used that same direct endpoint for every reply. This is a false refusal of a
+successful discovery sequence, not proof that the direct path is blocked or
+that the Huawei pinhole needs another change.
+
+The installed Tailscale 1.90.9 help and
+[versioned client source](https://github.com/tailscale/tailscale/blob/v1.90.9/cmd/tailscale/cli/ping.go)
+describe initial relay use during discovery and stopping when a direct path
+is found. The repair currently treats discovery and final verification as
+one test. Its helper also truncates the failure output to the play recap,
+which hides the successful direct reply and the exact failed assertion.
+
+Proposed correction: separate bounded discovery from a fresh direct-only
+verification sample. Keep the final expected peer, global IPv6 endpoint,
+UDP port, no-relay requirement, and signed evidence integrity checks. Do not
+accept discovery success as the final proof, discard unexpected lines, add
+unbounded retries, or reset Tailscale to make the check pass. Keep discovery
+diagnostics distinct from the signed verification evidence. Review the
+router prerequisite, ops post-apply verification, root evidence parser, and
+their tests together. Test initial relay-to-direct discovery, relay-only
+failure, return to relay during verification, changed endpoints, and unknown
+output. Report the failed phase without exposing private configuration.
+
+No implementation or network configuration changed during this diagnosis.
+The result does not prove long-term path stability or complete the signed
+repair, ops-to-peer verification, or box rollback acceptance.
+
 # 2026-09-05 - Overlay signed revalidation includes changing runtime measurements
 
 Review after the repeated collision-check failure found a separate blocker.
