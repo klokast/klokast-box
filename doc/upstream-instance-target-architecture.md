@@ -650,8 +650,11 @@ operation.
 
 ## 11.1 First box connectivity source migration
 
-Status: `implemented`; live acceptance is pending. This change moves one box connectivity group from the old
-private Platform resource registry to `klokast-instance.json`. It does not
+Status: `implemented`; forward verification acceptance stopped at the
+[controller preflight directory-mode failure](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077).
+Signed verification and replay refusal remain pending. This change
+moves one box connectivity group from the old private Platform resource
+registry to `klokast-instance.json`. It does not
 change the declared values. It does not move the box that hosts the active
 controller. The human must make a later explicit decision before the second
 box can move. There is no elapsed-time condition.
@@ -746,11 +749,37 @@ approved.
 Repository acceptance must cover Authority State v2 and v1 conversion, Plan
 v3, complete closed groups, strict canonical JSON, effective-registry parity,
 unique non-controller selection, narrow router commands, stale or changed
-inputs, wrong box or signer, replay, and failed restoration. Live acceptance
-must include one check, adoption, verification-only Plan, real forward
-rollback, re-adoption, final verification-only Plan, and signed-request replay
-refusal. Controller identity, applications, the second box, old-file removal,
-and application data remain outside this change.
+inputs, wrong box or signer, replay, and failed restoration.
+
+Development acceptance verifies the existing instance-owned first-box group.
+Do not repeat Authority State conversion, initial adoption, engine build, or
+engine promotion. Install the wrappers that match the selected, activated
+engine and verify every required component in a Controller Toolchain v3
+receipt. Keep the public controller checkout clean and fixed at that engine
+throughout acceptance.
+
+Create fresh source, source-recovery, observation, and Plan v3 evidence. The
+selected first-box and Tailnet groups must be verification-only; the
+controller box must retain the old registry. Require exact parity between the
+instance-derived and old network values. Run the MacBook helper with
+`--check`, then approve one `verify_instance_authority` request with
+`--prove-replay-refusal`. Require a `verified` execution receipt and refusal
+of the repeated signed request because its nonce was already used. All
+authenticated router, configuration, service, route, and firewall checks must
+pass. Direct transport is preferred; DERP is acceptable and informational.
+Confirm that the active setting-source record and desired-state files have
+unchanged hashes. Finish with a fresh verification-only Plan v3. These checks
+are the agreed criteria for the first-box milestone to become `live-verified`.
+There is no fixed observation or waiting period.
+
+Live rollback and re-adoption remain unverified and deferred. Preserve their
+code, saved inputs, signatures, receipts, and recovery evidence. They and the
+separate direct-IPv6 repair do not block continued development. This narrower
+development acceptance does not satisfy the rollback gates for later legacy
+removal. A failed required check stops acceptance: record the failure without
+changing network settings, restarting Tailscale, or starting IPv6 repair.
+Controller identity, applications, the second box, old-file removal, and
+application data remain outside this change.
 
 ## 11.2 Ops-only overlay IPv6 repair
 
@@ -857,19 +886,25 @@ complete.
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
-| First box connectivity migration | `implemented` | The exact one-router source transition, authority, authorization, comparison, rollback, and recovery contracts are implemented. Controller acceptance is the remaining gate. |
-| Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Physical pinhole change and signed live acceptance remain. |
+| First box connectivity migration | `implemented` | The exact one-router source transition and recovery contracts are implemented. Forward verification and nonce replay refusal are the remaining development acceptance gates in section 11.1. Live rollback and re-adoption remain unverified and deferred. |
+| Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Migration and legacy removal | `proposed` | The Tailnet pilot is complete. Only the first non-controller box migration is decided. The second box and legacy removal still require separate explicit decisions. |
 
 ### Current work queue
 
-1. Live-verify the ops-only overlay IPv6 repair after the human changes the
-   Huawei pinhole.
-2. Complete the real rollback and re-adoption acceptance for the first
-   non-controller box migration.
-3. Report that result to the human. Do not infer approval for the second box.
-4. Keep legacy removal `proposed` until its separate recovery and explicit
-   approval gates are complete.
+1. Resolve the [controller preflight directory-mode failure](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
+   before a new first-box acceptance attempt. Complete forward verification
+   and signed-request replay refusal under section 11.1, then report readiness
+   for the next migration decision.
+2. Wait for a separate explicit decision before moving the controller box's
+   settings. First-box acceptance does not authorize that migration.
+3. Keep legacy removal `proposed` until its separate recovery, rollback,
+   observation, and explicit approval gates are complete.
+
+Deferred work: direct-IPv6 repair and live first-box rollback and re-adoption
+testing. Neither blocks continued development. Keep their recovery code,
+saved inputs, and evidence. This is the single current queue; runbooks and
+failure notes link here rather than define another work order.
 
 ### Completed read-only acceptance alignment design
 

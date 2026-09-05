@@ -2,6 +2,47 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - Box preflight work directory loses group access under umask 077
+
+The first-box forward-verification attempt stopped in the controller
+`platform-apply preflight` used by the MacBook check workflow. The error was
+`ksa-apply: installed platform-resources failed to compile the old registry`.
+It occurred before router verification or creation of an approval intent.
+No signed verification or live replay test ran. The active source record,
+private desired-state files, legacy files, and both checkout commits remained
+unchanged. The first-box milestone remains `implemented`.
+
+Before this refusal, wrapper convergence and all ten Controller Toolchain v3
+component checks passed against engine `d2c7c39`. Source synchronization,
+activation validation, source recovery, and a fresh deployable Plan v3 also
+passed. The Plan selected first-box and Tailnet verification and retained
+the controller box's old registry. All 497 Python tests and the controller
+Ansible syntax check passed. The existing sealed build recorded successful
+Go tests and build output.
+
+The controller preflight ran with `umask 077` to protect private evidence.
+`ksa-apply.new_box_work` requests mode `0750` for its per-request directory,
+but `Path.mkdir` applies the inherited umask. The function then changes
+ownership to `root:smith` without setting the final directory mode. A
+controller-side metadata-only reproduction confirmed mode `0700` under
+that umask. This prevents the `smith` compiler from traversing the directory
+even though staged registry files have mode `0440` and group `smith`.
+The installed compiler successfully compiled the original controller-owned
+registry in a separate read-only diagnostic. The failed helper's stderr was
+not forwarded, and its temporary work directory was removed by the existing
+cleanup path.
+
+A later code change must set and verify the intended group traversal mode
+without granting write access to `smith` or exposing rollback storage. Test
+the actual directory and account boundary under a restrictive umask; the
+current tests mock `new_box_work` in the relevant execution paths. Also make
+compiler failures diagnosable without disclosing private configuration.
+Do not relax the caller's umask, change network settings, or replace the
+selected engine to force this acceptance attempt to pass. Preserve the
+controller-private failure log, baseline hashes, mode diagnostic, and Plan.
+The [current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns resumption.
+
 # 2026-09-05 - DERP must not block one-box source adoption or rollback
 
 The one-router workflow used `tailscale ping --c 1` with its default
@@ -13,9 +54,11 @@ Successful DERP checks produce a fixed informational notice in Ansible output,
 the human approval terminal, and the controller audit log. Notices do not
 change signed JSON, source records, or authorization checks.
 
-Live signed rollback and re-adoption acceptance remain pending. The separate
-direct-IPv6 repair is optional for source acceptance and retains its strict
-success checks. Its discovery false refusal below is not fixed by this change.
+Live signed rollback and re-adoption remain unverified and deferred. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the remaining development gates. The separate direct-IPv6 repair is
+deferred and retains its strict success checks. Its discovery false refusal
+below is not fixed by this change.
 
 # 2026-09-05 - Overlay prerequisite rejects successful direct-path discovery
 
@@ -151,7 +194,12 @@ the exact Huawei firmware and a checked renumbering test. If no stable host
 binding exists, design a narrow, audited, rollback-capable update boundary
 before any automation is added.
 
-# 2026-08-25 - one-box verification requires a direct Tailnet path
+# 2026-08-25 - Historical one-box direct-path and rollback input failures
+
+The direct-only acceptance rule in this incident was replaced on 2026-09-05.
+The current box source workflow accepts direct or DERP transport. Keep the
+diagnosis and recovery evidence below; direct-path repair is deferred under
+the [current work queue](upstream-instance-target-architecture.md#current-work-queue).
 
 The first signed box-connectivity adoption did not reach Ansible because the
 root Apply program passed a root-only rollback file to the `smith`-owned
@@ -165,8 +213,8 @@ operation to `smith`.
 During recovery inspection, one controller ping reached `k001-router` only
 through the Hong Kong DERP relay. A later closed legacy verification
 established a direct peer-to-peer path and passed all checks. If the relay-only
-condition becomes frequent, investigate the endpoint and NAT state. Do not
-weaken the direct-path requirement to complete the source migration.
+condition becomes frequent, endpoint and NAT state can be inspected in the
+separate deferred repair work.
 
 The condition occurred again during the unsigned adoption preflight. Both
 peers reported working UDP and stable NAT mappings. The checked live router
@@ -176,10 +224,10 @@ masquerade. Tailscale endpoint history then showed that the selected router
 still used an obsolete public UDP mapping for the controller. The unprivileged
 `tailscale debug restun` command failed closed because endpoint refresh needs
 root. The human ran the command on both peers, and the direct path recovered
-immediately. Add a narrow, checked, audited endpoint-refresh diagnostic that
-can operate on exactly the active controller and one selected router. It must
-not grant general root access, change Tailnet policy, or weaken the direct-path
-acceptance check.
+immediately. Any later endpoint-refresh diagnostic must be narrow, checked,
+and audited, with only the active controller and one selected router in
+scope. It must not grant general root access or change Tailnet policy. Do not
+refresh endpoints to force a passing source acceptance result.
 
 # 2026-08-25 - sealed builder cleanup depends on one Alpine mirror
 
