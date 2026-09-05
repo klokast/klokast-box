@@ -11,14 +11,21 @@ address lifetimes, firewall packet counters, and measured ping latency.
 These measurements can change while configuration and the direct endpoint
 remain unchanged. The earlier unsigned preflight did not test that interval.
 
-Before another signed repair, define and test a closed comparison for these
-runtime measurements. Keep the original preimages and their signed hashes
-unchanged in root-only rollback storage. Continue to reject changes to
-configuration files, permissions, addresses, prefixes, sysctl settings,
-firewall rules, host identities, direct endpoint, and Freebox configuration.
-Do not remove whole evidence documents from validation or treat any
-unrecognized difference as harmless. The current exact comparison remains
-in effect until this separate validation change is reviewed and implemented.
+The human approved a narrow runtime comparison. The root Apply program now
+checks the archived bytes against their signed hashes, then compares fresh
+configuration under the closed rules in
+[ops-only overlay repair](upstream-instance-target-architecture.md#112-ops-only-overlay-ipv6-repair).
+Tests cover a simulated review delay, increased counters, changed latency,
+configuration drift, altered archives, and unknown evidence fields. Audit
+records identify the comparison version and fresh evidence hashes without
+copying configuration content.
+
+Live acceptance is still pending. Promote the reviewed engine, install its
+exact tools, and repeat preparation and signed revalidation before claiming
+this blocker is resolved on the controller. Lifetime extensions and firewall
+counter resets deliberately require fresh approval. If these occur during
+normal review, record the evidence and review the rules; do not widen the
+exceptions or remove the direct-path requirement as a workaround.
 
 # 2026-09-05 - Repeated IPv6 preflight mistook its failed probe for a collision
 

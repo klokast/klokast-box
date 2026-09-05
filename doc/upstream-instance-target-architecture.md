@@ -751,6 +751,30 @@ Huawei prerequisite, and exact router and ops preimage hashes. It accepts no
 command, path, playbook, gateway, prefix, zone, or second action from the
 human.
 
+Live revalidation compares configuration, not changing measurements. The
+original evidence bytes must still match their signed hashes. Only these
+differences between the original and fresh evidence are permitted:
+
+- Anonymous nftables `counter packets N bytes N` measurements may increase.
+  Rule text, order, quoted strings, named counters, quotas, and limits stay
+  exact. Counter resets require fresh approval.
+- IPv6 address lifetimes may decrease by at most 600 seconds. Both finite
+  lifetimes must remain at least 60 seconds, and preferred lifetime must not
+  exceed valid lifetime. Address identity, interface, flags, and infinite
+  lifetimes stay exact. Tentative, duplicate, deprecated, expired, renewed
+  beyond the signed lifetime, or unrecognized address output is refused.
+- The latency in the single successful direct ping line may change. The
+  router identity, Tailnet address, global IPv6 endpoint, and UDP port stay
+  exact. The endpoint must equal the recorded peer global address; DERP,
+  extra lines, and unknown output are refused.
+
+Files, modes, sysctl values, Freebox state, and all other fields stay exact.
+This comparison is part of the engine-bound root Apply program, not a helper
+loaded from the writable checkout. It validates both snapshots before
+approval and execution. It does not rewrite historical evidence or rollback
+material. Tests must cover normal countdown and traffic during review,
+configuration drift, altered stored bytes, wrong identities, and replay.
+
 The root-owned Freebox broker has four operations: `inspect`,
 `configure-ops-delegation`, `verify`, and `restore`. A separate physical
 authorization installer stores the application token root-only. The broker

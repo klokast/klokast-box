@@ -2113,6 +2113,8 @@ def overlay_preflight(args):
         evidence = collect_overlay_evidence(
             work, active, peer, suffix, inspection["prefix"], next_hop, check=True
         )
+        for role in ("router_preimage", "ops_preimage", "huawei_prerequisite"):
+            overlay_evidence_view(evidence[role + "_path"], role, active, peer, suffix)
         binding.update(evidence)
         issued = now_utc()
         intent = overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, issued)
@@ -2178,6 +2180,129 @@ def stage_overlay_snapshot(source, work, name):
     return target
 
 
+def overlay_runtime_view(runtime):
+    """Keep all output exact except validated IPv6 lifetime numbers."""
+    lifetimes = []
+    lines = []
+    for line in runtime.splitlines(keepends=True):
+        if " inet6 " not in line:
+            lines.append(line)
+            continue
+        match = re.fullmatch(
+            r"([0-9]+: \S+ +inet6 (\S+) +scope (?:global|link|host) [^\n]*?"
+            r"valid_lft )(forever|[0-9]{1,10}sec)( preferred_lft )(forever|[0-9]{1,10}sec)(\n?)",
+            line,
+        )
+        if not match or re.search(r"\b(tentative|dadfailed|deprecated)\b", line):
+            raise ApplyError("overlay IPv6 address output is unknown or not usable")
+        try:
+            ipaddress.IPv6Interface(match[2])
+        except ValueError as error:
+            raise ApplyError("overlay IPv6 address is invalid") from error
+        values = [None if value == "forever" else int(value[:-3]) for value in (match[3], match[5])]
+        valid, preferred = values
+        if any(value is not None and not 60 <= value <= 4294967295 for value in values) or (
+            valid is not None and (preferred is None or preferred > valid)
+        ):
+            raise ApplyError("overlay IPv6 address lifetime is too short or invalid")
+        lifetimes.extend(values)
+        lines.append(match[1] + "<valid>" + match[4] + "<preferred>" + match[6])
+    return "".join(lines), lifetimes
+
+
+def overlay_nft_view(ruleset):
+    """Mask only anonymous counter measurements, never strings or comments.
+
+    This is not a firewall parser. Every other byte, including whitespace,
+    named counters, quotas and limits, remains part of the exact comparison.
+    """
+    tokens = re.findall(r'"(?:[^"\\]|\\.)*"|#[^\n]*|[A-Za-z0-9_./:-]+|\s+|.', ruleset)
+    if '"' in tokens or "".join(tokens) != ruleset:
+        raise ApplyError("overlay firewall output contains an unknown string format")
+    positions = [index for index, token in enumerate(tokens) if not token.isspace()]
+    counters = []
+    for offset in range(len(positions) - 4):
+        indices = positions[offset:offset + 5]
+        words = [tokens[index] for index in indices]
+        if words[0] == "counter" and words[1] == "packets" and words[3] == "bytes" and re.fullmatch(r"[0-9]{1,20}", words[2]) and re.fullmatch(r"[0-9]{1,20}", words[4]):
+            if any(int(words[index]) > 18446744073709551615 for index in (2, 4)):
+                raise ApplyError("overlay firewall counter exceeds its unsigned 64-bit range")
+            counters.extend((int(words[2]), int(words[4])))
+            tokens[indices[2]] = "<packets>"
+            tokens[indices[4]] = "<bytes>"
+    return "".join(tokens), counters
+
+
+def overlay_evidence_view(path, role, active, peer, suffix):
+    if role not in {"router_preimage", "ops_preimage", "huawei_prerequisite"}:
+        raise ApplyError("overlay evidence role is not closed")
+    fields = {"schema_version", "kind", "box", "files", "runtime", "nft_ruleset"}
+    if role == "huawei_prerequisite":
+        fields = {"schema_version", "kind", "active_router", "peer_router", "peer_global_ipv6", "udp_port", "direct_ping"}
+    value = load_json(path, expected_fields=fields)
+    kind = "klokast.huawei-ipv6-pinhole-prerequisite.v1" if role == "huawei_prerequisite" else f"klokast.overlay-ipv6-{role.removesuffix('_preimage')}-preimage.v1"
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1 or value["kind"] != kind:
+        raise ApplyError("overlay evidence kind or version is invalid")
+    if role == "huawei_prerequisite":
+        if not isinstance(value["peer_global_ipv6"], str):
+            raise ApplyError("overlay direct peer address must be a string")
+        ping = value["direct_ping"]
+        match = re.fullmatch(
+            rf"(pong from {re.escape(peer)}-router(?:\.{re.escape(suffix)})? "
+            r"\(([0-9.]+)\) via \[([0-9a-fA-F:]+)\]:41641 in )[0-9]+(?:\.[0-9]+)?ms",
+            ping if isinstance(ping, str) else "",
+        )
+        try:
+            endpoint = ipaddress.IPv6Address(value["peer_global_ipv6"])
+            valid_ping = match and ipaddress.IPv6Address(match[3]) == endpoint and ipaddress.IPv4Address(match[2]) in ipaddress.IPv4Network("100.64.0.0/10")
+        except (ValueError, TypeError) as error:
+            raise ApplyError("overlay direct peer address is invalid") from error
+        if value["active_router"] != active + "-router" or value["peer_router"] != peer + "-router" or type(value["udp_port"]) is not int or value["udp_port"] != 41641 or not endpoint.is_global or not valid_ping:
+            raise ApplyError("overlay prerequisite must prove the exact direct IPv6 peer")
+        value["direct_ping"] = match[1] + "<latency>"
+        return value, [], []
+    if value["box"] != active or not isinstance(value["files"], dict) or not isinstance(value["runtime"], str) or not isinstance(value["nft_ruleset"], str):
+        raise ApplyError("overlay preimage identity or fields are invalid")
+    file_paths = {
+        "/etc/network/interfaces", "/etc/sysctl.d/91-klokast-ops-ipv6.conf",
+    }
+    if role == "router_preimage":
+        file_paths.update({"/etc/dhcpcd.conf", "/etc/dnsmasq.conf", "/etc/dnsmasq.d/91-klokast-ops-ipv6.conf", "/etc/klokast/overlay-ipv6.nft", "/etc/network/if-up.d/91-klokast-ops-ipv6"})
+    elif role == "ops_preimage":
+        file_paths.add("/etc/klokast/overlay-ipv6-input.nft")
+    else:
+        raise ApplyError("overlay evidence role is not closed")
+    if set(value["files"]) != file_paths:
+        raise ApplyError("overlay preimage file set is not closed")
+    for entry in value["files"].values():
+        if not isinstance(entry, list) or len(entry) != 3 or type(entry[0]) is not bool or not isinstance(entry[1], str) or not isinstance(entry[2], str) or not re.fullmatch(r"0[0-7]{3}", entry[2]):
+            raise ApplyError("overlay preimage file content or mode is invalid")
+    value["runtime"], lifetimes = overlay_runtime_view(value["runtime"])
+    value["nft_ruleset"], counters = overlay_nft_view(value["nft_ruleset"])
+    return value, lifetimes, counters
+
+
+def compare_overlay_evidence(binding, evidence, intent, active, peer, suffix):
+    for role in ("router_preimage", "ops_preimage", "huawei_prerequisite"):
+        stored_path, fresh_path = binding[role + "_path"], evidence[role + "_path"]
+        # Authenticate the original bytes, not a normalized or re-serialized
+        # substitute. Historical Ansible JSON and rollback files stay untouched.
+        if sha256_bytes(read_regular(stored_path)) != intent[role + "_sha256"]:
+            raise ApplyError(f"stored overlay {role} bytes do not match the signed hash")
+        before, old_lifetimes, old_counters = overlay_evidence_view(stored_path, role, active, peer, suffix)
+        after, new_lifetimes, new_counters = overlay_evidence_view(fresh_path, role, active, peer, suffix)
+        if before != after or len(old_lifetimes) != len(new_lifetimes) or len(old_counters) != len(new_counters):
+            raise ApplyError(f"overlay {role} configuration changed after authorization")
+        for old, new in zip(old_lifetimes, new_lifetimes):
+            if (
+                (old is None or new is None) and old != new
+                or old is not None and new is not None and not 0 <= old - new <= 600
+            ):
+                raise ApplyError(f"overlay {role} IPv6 lifetime changed outside the approved countdown")
+        if any(new < old for old, new in zip(old_counters, new_counters)):
+            raise ApplyError(f"overlay {role} firewall counter reset after authorization")
+
+
 def overlay_revalidate(binding, intent, work):
     namespace = argparse.Namespace(
         plan=binding["plan_path"], authority_state=binding["authority_path"],
@@ -2202,21 +2327,19 @@ def overlay_revalidate(binding, intent, work):
         "delegation_slot": inspection["slot"],
         "delegated_prefix": inspection["prefix"],
         "freebox_preimage_sha256": inspection["delegation_document_sha256"],
-        "router_preimage_sha256": evidence["router_preimage_sha256"],
-        "ops_preimage_sha256": evidence["ops_preimage_sha256"],
-        "huawei_prerequisite_sha256": evidence["huawei_prerequisite_sha256"],
         "binary_sha256": current["binary_sha256"],
         "builder_receipt_sha256": current["builder_receipt_sha256"],
     }
     if any(intent.get(field) != value for field, value in checks.items()):
         raise ApplyError("overlay direct repair evidence changed after authorization")
-    for field, current_path in (
-        ("router_preimage_path", evidence["router_preimage_path"]),
-        ("ops_preimage_path", evidence["ops_preimage_path"]),
-        ("huawei_prerequisite_path", evidence["huawei_prerequisite_path"]),
-    ):
-        if read_regular(binding[field]) != read_regular(current_path):
-            raise ApplyError("stored overlay repair evidence differs from exact revalidation")
+    compare_overlay_evidence(binding, evidence, intent, active, peer, suffix)
+    append_audit(
+        "overlay-repair.revalidated", nonce=intent["nonce"],
+        comparison="overlay_runtime_v1",
+        **{role + "_sha256": evidence[role + "_sha256"] for role in (
+            "router_preimage", "ops_preimage", "huawei_prerequisite"
+        )},
+    )
     return current, suffix
 
 
