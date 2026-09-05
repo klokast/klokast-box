@@ -2,6 +2,24 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - Overlay signed revalidation includes changing runtime measurements
+
+Review after the repeated collision-check failure found a separate blocker.
+`overlay_revalidate` compares fresh router, ops, and Huawei evidence byte for
+byte with the approved preimages. Saved live evidence contains finite IPv6
+address lifetimes, firewall packet counters, and measured ping latency.
+These measurements can change while configuration and the direct endpoint
+remain unchanged. The earlier unsigned preflight did not test that interval.
+
+Before another signed repair, define and test a closed comparison for these
+runtime measurements. Keep the original preimages and their signed hashes
+unchanged in root-only rollback storage. Continue to reject changes to
+configuration files, permissions, addresses, prefixes, sysctl settings,
+firewall rules, host identities, direct endpoint, and Freebox configuration.
+Do not remove whole evidence documents from validation or treat any
+unrecognized difference as harmless. The current exact comparison remains
+in effect until this separate validation change is reviewed and implemented.
+
 # 2026-09-05 - Repeated IPv6 preflight mistook its failed probe for a collision
 
 The first successful repair preflight probed the proposed WAN link-local
