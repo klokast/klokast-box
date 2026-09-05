@@ -2,6 +2,8 @@
 import unittest
 import importlib.util
 import tempfile
+import os
+import subprocess
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,61 @@ ROUTER_NFT = (ROOT / "ansible/roles/router/templates/nftables.nft.j2").read_text
 
 
 class OverlayIPv6RoleTest(unittest.TestCase):
+    def run_collision_probe(self, before="", after="", *, ping_rc=1, ip_rc=0, repeat=False):
+        play = yaml.safe_load(ROUTER_PLAY)[0]
+        task = next(t for t in play["tasks"] if t["name"] == "Check the stable WAN next hop is not in use")
+        script = task["ansible.builtin.shell"].replace(
+            "{{ overlay_ipv6_next_hop | quote }}", "'fe80::1234'"
+        ).replace("{{ router_wan_interface }}", "eth0")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ip = root / "ip"
+            ip.write_text("""#!/bin/sh
+case "$*" in
+  *'address show'*) exit 0 ;;
+  *'neigh show'*)
+    [ "$PROBE_IP_RC" = 0 ] || exit "$PROBE_IP_RC"
+    if [ -f "$PROBE_MARKER" ]; then
+      printf '%s\\n' "$PROBE_AFTER"
+    else
+      printf '%s\\n' "$PROBE_BEFORE"
+    fi ;;
+  *) exit 2 ;;
+esac
+""")
+            ping = root / "ping"
+            ping.write_text("#!/bin/sh\n: >\"$PROBE_MARKER\"\nexit \"$PROBE_PING_RC\"\n")
+            ip.chmod(0o700)
+            ping.chmod(0o700)
+            env = {
+                **os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                "PROBE_MARKER": str(root / "probed"), "PROBE_BEFORE": before,
+                "PROBE_AFTER": after, "PROBE_PING_RC": str(ping_rc), "PROBE_IP_RC": str(ip_rc),
+            }
+            results = [subprocess.run(["/bin/sh", "-s"], input=script, text=True, capture_output=True, env=env)]
+            if repeat:
+                results.append(subprocess.run(["/bin/sh", "-s"], input=script, text=True, capture_output=True, env=env))
+            return results
+
+    def test_failed_collision_probe_does_not_poison_repeated_preflight(self):
+        for state in ("FAILED", "INCOMPLETE"):
+            with self.subTest(state=state):
+                results = self.run_collision_probe(after=f"fe80::1234 {state}", repeat=True)
+                for result in results:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), "unused")
+
+    def test_collision_probe_refuses_known_neighbours_and_inspection_failures(self):
+        for state in ("REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT", "FAILED", "UNKNOWN"):
+            entry = f"fe80::1234 lladdr 00:11:22:33:44:55 {state}"
+            for stage in ("before", "after"):
+                with self.subTest(state=state, stage=stage):
+                    result = self.run_collision_probe(**{stage: entry})[0]
+                    self.assertNotEqual(result.returncode, 0)
+        for options in ({"ping_rc": 0}, {"ip_rc": 2}, {"before": "fe80::1234 UNKNOWN"}):
+            with self.subTest(options=options):
+                self.assertNotEqual(self.run_collision_probe(**options)[0].returncode, 0)
+
     def load_ops_helper(self):
         loader = SourceFileLoader("overlay_ops_test", str(ROOT / "ansible/bin/overlay-ipv6-ops"))
         spec = importlib.util.spec_from_loader(loader.name, loader)

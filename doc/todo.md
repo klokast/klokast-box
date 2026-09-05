@@ -2,6 +2,21 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - Repeated IPv6 preflight mistook its failed probe for a collision
+
+The first successful repair preflight probed the proposed WAN link-local
+next hop. With no reply, Linux retained a `FAILED` neighbour-cache entry
+without a hardware address. The next preflight treated any matching cache
+entry as an occupied address and refused before approval.
+
+The check now permits only bare `FAILED` or `INCOMPLETE` unresolved entries.
+It still refuses resolved neighbours, unknown entry shapes, and ping replies.
+It checks the cache again after probing to detect a neighbour that resolves
+but blocks echo replies. Address and neighbour inspection errors stop the
+check. The signed operation must still pass kernel duplicate address
+detection after adding the address. Do not flush the neighbour cache as a
+workaround. Tests cover consecutive failed probes and real collisions.
+
 # 2026-09-05 - Ops IPv6 helper must use the controller local connection
 
 After the router snapshot handoff was corrected, the repair preflight failed

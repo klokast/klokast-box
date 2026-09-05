@@ -161,16 +161,31 @@
       ansible.builtin.shell: |
         set -eu
         address={{ overlay_ipv6_next_hop | quote }}
-        if ip -o -6 address show dev {{ router_wan_interface }} | awk '{print $4}' | cut -d/ -f1 | grep -Fqx "$address"; then
+        local_addresses=$(ip -o -6 address show dev {{ router_wan_interface }})
+        if printf '%s\n' "$local_addresses" | awk '{print $4}' | cut -d/ -f1 | grep -Fqx "$address"; then
           echo local
           exit 0
         fi
-        if ip -6 neigh show dev {{ router_wan_interface }} | awk '{print $1}' | grep -Fqx "$address"; then
-          echo occupied
+        known_neighbour() {
+          # A failed probe can leave an unresolved entry without a MAC address.
+          # Retain refusal for resolved entries and all unknown entry shapes.
+          awk -v address="$address" '
+            $1 == address && !(NF == 2 && ($2 == "FAILED" || $2 == "INCOMPLETE")) { found = 1 }
+            END { exit !found }
+          '
+        }
+        neighbours=$(ip -6 neigh show dev {{ router_wan_interface }})
+        if printf '%s\n' "$neighbours" | known_neighbour; then
+          echo 'next hop has a known neighbour entry' >&2
           exit 1
         fi
         if ping -6 -c 2 -W 1 -I {{ router_wan_interface }} "$address" >/dev/null 2>&1; then
-          echo occupied
+          echo 'next hop replied to the collision probe' >&2
+          exit 1
+        fi
+        neighbours=$(ip -6 neigh show dev {{ router_wan_interface }})
+        if printf '%s\n' "$neighbours" | known_neighbour; then
+          echo 'next hop resolved during the collision probe' >&2
           exit 1
         fi
         echo unused
