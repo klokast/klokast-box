@@ -9,6 +9,14 @@ Run Platform commands as `smith` on the active `<box>-ops` controller from
 `~/src/klokast/klokast-box`. Run approval commands on the trusted MacBook.
 Do not run Platform commands on an infra-agent.
 
+Direct and DERP connections are both permitted for this source-change
+workflow, including rollback. Successful checks print an informational
+notice when the controller-to-router probe uses DERP. The notice does not
+mean that subsequent traffic must use the same route. Authenticated Ansible
+access and all router configuration checks remain required. A timeout or
+failed verification still stops the operation. Do not run the separate
+direct-IPv6 repair just to satisfy this source-change workflow.
+
 ## 1. Prepare The Controller
 
 Use section 1 of

@@ -2,6 +2,21 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-05 - DERP must not block one-box source adoption or rollback
+
+The one-router workflow used `tailscale ping --c 1` with its default
+direct-only completion condition, then rejected any DERP reply. This made
+working relayed management access an Apply or rollback failure. The human
+approved accepting either transport for this workflow. It now uses a bounded
+relay-capable probe after authenticated router configuration verification.
+Successful DERP checks produce a fixed informational notice in Ansible output,
+the human approval terminal, and the controller audit log. Notices do not
+change signed JSON, source records, or authorization checks.
+
+Live signed rollback and re-adoption acceptance remain pending. The separate
+direct-IPv6 repair is optional for source acceptance and retains its strict
+success checks. Its discovery false refusal below is not fixed by this change.
+
 # 2026-09-05 - Overlay prerequisite rejects successful direct-path discovery
 
 Read-only diagnosis reproduced the repair refusal in the actual router

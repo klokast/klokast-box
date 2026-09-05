@@ -1270,6 +1270,19 @@ def run_box_resource(
         raise ApplyError(
             f"one-router {command} failed for {box}: {diagnostic[:512]}"
         )
+    # Informational only: a fixed Ansible notice never grants authority or
+    # bypasses a failed helper. Do not forward arbitrary helper output or put
+    # human notices on the JSON evidence stream.
+    if "Controller-to-router probe used DERP. Access checks passed." in result.stdout:
+        print(
+            f"ksa-apply: notice: {box}-router probe used DERP during {command}"
+            f"{' (check mode)' if check else ''}. Access checks passed; direct transport is optional.",
+            file=sys.stderr,
+        )
+        append_audit(
+            "box-access.transport", box=box, operation=command,
+            check_mode=check, transport="DERP",
+        )
 
 
 def box_preflight(args):

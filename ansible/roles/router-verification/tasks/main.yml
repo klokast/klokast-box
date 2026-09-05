@@ -82,7 +82,7 @@
 - name: Assert router service and network readiness
   # `dhcpcd` can keep a WAN-side unreachable IPv6 prefix route even in the
   # intentionally IPv4-only downstream model. Treat that as informational;
-  # the actual acceptance criteria are direct Tailscale reachability and a
+  # the actual acceptance criteria are authenticated router access and a
   # live firewall ruleset without stale jump-era exceptions.
   ansible.builtin.assert:
     that:

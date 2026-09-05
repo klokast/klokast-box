@@ -718,6 +718,23 @@ when execution ends. It creates a new v2 state that assigns the selected group
 to the instance. It then applies and verifies the selected router from the
 effective input. It verifies controller access and the declared network paths.
 
+Box source adoption, verification, and rollback accept direct or DERP
+transport. Authenticated Ansible access, the router hostname, configuration,
+services, routes, and firewall checks remain required. The controller runs
+one bounded Tailscale probe with `--until-direct=false`; it must return one
+recognized reply from the selected router. A timeout, command failure,
+wrong peer, or unknown output still stops the operation. Transport is observed
+state, not a signed source input or an authorization condition.
+
+When a successful check observes DERP, print one informational notice for
+that check. The root wrapper forwards only fixed notice text to stderr so the
+Mac terminal shows it without changing JSON evidence on stdout. Its audit
+record names the box, operation, check-mode flag, and observed transport; it
+does not include the peer endpoint or private configuration. Direct replies
+need no notice. This rule also applies to failure restoration and explicit
+rollback. The separate direct-IPv6 repair retains its direct-path success
+criteria and is not a prerequisite for box source acceptance.
+
 On failure, Apply creates another forward v2 state that restores the old
 registry as the selected group source. It runs the same one-router operation
 with the old input and verifies the restored state. It reports

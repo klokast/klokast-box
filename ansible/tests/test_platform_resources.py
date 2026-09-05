@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -2325,10 +2326,51 @@ all:
         controller_ping = next(
             task
             for task in tasks
-            if task.get("name") == "Check direct controller reachability to the selected router"
+            if task.get("name") == "Check controller reachability to the selected router"
         )
         self.assertIs(verification["check_mode"], False)
         self.assertIs(controller_ping["check_mode"], False)
+
+    def test_box_access_probe_accepts_direct_and_derp_but_not_unknown_replies(self):
+        play = yaml.safe_load((REPO_ROOT / "ansible/playbooks/32-platform-box-access.yml").read_text())[0]
+        tasks = play["tasks"]
+        probe = next(task for task in tasks if task.get("register") == "platform_box_access_controller_ping")
+        self.assertEqual(probe["ansible.builtin.command"]["argv"], [
+            "tailscale", "ping", "--c", "1", "--until-direct=false", "--timeout=5s", "{{ ansible_host }}",
+        ])
+        self.assertNotIn("failed_when", probe)
+        self.assertNotIn("ignore_errors", probe)
+        self.assertEqual(probe["delegate_to"], "localhost")
+        validation = next(task for task in tasks if task["name"] == "Require a recognized reply from the selected router")
+        notice = tasks[-1]
+        self.assertEqual(validation["ansible.builtin.assert"]["that"], [
+            "platform_box_access_controller_ping.stdout_lines | length == 1",
+            "platform_box_access_controller_ping.stdout is match(platform_box_access_reply_pattern)",
+        ])
+        pattern = play["vars"]["platform_box_access_reply_pattern"].replace("{{ (node_name ~ '-router') | regex_escape }}", re.escape("boxa-router")).replace("{{ platform_magicdns_suffix | regex_escape }}", re.escape("example.ts.net"))
+        self.assertNotIn("{{", pattern)
+        self.assertEqual(notice["when"], "'via DERP(' in platform_box_access_controller_ping.stdout")
+        def accepted(output):
+            return len(output.splitlines()) == 1 and re.match(pattern, output) is not None
+        for endpoint in ("DERP(nue)", "192.0.2.1:41641", "[2001:db8::1]:41641"):
+            output = f"pong from boxa-router (100.64.0.1) via {endpoint} in 291ms"
+            with self.subTest(endpoint=endpoint):
+                self.assertTrue(accepted(output))
+                self.assertEqual("via DERP(" in output, endpoint.startswith("DERP"))
+        valid = "pong from boxa-router (100.64.0.1) via DERP(nue) in 291ms"
+        self.assertTrue(accepted(valid.replace("boxa-router", "boxa-router.example.ts.net")))
+        for output in ("", "ping timed out", "100.64.0.1 is local Tailscale IP", valid.replace("boxa-router", "boxb-router"), valid.replace("DERP(nue)", "unknown"), valid + "\n" + valid, valid + " unexpected"):
+            with self.subTest(output=output):
+                self.assertFalse(accepted(output))
+        role = next(task for task in tasks if task.get("ansible.builtin.import_role", {}).get("name") == "router-verification")
+        self.assertLess(tasks.index(role), tasks.index(probe))
+        self.assertNotIn("ignore_errors", role)
+
+    def test_explicit_ipv6_repair_keeps_its_no_derp_requirement(self):
+        for name in ("83-overlay-ipv6-router.yml", "84-overlay-ipv6-ops.yml"):
+            source = (REPO_ROOT / "ansible/playbooks" / name).read_text()
+            self.assertIn("via DERP", source)
+            self.assertIn("41641", source)
 
 
 if __name__ == "__main__":

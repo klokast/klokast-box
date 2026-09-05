@@ -2,6 +2,9 @@
 - name: Apply or verify one selected router access configuration
   hosts: router
   gather_facts: true
+  vars:
+    platform_box_access_reply_pattern: >-
+      ^pong from {{ (node_name ~ '-router') | regex_escape }}(?:\.{{ platform_magicdns_suffix | regex_escape }})? \([0-9a-fA-F:.]+\) via (?:DERP\([a-z0-9]+\)|[0-9.]+:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+) in [0-9]+(?:\.[0-9]+)?(?:ms|s)$
   tasks:
     - name: Require one closed box access operation
       ansible.builtin.assert:
@@ -27,18 +30,32 @@
         name: router-verification
       check_mode: false
 
-    - name: Check direct controller reachability to the selected router
-      ansible.builtin.command: "tailscale ping --c 1 {{ ansible_host }}"
+    - name: Check controller reachability to the selected router
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - ping
+          - --c
+          - "1"
+          - --until-direct=false
+          - --timeout=5s
+          - "{{ ansible_host }}"
       delegate_to: localhost
       become: false
       register: platform_box_access_controller_ping
       changed_when: false
       check_mode: false
 
-    - name: Require a direct controller path to the selected router
+    - name: Require a recognized reply from the selected router
       ansible.builtin.assert:
         that:
-          - "'via DERP' not in platform_box_access_controller_ping.stdout"
+          - platform_box_access_controller_ping.stdout_lines | length == 1
+          - platform_box_access_controller_ping.stdout is match(platform_box_access_reply_pattern)
         fail_msg: >-
-          The controller cannot reach the selected router through a direct
-          Tailnet path.
+          The controller did not receive one recognized Tailnet reply from
+          the selected router. Both direct and DERP paths are permitted.
+
+    - name: Report observed DERP transport after successful access checks
+      ansible.builtin.debug:
+        msg: "Controller-to-router probe used DERP. Access checks passed."
+      when: "'via DERP(' in platform_box_access_controller_ping.stdout"

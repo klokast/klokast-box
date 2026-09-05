@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import datetime as dt
 import importlib.util
+import io
 import json
 import subprocess
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest.mock import Mock, patch
+from contextlib import redirect_stderr, redirect_stdout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -815,6 +817,35 @@ class PlatformApplyTest(unittest.TestCase):
             self.mod.run_box_resource(
                 "/effective.yml", "boxa", "verify-box-access", "tail1234.ts.net"
             )
+
+    def test_derp_notice_reaches_stderr_and_audit_without_changing_json_stdout(self):
+        notice = "Controller-to-router probe used DERP. Access checks passed."
+        for command, check in (("apply-box-access", True), ("apply-box-access", False), ("verify-box-access", False)):
+            with self.subTest(command=command, check=check):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                result = Mock(returncode=0, stdout="private configuration not for forwarding\n    msg: " + notice + "\n", stderr="")
+                with patch.object(self.mod, "run_platform_resources_as_controller", return_value=result), patch.object(self.mod, "append_audit") as audit, redirect_stdout(stdout), redirect_stderr(stderr):
+                    self.mod.run_box_resource("/effective.yml", "boxa", command, "example.ts.net", check=check)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(stderr.getvalue().count("probe used DERP"), 1)
+                self.assertIn("boxa-router", stderr.getvalue())
+                self.assertIn(command, stderr.getvalue())
+                self.assertNotIn("private configuration", stderr.getvalue())
+                audit.assert_called_once_with("box-access.transport", box="boxa", operation=command, check_mode=check, transport="DERP")
+
+    def test_direct_transport_is_quiet_and_derp_notice_cannot_hide_a_failure(self):
+        for returncode in (0, 1):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            output = "direct reply" if returncode == 0 else "Controller-to-router probe used DERP. Access checks passed.\n[ERROR]: verification failed"
+            with patch.object(self.mod, "run_platform_resources_as_controller", return_value=Mock(returncode=returncode, stdout=output, stderr="")), patch.object(self.mod, "append_audit") as audit, redirect_stdout(stdout), redirect_stderr(stderr):
+                if returncode:
+                    with self.assertRaisesRegex(self.mod.ApplyError, "verification failed"):
+                        self.mod.run_box_resource("/old.yml", "boxa", "verify-box-access", "example.ts.net")
+                else:
+                    self.mod.run_box_resource("/old.yml", "boxa", "verify-box-access", "example.ts.net")
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(stderr.getvalue(), "")
+            audit.assert_not_called()
 
     def test_box_execute_rejects_stale_plan_and_compiler_hashes(self):
         intent = self.valid_box_intent()
