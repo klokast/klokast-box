@@ -43,6 +43,13 @@ passes with the correction. Live account-boundary verification remains part
 of the resumed preflight. The existing Ansible wrapper installation carries
 the correction.
 
+Review found the same missing final mode in all three Apply execution-receipt
+directory writers. They now set mode `0750` after ownership changes so the
+controller can read receipts under `umask 077`. A second regression test
+reproduced the failure in each writer and checks directory mode `0750`, file
+mode `0440`, ownership requests, and receipt content. Signature, nonce,
+receipt-hash, rollback, and network behavior are unchanged.
+
 The human authorized repair and resumption after the stopped attempt. Build
 and promote the corrected engine through the existing sealed and signed
 workflow before restarting acceptance with fresh evidence. Keep that new

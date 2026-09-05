@@ -945,6 +945,29 @@ class PlatformApplyTest(unittest.TestCase):
                         if directory.exists():
                             directory.chmod(0o700)
 
+    def test_execution_receipts_keep_controller_read_access_under_restrictive_umask(self):
+        for function, intent, result, extra in (
+            (self.mod.store_execution, self.valid_intent(), "verified", ("a" * 64,)),
+            (self.mod.store_box_execution, self.valid_box_intent(), "verified", ("a" * 64,)),
+            (self.mod.store_overlay_execution, self.valid_overlay_intent(), "success", ()),
+        ):
+            with self.subTest(function=function.__name__), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "executions"
+                previous_mask = os.umask(0o077)
+                try:
+                    with patch.object(self.mod, "EXECUTION_ROOT", root), patch.object(
+                        self.mod, "smith_gid", return_value=123
+                    ), patch.object(self.mod.os, "chown") as chown:
+                        path, receipt = function(intent, result, *extra)
+                        self.assertEqual(root.stat().st_mode & 0o777, 0o750)
+                        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o750)
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o440)
+                        self.assertEqual(json.loads(path.read_text()), receipt)
+                        chown.assert_any_call(path.parent, 0, 123)
+                        chown.assert_any_call(path, 0, 123)
+                finally:
+                    os.umask(previous_mask)
+
     def test_box_rollback_preflight_stages_root_only_registry_for_controller(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

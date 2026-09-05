@@ -1578,6 +1578,7 @@ def store_execution(intent, result, authority_state_sha256, recovery_result="not
     ensure_dir(EXECUTION_ROOT, 0o750)
     directory.mkdir(mode=0o750)
     os.chown(directory, 0, smith_gid())
+    os.chmod(directory, 0o750)
     path = directory / f"{digest}.json"
     path.write_text(canonical(receipt) + "\n", encoding="utf-8")
     path.chmod(0o440)
@@ -1609,6 +1610,7 @@ def store_box_execution(intent, result, authority_state_sha256, recovery_result=
     ensure_dir(EXECUTION_ROOT, 0o750)
     directory.mkdir(mode=0o750)
     os.chown(directory, 0, smith_gid())
+    os.chmod(directory, 0o750)
     path = directory / f"{receipt['receipt_sha256']}.json"
     path.write_text(canonical(receipt) + "\n", encoding="utf-8")
     path.chmod(0o440)
@@ -2179,6 +2181,7 @@ def store_overlay_execution(intent, result, recovery_result="not_needed"):
     ensure_dir(EXECUTION_ROOT, 0o750)
     directory.mkdir(mode=0o750)
     os.chown(directory, 0, smith_gid())
+    os.chmod(directory, 0o750)
     path = directory / f"{receipt['receipt_sha256']}.json"
     path.write_text(canonical(receipt) + "\n", encoding="utf-8")
     path.chmod(0o440)
