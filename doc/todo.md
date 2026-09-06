@@ -2,6 +2,40 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-06 - First-box approval cancelled before Touch ID
+
+The MacBook preparation batch produced fresh valid evidence. Both controller
+preflights passed, and the second displayed the exact first-box
+`verify_instance_authority` intent. The MacBook helper then printed
+`approval cancelled` at its text confirmation prompt. This branch means that
+the line read was not exactly `approve platform apply`. The transcript does
+not show which line was read or whether cancellation was intentional.
+
+At 10:54 UTC, the controller had no execution receipt for either prepared
+intent. All saved setting-source and desired-state hashes remained unchanged,
+and the public and private checkout commits still matched the acceptance
+baseline. The fresh-evidence correction passed the real MacBook checks;
+this cancellation occurred before the Touch ID signer was invoked.
+
+A local pseudo-terminal simulation used the unchanged MacBook helper and
+Python launcher with stub SSH and signing commands. A queued blank line
+reproduced immediate cancellation. With no queued line, the helper waited
+for the exact phrase and then reached the test signer. This is a possible
+input cause, not proof of what occurred on the MacBook. Do not supply the
+approval phrase through automation or treat cancellation as authorization.
+
+The revised Python command clears queued terminal input after `--check`
+with `termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)`, then starts
+`--prove-replay-refusal`. A second local pseudo-terminal simulation confirmed
+that this discards the queued blank line and waits for a new typed phrase.
+SSH and signing remained stubs in these simulations. The revised command
+has not yet been verified on the MacBook. It does not change the controller,
+the signing helper, or any approval check. For an unintended cancellation,
+the human must start a new approval and enter the exact phrase at its prompt.
+The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the remaining signed verification and replay gates.
+
 # 2026-09-06 - Delayed approval used expired first-box evidence
 
 The MacBook `apply-platform-intent --check` twice refused the saved Plan with

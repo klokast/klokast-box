@@ -146,6 +146,13 @@ all input hashes. Approve this one request with Touch ID. Require a `verified`
 execution receipt, followed by refusal of the exact repeated signed request
 with `Apply intent nonce was already used`.
 
+Wait for the text confirmation prompt before typing `approve platform apply`.
+A queued blank line from a pasted command can cancel the request before
+Touch ID. A Python launcher can discard queued terminal input after `--check`
+with `termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)` before it starts
+the approval call. It must keep the terminal attached and must not supply
+the phrase. See the [cancellation diagnosis](../../doc/todo.md#2026-09-06---first-box-approval-cancelled-before-touch-id).
+
 The verification action checks only `<selected-box>-router`. Require
 authenticated access and the existing hostname, configuration, service,
 route, and firewall checks. Direct traffic is preferred. A DERP notice is
