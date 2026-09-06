@@ -2,6 +2,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -241,6 +243,55 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             self.assertNotIn(str(directory / "klokast"), installed_names)
             for name in ("receipt.json", "build.log", "cleanup.json"):
                 self.assertIn(str(directory / name), installed_names)
+
+    def test_installed_results_and_diagnostics_keep_every_parent_readable(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                result = root / "result"
+                result.mkdir()
+                expected = self.write_result(result, test_result="failure" if failed else "success")
+                receipt = json.loads((result / "receipt.json").read_text())
+                (result / "cleanup.json").write_text("{}\n")
+                installed_owners = {}
+
+                def unprivileged_install(argv, **_kwargs):
+                    # Run the actual install utility; replace only escalation and
+                    # root ownership. This runs with GNU install and BusyBox install.
+                    command = [str(arg) for arg in argv]
+                    self.assertEqual(command[:2], ["doas", "install"])
+                    self.assertEqual(command[command.index("-o") + 1], "root")
+                    self.assertEqual(command[command.index("-g") + 1], "smith")
+                    installed_owners[Path(command[-1])] = ("root", "smith")
+                    command = command[1:]
+                    for flag in ("-o", "-g"):
+                        index = command.index(flag)
+                        del command[index:index + 2]
+                    return subprocess.run(command, check=True, capture_output=True)
+
+                previous_mask = os.umask(0o077)
+                try:
+                    with patch.object(self.mod, "OUTPUT_ROOT", root / "output"), patch.object(
+                        self.mod, "run", side_effect=unprivileged_install,
+                    ):
+                        install = self.mod.install_failure_diagnostics if failed else self.mod.install_results
+                        destination = install(result, expected if failed else receipt)
+                        for directory in (
+                            root / "output", root / "output" / "klokast-cli",
+                            destination.parent, destination,
+                        ):
+                            self.assertEqual(directory.stat().st_mode & 0o777, 0o750)
+                            self.assertEqual(installed_owners[directory], ("root", "smith"))
+                        for name in ("receipt.json", "build.log", "cleanup.json"):
+                            self.assertEqual((destination / name).read_bytes(), (result / name).read_bytes())
+                            self.assertEqual((destination / name).stat().st_mode & 0o777, 0o640)
+                        self.assertEqual((destination / "klokast").exists(), not failed)
+                        if not failed:
+                            self.assertEqual(self.mod.verify_result(destination, expected), receipt)
+                        with self.assertRaisesRegex(self.mod.BuilderError, "refusing to overwrite"):
+                            install(result, expected if failed else receipt)
+                finally:
+                    os.umask(previous_mask)
 
 
 class PlatformBuilderDom0Test(unittest.TestCase):

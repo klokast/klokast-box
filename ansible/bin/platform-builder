@@ -392,7 +392,18 @@ def verify_result(result_dir, expected):
     return receipt
 
 
+def prepare_result_parent(source_commit):
+    parent = OUTPUT_ROOT / "klokast-cli" / validate_commit(source_commit)
+    # BusyBox install applies its mode and owner only to explicit targets.
+    # Implicit parents otherwise inherit root's umask and can block smith.
+    for directory in (OUTPUT_ROOT, parent.parent, parent):
+        if directory.is_symlink():
+            raise BuilderError(f"build output parent must not be a symbolic link: {directory}")
+        run(["doas", "install", "-d", "-o", "root", "-g", "smith", "-m", "0750", directory])
+
+
 def install_results(result_dir, receipt):
+    prepare_result_parent(receipt["source_commit"])
     destination = OUTPUT_ROOT / "klokast-cli" / receipt["source_commit"] / receipt["operation_id"]
     if destination.exists():
         raise BuilderError(f"refusing to overwrite existing build output: {destination}")
@@ -401,6 +412,8 @@ def install_results(result_dir, receipt):
         source = result_dir / name
         if source.exists():
             run(["doas", "install", "-o", "root", "-g", "smith", "-m", mode, source, destination / name])
+    # Verify the installed copy as the controller before reporting success.
+    verify_result(destination, receipt)
     return destination
 
 
@@ -412,6 +425,7 @@ def install_failure_diagnostics(result_dir, expected):
             available.append(source)
     if not available:
         return None
+    prepare_result_parent(expected["source_commit"])
     destination = OUTPUT_ROOT / "klokast-cli" / expected["source_commit"] / expected["operation_id"]
     if destination.exists():
         raise BuilderError(f"refusing to overwrite existing build diagnostics: {destination}")

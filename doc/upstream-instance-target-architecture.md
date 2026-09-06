@@ -900,6 +900,7 @@ complete.
 ### Current work queue
 
 1. Build and promote the [signed verification path correction](todo.md#2026-09-06---signed-box-verification-reads-the-protected-preflight-archive)
+   and [builder output permission correction](todo.md#2026-09-06---builder-output-parent-blocks-controller-receipt-access)
    through the existing sealed and signed workflow. Complete forward
    verification and signed-request replay refusal under section 11.1.
    Prepare fresh evidence

@@ -2,6 +2,37 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-06 - Builder output parent blocks controller receipt access
+
+The sealed build for the signed verification path correction completed its
+Go tests, compilation, and Xen cleanup. The controller then failed to read
+the installed receipt. Its new engine-commit directory had mode `0700` and
+owner `root:root`, while the final operation directory was installed with
+the requested `root:smith` ownership and mode `0750`.
+
+`platform-builder` used one BusyBox `install -d` call for the complete output
+path. Only the explicit final directory received those owner and mode flags.
+The implicit commit parent inherited `umask 077`. A controller-local test in
+a temporary directory reproduced the implicit parent's mode `0700` without
+root access or any Platform change. The same omission affected installation
+of failed-build diagnostics.
+
+The builder now explicitly installs each output parent as `root:smith` with
+mode `0750` before creating the new operation directory. It still refuses to
+overwrite an existing operation. It also verifies the installed successful
+result as the controller before reporting success. The regression test uses
+the real install utility and files under `umask 077`, replacing only privilege
+escalation and ownership changes. It covers successful results, bounded
+failure diagnostics, every parent mode and owner request, content, and
+overwrite refusal. It failed against the old code and passes with the fix.
+
+Keep the completed intermediate build and its failure evidence. It was not
+promoted. Build and promote the engine that contains both this correction and
+the signed verification path correction. Do not loosen the caller's umask or
+edit installed receipts. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the remaining acceptance steps.
+
 # 2026-09-06 - Signed box verification reads the protected preflight archive
 
 The human completed both fresh preflights, entered the approval phrase, and
@@ -36,8 +67,10 @@ verification, ownership changes, and the router command are test doubles.
 It failed against the old path and passes with the correction. It covers a
 verified receipt, a helper failure, refusal of altered saved bytes, cleanup,
 unchanged archive modes, and nonce replay refusal after success or failure.
-All 500 Python tests pass. The corrected engine still needs its sealed build,
-matching installed tools, signed promotion, and live acceptance.
+All 500 Python tests passed for this correction. Its sealed Go build passed,
+but the receipt installation exposed the builder parent-mode issue above.
+The combined correction still needs matching installed tools, signed
+promotion, and live acceptance.
 
 The MacBook printed a missing `ssh-askpass` notice, but then completed the
 signature. The controller accepted that signature before this path failure.
