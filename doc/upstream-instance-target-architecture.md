@@ -862,6 +862,84 @@ DERP-capable Tailnet recovery. An unproved restoration records
 `recovery_required`. The nonce is consumed before final live revalidation, so
 a failed, stale, or successful signed action cannot be replayed.
 
+## 11.3 Controller box connectivity source migration
+
+Status: `decided`. The human selected a source-only migration of the box
+that hosts the active controller, currently k002. This decision completes
+connectivity source adoption for the existing two-box deployment. It does
+not complete the private-instance migration. Section 11.1 remains the
+completed first-box acceptance record.
+
+Deployment Plans use `klokast.plan.v4`. The CLI and controller wrapper accept
+`--connectivity-target non-controller|active-controller`, with
+`non-controller` as the default. The selected box comes only from the private
+instance. Planning and execution must compare it with the active-controller
+identity. Exactly two boxes are required. Controller-box selection requires
+the peer and Tailnet groups to use the instance. Each connectivity group has
+its existing five scopes. Every adopted, unselected group reports
+verification-only, with no executable action for that unselected group.
+
+The new `controller_box_connectivity_source_v1` executor accepts only
+`adopt_instance_specification` and `verify_instance_authority`. Its closed
+`klokast.controller-box-connectivity-source-intent.v1` request uses the
+existing Touch ID signer and helper. It binds the selected box, controller,
+action, Plan, active source record, engine, toolchain, private inputs, and
+compiler comparison. It accepts no router apply, rollback, command, or extra
+scope. Instance Specification v1, Authority State v2, and Controller Toolchain
+v3 remain unchanged. Historical evidence is immutable. Older Plans cannot
+authorize this executor. First-box and deferred IPv6 interfaces remain.
+
+Preparation and execution build an effective registry from instance-derived
+connectivity values for the selected and already adopted boxes. All unrelated
+legacy fields remain. Old and effective compiler outputs must be equal after
+removing only their registry path and hash. Selected-router variables must be
+equal. Authenticated router access, configuration, services, routes, firewall,
+and a recognized direct or DERP reply must pass through the effective input.
+Direct transport is preferred; DERP is acceptable.
+
+Signed execution consumes the nonce before live verification. After that
+verification succeeds, it rechecks the controller and all bound inputs, then
+appends one Authority State v2 record that changes only the selected box's
+source. The shared source writer uses a short-lived local file lock and an
+exact prior-state check at publication. It refuses concurrent source changes.
+This executor never calls `apply-box-access`, router configuration handlers,
+service restarts, or gateway repair. Its authority is limited to controller
+source publication and evidence storage; compromise remains in the existing
+controller TCB. No new account, credential, service, or network flow is needed.
+
+Failure before publication leaves the active source unchanged. Publication
+followed by a receipt-storage failure is an incomplete operation. Inspect the
+active source and evidence, then use fresh verification and approval. Do not
+retry the signed request, run automatic repair, or claim recovery. Live
+rollback, re-adoption, direct-IPv6 repair, and legacy-file removal are deferred.
+
+Repository acceptance must cover both targets, adopted unselected groups,
+older-Plan refusal, controller identity, exact scopes and input binding,
+expired signatures, nonce reuse, and concurrent publication. Signed-path tests
+use real temporary files under umask 077 and check runtime readability,
+protected archives, receipts, and cleanup. Command tests require verification
+only and cover direct, DERP, wrong peer, unknown reply, verification failure,
+publication failure, and receipt failure. Run the Python suite, sealed Go
+suite/build, and relevant Ansible syntax checks before promotion.
+
+Live acceptance promotes one reviewed implementation commit with the existing
+sealed-build and human approval workflows and installs matching tools. Take
+input and persistent-router baselines after promotion. Refresh source,
+recovery, observation, and Plan evidence when the human is ready. Run unsigned
+preparation, then approve adoption with Touch ID. Require a source transition
+that affects only k002. Create a fresh verification-only Plan, approve
+verification, and prove exact replay refusal through the existing helper.
+Store a final Plan with both connectivity groups and Tailnet verification-only.
+All desired-state files and persistent router configuration must be unchanged.
+No rollback exercise or waiting period is required.
+
+Only these completed checks permit `live-verified`. Record the result and
+controller-held evidence in the controller-box runbook and this document.
+Commit and push the acceptance documentation without automatically deploying
+that documentation-only commit. List the remaining legacy-owned setting
+groups from the final Plan for the next human migration decision. This action
+does not authorize another migration or legacy removal.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -898,13 +976,13 @@ complete.
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
 | First box connectivity migration | `live-verified` | On 2026-09-06, the human promoted the corrected sealed engine and approved one verification-only request with Touch ID. Authenticated k001 router configuration, service, route, firewall, and reachability checks passed. The controller stored a `verified` execution receipt, and the MacBook helper confirmed refusal of the exact replay because its nonce was already used. A final Plan kept k001 and Tailnet verification-only and k002 on the old registry. All setting-source and desired-state hashes remained unchanged. Live rollback and re-adoption remain unverified and deferred. |
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
-| Migration and legacy removal | `proposed` | The Tailnet pilot is complete. Only the first non-controller box migration is decided. The second box and legacy removal still require separate explicit decisions. |
+| Controller box connectivity source migration | `decided` | Section 11.3 selects source-only adoption for the active controller box. Implementation, sealed tests, promotion, and signed live acceptance are pending. |
+| Migration and legacy removal | `proposed` | Connectivity adoption does not authorize another setting group or legacy removal. |
 
 ### Current work queue
 
-1. Wait for a separate explicit decision before moving the controller box's
-   settings. The Platform is ready for this next migration decision.
-   First-box acceptance does not authorize that migration.
+1. Implement and live-verify the controller-box source-only decision in
+   section 11.3. Then use its final Plan to select the next legacy-owned group.
 2. Keep legacy removal `proposed` until its separate recovery, rollback,
    observation, and explicit approval gates are complete.
 

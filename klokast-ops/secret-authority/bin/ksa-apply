@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Root boundary for the closed Tailnet policy-input authority pilot."""
+"""Root boundary for closed, signed Platform source and recovery actions."""
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -26,6 +28,9 @@ KIND_AUTHORITY = "klokast.authority-state.v1"
 KIND_RECOVERY = "klokast.private-source-recovery.v1"
 KIND_TOOLCHAIN = "klokast.controller-toolchain.v3"
 KIND_PLAN_V3 = "klokast.plan.v3"
+KIND_PLAN_V4 = "klokast.plan.v4"
+KIND_CONTROLLER_BOX_INTENT = "klokast.controller-box-connectivity-source-intent.v1"
+CONTROLLER_BOX_EXECUTOR = "controller_box_connectivity_source_v1"
 KIND_AUTHORITY_V2 = "klokast.authority-state.v2"
 KIND_CONVERSION_INTENT = "klokast.authority-conversion-intent.v1"
 KIND_BOX_INTENT = "klokast.box-connectivity-intent.v1"
@@ -392,8 +397,15 @@ def box_scopes(box):
 
 def verify_plan_v3(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
-    if plan.get("kind") != KIND_PLAN_V3 or plan.get("schema_version") != 3:
-        raise ApplyError("box connectivity Apply requires Plan v3")
+    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4)}:
+        raise ApplyError("box connectivity Apply requires Plan v3 or v4")
+    version = plan["schema_version"]
+    target = plan.get("connectivity_target", "non-controller")
+    if target not in {"non-controller", "active-controller"}:
+        raise ApplyError("unknown connectivity target")
+    controller_target = version == 4 and target == "active-controller"
+    executor = CONTROLLER_BOX_EXECUTOR if controller_target else BOX_EXECUTOR
+    rollback_type = "no_mutation" if controller_target else BOX_ROLLBACK_TYPE
     expected = {
         "schema_version", "kind", "valid", "compatible", "substrate_healthy",
         "deployable", "authority_ready", "legacy_removal_ready", "health_scope",
@@ -403,6 +415,8 @@ def verify_plan_v3(path):
         "actions", "action_groups", "selected_box", "refusals", "diagnostics",
         "plan_sha256",
     }
+    if version == 4:
+        expected.add("connectivity_target")
     if set(plan) != expected:
         raise ApplyError("Plan v3 contains unknown or missing fields")
     supplied = plan.pop("plan_sha256")
@@ -426,9 +440,20 @@ def verify_plan_v3(path):
         len(projected_boxes) != len(plan.get("projection", {}).get("boxes", []))
         or len(set(projected_boxes)) != len(projected_boxes)
         or active_box not in projected_boxes
-        or non_active != [box]
+        or len(projected_boxes) != 2
+        or (box != active_box if controller_target else non_active != [box])
     ):
-        raise ApplyError("Plan v3 selected box is not the unique non-active-controller box")
+        raise ApplyError("Plan selected box does not match its two-box connectivity target")
+    state_groups = {
+        item.get("id"): item
+        for item in plan.get("authority_state", {}).get("setting_groups", [])
+        if isinstance(item, dict)
+    }
+    if controller_target and any(
+        (state_groups.get(group_id) or {}).get("source") != "instance_specification_v1"
+        for group_id in [TAILNET_GROUP_ID, BOX_GROUP_PREFIX + non_active[0]]
+    ):
+        raise ApplyError("controller box requires adopted peer and Tailnet groups")
     expected_group_id = BOX_GROUP_PREFIX + box
     groups = plan.get("action_groups")
     if not isinstance(groups, list) or groups != sorted(groups, key=lambda item: item.get("id", "")):
@@ -461,12 +486,15 @@ def verify_plan_v3(path):
             continue
         candidate_box = candidate.get("id", "").removeprefix(BOX_GROUP_PREFIX)
         selected = candidate_box == box
+        unselected_operation = "retain_legacy"
+        if version == 4 and (state_groups.get(candidate["id"]) or {}).get("source") == "instance_specification_v1":
+            unselected_operation = "verify_instance_authority"
         if set(candidate) != {"id", "operation", "scopes", "executor", "rollback_type", "box"} or candidate != {
             "id": BOX_GROUP_PREFIX + candidate_box,
-            "operation": candidate.get("operation") if selected else "retain_legacy",
+            "operation": candidate.get("operation") if selected else unselected_operation,
             "scopes": box_scopes(candidate_box),
-            "executor": BOX_EXECUTOR if selected else "none",
-            "rollback_type": BOX_ROLLBACK_TYPE,
+            "executor": executor if selected else "none",
+            "rollback_type": rollback_type if selected else BOX_ROLLBACK_TYPE,
             "box": candidate_box,
         }:
             raise ApplyError("Plan v3 box action group is not closed")
@@ -478,12 +506,12 @@ def verify_plan_v3(path):
         "id": expected_group_id,
         "operation": group.get("operation"),
         "scopes": box_scopes(box),
-        "executor": BOX_EXECUTOR,
-        "rollback_type": BOX_ROLLBACK_TYPE,
+        "executor": executor,
+        "rollback_type": rollback_type,
         "box": box,
     } or group["operation"] not in {"adopt_instance_specification", "verify_instance_authority"}:
         raise ApplyError("Plan v3 selected box group is partial or unknown")
-    actions = [item for item in plan.get("actions", []) if isinstance(item, dict) and item.get("executor") == BOX_EXECUTOR]
+    actions = [item for item in plan.get("actions", []) if isinstance(item, dict) and item.get("executor") in {BOX_EXECUTOR, CONTROLLER_BOX_EXECUTOR}]
     state_groups = {
         item.get("id"): item
         for item in plan.get("authority_state", {}).get("setting_groups", [])
@@ -504,16 +532,18 @@ def verify_plan_v3(path):
     if (
         source != expected_before
         or len(actions) != 5
+        or any(item.get("executor") != executor for item in actions)
         or sorted(item.get("scope") for item in actions) != box_scopes(box)
         or any(item.get("operation") != group["operation"] for item in actions)
         or any(item.get("authority_before") != expected_before for item in actions)
         or any(item.get("authority_after") != "instance_specification_v1" for item in actions)
         or any(item.get("preconditions") != [
-            "active_controller_fenced", "exact_plan_v3_revalidated",
-            "effective_registry_compiles_equal", "one_router_rollback_prepared",
+            "active_controller_fenced", f"exact_plan_v{version}_revalidated",
+            "effective_registry_compiles_equal",
+            "router_verified_before_source_publication" if controller_target else "one_router_rollback_prepared",
         ] for item in actions)
         or any(item.get("rollback") != {
-            "strategy": BOX_ROLLBACK_TYPE,
+            "strategy": rollback_type,
             "authority": LEGACY_REGISTRY_SOURCE,
             "source_sha256": registry_digest,
         } for item in actions)
@@ -921,19 +951,22 @@ def prepare_registry_comparison(work, plan, box):
         raise ApplyError("old Platform resource registry is invalid YAML") from error
     if not isinstance(registry, dict) or not isinstance(registry.get("boxes"), dict):
         raise ApplyError("old Platform resource registry has no box mapping")
-    selected = registry["boxes"].get(box)
-    if not isinstance(selected, dict) or not isinstance(selected.get("access"), dict):
-        raise ApplyError("old Platform resource registry has no selected box access")
-    derived_access = instance_box_access(plan, box)
-    if selected["access"] != derived_access:
-        raise ApplyError("instance connectivity differs from the dormant old registry copy")
-    selected["access"] = {
-        field: list(derived_access[field])
-        for field in (
-            "available_capabilities", "enabled_capabilities",
-            "prohibited_capabilities",
+    derived_boxes = {box}
+    if plan.get("kind") == KIND_PLAN_V4:
+        derived_boxes.update(
+            item["id"].removeprefix(BOX_GROUP_PREFIX)
+            for item in plan["authority_state"]["setting_groups"]
+            if item["id"].startswith(BOX_GROUP_PREFIX)
+            and item["source"] == "instance_specification_v1"
         )
-    }
+    for derived_box in sorted(derived_boxes):
+        selected = registry["boxes"].get(derived_box)
+        if not isinstance(selected, dict) or not isinstance(selected.get("access"), dict):
+            raise ApplyError("old Platform resource registry has no selected box access")
+        derived_access = instance_box_access(plan, derived_box)
+        if selected["access"] != derived_access:
+            raise ApplyError("instance connectivity differs from the dormant old registry copy")
+        selected["access"] = {field: list(values) for field, values in derived_access.items()}
     effective_path = work / "effective-registry.yml"
     effective_path.write_text(
         yaml.safe_dump(registry, sort_keys=False, allow_unicode=True),
@@ -987,6 +1020,10 @@ def validate_inputs_v3(args, work=None):
     status = require_root_active()
     require_self_match()
     plan_path, plan, group = verify_plan_v3(args.plan)
+    active = plan.get("projection", {}).get("control_plane", {}).get("active_controller", {})
+    if (active.get("hostname") != status.get("hostname")
+            or active.get("box_id", "") + "-ops" != status.get("hostname")):
+        raise ApplyError("Plan does not match the active controller identity")
     try:
         build_dir, build_commit = resolve_build_directory(args.build_dir)
         build_receipt, binary = verify_build_directory(build_dir, build_commit)
@@ -1031,6 +1068,8 @@ def validate_inputs_v3(args, work=None):
         "--controller-toolchain-receipt", toolchain_path,
         "--json",
     ]
+    if plan.get("kind") == KIND_PLAN_V4:
+        command.extend(["--connectivity-target", plan["connectivity_target"]])
     rerun = run_plan_as_controller(command)
     try:
         rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
@@ -1198,6 +1237,29 @@ def box_intent_common(binding, action, nonce, issued):
     }
 
 
+def controller_box_intent_common(binding, action, nonce, issued):
+    intent = box_intent_common(binding, action, nonce, issued)
+    intent.update(
+        kind=KIND_CONTROLLER_BOX_INTENT, executor=CONTROLLER_BOX_EXECUTOR,
+        rollback_type="no_mutation",
+        active_controller=binding["plan"]["projection"]["control_plane"]["active_controller"]["hostname"],
+    )
+    return intent
+
+
+def validate_controller_box_intent(intent):
+    if (intent.get("kind") != KIND_CONTROLLER_BOX_INTENT
+            or intent.get("executor") != CONTROLLER_BOX_EXECUTOR
+            or intent.get("rollback_type") != "no_mutation"
+            or intent.get("action") not in {"adopt_instance_specification", "verify_instance_authority"}
+            or intent.get("active_controller") != str(intent.get("selected_box")) + "-ops"):
+        raise ApplyError("controller box source intent contains an unknown action or controller")
+    legacy_shape = dict(intent)
+    legacy_shape.pop("active_controller", None)
+    legacy_shape.update(kind=KIND_BOX_INTENT, executor=BOX_EXECUTOR, rollback_type=BOX_ROLLBACK_TYPE)
+    validate_box_intent(legacy_shape)
+
+
 def validate_box_intent(intent):
     expected = {
         "schema_version", "kind", "action", "plan_sha256",
@@ -1295,7 +1357,8 @@ def box_preflight(args):
         binding = validate_inputs_v3(args, work)
         operation = binding["group"]["operation"]
         magicdns_suffix = plan_magicdns_suffix(binding["plan"])
-        if operation == "adopt_instance_specification":
+        controller_target = binding["group"]["executor"] == CONTROLLER_BOX_EXECUTOR
+        if operation == "adopt_instance_specification" and not controller_target:
             run_box_resource(
                 binding["effective_registry_path"], binding["group"]["box"],
                 "apply-box-access", magicdns_suffix,
@@ -1307,7 +1370,7 @@ def box_preflight(args):
                 "verify-box-access", magicdns_suffix,
             )
         issued = now_utc()
-        intent = box_intent_common(binding, operation, nonce, issued)
+        intent = (controller_box_intent_common if controller_target else box_intent_common)(binding, operation, nonce, issued)
         directory = PREFLIGHT_ROOT / nonce
         ensure_dir(PREFLIGHT_ROOT)
         directory.mkdir(mode=0o700)
@@ -1374,7 +1437,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_OVERLAY_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -1402,42 +1465,72 @@ def store_authority_transition(prior, intent, authority):
         "transition_id": intent["nonce"], "authority_state_sha256": "",
     }
     state["authority_state_sha256"] = authority_hash(state)
-    ensure_dir(AUTHORITY_ROOT, 0o750)
-    path = AUTHORITY_ROOT / f"{state['authority_state_sha256']}.json"
-    content = (canonical(state) + "\n").encode("utf-8")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
+    publish_authority(state)
+    return state
+
+
+@contextmanager
+def authority_publication_lock():
+    # Keep the inode stable: unlinking a lock file permits two lock holders.
+    lock_path = AUTHORITY_POINTER.with_name(".authority-publication.lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(descriptor, content)
-        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+            raise ApplyError("authority publication lock is unsafe")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ApplyError("concurrent authority source publication; create fresh evidence") from error
+        yield
     finally:
         os.close(descriptor)
-    os.chown(path, 0, smith_gid())
-    temporary = AUTHORITY_POINTER.with_name(f".{AUTHORITY_POINTER.name}.{os.getpid()}.tmp")
-    temporary.write_text(state["authority_state_sha256"] + "\n", encoding="ascii")
-    temporary.chmod(0o444)
-    os.replace(temporary, AUTHORITY_POINTER)
-    return state
+
+
+def publish_authority(state):
+    with authority_publication_lock():
+        prior_digest = state["prior_state_sha256"]
+        if read_regular(AUTHORITY_POINTER, 66) != (prior_digest + "\n").encode("ascii"):
+            raise ApplyError("concurrent authority source change; prior state is no longer active")
+        prior = load_json(AUTHORITY_ROOT / f"{prior_digest}.json", canonical_stored=True)
+        if prior.get("kind") == KIND_AUTHORITY_V2:
+            validate_authority_v2_document(prior)
+        else:
+            validate_authority_v1_document(prior)
+        if (prior.get("authority_state_sha256") != prior_digest
+                or prior.get("kind") != state.get("prior_state_kind", KIND_AUTHORITY)):
+            raise ApplyError("authority publication prior state changed")
+        ensure_dir(AUTHORITY_ROOT, 0o750)
+        path = AUTHORITY_ROOT / f"{state['authority_state_sha256']}.json"
+        content = (canonical(state) + "\n").encode("utf-8")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chown(path, 0, smith_gid())
+            os.chmod(path, 0o440)
+            temporary = AUTHORITY_POINTER.with_name(
+                f".{AUTHORITY_POINTER.name}.{os.getpid()}.tmp"
+            )
+            try:
+                with temporary.open("x", encoding="ascii") as handle:
+                    handle.write(state["authority_state_sha256"] + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.chmod(0o444)
+                os.replace(temporary, AUTHORITY_POINTER)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except OSError as error:
+            raise ApplyError("authority publication failed; inspect source evidence and use fresh approval") from error
+        return path
 
 
 def write_authority_v2(state):
     validate_authority_v2_document(state)
-    ensure_dir(AUTHORITY_ROOT, 0o750)
-    path = AUTHORITY_ROOT / f"{state['authority_state_sha256']}.json"
-    content = (canonical(state) + "\n").encode("utf-8")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
-    try:
-        os.write(descriptor, content)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.chown(path, 0, smith_gid())
-    temporary = AUTHORITY_POINTER.with_name(
-        f".{AUTHORITY_POINTER.name}.{os.getpid()}.tmp"
-    )
-    temporary.write_text(state["authority_state_sha256"] + "\n", encoding="ascii")
-    temporary.chmod(0o444)
-    os.replace(temporary, AUTHORITY_POINTER)
-    return path
+    return publish_authority(state)
 
 
 def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
@@ -1594,8 +1687,8 @@ def store_box_execution(intent, result, authority_state_sha256, recovery_result=
         "plan_sha256": intent["plan_sha256"],
         "nonce": intent["nonce"],
         "action": intent["action"],
-        "executor": BOX_EXECUTOR,
-        "rollback_type": BOX_ROLLBACK_TYPE,
+        "executor": intent["executor"],
+        "rollback_type": intent["rollback_type"],
         "selected_box": intent["selected_box"],
         "action_group_id": intent["action_group_id"],
         "old_registry_sha256": intent["old_registry_sha256"],
@@ -1618,7 +1711,7 @@ def store_box_execution(intent, result, authority_state_sha256, recovery_result=
     return path, receipt
 
 
-def box_revalidate(binding, intent):
+def box_revalidate(binding, intent, *, phase="execute"):
     namespace = argparse.Namespace(
         plan=binding["plan_path"], authority_state=binding["authority_path"],
         controller_toolchain_receipt=binding["toolchain_path"],
@@ -1626,9 +1719,21 @@ def box_revalidate(binding, intent):
         instance_source_receipt=binding["source_path"],
         observation=binding["observation"], build_dir=binding["build_dir"],
     )
-    work = new_box_work(intent["nonce"] + "-execute")
+    work = new_box_work(intent["nonce"] + "-" + phase)
     try:
         current = validate_inputs_v3(namespace, work)
+        if intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
+            if (current["plan"].get("kind") != KIND_PLAN_V4
+                    or current["group"].get("executor") != CONTROLLER_BOX_EXECUTOR):
+                raise ApplyError("controller box source execution requires its Plan v4 executor")
+            expected = controller_box_intent_common(
+                current, current["group"]["operation"], intent["nonce"],
+                parse_utc(intent["issued_at"], "issued_at"),
+            )
+            if expected != intent:
+                raise ApplyError("controller box source inputs changed after authorization")
+        elif current["group"].get("executor") != BOX_EXECUTOR:
+            raise ApplyError("first-box intent cannot authorize the controller box executor")
         checks = {
             "plan_sha256": current["plan"]["plan_sha256"],
             "authority_state_sha256": current["state"]["authority_state_sha256"],
@@ -1686,6 +1791,73 @@ def stage_box_registry_for_controller(source, work, name):
     os.chown(target, 0, smith_gid())
     os.chmod(target, 0o440)
     return target
+
+
+def controller_box_execute(args, intent):
+    validate_controller_box_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed controller box intent differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    if set(binding) != {
+        "plan_path", "authority_path", "toolchain_path", "source_path",
+        "recovery_path", "observation", "build_dir", "binary_sha256",
+        "builder_receipt_sha256", "old_registry_path", "effective_registry_path",
+        "old_registry_sha256", "effective_registry_sha256", "compiled_sha256",
+        "router_vars_sha256",
+    }:
+        raise ApplyError("stored controller box binding has unknown or missing fields")
+    consume_nonce(intent)
+    work = final_work = None
+    published = False
+    try:
+        current, work = box_revalidate(binding, intent)
+        verify_public_checkout(intent["engine_commit"])
+        run_box_resource(
+            current["effective_registry_path"], intent["selected_box"],
+            "verify-box-access", plan_magicdns_suffix(current["plan"]),
+        )
+        # Repeat the complete input and controller checks after the live check.
+        # Publication then compares the prior state under the shared local lock.
+        final, final_work = box_revalidate(binding, intent, phase="post-verify")
+        validate_controller_box_intent(intent)
+        digest = final["state"]["authority_state_sha256"]
+        result = "verified"
+        if intent["action"] == "adopt_instance_specification":
+            transitioned = make_authority_v2(
+                final["state"], intent, group_id=intent["action_group_id"],
+                source="instance_specification_v1",
+            )
+            write_authority_v2(transitioned)
+            published = True
+            digest = transitioned["authority_state_sha256"]
+            result = "success"
+        path, receipt = store_box_execution(intent, result, digest)
+        append_audit(
+            "controller-box-source.executed", nonce=intent["nonce"],
+            selected_box=intent["selected_box"], result=result,
+            authority_state_sha256=digest, receipt_sha256=receipt["receipt_sha256"],
+        )
+        print(canonical({
+            "schema_version": 1, "result": result, "receipt_path": str(path),
+            "authority_state_sha256": digest,
+        }))
+    except (ApplyError, OSError) as error:
+        if published:
+            raise ApplyError(
+                "controller box source was published but operation is incomplete; "
+                "inspect active source and execution evidence, then obtain fresh verification approval; "
+                "the signed request cannot be retried"
+            ) from error
+        raise ApplyError(
+            f"controller box source operation failed before publication: {error}; "
+            "inspect evidence and obtain a fresh request"
+        ) from error
+    finally:
+        for runtime in (work, final_work):
+            if runtime is not None:
+                shutil.rmtree(runtime, ignore_errors=True)
 
 
 def box_execute(args, intent):
@@ -2623,6 +2795,8 @@ def box_rollback_prepare(args):
     work = new_box_work(nonce)
     try:
         binding = validate_inputs_v3(args, work)
+        if binding["group"]["executor"] != BOX_EXECUTOR:
+            raise ApplyError("controller box source executor does not permit rollback")
         if binding["group"]["operation"] != "verify_instance_authority":
             raise ApplyError("box rollback requires a fresh verification-only Plan v3")
         execution_path, execution = resolve_hashed(
@@ -2708,20 +2882,20 @@ def evidence_kind(path):
 
 
 def preflight(args):
-    if evidence_kind(args.plan) == KIND_PLAN_V3:
+    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4}:
         box_preflight(args)
     else:
         preflight_tailnet(args)
 
 
 def overlay_repair_prepare(args):
-    if evidence_kind(args.plan) != KIND_PLAN_V3:
+    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4}:
         raise ApplyError("overlay repair requires Plan v3")
     overlay_preflight(args)
 
 
 def rollback_prepare(args):
-    if evidence_kind(args.plan) == KIND_PLAN_V3:
+    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4}:
         box_rollback_prepare(args)
     else:
         rollback_prepare_tailnet(args)
@@ -2733,6 +2907,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
+        controller_box_execute(args, intent)
     elif intent.get("kind") == KIND_BOX_INTENT:
         box_execute(args, intent)
     elif intent.get("kind") == KIND_OVERLAY_INTENT:

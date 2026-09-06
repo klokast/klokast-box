@@ -6,6 +6,14 @@ selects the unique box that does not host the active controller. It
 must not operate on the controller box, applications, shared guests, or
 Tailnet policy.
 
+The recorded acceptance below used Plan v3. Current engines emit Plan v4.
+Use the default `non-controller` target for this runbook. After the controller
+box is adopted, it reports verification-only with executor `none` when it is
+unselected. Its separate source-only procedure is in
+[Controller Box Connectivity Source](48-controller-box-connectivity-source.md).
+The historical acceptance record and deferred first-box rollback interface
+remain unchanged.
+
 Run Platform commands as `smith` on the active `<box>-ops` controller from
 `~/src/klokast/klokast-box`. Run approval commands on the trusted MacBook.
 Do not run Platform commands on an infra-agent.

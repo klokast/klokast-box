@@ -44,8 +44,8 @@ func TestBuildProducesStableDeployablePlanWithRetainedAuthority(t *testing.T) {
 	if !first.Valid || !first.Compatible || !first.SubstrateHealthy || !first.Deployable || !first.AuthorityReady {
 		t.Fatalf("unexpected plan gates: %#v", first)
 	}
-	if first.SchemaVersion != 3 || first.Kind != "klokast.plan.v3" || first.SelectedBox != "boxb" {
-		t.Fatalf("Plan v3 did not select the unique non-controller box: %#v", first)
+	if first.SchemaVersion != 4 || first.Kind != "klokast.plan.v4" || first.SelectedBox != "boxb" {
+		t.Fatalf("Plan v4 did not select the unique non-controller box: %#v", first)
 	}
 	selectedGroup := actionGroup(first, authoritystate.BoxConnectivityPrefix+"boxb")
 	if selectedGroup.Operation != "adopt_instance_specification" || selectedGroup.Executor != "box_connectivity_v1" || !equalStrings(selectedGroup.Scopes, authoritystate.BoxConnectivityScopes("boxb")) {
@@ -223,7 +223,7 @@ func TestBuildUsesVerificationActionsAfterBoxAdoption(t *testing.T) {
 	}
 	group := actionGroup(artifact, authoritystate.BoxConnectivityPrefix+"boxb")
 	if !artifact.Deployable || group.Operation != "verify_instance_authority" {
-		t.Fatalf("migrated Plan v3 did not become verification-only: %#v", group)
+		t.Fatalf("migrated Plan v4 did not become verification-only: %#v", group)
 	}
 	for _, scope := range authoritystate.BoxConnectivityScopes("boxb") {
 		found := false
@@ -576,4 +576,59 @@ func equalStrings(first, second []string) bool {
 		}
 	}
 	return true
+}
+
+func TestControllerConnectivityTargetAndCompletedSources(t *testing.T) {
+	options := compatibilityOptions(t, prepareInstance(t))
+	options.ConnectivityTarget = "active-controller"
+	refused, err := Build(options, testEngine)
+	if err != nil || refused.Deployable {
+		t.Fatalf("controller target accepted an unadopted peer: %v %#v", err, refused)
+	}
+	state, err := authoritystate.LoadV2(options.AuthorityState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = authoritystate.TransitionGroup(state, authoritystate.BoxConnectivityPrefix+"boxb", authoritystate.InstanceAuthority, strings.Repeat("d", 64), "peer-adopted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adoption, err := Build(options, testEngine)
+	if err != nil || !adoption.Deployable || adoption.SelectedBox != "boxa" || adoption.ConnectivityTarget != "active-controller" {
+		t.Fatalf("controller target failed: %v %#v", err, adoption)
+	}
+	group := actionGroup(adoption, authoritystate.BoxConnectivityPrefix+"boxa")
+	if group.Executor != "controller_box_connectivity_source_v1" || group.RollbackType != "no_mutation" || group.Operation != "adopt_instance_specification" || !equalStrings(group.Scopes, authoritystate.BoxConnectivityScopes("boxa")) {
+		t.Fatalf("controller group is not closed: %#v", group)
+	}
+	peer := actionGroup(adoption, authoritystate.BoxConnectivityPrefix+"boxb")
+	if peer.Operation != "verify_instance_authority" || peer.Executor != "none" {
+		t.Fatalf("peer was not verification-only: %#v", peer)
+	}
+	state, err = authoritystate.TransitionGroup(state, group.ID, authoritystate.InstanceAuthority, strings.Repeat("e", 64), "controller-adopted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"non-controller", "active-controller"} {
+		options.ConnectivityTarget = target
+		final, err := Build(options, testEngine)
+		if err != nil || !final.Deployable {
+			t.Fatalf("completed-source Plan failed: %v %#v", err, final)
+		}
+		for _, group := range final.ActionGroups {
+			if group.Operation != "verify_instance_authority" {
+				t.Fatalf("adopted group retained legacy ownership: %#v", group)
+			}
+		}
+	}
+	options.ConnectivityTarget = "boxa"
+	if _, err := Build(options, testEngine); err == nil {
+		t.Fatal("caller-supplied box was accepted")
+	}
 }

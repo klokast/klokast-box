@@ -160,6 +160,11 @@ kind = value.get("kind")
 if kind == "klokast.authority-conversion-intent.v1":
     if value.get("action") != "convert_authority_state_v1_to_v2":
         raise SystemExit("controller returned an unknown authority conversion")
+elif kind == "klokast.controller-box-connectivity-source-intent.v1":
+    if (value.get("executor") != "controller_box_connectivity_source_v1"
+            or value.get("rollback_type") != "no_mutation"
+            or value.get("action") not in {"adopt_instance_specification", "verify_instance_authority"}):
+        raise SystemExit("controller returned an unknown controller box source action")
 elif kind == "klokast.box-connectivity-intent.v1":
     if value.get("executor") != "box_connectivity_v1":
         raise SystemExit("controller returned an unknown box Apply executor")
@@ -182,7 +187,8 @@ intent_action="$(python3 - "$intent" <<'PY'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
-    print(json.load(handle)["action"])
+    value = json.load(handle)
+    print("controller_box_source" if value["kind"] == "klokast.controller-box-connectivity-source-intent.v1" else value["action"])
 PY
 )"
 
@@ -260,7 +266,7 @@ PY
       adopt_instance_specification)
         expected_refusal="ksa-apply: authority state is not active"
         ;;
-      verify_instance_authority)
+      verify_instance_authority|controller_box_source)
         expected_refusal="ksa-apply: Apply intent nonce was already used"
         ;;
       repair_overlay_ipv6_direct)

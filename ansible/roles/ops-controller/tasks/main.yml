@@ -545,6 +545,18 @@
   tags:
     - ops-controller-apply
 
+- name: Create the stable authority publication lock inode
+  ansible.builtin.copy:
+    dest: /var/lib/klokast/.authority-publication.lock
+    content: ""
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
+  tags:
+    - ops-controller-apply
+    - ops-controller-secret-authority-wrappers
+
 - name: Install the immutable initial authority state
   ansible.builtin.copy:
     dest: "/var/lib/klokast/authority-states/{{ ops_controller_initial_authority_state_sha256 }}.json"

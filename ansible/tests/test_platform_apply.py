@@ -862,7 +862,7 @@ class PlatformApplyTest(unittest.TestCase):
             "state": {"authority_state_sha256": intent["authority_state_sha256"]},
             "group": {
                 "box": "boxb", "id": self.mod.BOX_GROUP_PREFIX + "boxb",
-                "scopes": self.mod.box_scopes("boxb"),
+                "scopes": self.mod.box_scopes("boxb"), "executor": self.mod.BOX_EXECUTOR,
             },
             "old_registry_sha256": intent["old_registry_sha256"],
             "effective_registry_sha256": intent["effective_registry_sha256"],
@@ -941,7 +941,7 @@ class PlatformApplyTest(unittest.TestCase):
                         "state": {"authority_state_sha256": intent["authority_state_sha256"]},
                         "group": {
                             "box": intent["selected_box"], "id": intent["action_group_id"],
-                            "scopes": intent["action_set"], "operation": intent["action"],
+                            "scopes": intent["action_set"], "operation": intent["action"], "executor": self.mod.BOX_EXECUTOR,
                         },
                     })
                     return current
@@ -1146,7 +1146,7 @@ class PlatformApplyTest(unittest.TestCase):
                     },
                 },
                 "group": {
-                    "operation": "verify_instance_authority",
+                    "operation": "verify_instance_authority", "executor": self.mod.BOX_EXECUTOR,
                     "box": box,
                     "id": group_id,
                 },

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and store one read-only Plan v3 artifact on the active controller."""
+"""Create and store one read-only Plan v4 artifact on the active controller."""
 
 import argparse
 import getpass
@@ -281,21 +281,21 @@ def canonical_plan(plan):
 
 def verify_plan(content):
     if len(content) <= 0 or len(content) > MAX_PLAN_BYTES:
-        raise PlanError("Plan v3 output is empty or exceeds its size limit")
+        raise PlanError("Plan v4 output is empty or exceeds its size limit")
     try:
         plan = json.loads(content)
     except json.JSONDecodeError as error:
-        raise PlanError("klokast returned invalid Plan v3 JSON") from error
-    if plan.get("schema_version") != 3 or plan.get("kind") != "klokast.plan.v3":
+        raise PlanError("klokast returned invalid Plan v4 JSON") from error
+    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4")}:
         raise PlanError("klokast returned an unsupported plan artifact")
     if not plan.get("valid"):
         raise PlanError("klokast did not produce a valid plan artifact")
     supplied_hash = plan.pop("plan_sha256", None)
     if not isinstance(supplied_hash, str) or not DIGEST_RE.fullmatch(supplied_hash):
-        raise PlanError("Plan v3 plan_sha256 is invalid")
+        raise PlanError("Plan v4 plan_sha256 is invalid")
     actual_hash = hashlib.sha256(canonical_plan(plan)).hexdigest()
     if actual_hash != supplied_hash:
-        raise PlanError("Plan v3 hash does not match its canonical content")
+        raise PlanError("Plan v4 hash does not match its canonical content")
     plan["plan_sha256"] = supplied_hash
     return plan, canonical_plan(plan) + b"\n"
 
@@ -324,12 +324,12 @@ def install_plan(plan, content):
     commit = plan.get("instance", {}).get("commit")
     digest = plan.get("plan_sha256")
     if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
-        raise PlanError("Plan v3 does not contain an exact instance commit")
+        raise PlanError("Plan v4 does not contain an exact instance commit")
     destination_directory = PLAN_ROOT / commit
     destination = destination_directory / f"{digest}.json"
     smith_group = prepare_plan_directory(destination_directory)
     if destination.exists():
-        if read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v3") != content:
+        if read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v4") != content:
             raise PlanError("the immutable plan path already contains different content")
         return destination
     with tempfile.NamedTemporaryFile(prefix="klokast-plan-", delete=False) as handle:
@@ -341,8 +341,8 @@ def install_plan(plan, content):
         run(["doas", "install", "-o", "root", "-g", smith_group, "-m", "0440", temporary, target_temporary])
         linked = run(["doas", "ln", target_temporary, destination], check=False)
         if linked.returncode != 0:
-            if not destination.exists() or read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v3") != content:
-                raise PlanError("cannot create the immutable Plan v3 path")
+            if not destination.exists() or read_bounded_regular(destination, MAX_PLAN_BYTES, "stored Plan v4") != content:
+                raise PlanError("cannot create the immutable Plan v4 path")
         return destination
     finally:
         run(["doas", "rm", "-f", target_temporary], check=False)
@@ -351,6 +351,7 @@ def install_plan(plan, content):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--connectivity-target", choices=("non-controller", "active-controller"), default="non-controller")
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--instance", required=True)
     parser.add_argument("--compatibility-deployment", required=True)
@@ -385,13 +386,23 @@ def main(argv=None):
             "--authority-state", authority_state,
             "--controller-toolchain-receipt", toolchain_receipt,
         ]
+        # Keep the default usable with a historical sealed engine. New engines
+        # emit Plan v4 and default to the non-controller target.
+        if args.connectivity_target == "active-controller":
+            plan_arguments.extend(["--connectivity-target", args.connectivity_target])
         plan, content = create_plan(binary, plan_arguments)
+        if args.connectivity_target == "active-controller" and (
+            plan.get("kind") != "klokast.plan.v4"
+            or plan.get("connectivity_target") != args.connectivity_target
+            or plan.get("selected_box", "") + "-ops" != status.get("hostname")
+        ):
+            raise PlanError("controller connectivity Plan does not select this active controller")
         if plan.get("observation", {}).get("source_controller") != status.get("hostname"):
-            raise PlanError("Plan v3 observation did not come from this active controller")
+            raise PlanError("Plan v4 observation did not come from this active controller")
         if plan.get("authority_state", {}).get("authority_state_sha256") != authority.get("authority_state_sha256"):
-            raise PlanError("Plan v3 did not bind the selected authority state")
+            raise PlanError("Plan v4 did not bind the selected authority state")
         if plan.get("controller_toolchain", {}).get("receipt_sha256") != toolchain.get("receipt_sha256"):
-            raise PlanError("Plan v3 did not bind the selected controller toolchain")
+            raise PlanError("Plan v4 did not bind the selected controller toolchain")
         destination = install_plan(plan, content)
     except PlanError as error:
         die(str(error))
