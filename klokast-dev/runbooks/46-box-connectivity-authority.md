@@ -137,8 +137,14 @@ klokast-dev/bin/apply-platform-intent \
 
 The preflight compiles the unchanged registry and the instance-derived
 effective registry. It ignores only `registry_path` and `registry_sha256` in
-the comparison. It also runs the selected router action in Ansible check mode.
-It does not sign or change the source record.
+the comparison. It also runs the selected router verification checks. It
+does not sign or change the source record.
+
+Signed execution must use the controller-readable runtime registry returned
+by exact revalidation. The saved preflight archive remains root-only. A
+successful preflight does not prove that signed execution selects the correct
+path; require the execution receipt below. Do not change archive permissions
+after a failure.
 
 Run the same command with `--prove-replay-refusal` in place of `--check`.
 Review the selected box, five scopes, `verify_instance_authority` action, and

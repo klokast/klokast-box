@@ -10,7 +10,7 @@ import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest.mock import Mock, patch
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -890,6 +890,129 @@ class PlatformApplyTest(unittest.TestCase):
         self.assertIn('box restoration could not be verified; recovery_required', function)
         self.assertIn('initial failure: {mutation_error}', function)
         self.assertIn('restoration failure: ', function)
+
+    def test_box_verification_executes_readable_revalidated_input_and_refuses_replay(self):
+        for outcome in ("verified", "helper_failed", "archive_changed"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                intent = self.valid_box_intent(action="verify_instance_authority")
+                archive = root / "preflights" / intent["nonce"]
+                archive.mkdir(parents=True, mode=0o700)
+                inputs = {
+                    "old": b"schema_version: 1\n# old input\n",
+                    "effective": b"schema_version: 1\n# effective input\n",
+                }
+                for name, content in inputs.items():
+                    (archive / f"{name}-registry.yml").write_bytes(content)
+                    (archive / f"{name}-registry.yml").chmod(0o600)
+                    intent[f"{name}_registry_sha256"] = self.mod.sha256_bytes(content)
+                binding = {
+                    key: str(root / key) for key in (
+                        "plan_path", "authority_path", "toolchain_path", "source_path",
+                        "recovery_path", "observation", "build_dir",
+                    )
+                }
+                for name in inputs:
+                    binding[f"{name}_registry_path"] = str(archive / f"{name}-registry.yml")
+                for key in (
+                    "old_registry_sha256", "effective_registry_sha256", "compiled_sha256",
+                    "router_vars_sha256", "binary_sha256", "builder_receipt_sha256",
+                ):
+                    binding[key] = intent[key]
+                for name, value in (("intent", intent), ("binding", binding)):
+                    (archive / f"{name}.json").write_text(self.mod.canonical(value) + "\n")
+                if outcome == "archive_changed":
+                    (archive / "effective-registry.yml").write_bytes(b"changed archive\n")
+
+                def validated_inputs(_args, work):
+                    # Stand in for external Plan/build validation. Keep the real
+                    # execution revalidation, saved-byte comparison, and file modes.
+                    current = dict(binding)
+                    for name, content in inputs.items():
+                        staged = work / f"{name}-registry.yml"
+                        staged.write_bytes(content)
+                        staged.chmod(0o440)
+                        current[f"{name}_registry_path"] = str(staged)
+                    current.update({
+                        "plan": {
+                            "plan_sha256": intent["plan_sha256"],
+                            "projection": {"tailnet": {"magicdns_suffix": "example.ts.net"}},
+                        },
+                        "state": {"authority_state_sha256": intent["authority_state_sha256"]},
+                        "group": {
+                            "box": intent["selected_box"], "id": intent["action_group_id"],
+                            "scopes": intent["action_set"], "operation": intent["action"],
+                        },
+                    })
+                    return current
+
+                work = root / "runtime" / (intent["nonce"] + "-execute")
+
+                def controller_helper(registry, arguments):
+                    # The smith helper must receive the readable copy, never the
+                    # protected archive. This assertion catches the live failure.
+                    self.assertEqual(Path(registry), work / "effective-registry.yml")
+                    self.assertEqual(Path(registry).read_bytes(), inputs["effective"])
+                    self.assertEqual(Path(registry).stat().st_mode & 0o777, 0o440)
+                    self.assertEqual(work.stat().st_mode & 0o777, 0o750)
+                    self.assertEqual(arguments, [
+                        "--box", intent["selected_box"], "--magicdns-suffix",
+                        "example.ts.net", "verify-box-access",
+                    ])
+                    return Mock(returncode=1 if outcome == "helper_failed" else 0,
+                                stdout="", stderr="[ERROR]: router verification failed")
+
+                previous_mask = os.umask(0o077)
+                try:
+                    with ExitStack() as stack, redirect_stdout(io.StringIO()) as stdout:
+                        for name, value in {
+                            "PREFLIGHT_ROOT": archive.parent, "BOX_RUNTIME_ROOT": work.parent,
+                            "NONCE_ROOT": root / "nonces", "EXECUTION_ROOT": root / "executions",
+                        }.items():
+                            stack.enter_context(patch.object(self.mod, name, value))
+                        stack.enter_context(patch.object(self.mod, "smith_gid", return_value=123))
+                        stack.enter_context(patch.object(self.mod.os, "chown"))
+                        stack.enter_context(patch.object(self.mod, "verify_signature"))
+                        stack.enter_context(patch.object(self.mod, "verify_public_checkout"))
+                        stack.enter_context(patch.object(self.mod, "append_audit"))
+                        mutation = stack.enter_context(patch.object(self.mod, "write_authority_v2"))
+                        stack.enter_context(patch.object(self.mod, "validate_inputs_v3", side_effect=validated_inputs))
+                        helper = stack.enter_context(patch.object(
+                            self.mod, "run_platform_resources_as_controller", side_effect=controller_helper,
+                        ))
+                        if outcome == "archive_changed":
+                            with self.assertRaisesRegex(self.mod.ApplyError, "stored box connectivity input differs"):
+                                self.mod.box_execute(Mock(), intent)
+                            helper.assert_not_called()
+                            self.assertFalse((root / "nonces" / intent["nonce"]).exists())
+                        else:
+                            if outcome == "helper_failed":
+                                with self.assertRaisesRegex(self.mod.ApplyError, "router verification failed"):
+                                    self.mod.box_execute(Mock(), intent)
+                                self.assertFalse((root / "executions" / intent["nonce"]).exists())
+                            else:
+                                self.mod.box_execute(Mock(), intent)
+                                result = json.loads(stdout.getvalue())
+                                receipt_path = Path(result["receipt_path"])
+                                receipt = json.loads(receipt_path.read_text())
+                                self.assertEqual(result["result"], "verified")
+                                self.assertEqual(receipt["result"], "verified")
+                                self.assertEqual(receipt["intent_sha256"], self.mod.sha256_bytes(
+                                    (self.mod.canonical(intent) + "\n").encode(),
+                                ))
+                                self.assertEqual(receipt["authority_state_sha256"], intent["authority_state_sha256"])
+                                self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o440)
+                                self.assertEqual(receipt_path.parent.stat().st_mode & 0o777, 0o750)
+                            self.assertEqual(helper.call_count, 1)
+                            with self.assertRaisesRegex(self.mod.ApplyError, "nonce was already used"):
+                                self.mod.box_execute(Mock(), intent)
+                            self.assertEqual(helper.call_count, 1)
+                        mutation.assert_not_called()
+                        self.assertFalse(work.exists())
+                        self.assertEqual(archive.stat().st_mode & 0o777, 0o700)
+                        self.assertEqual((archive / "effective-registry.yml").stat().st_mode & 0o777, 0o600)
+                finally:
+                    os.umask(previous_mask)
 
     def test_box_registry_staging_keeps_rollback_material_root_only(self):
         with tempfile.TemporaryDirectory() as temporary:

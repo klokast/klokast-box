@@ -652,9 +652,11 @@ operation.
 
 Status: `implemented`; the
 [controller preflight directory-mode correction](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
-is implemented. The corrected engine was activated on 2026-09-06, and the
-controller preflight passed under `umask 077`. Signed verification and replay
-refusal remain pending. This change
+is implemented. That engine was activated on 2026-09-06, and the controller
+preflight passed under `umask 077`. Signed execution exposed a separate
+[protected archive path error](todo.md#2026-09-06---signed-box-verification-reads-the-protected-preflight-archive).
+Its correction must be promoted before signed verification and replay
+refusal can complete. This change
 moves one box connectivity group from the old private Platform resource
 registry to `klokast-instance.json`. It does not
 change the declared values. It does not move the box that hosts the active
@@ -897,8 +899,10 @@ complete.
 
 ### Current work queue
 
-1. Complete forward verification and signed-request replay refusal under
-   section 11.1 with the activated corrected engine. Prepare fresh evidence
+1. Build and promote the [signed verification path correction](todo.md#2026-09-06---signed-box-verification-reads-the-protected-preflight-archive)
+   through the existing sealed and signed workflow. Complete forward
+   verification and signed-request replay refusal under section 11.1.
+   Prepare fresh evidence
    when the human starts the MacBook approval, as specified in the
    [first-box runbook](../klokast-dev/runbooks/46-box-connectivity-authority.md#3-create-plan-v3).
    Then report readiness for the next migration decision.

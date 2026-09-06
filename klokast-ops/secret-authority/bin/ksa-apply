@@ -1730,8 +1730,10 @@ def box_execute(args, intent):
         magicdns_suffix = plan_magicdns_suffix(current["plan"])
         if intent["action"] == "verify_instance_authority":
             verify_public_checkout(commit)
+            # Revalidation proved these bytes equal to the protected archive.
+            # The helper runs as smith and must use the readable runtime copy.
             run_box_resource(
-                binding["effective_registry_path"], box, "verify-box-access",
+                current["effective_registry_path"], box, "verify-box-access",
                 magicdns_suffix,
             )
             path, receipt = store_box_execution(

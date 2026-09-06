@@ -2,6 +2,50 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-06 - Signed box verification reads the protected preflight archive
+
+The human completed both fresh preflights, entered the approval phrase, and
+signed the verification intent with Touch ID. Engine `bd7d044` then refused
+`verify-box-access` with `PermissionError` for the saved
+`apply-preflights/<nonce>/effective-registry.yml`. At 11:19 UTC, all baseline
+setting-source and desired-state hashes were unchanged. The controller
+checkout still selected that engine and the private commit was unchanged.
+No execution receipt was stored. This failure occurs after nonce consumption;
+the failed nonce must remain used. A new attempt needs a new signed intent.
+
+Preflight archives intentionally have a root-only parent and files. During
+signed execution, `box_revalidate` creates a controller-readable runtime
+copy and proves that its bytes and compiled values equal the approved inputs.
+The verification branch then used `binding["effective_registry_path"]`,
+which points to the root-only archive, instead of the revalidated
+`current["effective_registry_path"]`. The helper runs as `smith` and cannot
+traverse the archive. The earlier umask correction repaired runtime directory
+modes but did not repair this path selection. Preflight-only live testing and
+the earlier unit tests did not cover the handoff during signed execution.
+
+The correction passes the revalidated runtime path to the verification helper.
+Archive permissions, exact byte and hash checks, signature verification,
+nonce handling, and network behavior remain unchanged. Adoption, rollback,
+and restoration already stage their protected inputs before invoking the
+controller helper. Their live rollback and re-adoption tests remain deferred.
+
+The new regression test executes the verification branch with real saved
+files, runtime staging, exact saved-byte comparison, nonce consumption, and
+receipt storage under `umask 077`. External Plan/build validation, signature
+verification, ownership changes, and the router command are test doubles.
+It failed against the old path and passes with the correction. It covers a
+verified receipt, a helper failure, refusal of altered saved bytes, cleanup,
+unchanged archive modes, and nonce replay refusal after success or failure.
+All 500 Python tests pass. The corrected engine still needs its sealed build,
+matching installed tools, signed promotion, and live acceptance.
+
+The MacBook printed a missing `ssh-askpass` notice, but then completed the
+signature. The controller accepted that signature before this path failure.
+The notice was not the cause of this refusal. Preserve the old evidence and
+use the [current work queue](upstream-instance-target-architecture.md#current-work-queue)
+to resume with the corrected engine. Do not widen archive permissions or
+change network settings to force success.
+
 # 2026-09-06 - First-box approval cancelled before Touch ID
 
 The MacBook preparation batch produced fresh valid evidence. Both controller
@@ -29,8 +73,10 @@ with `termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)`, then starts
 `--prove-replay-refusal`. A second local pseudo-terminal simulation confirmed
 that this discards the queued blank line and waits for a new typed phrase.
 SSH and signing remained stubs in these simulations. The revised command
-has not yet been verified on the MacBook. It does not change the controller,
-the signing helper, or any approval check. For an unintended cancellation,
+passed on the MacBook at 11:17 UTC: the human entered the phrase and Touch ID
+produced a signature. This does not establish what caused the earlier input
+cancellation. The command does not change the controller, the signing helper,
+or any approval check. For an unintended cancellation,
 the human must start a new approval and enter the exact phrase at its prompt.
 The
 [current work queue](upstream-instance-target-architecture.md#current-work-queue)
