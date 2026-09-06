@@ -2,6 +2,42 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-06 - First-box forward verification acceptance completed
+
+The human promoted combined corrected engine
+`86b8c7e5e14ad84bda2fae0c685a6c3fe1b7606d` through the existing MacBook
+Touch ID workflow. Private commit `06800dd6ddc01ab159f9d580073d3871a5ebf04e`
+contains only the expected engine metadata transition. The controller
+verified the sealed Go build, complete cleanup, all ten installed toolchain
+components, source synchronization, source recovery, and Authority State v2.
+All 501 Python tests and the controller Ansible syntax check passed.
+
+The human approved one `verify_instance_authority` request for the exact
+five-scope k001 connectivity group. Authenticated router configuration,
+service, route, firewall, and reachability checks passed. The immutable
+execution receipt has result `verified`, recovery result `not_needed`, and
+hash `edf3c7e502e5196d91a957adc5bf2f9bc85b62832d4fe807e6b49d9ad826fc71`.
+The MacBook helper repeated the exact signed request and completed only after
+it received `Apply intent nonce was already used`. The final Plan has hash
+`9dc2cf955e04386d859529d4abb039f93da57f98fe9013fa43ecfa98a71d9381`.
+It is valid and deployable, keeps k001 and Tailnet verification-only, and
+keeps k002 on `legacy_platform_resources`.
+
+All seven saved setting-source and desired-state hashes remained unchanged.
+The active Authority State stayed
+`6cdc48ae5cf3027774b654d8dc1cc41f256172e70ceca882e9b529e608a27a23`.
+No network setting, Tailscale service, application, application data, second
+box source, or legacy file changed. The first-box milestone is now
+`live-verified`. The Platform is ready for the next migration decision.
+Moving the controller box's settings still requires a separate explicit
+decision.
+
+Live rollback and re-adoption remain unverified and deferred. Direct-IPv6
+repair also remains deferred. Neither blocks continued development. Keep all
+saved recovery inputs and immutable evidence. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the remaining order.
+
 # 2026-09-06 - Builder output parent blocks controller receipt access
 
 The sealed build for the signed verification path correction completed its
@@ -26,10 +62,11 @@ escalation and ownership changes. It covers successful results, bounded
 failure diagnostics, every parent mode and owner request, content, and
 overwrite refusal. It failed against the old code and passes with the fix.
 
-Keep the completed intermediate build and its failure evidence. It was not
-promoted. Build and promote the engine that contains both this correction and
-the signed verification path correction. Do not loosen the caller's umask or
-edit installed receipts. The
+The completed intermediate build and its failure evidence remain saved; that
+engine was not promoted. The combined engine passed a second sealed build,
+the controller read its installed receipt, and the human promoted it as
+`86b8c7e` on 2026-09-06. Do not loosen the caller's umask or edit installed
+receipts. The
 [current work queue](upstream-instance-target-architecture.md#current-work-queue)
 owns the remaining acceptance steps.
 
@@ -69,8 +106,9 @@ verified receipt, a helper failure, refusal of altered saved bytes, cleanup,
 unchanged archive modes, and nonce replay refusal after success or failure.
 All 500 Python tests passed for this correction. Its sealed Go build passed,
 but the receipt installation exposed the builder parent-mode issue above.
-The combined correction still needs matching installed tools, signed
-promotion, and live acceptance.
+The combined engine passed 501 Python tests, the sealed Go build, matching
+tool checks, signed promotion, forward verification, and replay refusal on
+2026-09-06.
 
 The MacBook printed a missing `ssh-askpass` notice, but then completed the
 signature. The controller accepted that signature before this path failure.

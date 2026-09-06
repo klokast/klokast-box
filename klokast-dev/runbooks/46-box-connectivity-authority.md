@@ -18,6 +18,14 @@ access and all router configuration checks remain required. A timeout or
 failed verification still stops the operation. Do not run the separate
 direct-IPv6 repair just to satisfy this source-change workflow.
 
+Development acceptance completed on 2026-09-06 with engine `86b8c7e`.
+The active controller stored verified execution receipt `edf3c7e`. The
+MacBook helper confirmed refusal of the exact repeated signed request because
+its nonce was already used. Final Plan `9dc2cf9` kept k001 and Tailnet
+verification-only and kept k002 on the old registry. All saved setting-source
+and desired-state hashes remained unchanged. Live rollback and re-adoption
+remain unverified and deferred.
+
 ## 1. Prepare The Controller
 
 Check the active controller, clean public checkout, private engine lock, and

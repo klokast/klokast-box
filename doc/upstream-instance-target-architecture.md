@@ -650,13 +650,16 @@ operation.
 
 ## 11.1 First box connectivity source migration
 
-Status: `implemented`; the
+Status: `live-verified` on 2026-09-06. The
 [controller preflight directory-mode correction](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
-is implemented. That engine was activated on 2026-09-06, and the controller
-preflight passed under `umask 077`. Signed execution exposed a separate
+was implemented and activated. Signed execution then exposed a separate
 [protected archive path error](todo.md#2026-09-06---signed-box-verification-reads-the-protected-preflight-archive).
-Its correction must be promoted before signed verification and replay
-refusal can complete. This change
+The human promoted the combined correction as engine `86b8c7e`, and the
+controller verified its sealed build and matching installed tools. The
+controller stored verified execution receipt `edf3c7e` and final
+verification-only Plan `9dc2cf9`. The MacBook helper confirmed refusal of
+the exact repeated signed request because its nonce was already used. All
+seven setting-source and desired-state hashes remained unchanged. This change
 moves one box connectivity group from the old private Platform resource
 registry to `klokast-instance.json`. It does not
 change the declared values. It does not move the box that hosts the active
@@ -893,23 +896,16 @@ complete.
 | Engine promotion | `live-verified` | On 2026-08-24, the real MacBook Touch ID workflow completed the reversible connectivity transition and a later metadata-only promotion. The active controller verified the exact sealed builds and immutable promotion and activation evidence. |
 | Elementary connectivity capabilities | `live-verified` | On 2026-08-24, controlled promotion, private-state alignment, exact sealed validation, read-only acceptance, and human continuing-authority review passed. No Platform resource apply or application runtime operation was part of acceptance. |
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
-| First box connectivity migration | `implemented` | The exact one-router source transition and recovery contracts are implemented. Forward verification and nonce replay refusal are the remaining development acceptance gates in section 11.1. Live rollback and re-adoption remain unverified and deferred. |
+| First box connectivity migration | `live-verified` | On 2026-09-06, the human promoted the corrected sealed engine and approved one verification-only request with Touch ID. Authenticated k001 router configuration, service, route, firewall, and reachability checks passed. The controller stored a `verified` execution receipt, and the MacBook helper confirmed refusal of the exact replay because its nonce was already used. A final Plan kept k001 and Tailnet verification-only and k002 on the old registry. All setting-source and desired-state hashes remained unchanged. Live rollback and re-adoption remain unverified and deferred. |
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Migration and legacy removal | `proposed` | The Tailnet pilot is complete. Only the first non-controller box migration is decided. The second box and legacy removal still require separate explicit decisions. |
 
 ### Current work queue
 
-1. Build and promote the [signed verification path correction](todo.md#2026-09-06---signed-box-verification-reads-the-protected-preflight-archive)
-   and [builder output permission correction](todo.md#2026-09-06---builder-output-parent-blocks-controller-receipt-access)
-   through the existing sealed and signed workflow. Complete forward
-   verification and signed-request replay refusal under section 11.1.
-   Prepare fresh evidence
-   when the human starts the MacBook approval, as specified in the
-   [first-box runbook](../klokast-dev/runbooks/46-box-connectivity-authority.md#3-create-plan-v3).
-   Then report readiness for the next migration decision.
-2. Wait for a separate explicit decision before moving the controller box's
-   settings. First-box acceptance does not authorize that migration.
-3. Keep legacy removal `proposed` until its separate recovery, rollback,
+1. Wait for a separate explicit decision before moving the controller box's
+   settings. The Platform is ready for this next migration decision.
+   First-box acceptance does not authorize that migration.
+2. Keep legacy removal `proposed` until its separate recovery, rollback,
    observation, and explicit approval gates are complete.
 
 Deferred work: direct-IPv6 repair and live first-box rollback and re-adoption
