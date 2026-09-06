@@ -652,7 +652,8 @@ operation.
 
 Status: `implemented`; the
 [controller preflight directory-mode correction](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
-is implemented. Corrected-engine activation, signed verification, and replay
+is implemented. The corrected engine was activated on 2026-09-06, and the
+controller preflight passed under `umask 077`. Signed verification and replay
 refusal remain pending. This change
 moves one box connectivity group from the old private Platform resource
 registry to `klokast-instance.json`. It does not
@@ -896,11 +897,11 @@ complete.
 
 ### Current work queue
 
-1. Activate the [controller preflight directory-mode correction](todo.md#2026-09-05---box-preflight-work-directory-loses-group-access-under-umask-077)
-   through the sealed build and signed promotion workflow before a new
-   first-box acceptance attempt. Complete forward verification
-   and signed-request replay refusal under section 11.1, then report readiness
-   for the next migration decision.
+1. Complete forward verification and signed-request replay refusal under
+   section 11.1 with the activated corrected engine. Prepare fresh evidence
+   when the human starts the MacBook approval, as specified in the
+   [first-box runbook](../klokast-dev/runbooks/46-box-connectivity-authority.md#3-create-plan-v3).
+   Then report readiness for the next migration decision.
 2. Wait for a separate explicit decision before moving the controller box's
    settings. First-box acceptance does not authorize that migration.
 3. Keep legacy removal `proposed` until its separate recovery, rollback,

@@ -81,6 +81,13 @@ existing rollback inputs and all prior evidence.
 
 ## 3. Create Plan V3
 
+Prepare this evidence when the human is ready to run the MacBook approval.
+The source receipt and observation each expire after 30 minutes. A successful
+earlier preflight does not extend that time. For a delayed handoff, run the
+existing controller preparation commands from the MacBook remote terminal
+immediately before `--check` and `--prove-replay-refusal`. Do not hand over
+fixed evidence paths for an approval at an unknown later time.
+
 Use section 2 of [the Tailnet pilot](45-tailnet-authority-pilot.md) to
 synchronize the private source, prove source recovery, refresh the Platform
 map, and export a fresh observation. Then run `platform-plan` with the active
@@ -99,6 +106,13 @@ ansible/bin/platform-plan \
   --authority-state "$AUTHORITY_STATE" \
   --controller-toolchain-receipt TOOLCHAIN_RECEIPT
 ```
+
+Keep each attempt in a separate private evidence directory. Keep its source
+receipt, recovery receipt, observation, Plan, and approval arguments together.
+If evidence expires, create a new set with the same engine and unchanged
+baseline. Do not alter timestamps or replace an observation used by an old
+Plan. Both MacBook calls must use the new set. The Apply intent also has its
+own ten-minute approval limit.
 
 The Plan must be valid, deployable `klokast.plan.v3`, with no refusal. It must
 select the unique box that does not host the active controller. Its action

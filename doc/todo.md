@@ -2,6 +2,48 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-06 - Delayed approval used expired first-box evidence
+
+The MacBook `apply-platform-intent --check` twice refused the saved Plan with
+`Plan v3 inputs changed during exact revalidation`. A controller-side rerun
+of the same sealed planner exposed diagnostic `fetched-at.stale`: the source
+receipt was more than 30 minutes old. The receipt was created at 08:53:39 UTC,
+and the observation at 08:55:21 UTC. At diagnosis, 10:21:15 UTC, both exceeded
+their 30-minute limits. The earlier controller preflight had passed while
+they were fresh. All baseline setting-source and desired-state hashes, the
+public engine commit, and the private commit were unchanged. No signing or
+execution occurred in these failed checks.
+
+The handoff prepared evidence before the human was ready to sign, then gave
+the human fixed paths that could expire during the wait. Prepare evidence
+when the human starts the MacBook workflow. The controller preparation batch
+uses the existing observation, source synchronization, recovery, toolchain,
+and Plan commands. It checks the fixed commits, baseline hashes, and exact
+verification-only groups, retains each attempt separately, and returns its
+new approval arguments. The MacBook then runs `--check` and
+`--prove-replay-refusal` with that same set. Source, observation, intent,
+signature, and replay checks remain unchanged. No engine rebuild or
+promotion is needed for an evidence refresh. See the
+[first-box runbook](../klokast-dev/runbooks/46-box-connectivity-authority.md#3-create-plan-v3).
+
+The first batch trial rejected the refreshed observation reference in the
+read-only substrate action. The batch now checks that reference against the
+new observation. It requires all other action fields to remain unchanged.
+This comparison applies only between separate evidence attempts; root Apply
+still revalidates each stored Plan exactly.
+
+The corrected batch produced a valid deployable Plan, and the controller
+preflight passed at 10:32 UTC under `umask 077`. The baseline hashes remained
+unchanged. This confirms that fresh evidence resolves the unsigned refusal;
+signed verification and replay refusal remain the live acceptance gates.
+
+The root revalidation error does not distinguish expired evidence from a
+content mismatch. A future error-reporting correction should expose the
+bounded diagnostic code without private input content. This does not block
+acceptance with fresh evidence. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the remaining acceptance gates.
+
 # 2026-09-05 - Box preflight work directory loses group access under umask 077
 
 The first-box forward-verification attempt stopped in the controller
@@ -39,9 +81,9 @@ and registry-staging functions under umasks `022`, `077`, and `777`; it
 checks directory modes, ownership requests, unchanged rollback-file mode
 `0600`, and staged-file mode `0440`. Only ownership changes are mocked for
 the unprivileged test runner. The test failed against the old code and
-passes with the correction. Live account-boundary verification remains part
-of the resumed preflight. The existing Ansible wrapper installation carries
-the correction.
+passes with the correction. Live account-boundary verification passed in
+the resumed preflight under `umask 077` on 2026-09-06. The existing Ansible
+wrapper installation carries the correction.
 
 Review found the same missing final mode in all three Apply execution-receipt
 directory writers. They now set mode `0750` after ownership changes so the
@@ -50,9 +92,12 @@ reproduced the failure in each writer and checks directory mode `0750`, file
 mode `0440`, ownership requests, and receipt content. Signature, nonce,
 receipt-hash, rollback, and network behavior are unchanged.
 
-The human authorized repair and resumption after the stopped attempt. Build
-and promote the corrected engine through the existing sealed and signed
-workflow before restarting acceptance with fresh evidence. Keep that new
+The human authorized repair and resumption after the stopped attempt. Engine
+`bd7d044678c9aa872c62a5d2b4f5f59219e8723f` passed the sealed Go build and tests,
+all 499 Python tests, and the controller Ansible syntax check. All ten
+installed controller components matched that engine. The human completed its
+signed promotion and activation on 2026-09-06. The resumed preflight passed
+with unchanged input hashes; DERP transport was informational. Keep that
 engine fixed during the new attempt. Do not relax the caller's umask or
 change network settings. Preserve the controller-private failure log,
 baseline hashes, mode diagnostic, and Plan. Compiler error reporting still
