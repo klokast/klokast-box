@@ -188,6 +188,7 @@ func TestRegistryCheckpointPreservesOmissionAndEmptyValues(t *testing.T) {
 		mutateInstanceJSON(t, root, func(v map[string]any) {
 			nested(v, "boxes", "boxa")["substrate"] = map[string]any{}
 			v["inactive-apps"] = map[string]any{"retired-example": map[string]any{"resources": map[string]any{}, "ephemeral": map[string]any{"expires-at": ""}}}
+			nested(v, "inactive-apps", "retired-example")["placement"] = map[string]any{"primary": "", "secondary": "", "builder": "", "boxes": []string{}}
 		})
 	})
 	snapshot, report, err := Load(root, testEngine)
@@ -196,5 +197,8 @@ func TestRegistryCheckpointPreservesOmissionAndEmptyValues(t *testing.T) {
 	}
 	if snapshot.Instance.Boxes["boxa"].Substrate == nil || snapshot.Instance.Boxes["boxb"].Substrate != nil || snapshot.Instance.InactiveApps["retired-example"].Resources == nil {
 		t.Fatal("omitted and explicit empty fields were conflated on input")
+	}
+	if p := snapshot.Instance.InactiveApps["retired-example"].Placement; p == nil || len(p.BoxIDs()) != 0 {
+		t.Fatal("saved empty placement fields must remain unselected")
 	}
 }

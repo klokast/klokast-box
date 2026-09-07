@@ -1215,10 +1215,11 @@ metadata-only workflow. Schema acceptance is not source adoption.
   typed optional placement, Boolean resource selections, device and VM
   bindings, runtime state, ingress mode, isolation, user bindings, and
   ephemeral controls. Placement distinguishes primary, secondary, builder,
-  and multi-box targets. This preserves cleanup targets and preselection.
+  and multi-box targets. An empty primary, secondary, or builder string is a
+  saved unselected target; keep it empty. This preserves cleanup targets and preselection.
   An `apps` entry can separately retain data with `desired-state: absent`.
   A present application cannot also have an inactive entry.
-- References must name instance boxes. Reject unknown fields, nulls, invalid
+- Nonempty references must name instance boxes. Reject unknown fields, nulls, invalid
   addresses, duplicate identities or addresses within a box, unsafe interface
   names, conflicting placements, and malformed ephemeral controls. No raw
   credentials, executable strings, provider keys, or arbitrary command fields

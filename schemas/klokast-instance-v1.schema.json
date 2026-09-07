@@ -101,14 +101,17 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "primary": {"$ref": "#/$defs/box-id"},
-        "secondary": {"$ref": "#/$defs/box-id"},
-        "builder": {"$ref": "#/$defs/box-id"},
+        "primary": {"$ref": "#/$defs/inactive-box-target"},
+        "secondary": {"$ref": "#/$defs/inactive-box-target"},
+        "builder": {"$ref": "#/$defs/inactive-box-target"},
         "boxes": {
           "type": "array", "uniqueItems": true,
           "items": {"$ref": "#/$defs/box-id"}
         }
       }
+    },
+    "inactive-box-target": {
+      "oneOf": [{"$ref": "#/$defs/box-id"}, {"const": ""}]
     },
     "inactive-user": {
       "type": "object", "additionalProperties": false,

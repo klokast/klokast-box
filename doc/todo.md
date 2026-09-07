@@ -13,6 +13,16 @@ then make that engine the rollback checker for the later consumer engine.
 The checkpoint refuses deployment if its new fields are present. Do not
 remove the rollback check or silently discard new fields in a reverse map.
 
+The first sealed candidate check found two saved empty placement strings:
+the disabled builder target and one disabled app's secondary target. The
+initial schema required a box name at both paths. The corrected schema
+preserves empty strings as unselected targets and still rejects nonempty
+references to unknown boxes. Do not invent a target or remove these fields.
+
+An isolated-checkout syntax check also needs an explicit `ANSIBLE_CONFIG`
+pointing to that checkout's `ansible/ansible.cfg`. Without it, Ansible cannot
+find the repository roles. The builder wrapper already sets its own config.
+
 The scope audit also found that omitted disabled apps were reported as one
 derived action. This hid cleanup placement, devices, VM and user bindings,
 resource preselection, and saved privileged-build controls. The planner now

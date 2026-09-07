@@ -14,9 +14,12 @@ exact pushed commit. Use an isolated public checkout on the controller with
 active engine until the human starts promotion. This keeps normal controller
 resolution available during the build and review.
 
-Run the existing Ansible builder from that checkout:
+Run the syntax check and existing Ansible builder from that checkout:
 
 ```sh
+ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg" ansible-playbook -vv \
+  --syntax-check -i ansible/inventory/hosts.yml \
+  ansible/playbooks/73-platform-builder.yml
 ansible/bin/platform-builder build-klokast-cli \
   --box "$ACTIVE_BOX" --approved-commit "$ENGINE_COMMIT"
 ```
