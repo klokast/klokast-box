@@ -60,14 +60,15 @@ type SettingGroup struct {
 }
 
 type StateV2 struct {
-	SchemaVersion        int            `json:"schema_version"`
-	Kind                 string         `json:"kind"`
-	PriorStateKind       string         `json:"prior_state_kind"`
-	PriorStateSHA256     string         `json:"prior_state_sha256"`
-	SettingGroups        []SettingGroup `json:"setting_groups"`
-	SignedIntentSHA256   string         `json:"signed_intent_sha256"`
-	TransitionID         string         `json:"transition_id"`
-	AuthorityStateSHA256 string         `json:"authority_state_sha256"`
+	SchemaVersion              int               `json:"schema_version"`
+	Kind                       string            `json:"kind"`
+	PriorStateKind             string            `json:"prior_state_kind"`
+	PriorStateSHA256           string            `json:"prior_state_sha256"`
+	SettingGroups              []SettingGroup    `json:"setting_groups"`
+	SignedIntentSHA256         string            `json:"signed_intent_sha256"`
+	TransitionID               string            `json:"transition_id"`
+	AuthorityStateSHA256       string            `json:"authority_state_sha256"`
+	ControllerIdentityAdoption *IdentityAdoption `json:"controller_identity_adoption,omitempty"`
 }
 
 func Initial() (State, error) {
@@ -291,7 +292,7 @@ func TransitionGroup(prior StateV2, groupID, source, intentSHA256, transitionID 
 }
 
 func ValidateV2(state StateV2) error {
-	if state.SchemaVersion != 2 || state.Kind != KindV2 {
+	if state.SchemaVersion != 2 || state.Kind != KindV2 || state.ControllerIdentityAdoption != nil {
 		return fmt.Errorf("authority state v2 kind or version is invalid")
 	}
 	if (state.PriorStateKind != Kind && state.PriorStateKind != KindV2) || !digest(state.PriorStateSHA256) || !digest(state.SignedIntentSHA256) || state.TransitionID == "" || state.TransitionID == "initial" {

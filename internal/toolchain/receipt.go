@@ -11,10 +11,12 @@ import (
 	"klokast-box/internal/strictjson"
 )
 
-const Kind = "klokast.controller-toolchain.v3"
+const Kind = "klokast.controller-toolchain.v4"
+const KindV3 = "klokast.controller-toolchain.v3"
 
 var Components = []string{
 	"controller_guard",
+	"controller_ha",
 	"freebox_broker",
 	"ksa_apply",
 	"ops_network_helper",
@@ -68,14 +70,18 @@ func Load(path string, engineCommit string) (Receipt, error) {
 }
 
 func Validate(receipt Receipt, engineCommit string) error {
-	if receipt.SchemaVersion != 3 || receipt.Kind != Kind || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
+	if !((receipt.SchemaVersion == 4 && receipt.Kind == Kind) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
 		return fmt.Errorf("controller toolchain receipt identity does not match the selected clean engine commit")
 	}
-	if len(receipt.Components) != len(Components) {
+	components := Components
+	if receipt.SchemaVersion == 3 {
+		components = append(append([]string{}, Components[:1]...), Components[2:]...)
+	}
+	if len(receipt.Components) != len(components) {
 		return fmt.Errorf("controller toolchain receipt does not contain the closed component set")
 	}
 	for index, component := range receipt.Components {
-		if component.Name != Components[index] || !isDigest(component.SourceSHA256) || component.SourceSHA256 != component.InstalledSHA256 {
+		if component.Name != components[index] || !isDigest(component.SourceSHA256) || component.SourceSHA256 != component.InstalledSHA256 {
 			return fmt.Errorf("controller toolchain component %q does not match its installed source", component.Name)
 		}
 	}

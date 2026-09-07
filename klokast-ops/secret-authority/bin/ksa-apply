@@ -29,6 +29,16 @@ KIND_RECOVERY = "klokast.private-source-recovery.v1"
 KIND_TOOLCHAIN = "klokast.controller-toolchain.v3"
 KIND_PLAN_V3 = "klokast.plan.v3"
 KIND_PLAN_V4 = "klokast.plan.v4"
+KIND_PLAN_V5 = "klokast.plan.v5"
+KIND_AUTHORITY_V3 = "klokast.authority-state.v3"
+KIND_IDENTITY_INTENT = "klokast.controller-identity-source-intent.v1"
+IDENTITY_EXECUTOR = "controller_identity_source_v1"
+IDENTITY_GROUP = "controller-identity-v1"
+IDENTITY_SCOPES = [
+    "controller_ha.controllers[0].box", "controller_ha.controllers[0].hostname",
+    "controller_ha.controllers[1].box", "controller_ha.controllers[1].hostname",
+    "deployment.control_plane.controller",
+]
 KIND_CONTROLLER_BOX_INTENT = "klokast.controller-box-connectivity-source-intent.v1"
 CONTROLLER_BOX_EXECUTOR = "controller_box_connectivity_source_v1"
 KIND_AUTHORITY_V2 = "klokast.authority-state.v2"
@@ -397,13 +407,16 @@ def box_scopes(box):
 
 def verify_plan_v3(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
-    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4)}:
+    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5)}:
         raise ApplyError("box connectivity Apply requires Plan v3 or v4")
     version = plan["schema_version"]
     target = plan.get("connectivity_target", "non-controller")
     if target not in {"non-controller", "active-controller"}:
         raise ApplyError("unknown connectivity target")
-    controller_target = version == 4 and target == "active-controller"
+    identity_target = version == 5 and plan.get("migration_target") == "controller-identity"
+    if version == 5 and plan.get("migration_target") not in {"connectivity", "controller-identity"}:
+        raise ApplyError("unknown migration target")
+    controller_target = version >= 4 and target == "active-controller"
     executor = CONTROLLER_BOX_EXECUTOR if controller_target else BOX_EXECUTOR
     rollback_type = "no_mutation" if controller_target else BOX_ROLLBACK_TYPE
     expected = {
@@ -415,8 +428,10 @@ def verify_plan_v3(path):
         "actions", "action_groups", "selected_box", "refusals", "diagnostics",
         "plan_sha256",
     }
-    if version == 4:
+    if version >= 4:
         expected.add("connectivity_target")
+    if version == 5:
+        expected.add("migration_target")
     if set(plan) != expected:
         raise ApplyError("Plan v3 contains unknown or missing fields")
     supplied = plan.pop("plan_sha256")
@@ -461,6 +476,9 @@ def verify_plan_v3(path):
     expected_group_ids = {TAILNET_GROUP_ID} | {
         BOX_GROUP_PREFIX + item for item in projected_boxes
     }
+    identity_grouped = version == 5 and (identity_target or plan.get("authority_state", {}).get("kind") == KIND_AUTHORITY_V3)
+    if identity_grouped:
+        expected_group_ids.add(IDENTITY_GROUP)
     group_ids = [
         item.get("id") for item in groups if isinstance(item, dict)
     ]
@@ -484,10 +502,13 @@ def verify_plan_v3(path):
             }:
                 raise ApplyError("Plan v3 Tailnet verification group is not closed")
             continue
+        if candidate.get("id") == IDENTITY_GROUP:
+            validate_identity_group(plan, candidate, selected=identity_target)
+            continue
         candidate_box = candidate.get("id", "").removeprefix(BOX_GROUP_PREFIX)
-        selected = candidate_box == box
+        selected = candidate_box == box and not identity_target
         unselected_operation = "retain_legacy"
-        if version == 4 and (state_groups.get(candidate["id"]) or {}).get("source") == "instance_specification_v1":
+        if version >= 4 and (state_groups.get(candidate["id"]) or {}).get("source") == "instance_specification_v1":
             unselected_operation = "verify_instance_authority"
         if set(candidate) != {"id", "operation", "scopes", "executor", "rollback_type", "box"} or candidate != {
             "id": BOX_GROUP_PREFIX + candidate_box,
@@ -498,6 +519,10 @@ def verify_plan_v3(path):
             "box": candidate_box,
         }:
             raise ApplyError("Plan v3 box action group is not closed")
+    if identity_target:
+        group = next(item for item in groups if item["id"] == IDENTITY_GROUP)
+        validate_identity_plan_actions(plan, group)
+        return resolved, plan, group
     matching = [item for item in groups if isinstance(item, dict) and item.get("id") == expected_group_id]
     if len(matching) != 1:
         raise ApplyError("Plan v3 does not contain the selected box group")
@@ -701,13 +726,18 @@ def validate_authority_v2(path, plan, group):
     boxes = [item.get("id") for item in plan.get("projection", {}).get("boxes", [])]
     if any(not isinstance(item, str) for item in boxes):
         raise ApplyError("Plan v3 box projection is invalid")
-    validate_authority_v2_document(state, boxes)
+    validate_authority_current_document(state, boxes)
     pointer = read_regular(AUTHORITY_POINTER, 66)
     if pointer != (state["authority_state_sha256"] + "\n").encode("ascii"):
         raise ApplyError("authority state is not active")
     reference = plan.get("authority_state") or {}
-    if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != KIND_AUTHORITY_V2 or reference.get("setting_groups") != state["setting_groups"]:
+    if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != state["kind"] or reference.get("setting_groups") != state["setting_groups"]:
         raise ApplyError("Plan v3 binds another Authority State v2")
+    if group["id"] == IDENTITY_GROUP:
+        expected_kind = KIND_AUTHORITY_V2 if group["operation"] == "adopt_instance_specification" else KIND_AUTHORITY_V3
+        if state["kind"] != expected_kind:
+            raise ApplyError("controller identity operation does not match current source")
+        return resolved, state
     current = next(
         (item for item in state["setting_groups"] if item["id"] == group["id"]),
         None,
@@ -725,6 +755,7 @@ def validate_authority_v2(path, plan, group):
 def component_paths(build_binary):
     return {
         "controller_guard": (REPO_ROOT / "ansible/roles/ops-controller/files/klokast-controller-guard", CONTROLLER_GUARD),
+        "controller_ha": (REPO_ROOT / "ansible/bin/ops-controller-ha", Path("/usr/local/sbin/ops-controller-ha")),
         "freebox_broker": (REPO_ROOT / "klokast-ops/secret-authority/bin/freebox-ipv6-broker", FREEBOX_BROKER),
         "ksa_apply": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
         "ops_network_helper": (REPO_ROOT / "ansible/bin/overlay-ipv6-ops", OPS_NETWORK_HELPER),
@@ -755,10 +786,15 @@ def validate_toolchain(path, plan, build_binary):
         "schema_version", "kind", "engine_commit", "public_checkout_clean",
         "public_checkout_commit", "components", "receipt_sha256",
     }
-    if set(receipt) != expected or receipt.get("schema_version") != 3 or receipt.get("kind") != KIND_TOOLCHAIN or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
+    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
+    components = COMPONENTS
+    if receipt.get("schema_version") == 4:
+        components = sorted([*COMPONENTS, "controller_ha"])
+    if plan.get("schema_version") == 5 and receipt.get("schema_version") != 4:
+        raise ApplyError("Plan v5 requires Controller Toolchain v4")
     entries = receipt.get("components")
-    if not isinstance(entries, list) or [item.get("name") for item in entries] != COMPONENTS:
+    if not isinstance(entries, list) or [item.get("name") for item in entries] != components:
         raise ApplyError("controller toolchain receipt has an unknown component set")
     paths = component_paths(build_binary)
     for item in entries:
@@ -848,6 +884,8 @@ def validate_inputs(args):
     # The private checkout belongs to the controller account. Keep root for
     # evidence and policy checks, but drop privilege for the read-only sealed
     # planner so its Git ownership validation uses the canonical owner.
+    if plan.get("kind") == KIND_PLAN_V5:
+        command.extend(["--migration-target", plan["migration_target"]])
     rerun = run_plan_as_controller(command)
     try:
         rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
@@ -952,7 +990,7 @@ def prepare_registry_comparison(work, plan, box):
     if not isinstance(registry, dict) or not isinstance(registry.get("boxes"), dict):
         raise ApplyError("old Platform resource registry has no box mapping")
     derived_boxes = {box}
-    if plan.get("kind") == KIND_PLAN_V4:
+    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5}:
         derived_boxes.update(
             item["id"].removeprefix(BOX_GROUP_PREFIX)
             for item in plan["authority_state"]["setting_groups"]
@@ -1068,8 +1106,10 @@ def validate_inputs_v3(args, work=None):
         "--controller-toolchain-receipt", toolchain_path,
         "--json",
     ]
-    if plan.get("kind") == KIND_PLAN_V4:
+    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5}:
         command.extend(["--connectivity-target", plan["connectivity_target"]])
+    if plan.get("kind") == KIND_PLAN_V5:
+        command.extend(["--migration-target", plan["migration_target"]])
     rerun = run_plan_as_controller(command)
     try:
         rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
@@ -1077,7 +1117,9 @@ def validate_inputs_v3(args, work=None):
         raise ApplyError("sealed engine returned invalid Plan v3 JSON") from error
     if rerun.returncode != 0 or rerun_plan != plan:
         raise ApplyError("Plan v3 inputs changed during exact revalidation")
-    comparison = prepare_registry_comparison(work, plan, group["box"]) if work else {}
+    comparison = {}
+    if work:
+        comparison = prepare_controller_comparison(work, plan) if group["id"] == IDENTITY_GROUP else prepare_registry_comparison(work, plan, group["box"])
     return {
         "plan_path": str(plan_path), "plan": plan, "group": group,
         "state": state, "authority_path": str(authority_path),
@@ -1437,7 +1479,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -1493,8 +1535,8 @@ def publish_authority(state):
         if read_regular(AUTHORITY_POINTER, 66) != (prior_digest + "\n").encode("ascii"):
             raise ApplyError("concurrent authority source change; prior state is no longer active")
         prior = load_json(AUTHORITY_ROOT / f"{prior_digest}.json", canonical_stored=True)
-        if prior.get("kind") == KIND_AUTHORITY_V2:
-            validate_authority_v2_document(prior)
+        if prior.get("kind") in {KIND_AUTHORITY_V2, KIND_AUTHORITY_V3}:
+            validate_authority_current_document(prior)
         else:
             validate_authority_v1_document(prior)
         if (prior.get("authority_state_sha256") != prior_digest
@@ -1529,7 +1571,7 @@ def publish_authority(state):
 
 
 def write_authority_v2(state):
-    validate_authority_v2_document(state)
+    validate_authority_current_document(state)
     return publish_authority(state)
 
 
@@ -1547,7 +1589,7 @@ def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
         } for box in sorted(boxes))
         prior_kind = KIND_AUTHORITY
     else:
-        validate_authority_v2_document(prior)
+        validate_authority_current_document(prior)
         if group_id is None or source not in {LEGACY_REGISTRY_SOURCE, "instance_specification_v1"}:
             raise ApplyError("Authority State v2 transition request is incomplete")
         if not any(item["id"] == group_id for item in prior["setting_groups"]):
@@ -1560,7 +1602,7 @@ def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
             }
             for item in prior["setting_groups"]
         ]
-        prior_kind = KIND_AUTHORITY_V2
+        prior_kind = prior["kind"]
     state = {
         "schema_version": 2,
         "kind": KIND_AUTHORITY_V2,
@@ -1571,8 +1613,10 @@ def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
         "transition_id": intent["nonce"],
         "authority_state_sha256": "",
     }
+    if prior_kind == KIND_AUTHORITY_V3:
+        state.update(kind=KIND_AUTHORITY_V3, schema_version=3, controller_identity_adoption=prior["controller_identity_adoption"])
     state["authority_state_sha256"] = authority_v2_hash(state)
-    validate_authority_v2_document(state, boxes if boxes else None)
+    validate_authority_current_document(state, boxes if boxes else None)
     return state
 
 
@@ -1723,7 +1767,7 @@ def box_revalidate(binding, intent, *, phase="execute"):
     try:
         current = validate_inputs_v3(namespace, work)
         if intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
-            if (current["plan"].get("kind") != KIND_PLAN_V4
+            if (current["plan"].get("kind") not in {KIND_PLAN_V4, KIND_PLAN_V5}
                     or current["group"].get("executor") != CONTROLLER_BOX_EXECUTOR):
                 raise ApplyError("controller box source execution requires its Plan v4 executor")
             expected = controller_box_intent_common(
@@ -2877,25 +2921,376 @@ def box_rollback_prepare(args):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def validate_authority_current_document(state, expected_boxes=None):
+    if state.get("kind") == KIND_AUTHORITY_V2:
+        return validate_authority_v2_document(state, expected_boxes)
+    fields = {"schema_version", "kind", "prior_state_kind", "prior_state_sha256", "setting_groups", "signed_intent_sha256", "transition_id", "authority_state_sha256", "controller_identity_adoption"}
+    if set(state) != fields or state.get("kind") != KIND_AUTHORITY_V3 or state.get("schema_version") != 3 or state.get("prior_state_kind") not in {KIND_AUTHORITY_V2, KIND_AUTHORITY_V3} or authority_v2_hash(state) != state.get("authority_state_sha256"):
+        raise ApplyError("Authority State v3 is invalid")
+    anchor = state.get("controller_identity_adoption")
+    if not isinstance(anchor, dict) or set(anchor) != {"nonce", "intent_sha256", "plan_sha256"} or not NONCE_RE.fullmatch(anchor.get("nonce", "")) or any(not DIGEST_RE.fullmatch(anchor.get(k, "")) for k in ("intent_sha256", "plan_sha256")):
+        raise ApplyError("controller identity adoption reference is invalid")
+    groups = state.get("setting_groups")
+    if not isinstance(groups, list) or len(groups) != 4 or any(not isinstance(g, dict) for g in groups) or groups != sorted(groups, key=lambda g: g.get("id", "")):
+        raise ApplyError("Authority State v3 requires the closed two-box group set")
+    identity = [g for g in groups if g.get("id") == IDENTITY_GROUP]
+    if identity != [{"id": IDENTITY_GROUP, "scopes": IDENTITY_SCOPES, "source": "instance_specification_v1"}]:
+        raise ApplyError("Authority State v3 controller identity group is partial")
+    base = dict(state)
+    base.pop("controller_identity_adoption")
+    base.update(kind=KIND_AUTHORITY_V2, schema_version=2, prior_state_kind=KIND_AUTHORITY_V2,
+                setting_groups=[g for g in groups if g.get("id") != IDENTITY_GROUP])
+    base["authority_state_sha256"] = authority_v2_hash(base)
+    validate_authority_v2_document(base, expected_boxes)
+    if state["prior_state_kind"] == KIND_AUTHORITY_V2 and (
+        state["signed_intent_sha256"] != anchor["intent_sha256"] or state["transition_id"] != anchor["nonce"]
+        or any(g["source"] != "instance_specification_v1" for g in base["setting_groups"])
+    ):
+        raise ApplyError("initial identity adoption does not preserve adopted connectivity")
+
+
+def controller_pair(plan):
+    projection = plan.get("projection", {})
+    control = projection.get("control_plane", {})
+    pair = {}
+    for role in ("active", "standby"):
+        item = control.get(role + "_controller")
+        if not isinstance(item, dict) or not isinstance(item.get("box_id"), str) or not BOX_RE.fullmatch(item["box_id"]) or item.get("hostname") != item["box_id"] + "-ops":
+            raise ApplyError("controller identity requires an exact active and standby pair")
+        pair[role] = {"box": item["box_id"], "hostname": item["hostname"]}
+    boxes = [item.get("id") for item in projection.get("boxes", [])]
+    if len(boxes) != 2 or len(set(boxes)) != 2 or set(boxes) != {pair["active"]["box"], pair["standby"]["box"]}:
+        raise ApplyError("controller identity pair differs from the two instance boxes")
+    return pair
+
+
+def validate_identity_group(plan, group, *, selected):
+    operation = "verify_instance_authority" if plan["authority_state"]["kind"] == KIND_AUTHORITY_V3 else "adopt_instance_specification"
+    if group != {"id": IDENTITY_GROUP, "operation": operation, "scopes": IDENTITY_SCOPES,
+                 "executor": IDENTITY_EXECUTOR if selected else "none", "rollback_type": "no_mutation"}:
+        raise ApplyError("controller identity action group is partial or unknown")
+
+
+def validate_identity_plan_actions(plan, group):
+    if plan.get("kind") != KIND_PLAN_V5 or plan.get("migration_target") != "controller-identity":
+        raise ApplyError("controller identity source requires explicit Plan v5 selection")
+    controller_pair(plan)
+    groups = plan["authority_state"]["setting_groups"]
+    if any(g.get("source") != "instance_specification_v1" for g in groups):
+        raise ApplyError("controller identity requires all connectivity sources adopted")
+    actions = [a for a in plan["actions"] if a.get("executor") in {IDENTITY_EXECUTOR, BOX_EXECUTOR, CONTROLLER_BOX_EXECUTOR}]
+    if len(actions) != 5 or sorted(a.get("scope", "") for a in actions) != IDENTITY_SCOPES:
+        raise ApplyError("controller identity Plan action coverage is incomplete")
+    for action in actions:
+        before = "instance_specification_v1"
+        if group["operation"] == "adopt_instance_specification":
+            before = "controller_ha_markers" if action["scope"] == "deployment.control_plane.controller" else "legacy_controller_ha"
+        if action.get("executor") != IDENTITY_EXECUTOR or action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("rollback") != {"strategy": "no_mutation", "authority": before} or action.get("preconditions") != ["configured_controller_pair", "exact_plan_v5_revalidated", "equal_controller_configuration", "roles_verified_before_source_publication"]:
+            raise ApplyError("controller identity Plan action is unknown or has changed authority")
+
+
+def load_legacy_controller_config(content=None):
+    try:
+        config = yaml.safe_load(read_regular(CONTROLLER_HA) if content is None else content)
+    except yaml.YAMLError as error:
+        raise ApplyError("legacy controller configuration is invalid YAML") from error
+    if not isinstance(config, dict) or set(config) != {"schema_version", "remote_user", "repo_dir", "controllers"} or config["schema_version"] != 1 or config["remote_user"] != "smith" or config["repo_dir"] != "~/src/klokast/klokast-box":
+        raise ApplyError("legacy controller configuration has unknown fields or fixed settings")
+    entries = config["controllers"]
+    if not isinstance(entries, list) or len(entries) != 2:
+        raise ApplyError("controller source migration requires two legacy controllers")
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"box", "hostname"} or not isinstance(entry["box"], str) or not BOX_RE.fullmatch(entry["box"]) or entry["hostname"] != entry["box"] + "-ops":
+            raise ApplyError("legacy controller identity is malformed")
+    if entries[0]["box"] == entries[1]["box"]:
+        raise ApplyError("legacy controller identities are duplicated")
+    return config
+
+
+def prepare_controller_comparison(work, plan):
+    pair = controller_pair(plan)
+    content = read_regular(CONTROLLER_HA)
+    expected_digest = next(v["sha256"] for v in plan["compatibility_inputs"] if v["name"] == "legacy_controller_ha")
+    if sha256_bytes(content) != expected_digest:
+        raise ApplyError("legacy controller input changed after sealed planning")
+    old = load_legacy_controller_config(content)
+    effective = dict(old, controllers=[pair["active"], pair["standby"]])
+    # Array positions are the existing compatibility scopes; preserve their meaning.
+    if old != effective:
+        raise ApplyError("old and instance-derived controller configurations differ")
+    result = {"controller_pair": pair}
+    for name, value in (("old", old), ("effective", effective)):
+        path = work / (name + "-controllers.json")
+        path.write_text(canonical(value) + "\n", encoding="utf-8")
+        path.chmod(0o640)
+        os.chown(path, 0, smith_gid())
+        result[name + "_controller_path"] = str(path)
+        result[name + "_controller_sha256"] = sha256_file(path)
+    return result
+
+
+def verify_controller_pair(pair):
+    results = {}
+    # Fixed stdin payload. Neither private values nor executable source are arguments.
+    script = "set -eu\nhostname\n/usr/local/sbin/klokast-controller-guard --status --json\n"
+    for role in ("active", "standby"):
+        expected = pair[role]
+        command = ["sh", "-s"] if role == "active" else ["timeout", "20", "tailscale", "ssh", "smith@" + expected["hostname"], "sh", "-s"]
+        result = run([DOAS, "-u", CONTROLLER_USER, *command], capture=True, check=False, input_text=script)
+        lines = result.stdout.splitlines()
+        if result.returncode != 0 or len(lines) != 2 or lines[0] != expected["hostname"]:
+            raise ApplyError("controller role verification failed or returned an unknown peer: " + expected["hostname"])
+        try:
+            status = json.loads(lines[1], object_pairs_hook=unique_object)
+        except (ValueError, TypeError) as error:
+            raise ApplyError("controller role verification returned invalid JSON") from error
+        required = {"schema_version", "configured", "hostname", "box", "role", "active", "active_box", "updated_at", "checked_at"}
+        if not isinstance(status, dict) or set(status) != required or status.get("schema_version") != 1 or status.get("configured") is not True or status.get("hostname") != expected["hostname"] or status.get("box") != expected["box"] or status.get("role") != role or status.get("active") is not (role == "active") or status.get("active_box") != pair["active"]["box"]:
+            raise ApplyError("configured controller role differs from the approved pair: " + expected["hostname"])
+        parse_utc(status["updated_at"], "controller marker updated_at")
+        parse_utc(status["checked_at"], "controller checked_at")
+        status.pop("checked_at")
+        results[role] = status
+    return results
+
+
+def identity_intent(binding, nonce, issued):
+    plan = binding["plan"]
+    compatibility = {v["name"]: v["sha256"] for v in plan["compatibility_inputs"]}
+    return {
+        "schema_version": 1, "kind": KIND_IDENTITY_INTENT,
+        "action": binding["group"]["operation"], "executor": IDENTITY_EXECUTOR,
+        "action_group_id": IDENTITY_GROUP, "action_set": IDENTITY_SCOPES, "rollback_type": "no_mutation",
+        "plan_sha256": plan["plan_sha256"], "authority_state_sha256": binding["state"]["authority_state_sha256"],
+        "private_commit": plan["instance"]["commit"], "engine_commit": plan["engine"]["commit"],
+        "private_instance_sha256": next(v["sha256"] for v in plan["inputs"] if v["path"] == "klokast-instance.json"),
+        "legacy_deployment_sha256": compatibility["legacy_deployment"], "legacy_registry_sha256": compatibility[LEGACY_REGISTRY_SOURCE],
+        "legacy_controller_ha_sha256": compatibility["legacy_controller_ha"],
+        "source_receipt_sha256": plan["instance_source"]["receipt_sha256"], "source_recovery_receipt_sha256": Path(binding["recovery_path"]).stem,
+        "observation_sha256": plan["observation"]["generation_sha256"], "toolchain_receipt_sha256": plan["controller_toolchain"]["receipt_sha256"],
+        "binary_sha256": binding["binary_sha256"], "builder_receipt_sha256": binding["builder_receipt_sha256"],
+        "controller_pair": binding["controller_pair"], "old_controller_sha256": binding["old_controller_sha256"],
+        "effective_controller_sha256": binding["effective_controller_sha256"], "controller_roles_sha256": binding["controller_roles_sha256"],
+        "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+    }
+
+
+def validate_identity_intent(intent, *, check_time=True):
+    fields = {"schema_version", "kind", "action", "executor", "action_group_id", "action_set", "rollback_type", "plan_sha256", "authority_state_sha256", "private_commit", "engine_commit", "private_instance_sha256", "legacy_deployment_sha256", "legacy_registry_sha256", "legacy_controller_ha_sha256", "source_receipt_sha256", "source_recovery_receipt_sha256", "observation_sha256", "toolchain_receipt_sha256", "binary_sha256", "builder_receipt_sha256", "controller_pair", "old_controller_sha256", "effective_controller_sha256", "controller_roles_sha256", "nonce", "issued_at", "expires_at"}
+    if set(intent) != fields or intent.get("schema_version") != 1 or intent.get("kind") != KIND_IDENTITY_INTENT or intent.get("executor") != IDENTITY_EXECUTOR or intent.get("action_group_id") != IDENTITY_GROUP or intent.get("action_set") != IDENTITY_SCOPES or intent.get("rollback_type") != "no_mutation" or intent.get("action") not in {"adopt_instance_specification", "verify_instance_authority"}:
+        raise ApplyError("controller identity intent contains unknown fields, scopes, or action")
+    for field in fields:
+        if field.endswith("_sha256") and not DIGEST_RE.fullmatch(intent.get(field, "")):
+            raise ApplyError("controller identity intent digest is invalid: " + field)
+    if any(not COMMIT_RE.fullmatch(intent.get(k, "")) for k in ("private_commit", "engine_commit")) or not NONCE_RE.fullmatch(intent.get("nonce", "")):
+        raise ApplyError("controller identity intent binding is invalid")
+    pair = intent.get("controller_pair")
+    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
+        raise ApplyError("controller identity intent pair is incomplete")
+    for entry in pair.values():
+        if not isinstance(entry, dict) or set(entry) != {"box", "hostname"} or not isinstance(entry["box"], str) or not BOX_RE.fullmatch(entry["box"]) or entry["hostname"] != entry["box"] + "-ops":
+            raise ApplyError("controller identity intent pair is malformed")
+    if pair["active"] == pair["standby"] or intent["old_controller_sha256"] != intent["effective_controller_sha256"]:
+        raise ApplyError("controller identity intent changes controller settings")
+    issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
+        raise ApplyError("controller identity intent is expired or has an invalid lifetime")
+
+
+def identity_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    work = new_box_work(nonce)
+    try:
+        binding = validate_inputs_v3(args, work)
+        if binding["group"]["executor"] != IDENTITY_EXECUTOR:
+            raise ApplyError("controller identity preparation requires its explicit executor")
+        roles = verify_controller_pair(binding["controller_pair"])
+        binding["controller_roles_sha256"] = sha256_bytes(canonical(roles).encode())
+        intent = identity_intent(binding, nonce, now_utc())
+        validate_identity_intent(intent)
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        stored = {k: v for k, v in binding.items() if k not in {"plan", "group", "state"}}
+        for name in ("old", "effective"):
+            field = name + "_controller_path"
+            target = directory / (name + "-controllers.json")
+            shutil.copyfile(binding[field], target)
+            stored[field] = str(target)
+        for name, data in (("binding", stored), ("intent", intent), ("roles", roles)):
+            (directory / (name + ".json")).write_text(canonical(data) + "\n", encoding="utf-8")
+        for path in directory.iterdir(): path.chmod(0o600)
+        append_audit("controller-identity.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], action=intent["action"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def identity_revalidate(binding, intent, phase):
+    args = argparse.Namespace(plan=binding["plan_path"], authority_state=binding["authority_path"], controller_toolchain_receipt=binding["toolchain_path"], source_recovery_receipt=binding["recovery_path"], instance_source_receipt=binding["source_path"], observation=binding["observation"], build_dir=binding["build_dir"])
+    work = new_box_work(intent["nonce"] + "-" + phase)
+    try:
+        current = validate_inputs_v3(args, work)
+        roles = verify_controller_pair(current["controller_pair"])
+        current["controller_roles_sha256"] = sha256_bytes(canonical(roles).encode())
+        if identity_intent(current, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
+            raise ApplyError("controller identity inputs or live roles changed after approval")
+        for name in ("old", "effective"):
+            if read_regular(binding[name + "_controller_path"]) != read_regular(current[name + "_controller_path"]):
+                raise ApplyError("protected controller configuration differs from revalidation")
+        validate_identity_intent(intent)
+        return current, work
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+
+
+def identity_execute(args, intent):
+    validate_identity_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed controller identity intent differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    expected_fields = {"plan_path", "authority_path", "toolchain_path", "source_path", "recovery_path", "observation", "build_dir", "binary_sha256", "builder_receipt_sha256", "controller_pair", "old_controller_path", "old_controller_sha256", "effective_controller_path", "effective_controller_sha256", "controller_roles_sha256"}
+    if set(binding) != expected_fields:
+        raise ApplyError("protected controller identity binding has unknown fields")
+    consume_nonce(intent)
+    runtime = final_runtime = None
+    published = False
+    try:
+        current, runtime = identity_revalidate(binding, intent, "execute")
+        final, final_runtime = identity_revalidate(binding, intent, "post-verify")
+        state, result = final["state"], "verified"
+        if intent["action"] == "adopt_instance_specification":
+            state = dict(state, schema_version=3, kind=KIND_AUTHORITY_V3, prior_state_kind=KIND_AUTHORITY_V2,
+                         prior_state_sha256=state["authority_state_sha256"], transition_id=intent["nonce"],
+                         signed_intent_sha256=sha256_bytes((canonical(intent) + "\n").encode()))
+            state["setting_groups"] = sorted([*state["setting_groups"], {"id": IDENTITY_GROUP, "scopes": IDENTITY_SCOPES, "source": "instance_specification_v1"}], key=lambda g: g["id"])
+            state["controller_identity_adoption"] = {"nonce": intent["nonce"], "intent_sha256": state["signed_intent_sha256"], "plan_sha256": intent["plan_sha256"]}
+            state["authority_state_sha256"] = authority_v2_hash(state)
+            validate_authority_current_document(state)
+            publish_authority(state)
+            published, result = True, "success"
+        receipt = {"schema_version": 3, "kind": "klokast.apply-execution.v3", "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode()), "plan_sha256": intent["plan_sha256"], "nonce": intent["nonce"], "action": intent["action"], "executor": IDENTITY_EXECUTOR, "action_group_id": IDENTITY_GROUP, "controller_pair": intent["controller_pair"], "result": result, "recovery_result": "not_needed", "authority_state_sha256": state["authority_state_sha256"], "finished_at": format_utc(now_utc())}
+        path = store_identity_receipt(receipt)
+        append_audit("controller-identity.executed", nonce=intent["nonce"], result=result, receipt_sha256=receipt["receipt_sha256"])
+        print(canonical({"schema_version": 1, "result": result, "receipt_path": str(path), "authority_state_sha256": state["authority_state_sha256"]}))
+    except (ApplyError, OSError) as error:
+        if published:
+            raise ApplyError("controller identity source was published but operation is incomplete; inspect source and archives, then obtain fresh signed verification; do not retry the used request") from error
+        raise ApplyError("controller identity operation failed before publication; inspect evidence and obtain a fresh request: " + str(error)) from error
+    finally:
+        for path in (runtime, final_runtime):
+            if path is not None: shutil.rmtree(path, ignore_errors=True)
+
+
+def store_identity_receipt(receipt):
+    receipt["receipt_sha256"] = sha256_bytes(canonical(receipt).encode())
+    ensure_dir(EXECUTION_ROOT, 0o750)
+    directory = EXECUTION_ROOT / receipt["nonce"]
+    directory.mkdir(mode=0o750)
+    os.chown(directory, 0, smith_gid())
+    directory.chmod(0o750)
+    path = directory / (receipt["receipt_sha256"] + ".json")
+    path.write_text(canonical(receipt) + "\n", encoding="utf-8")
+    os.chown(path, 0, smith_gid())
+    path.chmod(0o440)
+    return path
+
+
+def controller_input_object(content, label):
+    try:
+        value = json.loads(content, object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ApplyError(label + " is not valid JSON") from error
+    if not isinstance(value, dict):
+        raise ApplyError(label + " must be one JSON object")
+    return value
+
+
+def controller_identity_status():
+    status = require_root_active()
+    require_self_match()
+    pointer = read_regular(AUTHORITY_POINTER, 66)
+    digest = pointer.decode("ascii", errors="replace").strip()
+    if not DIGEST_RE.fullmatch(digest) or pointer != (digest + "\n").encode():
+        raise ApplyError("active controller identity source pointer is invalid")
+    _, state = resolve_hashed(AUTHORITY_ROOT / (digest + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
+    validate_authority_current_document(state)
+    if state["kind"] == KIND_AUTHORITY_V2:
+        input_path = CONTROLLER_HA
+        input_bytes = read_regular(input_path)
+        old = load_legacy_controller_config(input_bytes)
+        active = next((v for v in old["controllers"] if v["hostname"] == status["hostname"]), None)
+        if active is None: raise ApplyError("active controller is absent from legacy contact set")
+        pair = {"active": active, "standby": next(v for v in old["controllers"] if v != active)}
+        source = "legacy_controller_ha"
+    else:
+        anchor = state["controller_identity_adoption"]
+        directory = PREFLIGHT_ROOT / anchor["nonce"]
+        intent_path = directory / "intent.json"
+        intent = load_json(intent_path, canonical_stored=True)
+        validate_identity_intent(intent, check_time=False)
+        if intent["action"] != "adopt_instance_specification" or sha256_file(intent_path) != anchor["intent_sha256"] or intent["plan_sha256"] != anchor["plan_sha256"]:
+            raise ApplyError("controller identity adoption archive does not match source")
+        binding = load_json(directory / "binding.json", canonical_stored=True)
+        _, plan, _ = verify_plan_v3(binding["plan_path"])
+        if plan["plan_sha256"] != anchor["plan_sha256"] or controller_pair(plan) != intent["controller_pair"]:
+            raise ApplyError("controller identity adoption Plan differs from source")
+        input_path = INSTANCE / "klokast-instance.json"
+        input_bytes = read_regular(input_path)
+        private = controller_input_object(input_bytes, "private controller input")
+        private_controller = private.get("controllers")
+        pair = intent["controller_pair"]
+        if private_controller != {role: pair[role]["box"] for role in ("active", "standby")}:
+            raise ApplyError("current private controller identities differ from adopted pair; explicit identity change or recovery is required")
+        for command, expected in ((["git", "-C", INSTANCE, "status", "--porcelain"], ""), (["git", "-C", INSTANCE, "branch", "--show-current"], "main")):
+            result = run_plan_as_controller(command)
+            if result.returncode or result.stdout.strip() != expected:
+                raise ApplyError("controller identity requires a clean private deployment checkout")
+        source = "instance_specification_v1"
+    lock_bytes = read_regular(INSTANCE / "klokast.lock.json")
+    lock = controller_input_object(lock_bytes, "private engine lock")
+    engine = lock.get("engine", {})
+    if not isinstance(engine, dict) or engine.get("repository") != ENGINE_REPOSITORY or engine.get("ref") != "main" or not COMMIT_RE.fullmatch(engine.get("commit", "")):
+        raise ApplyError("controller identity requires a canonical engine lock")
+    verify_public_checkout(engine["commit"])
+    verify_controller_pair(pair)
+    if read_regular(AUTHORITY_POINTER, 66) != pointer or read_regular(INSTANCE / "klokast.lock.json") != lock_bytes:
+        raise ApplyError("controller identity source or engine changed during resolution")
+    verify_public_checkout(engine["commit"])
+    if read_regular(input_path) != input_bytes:
+        raise ApplyError("controller identity input changed during resolution")
+    if source == "instance_specification_v1":
+        result = run_plan_as_controller(["git", "-C", INSTANCE, "status", "--porcelain"])
+        if result.returncode or result.stdout.strip():
+            raise ApplyError("private checkout changed during controller resolution")
+    return {"schema_version": 1, "kind": "klokast.controller-identity-status.v1", "source": source,
+            "authority_state_sha256": digest, "engine_commit": engine["commit"], "controllers": pair}
+
+
 def evidence_kind(path):
     return load_json(path).get("kind")
 
 
 def preflight(args):
-    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4}:
+    if evidence_kind(args.plan) == KIND_PLAN_V5 and load_json(args.plan).get("migration_target") == "controller-identity":
+        identity_preflight(args)
+    elif evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5}:
         box_preflight(args)
     else:
         preflight_tailnet(args)
 
 
 def overlay_repair_prepare(args):
-    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4}:
+    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5}:
         raise ApplyError("overlay repair requires Plan v3")
     overlay_preflight(args)
 
 
 def rollback_prepare(args):
-    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4}:
+    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5}:
         box_rollback_prepare(args)
     else:
         rollback_prepare_tailnet(args)
@@ -2907,6 +3302,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_IDENTITY_INTENT:
+        identity_execute(args, intent)
     elif intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
         controller_box_execute(args, intent)
     elif intent.get("kind") == KIND_BOX_INTENT:
@@ -2922,6 +3319,7 @@ def execute(args):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
+    commands.add_parser("controller-identity-status")
     preflight_parser = commands.add_parser("preflight")
     for name in (
         "plan", "authority-state", "controller-toolchain-receipt",
@@ -2962,7 +3360,9 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        if args.operation == "preflight":
+        if args.operation == "controller-identity-status":
+            print(canonical(controller_identity_status()))
+        elif args.operation == "preflight":
             preflight(args)
         elif args.operation == "execute":
             execute(args)

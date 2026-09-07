@@ -22,7 +22,7 @@ except ImportError:
     raise SystemExit(2)
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path("/home/smith/src/klokast/klokast-box") if Path(__file__).parent == Path("/usr/local/sbin") else Path(__file__).resolve().parents[2]
 CONFIG_ENV = "KLOKAST_CONTROLLER_HA_CONFIG"
 CONTROLLER_CONFIG = Path("/home/smith/private/klokast/controller-ha.yml")
 MAC_CONFIG = Path.home() / ".config" / "klokast" / "controller-ha.yml"
@@ -129,9 +129,9 @@ def targets(config, box):
     return [f"{user}@{controller['hostname']}" for user in config.get("remote_users", [config["remote_user"]])]
 
 
-def run(argv, *, stdin=None, capture=False, check=True):
+def run(argv, *, stdin=None, capture=False, check=True, timeout=None):
     if capture:
-        completed = subprocess.run(argv, input=stdin, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        completed = subprocess.run(argv, input=stdin, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout)
     else:
         completed = subprocess.run(argv, input=stdin, text=True, check=False)
     if check and completed.returncode != 0:
@@ -326,14 +326,53 @@ def print_status(config, json_output=False):
 
 
 def resolve_active(config):
-    active = []
-    for box in sorted(config["controllers"]):
-        status = controller_status(config, box)
-        if status.get("reachable") and status.get("active"):
-            active.append(box)
-    if len(active) != 1:
-        die(f"expected exactly one active controller, found {len(active)}")
-    print(config["controllers"][active[0]]["hostname"])
+    if config.get("identity_status"):
+        print(config["identity_status"]["controllers"]["active"]["hostname"])
+        return
+    die("normal controller resolution requires verified source status; use explicit legacy recovery for recovery operations")
+
+
+def source_config(config):
+    replies = []
+    script = "set -eu\nexec /usr/bin/doas -n /usr/local/sbin/ksa-apply controller-identity-status\n"
+    for box, contact in sorted(config["controllers"].items()):
+        argv = ["sh", "-s"] if is_local_controller(config, box) else ["tailscale", "ssh", target(config, box), "sh", "-s"]
+        try:
+            result = run(argv, stdin=script, capture=True, check=False, timeout=50)
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode != 0:
+            continue
+        try:
+            status = json.loads(result.stdout)
+            validate_source_status(status, contact["hostname"])
+        except (ValueError, TypeError, KeyError) as error:
+            die("controller source returned an invalid status: " + str(error))
+        replies.append(status)
+    if len(replies) != 1:
+        die(f"expected one verified active controller source, found {len(replies)}; inspect source custody or use explicit legacy recovery")
+    status = replies[0]
+    resolved = dict(config)
+    resolved["controllers"] = {item["box"]: dict(item) for item in status["controllers"].values()}
+    resolved["identity_status"] = status
+    return resolved
+
+
+def validate_source_status(status, contact):
+    if not isinstance(status, dict) or set(status) != {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit", "controllers"}:
+        raise ValueError("unknown or missing status fields")
+    if status["schema_version"] != 1 or status["kind"] != "klokast.controller-identity-status.v1" or status["source"] not in {"legacy_controller_ha", "instance_specification_v1"}:
+        raise ValueError("unknown status version or source")
+    if not re.fullmatch(r"[0-9a-f]{64}", status["authority_state_sha256"]) or not re.fullmatch(r"[0-9a-f]{40}", status["engine_commit"]):
+        raise ValueError("invalid source or engine digest")
+    pair = status["controllers"]
+    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
+        raise ValueError("incomplete controller pair")
+    for entry in pair.values():
+        if not isinstance(entry, dict) or set(entry) != {"box", "hostname"} or not valid_box(entry["box"]) or entry["hostname"] != entry["box"] + "-ops":
+            raise ValueError("invalid controller identity")
+    if pair["active"] == pair["standby"] or pair["active"]["hostname"] != contact:
+        raise ValueError("reply did not come from the declared active controller")
 
 
 def maybe_dry_run(command, dry_run):
@@ -520,14 +559,12 @@ def demote(config, args):
 
 def run_on_controller(config, args):
     controller_host = args.controller
-    if controller_host == "auto":
-        completed = subprocess.run(
-            [sys.executable, __file__, "--config", str(args.config), "resolve-active"],
-            text=True,
-            stdout=subprocess.PIPE,
-            check=True,
-        )
-        controller_host = completed.stdout.strip()
+    active = config.get("identity_status", {}).get("controllers", {}).get("active", {}).get("hostname")
+    if not active:
+        die("dispatch requires a verified controller identity source")
+    if controller_host != "auto" and controller_host != active:
+        die("explicit dispatch target differs from the verified active controller")
+    controller_host = active
     ssh_target = f"{config['remote_user']}@{controller_host}"
     command = " ".join(subprocess.list2cmdline([arg]) for arg in args.remote_command)
     script = r'''
@@ -559,12 +596,14 @@ def reseed(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Manage active/passive Klokast ops controllers")
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--legacy-recovery", action="store_true", help="use saved contacts for explicit recovery operations only")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     status = subparsers.add_parser("status")
     status.add_argument("--json", action="store_true")
 
-    subparsers.add_parser("resolve-active")
+    resolve = subparsers.add_parser("resolve-active")
+    resolve.add_argument("--controller", default="auto", help="contact hint; it must resolve to the verified active controller")
 
     subparsers.add_parser("validate-config")
 
@@ -608,8 +647,29 @@ def main(argv=None):
     reseed_parser.add_argument("--controller", required=True)
 
     args = parser.parse_args(argv)
-    args.config = resolve_config_path(args.config)
-    config = load_config(args.config)
+    explicit_contact = getattr(args, "controller", "auto")
+    if args.command in {"resolve-active", "run"} and explicit_contact != "auto" and args.config is None and not os.environ.get(CONFIG_ENV):
+        if not explicit_contact.endswith("-ops") or not valid_box(explicit_contact[:-4]):
+            die("explicit controller contact must have the exact box-ops form")
+        box = explicit_contact[:-4]
+        config = {"remote_user": FIXED_REMOTE_USER, "repo_dir": FIXED_REPO_DIR,
+                  "controllers": {box: {"box": box, "hostname": explicit_contact}}}
+    else:
+        args.config = resolve_config_path(args.config)
+        config = load_config(args.config)
+    if args.legacy_recovery:
+        if args.command not in {"status", "bootstrap-standby", "sync", "promote", "switchover", "sanitize-standby", "demote", "reseed", "validate-config"}:
+            die("legacy recovery cannot resolve or dispatch normal controller commands")
+        print("ops-controller-ha: explicit legacy recovery uses saved contacts; normal source authority is not changed", file=sys.stderr)
+    elif args.command != "validate-config":
+        if args.command == "resolve-active" and args.controller != "auto":
+            if not args.controller.endswith("-ops") or not valid_box(args.controller[:-4]):
+                die("explicit controller contact must have the exact box-ops form")
+            box = args.controller[:-4]
+            config = dict(config, controllers={box: {"box": box, "hostname": args.controller}})
+        config = source_config(config)
+        if args.command == "resolve-active" and args.controller != "auto" and args.controller != config["identity_status"]["controllers"]["active"]["hostname"]:
+            die("explicit controller contact differs from verified active identity")
     if args.command == "status":
         print_status(config, args.json)
     elif args.command == "resolve-active":

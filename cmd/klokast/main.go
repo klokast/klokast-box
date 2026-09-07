@@ -71,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity] [--json] | klokast doctor --instance PATH --observation FILE [--json]")
 	return 2
 }
 
@@ -129,18 +129,19 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	controllerPath := flags.String("compatibility-controller-ha", "", "path to the transitional controller HA document")
 	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
 	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
-	authorityState := flags.String("authority-state", "", "path to an Authority State v2 JSON document")
-	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v3 receipt")
+	authorityState := flags.String("authority-state", "", "path to an Authority State v2 or v3 JSON document")
+	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v4 receipt")
+	migrationTarget := flags.String("migration-target", "connectivity", "migration target: connectivity or controller-identity")
 	connectivityTarget := flags.String("connectivity-target", "non-controller", "connectivity target: non-controller or active-controller")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
-		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--json]")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
+		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity] [--json]")
 		return 2
 	}
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
 	if *observationPath == "" {
-		if *instanceSourceReceipt != "" || *authorityState != "" || *controllerToolchainReceipt != "" || *connectivityTarget != "non-controller" {
-			fmt.Fprintln(stderr, "klokast plan: Plan v4 evidence flags require --observation")
+		if *instanceSourceReceipt != "" || *authorityState != "" || *controllerToolchainReceipt != "" || *connectivityTarget != "non-controller" || *migrationTarget != "connectivity" {
+			fmt.Fprintln(stderr, "klokast plan: Plan v5 evidence flags require --observation")
 			return 2
 		}
 		return runCompatibilityPlan(planner.Options{
@@ -153,7 +154,8 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	result, err := deploymentplan.Build(deploymentplan.Options{
-		ConnectivityTarget:        *connectivityTarget,
+		MigrationTarget:            *migrationTarget,
+		ConnectivityTarget:         *connectivityTarget,
 		InstancePath:               *instancePath,
 		CompatibilityDeployment:    *deploymentPath,
 		CompatibilityRegistry:      *registryPath,

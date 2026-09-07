@@ -1,4 +1,4 @@
-// Package deploymentplan creates a deterministic, read-only Plan v4 artifact.
+// Package deploymentplan creates a deterministic, read-only Plan v5 artifact.
 package deploymentplan
 
 import (
@@ -20,6 +20,7 @@ import (
 )
 
 type Options struct {
+	MigrationTarget            string
 	ConnectivityTarget         string
 	InstancePath               string
 	CompatibilityDeployment    string
@@ -32,6 +33,7 @@ type Options struct {
 }
 
 type Artifact struct {
+	MigrationTarget     string                       `json:"migration_target"`
 	ConnectivityTarget  string                       `json:"connectivity_target"`
 	SchemaVersion       int                          `json:"schema_version"`
 	Kind                string                       `json:"kind"`
@@ -135,6 +137,12 @@ type Refusal struct {
 }
 
 func Build(options Options, engine contract.Engine) (Artifact, error) {
+	if options.MigrationTarget == "" {
+		options.MigrationTarget = "connectivity"
+	}
+	if options.MigrationTarget != "connectivity" && options.MigrationTarget != "controller-identity" {
+		return Artifact{}, fmt.Errorf("migration target must be connectivity or controller-identity")
+	}
 	if options.ConnectivityTarget == "" {
 		options.ConnectivityTarget = "non-controller"
 	}
@@ -142,12 +150,13 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		return Artifact{}, fmt.Errorf("connectivity target must be non-controller or active-controller")
 	}
 	artifact := Artifact{
+		MigrationTarget:    options.MigrationTarget,
 		ConnectivityTarget: options.ConnectivityTarget,
-		SchemaVersion:      4,
-		Kind:               "klokast.plan.v4",
+		SchemaVersion:      5,
+		Kind:               "klokast.plan.v5",
 		HealthScope:        "standard_substrate_v1",
 		Engine:             planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
-		Inputs:        []planner.InputDigest{}, CompatibilityInputs: []planner.CompatibilityInput{},
+		Inputs:             []planner.InputDigest{}, CompatibilityInputs: []planner.CompatibilityInput{},
 		Authorities: []AuthorityAssignment{}, Actions: []Action{}, ActionGroups: []ActionGroup{}, Refusals: []Refusal{},
 		Diagnostics: []contract.Diagnostic{},
 	}
@@ -165,13 +174,16 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		artifact.Diagnostics = report.Diagnostics
 		return artifact, nil
 	}
-	state, err := authoritystate.LoadV2(options.AuthorityState)
+	state, err := authoritystate.LoadCurrent(options.AuthorityState)
 	if err != nil {
 		return Artifact{}, err
 	}
 	toolchainReceipt, err := toolchain.Load(options.ControllerToolchainReceipt, engine.Commit)
 	if err != nil {
 		return Artifact{}, err
+	}
+	if toolchainReceipt.SchemaVersion != 4 {
+		return Artifact{}, fmt.Errorf("Plan v5 requires Controller Toolchain v4")
 	}
 	artifact.AuthorityState = AuthorityStateReference{
 		AuthorityStateSHA256: state.AuthorityStateSHA256,
@@ -253,6 +265,12 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			groupScopes[scope] = groupID
 		}
 	}
+	identityGrouped := options.MigrationTarget == "controller-identity" || state.Kind == authoritystate.KindV3
+	if identityGrouped {
+		for _, scope := range authoritystate.ControllerIdentityScopes {
+			groupScopes[scope] = authoritystate.ControllerIdentityGroupID
+		}
+	}
 	for _, finding := range artifact.Compatibility.Findings {
 		if _, grouped := groupScopes[finding.Path]; grouped {
 			groupFindings[finding.Path] = finding
@@ -261,6 +279,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		switch finding.Class {
 		case "matched", "derived":
 			before := sourceAuthority(finding)
+			if finding.Code == "controller.instance-specification" {
+				before = "controller_ha_markers"
+			}
 			if finding.Code == "airunner.instance-specification" {
 				before = "none"
 			}
@@ -278,7 +299,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			artifact.Refusals = append(artifact.Refusals, refusal("compatibility.class", finding.Path, "the compatibility finding class is not supported"))
 		}
 	}
-	tailnetSource, err := authoritystate.GroupSource(state, authoritystate.TailnetGroupID)
+	tailnetSource, err := authoritystate.CurrentGroupSource(state, authoritystate.TailnetGroupID)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -304,7 +325,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			Operation: "verify_instance_authority", Scope: scope,
 			AuthorityBefore: authoritystate.InstanceAuthority,
 			AuthorityAfter:  authoritystate.InstanceAuthority, Executor: "tailnet_policy_inputs_v1",
-			Preconditions: []string{"active_controller_fenced", "exact_plan_v4_revalidated", "byte_equal_policy", "tailnet_policy_preimage_prepared"},
+			Preconditions: []string{"active_controller_fenced", "exact_plan_v5_revalidated", "byte_equal_policy", "tailnet_policy_preimage_prepared"},
 			Rollback:      Rollback{Strategy: "tailnet_policy_preimage_v1", Authority: authoritystate.LegacyAuthority, SourceSHA256: legacyDigest},
 		})
 	}
@@ -317,7 +338,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			"connectivity requires two instance boxes and the matching active controller observation",
 		))
 	} else if options.ConnectivityTarget == "active-controller" {
-		peerSource, _ := authoritystate.GroupSource(state, authoritystate.BoxConnectivityPrefix+artifact.SelectedBox)
+		peerSource, _ := authoritystate.CurrentGroupSource(state, authoritystate.BoxConnectivityPrefix+artifact.SelectedBox)
 		if peerSource != authoritystate.InstanceAuthority || tailnetSource != authoritystate.InstanceAuthority {
 			artifact.Refusals = append(artifact.Refusals, refusal(
 				"box-connectivity.prerequisite", "boxes",
@@ -329,7 +350,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	registryDigest := digests[authoritystate.LegacyRegistrySource]
 	for _, box := range artifact.Projection.Boxes {
 		groupID := authoritystate.BoxConnectivityPrefix + box.ID
-		source, sourceErr := authoritystate.GroupSource(state, groupID)
+		source, sourceErr := authoritystate.CurrentGroupSource(state, groupID)
 		if sourceErr != nil {
 			artifact.Refusals = append(artifact.Refusals, refusal("box-connectivity.authority", groupID, sourceErr.Error()))
 			continue
@@ -339,13 +360,13 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			operation = "verify_instance_authority"
 		}
 		rollbackType := "box_connectivity_registry_v1"
-		preconditions := []string{"active_controller_fenced", "exact_plan_v4_revalidated", "effective_registry_compiles_equal", "one_router_rollback_prepared"}
-		if box.ID == artifact.SelectedBox {
+		preconditions := []string{"active_controller_fenced", "exact_plan_v5_revalidated", "effective_registry_compiles_equal", "one_router_rollback_prepared"}
+		if box.ID == artifact.SelectedBox && options.MigrationTarget == "connectivity" {
 			operation, executor = "adopt_instance_specification", "box_connectivity_v1"
 			if options.ConnectivityTarget == "active-controller" {
 				executor = "controller_box_connectivity_source_v1"
 				rollbackType = "no_mutation"
-				preconditions = []string{"active_controller_fenced", "exact_plan_v4_revalidated", "effective_registry_compiles_equal", "router_verified_before_source_publication"}
+				preconditions = []string{"active_controller_fenced", "exact_plan_v5_revalidated", "effective_registry_compiles_equal", "router_verified_before_source_publication"}
 			}
 			if source == authoritystate.InstanceAuthority {
 				operation = "verify_instance_authority"
@@ -385,6 +406,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 				},
 			})
 		}
+	}
+	if identityGrouped {
+		addControllerIdentityGroup(&artifact, state, groupFindings, digests)
 	}
 	for _, finding := range health.Findings {
 		artifact.Refusals = append(artifact.Refusals, refusal("observation."+finding.Code, finding.Path, finding.Message))
@@ -432,19 +456,19 @@ func Hash(artifact Artifact) (string, error) {
 	artifact.PlanSHA256 = ""
 	encoded, err := json.Marshal(artifact)
 	if err != nil {
-		return "", fmt.Errorf("encode Plan v4 artifact: %w", err)
+		return "", fmt.Errorf("encode Plan v5 artifact: %w", err)
 	}
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
-		return "", fmt.Errorf("canonicalize Plan v4 artifact: %w", err)
+		return "", fmt.Errorf("canonicalize Plan v5 artifact: %w", err)
 	}
 	var canonical bytes.Buffer
 	encoder := json.NewEncoder(&canonical)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
-		return "", fmt.Errorf("canonicalize Plan v4 artifact: %w", err)
+		return "", fmt.Errorf("canonicalize Plan v5 artifact: %w", err)
 	}
 	content := bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'})
 	digest := sha256.Sum256(content)
@@ -510,6 +534,9 @@ func authorityGroupsMatchProjection(state authoritystate.StateV2, projection *pl
 	}
 	for _, box := range projection.Boxes {
 		expected[authoritystate.BoxConnectivityPrefix+box.ID] = authoritystate.BoxConnectivityScopes(box.ID)
+	}
+	if state.Kind == authoritystate.KindV3 {
+		expected[authoritystate.ControllerIdentityGroupID] = authoritystate.ControllerIdentityScopes
 	}
 	if len(state.SettingGroups) != len(expected) {
 		return false

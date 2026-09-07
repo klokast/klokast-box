@@ -949,13 +949,15 @@ that documentation-only commit. List the remaining legacy-owned setting
 groups from the final Plan for the next human migration decision. This action
 does not authorize another migration or legacy removal.
 
-## 11.4 Next migration proposal: controller identity sources
+## 11.4 Controller identity source migration
 
-Status: `proposed` on 2026-09-07. The next-step review recommends source-only
-adoption of the current active and standby controller identities. The human
-requested the next step from the completed connectivity plan. That step is
-the next scope decision; it does not yet approve another live migration.
-The completed acceptance records in sections 11.1 and 11.3 remain unchanged.
+Status: `decided` on 2026-09-07. The human authorized this migration and
+continued work across the remaining migration scopes without a separate
+scope decision each time. Record each bounded design before implementation.
+The existing human signing steps still authorize exact engine promotions and
+live source transitions. The completed acceptance records remain immutable.
+This authorization does not request data deletion, live controller
+switchover, or the deferred IPv6 repair and rollback exercises.
 
 ### Selection from the final Plan
 
@@ -972,10 +974,10 @@ live approval must use fresh evidence for their selected engine.
 | Application declarations and data intent | Some fields match or derive from the instance, but omitted/absent apps, cleanup placement, devices, and retained data have different authority and lifecycle rules. This needs an app-specific scope and verification design. |
 | Legacy schema metadata and execution inventory | A matched schema version is a format check. It does not establish an instance-owned setting or remove an execution-inventory dependency. These belong to a later replacement/removal decision. |
 
-### Proposed scope and result
+### Scope, authority, and versioned evidence
 
-Limit the first controller-identity action to the existing two-controller
-arrangement and exactly these five Plan scopes:
+Adopt the existing active/standby pair as one `controller-identity-v1` group
+with exactly these five scopes:
 
 ```text
 controller_ha.controllers[0].box
@@ -985,99 +987,145 @@ controller_ha.controllers[1].hostname
 deployment.control_plane.controller
 ```
 
-The sealed instance projection selects the current active and standby boxes
-and derives their hostnames. No caller can supply a replacement identity or
-select a subset of the group. Compare the complete legacy controller set with
-the projection, then verify the live roles independently. Legacy list order
-does not grant active authority. Require the same boxes, hostnames, active
-controller, and standby controller before and after adoption.
+The first four scopes have prior source `legacy_controller_ha`. The last
+scope is a derived placement finding, not a stored legacy deployment value;
+its prior source is `controller_ha_markers`. Existing HA markers remain the
+live permission boundary after desired identity adoption. No caller chooses
+another pair or a partial scope set. Exactly two instance boxes and two
+controllers are required, with both connectivity groups and Tailnet already
+adopted. Identities, live roles, accounts, credentials, applications, data,
+network settings, and legacy files stay unchanged.
 
-The intended result is that controller discovery and dispatch consume the
-instance-derived identities. Both box connectivity groups and Tailnet stay
-verification-only. The account, repository path, schema metadata, application
-settings, and execution inventory retain their existing sources. In
-particular, this scope does not adopt `controller_ha.remote_user`,
-`controller_ha.repo_dir`, or `controller_ha.schema_version`.
+Instance Specification v1 remains unchanged. Plan v5 adds
+`migration_target`, selected by `--migration-target connectivity|controller-identity`.
+The default preserves the existing connectivity selector and executors.
+Explicit controller-identity selection enables only the new
+`controller_identity_source_v1` executor. Already adopted unselected groups
+report verification with executor `none` for their unselected box or identity
+groups. The existing Tailnet verification group remains available.
 
-The compatibility finding `deployment.control_plane.controller` describes
-proposed placement. It is not proof that a legacy deployment file contains an
-active-controller selection. The implementation must record the actual
-consumers and per-scope prior sources; it must not infer execution ownership
-from the finding's path alone.
+Authority State v3 preserves the existing v2 fields and connectivity groups,
+adds the closed five-scope identity group with source
+`instance_specification_v1`, and adds `controller_identity_adoption` with
+`nonce`, `intent_sha256`, and `plan_sha256`. One signed adoption changes v2
+to v3 atomically. Later v3 source records preserve this adoption reference.
+No separate unsigned conversion publishes state. Older states and Plans
+remain immutable and cannot authorize this executor. Existing connectivity
+and deferred IPv6 consumers accept the new version while preserving the
+identity group and its adoption reference during any separately authorized
+operation. Controller Toolchain v4 adds the installed `controller_ha`
+resolver to the existing closed component set; historical v3 receipts remain
+readable but cannot authorize the new identity executor.
 
-### Required design before implementation
+### Resolution and permission
 
-1. Define a closed controller-identity setting group and versioned approval
-   intent. Permit only adoption and verification. The existing Authority
-   State v2 validator accepts only Tailnet and box-connectivity groups, so
-   this proposal needs a new authority-state version and a new Plan version.
-   Define one signed transition from the exact prior state. Preserve all
-   existing group sources and scopes. Do not reinterpret historical v2
-   states or allow older Plans to authorize the new executor. Keep Instance
-   Specification v1 unchanged. Bind every new installed resolver component
-   through the controller toolchain receipt.
-2. Map the controller-side and MacBook consumers of `ops-controller-ha`,
-   including automatic resolution, explicit dispatch, promotion helpers,
-   and recovery. Define the instance-derived resolver output and its
-   provenance checks. A remaining legacy contact list can locate a controller
-   during bootstrap or recovery; after adoption it cannot override the
-   verified instance identity. An explicit hostname is also a contact hint,
-   not an authority bypass. The airunner must keep no private instance copy.
-   Do not claim completed source adoption while a normal dispatch path still
-   trusts the legacy identity list.
-3. Keep live controller permission separate from desired placement. Require
-   configured, valid markers on both controllers, exactly one active role,
-   the expected standby role, and agreement with authenticated runtime
-   hostnames and the instance projection. A missing marker, an unknown reply,
-   an unreachable controller, two active roles, or a mismatch refuses
-   migration. The guard's legacy behavior for a missing marker is not
-   sufficient evidence. Adoption cannot write HA markers, fence or promote
-   a controller, synchronize private state, reseed credentials, change a
-   service, or execute an arbitrary command.
-4. Reuse the existing signer, nonce ledger, protected archives, readable
-   runtime copies, and exact-state publication lock. Bind the Plan, action,
-   controller pair, current source, engine, toolchain, private inputs,
-   effective resolver output, and comparison evidence. Consume the nonce
-   before execution-time live checks. Recheck all inputs and roles before
-   one atomic source publication. A concurrent change refuses publication.
-5. Define recovery before this source becomes authoritative. Keep the old
-   registries and immutable evidence. A failed pre-publication check leaves
-   the source unchanged. A stored source with no execution receipt requires
-   inspection and fresh signed verification. Do not retry a used request or
-   silently restore legacy ownership. Define how the existing human recovery
-   procedure can locate and fence controllers if the current instance or
-   source evidence is unavailable. A role change still requires its separate
-   recovery procedure and explicit reconciliation with private intent.
-   Resolve this bootstrap/recovery boundary before moving to `decided`.
-6. Specify compatibility for both connectivity planner targets and the
-   existing first-box and deferred IPv6 interfaces under the new state
-   version. Define the new selector, exact JSON fields, accepted source
-   transitions, consumer installation order, and offline reconstruction
-   inputs. Close each item above in this document before implementation.
+`ksa-apply controller-identity-status` is a fixed read-only controller action.
+It emits `klokast.controller-identity-status.v1`: schema version, source,
+current source hash, engine commit, and the active/standby box and hostname
+pairs. It does not synchronize private input, mint credentials, or approve a
+new deployment. Before adoption it validates the existing controller set and
+live roles. After adoption it validates the v3 adoption reference, protected
+intent and Plan, clean current private and public checkouts, the current
+instance controller fields, and exact equality with the adopted pair. It
+rechecks source and inputs before returning. A changed desired pair requires
+a future explicit identity-change action; this source-only action cannot
+move the controller.
 
-### Proposed acceptance gates
+The installed `ops-controller-ha` and its MacBook copy use that status action
+for normal resolution and dispatch. Local legacy configuration supplies the
+fixed account and repository path and contact hints only. Exactly one
+reachable contact must return a valid active-controller result; unavailable
+or stale standby evidence cannot supply a fallback active authority. An
+explicit dispatch hostname must equal the verified active hostname.
+`kk` uses the same check for automatic and explicit controller selection.
+MacBook promotion helpers retain their explicit bootstrap contact path:
+engine promotion and activation still perform their own root controller and
+private-source validation. No airunner receives private instance files.
 
-Repository tests must prove exact five-scope coverage, changed-input and
-older-Plan refusal, strict role checks, nonce expiry and reuse refusal,
-concurrent-source refusal, and failure before and after publication. Exercise
-the signed path with real temporary files under umask 077, including archive
-protection, readable copies, receipts, and cleanup. Resolver tests must prove
-that changing a legacy contact hint cannot select a different authoritative
-controller after adoption. Test missing source evidence and the specified
-recovery path. Command tests must show verification and source publication
-only. Run the Python suite, sealed Go tests/build, shell checks, and relevant
-Ansible syntax checks for the reviewed implementation commit.
+Live checks independently obtain the actual runtime hostname and configured
+HA marker from both controllers through the controller's authenticated
+transport. Require exactly one active role, one standby role, expected box
+and hostname fields, and the same `active_box` in both markers. Missing or
+malformed markers, the guard's legacy-unconfigured fallback, unreachable
+peers, unknown replies, and conflicting roles are refusals. The new executor
+never writes HA markers, promotes, fences, synchronizes private state,
+reseeds credentials, runs router configuration, or dispatches an arbitrary
+command. It runs in the existing controller TCB; no new account, daemon,
+credential, or network permission is introduced.
 
-Live acceptance must promote the reviewed sealed engine and install matching
-controller and MacBook tools. Save post-promotion private-file and persistent
-configuration baselines, including both HA marker files. Use fresh unsigned
-preparation, human signed adoption, fresh signed verification, and exact
-replay refusal. Verify resolution and explicit dispatch from each supported
-locus. Require one source transition for this group, unchanged identities
-and roles, unchanged settings, and a final Plan with this group, both
-connectivity groups, and Tailnet verification-only. Keep the complete evidence
-on the controller. This proposal grants no approval for live switchover,
-rollback, re-adoption, IPv6 repair, application changes, or legacy removal.
+### Signed execution and failure handling
+
+The closed `klokast.controller-identity-source-intent.v1` binds action,
+Plan, current source, controller pair, exact five scopes, private commit and
+input hashes, engine/build/toolchain, source/recovery/observation receipts,
+and equal old/effective controller configuration hashes plus stable marker
+evidence. Permit only adoption and verification. Unknown fields, extra
+scopes, rollback requests, changed inputs, expired signatures, and old Plans
+are refused. Reuse the existing Touch ID signer and helper.
+
+Preparation stages equal old/effective controller configurations in a
+controller-readable temporary directory and saves exact copies in the
+root-only preflight archive. The effective configuration derives identities
+from the sealed projection and preserves the legacy account and repository
+path. Execution verifies the signature and protected preparation, consumes
+the nonce, reconstructs and compares every bound input, and checks both live
+roles. It repeats input and role checks before publication. Publish one
+forward source record using the existing short-lived local lock and exact
+prior-state comparison, then write the receipt. Verification writes a receipt
+without another source transition. Remove readable runtime copies on every
+exit. Keep protected archives and nonce evidence.
+
+Failure before publication leaves the source unchanged. A publication with
+no completed receipt is incomplete: inspect the current source and archives,
+then use fresh signed verification. Never retry a used request, silently
+restore legacy ownership, or repair the network. The adoption reference
+permits inspection even if receipt storage failed.
+
+### Recovery and installation order
+
+Keep the human's legacy contact configuration and immutable source,
+approval, and build evidence. `ops-controller-ha --legacy-recovery` permits
+only the existing status, bootstrap, synchronization, fencing/promotion,
+demotion, sanitization, and reseeding procedures. It cannot resolve a normal
+active dispatch or run a workload command. This explicit recovery mode uses
+the saved contacts when source custody is unavailable and retains the
+existing fencing prerequisite for promotion. It is not invoked by migration.
+Restore controller source custody and reconcile private desired identity
+through the human workflow before normal dispatch resumes. Do not repoint
+the active source to an old record. A source rollback or identity change
+requires a separately designed signed action; neither is part of this
+executor.
+
+Promote one reviewed sealed engine, then install matching active-controller
+and MacBook tools before adoption. The standby needs its existing guard;
+source adoption does not give it private credentials or change its installed
+engine. Verify the installed resolver in Toolchain v4. Before promotion,
+exercise missing-source recovery and reconstruction from saved controller
+contacts and immutable evidence in isolated tests. Historical interfaces
+remain available with explicit recovery intent where required.
+
+### Acceptance gates
+
+Tests cover both planner targets, exact scope coverage and source assignment,
+v2-to-v3 publication, v3 preservation, and older-plan/toolchain refusal. Test
+both resolvers, explicit dispatch, wrong contact hints, changed identities,
+missing source/markers, two active roles, unreachable standby, partial or
+unknown replies, expired signatures, consumed nonces, concurrent publication,
+and failure before publication or receipt storage. Use real temporary files
+under umask 077 for signed execution, archive modes, readable runtime copies,
+receipts, and cleanup. Command assertions permit verification only. Run the
+Python suite, sealed Go tests/build, shell checks, and controller Ansible
+syntax checks for the exact implementation commit.
+
+After promotion, save private-file, both HA-marker, and persistent-router
+baselines. Use fresh unsigned preparation, signed adoption, fresh signed
+verification, and exact replay refusal. Verify automatic and explicit
+resolution from the controller and MacBook. Require one identity-source
+transition, unchanged identities and roles, unchanged settings, and final
+Plans with the identity group, both connectivity groups, and Tailnet
+verification-only. Save controller-held evidence, commit and push acceptance
+documentation, and continue the remaining migration queue. Do not deploy a
+final documentation-only commit automatically.
 
 ## 12. Implementation status and design work queue
 
@@ -1116,18 +1164,20 @@ complete.
 | First box connectivity migration | `live-verified` | On 2026-09-06, the human promoted the corrected sealed engine and approved one verification-only request with Touch ID. Authenticated k001 router configuration, service, route, firewall, and reachability checks passed. The controller stored a `verified` execution receipt, and the MacBook helper confirmed refusal of the exact replay because its nonce was already used. A final Plan kept k001 and Tailnet verification-only and k002 on the old registry. All setting-source and desired-state hashes remained unchanged. Live rollback and re-adoption remain unverified and deferred. |
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
-| Controller identity sources | `proposed` | Section 11.4 recommends the exact five-scope current controller identity group from the final connectivity Plan. Select the scope and close its resolver, versioning, bootstrap, and recovery design before implementation. |
+| Controller identity sources | `decided` | Section 11.4 defines source-only adoption of the current controller identity group, Plan v5, Authority State v3, the resolver, recovery, and signed acceptance. Implementation and verification are in progress. |
 | Migration and legacy removal | `proposed` | Connectivity adoption does not authorize another setting group or legacy removal. |
 
 ### Current work queue
 
-1. Complete the next scope decision using the
-   [controller identity proposal](#114-next-migration-proposal-controller-identity-sources)
-   in section 11.4. It recommends source-only adoption of the current active
-   and standby identities. Close its design gates and record `decided` before
-   implementation. The final Plan's other legacy-owned settings remain queued.
-2. Keep legacy removal `proposed` until its separate recovery, rollback,
-   observation, and explicit approval gates are complete.
+1. Implement and live-verify the [controller identity source decision](#114-controller-identity-source-migration).
+2. Continue the remaining application, box-setting, and execution-inventory
+   migration work from each final Plan. The human authorized continued scope
+   development without another scope-selection question. Record bounded
+   designs, preserve data and recovery, and use the existing exact signed
+   promotion and live-action workflows.
+3. Keep legacy removal `proposed` until its recovery, rollback, observation,
+   and exact live-action gates are complete. Continued migration work does
+   not by itself authorize deletion of retained data or recovery evidence.
 
 Deferred work: direct-IPv6 repair and live first-box rollback and re-adoption
 testing. Neither blocks continued development. Keep their recovery code,

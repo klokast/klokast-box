@@ -44,7 +44,7 @@ func TestBuildProducesStableDeployablePlanWithRetainedAuthority(t *testing.T) {
 	if !first.Valid || !first.Compatible || !first.SubstrateHealthy || !first.Deployable || !first.AuthorityReady {
 		t.Fatalf("unexpected plan gates: %#v", first)
 	}
-	if first.SchemaVersion != 4 || first.Kind != "klokast.plan.v4" || first.SelectedBox != "boxb" {
+	if first.SchemaVersion != 5 || first.Kind != "klokast.plan.v5" || first.SelectedBox != "boxb" {
 		t.Fatalf("Plan v4 did not select the unique non-controller box: %#v", first)
 	}
 	selectedGroup := actionGroup(first, authoritystate.BoxConnectivityPrefix+"boxb")
@@ -323,7 +323,7 @@ func writeAuthorityState(t *testing.T, directory string) string {
 func writeToolchainReceipt(t *testing.T, directory string) string {
 	t.Helper()
 	receipt := toolchain.Receipt{
-		SchemaVersion: 3, Kind: toolchain.Kind, EngineCommit: testCommit,
+		SchemaVersion: 4, Kind: toolchain.Kind, EngineCommit: testCommit,
 		PublicCheckoutClean: true, PublicCheckoutCommit: testCommit,
 		Components: []toolchain.Component{},
 	}

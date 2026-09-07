@@ -87,7 +87,7 @@ class ControllerToolchainReceiptTest(unittest.TestCase):
         self.assertEqual(
             [name for name, _source, _installed in self.mod.COMPONENTS] + ["sealed_engine"],
             [
-                "controller_guard", "freebox_broker", "ksa_apply",
+                "controller_guard", "controller_ha", "freebox_broker", "ksa_apply",
                 "ops_network_helper", "platform_resources",
                 "policy_mutation_helper", "policy_renderer", "policy_template",
                 "router_network_helper",

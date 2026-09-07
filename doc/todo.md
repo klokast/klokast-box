@@ -2,6 +2,30 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Controller identity migration implementation
+
+The human authorized continued migration across scopes without another
+scope-selection question. The
+[controller identity decision](upstream-instance-target-architecture.md#114-controller-identity-source-migration)
+now closes the resolver, source versions, signed action, and explicit recovery
+path. Its [runbook](../klokast-dev/runbooks/49-controller-identity-source.md)
+owns installation and acceptance. The earlier review below is historical.
+
+The full Python suite under umask 077 exposed an existing Plan test fixture
+that requested directory mode 0750 in `mkdir` but did not restore bits masked
+by the caller's umask. The fixture now explicitly sets its intended mode.
+Production evidence permissions remain strict. Controller identity tests use
+real signatures and temporary files under umask 077, including readable
+runtime configurations, protected archives, consumed nonces, source
+publication, and receipt failure. Read-only live inspection found the
+expected configured active and standby roles.
+
+The next source adoption still requires exact sealed validation, engine
+promotion, matching tools, and signed live acceptance. No source or role
+changed during implementation. The
+[current queue](upstream-instance-target-architecture.md#current-work-queue)
+owns continued migration work.
+
 # 2026-09-07 - Next migration review found controller source dependencies
 
 The final connectivity Plan has four matched controller identity fields and
@@ -24,7 +48,7 @@ non-login shell did not include its directory in `PATH`. Using the checked-in
 absolute path, `/usr/local/sbin/klokast-controller-guard`, completed the
 read-only check. No Platform setting changed.
 
-The [next-scope proposal](upstream-instance-target-architecture.md#114-next-migration-proposal-controller-identity-sources)
+The [next-scope proposal](upstream-instance-target-architecture.md#114-controller-identity-source-migration)
 records the recommended five fields and the remaining consumer, bootstrap,
 recovery, and acceptance design gates. The
 [current work queue](upstream-instance-target-architecture.md#current-work-queue)

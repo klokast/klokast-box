@@ -329,7 +329,7 @@ airunner identities, app placement, features, and retained data. It sorts maps
 and sets before it creates the projection hash. It preserves the `airunners`
 order, and a priority change changes the projection hash.
 
-Plan v4 emits `control_plane.airunners` as the same ordered string array. It
+Plan v5 emits `control_plane.airunners` as the same ordered string array. It
 does not emit airunner kinds, placement fields, or derived airunner objects.
 
 The compatibility planner compares this projection with the current private
@@ -338,12 +338,15 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 `unsupported`. A disabled legacy app that is omitted from `apps` resolves to
 absent. An enabled legacy app must have explicit present intent.
 
-With fresh Observation v1, Instance Source Receipt v1, Authority State v2,
-and Controller Toolchain v3 evidence, `plan` emits a hashed Plan v4 artifact.
+With fresh Observation v1, Instance Source Receipt v1, Authority State v2 or
+v3, and Controller Toolchain v4 evidence, `plan` emits a hashed Plan v5 artifact.
 The deployment planner accepts `--connectivity-target non-controller|active-controller`.
 The default is `non-controller`; the private instance supplies the selected box.
-The [target architecture](upstream-instance-target-architecture.md#113-controller-box-connectivity-source-migration)
-defines the Plan v4 source-action rules. Instance Specification v1 is unchanged.
+The planner also accepts `--migration-target connectivity|controller-identity`,
+with `connectivity` as the default. Controller identity adoption requires
+explicit selection and a complete current active/standby pair. The
+[target architecture](upstream-instance-target-architecture.md#114-controller-identity-source-migration)
+defines the Plan v5 source-action rules. Instance Specification v1 is unchanged.
 It does not apply changes. Plan v1 remains read-only historical evidence and
 cannot authorize Apply. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy

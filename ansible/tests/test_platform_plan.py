@@ -87,6 +87,7 @@ class PlatformPlanTest(unittest.TestCase):
             digest = "b" * 64
             directory = root / commit
             directory.mkdir(mode=0o750)
+            directory.chmod(0o750)
             receipt = directory / f"{digest}.json"
             receipt.write_text(json.dumps({
                 "commit": commit,

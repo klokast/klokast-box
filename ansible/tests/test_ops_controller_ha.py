@@ -118,6 +118,7 @@ class OpsControllerHaTest(unittest.TestCase):
                 str(HA),
                 "--config",
                 str(EXAMPLE_CONFIG),
+                "--legacy-recovery",
                 "bootstrap-standby",
                 "--box",
                 "boxa",

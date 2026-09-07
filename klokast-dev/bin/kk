@@ -36,11 +36,7 @@ quote_args() {
 
 resolve_controller() {
   local controller="$1"
-  if [ "$controller" = "auto" ]; then
-    "$REPO_ROOT/ansible/bin/ops-controller-ha" resolve-active
-  else
-    printf '%s\n' "$controller"
-  fi
+  "$REPO_ROOT/ansible/bin/ops-controller-ha" resolve-active --controller "$controller"
 }
 
 die() {
