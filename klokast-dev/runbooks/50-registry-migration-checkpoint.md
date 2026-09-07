@@ -63,11 +63,38 @@ receipts and a fresh compatibility report on the controller.
 
 ## Continue the grouped adoption
 
-With the checkpoint active, implement and promote the source-aware consumer
-engine. The publication helper can then validate new fields with both sealed
-engines. Keep the source executor, consumer, inventory, and recovery gates in
-the target document. They are not supplied by this checkpoint.
+With the checkpoint active, continue the
+[registry source runbook](51-registry-source-adoption.md). Its consumer engine
+keeps both sealed-engine checks for private publication. Keep the source
+executor, consumer, inventory, and recovery gates in the target document.
+They are not supplied by this checkpoint.
 
 Do not remove legacy files or restart applications. Adoption and subsequent
 verification require fresh signed actions. Keep data retention and the
 deferred IPv6 and rollback interfaces unchanged.
+
+## Acceptance record: 2026-09-07
+
+Status: `live-verified`. Active engine:
+`e12b42620a31e2c708ac5fdfdefcb693f3dc6f75`. Private commit:
+`de8e252cca751319582b877ab6805d0387c90ee4`.
+Sealed build operation: `8797cc91f31b`.
+
+The controller-held evidence directory is:
+`/home/smith/private/klokast/registry-checkpoint-acceptance/e12b42620a31e2c708ac5fdfdefcb693f3dc6f75`.
+Its `checkpoint-acceptance-result.json` records activation and toolchain
+receipt references. `candidate-verification-result.json` records lossless
+conversion of both boxes and all eight disabled apps, equal full and box-only
+compiler outputs, equal router variables, and explicit deployment refusal.
+The current active instance passes sealed validation and compatibility.
+
+The only private changes were the two schema URLs and lock engine commit.
+All other private file bytes, modes, and owners remained unchanged. Authority
+State hash `0b34c848ef2008f74259593ce7c869473a16cfa1e4f130b47eb49b556c0d8005`
+and the active/standby pair remained unchanged. Normal controller resolution
+passed after activation. Toolchain receipt hash:
+`19f78b17666b80cbfea8a5f528cfbd562433079d5fcfbf15f1b1e5a5e1e66d0a`.
+
+Activation receipt:
+`/var/lib/klokast/engine-activations/de8e252cca751319582b877ab6805d0387c90ee4/63114ac1603816a5a0bd7e510f0f5980536addd0207e5c017953611b2ff6d0fe.json`.
+Continue the registry source-adoption decision in the target document.

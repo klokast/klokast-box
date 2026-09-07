@@ -182,8 +182,15 @@ func compareControllerHA(projection Projection, legacy compatibilityDocument) Co
 		findings = append(findings, Finding{Path: "controller_ha." + path, Class: class, Code: code, Authority: authority, Message: message})
 	}
 	add("schema_version", "matched", "controller.schema", "the legacy controller set uses the supported compatibility schema")
+	for field, wanted := range map[string]string{"remote_user": "smith", "repo_dir": "~/src/klokast/klokast-box"} {
+		class := "matched"
+		if legacy.root[field] != wanted {
+			class = "conflict"
+		}
+		add(field, class, "controller.engine-policy", "the controller account and repository path must match fixed engine policy")
+	}
 	for _, field := range sortedKeys(legacy.root) {
-		if field != "schema_version" && field != "controllers" {
+		if field != "schema_version" && field != "controllers" && field != "remote_user" && field != "repo_dir" {
 			add(field, "compatibility_only", "controller.field", "the legacy controller setting remains under legacy controller HA authority")
 		}
 	}

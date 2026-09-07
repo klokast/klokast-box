@@ -197,6 +197,7 @@ grant_path="\${grant_dir}/grant.json"
 cd "\$repo_dir"
 git pull --ff-only
 git status --short --branch
+platform-registry assert-writable
 
 python3 - "\$registry_path" "\$active_master" "\$passive_backup" <<'PY'
 import sys
@@ -208,7 +209,9 @@ path = Path(sys.argv[1])
 active = sys.argv[2]
 passive = sys.argv[3]
 if path.exists():
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    import json
+    import subprocess
+    data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
 else:
     data = {"schema_version": 1, "apps": {}}
 if data.get("schema_version") != 1:

@@ -11,7 +11,8 @@ import (
 	"klokast-box/internal/strictjson"
 )
 
-const Kind = "klokast.controller-toolchain.v4"
+const Kind = "klokast.controller-toolchain.v5"
+const KindV4 = "klokast.controller-toolchain.v4"
 const KindV3 = "klokast.controller-toolchain.v3"
 
 var Components = []string{
@@ -20,6 +21,7 @@ var Components = []string{
 	"freebox_broker",
 	"ksa_apply",
 	"ops_network_helper",
+	"platform_registry",
 	"platform_resources",
 	"policy_mutation_helper",
 	"policy_renderer",
@@ -70,12 +72,18 @@ func Load(path string, engineCommit string) (Receipt, error) {
 }
 
 func Validate(receipt Receipt, engineCommit string) error {
-	if !((receipt.SchemaVersion == 4 && receipt.Kind == Kind) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
+	if !((receipt.SchemaVersion == 5 && receipt.Kind == Kind) || (receipt.SchemaVersion == 4 && receipt.Kind == KindV4) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
 		return fmt.Errorf("controller toolchain receipt identity does not match the selected clean engine commit")
 	}
-	components := Components
-	if receipt.SchemaVersion == 3 {
-		components = append(append([]string{}, Components[:1]...), Components[2:]...)
+	components := []string{}
+	for _, name := range Components {
+		if receipt.SchemaVersion < 5 && name == "platform_registry" {
+			continue
+		}
+		if receipt.SchemaVersion == 3 && name == "controller_ha" {
+			continue
+		}
+		components = append(components, name)
 	}
 	if len(receipt.Components) != len(components) {
 		return fmt.Errorf("controller toolchain receipt does not contain the closed component set")

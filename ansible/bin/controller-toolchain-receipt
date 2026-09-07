@@ -26,6 +26,7 @@ COMPONENTS = [
     ("freebox_broker", REPO_ROOT / "klokast-ops/secret-authority/bin/freebox-ipv6-broker", Path("/usr/local/sbin/freebox-ipv6-broker")),
     ("ksa_apply", REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
     ("ops_network_helper", REPO_ROOT / "ansible/bin/overlay-ipv6-ops", Path("/usr/local/sbin/overlay-ipv6-ops")),
+    ("platform_registry", REPO_ROOT / "ansible/bin/platform-registry", Path("/usr/local/sbin/platform-registry")),
     ("platform_resources", REPO_ROOT / "ansible/bin/platform-resources", Path("/usr/local/sbin/platform-resources")),
     ("policy_mutation_helper", REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", Path("/usr/local/libexec/klokast/ts-policy-mutate-internal")),
     ("policy_renderer", REPO_ROOT / "ansible/bin/render-tailscale-policy", Path("/usr/local/sbin/render-tailscale-policy")),
@@ -130,8 +131,8 @@ def build_receipt(build_dir):
         "installed_sha256": binary_digest,
     })
     receipt = {
-        "schema_version": 4,
-        "kind": "klokast.controller-toolchain.v4",
+        "schema_version": 5,
+        "kind": "klokast.controller-toolchain.v5",
         "engine_commit": commit,
         "public_checkout_clean": True,
         "public_checkout_commit": commit,

@@ -102,20 +102,23 @@ def require_active_controller():
         die(f"controller is not active: {detail}")
 
 
+def assert_registry_writable():
+    run(["platform-registry", "assert-writable"], stdout=subprocess.PIPE)
+
+
 def load_registry(path):
-    if not path.exists():
-        die(f"platform resources registry does not exist: {path}")
-    with path.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        die(f"registry root must be a mapping: {path}")
-    apps = data.get("apps")
-    if not isinstance(apps, dict):
-        die("registry apps must be a mapping")
-    return data
+    result = run(["platform-registry", "read", "--registry", path, "--json"], stdout=subprocess.PIPE)
+    try:
+        value = json.loads(result.stdout)
+        if value.get("kind") != "klokast.registry-read.v1" or not isinstance(value.get("registry"), dict):
+            die("verified registry reader returned an unknown contract")
+        return value["registry"]
+    except (ValueError, TypeError) as error:
+        die("verified registry reader returned invalid JSON: " + str(error))
 
 
 def save_registry(path, data):
+    assert_registry_writable()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = path.with_name(f"{path.name}.{stamp}.bak")
     shutil.copy2(path, backup)
@@ -283,6 +286,7 @@ def ensure_removal_supported(app):
 
 def mutate_runtime_state(args, state):
     require_active_controller()
+    assert_registry_writable()
     registry = load_registry(args.registry)
     entry = app_entry(registry, args.app)
     ensure_supported(args.app)
@@ -399,6 +403,7 @@ def cmd_restart(args):
 
 def remove_one(args, wipe):
     require_active_controller()
+    assert_registry_writable()
     ensure_removal_supported(args.app)
     registry = load_registry(args.registry)
     entry = app_entry(registry, args.app)

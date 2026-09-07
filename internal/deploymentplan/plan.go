@@ -1,4 +1,4 @@
-// Package deploymentplan creates a deterministic, read-only Plan v5 artifact.
+// Package deploymentplan creates a deterministic, read-only Plan v6 artifact.
 package deploymentplan
 
 import (
@@ -140,8 +140,8 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	if options.MigrationTarget == "" {
 		options.MigrationTarget = "connectivity"
 	}
-	if options.MigrationTarget != "connectivity" && options.MigrationTarget != "controller-identity" {
-		return Artifact{}, fmt.Errorf("migration target must be connectivity or controller-identity")
+	if options.MigrationTarget != "connectivity" && options.MigrationTarget != "controller-identity" && options.MigrationTarget != "registry" {
+		return Artifact{}, fmt.Errorf("migration target must be connectivity, controller-identity, or registry")
 	}
 	if options.ConnectivityTarget == "" {
 		options.ConnectivityTarget = "non-controller"
@@ -152,8 +152,8 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	artifact := Artifact{
 		MigrationTarget:    options.MigrationTarget,
 		ConnectivityTarget: options.ConnectivityTarget,
-		SchemaVersion:      5,
-		Kind:               "klokast.plan.v5",
+		SchemaVersion:      6,
+		Kind:               "klokast.plan.v6",
 		HealthScope:        "standard_substrate_v1",
 		Engine:             planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
 		Inputs:             []planner.InputDigest{}, CompatibilityInputs: []planner.CompatibilityInput{},
@@ -182,8 +182,8 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
-	if toolchainReceipt.SchemaVersion != 4 {
-		return Artifact{}, fmt.Errorf("Plan v5 requires Controller Toolchain v4")
+	if toolchainReceipt.SchemaVersion != 5 {
+		return Artifact{}, fmt.Errorf("Plan v6 requires Controller Toolchain v5")
 	}
 	artifact.AuthorityState = AuthorityStateReference{
 		AuthorityStateSHA256: state.AuthorityStateSHA256,
@@ -265,11 +265,19 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			groupScopes[scope] = groupID
 		}
 	}
-	identityGrouped := options.MigrationTarget == "controller-identity" || state.Kind == authoritystate.KindV3
+	identityGrouped := options.MigrationTarget == "controller-identity" || state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4
 	if identityGrouped {
 		for _, scope := range authoritystate.ControllerIdentityScopes {
 			groupScopes[scope] = authoritystate.ControllerIdentityGroupID
 		}
+	}
+	registryGrouped := artifact.Projection.Registry != nil
+	if registryGrouped {
+		for _, scope := range artifact.Projection.Registry.Scopes {
+			groupScopes[scope] = authoritystate.RegistryGroupID
+		}
+	} else if options.MigrationTarget == "registry" || state.Kind == authoritystate.KindV4 {
+		artifact.Refusals = append(artifact.Refusals, refusal("registry.incomplete", "registry", "registry source requires a complete instance-derived registry"))
 	}
 	for _, finding := range artifact.Compatibility.Findings {
 		if _, grouped := groupScopes[finding.Path]; grouped {
@@ -278,6 +286,14 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		}
 		switch finding.Class {
 		case "matched", "derived":
+			if finding.Code == "registry.schema" || finding.Code == "deployment.schema" || finding.Code == "controller.schema" || finding.Code == "controller.engine-policy" {
+				artifact.Actions = append(artifact.Actions, Action{
+					ID: actionID("verify_engine_policy", finding.ID), FindingID: finding.ID, Scope: finding.Path,
+					Operation: "verify_engine_policy", AuthorityBefore: "engine_policy", AuthorityAfter: "engine_policy", Executor: "none",
+					Preconditions: []string{"exact_plan_v6_revalidated"}, Rollback: Rollback{Strategy: "no_mutation", Authority: "engine_policy"},
+				})
+				continue
+			}
 			before := sourceAuthority(finding)
 			if finding.Code == "controller.instance-specification" {
 				before = "controller_ha_markers"
@@ -307,8 +323,8 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		ID:           authoritystate.TailnetGroupID,
 		Operation:    "verify_instance_authority",
 		Scopes:       append([]string{}, authoritystate.TailnetScopes...),
-		Executor:     "tailnet_policy_inputs_v1",
-		RollbackType: "tailnet_policy_preimage_v1",
+		Executor:     "none",
+		RollbackType: "no_mutation",
 	})
 	legacyDigest := digests[authoritystate.LegacyAuthority]
 	for _, scope := range authoritystate.TailnetScopes {
@@ -324,9 +340,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			ID: actionID("verify_instance_authority", finding.ID), FindingID: finding.ID,
 			Operation: "verify_instance_authority", Scope: scope,
 			AuthorityBefore: authoritystate.InstanceAuthority,
-			AuthorityAfter:  authoritystate.InstanceAuthority, Executor: "tailnet_policy_inputs_v1",
-			Preconditions: []string{"active_controller_fenced", "exact_plan_v5_revalidated", "byte_equal_policy", "tailnet_policy_preimage_prepared"},
-			Rollback:      Rollback{Strategy: "tailnet_policy_preimage_v1", Authority: authoritystate.LegacyAuthority, SourceSHA256: legacyDigest},
+			AuthorityAfter:  authoritystate.InstanceAuthority, Executor: "none",
+			Preconditions: []string{"active_controller_fenced", "exact_plan_v6_revalidated"},
+			Rollback:      Rollback{Strategy: "no_mutation", Authority: authoritystate.InstanceAuthority},
 		})
 	}
 	artifact.SelectedBox = selectNonControllerBox(artifact.Projection)
@@ -360,13 +376,13 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			operation = "verify_instance_authority"
 		}
 		rollbackType := "box_connectivity_registry_v1"
-		preconditions := []string{"active_controller_fenced", "exact_plan_v5_revalidated", "effective_registry_compiles_equal", "one_router_rollback_prepared"}
+		preconditions := []string{"active_controller_fenced", "exact_plan_v6_revalidated", "effective_registry_compiles_equal", "one_router_rollback_prepared"}
 		if box.ID == artifact.SelectedBox && options.MigrationTarget == "connectivity" {
 			operation, executor = "adopt_instance_specification", "box_connectivity_v1"
 			if options.ConnectivityTarget == "active-controller" {
 				executor = "controller_box_connectivity_source_v1"
 				rollbackType = "no_mutation"
-				preconditions = []string{"active_controller_fenced", "exact_plan_v5_revalidated", "effective_registry_compiles_equal", "router_verified_before_source_publication"}
+				preconditions = []string{"active_controller_fenced", "exact_plan_v6_revalidated", "effective_registry_compiles_equal", "router_verified_before_source_publication"}
 			}
 			if source == authoritystate.InstanceAuthority {
 				operation = "verify_instance_authority"
@@ -409,6 +425,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	}
 	if identityGrouped {
 		addControllerIdentityGroup(&artifact, state, groupFindings, digests)
+	}
+	if registryGrouped {
+		addRegistryGroup(&artifact, state, groupFindings)
 	}
 	for _, finding := range health.Findings {
 		artifact.Refusals = append(artifact.Refusals, refusal("observation."+finding.Code, finding.Path, finding.Message))
@@ -535,8 +554,14 @@ func authorityGroupsMatchProjection(state authoritystate.StateV2, projection *pl
 	for _, box := range projection.Boxes {
 		expected[authoritystate.BoxConnectivityPrefix+box.ID] = authoritystate.BoxConnectivityScopes(box.ID)
 	}
-	if state.Kind == authoritystate.KindV3 {
+	if state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 {
 		expected[authoritystate.ControllerIdentityGroupID] = authoritystate.ControllerIdentityScopes
+	}
+	if state.Kind == authoritystate.KindV4 {
+		if projection.Registry == nil {
+			return false
+		}
+		expected[authoritystate.RegistryGroupID] = projection.Registry.Scopes
 	}
 	if len(state.SettingGroups) != len(expected) {
 		return false

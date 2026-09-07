@@ -70,18 +70,19 @@ def require_active_controller():
         die(f"controller is not active: {(result.stderr or result.stdout).strip()}")
 
 
+def assert_registry_writable():
+    run(["platform-registry", "assert-writable"], capture=True)
+
+
 def load_registry(path):
-    if not path.is_file():
-        die(f"platform resources registry does not exist: {path}")
-    with path.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        die(f"registry root must be a mapping: {path}")
-    if data.get("schema_version") != 1:
-        die(f"registry must use schema_version: 1: {path}")
-    if not isinstance(data.get("apps"), dict):
-        die("registry apps must be a mapping")
-    return data
+    result = run(["platform-registry", "read", "--registry", path, "--json"], capture=True)
+    try:
+        value = json.loads(result.stdout)
+        if value.get("kind") != "klokast.registry-read.v1" or not isinstance(value.get("registry"), dict):
+            die("verified registry reader returned an unknown contract")
+        return value["registry"]
+    except (ValueError, TypeError) as error:
+        die("verified registry reader returned invalid JSON: " + str(error))
 
 
 def write_candidate(path, data):
@@ -93,10 +94,11 @@ def write_candidate(path, data):
 
 
 def save_registry(path, data, *, dry_run=False):
+    assert_registry_writable()
     candidate = write_candidate(path, data)
     try:
         run(
-            [PLATFORM_RESOURCES, "--registry", candidate, "show-box-configs"],
+            [PLATFORM_RESOURCES, "--registry", candidate, "--compatibility-registry", "show-box-configs"],
             capture=True,
         )
         if dry_run:
@@ -172,6 +174,7 @@ def converge(args, operation):
 
 def set_runtime_state(args, state):
     require_active_controller()
+    assert_registry_writable()
     registry = load_registry(args.registry)
     boxes = registry.setdefault("boxes", {})
     if not isinstance(boxes, dict):

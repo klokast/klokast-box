@@ -33,7 +33,7 @@ func addControllerIdentityGroup(artifact *Artifact, state authoritystate.StateV2
 		if scope == "deployment.control_plane.controller" {
 			before, class = "controller_ha_markers", "derived"
 		}
-		if state.Kind == authoritystate.KindV3 {
+		if state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 {
 			before = authoritystate.InstanceAuthority
 		}
 		if !ok || finding.Class != class || digests["legacy_controller_ha"] == "" {
@@ -43,7 +43,7 @@ func addControllerIdentityGroup(artifact *Artifact, state authoritystate.StateV2
 		artifact.Actions = append(artifact.Actions, Action{
 			ID: actionID(operation, finding.ID), FindingID: finding.ID, Scope: scope, Operation: operation,
 			AuthorityBefore: before, AuthorityAfter: authoritystate.InstanceAuthority, Executor: executor,
-			Preconditions: []string{"configured_controller_pair", "exact_plan_v5_revalidated", "equal_controller_configuration", "roles_verified_before_source_publication"},
+			Preconditions: []string{"configured_controller_pair", "exact_plan_v6_revalidated", "equal_controller_configuration", "roles_verified_before_source_publication"},
 			Rollback:      Rollback{Strategy: "no_mutation", Authority: before},
 		})
 	}

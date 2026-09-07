@@ -619,7 +619,7 @@ class PlatformApplyTest(unittest.TestCase):
                 },
             },
             "group": {"operation": "verify_instance_authority", "box": "boxb"},
-            "state": {"authority_state_sha256": intent["authority_state_sha256"]},
+            "state": {"kind": self.mod.KIND_AUTHORITY_V2, "authority_state_sha256": intent["authority_state_sha256"]},
             "binary_sha256": intent["binary_sha256"],
             "builder_receipt_sha256": intent["builder_receipt_sha256"],
         }
@@ -859,7 +859,7 @@ class PlatformApplyTest(unittest.TestCase):
         }
         current = {
             "plan": {"plan_sha256": "f" * 64},
-            "state": {"authority_state_sha256": intent["authority_state_sha256"]},
+            "state": {"kind": self.mod.KIND_AUTHORITY_V2, "authority_state_sha256": intent["authority_state_sha256"]},
             "group": {
                 "box": "boxb", "id": self.mod.BOX_GROUP_PREFIX + "boxb",
                 "scopes": self.mod.box_scopes("boxb"), "executor": self.mod.BOX_EXECUTOR,
@@ -938,7 +938,7 @@ class PlatformApplyTest(unittest.TestCase):
                             "plan_sha256": intent["plan_sha256"],
                             "projection": {"tailnet": {"magicdns_suffix": "example.ts.net"}},
                         },
-                        "state": {"authority_state_sha256": intent["authority_state_sha256"]},
+                        "state": {"kind": self.mod.KIND_AUTHORITY_V2, "authority_state_sha256": intent["authority_state_sha256"]},
                         "group": {
                             "box": intent["selected_box"], "id": intent["action_group_id"],
                             "scopes": intent["action_set"], "operation": intent["action"], "executor": self.mod.BOX_EXECUTOR,
@@ -1150,7 +1150,7 @@ class PlatformApplyTest(unittest.TestCase):
                     "box": box,
                     "id": group_id,
                 },
-                "state": {"authority_state_sha256": "b" * 64},
+                "state": {"kind": self.mod.KIND_AUTHORITY_V2, "authority_state_sha256": "b" * 64},
                 "old_registry_sha256": old_hash,
                 "effective_registry_sha256": effective_hash,
             }

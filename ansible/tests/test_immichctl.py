@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from registry_fixture import legacy_client
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +93,7 @@ apps:
 
     def run_destroy(self, registry_path, *extra_args):
         env = os.environ.copy()
+        env["PATH"] = legacy_client(registry_path.parent)
         env["HOME"] = str(registry_path.parent)
         env.pop("KLOKAST_PLATFORM_RESOURCES_REGISTRY", None)
         env.pop("KLOKAST_APP_RESOURCES_REGISTRY", None)

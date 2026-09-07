@@ -63,13 +63,14 @@ type InputDigest struct {
 }
 
 type Projection struct {
-	SchemaVersion int          `json:"schema_version"`
-	Engine        Engine       `json:"engine"`
-	Tailnet       Tailnet      `json:"tailnet"`
-	Sites         []Site       `json:"sites"`
-	Boxes         []Box        `json:"boxes"`
-	ControlPlane  ControlPlane `json:"control_plane"`
-	Apps          []App        `json:"apps"`
+	Registry      *RegistryProjection `json:"registry,omitempty"`
+	SchemaVersion int                 `json:"schema_version"`
+	Engine        Engine              `json:"engine"`
+	Tailnet       Tailnet             `json:"tailnet"`
+	Sites         []Site              `json:"sites"`
+	Boxes         []Box               `json:"boxes"`
+	ControlPlane  ControlPlane        `json:"control_plane"`
+	Apps          []App               `json:"apps"`
 }
 
 type Tailnet struct {
@@ -259,15 +260,18 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 		return Result{}, fmt.Errorf("load embedded application manifests: %w", err)
 	}
 	compatibility := compare(snapshot, projection, legacy, manifests)
-	// The schema checkpoint can validate future registry inputs, but this
-	// engine must never authorize actions while its consumers ignore them.
-	for _, box := range projection.Boxes {
-		if snapshot.Instance.Boxes[box.ID].Substrate != nil {
-			compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("boxes."+box.ID+".substrate"))
+	if projection.Registry != nil {
+		compareRenderedRegistry(&compatibility, *projection.Registry, legacy)
+	} else {
+		// A partial extension can never be silently ignored by older consumers.
+		for _, box := range projection.Boxes {
+			if snapshot.Instance.Boxes[box.ID].Substrate != nil {
+				compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("boxes."+box.ID+".substrate"))
+			}
 		}
-	}
-	if snapshot.Instance.InactiveApps != nil {
-		compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("inactive-apps"))
+		if snapshot.Instance.InactiveApps != nil {
+			compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("inactive-apps"))
+		}
 	}
 	compatibility.Inputs = []CompatibilityInput{{Name: "legacy_platform_resources", SHA256: legacy.digest}}
 	if options.CompatibilityDeployment != "" {
@@ -405,6 +409,9 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			resolved.Data = append(resolved.Data, DataBinding{ID: dataID, BoxID: data.Box, RuntimeBox: data.Box, Retention: data.Retention})
 		}
 		result.Apps = append(result.Apps, resolved)
+	}
+	if registry, err := ResolveRegistry(snapshot); err == nil {
+		result.Registry = &registry
 	}
 	return result
 }
@@ -627,7 +634,7 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 
 func registryCheckpointFinding(path string) Finding {
 	return Finding{Path: path, Class: "unsupported", Code: "registry.checkpoint-only",
-		Message: "this engine checks registry settings for rollback compatibility; deploy with the later source-aware consumer engine"}
+		Message: "registry settings are incomplete; source adoption requires both substrates, the inactive-apps map, and disabled apps only"}
 }
 
 func normalizedLegacyResourceFlags(value any) map[string]any {

@@ -53,20 +53,26 @@ func LoadCurrent(path string) (StateV2, error) {
 }
 
 func rejectV3FieldOnV2(content []byte, state StateV2) error {
-	if state.Kind != KindV2 {
-		return nil
-	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(content, &fields); err != nil {
 		return err
 	}
-	if _, present := fields["controller_identity_adoption"]; present {
+	if _, present := fields["registry_adoption"]; present && state.Kind != KindV4 {
+		return fmt.Errorf("older Authority State cannot contain a v4 registry adoption field, including null")
+	}
+	if _, present := fields["controller_identity_adoption"]; present && state.Kind == KindV2 {
 		return fmt.Errorf("Authority State v2 cannot contain a v3 adoption field, including null")
 	}
 	return nil
 }
 
 func ValidateCurrent(state StateV2) error {
+	if state.Kind == KindV4 {
+		return validateV4(state)
+	}
+	if state.RegistryAdoption != nil {
+		return fmt.Errorf("older Authority State cannot contain registry adoption")
+	}
 	if state.Kind == KindV2 {
 		return ValidateV2(state)
 	}

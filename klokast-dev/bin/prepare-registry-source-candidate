@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Prepare and check a private registry candidate without publication or adoption."""
+
+import argparse
+import copy
+import datetime as dt
+import hashlib
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+PRIVATE = Path("/home/smith/private/klokast")
+INSTANCE = PRIVATE / "instance"
+REGISTRY = PRIVATE / "platform-resources.yml"
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def rename(value, names):
+    return {names.get(key, key): item for key, item in value.items()}
+
+
+def bindings(value, depth, names):
+    if depth == 0: return rename(value, names)
+    return {key: bindings(item, depth - 1, names) for key, item in value.items()}
+
+
+def convert(instance, registry):
+    if set(registry) != {"schema_version", "boxes", "apps"} or registry["schema_version"] != 1 or set(registry["boxes"]) != set(instance["boxes"]):
+        raise ValueError("legacy registry has unknown fields or a different box set")
+    if any(app.get("desired-state") != "absent" for app in instance["apps"].values()):
+        raise ValueError("registry source migration requires disabled apps only")
+    result = copy.deepcopy(instance)
+    for box, old in registry["boxes"].items():
+        if not isinstance(old, dict) or set(old) - {"access", "dom0_bridge_ports", "dhcp_reservations", "shared_guests"}:
+            raise ValueError("legacy box has unmapped registry settings")
+        substrate = {}
+        for name, saved in old.items():
+            if name == "access": continue
+            if name == "dom0_bridge_ports": name = "bridge-ports"
+            elif name == "dhcp_reservations":
+                name = "dhcp-reservations"
+                saved = [rename(item, {"ipv4_address":"ipv4-address"}) for item in saved]
+            elif name == "shared_guests":
+                name = "shared-guests"
+                saved = bindings(saved, 1, {"runtime_state":"runtime-state"})
+            substrate[name] = saved
+        result["boxes"][box]["substrate"] = substrate
+        if "substrate" in instance["boxes"][box] and canonical(instance["boxes"][box]["substrate"]) != canonical(substrate):
+            raise ValueError("existing instance substrate differs from legacy comparison input")
+    inactive = {}
+    for app, old in registry["apps"].items():
+        if not isinstance(old, dict) or old.get("enabled") is not False:
+            raise ValueError("every saved legacy app must be explicitly disabled")
+        value = {}
+        for name, saved in old.items():
+            if name == "enabled": continue
+            if name == "placement": saved = rename(saved, {"active_master":"primary", "passive_backup":"secondary", "builder_box":"builder"})
+            elif name == "runtime_state": name = "runtime-state"
+            elif name == "ingress_mode": name = "ingress-mode"
+            elif name == "app_vms":
+                name = "app-vms"
+                saved = bindings(saved, 2, {"vm_ipv4_address":"vm-ipv4-address"})
+            elif name == "devices": saved = bindings(saved, 2, {"ipv4_address":"ipv4-address"})
+            elif name == "users": saved = [rename(item, {"system_user":"system-user", "tailscale_login":"tailscale-login", "vm_ipv4_address":"vm-ipv4-address"}) for item in saved]
+            elif name == "ephemeral": saved = rename(saved, {"privileged_approval":"privileged-approval", "cleanup_required":"cleanup-required", "expires_at":"expires-at"})
+            elif name not in {"resources", "isolation"}: raise ValueError("legacy app contains an unmapped field")
+            value[name] = saved
+        inactive[app] = value
+    result["inactive-apps"] = inactive
+    if "inactive-apps" in instance and canonical(instance["inactive-apps"]) != canonical(inactive):
+        raise ValueError("existing inactive instance settings differ from legacy comparison input")
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-dir", required=True)
+    args = parser.parse_args(argv)
+    os.umask(0o077)
+    loader = SourceFileLoader("registry_candidate_plan", str(REPO / "ansible/bin/platform-plan"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    checker = importlib.util.module_from_spec(spec)
+    loader.exec_module(checker)
+    output = None
+    try:
+        checker.require_active_controller()
+        build, engine = checker.resolve_build_directory(args.build_dir)
+        receipt, binary = checker.verify_build_directory(build, engine)
+        checker.verify_binary_version(binary, receipt)
+        def git(root, *args):
+            return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+        if git(REPO, "rev-parse", "HEAD") != engine or git(REPO, "status", "--porcelain") or git(REPO, "branch", "--show-current") != "main":
+            raise ValueError("candidate preparation requires the clean reviewed engine checkout")
+        if git(INSTANCE, "status", "--porcelain") or git(INSTANCE, "branch", "--show-current") != "main":
+            raise ValueError("private source must be clean on main")
+        private_commit = git(INSTANCE, "rev-parse", "HEAD")
+        inputs = {name: (INSTANCE / name).read_bytes() for name in ("klokast-instance.json", "klokast.lock.json")}
+        old_content = REGISTRY.read_bytes()
+        old = yaml.safe_load(old_content)
+        instance = json.loads(inputs["klokast-instance.json"])
+        candidate = convert(instance, old)
+        lock = json.loads(inputs["klokast.lock.json"])
+        lock["engine"]["commit"] = engine
+        for value, schema in ((candidate,"klokast-instance-v1"),(lock,"klokast-lock-v1")):
+            value["$schema"] = f"https://raw.githubusercontent.com/klokast/klokast-box/{engine}/schemas/{schema}.schema.json"
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        output = PRIVATE / "registry-source-candidates" / engine / stamp
+        output.mkdir(parents=True, mode=0o700)
+        def checked(command, label):
+            result = subprocess.run([str(v) for v in command], capture_output=True, text=True, check=False)
+            (output / (label + ".stdout")).write_text(result.stdout)
+            (output / (label + ".stderr")).write_text(result.stderr)
+            if result.returncode:
+                raise ValueError("candidate check failed; inspect protected " + label + " logs")
+            return json.loads(result.stdout)
+        with tempfile.TemporaryDirectory(prefix="registry-fixture-", dir=output) as temporary:
+            fixture = Path(temporary)
+            shutil.copytree(INSTANCE, fixture, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+            (fixture / "klokast-instance.json").write_text(canonical(candidate) + "\n")
+            (fixture / "klokast.lock.json").write_text(canonical(lock) + "\n")
+            git(fixture,"init","-q","-b","main")
+            git(fixture,"add","-A")
+            git(fixture,"-c","user.name=Klokast candidate check","-c","user.email=validation@example.invalid","commit","-qm","Temporary registry candidate")
+            rendered = checked([binary,"registry","--instance",fixture,"--json"],"sealed-registry")
+            if rendered.get("valid") is not True or canonical(rendered["projection"]["registry"]) != canonical(old):
+                raise ValueError("sealed registry rendering differs from the complete legacy object")
+            compatibility = checked([binary,"plan","--instance",fixture,
+                "--compatibility-deployment",PRIVATE / "deployment.yml",
+                "--compatibility-registry",REGISTRY,
+                "--compatibility-controller-ha",PRIVATE / "controller-ha.yml","--json"],"sealed-compatibility")
+            if compatibility.get("valid") is not True or compatibility.get("compatible") is not True:
+                raise ValueError("sealed compatibility checks refused the complete candidate")
+            effective = fixture / "effective-registry.yml"
+            effective.write_text(canonical(rendered["projection"]["registry"]) + "\n")
+            compiler = REPO / "ansible/bin/platform-resources"
+            comparisons = {}
+            for command in ("show","show-box-configs"):
+                values = []
+                for name,path in (("old",REGISTRY),("effective",effective)):
+                    value = checked([compiler,"--registry",path,"--compatibility-registry",command],name+"-"+command)
+                    value.pop("registry_path"); value.pop("registry_sha256")
+                    values.append(value)
+                if canonical(values[0]) != canonical(values[1]): raise ValueError("compiler outputs differ outside provenance")
+                comparisons[command] = hashlib.sha256(canonical(values[0]).encode()).hexdigest()
+            for box in sorted(old["boxes"]):
+                values = [checked([compiler,"--registry",path,"--compatibility-registry","--box",box,"show-box-access-vars"],name+"-"+box+"-router-vars") for name,path in (("old",REGISTRY),("effective",effective))]
+                if canonical(values[0]) != canonical(values[1]): raise ValueError("router variables differ")
+                comparisons[box] = hashlib.sha256(canonical(values[0]).encode()).hexdigest()
+        if git(REPO,"rev-parse","HEAD") != engine or git(REPO,"status","--porcelain") or git(INSTANCE,"rev-parse","HEAD") != private_commit or git(INSTANCE,"status","--porcelain") or REGISTRY.read_bytes() != old_content or any((INSTANCE/name).read_bytes() != value for name,value in inputs.items()):
+            raise ValueError("private or legacy inputs changed during candidate preparation")
+        (output / "candidate-instance.json").write_text(canonical(candidate) + "\n")
+        result = {"schema_version":1,"result":"verified-candidate","engine_commit":engine,"private_commit":private_commit,"build_dir":str(build),"directory":str(output),"boxes":len(old["boxes"]),"inactive_apps":len(old["apps"]),"scopes":len(rendered["projection"]["scopes"]),"registry_sha256":rendered["projection"]["registry_sha256"],"candidate_sha256":hashlib.sha256((canonical(candidate)+"\n").encode()).hexdigest(),"comparisons":comparisons,"compatibility_summary":compatibility["compatibility"]["summary"],"published":False}
+        (output / "result.json").write_text(canonical(result) + "\n")
+        print(canonical(result))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, checker.PlanError) as error:
+        print("prepare-registry-source-candidate: " + str(error) + ("; protected evidence: " + str(output) if output else ""), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__": raise SystemExit(main())

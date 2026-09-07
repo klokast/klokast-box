@@ -1196,7 +1196,7 @@ evidence until their separate removal and recovery gates are complete.
 
 ### Compatibility checkpoint
 
-Status: `implemented`. This prerequisite comes before the source executor.
+Status: `live-verified`. This prerequisite comes before the source executor.
 The publication helper checks each candidate with both the active engine and
 its previous sealed engine. The current previous engine rejects new fields.
 Do not remove that check or use a lossy reverse schema conversion. First
@@ -1256,8 +1256,116 @@ remaining design gates are complete.
 
 The [checkpoint runbook](../klokast-dev/runbooks/50-registry-migration-checkpoint.md)
 owns sealed build, private candidate checks, and metadata-only promotion.
-Repository verification passed the Go suite and all 512 Python tests. Sealed
-build and human promotion remain the checkpoint's acceptance gates.
+Repository verification passed the Go suite and all 512 Python tests. The
+corrected engine `e12b426` passed its sealed build, exact private round-trip
+and compiler checks, and metadata-only human promotion. Private commit
+`de8e252` is active. The source record and controller pair stayed unchanged.
+The checkpoint runbook holds the acceptance references.
+
+### Registry source adoption
+
+Status: `implemented`; live acceptance is pending. Adopt the remaining
+registry settings as one atomic group. The
+[registry source runbook](../klokast-dev/runbooks/51-registry-source-adoption.md)
+contains the implementation and acceptance workflow.
+This step uses the existing two-box arrangement, a configured controller pair,
+and disabled applications only. It does not enable an application or change
+retained data. Execution-inventory replacement remains a separate dependency
+in this batch; keep its continuing authority visible until its consumers and
+recovery inputs are replaced. Continued work on it needs no new scope decision.
+
+Use the checkpoint's Instance Specification v1 without another schema change.
+Each box must have a `substrate` object and the instance must have an
+`inactive-apps` map. Keep every legacy app entry, including entries without a
+current manifest. Preserve omitted fields, explicit empty targets, false
+resource selections, saved expiry values, and retained-data declarations.
+The complete old and rendered registry objects must be equal before adoption.
+Unrepresented fields or present apps are refusals, not permission to omit data.
+
+The sealed `klokast registry` renderer emits the effective registry, its exact
+input hashes, and a sorted scope list. The group owns the three substrate
+scopes for each box, every represented inactive-app field including its false
+enabled flag, and declared retained-data scopes. Omitted substrate fields
+still have explicit source ownership and retain existing compiler defaults.
+The private instance determines boxes, apps, and scopes; callers cannot supply
+them. Preserve detailed compatibility findings. A complete renderer replaces
+the checkpoint's deployment refusal only when all fields compare equally.
+
+Plan v6 adds the explicit `--migration-target registry` selector. The default
+remains connectivity. The sole new executor is `registry_source_v1`, with a
+closed `klokast.registry-source-intent.v1` approval. It permits source adoption
+and verification only. All unselected adopted groups report verification
+with executor `none`. The intent binds the exact Plan, current source record,
+controller pair, engine/build, toolchain, private/source/recovery/observation
+inputs, registry scope set, and compiler and target-variable comparisons.
+Older Plans cannot authorize this executor.
+
+Authority State v4 adds the registry group and its original signed adoption
+reference. Preserve the identity adoption reference and all existing groups.
+Validate the closed registry field vocabulary, complete box scope set, and
+app enabled scopes. The planner requires the exact private-instance and source
+scope sets. The root reader and executor also check the original protected
+adoption Plan. Source publication uses the shared local lock and exact prior-state
+check. Keep v2 and v3 readers closed to new fields, including null fields.
+
+Normal reads use the installed `platform-registry` client and the root
+`ksa-apply registry-source-status` action. The latter verifies the active
+controller, adopted-source evidence, clean matching public/private checkouts,
+sealed renderer, and unchanged inputs before returning effective values.
+It accepts no caller path or executable. It does not write source records or
+run configuration commands. The client supplies legacy values before adoption
+and instance values afterward. Failure to verify the selected source must not
+fall back to the old file. Noncanonical registry overrides cannot select
+another source after adoption.
+
+The compiler, mapper, lifecycle reader, and direct app-registry readers use
+this client. Legacy writer entry points call its source guard before any
+write or dependent runtime operation. After adoption they refuse with an
+instruction to publish instance intent through the existing human workflow.
+The source-only migration does not grant app launch, removal, or data-deletion
+authority. An explicit compiler compatibility mode remains available for
+read-only comparison and verification. It must reject apply, grant, and
+other mutations. Historical box mutation/rollback paths remain available for
+their prior source versions; a registry-adopted source requires a new recovery
+design before those paths can change its ownership. Keep the deferred IPv6
+interface and historical artifacts intact.
+
+Classify the three legacy schema-version fields as format evidence and the
+fixed controller account/path as engine policy. Check their actual values.
+Do not emit source-adoption actions for them. The old documents stay as
+explicit comparison and recovery inputs. Toolchain v5 adds the installed
+registry client; it also binds the unchanged existing component set.
+
+Preparation and signed execution use protected archives and readable runtime
+copies. Compare the full compiler output and box-only output, ignoring only
+registry path/hash provenance, and require equal router variables for both
+boxes. Verify both routers with the effective registry and check the
+controller pair. Consume the nonce before execution-time live verification.
+Revalidate all inputs after verification and before publishing one v4 record.
+Never apply router configuration, restart services, repair a gateway, or
+automatically roll back on a verification error. If publication succeeds but
+receipt storage fails, report an incomplete operation; require inspection and
+fresh signed verification. Do not retry the signed request.
+
+Before promotion, test renderer round trips, missing/extra fields, empty
+targets, defaults, retained data, detailed scope coverage, all planner targets,
+old Plan refusal, wrong controllers, changed inputs, expired signatures,
+nonce reuse, concurrent source changes, publication/receipt failures, and
+verification-only command sets. Exercise real temporary files under umask
+077, readable runtime copies, protected archives, receipts, and cleanup.
+Test normal reads and writer refusals after adoption, including registry
+overrides, missing helpers, and corrupt source evidence. Run the Python suite,
+sealed Go tests/build, and affected shell/Ansible syntax checks.
+
+Promote the reviewed consumer engine through the existing Touch ID workflow.
+Then prepare the typed private candidate on the controller and publish it
+through the trusted MacBook helper, retaining both engine checks. Refresh
+source/recovery/observation evidence when the human is ready. Require signed
+adoption, fresh signed verification, exact replay refusal, unchanged source
+groups outside this batch, unchanged private semantic settings, and unchanged
+persistent router configuration. Store a final Plan and the remaining
+execution-inventory authority. Update acceptance documentation without
+automatically deploying its final documentation commit.
 
 ## 12. Implementation status and design work queue
 
@@ -1297,7 +1405,8 @@ complete.
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
-| Registry compatibility checkpoint | `implemented` | Optional typed substrate and inactive-app inputs, semantic checks, explicit deployment refusal, and detailed omitted-app ownership are implemented. The checkpoint must pass its sealed build and metadata-only promotion before it can serve as the consumer engine's rollback checker. |
+| Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
+| Registry source adoption | `implemented` | The grouped renderer, normal readers, writer guards, Plan v6, Authority State v4, Toolchain v5, candidate checker, and signed executor pass repository verification. Sealed build, promotion, private publication, and signed live acceptance are next. Runbook 51 defines the checks. |
 | Remaining registry and inventory migration | `proposed` | Section 11.5 records the combined schema, consumer, retained-data, and inventory dependencies. Continued scope development is authorized; the bounded design is not complete. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 

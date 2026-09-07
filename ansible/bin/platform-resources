@@ -302,6 +302,8 @@ def parse_args():
         required=True,
         help="Deployment platform resource registry YAML.",
     )
+    parser.add_argument("--compatibility-registry", action="store_true",
+                        help="Read an explicit registry only for comparison or verification; mutations are refused.")
     parser.add_argument(
         "--app",
         action="append",
@@ -2646,9 +2648,9 @@ def build_app_resource_cleanup_scope(app_name, node, reason):
     }
 
 
-def compile_registry(registry_path, app_filter):
+def compile_registry(registry_path, app_filter, *, registry_input=None):
     topology = load_topology()
-    registry = load_yaml(registry_path)
+    registry = load_yaml(registry_path) if registry_input is None else registry_input["registry"]
     if registry.get("schema_version") != 1:
         die(f"{registry_path} must use schema_version: 1")
     apps = registry.get("apps") or {}
@@ -2854,8 +2856,8 @@ def compile_registry(registry_path, app_filter):
         "schema_version": 1,
         "compiler": "platform-resources",
         "compiler_version": COMPILER_VERSION,
-        "registry_path": str(registry_path),
-        "registry_sha256": sha256_file(registry_path),
+        "registry_path": str(registry_path) if registry_input is None else registry_input["registry_path"],
+        "registry_sha256": sha256_file(registry_path) if registry_input is None else registry_input["registry_sha256"],
         "apps": compiled_apps,
         "box_configs": effective_box_configs,
         "boxes": sorted(boxes),
@@ -2881,9 +2883,9 @@ def compile_registry(registry_path, app_filter):
     }
 
 
-def compile_box_registry_plan(registry_path):
+def compile_box_registry_plan(registry_path, *, registry_input=None):
     topology = load_topology()
-    registry = load_yaml(registry_path)
+    registry = load_yaml(registry_path) if registry_input is None else registry_input["registry"]
     if registry.get("schema_version") != 1:
         die(f"{registry_path} must use schema_version: 1")
     apps = registry.get("apps") or {}
@@ -2918,8 +2920,8 @@ def compile_box_registry_plan(registry_path):
         "schema_version": 1,
         "compiler": "platform-resources",
         "compiler_version": COMPILER_VERSION,
-        "registry_path": str(registry_path),
-        "registry_sha256": sha256_file(registry_path),
+        "registry_path": str(registry_path) if registry_input is None else registry_input["registry_path"],
+        "registry_sha256": sha256_file(registry_path) if registry_input is None else registry_input["registry_sha256"],
         "apps": {},
         "box_configs": box_configs,
         "boxes": sorted(box_configs),
@@ -3957,10 +3959,26 @@ def requested_apps_present(compiled, app_filter):
         die(f"registry has no app entry for: {', '.join(missing)}")
 
 
+def registry_source_input(args):
+    if args.compatibility_registry:
+        if args.command not in {"lint", "show", "show-box-configs", "show-box-access-vars", "verify", "verify-shared-guests", "verify-box-access"}:
+            die("--compatibility-registry permits comparison and verification only; apply, grant, and output mutations are refused")
+        return None
+    try:
+        result = subprocess.run(["/usr/local/sbin/platform-registry", "read", "--registry", str(Path(args.registry).expanduser()), "--json"], text=True, capture_output=True, check=False)
+        value = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, ValueError) as error:
+        die("verified registry client is unavailable or returned invalid JSON: " + str(error))
+    if not isinstance(value, dict) or set(value) != {"schema_version", "kind", "source", "registry_path", "registry_sha256", "registry"} or value.get("kind") != "klokast.registry-read.v1" or value.get("schema_version") != 1:
+        die("registry source verification failed; use platform-registry on the active controller to inspect the selected source")
+    return value
+
+
 def main():
     args = parse_args()
     assert_command_scope(args)
     registry_path = Path(args.registry)
+    registry_input = registry_source_input(args)
     box_only_commands = {
         "show-box-configs",
         "apply-shared-guests",
@@ -3970,9 +3988,9 @@ def main():
         "verify-box-access",
     }
     compiled = (
-        compile_box_registry_plan(registry_path)
+        compile_box_registry_plan(registry_path, registry_input=registry_input)
         if args.command in box_only_commands
-        else compile_registry(registry_path, args.app)
+        else compile_registry(registry_path, args.app, registry_input=registry_input)
     )
     requested_apps_present(compiled, args.app)
     if args.command == "lint":

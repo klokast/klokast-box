@@ -2181,7 +2181,7 @@ all:
         path = self.write_registry({"schema_version": 1, "apps": {}})
         compile_calls = []
 
-        def fake_compile(registry_path, app_filter):
+        def fake_compile(registry_path, app_filter, **kwargs):
             compile_calls.append((registry_path, list(app_filter)))
             return {"apps": {"immich": {}}}
 
@@ -2192,6 +2192,7 @@ all:
                     "argv",
                     [
                         "platform-resources",
+                        "--compatibility-registry",
                         "--registry",
                         str(path),
                         "--app",

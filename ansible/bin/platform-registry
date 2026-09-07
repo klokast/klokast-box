@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Read the verified registry source or guard a legacy registry writer."""
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+
+REGISTRY = Path("/home/smith/private/klokast/platform-resources.yml")
+INSTANCE = Path("/home/smith/private/klokast/instance/klokast-instance.json")
+HELPER = Path("/usr/local/sbin/ksa-apply")
+MAXIMUM = 16 * 1024 * 1024
+
+
+class RegistryError(Exception):
+    pass
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RegistryError("registry source response contains duplicate fields")
+        result[key] = value
+    return result
+
+
+def source_status():
+    try:
+        result = subprocess.run(["/usr/bin/doas", str(HELPER), "registry-source-status"], text=True, capture_output=True, check=False)
+    except OSError as error:
+        raise RegistryError("registry source helper is unavailable; install the matching controller toolchain") from error
+    if result.returncode != 0:
+        raise RegistryError("registry source verification failed; inspect ksa-apply registry-source-status on the active controller")
+    if len(result.stdout) > MAXIMUM:
+        raise RegistryError("registry source response exceeds its size limit")
+    try:
+        status = json.loads(result.stdout, object_pairs_hook=unique_object)
+    except (TypeError, ValueError) as error:
+        raise RegistryError("registry source response is invalid JSON") from error
+    fields = {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit"}
+    if not isinstance(status, dict) or status.get("schema_version") != 1 or status.get("kind") != "klokast.registry-source-status.v1" or status.get("source") not in {"legacy_platform_resources", "instance_specification_v1"}:
+        raise RegistryError("registry source response has an unknown contract")
+    if status["source"] == "instance_specification_v1": fields.add("rendered")
+    if set(status) != fields:
+        raise RegistryError("registry source response has unknown or missing fields")
+    return status
+
+
+def assert_writable(status):
+    if status["source"] != "legacy_platform_resources":
+        raise RegistryError("the private instance owns registry settings; publish instance intent through the human workflow before a runtime change")
+
+
+def read_registry(path, status):
+    path = Path(path).expanduser().absolute()
+    if status["source"] == "instance_specification_v1":
+        if path != REGISTRY:
+            raise RegistryError("registry overrides cannot replace the adopted private-instance source")
+        try:
+            rendered = status["rendered"]
+            projection = rendered["projection"]
+            registry, digest = projection["registry"], projection["registry_sha256"]
+        except (KeyError, TypeError) as error:
+            raise RegistryError("verified registry response is incomplete") from error
+        if rendered.get("valid") is not True or not isinstance(registry, dict):
+            raise RegistryError("verified registry response has no valid registry")
+        path = INSTANCE
+    else:
+        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= MAXIMUM:
+            raise RegistryError("legacy registry must be one bounded regular file")
+        content = path.read_bytes()
+        try:
+            registry = yaml.safe_load(content)
+        except yaml.YAMLError as error:
+            raise RegistryError("legacy registry is invalid YAML") from error
+        digest = hashlib.sha256(content).hexdigest()
+    if not isinstance(registry, dict) or registry.get("schema_version") != 1:
+        raise RegistryError("registry must use schema_version 1")
+    return {"schema_version": 1, "kind": "klokast.registry-read.v1", "source": status["source"],
+            "registry_path": str(path), "registry_sha256": digest, "registry": registry}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=("read", "assert-writable"))
+    parser.add_argument("--registry", default=str(REGISTRY))
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        status = source_status()
+        if args.operation == "assert-writable":
+            assert_writable(status)
+        else:
+            print(json.dumps(read_registry(args.registry, status), sort_keys=True, ensure_ascii=False))
+    except (RegistryError, OSError) as error:
+        print("platform-registry: " + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

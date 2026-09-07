@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
+import os
+from registry_fixture import legacy_client
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +31,9 @@ class PlatformGuestTest(unittest.TestCase):
         self.registry = Path(self.tmp.name) / "platform-resources.yml"
         self.registry.write_text("schema_version: 1\napps: {}\n", encoding="utf-8")
         self.registry.chmod(0o600)
+        environment = patch.dict(os.environ, {"PATH": legacy_client(self.tmp.name)})
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

@@ -1,0 +1,154 @@
+package deploymentplan
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"klokast-box/internal/authoritystate"
+	"klokast-box/internal/contract"
+	"klokast-box/internal/doctor"
+)
+
+func TestRegistryAdoptionAndFinalPlannerTargets(t *testing.T) {
+	instance := prepareInstance(t)
+	path := filepath.Join(instance, contract.InstancePath)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var desired map[string]any
+	if err := json.Unmarshal(content, &desired); err != nil {
+		t.Fatal(err)
+	}
+	desired["controllers"].(map[string]any)["standby"] = "boxb"
+	for _, box := range desired["boxes"].(map[string]any) {
+		box.(map[string]any)["substrate"] = map[string]any{}
+	}
+	desired["inactive-apps"] = map[string]any{"nextcloud": map[string]any{"placement": map[string]any{"primary": "", "secondary": ""}, "resources": map[string]any{"cloudflare-tunnel-egress": false}}}
+	writeFile(t, instance, contract.InstancePath, string(canonicalTestJSON(t, desired)))
+	runGit(t, instance, "add", contract.InstancePath)
+	runGit(t, instance, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "complete registry")
+	options := compatibilityOptions(t, instance)
+	content, _ = os.ReadFile(options.CompatibilityControllerHA)
+	if err := os.WriteFile(options.CompatibilityControllerHA, append(content, []byte("  - box: boxb\n    hostname: boxb-ops\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	content, _ = os.ReadFile(options.ObservationPath)
+	var observation doctor.Observation
+	if err := json.Unmarshal(content, &observation); err != nil {
+		t.Fatal(err)
+	}
+	observation.TailnetMachines = append(observation.TailnetMachines, doctor.TailnetMachine{Hostname: "boxb-ops", Online: true, Tags: []string{"tag:ops"}})
+	sort.Slice(observation.TailnetMachines, func(i, j int) bool {
+		return observation.TailnetMachines[i].Hostname < observation.TailnetMachines[j].Hostname
+	})
+	for i := range observation.Boxes {
+		box := &observation.Boxes[i]
+		if box.HostnamePrefix == "boxb" {
+			box.RunningGuests = append(box.RunningGuests, "ops")
+			sort.Strings(box.RunningGuests)
+			box.ConfiguredGuests = append(box.ConfiguredGuests, "ops")
+			sort.Strings(box.ConfiguredGuests)
+			box.AutostartGuests = append(box.AutostartGuests, "ops")
+			sort.Strings(box.AutostartGuests)
+		}
+	}
+	value := map[string]any{}
+	if err := json.Unmarshal(canonicalTestJSON(t, observation), &value); err != nil {
+		t.Fatal(err)
+	}
+	delete(value, "generation_sha256")
+	observation.GenerationSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSuffix(string(canonicalTestJSON(t, value)), "\n"))))
+	if err := os.WriteFile(options.ObservationPath, canonicalTestJSON(t, observation), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := authoritystate.LoadV2(options.AuthorityState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.SettingGroups {
+		state.SettingGroups[i].Source = authoritystate.InstanceAuthority
+	}
+	state.Kind, state.SchemaVersion, state.PriorStateKind = authoritystate.KindV3, 3, authoritystate.KindV2
+	state.TransitionID, state.SignedIntentSHA256 = "identity-test-anchor", strings.Repeat("c", 64)
+	state.ControllerIdentityAdoption = &authoritystate.IdentityAdoption{Nonce: state.TransitionID, IntentSHA256: state.SignedIntentSHA256, PlanSHA256: strings.Repeat("d", 64)}
+	state.SettingGroups = append(state.SettingGroups, authoritystate.SettingGroup{ID: authoritystate.ControllerIdentityGroupID, Scopes: authoritystate.ControllerIdentityScopes, Source: authoritystate.InstanceAuthority})
+	sort.Slice(state.SettingGroups, func(i, j int) bool { return state.SettingGroups[i].ID < state.SettingGroups[j].ID })
+	state.AuthorityStateSHA256, _ = authoritystate.HashV2(state)
+	if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, state), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := Build(options, testEngine)
+	if err != nil || before.Deployable {
+		t.Fatalf("implicit registry migration accepted: %v %#v", err, before.Refusals)
+	}
+	options.MigrationTarget = "registry"
+	plan, err := Build(options, testEngine)
+	if err != nil || !plan.Deployable {
+		t.Fatalf("registry adoption failed: %v %#v %#v", err, plan.Refusals, plan.Diagnostics)
+	}
+	group := actionGroup(plan, authoritystate.RegistryGroupID)
+	if group.Executor != "registry_source_v1" || group.Operation != "adopt_instance_specification" || len(group.Scopes) != 9 {
+		t.Fatalf("incomplete registry group: %#v", group)
+	}
+	for _, action := range plan.Actions {
+		if strings.HasSuffix(action.Scope, "schema_version") || action.Scope == "controller_ha.remote_user" || action.Scope == "controller_ha.repo_dir" {
+			if action.Operation != "verify_engine_policy" || action.Executor != "none" {
+				t.Fatalf("metadata gained source adoption: %#v", action)
+			}
+		}
+	}
+	state.Kind, state.SchemaVersion, state.PriorStateKind = authoritystate.KindV4, 4, authoritystate.KindV3
+	state.PriorStateSHA256, state.TransitionID, state.SignedIntentSHA256 = state.AuthorityStateSHA256, "registry-test-anchor", strings.Repeat("e", 64)
+	state.RegistryAdoption = &authoritystate.IdentityAdoption{Nonce: state.TransitionID, IntentSHA256: state.SignedIntentSHA256, PlanSHA256: plan.PlanSHA256}
+	state.SettingGroups = append(state.SettingGroups, authoritystate.SettingGroup{ID: authoritystate.RegistryGroupID, Scopes: group.Scopes, Source: authoritystate.InstanceAuthority})
+	sort.Slice(state.SettingGroups, func(i, j int) bool { return state.SettingGroups[i].ID < state.SettingGroups[j].ID })
+	state.AuthorityStateSHA256, _ = authoritystate.HashV2(state)
+	if err := authoritystate.ValidateCurrent(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, state), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"registry", "connectivity", "controller-identity"} {
+		for _, connectivity := range []string{"non-controller", "active-controller"} {
+			options.MigrationTarget, options.ConnectivityTarget = target, connectivity
+			final, err := Build(options, testEngine)
+			if err != nil || !final.Deployable {
+				t.Fatalf("final %s/%s: %v %#v", target, connectivity, err, final.Refusals)
+			}
+			for _, g := range final.ActionGroups {
+				if g.Operation != "verify_instance_authority" {
+					t.Fatalf("adopted group retained legacy source: %#v", g)
+				}
+			}
+			for _, assignment := range final.Authorities {
+				if assignment.Authority == authoritystate.LegacyRegistrySource && assignment.Disposition == "continuing" {
+					t.Fatalf("adopted registry retained legacy authority: %#v", assignment)
+				}
+			}
+			if final.LegacyRemovalReady {
+				t.Fatal("execution inventory dependency was lost")
+			}
+		}
+	}
+	for _, oldKind := range []string{authoritystate.KindV2, authoritystate.KindV3} {
+		var raw map[string]any
+		if err := json.Unmarshal(canonicalTestJSON(t, state), &raw); err != nil {
+			t.Fatal(err)
+		}
+		raw["kind"], raw["registry_adoption"] = oldKind, nil
+		if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := authoritystate.LoadCurrent(options.AuthorityState); err == nil {
+			t.Fatal("older source accepted null registry adoption")
+		}
+	}
+}

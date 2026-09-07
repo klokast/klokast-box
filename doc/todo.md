@@ -2,6 +2,23 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Registry source adoption must replace normal readers too
+
+A source-record change alone would leave the compiler, lifecycle tools, and
+Immich registry writers using the old YAML file. The grouped implementation
+adds the verified `platform-registry` reader and source guards before legacy
+writes or dependent runtime changes. Explicit compiler compatibility mode is
+read-only. Tests must stub the selected source or select that comparison mode;
+do not add a production fallback when the installed helper is missing.
+
+The signed-file test caught a missing new-intent entry in the shared nonce
+dispatcher. Registry intents now use the same single-use Plan binding as the
+existing signed workflows. Tests cover protected archives, readable runtime
+copies under umask 077, source publication, receipt failure, and exact replay.
+The [registry runbook](../klokast-dev/runbooks/51-registry-source-adoption.md)
+defines the remaining live acceptance. Execution inventory is still a separate
+continuing source; source adoption does not authorize legacy-file removal.
+
 # 2026-09-07 - Registry migration needs a compatible rollback checker
 
 Private publication validates candidates with the active sealed engine and

@@ -160,6 +160,9 @@ kind = value.get("kind")
 if kind == "klokast.authority-conversion-intent.v1":
     if value.get("action") != "convert_authority_state_v1_to_v2":
         raise SystemExit("controller returned an unknown authority conversion")
+elif kind == "klokast.registry-source-intent.v1":
+    if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority"} or value.get("executor") != "registry_source_v1" or value.get("rollback_type") != "no_mutation":
+        raise SystemExit("controller returned an unsupported registry source intent")
 elif kind == "klokast.controller-identity-source-intent.v1":
     if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority"} or value.get("executor") != "controller_identity_source_v1" or value.get("rollback_type") != "no_mutation":
         raise SystemExit("controller returned an unsupported controller identity intent")
@@ -191,7 +194,7 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
-    print("controller_box_source" if value["kind"] in {"klokast.controller-box-connectivity-source-intent.v1", "klokast.controller-identity-source-intent.v1"} else value["action"])
+    print("controller_box_source" if value["kind"] in {"klokast.controller-box-connectivity-source-intent.v1", "klokast.controller-identity-source-intent.v1", "klokast.registry-source-intent.v1"} else value["action"])
 PY
 )"
 

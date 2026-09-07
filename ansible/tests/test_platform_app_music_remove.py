@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import yaml
+from registry_fixture import legacy_client
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,7 @@ class PlatformAppMusicRemoveTest(unittest.TestCase):
 
     def run_cli(self, *arguments):
         environment = os.environ.copy()
+        environment["PATH"] = legacy_client(self.temporary.name)
         environment["KLOKAST_CONTROLLER_GUARD"] = str(Path(self.temporary.name) / "absent-guard")
         environment["KLOKAST_APP_LIFECYCLE_AUDIT"] = str(Path(self.temporary.name) / "audit.jsonl")
         return subprocess.run(

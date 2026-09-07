@@ -880,7 +880,7 @@ def compile_platform_resources_registry(registry: Path, warnings: list[str]) -> 
     result = run_command(
         [str(PLATFORM_RESOURCES), "--registry", str(registry), "show"],
         cwd=REPO_DIR,
-        timeout=30,
+        timeout=120,
     )
     if result.returncode != 0:
         warnings.append(
@@ -890,7 +890,7 @@ def compile_platform_resources_registry(registry: Path, warnings: list[str]) -> 
         result = run_command(
             [str(PLATFORM_RESOURCES), "--registry", str(registry), "show-box-configs"],
             cwd=REPO_DIR,
-            timeout=30,
+            timeout=120,
         )
         if result.returncode != 0:
             warnings.append(

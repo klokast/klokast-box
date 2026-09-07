@@ -167,6 +167,8 @@ boxes:
 	controller := filepath.Join(parent, "controller-ha.yml")
 	if err := os.WriteFile(controller, []byte(`---
 schema_version: 1
+remote_user: smith
+repo_dir: ~/src/klokast/klokast-box
 controllers:
   - box: boxa
     hostname: boxa-ops
@@ -237,7 +239,7 @@ func writeMainAuthorityState(t *testing.T, directory string) string {
 func writeMainToolchainReceipt(t *testing.T, directory string) string {
 	t.Helper()
 	receipt := toolchain.Receipt{
-		SchemaVersion: 4, Kind: toolchain.Kind,
+		SchemaVersion: 5, Kind: toolchain.Kind,
 		EngineCommit: engineCommit, PublicCheckoutCommit: engineCommit,
 		PublicCheckoutClean: true,
 	}

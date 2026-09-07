@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and store one read-only Plan v5 artifact on the active controller."""
+"""Create and store one read-only Plan v6 artifact on the active controller."""
 
 import argparse
 import getpass
@@ -286,7 +286,7 @@ def verify_plan(content):
         plan = json.loads(content)
     except json.JSONDecodeError as error:
         raise PlanError("klokast returned invalid Plan v5 JSON") from error
-    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4"), (5, "klokast.plan.v5")}:
+    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4"), (5, "klokast.plan.v5"), (6, "klokast.plan.v6")}:
         raise PlanError("klokast returned an unsupported plan artifact")
     if not plan.get("valid"):
         raise PlanError("klokast did not produce a valid plan artifact")
@@ -351,7 +351,7 @@ def install_plan(plan, content):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--migration-target", choices=("connectivity", "controller-identity"), default="connectivity")
+    parser.add_argument("--migration-target", choices=("connectivity", "controller-identity", "registry"), default="connectivity")
     parser.add_argument("--connectivity-target", choices=("non-controller", "active-controller"), default="non-controller")
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--instance", required=True)
@@ -388,16 +388,18 @@ def main(argv=None):
             "--controller-toolchain-receipt", toolchain_receipt,
         ]
         # Keep the default usable with a historical sealed engine. New engines
-        # emit Plan v5 and default to the non-controller target.
+        # emit Plan v6 and default to the non-controller target.
         if args.connectivity_target == "active-controller":
             plan_arguments.extend(["--connectivity-target", args.connectivity_target])
         if args.migration_target != "connectivity":
             plan_arguments.extend(["--migration-target", args.migration_target])
         plan, content = create_plan(binary, plan_arguments)
-        if args.migration_target == "controller-identity" and (plan.get("kind") != "klokast.plan.v5" or plan.get("migration_target") != args.migration_target):
+        if args.migration_target == "registry" and (plan.get("kind") != "klokast.plan.v6" or plan.get("migration_target") != "registry"):
+            raise PlanError("registry source requires explicit Plan v6 selection")
+        if args.migration_target == "controller-identity" and (plan.get("kind") not in {"klokast.plan.v5", "klokast.plan.v6"} or plan.get("migration_target") != args.migration_target):
             raise PlanError("controller identity migration requires explicit Plan v5 selection")
         if args.connectivity_target == "active-controller" and (
-            plan.get("kind") not in {"klokast.plan.v4", "klokast.plan.v5"}
+            plan.get("kind") not in {"klokast.plan.v4", "klokast.plan.v5", "klokast.plan.v6"}
             or plan.get("connectivity_target") != args.connectivity_target
             or plan.get("selected_box", "") + "-ops" != status.get("hostname")
         ):

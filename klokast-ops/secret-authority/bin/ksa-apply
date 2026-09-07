@@ -30,6 +30,12 @@ KIND_TOOLCHAIN = "klokast.controller-toolchain.v3"
 KIND_PLAN_V3 = "klokast.plan.v3"
 KIND_PLAN_V4 = "klokast.plan.v4"
 KIND_PLAN_V5 = "klokast.plan.v5"
+KIND_PLAN_V6 = "klokast.plan.v6"
+KIND_AUTHORITY_V4 = "klokast.authority-state.v4"
+KIND_REGISTRY_INTENT = "klokast.registry-source-intent.v1"
+REGISTRY_EXECUTOR = "registry_source_v1"
+REGISTRY_GROUP = "registry-settings-v1"
+PLATFORM_REGISTRY = Path("/usr/local/sbin/platform-registry")
 KIND_AUTHORITY_V3 = "klokast.authority-state.v3"
 KIND_IDENTITY_INTENT = "klokast.controller-identity-source-intent.v1"
 IDENTITY_EXECUTOR = "controller_identity_source_v1"
@@ -407,14 +413,15 @@ def box_scopes(box):
 
 def verify_plan_v3(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
-    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5)}:
+    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5), (KIND_PLAN_V6, 6)}:
         raise ApplyError("box connectivity Apply requires Plan v3 or v4")
     version = plan["schema_version"]
     target = plan.get("connectivity_target", "non-controller")
     if target not in {"non-controller", "active-controller"}:
         raise ApplyError("unknown connectivity target")
-    identity_target = version == 5 and plan.get("migration_target") == "controller-identity"
-    if version == 5 and plan.get("migration_target") not in {"connectivity", "controller-identity"}:
+    identity_target = version >= 5 and plan.get("migration_target") == "controller-identity"
+    registry_target = version == 6 and plan.get("migration_target") == "registry"
+    if version >= 5 and plan.get("migration_target") not in ({"connectivity", "controller-identity", "registry"} if version == 6 else {"connectivity", "controller-identity"}):
         raise ApplyError("unknown migration target")
     controller_target = version >= 4 and target == "active-controller"
     executor = CONTROLLER_BOX_EXECUTOR if controller_target else BOX_EXECUTOR
@@ -430,7 +437,7 @@ def verify_plan_v3(path):
     }
     if version >= 4:
         expected.add("connectivity_target")
-    if version == 5:
+    if version >= 5:
         expected.add("migration_target")
     if set(plan) != expected:
         raise ApplyError("Plan v3 contains unknown or missing fields")
@@ -476,9 +483,11 @@ def verify_plan_v3(path):
     expected_group_ids = {TAILNET_GROUP_ID} | {
         BOX_GROUP_PREFIX + item for item in projected_boxes
     }
-    identity_grouped = version == 5 and (identity_target or plan.get("authority_state", {}).get("kind") == KIND_AUTHORITY_V3)
+    identity_grouped = version >= 5 and (identity_target or plan.get("authority_state", {}).get("kind") in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4})
     if identity_grouped:
         expected_group_ids.add(IDENTITY_GROUP)
+    if version == 6 and plan.get("projection", {}).get("registry") is not None:
+        expected_group_ids.add(REGISTRY_GROUP)
     group_ids = [
         item.get("id") for item in groups if isinstance(item, dict)
     ]
@@ -497,16 +506,19 @@ def verify_plan_v3(path):
                 "id": TAILNET_GROUP_ID,
                 "operation": "verify_instance_authority",
                 "scopes": SCOPES,
-                "executor": EXECUTOR,
-                "rollback_type": ROLLBACK_TYPE,
+                "executor": "none" if version == 6 else EXECUTOR,
+                "rollback_type": "no_mutation" if version == 6 else ROLLBACK_TYPE,
             }:
                 raise ApplyError("Plan v3 Tailnet verification group is not closed")
             continue
         if candidate.get("id") == IDENTITY_GROUP:
             validate_identity_group(plan, candidate, selected=identity_target)
             continue
+        if candidate.get("id") == REGISTRY_GROUP:
+            validate_registry_group(plan, candidate, selected=registry_target)
+            continue
         candidate_box = candidate.get("id", "").removeprefix(BOX_GROUP_PREFIX)
-        selected = candidate_box == box and not identity_target
+        selected = candidate_box == box and not identity_target and not registry_target
         unselected_operation = "retain_legacy"
         if version >= 4 and (state_groups.get(candidate["id"]) or {}).get("source") == "instance_specification_v1":
             unselected_operation = "verify_instance_authority"
@@ -519,6 +531,10 @@ def verify_plan_v3(path):
             "box": candidate_box,
         }:
             raise ApplyError("Plan v3 box action group is not closed")
+    if registry_target:
+        group = next(item for item in groups if item["id"] == REGISTRY_GROUP)
+        validate_registry_plan_actions(plan, group)
+        return resolved, plan, group
     if identity_target:
         group = next(item for item in groups if item["id"] == IDENTITY_GROUP)
         validate_identity_plan_actions(plan, group)
@@ -733,9 +749,16 @@ def validate_authority_v2(path, plan, group):
     reference = plan.get("authority_state") or {}
     if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != state["kind"] or reference.get("setting_groups") != state["setting_groups"]:
         raise ApplyError("Plan v3 binds another Authority State v2")
-    if group["id"] == IDENTITY_GROUP:
-        expected_kind = KIND_AUTHORITY_V2 if group["operation"] == "adopt_instance_specification" else KIND_AUTHORITY_V3
+    if group["id"] == REGISTRY_GROUP:
+        expected_kind = KIND_AUTHORITY_V3 if group["operation"] == "adopt_instance_specification" else KIND_AUTHORITY_V4
         if state["kind"] != expected_kind:
+            raise ApplyError("registry operation does not match current source")
+        if state["kind"] == KIND_AUTHORITY_V4:
+            verify_registry_anchor(state, plan["projection"]["registry"]["scopes"])
+        return resolved, state
+    if group["id"] == IDENTITY_GROUP:
+        expected_kinds = {KIND_AUTHORITY_V2} if group["operation"] == "adopt_instance_specification" else {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4}
+        if state["kind"] not in expected_kinds:
             raise ApplyError("controller identity operation does not match current source")
         return resolved, state
     current = next(
@@ -759,6 +782,7 @@ def component_paths(build_binary):
         "freebox_broker": (REPO_ROOT / "klokast-ops/secret-authority/bin/freebox-ipv6-broker", FREEBOX_BROKER),
         "ksa_apply": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
         "ops_network_helper": (REPO_ROOT / "ansible/bin/overlay-ipv6-ops", OPS_NETWORK_HELPER),
+        "platform_registry": (REPO_ROOT / "ansible/bin/platform-registry", PLATFORM_REGISTRY),
         "platform_resources": (REPO_ROOT / "ansible/bin/platform-resources", PLATFORM_RESOURCES),
         "policy_mutation_helper": (REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", MUTATION_HELPER),
         "policy_renderer": (REPO_ROOT / "ansible/bin/render-tailscale-policy", RENDERER),
@@ -786,11 +810,15 @@ def validate_toolchain(path, plan, build_binary):
         "schema_version", "kind", "engine_commit", "public_checkout_clean",
         "public_checkout_commit", "components", "receipt_sha256",
     }
-    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
+    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
     components = COMPONENTS
-    if receipt.get("schema_version") == 4:
+    if receipt.get("schema_version") >= 4:
         components = sorted([*COMPONENTS, "controller_ha"])
+    if receipt.get("schema_version") == 5:
+        components = sorted([*components, "platform_registry"])
+    if plan.get("schema_version") == 6 and receipt.get("schema_version") != 5:
+        raise ApplyError("Plan v6 requires Controller Toolchain v5")
     if plan.get("schema_version") == 5 and receipt.get("schema_version") != 4:
         raise ApplyError("Plan v5 requires Controller Toolchain v4")
     entries = receipt.get("components")
@@ -884,7 +912,7 @@ def validate_inputs(args):
     # The private checkout belongs to the controller account. Keep root for
     # evidence and policy checks, but drop privilege for the read-only sealed
     # planner so its Git ownership validation uses the canonical owner.
-    if plan.get("kind") == KIND_PLAN_V5:
+    if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6}:
         command.extend(["--migration-target", plan["migration_target"]])
     rerun = run_plan_as_controller(command)
     try:
@@ -952,8 +980,9 @@ def plan_magicdns_suffix(plan):
 
 
 def run_platform_resources_as_controller(registry, arguments):
+    comparison = ["--compatibility-registry"] if any(item in {"show", "show-box-configs", "show-box-access-vars", "verify-box-access"} for item in arguments) else []
     return run_plan_as_controller([
-        PLATFORM_RESOURCES, "--registry", registry, *arguments,
+        PLATFORM_RESOURCES, "--registry", registry, *comparison, *arguments,
     ])
 
 
@@ -990,7 +1019,7 @@ def prepare_registry_comparison(work, plan, box):
     if not isinstance(registry, dict) or not isinstance(registry.get("boxes"), dict):
         raise ApplyError("old Platform resource registry has no box mapping")
     derived_boxes = {box}
-    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5}:
+    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
         derived_boxes.update(
             item["id"].removeprefix(BOX_GROUP_PREFIX)
             for item in plan["authority_state"]["setting_groups"]
@@ -1106,9 +1135,9 @@ def validate_inputs_v3(args, work=None):
         "--controller-toolchain-receipt", toolchain_path,
         "--json",
     ]
-    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5}:
+    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
         command.extend(["--connectivity-target", plan["connectivity_target"]])
-    if plan.get("kind") == KIND_PLAN_V5:
+    if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6}:
         command.extend(["--migration-target", plan["migration_target"]])
     rerun = run_plan_as_controller(command)
     try:
@@ -1119,7 +1148,10 @@ def validate_inputs_v3(args, work=None):
         raise ApplyError("Plan v3 inputs changed during exact revalidation")
     comparison = {}
     if work:
-        comparison = prepare_controller_comparison(work, plan) if group["id"] == IDENTITY_GROUP else prepare_registry_comparison(work, plan, group["box"])
+        if group["id"] == REGISTRY_GROUP:
+            comparison = prepare_complete_registry_comparison(work, plan)
+        else:
+            comparison = prepare_controller_comparison(work, plan) if group["id"] == IDENTITY_GROUP else prepare_registry_comparison(work, plan, group["box"])
     return {
         "plan_path": str(plan_path), "plan": plan, "group": group,
         "state": state, "authority_path": str(authority_path),
@@ -1479,7 +1511,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -1535,7 +1567,7 @@ def publish_authority(state):
         if read_regular(AUTHORITY_POINTER, 66) != (prior_digest + "\n").encode("ascii"):
             raise ApplyError("concurrent authority source change; prior state is no longer active")
         prior = load_json(AUTHORITY_ROOT / f"{prior_digest}.json", canonical_stored=True)
-        if prior.get("kind") in {KIND_AUTHORITY_V2, KIND_AUTHORITY_V3}:
+        if prior.get("kind") in {KIND_AUTHORITY_V2, KIND_AUTHORITY_V3, KIND_AUTHORITY_V4}:
             validate_authority_current_document(prior)
         else:
             validate_authority_v1_document(prior)
@@ -1590,6 +1622,8 @@ def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
         prior_kind = KIND_AUTHORITY
     else:
         validate_authority_current_document(prior)
+        if prior["kind"] == KIND_AUTHORITY_V4:
+            raise ApplyError("registry-adopted sources require an explicit recovery design before legacy ownership changes")
         if group_id is None or source not in {LEGACY_REGISTRY_SOURCE, "instance_specification_v1"}:
             raise ApplyError("Authority State v2 transition request is incomplete")
         if not any(item["id"] == group_id for item in prior["setting_groups"]):
@@ -1767,7 +1801,7 @@ def box_revalidate(binding, intent, *, phase="execute"):
     try:
         current = validate_inputs_v3(namespace, work)
         if intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
-            if (current["plan"].get("kind") not in {KIND_PLAN_V4, KIND_PLAN_V5}
+            if (current["plan"].get("kind") not in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}
                     or current["group"].get("executor") != CONTROLLER_BOX_EXECUTOR):
                 raise ApplyError("controller box source execution requires its Plan v4 executor")
             expected = controller_box_intent_common(
@@ -1924,6 +1958,8 @@ def box_execute(args, intent):
         raise ApplyError("stored box Apply binding has unknown or missing fields")
     current, work = box_revalidate(binding, intent)
     try:
+        if current["state"]["kind"] == KIND_AUTHORITY_V4 and intent["action"] != "verify_instance_authority":
+            raise ApplyError("registry-adopted source refuses legacy box mutations; explicit recovery design is required")
         if intent["action"] != "rollback_to_legacy" and current["group"]["operation"] != intent["action"]:
             raise ApplyError("Plan v3 action changed after authorization")
         if intent["action"] == "rollback_to_legacy":
@@ -2839,6 +2875,8 @@ def box_rollback_prepare(args):
     work = new_box_work(nonce)
     try:
         binding = validate_inputs_v3(args, work)
+        if binding["state"]["kind"] == KIND_AUTHORITY_V4:
+            raise ApplyError("registry-adopted source refuses legacy rollback; explicit recovery design is required")
         if binding["group"]["executor"] != BOX_EXECUTOR:
             raise ApplyError("controller box source executor does not permit rollback")
         if binding["group"]["operation"] != "verify_instance_authority":
@@ -2922,6 +2960,8 @@ def box_rollback_prepare(args):
 
 
 def validate_authority_current_document(state, expected_boxes=None):
+    if state.get("kind") == KIND_AUTHORITY_V4:
+        return validate_authority_v4_document(state, expected_boxes)
     if state.get("kind") == KIND_AUTHORITY_V2:
         return validate_authority_v2_document(state, expected_boxes)
     fields = {"schema_version", "kind", "prior_state_kind", "prior_state_sha256", "setting_groups", "signed_intent_sha256", "transition_id", "authority_state_sha256", "controller_identity_adoption"}
@@ -2965,14 +3005,14 @@ def controller_pair(plan):
 
 
 def validate_identity_group(plan, group, *, selected):
-    operation = "verify_instance_authority" if plan["authority_state"]["kind"] == KIND_AUTHORITY_V3 else "adopt_instance_specification"
+    operation = "verify_instance_authority" if plan["authority_state"]["kind"] in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4} else "adopt_instance_specification"
     if group != {"id": IDENTITY_GROUP, "operation": operation, "scopes": IDENTITY_SCOPES,
                  "executor": IDENTITY_EXECUTOR if selected else "none", "rollback_type": "no_mutation"}:
         raise ApplyError("controller identity action group is partial or unknown")
 
 
 def validate_identity_plan_actions(plan, group):
-    if plan.get("kind") != KIND_PLAN_V5 or plan.get("migration_target") != "controller-identity":
+    if plan.get("kind") not in {KIND_PLAN_V5, KIND_PLAN_V6} or plan.get("migration_target") != "controller-identity":
         raise ApplyError("controller identity source requires explicit Plan v5 selection")
     controller_pair(plan)
     groups = plan["authority_state"]["setting_groups"]
@@ -2985,7 +3025,7 @@ def validate_identity_plan_actions(plan, group):
         before = "instance_specification_v1"
         if group["operation"] == "adopt_instance_specification":
             before = "controller_ha_markers" if action["scope"] == "deployment.control_plane.controller" else "legacy_controller_ha"
-        if action.get("executor") != IDENTITY_EXECUTOR or action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("rollback") != {"strategy": "no_mutation", "authority": before} or action.get("preconditions") != ["configured_controller_pair", "exact_plan_v5_revalidated", "equal_controller_configuration", "roles_verified_before_source_publication"]:
+        if action.get("executor") != IDENTITY_EXECUTOR or action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("rollback") != {"strategy": "no_mutation", "authority": before} or action.get("preconditions") != ["configured_controller_pair", f"exact_plan_v{plan['schema_version']}_revalidated", "equal_controller_configuration", "roles_verified_before_source_publication"]:
             raise ApplyError("controller identity Plan action is unknown or has changed authority")
 
 
@@ -3270,27 +3310,352 @@ def controller_identity_status():
             "authority_state_sha256": digest, "engine_commit": engine["commit"], "controllers": pair}
 
 
+def validate_registry_scopes(scopes, boxes):
+    if not isinstance(scopes, list) or any(not isinstance(s, str) for s in scopes) or scopes != sorted(set(scopes)):
+        raise ApplyError("registry scopes must be sorted and unique")
+    required = {f"boxes.{box}.{field}" for box in boxes for field in ("dom0_bridge_ports", "dhcp_reservations", "shared_guests")}
+    if not required.issubset(scopes):
+        raise ApplyError("registry substrate scope set is partial")
+    apps, enabled = set(), set()
+    for scope in scopes:
+        if scope in required:
+            continue
+        parts = scope.split(".")
+        if len(parts) < 3 or parts[0] != "apps" or not BOX_RE.fullmatch(parts[1]):
+            raise ApplyError("registry scope is outside the closed vocabulary")
+        if len(parts) == 4 and parts[2] == "data" and BOX_RE.fullmatch(parts[3]):
+            continue
+        if len(parts) != 3 or parts[2] not in {"enabled", "placement", "resources", "runtime_state", "ingress_mode", "isolation", "devices", "app_vms", "users", "ephemeral"}:
+            raise ApplyError("registry app scope is partial or unknown")
+        apps.add(parts[1])
+        if parts[2] == "enabled": enabled.add(parts[1])
+    if apps != enabled:
+        raise ApplyError("registry app lacks its disabled-state scope")
+
+
+def validate_authority_v4_document(state, expected_boxes=None):
+    fields = {"schema_version", "kind", "prior_state_kind", "prior_state_sha256", "setting_groups", "signed_intent_sha256", "transition_id", "authority_state_sha256", "controller_identity_adoption", "registry_adoption"}
+    if set(state) != fields or state.get("schema_version") != 4 or state.get("kind") != KIND_AUTHORITY_V4 or state.get("prior_state_kind") not in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4} or authority_v2_hash(state) != state.get("authority_state_sha256"):
+        raise ApplyError("Authority State v4 is invalid")
+    anchor = state.get("registry_adoption")
+    if not isinstance(anchor, dict) or set(anchor) != {"nonce", "intent_sha256", "plan_sha256"} or not NONCE_RE.fullmatch(anchor.get("nonce", "")) or any(not DIGEST_RE.fullmatch(anchor.get(k, "")) for k in ("intent_sha256", "plan_sha256")):
+        raise ApplyError("registry adoption reference is invalid")
+    groups = state.get("setting_groups")
+    if not isinstance(groups, list) or len(groups) != 5 or any(not isinstance(g, dict) or set(g) != {"id", "scopes", "source"} or g["source"] != "instance_specification_v1" for g in groups) or groups != sorted(groups, key=lambda g: g["id"]) or len({g["id"] for g in groups}) != 5:
+        raise ApplyError("Authority State v4 requires all five adopted groups")
+    registry = [g for g in groups if g["id"] == REGISTRY_GROUP]
+    boxes = [g["id"].removeprefix(BOX_GROUP_PREFIX) for g in groups if g["id"].startswith(BOX_GROUP_PREFIX)]
+    if len(registry) != 1 or len(boxes) != 2:
+        raise ApplyError("registry source group set is invalid")
+    validate_registry_scopes(registry[0]["scopes"], boxes)
+    base = dict(state)
+    base.pop("registry_adoption")
+    base.update(kind=KIND_AUTHORITY_V3, schema_version=3, prior_state_kind=KIND_AUTHORITY_V3,
+                setting_groups=[g for g in groups if g["id"] != REGISTRY_GROUP])
+    base["authority_state_sha256"] = authority_v2_hash(base)
+    validate_authority_current_document(base, expected_boxes)
+    if state["prior_state_kind"] == KIND_AUTHORITY_V3 and (state["transition_id"] != anchor["nonce"] or state["signed_intent_sha256"] != anchor["intent_sha256"]):
+        raise ApplyError("initial registry adoption differs from transition binding")
+
+
+REGISTRY_PRECONDITIONS = ["configured_controller_pair", "exact_plan_v6_revalidated", "equal_complete_registry", "equal_compiler_and_router_variables", "routers_verified_before_source_publication"]
+
+
+def validate_registry_group(plan, group, *, selected):
+    projection = plan.get("projection", {}).get("registry")
+    if plan.get("kind") != KIND_PLAN_V6 or not isinstance(projection, dict) or set(projection) != {"registry", "registry_sha256", "scopes"}:
+        raise ApplyError("registry source requires a complete Plan v6 renderer projection")
+    pair = controller_pair(plan)
+    scopes = projection["scopes"]
+    validate_registry_scopes(scopes, [v["box"] for v in pair.values()])
+    if sha256_bytes(canonical(projection["registry"]).encode()) != projection["registry_sha256"]:
+        raise ApplyError("registry projection hash differs from its values")
+    adopted = plan["authority_state"]["kind"] == KIND_AUTHORITY_V4
+    operation = "verify_instance_authority" if adopted else "adopt_instance_specification" if selected else "retain_legacy"
+    if group != {"id": REGISTRY_GROUP, "operation": operation, "scopes": scopes, "executor": REGISTRY_EXECUTOR if selected else "none", "rollback_type": "no_mutation"}:
+        raise ApplyError("registry source action group is partial or unknown")
+
+
+def validate_registry_plan_actions(plan, group):
+    if plan.get("kind") != KIND_PLAN_V6 or plan.get("migration_target") != "registry":
+        raise ApplyError("registry source requires explicit Plan v6 selection")
+    validate_registry_group(plan, group, selected=True)
+    if plan["authority_state"]["kind"] not in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4} or any(g.get("source") != "instance_specification_v1" for g in plan["authority_state"]["setting_groups"]):
+        raise ApplyError("registry adoption requires adopted identity and connectivity")
+    if any(a.get("executor") not in {REGISTRY_EXECUTOR, "none", "read_only_doctor", "unimplemented"} for a in plan["actions"]):
+        raise ApplyError("registry Plan includes another executable action")
+    actions = [a for a in plan["actions"] if a.get("executor") == REGISTRY_EXECUTOR]
+    if sorted(a.get("scope", "") for a in actions) != group["scopes"]:
+        raise ApplyError("registry Plan action coverage is partial")
+    for action in actions:
+        if set(action) != {"id", "finding_id", "scope", "operation", "executor", "authority_before", "authority_after", "preconditions", "rollback"}:
+            raise ApplyError("registry Plan action contains unknown fields")
+        before = "instance_specification_v1" if group["operation"] == "verify_instance_authority" or ".data." in action["scope"] else LEGACY_REGISTRY_SOURCE
+        if action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("preconditions") != REGISTRY_PRECONDITIONS or action.get("rollback") != {"strategy": "no_mutation", "authority": before}:
+            raise ApplyError("registry Plan action changes settings or scope")
+
+
+def verify_registry_anchor(state, scopes):
+    anchor = state["registry_adoption"]
+    directory = PREFLIGHT_ROOT / anchor["nonce"]
+    intent_path = directory / "intent.json"
+    intent = load_json(intent_path, canonical_stored=True)
+    validate_registry_intent(intent, check_time=False)
+    if intent["action"] != "adopt_instance_specification" or sha256_file(intent_path) != anchor["intent_sha256"] or intent["plan_sha256"] != anchor["plan_sha256"] or intent["action_set"] != scopes:
+        raise ApplyError("registry adoption archive differs from source or current scopes")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    _, plan, group = verify_plan_v3(binding["plan_path"])
+    if plan["plan_sha256"] != anchor["plan_sha256"] or group["scopes"] != scopes or controller_pair(plan) != intent["controller_pair"]:
+        raise ApplyError("registry adoption Plan differs from source")
+    current = next(g for g in state["setting_groups"] if g["id"] == REGISTRY_GROUP)
+    if current["scopes"] != scopes:
+        raise ApplyError("registry source scope set differs from its original adoption Plan")
+
+
+def prepare_complete_registry_comparison(work, plan):
+    result = prepare_controller_comparison(work, plan)
+    content = read_regular(REGISTRY)
+    expected = next(v["sha256"] for v in plan["compatibility_inputs"] if v["name"] == LEGACY_REGISTRY_SOURCE)
+    if sha256_bytes(content) != expected:
+        raise ApplyError("legacy registry changed after sealed planning")
+    try:
+        old = yaml.safe_load(content)
+    except yaml.YAMLError as error:
+        raise ApplyError("legacy registry is invalid YAML") from error
+    effective = plan["projection"]["registry"]["registry"]
+    if canonical(old) != canonical(effective):
+        raise ApplyError("complete old and instance-derived registries differ")
+    paths = {}
+    for name, data in (("old", content), ("effective", (canonical(effective) + "\n").encode())):
+        path = work / (name + "-registry.yml")
+        path.write_bytes(data)
+        os.chown(path, 0, smith_gid())
+        path.chmod(0o440)
+        paths[name] = path
+        result[name + "_registry_path"] = str(path)
+        result[name + "_registry_sha256"] = sha256_file(path)
+    result["compiler_sha256"] = {}
+    for command in ("show", "show-box-configs"):
+        compiled = []
+        for path in paths.values():
+            value = decode_helper_json(run_platform_resources_as_controller(path, [command]), "compare complete registry")
+            if "registry_path" not in value or "registry_sha256" not in value:
+                raise ApplyError("compiled registry lacks input provenance")
+            value.pop("registry_path")
+            value.pop("registry_sha256")
+            compiled.append(value)
+        if canonical(compiled[0]) != canonical(compiled[1]):
+            raise ApplyError("complete compiler output changed outside registry provenance")
+        result["compiler_sha256"][command] = sha256_bytes(canonical(compiled[0]).encode())
+    result["router_variables_sha256"] = {}
+    for box in sorted(effective["boxes"]):
+        values = [decode_helper_json(run_platform_resources_as_controller(path, ["--box", box, "show-box-access-vars"]), "compare router variables") for path in paths.values()]
+        if canonical(values[0]) != canonical(values[1]):
+            raise ApplyError("router variables differ between old and effective registry")
+        result["router_variables_sha256"][box] = sha256_bytes(canonical(values[0]).encode())
+    return result
+
+
+REGISTRY_INTENT_FIELDS = {"old_registry_sha256", "effective_registry_sha256", "compiler_sha256", "router_variables_sha256", "registry_projection_sha256"}
+
+
+def registry_intent(binding, nonce, issued):
+    value = identity_intent(binding, nonce, issued)
+    value.update(kind=KIND_REGISTRY_INTENT, executor=REGISTRY_EXECUTOR, action_group_id=REGISTRY_GROUP,
+                 action_set=binding["group"]["scopes"], registry_projection_sha256=binding["plan"]["projection"]["registry"]["registry_sha256"])
+    for key in REGISTRY_INTENT_FIELDS - {"registry_projection_sha256"}:
+        value[key] = binding[key]
+    return value
+
+
+def validate_registry_intent(intent, *, check_time=True):
+    if intent.get("kind") != KIND_REGISTRY_INTENT or intent.get("executor") != REGISTRY_EXECUTOR or intent.get("action_group_id") != REGISTRY_GROUP or not REGISTRY_INTENT_FIELDS.issubset(intent):
+        raise ApplyError("registry source intent is incomplete or unknown")
+    identity = {k: v for k, v in intent.items() if k not in REGISTRY_INTENT_FIELDS}
+    identity.update(kind=KIND_IDENTITY_INTENT, executor=IDENTITY_EXECUTOR, action_group_id=IDENTITY_GROUP, action_set=IDENTITY_SCOPES)
+    try:
+        validate_identity_intent(identity, check_time=check_time)
+    except ApplyError as error:
+        raise ApplyError(str(error).replace("controller identity", "registry source")) from error
+    boxes = [v["box"] for v in intent["controller_pair"].values()]
+    validate_registry_scopes(intent.get("action_set"), boxes)
+    for key in ("old_registry_sha256", "effective_registry_sha256", "registry_projection_sha256"):
+        if not isinstance(intent[key], str) or not DIGEST_RE.fullmatch(intent[key]):
+            raise ApplyError("registry intent has an invalid input hash")
+    if intent["old_registry_sha256"] != intent["legacy_registry_sha256"]:
+        raise ApplyError("registry intent legacy hashes differ")
+    for key, keys in (("compiler_sha256", {"show", "show-box-configs"}), ("router_variables_sha256", set(boxes))):
+        values = intent[key]
+        if not isinstance(values, dict) or set(values) != keys or any(not isinstance(v, str) or not DIGEST_RE.fullmatch(v) for v in values.values()):
+            raise ApplyError("registry intent comparison hashes are incomplete")
+
+
+def verify_registry_routers(binding):
+    plan = binding["plan"]
+    results = {}
+    for box in sorted(binding["router_variables_sha256"]):
+        results[box] = run_box_resource(binding["effective_registry_path"], box, "verify-box-access", plan_magicdns_suffix(plan))
+    return results
+
+
+def registry_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    work = new_box_work(nonce)
+    try:
+        binding = validate_inputs_v3(args, work)
+        if binding["group"]["executor"] != REGISTRY_EXECUTOR:
+            raise ApplyError("registry preparation requires its explicit executor")
+        roles = verify_controller_pair(binding["controller_pair"])
+        binding["controller_roles_sha256"] = sha256_bytes(canonical(roles).encode())
+        verify_registry_routers(binding)
+        # Recheck complete desired state and roles after live verification.
+        intent = registry_intent(binding, nonce, now_utc())
+        fresh, fresh_work = registry_revalidate(binding, intent, "prepare-recheck")
+        shutil.rmtree(fresh_work, ignore_errors=True)
+        validate_registry_intent(intent)
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        stored = {k: v for k, v in binding.items() if k not in {"plan", "group", "state"}}
+        for name in ("old", "effective"):
+            for kind, suffix in (("controller", "controllers.json"), ("registry", "registry.yml")):
+                field = name + "_" + kind + "_path"
+                target = directory / (name + "-" + suffix)
+                shutil.copyfile(binding[field], target)
+                stored[field] = str(target)
+        for name, data in (("binding", stored), ("intent", intent), ("roles", roles)):
+            (directory / (name + ".json")).write_text(canonical(data) + "\n", encoding="utf-8")
+        for path in directory.iterdir(): path.chmod(0o600)
+        append_audit("registry-source.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], action=intent["action"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def registry_revalidate(binding, intent, phase):
+    args = argparse.Namespace(**{key: binding[field] for key, field in (("plan", "plan_path"), ("authority_state", "authority_path"), ("controller_toolchain_receipt", "toolchain_path"), ("source_recovery_receipt", "recovery_path"), ("instance_source_receipt", "source_path"), ("observation", "observation"), ("build_dir", "build_dir"))})
+    work = new_box_work(intent["nonce"] + "-" + phase)
+    try:
+        current = validate_inputs_v3(args, work)
+        roles = verify_controller_pair(current["controller_pair"])
+        current["controller_roles_sha256"] = sha256_bytes(canonical(roles).encode())
+        if registry_intent(current, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
+            raise ApplyError("registry inputs or live controller roles changed after approval")
+        for name in ("old", "effective"):
+            for kind in ("controller", "registry"):
+                field = name + "_" + kind + "_path"
+                if read_regular(binding[field]) != read_regular(current[field]):
+                    raise ApplyError("protected registry comparison inputs changed")
+        validate_registry_intent(intent)
+        return current, work
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+
+
+def registry_execute(args, intent):
+    validate_registry_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed registry intent differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    expected_fields = {"plan_path", "authority_path", "toolchain_path", "source_path", "recovery_path", "observation", "build_dir", "binary_sha256", "builder_receipt_sha256", "controller_pair", "old_controller_path", "old_controller_sha256", "effective_controller_path", "effective_controller_sha256", "controller_roles_sha256", "old_registry_path", "effective_registry_path", "old_registry_sha256", "effective_registry_sha256", "compiler_sha256", "router_variables_sha256"}
+    if set(binding) != expected_fields:
+        raise ApplyError("protected registry binding has unknown fields")
+    consume_nonce(intent)
+    runtime = final_runtime = None
+    published = False
+    try:
+        current, runtime = registry_revalidate(binding, intent, "execute")
+        verify_registry_routers(current)
+        final, final_runtime = registry_revalidate(binding, intent, "post-verify")
+        state, result = final["state"], "verified"
+        if intent["action"] == "adopt_instance_specification":
+            state = dict(state, schema_version=4, kind=KIND_AUTHORITY_V4, prior_state_kind=KIND_AUTHORITY_V3,
+                         prior_state_sha256=state["authority_state_sha256"], transition_id=intent["nonce"],
+                         signed_intent_sha256=sha256_bytes((canonical(intent) + "\n").encode()))
+            state["setting_groups"] = sorted([*state["setting_groups"], {"id": REGISTRY_GROUP, "scopes": intent["action_set"], "source": "instance_specification_v1"}], key=lambda g: g["id"])
+            state["registry_adoption"] = {"nonce": intent["nonce"], "intent_sha256": state["signed_intent_sha256"], "plan_sha256": intent["plan_sha256"]}
+            state["authority_state_sha256"] = authority_v2_hash(state)
+            validate_authority_current_document(state)
+            publish_authority(state)
+            published, result = True, "success"
+        receipt = {"schema_version": 4, "kind": "klokast.apply-execution.v4", "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode()), "plan_sha256": intent["plan_sha256"], "nonce": intent["nonce"], "action": intent["action"], "executor": REGISTRY_EXECUTOR, "action_group_id": REGISTRY_GROUP, "action_set": intent["action_set"], "controller_pair": intent["controller_pair"], "result": result, "recovery_result": "not_needed", "authority_state_sha256": state["authority_state_sha256"], "finished_at": format_utc(now_utc())}
+        path = store_identity_receipt(receipt)
+        append_audit("registry-source.executed", nonce=intent["nonce"], result=result, receipt_sha256=receipt["receipt_sha256"])
+        print(canonical({"schema_version": 1, "result": result, "receipt_path": str(path), "authority_state_sha256": state["authority_state_sha256"]}))
+    except (ApplyError, OSError) as error:
+        if published:
+            raise ApplyError("registry source was published but operation is incomplete; inspect source and archives, then obtain fresh signed verification; do not retry the used request") from error
+        raise ApplyError("registry operation failed before publication; inspect evidence and obtain a fresh request: " + str(error)) from error
+    finally:
+        for path in (runtime, final_runtime):
+            if path is not None: shutil.rmtree(path, ignore_errors=True)
+
+
+def registry_source_status():
+    controller = controller_identity_status()
+    digest = controller["authority_state_sha256"]
+    pointer = (digest + "\n").encode()
+    _, state = resolve_hashed(AUTHORITY_ROOT / (digest + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
+    validate_authority_current_document(state)
+    result = {"schema_version": 1, "kind": "klokast.registry-source-status.v1", "source": LEGACY_REGISTRY_SOURCE,
+              "authority_state_sha256": digest, "engine_commit": controller["engine_commit"]}
+    if state["kind"] != KIND_AUTHORITY_V4:
+        if read_regular(AUTHORITY_POINTER, 66) != pointer:
+            raise ApplyError("registry source changed during resolution")
+        return result
+    # Only root-protected sealed artifacts for the active canonical engine can
+    # run. There is no caller-selected executable or instance path.
+    engine = controller["engine_commit"]
+    candidates = []
+    for directory in sorted((BUILD_ROOT / engine).iterdir()):
+        if OPERATION_RE.fullmatch(directory.name):
+            resolved, commit = resolve_build_directory(directory)
+            receipt, binary = verify_build_directory(resolved, commit)
+            verify_binary_version(binary, receipt)
+            candidates.append((receipt["binary_sha256"], binary))
+    if not candidates or len({v[0] for v in candidates}) != 1:
+        raise ApplyError("active registry engine has no unique verified sealed binary")
+    binary = candidates[0][1]
+    rendered = run_plan_as_controller([binary, "registry", "--instance", INSTANCE, "--json"])
+    projection = decode_helper_json(rendered, "render the adopted registry")
+    if set(projection) != {"schema_version", "kind", "valid", "engine", "repository", "inputs", "projection", "diagnostics"} or projection["schema_version"] != 1 or projection["kind"] != "klokast.registry.v1" or projection["valid"] is not True or projection["diagnostics"] != [] or projection["engine"] != {"repository": ENGINE_REPOSITORY, "ref": "main", "commit": engine} or projection["repository"].get("clean") is not True or projection["repository"].get("branch") != "main":
+        raise ApplyError("sealed registry result does not bind the clean active instance")
+    verify_registry_anchor(state, projection["projection"]["scopes"])
+    if controller_identity_status() != controller:
+        raise ApplyError("controller or registry source changed during rendering")
+    second = decode_helper_json(run_plan_as_controller([binary, "registry", "--instance", INSTANCE, "--json"]), "recheck adopted registry inputs")
+    if second != projection or read_regular(AUTHORITY_POINTER, 66) != pointer:
+        raise ApplyError("registry inputs or source changed during resolution")
+    result.update(source="instance_specification_v1", rendered=projection)
+    return result
+
+
 def evidence_kind(path):
     return load_json(path).get("kind")
 
 
 def preflight(args):
-    if evidence_kind(args.plan) == KIND_PLAN_V5 and load_json(args.plan).get("migration_target") == "controller-identity":
+    if evidence_kind(args.plan) == KIND_PLAN_V6 and load_json(args.plan).get("migration_target") == "registry":
+        registry_preflight(args)
+    elif evidence_kind(args.plan) in {KIND_PLAN_V5, KIND_PLAN_V6} and load_json(args.plan).get("migration_target") == "controller-identity":
         identity_preflight(args)
-    elif evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5}:
+    elif evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
         box_preflight(args)
     else:
         preflight_tailnet(args)
 
 
 def overlay_repair_prepare(args):
-    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5}:
+    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
         raise ApplyError("overlay repair requires Plan v3")
     overlay_preflight(args)
 
 
 def rollback_prepare(args):
-    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5}:
+    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
         box_rollback_prepare(args)
     else:
         rollback_prepare_tailnet(args)
@@ -3302,6 +3667,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_REGISTRY_INTENT:
+        registry_execute(args, intent)
     elif intent.get("kind") == KIND_IDENTITY_INTENT:
         identity_execute(args, intent)
     elif intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
@@ -3320,6 +3687,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
     commands.add_parser("controller-identity-status")
+    commands.add_parser("registry-source-status")
     preflight_parser = commands.add_parser("preflight")
     for name in (
         "plan", "authority-state", "controller-toolchain-receipt",
@@ -3362,6 +3730,8 @@ def main(argv=None):
     try:
         if args.operation == "controller-identity-status":
             print(canonical(controller_identity_status()))
+        elif args.operation == "registry-source-status":
+            print(canonical(registry_source_status()))
         elif args.operation == "preflight":
             preflight(args)
         elif args.operation == "execute":

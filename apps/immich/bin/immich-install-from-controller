@@ -107,6 +107,7 @@ load_secret_file() {
 }
 
 enable_immich_registry_entry() {
+    platform-registry assert-writable || die "registry source does not permit legacy enable"
     python3 - "$registry" "$active_master" "$passive_backup" <<'PY'
 import sys
 from pathlib import Path
@@ -117,7 +118,9 @@ path = Path(sys.argv[1])
 active = sys.argv[2]
 passive = sys.argv[3]
 if path.exists():
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    import json
+    import subprocess
+    data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
 else:
     data = {"schema_version": 1, "apps": {}}
 if data.get("schema_version") != 1:

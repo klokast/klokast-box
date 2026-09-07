@@ -329,6 +329,7 @@ immich_remove_extra() {
 }
 
 load_immich_destroy_registry_state() {
+    platform-registry assert-writable || die "registry source does not permit legacy destroy"
     require_resources_registry
     RESOURCE_REGISTRY="$resources_registry" python3 - "$active_master" "$passive_backup" <<'PY' || die "invalid Immich platform resources registry state"
 import os
@@ -339,7 +340,9 @@ import yaml
 
 active, passive = sys.argv[1], sys.argv[2]
 path = Path(os.environ["RESOURCE_REGISTRY"])
-data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+import json
+import subprocess
+data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
 apps = data.get("apps") or {}
 app = apps.get("immich") or {}
 placement = app.get("placement") or {}
@@ -350,6 +353,7 @@ PY
 
 disable_immich_registry_entry() {
     local dry_run=$1
+    platform-registry assert-writable || die "registry source does not permit a legacy write"
     python3 - "$resources_registry" "$active_master" "$passive_backup" "$dry_run" <<'PY'
 import os
 import shutil
@@ -361,7 +365,9 @@ import yaml
 
 path = Path(sys.argv[1])
 active, passive, dry_run = sys.argv[2], sys.argv[3], sys.argv[4] == "true"
-data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+import json
+import subprocess
+data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
 apps = data.setdefault("apps", {})
 entry = apps.setdefault("immich", {})
 if not isinstance(entry, dict):
