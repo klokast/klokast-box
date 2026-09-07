@@ -234,6 +234,8 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("/etc/klokast/secret-authority/allowed-signers-platform-apply", HA_SOURCE)
         self.assertIn("var/lib/klokast/authority-states", HA_SOURCE)
         self.assertIn("var/lib/klokast/active-authority-state", HA_SOURCE)
+        self.assertIn("var/lib/klokast/plans", HA_SOURCE)
+        self.assertIn("var/lib/klokast/apply-preflights", HA_SOURCE)
         self.assertIn("/etc/klokast/private-instance/github-readonly", HA_SOURCE)
 
 

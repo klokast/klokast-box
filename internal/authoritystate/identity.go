@@ -1,6 +1,7 @@
 package authoritystate
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -42,10 +43,27 @@ func LoadCurrent(path string) (StateV2, error) {
 	if err := strictjson.Decode(content, &state, true); err != nil {
 		return StateV2{}, err
 	}
+	if err := rejectV3FieldOnV2(content, state); err != nil {
+		return StateV2{}, err
+	}
 	if err := ValidateCurrent(state); err != nil {
 		return StateV2{}, err
 	}
 	return state, nil
+}
+
+func rejectV3FieldOnV2(content []byte, state StateV2) error {
+	if state.Kind != KindV2 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(content, &fields); err != nil {
+		return err
+	}
+	if _, present := fields["controller_identity_adoption"]; present {
+		return fmt.Errorf("Authority State v2 cannot contain a v3 adoption field, including null")
+	}
+	return nil
 }
 
 func ValidateCurrent(state StateV2) error {

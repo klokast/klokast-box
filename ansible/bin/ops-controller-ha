@@ -425,6 +425,8 @@ for path in \
   var/lib/klokast/secret-authority \
   var/lib/klokast/authority-states \
   var/lib/klokast/active-authority-state \
+  var/lib/klokast/plans \
+  var/lib/klokast/apply-preflights \
   var/lib/klokast/controller-toolchains \
   var/lib/klokast/private-source-recoveries \
   var/lib/klokast/apply-executions \

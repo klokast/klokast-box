@@ -14,7 +14,11 @@ owns installation and acceptance. The earlier review below is historical.
 The full Python suite under umask 077 exposed an existing Plan test fixture
 that requested directory mode 0750 in `mkdir` but did not restore bits masked
 by the caller's umask. The fixture now explicitly sets its intended mode.
-Production evidence permissions remain strict. Controller identity tests use
+Production evidence permissions remain strict. Review also found that the
+shared Go state structure could accept the new v3 adoption field as `null`
+in a historical v2 document. Both v2-reading entry points now reject that
+field even when null, and a regression check covers both loaders. No
+historical artifact is changed. Controller identity tests use
 real signatures and temporary files under umask 077, including readable
 runtime configurations, protected archives, consumed nonces, source
 publication, and receipt failure. Read-only live inspection found the

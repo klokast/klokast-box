@@ -86,6 +86,20 @@ func TestControllerIdentityMigrationAndExistingTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var malformed map[string]any
+	if err := json.Unmarshal(canonicalTestJSON(t, state), &malformed); err != nil {
+		t.Fatal(err)
+	}
+	malformed["controller_identity_adoption"] = nil
+	if err := os.WriteFile(options.AuthorityState, canonicalTestJSON(t, malformed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authoritystate.LoadV2(options.AuthorityState); err == nil {
+		t.Fatal("historical v2 loader accepted an extra null v3 field")
+	}
+	if _, err := authoritystate.LoadCurrent(options.AuthorityState); err == nil {
+		t.Fatal("current loader weakened the historical v2 field set")
+	}
 	for i := range state.SettingGroups {
 		state.SettingGroups[i].Source = authoritystate.InstanceAuthority
 	}

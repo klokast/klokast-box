@@ -1096,6 +1096,12 @@ the active source to an old record. A source rollback or identity change
 requires a separately designed signed action; neither is part of this
 executor.
 
+The existing non-provider state synchronization includes the immutable Plans
+and protected preflight archives as well as source states and receipts. The
+v3 identity reference needs its original Plan and intent after reconstruction.
+Preserve their root ownership and permissions. Synchronization still excludes
+provider credentials and the controller-private instance deploy key.
+
 Promote one reviewed sealed engine, then install matching active-controller
 and MacBook tools before adoption. The standby needs its existing guard;
 source adoption does not give it private credentials or change its installed

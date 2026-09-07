@@ -130,6 +130,9 @@ func LoadV2(path string) (StateV2, error) {
 	if err := strictjson.Decode(content, &state, true); err != nil {
 		return StateV2{}, fmt.Errorf("decode authority state: %w", err)
 	}
+	if err := rejectV3FieldOnV2(content, state); err != nil {
+		return StateV2{}, err
+	}
 	if err := ValidateV2(state); err != nil {
 		return StateV2{}, err
 	}
