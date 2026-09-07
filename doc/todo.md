@@ -2,6 +2,29 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Expired controller identity request and acceptance coverage
+
+The first human controller identity request expired before execution.
+Inspection found the original source unchanged, both matching preparation
+nonces unused, no execution receipt, and no runtime residue. The new attempt
+kept the original baselines and old archives and used fresh evidence. Signed
+adoption, fresh signed verification, and exact replay refusal then passed.
+The [controller identity acceptance record](../klokast-dev/runbooks/49-controller-identity-source.md#acceptance-record-2026-09-07)
+holds the evidence references and remaining gate.
+
+Request lifetime validation precedes nonce consumption. Therefore a refused
+expired request does not imply that its nonce was consumed. Inspect both
+source and nonce evidence before choosing the next action. Preserve expired
+requests and prepare a fresh request; do not extend the signed lifetime or
+reuse an expired signature. Complete each human approval before its displayed
+`expires_at` time.
+
+The MacBook Apply helper uses the supplied explicit controller contact.
+Successful Apply execution therefore does not prove that the separate
+MacBook automatic controller resolver works. Keep that read-only acceptance
+check explicit. The missing `ssh-askpass` notice recurred, but both fresh
+signatures succeeded; it did not block this source migration.
+
 # 2026-09-07 - Controller identity migration implementation
 
 The human authorized continued migration across scopes without another

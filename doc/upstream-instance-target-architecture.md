@@ -951,7 +951,11 @@ does not authorize another migration or legacy removal.
 
 ## 11.4 Controller identity source migration
 
-Status: `decided` on 2026-09-07. The human authorized this migration and
+Status: `implemented` on 2026-09-07. Signed adoption, fresh signed
+verification, replay refusal, and final controller checks passed. The
+MacBook resolver check remains pending before `live-verified`; see the
+[acceptance record](../klokast-dev/runbooks/49-controller-identity-source.md#acceptance-record-2026-09-07).
+The human authorized this migration and
 continued work across the remaining migration scopes without a separate
 scope decision each time. Record each bounded design before implementation.
 The existing human signing steps still authorize exact engine promotions and
@@ -1133,6 +1137,66 @@ verification-only. Save controller-held evidence, commit and push acceptance
 documentation, and continue the remaining migration queue. Do not deploy a
 final documentation-only commit automatically.
 
+### Recorded execution result
+
+Engine `c8f863b` and private commit `d43aaab` completed the exact identity
+source transition. Authority State v3 `0b34c84` adds the identity group and
+preserves both box groups and Tailnet. Final Plans for identity and both
+connectivity targets report all four groups as verification-only. The
+original input hashes, ownership and modes, both persistent controller
+markers, and 138 persistent configuration entries on each router remained
+unchanged. Controller automatic and explicit resolution passed, with standby
+dispatch refused. The MacBook resolver check is still open; successful
+explicit-contact Apply commands do not prove that separate entry point.
+
+The runbook holds full controller evidence references and the
+[remaining legacy list](../klokast-dev/runbooks/49-controller-identity-source.md#remaining-legacy-owned-settings).
+Do not repeat adoption or automatically deploy acceptance documentation.
+
+## 11.5 Remaining registry and inventory migration batch
+
+Status: `proposed`. Continued scope development is already authorized. This
+section records the next implementation dependencies, not a request for
+another scope decision. Complete the bounded design before implementation.
+
+Use final identity Plan `9866249` as the scope inventory. It contains 22
+legacy-source actions and a continuing execution-inventory authority. Some
+actions summarize an entire omitted application entry. Do not interpret
+that aggregate finding as permission to discard its nested settings.
+
+The next batch must address these connected dependencies together:
+
+- Give box bridge ports, DHCP reservations, and shared-guest runtime intent
+  explicit typed instance representations. Preserve their effective values,
+  including existing compiler defaults for omitted fields.
+- Define application absence, disabled preselection, cleanup placement,
+  managed-device and VM bindings, and retained data before adopting app
+  groups. An omitted app can still have legacy cleanup or binding fields.
+  Neither absence nor equal active network output permits data deletion.
+- Make normal compiler, guest-control, mapping, and application entry points
+  consume the selected source. A source record and an equal migration-time
+  rendering alone do not replace a later direct read or write of the legacy
+  registry. Explicit compatibility reads must not bypass normal source
+  ownership for mutation.
+- Classify fixed controller account/path rules and schema metadata as engine
+  policy or format evidence where appropriate. Preserve explicit controller
+  recovery contact inputs. Do not add a source-adoption action merely to
+  relabel a version field.
+- Replace the continuing execution inventory with instance-derived host
+  selection and upstream topology. Audit explicit limits and recovery
+  inventory before removing that dependency.
+
+Private-value preparation and publication must remain on the controller and
+trusted MacBook. The runner must not receive the private checkout or raw
+private configuration. Use exact engine promotion and signed source actions,
+compiler and target-variable equality, protected evidence, unchanged-setting
+baselines, and checked publication. Keep old files and historical execution
+evidence until their separate removal and recovery gates are complete.
+
+The exact new schema, action groups, consumer interfaces, recovery behavior,
+and test matrix are still design work. Do not label this batch `decided` or
+claim its scopes have moved to the instance yet.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -1170,14 +1234,17 @@ complete.
 | First box connectivity migration | `live-verified` | On 2026-09-06, the human promoted the corrected sealed engine and approved one verification-only request with Touch ID. Authenticated k001 router configuration, service, route, firewall, and reachability checks passed. The controller stored a `verified` execution receipt, and the MacBook helper confirmed refusal of the exact replay because its nonce was already used. A final Plan kept k001 and Tailnet verification-only and k002 on the old registry. All setting-source and desired-state hashes remained unchanged. Live rollback and re-adoption remain unverified and deferred. |
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
-| Controller identity sources | `decided` | Section 11.4 defines source-only adoption of the current controller identity group, Plan v5, Authority State v3, the resolver, recovery, and signed acceptance. Implementation and verification are in progress. |
-| Migration and legacy removal | `proposed` | Connectivity adoption does not authorize another setting group or legacy removal. |
+| Controller identity sources | `implemented` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the evidence. The MacBook resolver check remains open before `live-verified`. |
+| Remaining registry and inventory migration | `proposed` | Section 11.5 records the combined schema, consumer, retained-data, and inventory dependencies. Continued scope development is authorized; the bounded design is not complete. |
+| Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue
 
-1. Implement and live-verify the [controller identity source decision](#114-controller-identity-source-migration).
-2. Continue the remaining application, box-setting, and execution-inventory
-   migration work from each final Plan. The human authorized continued scope
+1. Complete the remaining MacBook resolver check and record live acceptance
+   for the [controller identity source decision](#114-controller-identity-source-migration).
+2. Complete the bounded design and implementation of the
+   [remaining registry and inventory batch](#115-remaining-registry-and-inventory-migration-batch)
+   from the final Plan. The human authorized continued scope
    development without another scope-selection question. Record bounded
    designs, preserve data and recovery, and use the existing exact signed
    promotion and live-action workflows.
