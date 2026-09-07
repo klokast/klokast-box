@@ -2,6 +2,35 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Next migration review found controller source dependencies
+
+The final connectivity Plan has four matched controller identity fields and
+one derived controller-placement field. These findings do not mean normal
+controller dispatch already consumes the instance. `ops-controller-ha`
+still loads its identity set from the legacy HA registry. Its automatic
+resolver is also used by MacBook helpers. Authority State v2 rejects any
+group other than Tailnet and box connectivity. A new source group therefore
+needs explicit versioning and an end-to-end consumer design.
+
+The placement finding is synthesized by the planner. Its legacy-looking path
+is not proof of a controller-selection field in the legacy deployment file.
+Also, the HA guard reports legacy active behavior when its marker is absent;
+new migration verification must require a configured marker and check both
+controller roles. Do not use that fallback as adoption evidence or change
+recovery behavior without a design.
+
+The review initially invoked the installed guard by name, but the remote
+non-login shell did not include its directory in `PATH`. Using the checked-in
+absolute path, `/usr/local/sbin/klokast-controller-guard`, completed the
+read-only check. No Platform setting changed.
+
+The [next-scope proposal](upstream-instance-target-architecture.md#114-next-migration-proposal-controller-identity-sources)
+records the recommended five fields and the remaining consumer, bootstrap,
+recovery, and acceptance design gates. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the next decision. This review did not implement or approve another
+source transition.
+
 # 2026-09-07 - Controller-box source acceptance completed
 
 Source-only adoption, fresh signed verification, exact replay refusal, and
