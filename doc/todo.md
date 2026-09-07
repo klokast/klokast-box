@@ -2,6 +2,28 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Registry migration needs a compatible rollback checker
+
+Private publication validates candidates with the active sealed engine and
+its previous engine. Adding fields in one promotion and then publishing them
+would fail the previous engine's closed schema. The
+[registry compatibility checkpoint](upstream-instance-target-architecture.md#compatibility-checkpoint)
+preserves this check: promote schema support with unchanged private values,
+then make that engine the rollback checker for the later consumer engine.
+The checkpoint refuses deployment if its new fields are present. Do not
+remove the rollback check or silently discard new fields in a reverse map.
+
+The scope audit also found that omitted disabled apps were reported as one
+derived action. This hid cleanup placement, devices, VM and user bindings,
+resource preselection, and saved privileged-build controls. The planner now
+reports each field separately with continuing legacy ownership. One disabled
+app has no current public manifest; typed inactive configuration must remain
+independent of launch support. No app absence implies data deletion.
+
+The root instructions reference the missing `apps/STORE.md`. The supported
+application index is in [apps/README.md](../apps/README.md#supported-apps).
+No application installation was part of this checkpoint.
+
 # 2026-09-07 - Expired controller identity request and acceptance coverage
 
 The first human controller identity request expired before execution.

@@ -138,6 +138,7 @@ func Check(instancePath string, engine Engine) (Report, error) {
 			return Report{}, fmt.Errorf("load embedded application manifests: %w", manifestErr)
 		}
 		c.validateInstance(instance, providers, manifests)
+		c.validateRegistrySettings(instance)
 	}
 	return c.report(), nil
 }

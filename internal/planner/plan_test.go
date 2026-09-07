@@ -49,7 +49,7 @@ func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
 	if len(result.Inputs) != 2 || len(result.ProjectionHash) != 64 || len(result.Compatibility.RegistrySHA256) != 64 {
 		t.Fatalf("missing provenance: %#v", result)
 	}
-	if result.Compatibility.Summary.Conflict != 0 || result.Compatibility.Summary.Unsupported != 0 || result.Compatibility.Summary.CompatibilityOnly != 0 {
+	if result.Compatibility.Summary.Conflict != 0 || result.Compatibility.Summary.Unsupported != 0 || result.Compatibility.Summary.CompatibilityOnly != 2 {
 		t.Fatalf("unexpected compatibility findings: %#v", result.Compatibility)
 	}
 }
@@ -75,8 +75,8 @@ func TestCommittedCleanAndDirtyDeployability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !clean.Deployable || !clean.AuthorityReady || clean.Repository.HeadCommit == "" {
-		t.Fatalf("clean committed instance is not authority-ready: %#v", clean)
+	if !clean.Deployable || clean.AuthorityReady || clean.Repository.HeadCommit == "" {
+		t.Fatalf("clean committed instance must retain disabled app preselection: %#v", clean)
 	}
 	appendFile(t, filepath.Join(root, contract.InstancePath), "\n")
 	dirty, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
@@ -95,7 +95,7 @@ func TestCompatibilityOnlyFieldsRemainVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Compatible || result.AuthorityReady || result.Compatibility.Summary.CompatibilityOnly != 1 {
+	if !result.Compatible || result.AuthorityReady || result.Compatibility.Summary.CompatibilityOnly != 3 {
 		t.Fatalf("compatibility-only field was not gated: %#v", result.Compatibility)
 	}
 	if !hasFinding(result, "boxes.boxa.dom0_bridge_ports", "compatibility_only") {
@@ -114,13 +114,13 @@ func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := map[string]string{
-		"schema_version": "matched",
-		"boxes.boxa": "derived",
-		"boxes.boxa.shared_guests": "compatibility_only",
+		"schema_version":               "matched",
+		"boxes.boxa":                   "derived",
+		"boxes.boxa.shared_guests":     "compatibility_only",
 		"boxes.boxa.dom0_bridge_ports": "compatibility_only",
 		"boxes.boxa.dhcp_reservations": "compatibility_only",
-		"apps.nextcloud": "derived",
-		"compatibility_marker": "unsupported",
+		"apps.nextcloud.enabled":       "derived",
+		"compatibility_marker":         "unsupported",
 	}
 	for path, class := range expected {
 		if !hasFinding(result, path, class) {
@@ -157,8 +157,16 @@ func TestUnrepresentedAppFieldsAreNotSilentlyOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasFinding(result, "apps.legacy-example", "derived") {
-		t.Fatalf("omitted disabled app was not resolved as absent: %#v", result.Compatibility.Findings)
+	if !hasFinding(result, "apps.legacy-example.enabled", "derived") {
+		t.Fatalf("omitted disabled app did not retain its exact enabled scope: %#v", result.Compatibility.Findings)
+	}
+	for _, field := range []string{"runtime_state", "users", "devices", "app_vms", "ingress_mode", "ephemeral", "placement", "resources"} {
+		if !hasFinding(result, "apps.legacy-example."+field, "compatibility_only") {
+			t.Fatalf("omitted app hides retained field %s: %#v", field, result.Compatibility.Findings)
+		}
+	}
+	if result.AuthorityReady || !result.Compatible {
+		t.Fatal("omitted app preselection must remain compatible and legacy-owned")
 	}
 }
 

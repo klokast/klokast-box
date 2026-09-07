@@ -20,14 +20,15 @@ const (
 type InstanceDocument struct {
 	Schema        string `json:"$schema"`
 	SchemaVersion int    `json:"schema-version"`
-	Tailscale struct {
+	Tailscale     struct {
 		DNSName string                    `json:"tailnet-dns-name"`
 		Members map[string]MemberDocument `json:"members"`
 	} `json:"tailscale"`
-	Boxes       map[string]BoxDocument       `json:"boxes"`
-	Controllers ControllerDocument           `json:"controllers"`
-	Airunners   []string                      `json:"airunners"`
-	Apps        map[string]AppBindingDocument `json:"apps"`
+	Boxes        map[string]BoxDocument         `json:"boxes"`
+	Controllers  ControllerDocument             `json:"controllers"`
+	Airunners    []string                       `json:"airunners"`
+	Apps         map[string]AppBindingDocument  `json:"apps"`
+	InactiveApps map[string]InactiveAppDocument `json:"inactive-apps,omitempty"`
 }
 
 type MemberDocument struct {
@@ -35,10 +36,11 @@ type MemberDocument struct {
 }
 
 type BoxDocument struct {
-	Site                 string   `json:"site"`
-	Country              string   `json:"country"`
-	Description          string   `json:"description"`
-	Connectivity         []string `json:"connectivity"`
+	Site         string             `json:"site"`
+	Country      string             `json:"country"`
+	Description  string             `json:"description"`
+	Connectivity []string           `json:"connectivity"`
+	Substrate    *SubstrateDocument `json:"substrate,omitempty"`
 }
 
 type ControllerDocument struct {

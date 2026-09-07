@@ -23,10 +23,10 @@ import (
 const maximumRegistryFile = 1024 * 1024
 
 type Options struct {
-	InstancePath               string
-	CompatibilityDeployment    string
-	CompatibilityRegistry      string
-	CompatibilityControllerHA  string
+	InstancePath              string
+	CompatibilityDeployment   string
+	CompatibilityRegistry     string
+	CompatibilityControllerHA string
 }
 
 type Result struct {
@@ -90,12 +90,12 @@ type Site struct {
 }
 
 type Box struct {
-	ID                   string       `json:"id"`
-	HostnamePrefix       string       `json:"hostname_prefix"`
-	SiteID               string       `json:"site_id"`
-	Connectivity         []string     `json:"connectivity"`
-	Runtime              RuntimeNames `json:"runtime"`
-	Access               Access       `json:"access"`
+	ID             string       `json:"id"`
+	HostnamePrefix string       `json:"hostname_prefix"`
+	SiteID         string       `json:"site_id"`
+	Connectivity   []string     `json:"connectivity"`
+	Runtime        RuntimeNames `json:"runtime"`
+	Access         Access       `json:"access"`
 }
 
 type RuntimeNames struct {
@@ -108,10 +108,10 @@ type RuntimeNames struct {
 }
 
 type Access struct {
-	Declared        []string        `json:"declared_capabilities"`
-	LegacyAvailable []string        `json:"legacy_available_capabilities"`
-	Enabled         []string        `json:"enabled_capabilities"`
-	Prohibited      []string        `json:"prohibited_capabilities"`
+	Declared        []string `json:"declared_capabilities"`
+	LegacyAvailable []string `json:"legacy_available_capabilities"`
+	Enabled         []string `json:"enabled_capabilities"`
+	Prohibited      []string `json:"prohibited_capabilities"`
 }
 
 type ControlPlane struct {
@@ -135,10 +135,10 @@ type App struct {
 }
 
 type DataBinding struct {
-	ID        string `json:"id"`
-	BoxID     string `json:"box_id"`
+	ID         string `json:"id"`
+	BoxID      string `json:"box_id"`
 	RuntimeBox string `json:"runtime_box"`
-	Retention string `json:"retention"`
+	Retention  string `json:"retention"`
 }
 
 type Placement struct {
@@ -259,6 +259,16 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 		return Result{}, fmt.Errorf("load embedded application manifests: %w", err)
 	}
 	compatibility := compare(snapshot, projection, legacy, manifests)
+	// The schema checkpoint can validate future registry inputs, but this
+	// engine must never authorize actions while its consumers ignore them.
+	for _, box := range projection.Boxes {
+		if snapshot.Instance.Boxes[box.ID].Substrate != nil {
+			compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("boxes."+box.ID+".substrate"))
+		}
+	}
+	if snapshot.Instance.InactiveApps != nil {
+		compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("inactive-apps"))
+	}
 	compatibility.Inputs = []CompatibilityInput{{Name: "legacy_platform_resources", SHA256: legacy.digest}}
 	if options.CompatibilityDeployment != "" {
 		mergeCompatibility(&compatibility, compareDeployment(projection, legacyDeployment))
@@ -311,7 +321,7 @@ func Plan(options Options, engine contract.Engine) (Result, error) {
 	result.Valid = true
 	result.Compatible = compatibility.Summary.Conflict == 0 && compatibility.Summary.Unsupported == 0
 	result.Repository = repository
-	result.Deployable = repository.Clean && repository.HeadCommit != ""
+	result.Deployable = result.Compatible && repository.Clean && repository.HeadCommit != ""
 	result.AuthorityReady = result.Compatible && result.Deployable && compatibility.Summary.CompatibilityOnly == 0
 	result.Inputs = inputDigests(snapshot.Inputs)
 	result.Projection = &projection
@@ -334,8 +344,8 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			MagicDNSSuffix: snapshot.Instance.Tailscale.DNSName,
 			Groups:         []TailnetGroup{},
 		},
-		Sites:      []Site{},
-		Boxes:      []Box{},
+		Sites: []Site{},
+		Boxes: []Box{},
 		ControlPlane: ControlPlane{
 			Airunners: []string{},
 		},
@@ -592,9 +602,6 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 		}
 		if enabled {
 			add("apps."+id, "conflict", "app.unrepresented", "the enabled legacy app is not represented by Instance Specification v1")
-		} else {
-			add("apps."+id, "derived", "app.omitted", "an omitted Instance Specification app resolves to absent")
-			continue
 		}
 		for _, field := range sortedKeys(legacyApp) {
 			class := "compatibility_only"
@@ -605,6 +612,8 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 					class, code, message = "unsupported", "app.enabled-type", "the unrepresented legacy enabled field must be a boolean"
 				} else if enabled {
 					class, code, message = "conflict", "app.enabled", "the enabled legacy app has no Instance Specification v1 representation"
+				} else {
+					class, code, message = "derived", "app.omitted-enabled", "the omitted app resolves to disabled; its other legacy settings remain separately owned"
 				}
 			}
 			add("apps."+id+"."+field, class, code, message)
@@ -614,6 +623,11 @@ func compare(snapshot contract.Snapshot, projection Projection, legacy registry,
 	result := Compatibility{RegistrySHA256: legacy.digest, Findings: findings}
 	sortCompatibility(&result)
 	return result
+}
+
+func registryCheckpointFinding(path string) Finding {
+	return Finding{Path: path, Class: "unsupported", Code: "registry.checkpoint-only",
+		Message: "this engine checks registry settings for rollback compatibility; deploy with the later source-aware consumer engine"}
 }
 
 func normalizedLegacyResourceFlags(value any) map[string]any {

@@ -1194,9 +1194,69 @@ compiler and target-variable equality, protected evidence, unchanged-setting
 baselines, and checked publication. Keep old files and historical execution
 evidence until their separate removal and recovery gates are complete.
 
-The exact new schema, action groups, consumer interfaces, recovery behavior,
-and test matrix are still design work. Do not label this batch `decided` or
-claim its scopes have moved to the instance yet.
+### Compatibility checkpoint
+
+Status: `implemented`. This prerequisite comes before the source executor.
+The publication helper checks each candidate with both the active engine and
+its previous sealed engine. The current previous engine rejects new fields.
+Do not remove that check or use a lossy reverse schema conversion. First
+promote an engine that accepts the following optional, closed v1 extensions
+without changing private values. The later consumer engine can then use this
+checkpoint as its rollback checker. Both promotions use the existing exact
+metadata-only workflow. Schema acceptance is not source adoption.
+
+- `boxes.<box>.substrate` contains `bridge-ports`, `dhcp-reservations`, and
+  `shared-guests`. Each field is optional so omission stays distinct from an
+  explicit empty value. Reservations contain only hostname, IPv4 address,
+  and MAC address. Guest roles are `bak`, `dmz`, and `iot`; runtime intent is
+  `running` or `stopped`.
+- `inactive-apps` stores disabled application configuration, including apps
+  whose public manifest was removed. It cannot enable an app. Each entry has
+  typed optional placement, Boolean resource selections, device and VM
+  bindings, runtime state, ingress mode, isolation, user bindings, and
+  ephemeral controls. Placement distinguishes primary, secondary, builder,
+  and multi-box targets. This preserves cleanup targets and preselection.
+  An `apps` entry can separately retain data with `desired-state: absent`.
+  A present application cannot also have an inactive entry.
+- References must name instance boxes. Reject unknown fields, nulls, invalid
+  addresses, duplicate identities or addresses within a box, unsafe interface
+  names, conflicting placements, and malformed ephemeral controls. No raw
+  credentials, executable strings, provider keys, or arbitrary command fields
+  are accepted. Text labels are data and never execution instructions.
+
+The checker runs without credentials or network access. Its worst-case
+compromise is untrusted validation output; it has no publication or execution
+authority. Deployment still requires the controller-held sealed binary and
+existing root validation. The checkpoint planner must explicitly refuse
+deployment when any new extension is present. It must not silently ignore
+accepted fields or authorize a new source action. Existing instance inputs,
+Plan v5, Authority State v3, Toolchain v4, and signed executors keep their
+current behavior. Historical artifacts remain immutable.
+
+Expand omitted-app compatibility findings to expose retained nested settings.
+Do not report a disabled app's complete legacy entry as replaceable merely
+because its enabled flag is false. This corrects the scope inventory; it does
+not adopt those fields or remove the old files.
+
+Verify the old fixtures and planner targets, typed extension acceptance,
+closed-schema and semantic refusals, retained-data coexistence, explicit
+checkpoint deployment refusal, and deterministic detailed legacy coverage.
+Run the Python suite and sealed Go tests/build before checkpoint promotion.
+Build from an isolated controller checkout so the active resolver retains its
+matching canonical engine until the human promotion starts. The checkpoint
+does not install services, apply configuration, publish instance values, or
+change source records. Compare those inputs before and after promotion.
+
+The later grouped adoption must still implement normal source-aware consumers,
+stale legacy-writer refusal, compiler and inventory equality, protected source
+publication, and signed live acceptance. Complete that executor design here
+before its implementation. Keep the overall batch `proposed` until those
+remaining design gates are complete.
+
+The [checkpoint runbook](../klokast-dev/runbooks/50-registry-migration-checkpoint.md)
+owns sealed build, private candidate checks, and metadata-only promotion.
+Repository verification passed the Go suite and all 512 Python tests. Sealed
+build and human promotion remain the checkpoint's acceptance gates.
 
 ## 12. Implementation status and design work queue
 
@@ -1236,6 +1296,7 @@ complete.
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
+| Registry compatibility checkpoint | `implemented` | Optional typed substrate and inactive-app inputs, semantic checks, explicit deployment refusal, and detailed omitted-app ownership are implemented. The checkpoint must pass its sealed build and metadata-only promotion before it can serve as the consumer engine's rollback checker. |
 | Remaining registry and inventory migration | `proposed` | Section 11.5 records the combined schema, consumer, retained-data, and inventory dependencies. Continued scope development is authorized; the bounded design is not complete. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
