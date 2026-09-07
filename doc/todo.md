@@ -10,7 +10,7 @@ nonces unused, no execution receipt, and no runtime residue. The new attempt
 kept the original baselines and old archives and used fresh evidence. Signed
 adoption, fresh signed verification, and exact replay refusal then passed.
 The [controller identity acceptance record](../klokast-dev/runbooks/49-controller-identity-source.md#acceptance-record-2026-09-07)
-holds the evidence references and remaining gate.
+holds the evidence references and completed `live-verified` result.
 
 Request lifetime validation precedes nonce consumption. Therefore a refused
 expired request does not imply that its nonce was consumed. Inspect both
@@ -22,7 +22,10 @@ reuse an expired signature. Complete each human approval before its displayed
 The MacBook Apply helper uses the supplied explicit controller contact.
 Successful Apply execution therefore does not prove that the separate
 MacBook automatic controller resolver works. Keep that read-only acceptance
-check explicit. The missing `ssh-askpass` notice recurred, but both fresh
+check explicit. The human subsequently confirmed automatic resolution,
+explicit resolution, and the dispatch dry run on the MacBook. All selected
+the unchanged active controller and completed acceptance. The missing
+`ssh-askpass` notice recurred, but both fresh
 signatures succeeded; it did not block this source migration.
 
 # 2026-09-07 - Controller identity migration implementation

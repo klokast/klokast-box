@@ -3,8 +3,8 @@
 This runbook implements the
 [controller identity decision](../../doc/upstream-instance-target-architecture.md#114-controller-identity-source-migration).
 It adopts the current active and standby identities as one five-scope group.
-Signed adoption, signed verification, and exact replay refusal completed on
-2026-09-07. The final MacBook resolver check is pending. See the
+Live acceptance completed on 2026-09-07. Signed adoption, signed verification,
+exact replay refusal, and controller and MacBook resolver checks passed. See the
 [acceptance record](#acceptance-record-2026-09-07). Keep the completed
 connectivity records. Do not repeat adoption; later checks use fresh
 verification-only Plans and requests.
@@ -147,8 +147,7 @@ question is required. Preserve retained data and recovery evidence.
 
 ## Acceptance record: 2026-09-07
 
-Status: signed adoption and verification completed; the final MacBook
-resolver check is pending. The controller checks below passed. The active
+Status: `live-verified`. All acceptance gates passed. The active
 controller remained `k002-ops` and the standby remained `k001-ops`.
 
 The human promoted and activated engine
@@ -209,9 +208,13 @@ or service state was changed by this source operation.
 
 The controller's normal automatic and explicit resolution selected the same
 active hostname. Explicit dispatch to the standby was refused. The fixed
-root status action returned source `instance_specification_v1`. The final
-MacBook resolver check remains pending; its earlier Apply commands used an
-explicit controller contact and do not establish automatic resolution.
+root status action returned source `instance_specification_v1`. The human
+then confirmed automatic and explicit resolution on the MacBook: both
+returned `k002-ops`. The explicit dispatch dry run selected
+`tailscale ssh smith@k002-ops cd ~/src/klokast/klokast-box && true`.
+The MacBook had pulled documentation commit `711d255`; its implementation
+files were unchanged from the promoted engine. The controller remained on
+`c8f863b`. This separate check completed the final acceptance gate.
 
 Final Plans for controller identity, default non-controller connectivity,
 and active-controller connectivity, respectively, are:
@@ -246,7 +249,9 @@ baseline, and expired-attempt evidence. The successful attempt is in
 | `signed-execution-verification.json` | Receipt, archive, nonce, cleanup checks, and the human's replay confirmation. |
 | `final/`, `controller-markers-final.json`, `resolver-checks-final.json` | Final router, role, and controller resolver checks. |
 | `final-20260907T160454Z/` | Three final Plans and `remaining-legacy-settings.json`. |
-| `controller-acceptance-result.json` | Completed controller checks and the pending MacBook resolver gate. |
+| `controller-acceptance-result.json` | Historical controller result before the MacBook check. |
+| `macbook-resolver-checks.json` | Human-reported MacBook automatic, explicit, and dispatch dry-run results. |
+| `acceptance-result.json` | Final `live-verified` result with all acceptance gates complete. |
 
 The first human request expired before execution. Inspection found no source
 change, consumed nonce, execution receipt, or runtime residue for that

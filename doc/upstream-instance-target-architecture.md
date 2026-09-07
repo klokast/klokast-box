@@ -951,9 +951,9 @@ does not authorize another migration or legacy removal.
 
 ## 11.4 Controller identity source migration
 
-Status: `implemented` on 2026-09-07. Signed adoption, fresh signed
-verification, replay refusal, and final controller checks passed. The
-MacBook resolver check remains pending before `live-verified`; see the
+Status: `live-verified` on 2026-09-07. Signed adoption, fresh signed
+verification, replay refusal, unchanged-setting checks, and controller and
+MacBook resolver checks passed. See the
 [acceptance record](../klokast-dev/runbooks/49-controller-identity-source.md#acceptance-record-2026-09-07).
 The human authorized this migration and
 continued work across the remaining migration scopes without a separate
@@ -1146,8 +1146,9 @@ connectivity targets report all four groups as verification-only. The
 original input hashes, ownership and modes, both persistent controller
 markers, and 138 persistent configuration entries on each router remained
 unchanged. Controller automatic and explicit resolution passed, with standby
-dispatch refused. The MacBook resolver check is still open; successful
-explicit-contact Apply commands do not prove that separate entry point.
+dispatch refused. The human also verified MacBook automatic and explicit
+resolution and its dispatch dry run. All selected the unchanged active
+controller. The final acceptance result is `live-verified`.
 
 The runbook holds full controller evidence references and the
 [remaining legacy list](../klokast-dev/runbooks/49-controller-identity-source.md#remaining-legacy-owned-settings).
@@ -1234,21 +1235,19 @@ complete.
 | First box connectivity migration | `live-verified` | On 2026-09-06, the human promoted the corrected sealed engine and approved one verification-only request with Touch ID. Authenticated k001 router configuration, service, route, firewall, and reachability checks passed. The controller stored a `verified` execution receipt, and the MacBook helper confirmed refusal of the exact replay because its nonce was already used. A final Plan kept k001 and Tailnet verification-only and k002 on the old registry. All setting-source and desired-state hashes remained unchanged. Live rollback and re-adoption remain unverified and deferred. |
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
-| Controller identity sources | `implemented` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the evidence. The MacBook resolver check remains open before `live-verified`. |
+| Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Remaining registry and inventory migration | `proposed` | Section 11.5 records the combined schema, consumer, retained-data, and inventory dependencies. Continued scope development is authorized; the bounded design is not complete. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue
 
-1. Complete the remaining MacBook resolver check and record live acceptance
-   for the [controller identity source decision](#114-controller-identity-source-migration).
-2. Complete the bounded design and implementation of the
+1. Complete the bounded design and implementation of the
    [remaining registry and inventory batch](#115-remaining-registry-and-inventory-migration-batch)
    from the final Plan. The human authorized continued scope
    development without another scope-selection question. Record bounded
    designs, preserve data and recovery, and use the existing exact signed
    promotion and live-action workflows.
-3. Keep legacy removal `proposed` until its recovery, rollback, observation,
+2. Keep legacy removal `proposed` until its recovery, rollback, observation,
    and exact live-action gates are complete. Continued migration work does
    not by itself authorize deletion of retained data or recovery evidence.
 
