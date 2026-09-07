@@ -52,6 +52,14 @@ class RegistrySourceTest(unittest.TestCase):
         before = "instance_specification_v1" if adopted else m.LEGACY_REGISTRY_SOURCE
         for scope in self.scopes():
             plan["actions"].append({"id": scope, "finding_id": scope, "scope": scope, "operation": operation, "executor": m.REGISTRY_EXECUTOR, "authority_before": before, "authority_after": "instance_specification_v1", "preconditions": m.REGISTRY_PRECONDITIONS, "rollback": {"strategy": "no_mutation", "authority": before}})
+        # The planner keeps pending migrations outside the selected group.
+        # This action is present in the live Plan even after registry adoption.
+        scope = "deployment.control_plane.airunners.boxa-ops-airunner"
+        plan["actions"].append({"id": scope, "finding_id": scope, "scope": scope,
+            "operation": "adopt_instance_specification", "executor": "unimplemented_action",
+            "authority_before": "legacy_deployment", "authority_after": "instance_specification_v1",
+            "preconditions": ["active_controller_fenced", "exact_plan_revalidated", "rollback_prepared"],
+            "rollback": {"strategy": "restore_authority", "authority": "legacy_deployment", "source_sha256": "a" * 64}})
         return plan
 
     def test_closed_plans_and_authority_versions(self):
@@ -68,10 +76,11 @@ class RegistrySourceTest(unittest.TestCase):
             lambda p: p.update(kind=m.KIND_PLAN_V5, schema_version=5),
             lambda p: p.update(migration_target="connectivity"),
             lambda p: p["projection"]["control_plane"]["active_controller"].update(hostname="wrong-ops"),
-            lambda p: p["actions"][-1].update(operation="apply-box-access"),
-            lambda p: p["actions"][-1].update(scope="apps.saved.command"),
+            lambda p: p["actions"][-2].update(operation="apply-box-access"),
+            lambda p: p["actions"][-2].update(scope="apps.saved.command"),
             lambda p: p["actions"][-1].update(executor="shell"),
-            lambda p: p["actions"][-1].update(command="id"),
+            lambda p: p["actions"][-1].update(executor="unimplemented"),
+            lambda p: p["actions"][-2].update(command="id"),
             lambda p: p["action_groups"][-2]["scopes"].pop(),
             lambda p: p["authority_state"]["setting_groups"][0].update(source=m.LEGACY_REGISTRY_SOURCE),
         ):
@@ -145,7 +154,8 @@ class RegistrySourceTest(unittest.TestCase):
                 def validate(args, work):
                     validations.append(work)
                     if executing and outcome == "input-changed": raise m.ApplyError("private input changed")
-                    return {**binding, **m.prepare_complete_registry_comparison(work, plan), "state": state, "plan": plan, "group": next(g for g in plan["action_groups"] if g["id"] == m.REGISTRY_GROUP)}
+                    _, checked_plan, group = m.verify_plan_v3(plan_path)
+                    return {**binding, **m.prepare_complete_registry_comparison(work, checked_plan), "state": state, "plan": checked_plan, "group": group}
                 stack.enter_context(patch.object(m, "validate_inputs_v3", side_effect=validate))
                 stack.enter_context(patch.object(m, "verify_controller_pair", return_value=self.identity.roles()))
                 with redirect_stdout(io.StringIO()) as stdout: m.registry_preflight(Mock())

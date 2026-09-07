@@ -3382,7 +3382,7 @@ def validate_registry_plan_actions(plan, group):
     validate_registry_group(plan, group, selected=True)
     if plan["authority_state"]["kind"] not in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4} or any(g.get("source") != "instance_specification_v1" for g in plan["authority_state"]["setting_groups"]):
         raise ApplyError("registry adoption requires adopted identity and connectivity")
-    if any(a.get("executor") not in {REGISTRY_EXECUTOR, "none", "read_only_doctor", "unimplemented"} for a in plan["actions"]):
+    if any(a.get("executor") not in {REGISTRY_EXECUTOR, "none", "read_only_doctor", "unimplemented_action"} for a in plan["actions"]):
         raise ApplyError("registry Plan includes another executable action")
     actions = [a for a in plan["actions"] if a.get("executor") == REGISTRY_EXECUTOR]
     if sorted(a.get("scope", "") for a in actions) != group["scopes"]:

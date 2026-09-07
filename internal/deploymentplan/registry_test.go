@@ -97,12 +97,22 @@ func TestRegistryAdoptionAndFinalPlannerTargets(t *testing.T) {
 	if group.Executor != "registry_source_v1" || group.Operation != "adopt_instance_specification" || len(group.Scopes) != 9 {
 		t.Fatalf("incomplete registry group: %#v", group)
 	}
+	pendingAirunner := false
 	for _, action := range plan.Actions {
+		if strings.HasPrefix(action.Scope, "deployment.control_plane.airunners.") {
+			if action.Operation != "adopt_instance_specification" || action.Executor != "unimplemented_action" {
+				t.Fatalf("registry migration changed the pending airunner action: %#v", action)
+			}
+			pendingAirunner = true
+		}
 		if strings.HasSuffix(action.Scope, "schema_version") || action.Scope == "controller_ha.remote_user" || action.Scope == "controller_ha.repo_dir" {
 			if action.Operation != "verify_engine_policy" || action.Executor != "none" {
 				t.Fatalf("metadata gained source adoption: %#v", action)
 			}
 		}
+	}
+	if !pendingAirunner {
+		t.Fatal("registry fixture omitted the pending airunner migration")
 	}
 	state.Kind, state.SchemaVersion, state.PriorStateKind = authoritystate.KindV4, 4, authoritystate.KindV3
 	state.PriorStateSHA256, state.TransitionID, state.SignedIntentSHA256 = state.AuthorityStateSHA256, "registry-test-anchor", strings.Repeat("e", 64)

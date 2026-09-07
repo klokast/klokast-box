@@ -5,6 +5,21 @@ Status: `implemented`; live acceptance is pending. The bounded decision is in
 The [compatibility checkpoint](50-registry-migration-checkpoint.md) is active.
 Its acceptance record is complete and remains the rollback-checker baseline.
 
+Engine `e05a713` was promoted and private commit `317af096` published the exact
+checked registry candidate. Matching Toolchain v5, both controller markers,
+and router configuration baselines passed. The first unsigned preflight refused
+an unrelated pending airunner action because of a validator vocabulary mismatch.
+No source transition or signed execution occurred. Promote the corrected
+validator before continuing. Preserve this controller-held attempt:
+
+```text
+/home/smith/private/klokast/registry-source-acceptance/e05a713cd32f859d75858ad1943f4ef88edb80f3
+```
+
+The directory contains publication synchronization, input and router baselines,
+the initial Plan, and the refusal in `initial-preflight/`. New acceptance must
+use the corrected engine, matching installed tools, and fresh evidence.
+
 ## Scope and authority
 
 Adopt both boxes' substrate settings and every saved disabled-app field as

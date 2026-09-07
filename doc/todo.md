@@ -2,6 +2,23 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Registry validator must accept pending Plan actions
+
+The first live registry preflight refused before router verification or source
+publication. The sealed Plan correctly kept an airunner migration outside the
+selected registry group with executor `unimplemented_action`. The root registry
+validator expected the nonexistent spelling `unimplemented`. The correction
+uses the planner's exact vocabulary and does not execute that pending action.
+
+The Python registry fixture had omitted pending actions, and its signed-file
+test bypassed the Plan parser. It now includes the airunner action and parses
+the stored Plan during preparation and execution. The Go registry test also
+requires that pending action. Keep the actual sealed private Plan parser check
+in the review gate; synthetic fixtures alone did not cover this deployment.
+The published private registry candidate remains valid. Preserve the refused
+attempt and its baselines, promote the correction, then capture new baselines
+and refresh evidence before signed adoption.
+
 # 2026-09-07 - Registry source adoption must replace normal readers too
 
 A source-record change alone would leave the compiler, lifecycle tools, and
