@@ -2,6 +2,43 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Controller-box source acceptance completed
+
+Source-only adoption, fresh signed verification, exact replay refusal, and
+unchanged-setting checks passed for engine `cc68fc6`. Both box connectivity
+groups and Tailnet now use the instance. The
+[controller-box acceptance record](../klokast-dev/runbooks/48-controller-box-connectivity-source.md#acceptance-record-2026-09-07)
+contains the immutable receipts, final Plans, and controller-held evidence
+directory. The completed first-box record below remains historical evidence.
+
+The acceptance work encountered these resolved preparation and inspection
+issues. None required a router change or a change to the sealed implementation:
+
+- The first controller syntax command named the nonexistent
+  `62-ops-controller.yml`. The check passed with the actual playbook,
+  `67-ops-controller-converge.yml`. No play ran during the failed check.
+- The first baseline helper treated the instance's `boxes` object as an
+  array. It failed before router contact. Iteration over the object keys
+  supplied the correct box IDs.
+- Combining the base and generated inventories also selected example
+  routers. Both real router reads succeeded, but example names did not
+  resolve. An explicit limit to the two instance-derived router names fixed
+  the evidence collection. The refused attempt remains in
+  `baseline-example-hosts-refused/` under the acceptance directory.
+- The first source-evidence helper assumed a narrow set of Git origin URL
+  formats and refused the valid `ssh.github.com` origin. Using repository
+  identity from the authenticated source receipt fixed the refresh. The
+  refused attempt remains in `adoption-20260906T232948Z/`.
+- Protected archive inspection through `sudo` was refused by the controller's
+  command policy. The existing `doas` path permitted the read-only checks.
+  Archive ownership and modes stayed unchanged.
+
+The runbook records the corrected syntax, inventory, and source-identity
+steps. No implementation change was needed during live acceptance. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the next legacy-scope decision. Live rollback, re-adoption, direct-IPv6
+repair, and legacy removal remain deferred.
+
 # 2026-09-06 - First-box forward verification acceptance completed
 
 The human promoted combined corrected engine

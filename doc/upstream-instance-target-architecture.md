@@ -864,11 +864,20 @@ a failed, stale, or successful signed action cannot be replayed.
 
 ## 11.3 Controller box connectivity source migration
 
-Status: `decided`. The human selected a source-only migration of the box
-that hosts the active controller, currently k002. This decision completes
-connectivity source adoption for the existing two-box deployment. It does
-not complete the private-instance migration. Section 11.1 remains the
-completed first-box acceptance record.
+Status: `live-verified` on 2026-09-07. The human approved source-only adoption
+for k002, which hosts the active controller, then approved fresh signed
+verification and confirmed exact replay refusal. Engine `cc68fc6` changed
+only the k002 connectivity source. Final Plan `783d1dc` reports both box
+connectivity groups and Tailnet as verification-only, with no refusals. All
+five private desired-state files and all 138 saved persistent configuration
+entries on each router remained unchanged. The
+[controller-box acceptance record](../klokast-dev/runbooks/48-controller-box-connectivity-source.md#acceptance-record-2026-09-07)
+contains the controller-held evidence references.
+
+This completes connectivity source adoption for the existing two-box
+deployment. It does not complete the private-instance migration. Section
+11.1 remains the completed first-box acceptance record. The contract below
+records the implemented and verified decision.
 
 Deployment Plans use `klokast.plan.v4`. The CLI and controller wrapper accept
 `--connectivity-target non-controller|active-controller`, with
@@ -976,13 +985,17 @@ complete.
 | Authorized apply | `live-verified` | On 2026-08-25, the dedicated Touch ID signer and closed root executor completed byte-preserving adoption, a verification-only Plan, forward rollback, re-adoption, a final verification-only Plan, and replay refusal. The final authority is Instance Specification v1 for the exact three-scope Tailnet group. The live policy bytes remained unchanged, and immutable evidence was retained. |
 | First box connectivity migration | `live-verified` | On 2026-09-06, the human promoted the corrected sealed engine and approved one verification-only request with Touch ID. Authenticated k001 router configuration, service, route, firewall, and reachability checks passed. The controller stored a `verified` execution receipt, and the MacBook helper confirmed refusal of the exact replay because its nonce was already used. A final Plan kept k001 and Tailnet verification-only and k002 on the old registry. All setting-source and desired-state hashes remained unchanged. Live rollback and re-adoption remain unverified and deferred. |
 | Ops-only overlay IPv6 repair | `implemented` | The Freebox broker, physical credential installer, manual Huawei prerequisite, ops-only network path, signed action, rollback, and repository tests are implemented. Signed live acceptance is deferred under the current work queue. |
-| Controller box connectivity source migration | `decided` | Section 11.3 selects source-only adoption for the active controller box. Implementation, sealed tests, promotion, and signed live acceptance are pending. |
+| Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
 | Migration and legacy removal | `proposed` | Connectivity adoption does not authorize another setting group or legacy removal. |
 
 ### Current work queue
 
-1. Implement and live-verify the controller-box source-only decision in
-   section 11.3. Then use its final Plan to select the next legacy-owned group.
+1. Select the next legacy-owned scope from the completed controller-box
+   [final Plan review](../klokast-dev/runbooks/48-controller-box-connectivity-source.md#remaining-legacy-owned-settings).
+   The remaining areas are controller selection and HA settings; box bridge
+   ports, DHCP reservations, and shared guests; application settings; and
+   legacy schema metadata and execution inventory. Record a separate decision
+   before implementing another migration.
 2. Keep legacy removal `proposed` until its separate recovery, rollback,
    observation, and explicit approval gates are complete.
 
