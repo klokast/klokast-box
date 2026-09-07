@@ -566,7 +566,7 @@ if requested_transition:
     transition = requested_transition
 elif set(instance) == legacy_keys:
     transition = "instance-v1-legacy-to-current"
-elif set(instance) == current_keys:
+elif set(instance) in (current_keys, current_keys | {"inactive-apps"}):
     connectivity_values = {
         item
         for document in instance.get("boxes", {}).values()

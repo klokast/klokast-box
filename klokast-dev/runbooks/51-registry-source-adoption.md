@@ -20,6 +20,15 @@ The directory contains publication synchronization, input and router baselines,
 the initial Plan, and the refusal in `initial-preflight/`. New acceptance must
 use the corrected engine, matching installed tools, and fresh evidence.
 
+The attempt to promote validator correction `1dc2dd6` then exposed a Mac
+candidate-selector omission for the published `inactive-apps` field. It stopped
+before approval or private publication. The combined correction must pass the
+actual Mac candidate generator and installed controller promotion preflight
+with the published private input. Keep both sealed-engine checks and the
+metadata-only diff. Use the direct `smith` controller contact during this
+pending promotion because the public checkout has advanced while installed
+Apply tools still match `e05a713`.
+
 ## Scope and authority
 
 Adopt both boxes' substrate settings and every saved disabled-app field as

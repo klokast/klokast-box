@@ -2,6 +2,25 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-07 - Test promotion after publishing optional instance fields
+
+After the registry candidate was published, the Mac promotion helper refused
+`inactive-apps` with `private Instance v1 document has no supported promotion
+shape`. Its automatic transition selector still required the earlier root
+field set. The existing metadata-only transition and controller validator
+already preserve optional registry fields; the selector now accepts the
+declared optional field. Unknown root fields and lossy legacy transitions
+remain refusals. Both sealed-engine checks remain required.
+
+The regression test executes the actual embedded Mac candidate generator,
+checks exact file preservation, and passes its envelope to the controller
+validator. Private review must also generate that exact envelope and run the
+installed unsigned promotion preflight before asking the human to retry.
+The failed Mac attempt did not publish a private commit or change source
+ownership. Its controller public checkout had already advanced for promotion;
+use the explicit controller contact while installed Apply tools still match
+the active engine.
+
 # 2026-09-07 - Registry validator must accept pending Plan actions
 
 The first live registry preflight refused before router verification or source

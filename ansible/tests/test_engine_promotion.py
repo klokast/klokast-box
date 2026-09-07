@@ -18,6 +18,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "klokast-ops" / "secret-authority" / "bin" / "ksa-instance"
+PROMOTION_HELPER = REPO_ROOT / "klokast-dev/bin/promote-private-instance-engine"
 OLD_COMMIT = "a" * 40
 NEW_COMMIT = "b" * 40
 
@@ -159,6 +160,83 @@ class EnginePromotionTest(unittest.TestCase):
         self.assertEqual(commit, envelope["private_base_commit"])
         self.assertEqual(tree, envelope["private_base_tree"])
         self.assertEqual(list(self.root.glob(".engine-promotion.*")), [])
+
+    def run_workstation_candidate(self, requested_transition=""):
+        # Execute the actual Mac helper program, including transition selection,
+        # file preservation, Git tree construction, and the closed envelope.
+        source = PROMOTION_HELPER.read_text()
+        start = source.index('python3 - "$PRIVATE_WORKTREE" "$CANDIDATE" "$ENVELOPE"')
+        program = source[start:].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        output = self.root / "workstation"
+        output.mkdir(mode=0o700)
+        result = subprocess.run([
+            sys.executable, "-c", program, str(self.checkout),
+            str(output / "candidate"), str(output / "envelope.json"),
+            OLD_COMMIT, NEW_COMMIT, self.git(self.checkout, "rev-parse", "HEAD"),
+            self.git(self.checkout, "rev-parse", "HEAD^{tree}"), "false",
+            requested_transition, str(output / "transition"),
+        ], text=True, capture_output=True)
+        return result, output
+
+    def use_current_registry_instance(self):
+        instance = json.loads((self.checkout / "klokast-instance.json").read_text())
+        instance = self.mod.transition_instance_v1(
+            instance, self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT, OLD_COMMIT
+        )
+        instance = self.mod.transition_instance_v1(
+            instance, self.mod.SCHEMA_TRANSITION_PROFILES_TO_CAPABILITIES, OLD_COMMIT
+        )
+        instance["boxes"]["boxa"]["substrate"] = {"bridge-ports": {"lan": ["eth1"]}}
+        instance["boxes"]["boxb"]["substrate"] = {}
+        instance["inactive-apps"] = {"nextcloud": {
+            "placement": {"primary": "", "secondary": ""},
+            "resources": {"cloudflare-tunnel-egress": False},
+        }}
+        (self.checkout / "klokast-instance.json").write_text(json.dumps(instance, indent=2, sort_keys=True) + "\n")
+        self.git(self.checkout, "add", "klokast-instance.json")
+        self.git(self.checkout, "commit", "-qm", "published registry settings")
+        return instance
+
+    def test_workstation_registry_promotion_preserves_bytes_and_passes_controller(self):
+        instance = self.use_current_registry_instance()
+        original = {name: (self.checkout / name).read_bytes()
+                    for name in ("klokast-instance.json", "klokast.lock.json")}
+        result, output = self.run_workstation_candidate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads((output / "envelope.json").read_text())
+        self.assertEqual(envelope["schema_transition"], "metadata-only")
+        candidate = json.loads(envelope["candidate_instance_json"])
+        self.assertEqual(candidate, {**instance, "$schema": self.schema(NEW_COMMIT, "klokast-instance-v1.schema.json")})
+        self.assertEqual(envelope["candidate_instance_json"].encode(), original["klokast-instance.json"].replace(OLD_COMMIT.encode(), NEW_COMMIT.encode()))
+        self.mod.validate_candidate_tree(self.args, envelope, self.old_build, self.new_build)
+        for name, content in original.items():
+            self.assertEqual((self.checkout / name).read_bytes(), content)
+        self.assertEqual(self.git(self.checkout, "status", "--porcelain"), "")
+        candidate["inactive-apps"]["nextcloud"]["placement"]["primary"] = "boxa"
+        envelope["candidate_instance_json"] = json.dumps(candidate)
+        with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "exact deterministic"):
+            self.mod.validate_candidate_tree(self.args, envelope, self.old_build, self.new_build)
+
+    def test_workstation_legacy_transition_still_works(self):
+        result, output = self.run_workstation_candidate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads((output / "envelope.json").read_text())
+        self.assertEqual(envelope["schema_transition"], self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT)
+        self.mod.validate_candidate_tree(self.args, envelope, self.old_build, self.new_build)
+
+    def test_workstation_registry_shape_rejects_unknown_fields(self):
+        instance = self.use_current_registry_instance()
+        instance["unknown-setting"] = {}
+        (self.checkout / "klokast-instance.json").write_text(json.dumps(instance))
+        result, _ = self.run_workstation_candidate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no supported promotion shape", result.stderr)
+
+    def test_workstation_registry_cannot_use_lossy_legacy_transition(self):
+        self.use_current_registry_instance()
+        result, _ = self.run_workstation_candidate(self.mod.SCHEMA_TRANSITION_CURRENT_TO_LEGACY)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot be converted to the legacy shape", result.stderr)
 
     def test_schema_transition_moves_only_redundant_legacy_structure(self):
         legacy = json.loads((self.checkout / "klokast-instance.json").read_text())
