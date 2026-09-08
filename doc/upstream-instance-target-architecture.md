@@ -1156,16 +1156,20 @@ Do not repeat adoption or automatically deploy acceptance documentation.
 
 ## 11.5 Remaining registry and inventory migration batch
 
-Status: `proposed`. Continued scope development is already authorized. This
-section records the next implementation dependencies, not a request for
-another scope decision. Complete the bounded design before implementation.
+Registry status: `live-verified`. Registry schema, consumers, and source
+adoption are complete. Execution inventory and runner identity adoption remain
+`proposed`; continued scope development is already authorized. Complete their
+bounded design before implementation.
 
-Use final identity Plan `9866249` as the scope inventory. It contains 22
-legacy-source actions and a continuing execution-inventory authority. Some
-actions summarize an entire omitted application entry. Do not interpret
-that aggregate finding as permission to discard its nested settings.
+The batch started from identity Plan `9866249`, which contained 22 legacy-source
+actions and continuing execution inventory. Final registry Plan `2d2bfbe5`
+now has no retained legacy setting actions. It keeps `execution_inventory`
+under `legacy_engine_inventory` and one pending runner adoption action with
+prior authority `none`. The
+[registry acceptance record](../klokast-dev/runbooks/51-registry-source-adoption.md#remaining-authority-and-action)
+holds the exact remaining list.
 
-The next batch must address these connected dependencies together:
+The batch addresses these connected dependencies:
 
 - Give box bridge ports, DHCP reservations, and shared-guest runtime intent
   explicit typed instance representations. Preserve their effective values,
@@ -1264,9 +1268,9 @@ The checkpoint runbook holds the acceptance references.
 
 ### Registry source adoption
 
-Status: `implemented`; signed adoption passed on 2026-09-08. Signed
-verification and exact replay refusal are pending. Adopt the remaining
-registry settings as one atomic group. The
+Status: `live-verified` on 2026-09-08. Signed adoption, fresh signed verification,
+exact replay refusal, final Plan, and unchanged-setting checks passed. Adopt
+the remaining registry settings as one atomic group. The
 [registry source runbook](../klokast-dev/runbooks/51-registry-source-adoption.md)
 contains the implementation and acceptance workflow.
 This step uses the existing two-box arrangement, a configured controller pair,
@@ -1368,6 +1372,38 @@ persistent router configuration. Store a final Plan and the remaining
 execution-inventory authority. Update acceptance documentation without
 automatically deploying its final documentation commit.
 
+### Recorded registry execution result
+
+Engine `db61bc7` and private commit `366efc19` completed the exact registry-only
+Authority State v4 transition. Fresh signed verification and exact replay
+refusal passed with nonce `byL1lnwV2C2G5cLwE54NiOut`. Final Plan `2d2bfbe5`
+reports all five adopted groups as verification-only. The original desired
+state, both controller markers, and 138 persistent configuration entries on
+each router remained unchanged. The normal registry reader uses the instance;
+the legacy writer guard refuses. Recognized DERP on k001 passed access checks.
+Both signed archives, receipts, consumed nonces, and runtime cleanup passed
+inspection. The
+[acceptance record](../klokast-dev/runbooks/51-registry-source-adoption.md#acceptance-record-2026-09-08)
+holds the full controller evidence references.
+
+### Remaining inventory and runner dependencies
+
+Status: `proposed`; implementation scope is already authorized. Final Plan
+`2d2bfbe5` retains only `execution_inventory` as a legacy authority. Its one
+pending adoption action is the declared controller-container runner identity;
+the action has prior authority `none`, not a retained legacy registry field.
+
+The consumer audit found that `converge-ops-controller` combines the static
+base inventory with `render-node-inventory` output. Ansible still loads a
+box-specific host-variable file that enables the runner, while the generic
+group default disables it. The current generator accepts a caller-supplied
+box and suffix. Complete the next design around instance-derived membership,
+runner selection, and upstream role topology. Compare effective host groups
+and variables, preserve exact target limits and recovery inventory, and audit
+all normal consumers before changing the Plan's continuing-authority report.
+The existing private `airunners` list supplies intent; this work does not
+authorize runner retirement, controller changes, or removal of recovery files.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -1407,15 +1443,15 @@ complete.
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
-| Registry source adoption | `implemented` | Engine `db61bc7` and private commit `366efc19` are active. Signed adoption passed on 2026-09-08 with an exact registry-only source transition and unchanged-setting checks. The human interrupted verification. Resume with fresh verification evidence and exact replay refusal; do not repeat adoption. Runbook 51 records the source, receipt, and resume checkpoint. |
-| Remaining registry and inventory migration | `proposed` | Section 11.5 records the combined schema, consumer, retained-data, and inventory dependencies. Continued scope development is authorized; the bounded design is not complete. |
+| Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
+| Remaining inventory and runner adoption | `proposed` | Final Plan `2d2bfbe5` retains execution inventory and one pending runner identity action. Section 11.5 records the consumer audit and remaining design dependencies. Continued scope development is authorized. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue
 
 1. Complete the bounded design and implementation of the
-   [remaining registry and inventory batch](#115-remaining-registry-and-inventory-migration-batch)
-   from the final Plan. The human authorized continued scope
+   [remaining inventory and runner dependencies](#remaining-inventory-and-runner-dependencies)
+   from final registry Plan `2d2bfbe5`. The human authorized continued scope
    development without another scope-selection question. Record bounded
    designs, preserve data and recovery, and use the existing exact signed
    promotion and live-action workflows.

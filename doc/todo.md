@@ -2,6 +2,25 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-08 - Final registry Plan still requires inventory and runner work
+
+Registry source adoption is `live-verified`. Signed verification, exact replay
+refusal, final unchanged-setting checks, protected evidence, and final Plan
+passed. The [acceptance record](../klokast-dev/runbooks/51-registry-source-adoption.md#acceptance-record-2026-09-08)
+holds the controller evidence. Recognized DERP on k001 passed; it requires no
+network repair for this milestone.
+
+The final Plan has no retained legacy setting actions. It still assigns
+`execution_inventory` to `legacy_engine_inventory` and emits one runner
+adoption action with prior authority `none`. Do not describe that action as
+a remaining legacy-owned registry group. The inventory consumer audit found
+static base inventory, generated per-box hosts, and a box-specific runner
+enablement override. A complete replacement must cover normal consumers,
+effective host variables, exact limits, and recovery inputs before the Plan
+can remove continuing inventory authority. The
+[current queue](upstream-instance-target-architecture.md#current-work-queue)
+already authorizes this scope development.
+
 # 2026-09-08 - Allow documentation updates in the Mac acceptance checkout
 
 The supplied registry resume command required the Mac `HEAD` to equal the
@@ -32,8 +51,9 @@ and refreshes evidence before unsigned verification preparation. It accepts
 no operation selector and cannot execute adoption. Do not rerun the original
 two-step command, overwrite its verification arguments, or relax input and
 expiry checks. The [registry runbook](../klokast-dev/runbooks/51-registry-source-adoption.md#interrupted-acceptance-2026-09-08)
-records this checkpoint. Signed verification and exact replay refusal remain
-required before the milestone is `live-verified`.
+records this historical checkpoint. Fresh signed verification and exact replay
+refusal subsequently completed the milestone; its final acceptance record is
+linked above.
 
 # 2026-09-07 - Test promotion after publishing optional instance fields
 

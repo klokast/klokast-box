@@ -1,10 +1,11 @@
 # Registry source adoption
 
-Status: `implemented`; signed adoption passed on 2026-09-08. Signed
-verification and exact replay refusal are pending. The bounded decision is in
+Status: `live-verified` on 2026-09-08. Signed adoption, fresh signed
+verification, exact replay refusal, final Plan, and unchanged-setting checks
+passed. The bounded decision is in
 [the target architecture](../../doc/upstream-instance-target-architecture.md#registry-source-adoption).
-The [compatibility checkpoint](50-registry-migration-checkpoint.md) is active.
-Its acceptance record is complete and remains the rollback-checker baseline.
+The [compatibility checkpoint](50-registry-migration-checkpoint.md) passed
+before adoption. Its completed acceptance record remains historical evidence.
 
 Engine `e05a713` was promoted and private commit `317af096` published the exact
 checked registry candidate. Matching Toolchain v5, both controller markers,
@@ -162,7 +163,65 @@ Commit and push acceptance documentation without deploying that documentation
 commit. Continue with the final Plan's remaining execution-inventory setting
 groups under the user's existing migration authorization.
 
+## Acceptance record, 2026-09-08
+
+The exact adoption transition and its receipt are recorded in the
+[interruption checkpoint](#interrupted-acceptance-2026-09-08) below. The human
+then approved fresh verification with the existing MacBook Touch ID helper.
+Verification finished at `2026-09-08T21:30:11Z`, and the helper confirmed refusal
+of the exact signed replay. The source stayed at Authority State v4
+`e2ef84b6c703be23e5c74c413799c7c8cde8c4f180f1eed3d24f3feb240eb1de`.
+
+The verification receipt and final Plan are stored on the active controller:
+
+```text
+/var/lib/klokast/apply-executions/byL1lnwV2C2G5cLwE54NiOut/dc1ac0f295c8d4cc6f5476849d2bf73aad2a2f41b9dee39bbf550c21ced8552d.json
+/var/lib/klokast/plans/366efc194d2efd82080d59f87222129eb309b51e/2d2bfbe5b3f18c2c4f2e244bdb5bd0547522a2610834ee8bde22e3430ad1ebe9.json
+```
+
+Final checks completed at `2026-09-08T21:38:54Z`. Both controller markers and
+all 138 captured persistent configuration entries on each router match the
+original baselines. The seven bound input files retain their required bytes,
+ownership, and modes, with only the exact adopted source-pointer transition
+permitted. The normal registry reader returns the adopted instance values,
+and the legacy writer guard refuses. Both signed requests have valid protected
+archives, one execution audit record each, consumed nonces, and no runtime
+copies. The k001 router used recognized DERP during signed verification;
+authenticated access checks passed. Direct transport remains preferred.
+
+The final Plan is valid, compatible, deployable, authority-ready, and healthy,
+with no refusals. Both connectivity groups, controller identity, registry
+settings, and Tailnet are verification-only. No action retains a legacy-owned
+registry or deployment setting. Registry acceptance is complete; this does
+not complete the whole upstream/instance migration.
+
+The controller-held acceptance directory below contains:
+
+- `acceptance-result.json`: final result and evidence-file hashes.
+- `final-plan-reference.json`: final Plan and exact remaining authority list.
+- `final-protected-evidence-check.json`: both signed archives and consumed nonces.
+- `human-replay-confirmation.json`: the human-reported helper result and its nonce.
+- `final-registry-reader-check.json`, `controller-markers-final.json`, and
+  `final/`: final reader, writer guard, identity, and router baseline checks.
+- `resumed-verification-20260908T211941.238422Z/`: the approved verification
+  preparation; `final-20260908T213442Z/`: final source and observation evidence.
+
+### Remaining authority and action
+
+| Final Plan item | Current state |
+| --- | --- |
+| `execution_inventory` | `legacy_engine_inventory` remains a continuing authority. |
+| `deployment.control_plane.airunners.k002-ops-airunner` | One pending adoption action, with executor `unimplemented_action` and prior authority `none`. It is not a retained legacy setting group. |
+
+The final Plan reports `legacy_removal_ready: false`. Continue the
+[current migration queue](../../doc/upstream-instance-target-architecture.md#current-work-queue)
+under the existing scope authorization. Keep legacy files and recovery
+evidence. This acceptance documentation does not require engine promotion.
+
 ## Interrupted acceptance, 2026-09-08
+
+This historical checkpoint explains the interrupted attempt and its resume.
+The [acceptance record](#acceptance-record-2026-09-08) above is the final result.
 
 Engine `db61bc775a0e30babd202be7ab96a26533d79fad` is active with the private
 commit above. The sealed build operation is `fb2dcfa3f83a`. Its 524 Python
@@ -234,9 +293,11 @@ from the active engine are confined to `doc/` and `klokast-dev/runbooks/`.
 All other tracked files must match. The controller still requires the exact
 active engine, matching installed tools, and unchanged private inputs.
 
-Run this command in an interactive Mac terminal from the public repository
-root. It refreshes evidence when invoked and uses the existing Touch ID
-approval helper. Review action `verify_instance_authority` before signing.
+The following command completed the verification acceptance recorded above.
+Keep it as the inspected resume procedure; no further signature is required
+for this completed acceptance. When used, it runs in an interactive Mac
+terminal from the public repository root, refreshes evidence, and uses the
+existing Touch ID approval helper for action `verify_instance_authority`.
 
 ```sh
 python3 -c '
