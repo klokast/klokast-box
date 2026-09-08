@@ -2,6 +2,19 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-08 - Allow documentation updates in the Mac acceptance checkout
+
+The supplied registry resume command required the Mac `HEAD` to equal the
+active engine commit. It stopped at that local assertion before contacting
+the controller. This check also rejects the published acceptance documentation
+commit, although all approval code is unchanged. The Mac commit was not
+reported, so confirm compatibility through the diff instead of assuming its
+value. Require a clean Mac checkout and permit differences from the active
+engine only under `doc/` and `klokast-dev/runbooks/`. Refuse other differences
+with a clear diagnostic. Keep the controller's exact engine, toolchain, and
+input checks. The [registry runbook](../klokast-dev/runbooks/51-registry-source-adoption.md#mac-checkout-for-verification-resume)
+contains the corrected complete command.
+
 # 2026-09-08 - Resume registry acceptance after completed adoption
 
 The human interrupted acceptance after registry adoption and preparation of

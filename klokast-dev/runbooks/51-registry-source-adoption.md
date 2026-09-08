@@ -88,8 +88,10 @@ ansible/bin/converge-ops-controller --box BOX -- \
 ansible/bin/controller-toolchain-receipt --build-dir BUILD_DIR
 ```
 
-Toolchain v5 adds `platform_registry` to the existing component set. Use the
-same public commit on the MacBook and controller through acceptance.
+Toolchain v5 adds `platform_registry` to the existing component set. Keep the
+controller checkout at the active engine through acceptance. The MacBook
+checkout must have matching implementation files; documentation updates are
+permitted after the [resume checkout check](#mac-checkout-for-verification-resume).
 
 ## Publish the private candidate and prepare adoption
 
@@ -223,3 +225,44 @@ passed for nonce `IcNLbmT43JW4azi6CirZrUIh`: seven root-owned files, directory
 mode `0700`, file mode `0600`, equal complete registry and controller values,
 unused nonce, and no runtime copies. The source remained unchanged. This is
 unsigned preparation evidence; refresh it when the human starts approval.
+
+### Mac checkout for verification resume
+
+The earlier exact-`HEAD` assertion also refuses a Mac checkout that contains
+only newer acceptance documentation. Permit a clean checkout whose differences
+from the active engine are confined to `doc/` and `klokast-dev/runbooks/`.
+All other tracked files must match. The controller still requires the exact
+active engine, matching installed tools, and unchanged private inputs.
+
+Run this command in an interactive Mac terminal from the public repository
+root. It refreshes evidence when invoked and uses the existing Touch ID
+approval helper. Review action `verify_instance_authority` before signing.
+
+```sh
+python3 -c '
+import json, subprocess
+engine = "db61bc775a0e30babd202be7ab96a26533d79fad"
+base = "/home/smith/private/klokast/registry-source-acceptance/" + engine
+if subprocess.check_output(["git", "status", "--porcelain"], text=True).strip():
+    raise SystemExit("Mac checkout has uncommitted changes; inspect them before approval.")
+changed = subprocess.check_output(["git", "diff", "--name-only", engine, "HEAD"], text=True).splitlines()
+unexpected = [p for p in changed if not p.startswith(("doc/", "klokast-dev/runbooks/"))]
+if unexpected:
+    raise SystemExit("Mac implementation differs from the active engine: " + ", ".join(unexpected))
+result = subprocess.run(
+    ["tailscale", "ssh", "smith@k002-ops", "sh", "-s"],
+    input="set -eu\numask 077\ncd /home/smith/src/klokast/klokast-box\npython3 " + base + "/resume-registry-verification.py\n",
+    text=True, stdout=subprocess.PIPE, check=True)
+prepared = json.loads(result.stdout)
+args = prepared["approval_args"]
+keys = ["plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"]
+if set(args) != set(keys) or not all(isinstance(args[k], str) and args[k].startswith("/") and "\n" not in args[k] for k in keys):
+    raise SystemExit("Controller returned invalid verification evidence paths.")
+print("Verification evidence: " + prepared["directory"], flush=True)
+command = ["klokast-dev/bin/apply-platform-intent", "--controller", "k002-ops", "--prove-replay-refusal"]
+for key in keys:
+    command.extend(["--" + key, args[key]])
+subprocess.run(command, check=True)
+print("Signed verification and exact replay refusal completed.")
+'
+```
