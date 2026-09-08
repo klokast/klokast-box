@@ -108,6 +108,21 @@ func TestDoctorUsageIsValidationFailure(t *testing.T) {
 	}
 }
 
+func TestInventoryRejectsCallerSelectionAndCommands(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"inventory"},
+		{"inventory", "--instance", "/unused"},
+		{"inventory", "--instance", "/unused", "--json", "--box", "boxa"},
+		{"inventory", "--instance", "/unused", "--json", "--compatibility-registry", "/unused"},
+		{"inventory", "--instance", "/unused", "--json", "apply"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(arguments, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "klokast inventory --instance PATH --json") {
+			t.Fatalf("inventory accepted caller selection or command: %v code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
 func TestPlanJSONIsReadOnlyAndReportsUnbornRepository(t *testing.T) {
 	priorRepository, priorRef, priorCommit := engineRepository, engineRef, engineCommit
 	engineRepository = "https://github.com/klokast/klokast-box"

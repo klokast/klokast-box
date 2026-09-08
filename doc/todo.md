@@ -2,6 +2,23 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-08 - Inventory migration must compare Ansible's merged variables
+
+The generated box graph alone does not contain all execution settings.
+Ansible merges generic group policy and legacy host variables, including the
+controller-container runner enablement override. The inventory source design
+therefore requires equality of effective host variables and complete role
+membership for every instance-derived host. Only inventory-file and directory
+provenance can be excluded. Extra legacy sample hosts remain recorded as
+excluded from normal selection, with no contact or deletion.
+
+The offline sealed renderer and comparison helper are the first implementation
+checkpoint. They leave Plan v6, Authority State v4, normal readers, and source
+ownership unchanged. Validate them with real controller Ansible and private
+inputs before adding the source executor and switching normal consumers.
+The [inventory design](upstream-instance-target-architecture.md#inventory-and-runner-source-adoption-design)
+defines that remaining implementation and acceptance.
+
 # 2026-09-08 - Final registry Plan still requires inventory and runner work
 
 Registry source adoption is `live-verified`. Signed verification, exact replay

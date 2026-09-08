@@ -74,8 +74,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "registry" {
 		return runRegistry(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry] [--json] | klokast doctor --instance PATH --observation FILE [--json] | klokast registry --instance PATH --json")
+	if len(args) > 0 && args[0] == "inventory" {
+		return runInventory(args[1:], stdout, stderr)
+	}
+	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry] [--json] | klokast doctor --instance PATH --observation FILE [--json] | klokast registry --instance PATH --json | klokast inventory --instance PATH --json")
 	return 2
+}
+
+func runInventory(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("inventory", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	path := flags.String("instance", "", "path to the private instance repository")
+	jsonOutput := flags.Bool("json", false, "write machine-readable output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" || !*jsonOutput {
+		fmt.Fprintln(stderr, "usage: klokast inventory --instance PATH --json")
+		return 2
+	}
+	result, err := planner.Inventory(*path, contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit})
+	if err != nil {
+		_ = json.NewEncoder(stdout).Encode(operationalResult{Valid: false, OperationalError: err.Error()})
+		return 1
+	}
+	if err := json.NewEncoder(stdout).Encode(result); err != nil {
+		fmt.Fprintln(stderr, "klokast inventory: cannot write result")
+		return 1
+	}
+	if !result.Valid {
+		return 2
+	}
+	return 0
 }
 
 func runRegistry(args []string, stdout, stderr io.Writer) int {

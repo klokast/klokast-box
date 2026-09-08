@@ -1157,9 +1157,9 @@ Do not repeat adoption or automatically deploy acceptance documentation.
 ## 11.5 Remaining registry and inventory migration batch
 
 Registry status: `live-verified`. Registry schema, consumers, and source
-adoption are complete. Execution inventory and runner identity adoption remain
-`proposed`; continued scope development is already authorized. Complete their
-bounded design before implementation.
+adoption are complete. Execution inventory and runner identity adoption are
+`decided`; continued implementation is already authorized. The offline
+renderer and comparison checkpoint precede the new source executor.
 
 The batch started from identity Plan `9866249`, which contained 22 legacy-source
 actions and continuing execution inventory. Final registry Plan `2d2bfbe5`
@@ -1388,7 +1388,7 @@ holds the full controller evidence references.
 
 ### Remaining inventory and runner dependencies
 
-Status: `proposed`; implementation scope is already authorized. Final Plan
+Status: `decided`; implementation scope is already authorized. Final Plan
 `2d2bfbe5` retains only `execution_inventory` as a legacy authority. Its one
 pending adoption action is the declared controller-container runner identity;
 the action has prior authority `none`, not a retained legacy registry field.
@@ -1403,6 +1403,92 @@ and variables, preserve exact target limits and recovery inventory, and audit
 all normal consumers before changing the Plan's continuing-authority report.
 The existing private `airunners` list supplies intent; this work does not
 authorize runner retirement, controller changes, or removal of recovery files.
+
+#### Inventory and runner source adoption design
+
+Adopt execution host selection and the complete ordered runner identity list
+as one `execution-inventory-v1` group. Its scopes are `execution_inventory`
+and one `deployment.control_plane.airunners.<identity>` scope per declared
+runner. Derive membership and scope order from the checked private instance;
+accept no caller-supplied host set. Limit this source-only milestone to the
+existing two-box arrangement, the configured controller pair, and already
+adopted registry, identity, and connectivity groups. Keep all effective host
+variables, role memberships, router settings, controller roles, runner runtime
+state, applications, and data unchanged. No runner is enrolled or retired.
+
+The sealed `klokast inventory --instance PATH --json` command renders only
+instance-derived box hosts, role groups, MagicDNS suffix, and controller-runner
+selection. It includes no credentials, observations, arbitrary variable input,
+or legacy host file. Upstream generic group variables remain engine policy.
+Dynamic application inventories remain compiler outputs from the adopted
+registry. Keep bootstrap and recovery target selection explicit.
+
+Normal Platform inventory consumers must select a controller-local reader.
+Before adoption it supplies the existing inventory. After adoption it supplies
+the sealed instance projection and upstream group policy from an inventory
+directory that does not load legacy host variables. Unknown source versions,
+missing installed helpers, modified inputs, and incomplete source evidence
+must refuse. Retained legacy inventories are explicit comparison and recovery
+inputs; they must not provide an automatic fallback after adoption. Existing
+one-box limits stay explicit. Audit shell wrappers, Python entry points,
+application launchers, builder paths, and default Ansible configuration.
+
+The reader has read authority over private topology and protected evidence.
+The root source executor can append one source record after verification; it
+cannot run arbitrary commands, configure hosts, restart services, launch or
+retire runners, or repair networking. The offline renderer has no credentials
+or network authority. The unprivileged comparison helper writes protected
+controller-private evidence and uses only inventory parsing and sealed tools.
+
+Plan v7 adds explicit `--migration-target inventory`. Other targets retain
+their existing interfaces and default selection. The new executor is
+`inventory_source_v1`, with a closed versioned intent permitting adoption and
+verification only. Bind the exact Plan, controller pair, source record,
+private files and commit, engine/build, Toolchain v6, source/recovery/observation
+evidence, ordered runner list, policy-file hashes, and old/effective inventory
+comparison hashes. Older Plans cannot authorize this executor. Instance
+Specification v1 remains unchanged.
+
+Authority State v5 adds the complete inventory group and its original signed
+adoption anchor. Preserve all five prior groups and their original anchors.
+After adoption, all unselected groups report verification-only; the inventory
+authority becomes instance-derived and the pending runner action is covered
+by the new group. Keep legacy removal unready until its separate recovery
+and removal gates are complete. Historical Plans, source records, and receipts
+stay immutable. Historical schemas must reject new fields, including nulls.
+
+Preparation compares Ansible's effective variables and group memberships for
+every instance-derived host using the existing base plus generated inventory
+and the new independent inventory. Ignore only Ansible inventory-path
+provenance, never target addresses, users, connection settings, or role policy.
+Require complete host coverage. Legacy sample hosts outside the instance are
+reported as excluded from normal selection and are never contacted. Preserve
+the full registry/compiler and both router-variable comparisons. Verify the
+controller pair, both routers, and fresh online/tag evidence for every declared
+runner. Recognized direct or DERP transport is acceptable.
+
+Signed execution consumes the nonce before live verification, then rechecks
+all bound inputs and the controller before publication. Use the shared short
+local lock and exact prior-state check. A failure before publication leaves
+the source unchanged. Publication followed by receipt failure is incomplete
+and requires inspection followed by fresh signed verification. Never retry a
+used request or repair the network automatically. Live rollback, re-adoption,
+legacy-file removal, and a recovery-source switch are deferred; preserve their
+inputs and refuse unsupported ownership changes.
+
+Test deterministic rendering, complete host and variable coverage, unknown
+boxes and runners, scope changes, all Plan targets, old-version rejection,
+changed policy/private inputs, wrong controllers and peers, expired requests,
+nonce reuse, concurrent publication, and receipt failure. Exercise real files
+under umask 077, protected archives, readable runtime copies, receipt creation,
+and cleanup. Assert verification-only command sets and no legacy fallback.
+Run the Python suite, sealed Go tests/build, and affected Ansible/shell checks.
+Use a sealed private comparison before promotion to detect inventory merge
+differences; keep the canonical controller at its active engine during this
+review. Promote one reviewed implementation through the existing human
+workflow, install matching tools, then obtain signed adoption and fresh signed
+verification with exact replay refusal. Preserve baseline files, source-only
+transition checks, and final Plan/evidence before marking this step live-verified.
 
 ## 12. Implementation status and design work queue
 
@@ -1444,7 +1530,7 @@ complete.
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
-| Remaining inventory and runner adoption | `proposed` | Final Plan `2d2bfbe5` retains execution inventory and one pending runner identity action. Section 11.5 records the consumer audit and remaining design dependencies. Continued scope development is authorized. |
+| Remaining inventory and runner adoption | `decided` | Final Plan `2d2bfbe5` retains execution inventory and one pending runner identity action. Section 11.5 closes the source-only design. The offline renderer and inventory comparison checkpoint are implemented; source execution and normal-consumer replacement remain pending. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue
