@@ -31,6 +31,14 @@ KIND_PLAN_V3 = "klokast.plan.v3"
 KIND_PLAN_V4 = "klokast.plan.v4"
 KIND_PLAN_V5 = "klokast.plan.v5"
 KIND_PLAN_V6 = "klokast.plan.v6"
+KIND_PLAN_V7 = "klokast.plan.v7"
+KIND_AUTHORITY_V5 = "klokast.authority-state.v5"
+KIND_INVENTORY_INTENT = "klokast.inventory-source-intent.v1"
+INVENTORY_EXECUTOR = "inventory_source_v1"
+INVENTORY_GROUP = "execution-inventory-v1"
+INVENTORY_SCOPE = "execution_inventory"
+RUNNER_SCOPE_PREFIX = "deployment.control_plane.airunners."
+PLATFORM_INVENTORY = Path("/usr/local/sbin/platform-inventory")
 KIND_AUTHORITY_V4 = "klokast.authority-state.v4"
 KIND_REGISTRY_INTENT = "klokast.registry-source-intent.v1"
 REGISTRY_EXECUTOR = "registry_source_v1"
@@ -413,15 +421,17 @@ def box_scopes(box):
 
 def verify_plan_v3(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
-    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5), (KIND_PLAN_V6, 6)}:
+    if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5), (KIND_PLAN_V6, 6), (KIND_PLAN_V7, 7)}:
         raise ApplyError("box connectivity Apply requires Plan v3 or v4")
     version = plan["schema_version"]
     target = plan.get("connectivity_target", "non-controller")
     if target not in {"non-controller", "active-controller"}:
         raise ApplyError("unknown connectivity target")
     identity_target = version >= 5 and plan.get("migration_target") == "controller-identity"
-    registry_target = version == 6 and plan.get("migration_target") == "registry"
-    if version >= 5 and plan.get("migration_target") not in ({"connectivity", "controller-identity", "registry"} if version == 6 else {"connectivity", "controller-identity"}):
+    registry_target = version >= 6 and plan.get("migration_target") == "registry"
+    inventory_target = version == 7 and plan.get("migration_target") == "inventory"
+    targets = {"connectivity", "controller-identity"} | ({"registry"} if version >= 6 else set()) | ({"inventory"} if version == 7 else set())
+    if version >= 5 and plan.get("migration_target") not in targets:
         raise ApplyError("unknown migration target")
     controller_target = version >= 4 and target == "active-controller"
     executor = CONTROLLER_BOX_EXECUTOR if controller_target else BOX_EXECUTOR
@@ -439,6 +449,8 @@ def verify_plan_v3(path):
         expected.add("connectivity_target")
     if version >= 5:
         expected.add("migration_target")
+    if version == 7:
+        expected.add("inventory")
     if set(plan) != expected:
         raise ApplyError("Plan v3 contains unknown or missing fields")
     supplied = plan.pop("plan_sha256")
@@ -483,11 +495,13 @@ def verify_plan_v3(path):
     expected_group_ids = {TAILNET_GROUP_ID} | {
         BOX_GROUP_PREFIX + item for item in projected_boxes
     }
-    identity_grouped = version >= 5 and (identity_target or plan.get("authority_state", {}).get("kind") in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4})
+    identity_grouped = version >= 5 and (identity_target or plan.get("authority_state", {}).get("kind") in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4, KIND_AUTHORITY_V5})
     if identity_grouped:
         expected_group_ids.add(IDENTITY_GROUP)
-    if version == 6 and plan.get("projection", {}).get("registry") is not None:
+    if version >= 6 and plan.get("projection", {}).get("registry") is not None:
         expected_group_ids.add(REGISTRY_GROUP)
+    if version == 7:
+        expected_group_ids.add(INVENTORY_GROUP)
     group_ids = [
         item.get("id") for item in groups if isinstance(item, dict)
     ]
@@ -506,8 +520,8 @@ def verify_plan_v3(path):
                 "id": TAILNET_GROUP_ID,
                 "operation": "verify_instance_authority",
                 "scopes": SCOPES,
-                "executor": "none" if version == 6 else EXECUTOR,
-                "rollback_type": "no_mutation" if version == 6 else ROLLBACK_TYPE,
+                "executor": "none" if version >= 6 else EXECUTOR,
+                "rollback_type": "no_mutation" if version >= 6 else ROLLBACK_TYPE,
             }:
                 raise ApplyError("Plan v3 Tailnet verification group is not closed")
             continue
@@ -517,8 +531,11 @@ def verify_plan_v3(path):
         if candidate.get("id") == REGISTRY_GROUP:
             validate_registry_group(plan, candidate, selected=registry_target)
             continue
+        if candidate.get("id") == INVENTORY_GROUP:
+            validate_inventory_group(plan, candidate, selected=inventory_target)
+            continue
         candidate_box = candidate.get("id", "").removeprefix(BOX_GROUP_PREFIX)
-        selected = candidate_box == box and not identity_target and not registry_target
+        selected = candidate_box == box and not identity_target and not registry_target and not inventory_target
         unselected_operation = "retain_legacy"
         if version >= 4 and (state_groups.get(candidate["id"]) or {}).get("source") == "instance_specification_v1":
             unselected_operation = "verify_instance_authority"
@@ -531,6 +548,10 @@ def verify_plan_v3(path):
             "box": candidate_box,
         }:
             raise ApplyError("Plan v3 box action group is not closed")
+    if inventory_target:
+        group = next(item for item in groups if item["id"] == INVENTORY_GROUP)
+        validate_inventory_plan_actions(plan, group)
+        return resolved, plan, group
     if registry_target:
         group = next(item for item in groups if item["id"] == REGISTRY_GROUP)
         validate_registry_plan_actions(plan, group)
@@ -749,15 +770,22 @@ def validate_authority_v2(path, plan, group):
     reference = plan.get("authority_state") or {}
     if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != state["kind"] or reference.get("setting_groups") != state["setting_groups"]:
         raise ApplyError("Plan v3 binds another Authority State v2")
-    if group["id"] == REGISTRY_GROUP:
-        expected_kind = KIND_AUTHORITY_V3 if group["operation"] == "adopt_instance_specification" else KIND_AUTHORITY_V4
+    if group["id"] == INVENTORY_GROUP:
+        expected_kind = KIND_AUTHORITY_V4 if group["operation"] == "adopt_instance_specification" else KIND_AUTHORITY_V5
         if state["kind"] != expected_kind:
+            raise ApplyError("inventory operation does not match current source")
+        if state["kind"] == KIND_AUTHORITY_V5:
+            verify_inventory_anchor(state, plan["inventory"]["scopes"])
+        return resolved, state
+    if group["id"] == REGISTRY_GROUP:
+        expected_kinds = {KIND_AUTHORITY_V3} if group["operation"] == "adopt_instance_specification" else {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}
+        if state["kind"] not in expected_kinds:
             raise ApplyError("registry operation does not match current source")
-        if state["kind"] == KIND_AUTHORITY_V4:
+        if state["kind"] in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}:
             verify_registry_anchor(state, plan["projection"]["registry"]["scopes"])
         return resolved, state
     if group["id"] == IDENTITY_GROUP:
-        expected_kinds = {KIND_AUTHORITY_V2} if group["operation"] == "adopt_instance_specification" else {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4}
+        expected_kinds = {KIND_AUTHORITY_V2} if group["operation"] == "adopt_instance_specification" else {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}
         if state["kind"] not in expected_kinds:
             raise ApplyError("controller identity operation does not match current source")
         return resolved, state
@@ -782,6 +810,7 @@ def component_paths(build_binary):
         "freebox_broker": (REPO_ROOT / "klokast-ops/secret-authority/bin/freebox-ipv6-broker", FREEBOX_BROKER),
         "ksa_apply": (REPO_ROOT / "klokast-ops/secret-authority/bin/ksa-apply", Path("/usr/local/sbin/ksa-apply")),
         "ops_network_helper": (REPO_ROOT / "ansible/bin/overlay-ipv6-ops", OPS_NETWORK_HELPER),
+        "platform_inventory": (REPO_ROOT / "ansible/bin/platform-inventory", PLATFORM_INVENTORY),
         "platform_registry": (REPO_ROOT / "ansible/bin/platform-registry", PLATFORM_REGISTRY),
         "platform_resources": (REPO_ROOT / "ansible/bin/platform-resources", PLATFORM_RESOURCES),
         "policy_mutation_helper": (REPO_ROOT / "klokast-ops/tailscale/bin/ts-policy-mutate-internal", MUTATION_HELPER),
@@ -810,14 +839,18 @@ def validate_toolchain(path, plan, build_binary):
         "schema_version", "kind", "engine_commit", "public_checkout_clean",
         "public_checkout_commit", "components", "receipt_sha256",
     }
-    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
+    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5"), (6, "klokast.controller-toolchain.v6")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
     components = COMPONENTS
     if receipt.get("schema_version") >= 4:
         components = sorted([*COMPONENTS, "controller_ha"])
-    if receipt.get("schema_version") == 5:
+    if receipt.get("schema_version") >= 5:
         components = sorted([*components, "platform_registry"])
-    if plan.get("schema_version") == 6 and receipt.get("schema_version") != 5:
+    if receipt.get("schema_version") == 6:
+        components = sorted([*components, "platform_inventory"])
+    if plan.get("schema_version") == 7 and receipt.get("schema_version") != 6:
+        raise ApplyError("Plan v7 requires Controller Toolchain v6")
+    if plan.get("schema_version") == 6 and receipt.get("schema_version") not in {5, 6}:
         raise ApplyError("Plan v6 requires Controller Toolchain v5")
     if plan.get("schema_version") == 5 and receipt.get("schema_version") != 4:
         raise ApplyError("Plan v5 requires Controller Toolchain v4")
@@ -912,7 +945,7 @@ def validate_inputs(args):
     # The private checkout belongs to the controller account. Keep root for
     # evidence and policy checks, but drop privilege for the read-only sealed
     # planner so its Git ownership validation uses the canonical owner.
-    if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6}:
+    if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         command.extend(["--migration-target", plan["migration_target"]])
     rerun = run_plan_as_controller(command)
     try:
@@ -1019,7 +1052,7 @@ def prepare_registry_comparison(work, plan, box):
     if not isinstance(registry, dict) or not isinstance(registry.get("boxes"), dict):
         raise ApplyError("old Platform resource registry has no box mapping")
     derived_boxes = {box}
-    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
+    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         derived_boxes.update(
             item["id"].removeprefix(BOX_GROUP_PREFIX)
             for item in plan["authority_state"]["setting_groups"]
@@ -1135,9 +1168,9 @@ def validate_inputs_v3(args, work=None):
         "--controller-toolchain-receipt", toolchain_path,
         "--json",
     ]
-    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
+    if plan.get("kind") in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         command.extend(["--connectivity-target", plan["connectivity_target"]])
-    if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6}:
+    if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         command.extend(["--migration-target", plan["migration_target"]])
     rerun = run_plan_as_controller(command)
     try:
@@ -1148,7 +1181,9 @@ def validate_inputs_v3(args, work=None):
         raise ApplyError("Plan v3 inputs changed during exact revalidation")
     comparison = {}
     if work:
-        if group["id"] == REGISTRY_GROUP:
+        if group["id"] == INVENTORY_GROUP:
+            comparison = prepare_inventory_comparison(work, plan)
+        elif group["id"] == REGISTRY_GROUP:
             comparison = prepare_complete_registry_comparison(work, plan)
         else:
             comparison = prepare_controller_comparison(work, plan) if group["id"] == IDENTITY_GROUP else prepare_registry_comparison(work, plan, group["box"])
@@ -1511,7 +1546,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -1567,7 +1602,7 @@ def publish_authority(state):
         if read_regular(AUTHORITY_POINTER, 66) != (prior_digest + "\n").encode("ascii"):
             raise ApplyError("concurrent authority source change; prior state is no longer active")
         prior = load_json(AUTHORITY_ROOT / f"{prior_digest}.json", canonical_stored=True)
-        if prior.get("kind") in {KIND_AUTHORITY_V2, KIND_AUTHORITY_V3, KIND_AUTHORITY_V4}:
+        if prior.get("kind") in {KIND_AUTHORITY_V2, KIND_AUTHORITY_V3, KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}:
             validate_authority_current_document(prior)
         else:
             validate_authority_v1_document(prior)
@@ -1622,7 +1657,7 @@ def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
         prior_kind = KIND_AUTHORITY
     else:
         validate_authority_current_document(prior)
-        if prior["kind"] == KIND_AUTHORITY_V4:
+        if prior["kind"] in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}:
             raise ApplyError("registry-adopted sources require an explicit recovery design before legacy ownership changes")
         if group_id is None or source not in {LEGACY_REGISTRY_SOURCE, "instance_specification_v1"}:
             raise ApplyError("Authority State v2 transition request is incomplete")
@@ -1801,7 +1836,7 @@ def box_revalidate(binding, intent, *, phase="execute"):
     try:
         current = validate_inputs_v3(namespace, work)
         if intent.get("kind") == KIND_CONTROLLER_BOX_INTENT:
-            if (current["plan"].get("kind") not in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}
+            if (current["plan"].get("kind") not in {KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}
                     or current["group"].get("executor") != CONTROLLER_BOX_EXECUTOR):
                 raise ApplyError("controller box source execution requires its Plan v4 executor")
             expected = controller_box_intent_common(
@@ -1958,7 +1993,7 @@ def box_execute(args, intent):
         raise ApplyError("stored box Apply binding has unknown or missing fields")
     current, work = box_revalidate(binding, intent)
     try:
-        if current["state"]["kind"] == KIND_AUTHORITY_V4 and intent["action"] != "verify_instance_authority":
+        if current["state"]["kind"] in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5} and intent["action"] != "verify_instance_authority":
             raise ApplyError("registry-adopted source refuses legacy box mutations; explicit recovery design is required")
         if intent["action"] != "rollback_to_legacy" and current["group"]["operation"] != intent["action"]:
             raise ApplyError("Plan v3 action changed after authorization")
@@ -2875,7 +2910,7 @@ def box_rollback_prepare(args):
     work = new_box_work(nonce)
     try:
         binding = validate_inputs_v3(args, work)
-        if binding["state"]["kind"] == KIND_AUTHORITY_V4:
+        if binding["state"]["kind"] in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}:
             raise ApplyError("registry-adopted source refuses legacy rollback; explicit recovery design is required")
         if binding["group"]["executor"] != BOX_EXECUTOR:
             raise ApplyError("controller box source executor does not permit rollback")
@@ -2960,6 +2995,8 @@ def box_rollback_prepare(args):
 
 
 def validate_authority_current_document(state, expected_boxes=None):
+    if state.get("kind") == KIND_AUTHORITY_V5:
+        return validate_authority_v5_document(state, expected_boxes)
     if state.get("kind") == KIND_AUTHORITY_V4:
         return validate_authority_v4_document(state, expected_boxes)
     if state.get("kind") == KIND_AUTHORITY_V2:
@@ -3005,14 +3042,14 @@ def controller_pair(plan):
 
 
 def validate_identity_group(plan, group, *, selected):
-    operation = "verify_instance_authority" if plan["authority_state"]["kind"] in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4} else "adopt_instance_specification"
+    operation = "verify_instance_authority" if plan["authority_state"]["kind"] in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4, KIND_AUTHORITY_V5} else "adopt_instance_specification"
     if group != {"id": IDENTITY_GROUP, "operation": operation, "scopes": IDENTITY_SCOPES,
                  "executor": IDENTITY_EXECUTOR if selected else "none", "rollback_type": "no_mutation"}:
         raise ApplyError("controller identity action group is partial or unknown")
 
 
 def validate_identity_plan_actions(plan, group):
-    if plan.get("kind") not in {KIND_PLAN_V5, KIND_PLAN_V6} or plan.get("migration_target") != "controller-identity":
+    if plan.get("kind") not in {KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7} or plan.get("migration_target") != "controller-identity":
         raise ApplyError("controller identity source requires explicit Plan v5 selection")
     controller_pair(plan)
     groups = plan["authority_state"]["setting_groups"]
@@ -3363,24 +3400,24 @@ REGISTRY_PRECONDITIONS = ["configured_controller_pair", "exact_plan_v6_revalidat
 
 def validate_registry_group(plan, group, *, selected):
     projection = plan.get("projection", {}).get("registry")
-    if plan.get("kind") != KIND_PLAN_V6 or not isinstance(projection, dict) or set(projection) != {"registry", "registry_sha256", "scopes"}:
+    if plan.get("kind") not in {KIND_PLAN_V6, KIND_PLAN_V7} or not isinstance(projection, dict) or set(projection) != {"registry", "registry_sha256", "scopes"}:
         raise ApplyError("registry source requires a complete Plan v6 renderer projection")
     pair = controller_pair(plan)
     scopes = projection["scopes"]
     validate_registry_scopes(scopes, [v["box"] for v in pair.values()])
     if sha256_bytes(canonical(projection["registry"]).encode()) != projection["registry_sha256"]:
         raise ApplyError("registry projection hash differs from its values")
-    adopted = plan["authority_state"]["kind"] == KIND_AUTHORITY_V4
+    adopted = plan["authority_state"]["kind"] in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}
     operation = "verify_instance_authority" if adopted else "adopt_instance_specification" if selected else "retain_legacy"
     if group != {"id": REGISTRY_GROUP, "operation": operation, "scopes": scopes, "executor": REGISTRY_EXECUTOR if selected else "none", "rollback_type": "no_mutation"}:
         raise ApplyError("registry source action group is partial or unknown")
 
 
 def validate_registry_plan_actions(plan, group):
-    if plan.get("kind") != KIND_PLAN_V6 or plan.get("migration_target") != "registry":
+    if plan.get("kind") not in {KIND_PLAN_V6, KIND_PLAN_V7} or plan.get("migration_target") != "registry":
         raise ApplyError("registry source requires explicit Plan v6 selection")
     validate_registry_group(plan, group, selected=True)
-    if plan["authority_state"]["kind"] not in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4} or any(g.get("source") != "instance_specification_v1" for g in plan["authority_state"]["setting_groups"]):
+    if plan["authority_state"]["kind"] not in {KIND_AUTHORITY_V3, KIND_AUTHORITY_V4, KIND_AUTHORITY_V5} or any(g.get("source") != "instance_specification_v1" for g in plan["authority_state"]["setting_groups"]):
         raise ApplyError("registry adoption requires adopted identity and connectivity")
     if any(a.get("executor") not in {REGISTRY_EXECUTOR, "none", "read_only_doctor", "unimplemented_action"} for a in plan["actions"]):
         raise ApplyError("registry Plan includes another executable action")
@@ -3391,7 +3428,7 @@ def validate_registry_plan_actions(plan, group):
         if set(action) != {"id", "finding_id", "scope", "operation", "executor", "authority_before", "authority_after", "preconditions", "rollback"}:
             raise ApplyError("registry Plan action contains unknown fields")
         before = "instance_specification_v1" if group["operation"] == "verify_instance_authority" or ".data." in action["scope"] else LEGACY_REGISTRY_SOURCE
-        if action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("preconditions") != REGISTRY_PRECONDITIONS or action.get("rollback") != {"strategy": "no_mutation", "authority": before}:
+        if action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("preconditions") != [v.replace("v6", "v" + str(plan["schema_version"])) for v in REGISTRY_PRECONDITIONS] or action.get("rollback") != {"strategy": "no_mutation", "authority": before}:
             raise ApplyError("registry Plan action changes settings or scope")
 
 
@@ -3602,7 +3639,7 @@ def registry_source_status():
     validate_authority_current_document(state)
     result = {"schema_version": 1, "kind": "klokast.registry-source-status.v1", "source": LEGACY_REGISTRY_SOURCE,
               "authority_state_sha256": digest, "engine_commit": controller["engine_commit"]}
-    if state["kind"] != KIND_AUTHORITY_V4:
+    if state["kind"] not in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5}:
         if read_regular(AUTHORITY_POINTER, 66) != pointer:
             raise ApplyError("registry source changed during resolution")
         return result
@@ -3633,29 +3670,418 @@ def registry_source_status():
     return result
 
 
+INVENTORY_PRECONDITIONS = ["configured_controller_pair", "exact_plan_v7_revalidated", "equal_complete_inventory", "equal_complete_registry", "equal_compiler_and_router_variables", "declared_runners_verified", "routers_verified_before_source_publication"]
+INVENTORY_INTENT_FIELDS = {"old_inventory_sha256", "effective_inventory_sha256", "inventory_projection_sha256", "inventory_policy_sha256", "legacy_inventory_sha256", "airunners", "runner_identities_sha256"}
+
+
+def validate_inventory_scopes(scopes, boxes):
+    if not isinstance(scopes, list) or any(not isinstance(s, str) for s in scopes) or len(scopes) < 2 or scopes != sorted(set(scopes)) or INVENTORY_SCOPE not in scopes:
+        raise ApplyError("inventory scopes require execution inventory and the complete sorted runner set")
+    for scope in scopes:
+        if scope == INVENTORY_SCOPE:
+            continue
+        runner = scope.removeprefix(RUNNER_SCOPE_PREFIX)
+        if not scope.startswith(RUNNER_SCOPE_PREFIX) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", runner) or runner in {b + "-ops" for b in boxes} or (runner not in {b + "-ops-airunner" for b in boxes} and not runner.endswith("-ops")):
+            raise ApplyError("inventory scope contains an unknown runner identity")
+
+
+def validate_authority_v5_document(state, expected_boxes=None):
+    base = dict(state)
+    anchor = base.pop("inventory_adoption", None)
+    if state.get("kind") != KIND_AUTHORITY_V5 or state.get("schema_version") != 5 or state.get("prior_state_kind") not in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5} or authority_v2_hash(state) != state.get("authority_state_sha256"):
+        raise ApplyError("Authority State v5 is invalid")
+    if not isinstance(anchor, dict) or set(anchor) != {"nonce", "intent_sha256", "plan_sha256"} or not NONCE_RE.fullmatch(anchor.get("nonce", "")) or any(not DIGEST_RE.fullmatch(anchor.get(k, "")) for k in ("intent_sha256", "plan_sha256")):
+        raise ApplyError("inventory adoption anchor is invalid")
+    groups = state.get("setting_groups")
+    if not isinstance(groups, list) or len(groups) != 6 or any(not isinstance(g, dict) or set(g) != {"id", "scopes", "source"} or g["source"] != "instance_specification_v1" for g in groups) or groups != sorted(groups, key=lambda g: g["id"]) or len({g["id"] for g in groups}) != 6:
+        raise ApplyError("Authority State v5 requires all six adopted groups")
+    selected = [g for g in groups if g["id"] == INVENTORY_GROUP]
+    boxes = [g["id"].removeprefix(BOX_GROUP_PREFIX) for g in groups if g["id"].startswith(BOX_GROUP_PREFIX)]
+    if len(selected) != 1 or len(boxes) != 2:
+        raise ApplyError("inventory source group set is invalid")
+    validate_inventory_scopes(selected[0]["scopes"], boxes)
+    base.update(kind=KIND_AUTHORITY_V4, schema_version=4, prior_state_kind=KIND_AUTHORITY_V4,
+                setting_groups=[g for g in groups if g["id"] != INVENTORY_GROUP])
+    base["authority_state_sha256"] = authority_v2_hash(base)
+    validate_authority_v4_document(base, expected_boxes)
+    if state["prior_state_kind"] == KIND_AUTHORITY_V4 and (state["transition_id"] != anchor["nonce"] or state["signed_intent_sha256"] != anchor["intent_sha256"]):
+        raise ApplyError("initial inventory adoption differs from its transition")
+
+
+def validate_inventory_group(plan, group, *, selected):
+    projection = plan.get("inventory")
+    if plan.get("kind") != KIND_PLAN_V7 or plan.get("schema_version") != 7 or not isinstance(projection, dict) or set(projection) != {"inventory", "inventory_sha256", "boxes", "airunners", "scopes"}:
+        raise ApplyError("inventory source requires a complete Plan v7 projection")
+    boxes = sorted(v["box"] for v in controller_pair(plan).values())
+    scopes, runners = projection["scopes"], projection["airunners"]
+    validate_inventory_scopes(scopes, boxes)
+    if projection["boxes"] != boxes or not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners) or sorted([INVENTORY_SCOPE, *(RUNNER_SCOPE_PREFIX + v for v in runners)]) != scopes or sha256_bytes(canonical(projection["inventory"]).encode()) != projection["inventory_sha256"]:
+        raise ApplyError("inventory projection changed boxes, ordered runners, scopes, or hash")
+    adopted = plan["authority_state"]["kind"] == KIND_AUTHORITY_V5
+    if adopted and next((g.get("scopes") for g in plan["authority_state"]["setting_groups"] if g.get("id") == INVENTORY_GROUP), None) != scopes:
+        raise ApplyError("inventory projection differs from adopted scopes")
+    operation = "verify_instance_authority" if adopted else "adopt_instance_specification" if selected else "retain_legacy"
+    if group != {"id": INVENTORY_GROUP, "operation": operation, "scopes": scopes, "executor": INVENTORY_EXECUTOR if selected else "none", "rollback_type": "no_mutation"}:
+        raise ApplyError("inventory source action group is partial or unknown")
+
+
+def validate_inventory_plan_actions(plan, group):
+    if plan.get("migration_target") != "inventory":
+        raise ApplyError("inventory source requires explicit Plan v7 selection")
+    validate_inventory_group(plan, group, selected=True)
+    if plan["authority_state"]["kind"] not in {KIND_AUTHORITY_V4, KIND_AUTHORITY_V5} or any(g.get("source") != "instance_specification_v1" for g in plan["authority_state"]["setting_groups"]):
+        raise ApplyError("inventory adoption requires all five prior groups adopted")
+    if any(a.get("executor") not in {INVENTORY_EXECUTOR, "none", "read_only_doctor"} for a in plan["actions"]):
+        raise ApplyError("inventory Plan includes another executable or pending action")
+    actions = [a for a in plan["actions"] if a.get("executor") == INVENTORY_EXECUTOR]
+    if sorted(a.get("scope", "") for a in actions) != group["scopes"]:
+        raise ApplyError("inventory Plan action coverage is partial")
+    for action in actions:
+        fields = {"id", "scope", "operation", "executor", "authority_before", "authority_after", "preconditions", "rollback"}
+        if action["scope"] != INVENTORY_SCOPE: fields.add("finding_id")
+        before = "instance_specification_v1" if group["operation"] == "verify_instance_authority" else "legacy_engine_inventory" if action["scope"] == INVENTORY_SCOPE else "none"
+        if set(action) != fields or action.get("operation") != group["operation"] or action.get("authority_before") != before or action.get("authority_after") != "instance_specification_v1" or action.get("preconditions") != INVENTORY_PRECONDITIONS or action.get("rollback") != {"strategy": "no_mutation", "authority": before}:
+            raise ApplyError("inventory Plan action changes settings or scope")
+
+
+INVENTORY_POLICY_GROUPS = ("all", "backend", "bootstrap", "dmz", "dom0", "iot", "ops", "podman_vms", "router", "usr", "vm_dom0")
+
+
+def inventory_digest(value):
+    return sha256_bytes(canonical(value).encode())
+
+
+def inventory_expanded_groups(graph, selected, *, ansible_output=False):
+    """Return complete role membership for selected hosts, rejecting cycles."""
+    result = {}
+    visiting = set()
+
+    def visit(name):
+        if name in result:
+            return result[name]
+        # Ansible --list retains child references to empty groups but omits
+        # their objects. The sealed input graph must still define every group.
+        if ansible_output and name not in graph:
+            return set()
+        if name in visiting or name not in graph or name == "_meta":
+            raise ApplyError("inventory group graph is recursive or incomplete")
+        visiting.add(name)
+        value = graph[name]
+        if not isinstance(value, dict):
+            raise ApplyError("inventory group is not an object")
+        members = set(value.get("hosts", []))
+        for child in value.get("children", []):
+            members.update(visit(child))
+        visiting.remove(name)
+        result[name] = members & selected
+        return result[name]
+
+    for name in graph:
+        if name != "_meta":
+            visit(name)
+    return {name: sorted(members) for name, members in sorted(result.items()) if members}
+
+
+def normalize_execution_inventory(graph, selected):
+    selected = set(selected)
+    hostvars = graph.get("_meta", {}).get("hostvars", {})
+    if not selected or not selected <= set(hostvars):
+        raise ApplyError("effective inventory does not cover every instance host")
+    variables = {}
+    for host in sorted(selected):
+        if not isinstance(hostvars[host], dict):
+            raise ApplyError("host variables must be an object")
+        variables[host] = {k: v for k, v in hostvars[host].items() if k not in {"inventory_file", "inventory_dir"}}
+    return {"hostvars": variables, "groups": inventory_expanded_groups(graph, selected, ansible_output=True)}
+
+
+def compare_execution_inventories(old, effective, projection):
+    selected = set(projection["inventory"]["_meta"]["hostvars"])
+    if set(effective.get("_meta", {}).get("hostvars", {})) != selected:
+        raise ApplyError("effective inventory contains extra or missing hosts")
+    old_value = normalize_execution_inventory(old, selected)
+    effective_value = normalize_execution_inventory(effective, selected)
+    if old_value != effective_value:
+        hosts = [host for host in sorted(selected) if old_value["hostvars"][host] != effective_value["hostvars"][host]]
+        group_difference = old_value["groups"] != effective_value["groups"]
+        raise ApplyError("effective inventory differs: host variables=" + ",".join(hosts) + "; group membership=" + str(group_difference).lower())
+    return {"schema_version": 1, "kind": "klokast.inventory-comparison.v1", "equal": True,
+            "hosts": sorted(selected), "excluded_legacy_hosts": sorted(set(old["_meta"]["hostvars"]) - selected),
+            "old_inventory_sha256": inventory_digest(old_value), "effective_inventory_sha256": inventory_digest(effective_value),
+            "inventory_projection_sha256": inventory_digest(projection), "policy_groups": list(INVENTORY_POLICY_GROUPS)}
+
+
+def prepare_inventory_comparison(work, plan):
+    result = prepare_complete_registry_comparison(work, plan)
+    projection_path = work / "inventory-projection.json"
+    projection_path.write_text(canonical(plan["inventory"]) + "\n")
+    projection_path.chmod(0o640)
+    os.chown(projection_path, 0, smith_gid())
+    comparison_parent = work / "inventory-comparison"
+    comparison_parent.mkdir(mode=0o700)
+    os.chown(comparison_parent, pwd.getpwnam(CONTROLLER_USER).pw_uid, smith_gid())
+    output = comparison_parent / "result"
+    comparison = decode_helper_json(run_plan_as_controller([REPO_ROOT / "ansible/bin/compare-instance-inventory", "--projection", projection_path, "--output-directory", output]), "compare execution inventory")
+    old = load_json(output / "old-inventory.stdout", 16 * 1024 * 1024)
+    effective = load_json(output / "effective-inventory.stdout", 16 * 1024 * 1024)
+    try:
+        checked = compare_execution_inventories(old, effective, plan["inventory"])
+        dynamic = load_json(output / "dynamic-inventory.stdout", 16 * 1024 * 1024)
+        if compare_execution_inventories(old, dynamic, plan["inventory"]) != checked:
+            raise ApplyError("normal dynamic inventory differs from the static comparison")
+    except ValueError as error:
+        raise ApplyError(str(error)) from error
+    legacy = REPO_ROOT / "ansible/inventory"
+    sources = {str(p.relative_to(REPO_ROOT)): sha256_file(p) for p in sorted(legacy.rglob("*.yml"))}
+    policy = {name: sha256_file(legacy / "group_vars" / (name + ".yml")) for name in INVENTORY_POLICY_GROUPS}
+    checked.update(policy_sha256=inventory_digest(policy), policy_files_sha256=policy, legacy_files_sha256=inventory_digest(sources), temporary_files_removed=True)
+    if comparison != checked:
+        raise ApplyError("inventory comparison evidence differs from checked inputs")
+    for name, graph in (("old", old), ("effective", effective)):
+        path = work / (name + "-inventory.json")
+        path.write_text(canonical(normalize_execution_inventory(graph, checked["hosts"])) + "\n")
+        path.chmod(0o640)
+        os.chown(path, 0, smith_gid())
+        result[name + "_inventory_path"] = str(path)
+        result[name + "_inventory_sha256"] = checked[name + "_inventory_sha256"]
+    result.update(inventory_projection_sha256=checked["inventory_projection_sha256"], inventory_policy_sha256=checked["policy_sha256"], legacy_inventory_sha256=checked["legacy_files_sha256"], airunners=plan["inventory"]["airunners"])
+    return result
+
+
+def verify_declared_runners(runners):
+    reply = decode_helper_json(run_plan_as_controller(["tailscale", "status", "--json"]), "verify declared runner identities")
+    peers = reply.get("Peer")
+    if not isinstance(peers, dict):
+        raise ApplyError("Tailnet status lacks runner peers")
+    result = []
+    for name in runners:
+        matches = [p for p in peers.values() if isinstance(p, dict) and p.get("HostName") == name]
+        tag = "tag:airunner" if name.endswith("-ops-airunner") else "tag:infra"
+        if len(matches) != 1:
+            raise ApplyError("declared runner is missing or duplicated: " + name)
+        peer = matches[0]
+        if peer.get("Online") is not True or peer.get("Tags") != [tag] or not isinstance(peer.get("ID"), str) or not peer["ID"]:
+            raise ApplyError("declared runner is offline or has an unexpected identity or tag: " + name)
+        result.append({"hostname": name, "id": peer["ID"], "tags": [tag], "online": True})
+    return result
+
+
+def inventory_intent(binding, nonce, issued):
+    value = registry_intent(binding, nonce, issued)
+    value.update(kind=KIND_INVENTORY_INTENT, executor=INVENTORY_EXECUTOR, action_group_id=INVENTORY_GROUP)
+    for key in INVENTORY_INTENT_FIELDS: value[key] = binding[key]
+    return value
+
+
+def validate_inventory_intent(intent, *, check_time=True):
+    if intent.get("kind") != KIND_INVENTORY_INTENT or intent.get("executor") != INVENTORY_EXECUTOR or intent.get("action_group_id") != INVENTORY_GROUP or not INVENTORY_INTENT_FIELDS.issubset(intent):
+        raise ApplyError("inventory source intent is incomplete or unknown")
+    registry = {k: v for k, v in intent.items() if k not in INVENTORY_INTENT_FIELDS}
+    # Validate the shared registry/controller evidence through its closed contract.
+    pair = intent.get("controller_pair")
+    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
+        raise ApplyError("inventory intent controller pair is incomplete")
+    boxes = [v.get("box") for v in pair.values() if isinstance(v, dict)]
+    if len(boxes) != 2 or any(not isinstance(v, str) for v in boxes):
+        raise ApplyError("inventory intent controller pair is malformed")
+    registry.update(kind=KIND_REGISTRY_INTENT, executor=REGISTRY_EXECUTOR, action_group_id=REGISTRY_GROUP,
+                    action_set=sorted("boxes." + box + "." + field for box in boxes for field in ("dhcp_reservations", "dom0_bridge_ports", "shared_guests")))
+    validate_registry_intent(registry, check_time=check_time)
+    validate_inventory_scopes(intent.get("action_set"), boxes)
+    runners = intent["airunners"]
+    if not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners) or sorted([INVENTORY_SCOPE, *(RUNNER_SCOPE_PREFIX + v for v in runners)]) != intent["action_set"]:
+        raise ApplyError("inventory intent has partial or changed runner scopes")
+    if any(not isinstance(intent[k], str) or not DIGEST_RE.fullmatch(intent[k]) for k in INVENTORY_INTENT_FIELDS - {"airunners"}) or intent["old_inventory_sha256"] != intent["effective_inventory_sha256"]:
+        raise ApplyError("inventory intent changes inventory values or contains an invalid hash")
+
+
+def verify_inventory_anchor(state, scopes):
+    anchor = state["inventory_adoption"]
+    directory = PREFLIGHT_ROOT / anchor["nonce"]
+    intent_path = directory / "intent.json"
+    intent = load_json(intent_path, canonical_stored=True)
+    validate_inventory_intent(intent, check_time=False)
+    if intent["action"] != "adopt_instance_specification" or sha256_file(intent_path) != anchor["intent_sha256"] or intent["plan_sha256"] != anchor["plan_sha256"] or intent["action_set"] != scopes:
+        raise ApplyError("inventory adoption archive differs from source or current scopes")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    _, plan, group = verify_plan_v3(binding["plan_path"])
+    if plan["plan_sha256"] != anchor["plan_sha256"] or group["scopes"] != scopes or plan["inventory"]["airunners"] != intent["airunners"]:
+        raise ApplyError("inventory adoption Plan differs from its anchor")
+    if next(g["scopes"] for g in state["setting_groups"] if g["id"] == INVENTORY_GROUP) != scopes:
+        raise ApplyError("inventory source scopes differ from original adoption")
+
+
+def inventory_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    work = new_box_work(nonce)
+    try:
+        binding = validate_inputs_v3(args, work)
+        if binding["group"]["executor"] != INVENTORY_EXECUTOR:
+            raise ApplyError("registry preparation requires its explicit executor")
+        roles = verify_controller_pair(binding["controller_pair"])
+        binding["controller_roles_sha256"] = sha256_bytes(canonical(roles).encode())
+        runners = verify_declared_runners(binding["airunners"])
+        binding["runner_identities_sha256"] = sha256_bytes(canonical(runners).encode())
+        verify_registry_routers(binding)
+        # Recheck complete desired state and roles after live verification.
+        intent = inventory_intent(binding, nonce, now_utc())
+        fresh, fresh_work = inventory_revalidate(binding, intent, "prepare-recheck")
+        shutil.rmtree(fresh_work, ignore_errors=True)
+        validate_inventory_intent(intent)
+        directory = PREFLIGHT_ROOT / nonce
+        ensure_dir(PREFLIGHT_ROOT)
+        directory.mkdir(mode=0o700)
+        stored = {k: v for k, v in binding.items() if k not in {"plan", "group", "state"}}
+        for name in ("old", "effective"):
+            for kind, suffix in (("controller", "controllers.json"), ("registry", "registry.yml"), ("inventory", "inventory.json")):
+                field = name + "_" + kind + "_path"
+                target = directory / (name + "-" + suffix)
+                shutil.copyfile(binding[field], target)
+                stored[field] = str(target)
+        for name, data in (("binding", stored), ("intent", intent), ("roles", roles), ("runners", runners)):
+            (directory / (name + ".json")).write_text(canonical(data) + "\n", encoding="utf-8")
+        for path in directory.iterdir(): path.chmod(0o600)
+        append_audit("inventory-source.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], action=intent["action"])
+        print(canonical(intent))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def inventory_revalidate(binding, intent, phase):
+    args = argparse.Namespace(**{key: binding[field] for key, field in (("plan", "plan_path"), ("authority_state", "authority_path"), ("controller_toolchain_receipt", "toolchain_path"), ("source_recovery_receipt", "recovery_path"), ("instance_source_receipt", "source_path"), ("observation", "observation"), ("build_dir", "build_dir"))})
+    work = new_box_work(intent["nonce"] + "-" + phase)
+    try:
+        current = validate_inputs_v3(args, work)
+        roles = verify_controller_pair(current["controller_pair"])
+        current["controller_roles_sha256"] = sha256_bytes(canonical(roles).encode())
+        current["runner_identities_sha256"] = sha256_bytes(canonical(verify_declared_runners(current["airunners"])).encode())
+        if inventory_intent(current, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
+            raise ApplyError("inventory inputs or live controller roles changed after approval")
+        for name in ("old", "effective"):
+            for kind in ("controller", "registry", "inventory"):
+                field = name + "_" + kind + "_path"
+                if read_regular(binding[field]) != read_regular(current[field]):
+                    raise ApplyError("protected inventory comparison inputs changed")
+        validate_inventory_intent(intent)
+        return current, work
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+
+
+def inventory_execute(args, intent):
+    validate_inventory_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed inventory intent differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    expected_fields = {"plan_path", "authority_path", "toolchain_path", "source_path", "recovery_path", "observation", "build_dir", "binary_sha256", "builder_receipt_sha256", "controller_pair", "old_controller_path", "old_controller_sha256", "effective_controller_path", "effective_controller_sha256", "controller_roles_sha256", "old_registry_path", "effective_registry_path", "old_registry_sha256", "effective_registry_sha256", "compiler_sha256", "router_variables_sha256"}
+    expected_fields |= INVENTORY_INTENT_FIELDS | {"old_inventory_path", "effective_inventory_path"}
+    if set(binding) != expected_fields:
+        raise ApplyError("protected inventory binding has unknown fields")
+    consume_nonce(intent)
+    runtime = final_runtime = None
+    published = False
+    proposed_digest = None
+    try:
+        current, runtime = inventory_revalidate(binding, intent, "execute")
+        verify_registry_routers(current)
+        final, final_runtime = inventory_revalidate(binding, intent, "post-verify")
+        state, result = final["state"], "verified"
+        if intent["action"] == "adopt_instance_specification":
+            state = dict(state, schema_version=5, kind=KIND_AUTHORITY_V5, prior_state_kind=KIND_AUTHORITY_V4,
+                         prior_state_sha256=state["authority_state_sha256"], transition_id=intent["nonce"],
+                         signed_intent_sha256=sha256_bytes((canonical(intent) + "\n").encode()))
+            state["setting_groups"] = sorted([*state["setting_groups"], {"id": INVENTORY_GROUP, "scopes": intent["action_set"], "source": "instance_specification_v1"}], key=lambda g: g["id"])
+            state["inventory_adoption"] = {"nonce": intent["nonce"], "intent_sha256": state["signed_intent_sha256"], "plan_sha256": intent["plan_sha256"]}
+            state["authority_state_sha256"] = authority_v2_hash(state)
+            validate_authority_current_document(state)
+            proposed_digest = state["authority_state_sha256"]
+            publish_authority(state)
+            published, result = True, "success"
+        receipt = {"schema_version": 5, "kind": "klokast.apply-execution.v5", "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode()), "plan_sha256": intent["plan_sha256"], "nonce": intent["nonce"], "action": intent["action"], "executor": INVENTORY_EXECUTOR, "action_group_id": INVENTORY_GROUP, "action_set": intent["action_set"], "controller_pair": intent["controller_pair"], "result": result, "recovery_result": "not_needed", "authority_state_sha256": state["authority_state_sha256"], "finished_at": format_utc(now_utc())}
+        path = store_identity_receipt(receipt)
+        append_audit("inventory-source.executed", nonce=intent["nonce"], result=result, receipt_sha256=receipt["receipt_sha256"])
+        print(canonical({"schema_version": 1, "result": result, "receipt_path": str(path), "authority_state_sha256": state["authority_state_sha256"]}))
+    except (ApplyError, OSError) as error:
+        if proposed_digest is not None and not published:
+            try:
+                published = read_regular(AUTHORITY_POINTER, 66) == (proposed_digest + "\n").encode()
+            except ApplyError:
+                raise ApplyError("inventory publication outcome is unknown; inspect source and archives, then obtain fresh signed verification") from error
+        if published:
+            raise ApplyError("inventory source was published but operation is incomplete; inspect source and archives, then obtain fresh signed verification; do not retry the used request") from error
+        raise ApplyError("inventory operation failed before publication; inspect evidence and obtain a fresh request: " + str(error)) from error
+    finally:
+        for path in (runtime, final_runtime):
+            if path is not None: shutil.rmtree(path, ignore_errors=True)
+
+
+def inventory_source_status():
+    controller = controller_identity_status()
+    digest = controller["authority_state_sha256"]
+    pointer = (digest + "\n").encode()
+    _, state = resolve_hashed(AUTHORITY_ROOT / (digest + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
+    validate_authority_current_document(state)
+    result = {"schema_version": 1, "kind": "klokast.inventory-source-status.v1", "source": "legacy_engine_inventory",
+              "authority_state_sha256": digest, "engine_commit": controller["engine_commit"]}
+    if state["kind"] != KIND_AUTHORITY_V5:
+        if read_regular(AUTHORITY_POINTER, 66) != pointer:
+            raise ApplyError("inventory source changed during resolution")
+        return result
+    # Only root-protected sealed artifacts for the active canonical engine can
+    # run. There is no caller-selected executable or instance path.
+    engine = controller["engine_commit"]
+    candidates = []
+    for directory in sorted((BUILD_ROOT / engine).iterdir()):
+        if OPERATION_RE.fullmatch(directory.name):
+            resolved, commit = resolve_build_directory(directory)
+            receipt, binary = verify_build_directory(resolved, commit)
+            verify_binary_version(binary, receipt)
+            candidates.append((receipt["binary_sha256"], binary))
+    if not candidates or len({v[0] for v in candidates}) != 1:
+        raise ApplyError("active inventory engine has no unique verified sealed binary")
+    binary = candidates[0][1]
+    rendered = run_plan_as_controller([binary, "inventory", "--instance", INSTANCE, "--json"])
+    projection = decode_helper_json(rendered, "render the adopted inventory")
+    if set(projection) != {"schema_version", "kind", "valid", "engine", "repository", "inputs", "projection", "diagnostics"} or projection["schema_version"] != 1 or projection["kind"] != "klokast.inventory.v1" or projection["valid"] is not True or projection["diagnostics"] != [] or projection["engine"] != {"repository": ENGINE_REPOSITORY, "ref": "main", "commit": engine} or projection["repository"].get("clean") is not True or projection["repository"].get("branch") != "main":
+        raise ApplyError("sealed inventory result does not bind the clean active instance")
+    verify_inventory_anchor(state, projection["projection"]["scopes"])
+    if controller_identity_status() != controller:
+        raise ApplyError("controller or inventory source changed during rendering")
+    second = decode_helper_json(run_plan_as_controller([binary, "inventory", "--instance", INSTANCE, "--json"]), "recheck adopted inventory inputs")
+    if second != projection or read_regular(AUTHORITY_POINTER, 66) != pointer:
+        raise ApplyError("inventory inputs or source changed during resolution")
+    result.update(source="instance_specification_v1", rendered=projection)
+    return result
+
+
 def evidence_kind(path):
     return load_json(path).get("kind")
 
 
 def preflight(args):
-    if evidence_kind(args.plan) == KIND_PLAN_V6 and load_json(args.plan).get("migration_target") == "registry":
+    if evidence_kind(args.plan) == KIND_PLAN_V7 and load_json(args.plan).get("migration_target") == "inventory":
+        inventory_preflight(args)
+    elif evidence_kind(args.plan) in {KIND_PLAN_V6, KIND_PLAN_V7} and load_json(args.plan).get("migration_target") == "registry":
         registry_preflight(args)
-    elif evidence_kind(args.plan) in {KIND_PLAN_V5, KIND_PLAN_V6} and load_json(args.plan).get("migration_target") == "controller-identity":
+    elif evidence_kind(args.plan) in {KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7} and load_json(args.plan).get("migration_target") == "controller-identity":
         identity_preflight(args)
-    elif evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
+    elif evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         box_preflight(args)
     else:
         preflight_tailnet(args)
 
 
 def overlay_repair_prepare(args):
-    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
+    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         raise ApplyError("overlay repair requires Plan v3")
     overlay_preflight(args)
 
 
 def rollback_prepare(args):
-    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6}:
+    if evidence_kind(args.plan) in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         box_rollback_prepare(args)
     else:
         rollback_prepare_tailnet(args)
@@ -3667,6 +4093,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_INVENTORY_INTENT:
+        inventory_execute(args, intent)
     elif intent.get("kind") == KIND_REGISTRY_INTENT:
         registry_execute(args, intent)
     elif intent.get("kind") == KIND_IDENTITY_INTENT:
@@ -3688,6 +4116,7 @@ def parse_args(argv):
     commands = parser.add_subparsers(dest="operation", required=True)
     commands.add_parser("controller-identity-status")
     commands.add_parser("registry-source-status")
+    commands.add_parser("inventory-source-status")
     preflight_parser = commands.add_parser("preflight")
     for name in (
         "plan", "authority-state", "controller-toolchain-receipt",
@@ -3730,6 +4159,8 @@ def main(argv=None):
     try:
         if args.operation == "controller-identity-status":
             print(canonical(controller_identity_status()))
+        elif args.operation == "inventory-source-status":
+            print(canonical(inventory_source_status()))
         elif args.operation == "registry-source-status":
             print(canonical(registry_source_status()))
         elif args.operation == "preflight":

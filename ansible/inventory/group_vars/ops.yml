@@ -214,6 +214,7 @@ ops_controller_secret_authority_wrappers:
 ops_controller_apply_mutation_helper_source: "{{ playbook_dir }}/../../klokast-ops/tailscale/bin/ts-policy-mutate-internal"
 ops_controller_apply_renderer_source: "{{ playbook_dir }}/../bin/render-tailscale-policy"
 ops_controller_apply_platform_resources_source: "{{ playbook_dir }}/../bin/platform-resources"
+ops_controller_apply_platform_inventory_source: "{{ playbook_dir }}/../bin/platform-inventory"
 ops_controller_apply_platform_registry_source: "{{ playbook_dir }}/../bin/platform-registry"
 ops_controller_apply_router_network_helper_source: "{{ playbook_dir }}/../bin/overlay-ipv6-router"
 ops_controller_apply_ops_network_helper_source: "{{ playbook_dir }}/../bin/overlay-ipv6-ops"

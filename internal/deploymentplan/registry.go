@@ -9,7 +9,7 @@ import (
 
 func addRegistryGroup(artifact *Artifact, state authoritystate.StateV2, findings map[string]planner.Finding) {
 	selected := artifact.MigrationTarget == "registry"
-	adopted := state.Kind == authoritystate.KindV4
+	adopted := state.Kind == authoritystate.KindV4 || state.Kind == authoritystate.KindV5
 	operation, executor := "retain_legacy", "none"
 	if adopted {
 		operation = "verify_instance_authority"

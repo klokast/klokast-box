@@ -24,6 +24,13 @@ class InventoryComparisonTests(unittest.TestCase):
         self.assertEqual(result["excluded_legacy_hosts"], ["old-example-ops"])
         self.assertEqual(result["old_inventory_sha256"], result["effective_inventory_sha256"])
 
+    def test_ansible_omits_empty_group_objects_but_sealed_graph_must_be_complete(self):
+        graph = self.graph()
+        omitted = copy.deepcopy(graph)
+        omitted["all"]["children"] += ["ungrouped", "usr"]
+        self.assertEqual(MOD.normalized_inventory(graph, ["boxa-ops"]), MOD.normalized_inventory(omitted, ["boxa-ops"]))
+        with self.assertRaises(ValueError): MOD.static_inventory(omitted)
+
     def test_refuses_connection_runner_membership_and_host_changes(self):
         for change in ("address", "runner", "role", "missing", "extra"):
             with self.subTest(change=change):

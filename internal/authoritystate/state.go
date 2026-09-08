@@ -70,6 +70,7 @@ type StateV2 struct {
 	AuthorityStateSHA256       string            `json:"authority_state_sha256"`
 	ControllerIdentityAdoption *IdentityAdoption `json:"controller_identity_adoption,omitempty"`
 	RegistryAdoption           *IdentityAdoption `json:"registry_adoption,omitempty"`
+	InventoryAdoption          *IdentityAdoption `json:"inventory_adoption,omitempty"`
 }
 
 func Initial() (State, error) {
@@ -296,7 +297,7 @@ func TransitionGroup(prior StateV2, groupID, source, intentSHA256, transitionID 
 }
 
 func ValidateV2(state StateV2) error {
-	if state.SchemaVersion != 2 || state.Kind != KindV2 || state.ControllerIdentityAdoption != nil || state.RegistryAdoption != nil {
+	if state.SchemaVersion != 2 || state.Kind != KindV2 || state.ControllerIdentityAdoption != nil || state.RegistryAdoption != nil || state.InventoryAdoption != nil {
 		return fmt.Errorf("authority state v2 kind or version is invalid")
 	}
 	if (state.PriorStateKind != Kind && state.PriorStateKind != KindV2) || !digest(state.PriorStateSHA256) || !digest(state.SignedIntentSHA256) || state.TransitionID == "" || state.TransitionID == "initial" {

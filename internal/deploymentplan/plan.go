@@ -52,6 +52,7 @@ type Artifact struct {
 	Inputs              []planner.InputDigest        `json:"inputs"`
 	CompatibilityInputs []planner.CompatibilityInput `json:"compatibility_inputs"`
 	Projection          *planner.Projection          `json:"projection,omitempty"`
+	Inventory           *planner.InventoryProjection `json:"inventory,omitempty"`
 	ProjectionHash      string                       `json:"projection_sha256,omitempty"`
 	Observation         ObservationReference         `json:"observation"`
 	Compatibility       *planner.Compatibility       `json:"compatibility,omitempty"`
@@ -140,8 +141,8 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	if options.MigrationTarget == "" {
 		options.MigrationTarget = "connectivity"
 	}
-	if options.MigrationTarget != "connectivity" && options.MigrationTarget != "controller-identity" && options.MigrationTarget != "registry" {
-		return Artifact{}, fmt.Errorf("migration target must be connectivity, controller-identity, or registry")
+	if options.MigrationTarget != "connectivity" && options.MigrationTarget != "controller-identity" && options.MigrationTarget != "registry" && options.MigrationTarget != "inventory" {
+		return Artifact{}, fmt.Errorf("migration target must be connectivity, controller-identity, registry, or inventory")
 	}
 	if options.ConnectivityTarget == "" {
 		options.ConnectivityTarget = "non-controller"
@@ -182,8 +183,19 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
-	if toolchainReceipt.SchemaVersion != 5 {
-		return Artifact{}, fmt.Errorf("Plan v6 requires Controller Toolchain v5")
+	if options.MigrationTarget == "inventory" || state.Kind == authoritystate.KindV5 {
+		artifact.SchemaVersion, artifact.Kind = 7, "klokast.plan.v7"
+		inventory, err := planner.Inventory(options.InstancePath, engine)
+		if err != nil {
+			return Artifact{}, err
+		}
+		if !inventory.Valid || inventory.Projection == nil || !reflect.DeepEqual(inventory.Inputs, report.Inputs) || !reflect.DeepEqual(inventory.Repository, report.Repository) {
+			return Artifact{}, fmt.Errorf("inventory projection is incomplete or differs from the checked private inputs")
+		}
+		artifact.Inventory = inventory.Projection
+	}
+	if (artifact.SchemaVersion == 7 && toolchainReceipt.SchemaVersion != 6) || (artifact.SchemaVersion == 6 && toolchainReceipt.SchemaVersion != 5 && toolchainReceipt.SchemaVersion != 6) {
+		return Artifact{}, fmt.Errorf("Plan v7 requires Toolchain v6; Plan v6 requires Toolchain v5 or v6")
 	}
 	artifact.AuthorityState = AuthorityStateReference{
 		AuthorityStateSHA256: state.AuthorityStateSHA256,
@@ -214,6 +226,17 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			"authority-state.groups", "authority_state.setting_groups",
 			"Authority State v2 groups do not match the complete instance box set",
 		))
+	}
+	if state.Kind == authoritystate.KindV5 {
+		scopes := []string{}
+		for _, group := range state.SettingGroups {
+			if group.ID == authoritystate.InventoryGroupID {
+				scopes = group.Scopes
+			}
+		}
+		if artifact.Inventory == nil || !reflect.DeepEqual(scopes, artifact.Inventory.Scopes) {
+			artifact.Refusals = append(artifact.Refusals, refusal("inventory.scopes", "inventory", "inventory source differs from the complete private scope set"))
+		}
 	}
 	receipt, sourceDiagnostics, err := instancesource.Load(options.InstanceSourceReceipt, time.Now().UTC())
 	if err != nil {
@@ -265,7 +288,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 			groupScopes[scope] = groupID
 		}
 	}
-	identityGrouped := options.MigrationTarget == "controller-identity" || state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4
+	identityGrouped := options.MigrationTarget == "controller-identity" || state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 || state.Kind == authoritystate.KindV5
 	if identityGrouped {
 		for _, scope := range authoritystate.ControllerIdentityScopes {
 			groupScopes[scope] = authoritystate.ControllerIdentityGroupID
@@ -276,8 +299,13 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		for _, scope := range artifact.Projection.Registry.Scopes {
 			groupScopes[scope] = authoritystate.RegistryGroupID
 		}
-	} else if options.MigrationTarget == "registry" || state.Kind == authoritystate.KindV4 {
+	} else if options.MigrationTarget == "registry" || state.Kind == authoritystate.KindV4 || state.Kind == authoritystate.KindV5 {
 		artifact.Refusals = append(artifact.Refusals, refusal("registry.incomplete", "registry", "registry source requires a complete instance-derived registry"))
+	}
+	if artifact.Inventory != nil {
+		for _, scope := range artifact.Inventory.Scopes {
+			groupScopes[scope] = authoritystate.InventoryGroupID
+		}
 	}
 	for _, finding := range artifact.Compatibility.Findings {
 		if _, grouped := groupScopes[finding.Path]; grouped {
@@ -429,6 +457,9 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	if registryGrouped {
 		addRegistryGroup(&artifact, state, groupFindings)
 	}
+	if artifact.Inventory != nil {
+		addInventoryGroup(&artifact, state, groupFindings)
+	}
 	for _, finding := range health.Findings {
 		artifact.Refusals = append(artifact.Refusals, refusal("observation."+finding.Code, finding.Path, finding.Message))
 	}
@@ -449,6 +480,15 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 	})
 	coverageReady, coverageRefusals := exactCoverage(artifact, digests)
 	artifact.Refusals = append(artifact.Refusals, coverageRefusals...)
+	if artifact.SchemaVersion == 7 {
+		for i := range artifact.Actions {
+			for j, precondition := range artifact.Actions[i].Preconditions {
+				if precondition == "exact_plan_v6_revalidated" {
+					artifact.Actions[i].Preconditions[j] = "exact_plan_v7_revalidated"
+				}
+			}
+		}
+	}
 	sort.Slice(artifact.Actions, func(i, j int) bool { return artifact.Actions[i].ID < artifact.Actions[j].ID })
 	sort.Slice(artifact.ActionGroups, func(i, j int) bool { return artifact.ActionGroups[i].ID < artifact.ActionGroups[j].ID })
 	sort.Slice(artifact.Refusals, func(i, j int) bool {
@@ -554,19 +594,26 @@ func authorityGroupsMatchProjection(state authoritystate.StateV2, projection *pl
 	for _, box := range projection.Boxes {
 		expected[authoritystate.BoxConnectivityPrefix+box.ID] = authoritystate.BoxConnectivityScopes(box.ID)
 	}
-	if state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 {
+	if state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 || state.Kind == authoritystate.KindV5 {
 		expected[authoritystate.ControllerIdentityGroupID] = authoritystate.ControllerIdentityScopes
 	}
-	if state.Kind == authoritystate.KindV4 {
+	if state.Kind == authoritystate.KindV4 || state.Kind == authoritystate.KindV5 {
 		if projection.Registry == nil {
 			return false
 		}
 		expected[authoritystate.RegistryGroupID] = projection.Registry.Scopes
 	}
-	if len(state.SettingGroups) != len(expected) {
+	extra := 0
+	if state.Kind == authoritystate.KindV5 {
+		extra = 1
+	}
+	if len(state.SettingGroups) != len(expected)+extra {
 		return false
 	}
 	for _, group := range state.SettingGroups {
+		if state.Kind == authoritystate.KindV5 && group.ID == authoritystate.InventoryGroupID {
+			continue // Checked against the independent sealed inventory projection.
+		}
 		scopes, present := expected[group.ID]
 		if !present || !reflect.DeepEqual(group.Scopes, scopes) {
 			return false
@@ -580,6 +627,11 @@ func authorityAssignments(artifact Artifact, digests map[string]string) []Author
 		{ID: "instance_specification_v1", Scope: "candidate_desired_state", Disposition: "candidate", SourceCommit: artifact.Instance.Commit},
 		{ID: "legacy_engine_inventory", Scope: "execution_inventory", Disposition: "continuing", SourceCommit: artifact.Engine.Commit},
 		{ID: "observation_v1", Scope: "standard_substrate_health", Disposition: "evidence", SourceSHA256: artifact.Observation.GenerationSHA256},
+	}
+	if artifact.AuthorityState.Kind == authoritystate.KindV5 && artifact.Inventory != nil {
+		result[1] = AuthorityAssignment{ID: "instance_execution_inventory_v1", Scope: authoritystate.InventoryScope,
+			Authority: authoritystate.InstanceAuthority, Disposition: "active", SourceCommit: artifact.Instance.Commit,
+			SourceSHA256: artifact.Inventory.InventorySHA256}
 	}
 	for _, finding := range artifact.Compatibility.Findings {
 		if finding.Class != "compatibility_only" {

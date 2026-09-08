@@ -62,7 +62,7 @@ def static_inventory(graph):
     return {"all": result}
 
 
-def expanded_groups(graph, selected):
+def expanded_groups(graph, selected, *, ansible_output=False):
     """Return complete role membership for selected hosts, rejecting cycles."""
     result = {}
     visiting = set()
@@ -70,6 +70,10 @@ def expanded_groups(graph, selected):
     def visit(name):
         if name in result:
             return result[name]
+        # Ansible --list retains child references to empty groups but omits
+        # their objects. The sealed input graph must still define every group.
+        if ansible_output and name not in graph:
+            return set()
         if name in visiting or name not in graph or name == "_meta":
             raise ValueError("inventory group graph is recursive or incomplete")
         visiting.add(name)
@@ -99,7 +103,7 @@ def normalized_inventory(graph, selected):
         if not isinstance(hostvars[host], dict):
             raise ValueError("host variables must be an object")
         variables[host] = {k: v for k, v in hostvars[host].items() if k not in PROVENANCE_FIELDS}
-    return {"hostvars": variables, "groups": expanded_groups(graph, selected)}
+    return {"hostvars": variables, "groups": expanded_groups(graph, selected, ansible_output=True)}
 
 
 def compare_inventories(old, effective, projection):

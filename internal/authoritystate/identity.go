@@ -57,7 +57,10 @@ func rejectV3FieldOnV2(content []byte, state StateV2) error {
 	if err := json.Unmarshal(content, &fields); err != nil {
 		return err
 	}
-	if _, present := fields["registry_adoption"]; present && state.Kind != KindV4 {
+	if _, present := fields["inventory_adoption"]; present && state.Kind != KindV5 {
+		return fmt.Errorf("older Authority State cannot contain a v5 inventory adoption field, including null")
+	}
+	if _, present := fields["registry_adoption"]; present && state.Kind != KindV4 && state.Kind != KindV5 {
 		return fmt.Errorf("older Authority State cannot contain a v4 registry adoption field, including null")
 	}
 	if _, present := fields["controller_identity_adoption"]; present && state.Kind == KindV2 {
@@ -67,6 +70,12 @@ func rejectV3FieldOnV2(content []byte, state StateV2) error {
 }
 
 func ValidateCurrent(state StateV2) error {
+	if state.Kind == KindV5 {
+		return validateV5(state)
+	}
+	if state.InventoryAdoption != nil {
+		return fmt.Errorf("older Authority State cannot contain inventory adoption")
+	}
 	if state.Kind == KindV4 {
 		return validateV4(state)
 	}

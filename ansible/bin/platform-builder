@@ -18,7 +18,7 @@ SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[2]
 ANSIBLE_DIR = REPO_ROOT / "ansible"
 PLAYBOOK = ANSIBLE_DIR / "playbooks" / "73-platform-builder.yml"
-BASE_INVENTORY = ANSIBLE_DIR / "inventory" / "hosts.yml"
+BASE_INVENTORY = ANSIBLE_DIR / "execution-inventory" / "hosts"
 RENDER_INVENTORY = ANSIBLE_DIR / "bin" / "render-node-inventory"
 CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 OUTPUT_ROOT = Path("/var/lib/klokast/builds")
@@ -317,6 +317,7 @@ def ansible_command(
     image_size,
     manifest,
     result_dir,
+    compatibility_inventory=False,
 ):
     inventory = render_inventory(staging, box)
     local_tmp = safe_child(staging, "ansible-local")
@@ -341,7 +342,7 @@ def ansible_command(
         "ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no",
         "ansible-playbook",
         "-i",
-        BASE_INVENTORY,
+        ANSIBLE_DIR / "inventory/hosts.yml" if compatibility_inventory else BASE_INVENTORY,
         "-i",
         inventory,
         PLAYBOOK,
@@ -489,6 +490,7 @@ def build_klokast_cli(args):
             image_size=image_size,
             manifest=manifest,
             result_dir=result_dir,
+            compatibility_inventory=getattr(args, "compatibility_inventory", False),
         )
         completed = run(command, check=False)
         expected = {
@@ -524,6 +526,7 @@ def parse_args(argv=None):
     build = subparsers.add_parser("build-klokast-cli", help="build cmd/klokast in the sealed Xen builder")
     build.add_argument("--box", required=True)
     build.add_argument("--approved-commit", required=True)
+    build.add_argument("--compatibility-inventory", action="store_true", help="explicitly use the retained inventory for toolchain bootstrap")
     build.add_argument("--dry-run-plan", action="store_true")
     build.add_argument("--operation-id", help=argparse.SUPPRESS)
     return parser.parse_args(argv)

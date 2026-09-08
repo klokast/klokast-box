@@ -7,7 +7,7 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
 
 BOX=""
-INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 FROM_PHASE="90"
 TO_PHASE="95"
 DRY_RUN=0
@@ -28,7 +28,7 @@ reboots it.
 
 Options:
   --box BOX           Box short name, for example `duh`
-  --inventory PATH    Ansible inventory. Default: ansible/inventory/hosts.yml
+  --inventory PATH    Ansible inventory. Default: ansible/execution-inventory/hosts
   --from PHASE        First phase to run. Default: 90
   --to PHASE          Last phase to run. Default: 95
   --wipe-source SRC   SSD wipe source. Only dom0 is supported. Default: dom0

@@ -33,7 +33,7 @@ func addControllerIdentityGroup(artifact *Artifact, state authoritystate.StateV2
 		if scope == "deployment.control_plane.controller" {
 			before, class = "controller_ha_markers", "derived"
 		}
-		if state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 {
+		if state.Kind == authoritystate.KindV3 || state.Kind == authoritystate.KindV4 || state.Kind == authoritystate.KindV5 {
 			before = authoritystate.InstanceAuthority
 		}
 		if !ok || finding.Class != class || digests["legacy_controller_ha"] == "" {

@@ -11,7 +11,7 @@ PLATFORM_RESOURCES="$SCRIPT_DIR/platform-resources"
 
 BOX=""
 TARGET="all"
-INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
 RESOURCES_REGISTRY="auto"
@@ -32,7 +32,7 @@ Options:
   --box BOX               Box short name, for example boxa
   --target TARGET         Check target. Supported: all, dom0, router, podman,
                           ops, map, resources. Default: all
-  --inventory PATH        Base Ansible inventory. Default: ansible/inventory/hosts.yml
+  --inventory PATH        Base Ansible inventory. Default: ansible/execution-inventory/hosts
   --magicdns-suffix NAME  Tailscale MagicDNS suffix. Default: auto-discovered
   --target-disk-device DEV
                           Device used when rendering temporary node inventory.

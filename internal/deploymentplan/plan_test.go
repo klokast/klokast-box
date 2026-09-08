@@ -323,7 +323,7 @@ func writeAuthorityState(t *testing.T, directory string) string {
 func writeToolchainReceipt(t *testing.T, directory string) string {
 	t.Helper()
 	receipt := toolchain.Receipt{
-		SchemaVersion: 5, Kind: toolchain.Kind, EngineCommit: testCommit,
+		SchemaVersion: 6, Kind: toolchain.Kind, EngineCommit: testCommit,
 		PublicCheckoutClean: true, PublicCheckoutCommit: testCommit,
 		Components: []toolchain.Component{},
 	}

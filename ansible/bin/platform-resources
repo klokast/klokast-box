@@ -3398,7 +3398,7 @@ def run_box_access(
             "ansible-playbook",
             "-vv",
             "-i",
-            str(REPO_ROOT / "ansible" / "inventory" / "hosts.yml"),
+            str(REPO_ROOT / "ansible" / "execution-inventory" / "hosts"),
             "-i",
             str(inventory_path),
             str(REPO_ROOT / "ansible" / "playbooks" / "32-platform-box-access.yml"),
@@ -3451,7 +3451,7 @@ def run_shared_guests(
     }
     write_platform_resources_vars(vars_path, vars_payload, desired_json)
 
-    inventory_args = ["-i", str(REPO_ROOT / "ansible" / "inventory" / "hosts.yml")]
+    inventory_args = ["-i", str(REPO_ROOT / "ansible" / "execution-inventory" / "hosts")]
     for box in boxes:
         inventory_path = tmp / f"{box}.yml"
         render_inventory(
@@ -3758,7 +3758,7 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
     }
     write_platform_resources_vars(vars_path, vars_payload, desired_json)
 
-    inventory_args = ["-i", str(REPO_ROOT / "ansible" / "inventory" / "hosts.yml")]
+    inventory_args = ["-i", str(REPO_ROOT / "ansible" / "execution-inventory" / "hosts")]
     for box in boxes:
         inventory_path = tmp / f"{box}.yml"
         render_inventory(

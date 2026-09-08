@@ -148,6 +148,82 @@ func TestRegistryAdoptionAndFinalPlannerTargets(t *testing.T) {
 			}
 		}
 	}
+
+	// Inventory selection is explicit and consumes the pending runner as one
+	// atomic source group, while preserving all completed migrations.
+	options.MigrationTarget = "inventory"
+	inventoryPlan, err := Build(options, testEngine)
+	if err != nil || !inventoryPlan.Deployable || inventoryPlan.SchemaVersion != 7 || inventoryPlan.Inventory == nil {
+		t.Fatalf("inventory preparation failed: %v %#v", err, inventoryPlan.Refusals)
+	}
+	inventoryGroup := actionGroup(inventoryPlan, authoritystate.InventoryGroupID)
+	if inventoryGroup.Executor != "inventory_source_v1" || inventoryGroup.Operation != "adopt_instance_specification" || len(inventoryGroup.Scopes) != 2 {
+		t.Fatalf("incomplete inventory group: %#v", inventoryGroup)
+	}
+	for _, g := range inventoryPlan.ActionGroups {
+		if g.ID != authoritystate.InventoryGroupID && (g.Executor != "none" || g.Operation != "verify_instance_authority") {
+			t.Fatalf("inventory selection changed an existing source group: %#v", g)
+		}
+	}
+	state.Kind, state.SchemaVersion, state.PriorStateKind = authoritystate.KindV5, 5, authoritystate.KindV4
+	state.PriorStateSHA256, state.TransitionID, state.SignedIntentSHA256 = state.AuthorityStateSHA256, "inventory-test-anchor", strings.Repeat("f", 64)
+	state.InventoryAdoption = &authoritystate.IdentityAdoption{Nonce: state.TransitionID, IntentSHA256: state.SignedIntentSHA256, PlanSHA256: inventoryPlan.PlanSHA256}
+	state.SettingGroups = append(state.SettingGroups, authoritystate.SettingGroup{ID: authoritystate.InventoryGroupID, Scopes: inventoryGroup.Scopes, Source: authoritystate.InstanceAuthority})
+	sort.Slice(state.SettingGroups, func(i, j int) bool { return state.SettingGroups[i].ID < state.SettingGroups[j].ID })
+	state.AuthorityStateSHA256, _ = authoritystate.HashV2(state)
+	if err := authoritystate.ValidateCurrent(state); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Dir(options.AuthorityState), filepath.Base(options.AuthorityState), string(canonicalTestJSON(t, state)))
+	for _, target := range []string{"inventory", "registry", "controller-identity", "connectivity"} {
+		for _, connectivity := range []string{"non-controller", "active-controller"} {
+			options.MigrationTarget, options.ConnectivityTarget = target, connectivity
+			final, err := Build(options, testEngine)
+			if err != nil || !final.Deployable || final.SchemaVersion != 7 {
+				t.Fatalf("final inventory %s/%s: %v %#v", target, connectivity, err, final.Refusals)
+			}
+			for _, group := range final.ActionGroups {
+				if group.Operation != "verify_instance_authority" {
+					t.Fatalf("adopted group retained legacy ownership: %#v", group)
+				}
+			}
+			for _, action := range final.Actions {
+				if action.Executor == "unimplemented_action" || (action.Operation == "retain_legacy" && (action.Scope == authoritystate.InventoryScope || strings.HasPrefix(action.Scope, authoritystate.RunnerScopePrefix))) {
+					t.Fatalf("inventory migration left pending authority: %#v", action)
+				}
+			}
+			for _, assignment := range final.Authorities {
+				if assignment.ID == "legacy_engine_inventory" {
+					t.Fatal("inventory still uses legacy authority")
+				}
+			}
+			if final.LegacyRemovalReady {
+				t.Fatal("inventory adoption authorized legacy deletion")
+			}
+		}
+	}
+	for _, badScopes := range [][]string{{authoritystate.InventoryScope}, {authoritystate.InventoryScope, "shell"}, {authoritystate.RunnerScopePrefix + "boxa-ops", authoritystate.InventoryScope}} {
+		bad := state
+		bad.SettingGroups = append([]authoritystate.SettingGroup{}, state.SettingGroups...)
+		for i := range bad.SettingGroups {
+			if bad.SettingGroups[i].ID == authoritystate.InventoryGroupID {
+				bad.SettingGroups[i].Scopes = badScopes
+			}
+		}
+		bad.AuthorityStateSHA256, _ = authoritystate.HashV2(bad)
+		if err := authoritystate.ValidateCurrent(bad); err == nil {
+			t.Fatal("invalid inventory scope accepted")
+		}
+	}
+	for _, oldKind := range []string{authoritystate.KindV2, authoritystate.KindV3, authoritystate.KindV4} {
+		var raw map[string]any
+		json.Unmarshal(canonicalTestJSON(t, state), &raw)
+		raw["kind"], raw["inventory_adoption"] = oldKind, nil
+		writeFile(t, filepath.Dir(options.AuthorityState), filepath.Base(options.AuthorityState), string(canonicalTestJSON(t, raw)))
+		if _, err := authoritystate.LoadCurrent(options.AuthorityState); err == nil {
+			t.Fatal("older source accepted null inventory adoption")
+		}
+	}
 	for _, oldKind := range []string{authoritystate.KindV2, authoritystate.KindV3} {
 		var raw map[string]any
 		if err := json.Unmarshal(canonicalTestJSON(t, state), &raw); err != nil {

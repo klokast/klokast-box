@@ -25,6 +25,7 @@ def canonical(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", required=True)
+    parser.add_argument("--observation", required=True, help="fresh controller-local Observation v1 for offline Plan contract checks")
     args = parser.parse_args()
     os.umask(0o077)
     loader = SourceFileLoader("inventory_candidate_plan", str(REPO / "ansible/bin/platform-plan"))
@@ -50,6 +51,8 @@ def main():
         clean(INSTANCE, private_commit)
         inputs = {name: (INSTANCE / name).read_bytes() for name in ("klokast-instance.json", "klokast.lock.json")}
         pointer = Path("/var/lib/klokast/active-authority-state").read_bytes()
+        observation_path = Path(args.observation).resolve(strict=True)
+        observation_bytes = observation_path.read_bytes()
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         output = PRIVATE / "inventory-source-candidates" / engine / stamp
         output.mkdir(mode=0o700, parents=True)
@@ -83,9 +86,76 @@ def main():
                                   "--output-directory", output / "comparison"], "inventory-comparison")
             if comparison.get("equal") is not True or not comparison.get("temporary_files_removed"):
                 raise ValueError("inventory equality or cleanup did not pass")
+            # Review-only receipts bind the temporary fixture, never the live
+            # deployment. They stay outside all protected execution roots.
+            def hashed(value, field="receipt_sha256"):
+                value.pop(field, None)
+                value[field] = hashlib.sha256(canonical(value).encode()).hexdigest()
+                return value
+
+            fixture_commit = git(fixture, "rev-parse", "HEAD")
+            sources = [json.loads(path.read_text()) for path in Path("/var/lib/klokast/instance-sources").glob("*/*.json")]
+            source = max((v for v in sources if v.get("commit") == private_commit), key=lambda v: v["fetched_at"])
+            source = hashed(dict(source, commit=fixture_commit, fetched_at=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+            synthetic_source = output / "review-only-source.json"
+            synthetic_source.write_text(canonical(source) + "\n")
+            def module(name, path):
+                loader = SourceFileLoader(name, str(path))
+                spec = importlib.util.spec_from_loader(name, loader)
+                result = importlib.util.module_from_spec(spec)
+                loader.exec_module(result)
+                return result
+            toolchain = module("inventory_review_toolchain", REPO / "ansible/bin/controller-toolchain-receipt")
+            components = []
+            for name, path, _installed in toolchain.COMPONENTS:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                components.append({"name": name, "source_sha256": digest, "installed_sha256": digest})
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            components.append({"name": "sealed_engine", "source_sha256": digest, "installed_sha256": digest})
+            receipt_fixture = hashed({"schema_version": 6, "kind": "klokast.controller-toolchain.v6", "engine_commit": engine, "public_checkout_clean": True, "public_checkout_commit": engine, "components": components})
+            synthetic_toolchain = output / "review-only-toolchain.json"
+            synthetic_toolchain.write_text(canonical(receipt_fixture) + "\n")
+            state_path = Path("/var/lib/klokast/authority-states") / (pointer.decode().strip() + ".json")
+            apply = module("inventory_review_apply", REPO / "klokast-ops/secret-authority/bin/ksa-apply")
+            apply.PLAN_ROOT = output / "review-only-plans"
+            plans = []
+            command = [binary, "plan", "--instance", fixture, "--compatibility-deployment", PRIVATE / "deployment.yml",
+                       "--compatibility-registry", PRIVATE / "platform-resources.yml", "--compatibility-controller-ha", PRIVATE / "controller-ha.yml",
+                       "--observation", observation_path, "--instance-source-receipt", synthetic_source,
+                       "--controller-toolchain-receipt", synthetic_toolchain, "--json"]
+            def check_plan(state, target, connectivity):
+                plan = checked([*command, "--authority-state", state, "--migration-target", target, "--connectivity-target", connectivity], "review-plan-" + Path(state).stem[:8] + "-" + target + "-" + connectivity)
+                if plan.get("valid") is not True or plan.get("deployable") is not True or plan.get("authority_ready") is not True:
+                    raise ValueError("sealed private Plan contract check refused; inspect private review evidence")
+                path = apply.PLAN_ROOT / fixture_commit / (plan["plan_sha256"] + ".json")
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path.write_text(canonical(plan) + "\n")
+                try:
+                    apply.verify_plan_v3(path)
+                except apply.ApplyError as error:
+                    raise ValueError("root Plan contract refused: " + str(error)) from error
+                plans.append(plan["plan_sha256"])
+                return plan
+            adoption = check_plan(state_path, "inventory", "non-controller")
+            # Check post-adoption reporting without publishing or approving a
+            # source change. The synthetic state has no signed archive.
+            state = json.loads(state_path.read_text())
+            state.update(schema_version=5, kind=apply.KIND_AUTHORITY_V5, prior_state_kind=apply.KIND_AUTHORITY_V4,
+                         prior_state_sha256=state["authority_state_sha256"], transition_id="review-only-inventory", signed_intent_sha256="a" * 64)
+            state["inventory_adoption"] = {"nonce": state["transition_id"], "intent_sha256": state["signed_intent_sha256"], "plan_sha256": adoption["plan_sha256"]}
+            state["setting_groups"] = sorted([*state["setting_groups"], {"id": apply.INVENTORY_GROUP, "source": "instance_specification_v1", "scopes": rendered["projection"]["scopes"]}], key=lambda g: g["id"])
+            state["authority_state_sha256"] = apply.authority_v2_hash(state)
+            apply.validate_authority_current_document(state)
+            synthetic_state = output / "review-only-authority.json"
+            synthetic_state.write_text(canonical(state) + "\n")
+            for target in ("inventory", "registry", "controller-identity", "connectivity"):
+                for connectivity in ("non-controller", "active-controller"):
+                    plan = check_plan(synthetic_state, target, connectivity)
+                    if any(g["operation"] != "verify_instance_authority" for g in plan["action_groups"]) or any(a.get("executor") == "unimplemented_action" for a in plan["actions"]) or any(a["id"] == "legacy_engine_inventory" for a in plan["authorities"]):
+                        raise ValueError("final private Plan retains inventory or pending runner authority")
         clean(REPO, engine)
         clean(INSTANCE, private_commit)
-        if Path("/var/lib/klokast/active-authority-state").read_bytes() != pointer or any((INSTANCE / name).read_bytes() != value for name, value in inputs.items()):
+        if observation_path.read_bytes() != observation_bytes or Path("/var/lib/klokast/active-authority-state").read_bytes() != pointer or any((INSTANCE / name).read_bytes() != value for name, value in inputs.items()):
             raise ValueError("private inputs or active source changed during inventory preparation")
         result = {"schema_version": 1, "result": "verified-inventory-candidate", "engine_commit": engine,
                   "private_commit": private_commit, "build_dir": str(build), "directory": str(output),
@@ -93,7 +163,8 @@ def main():
                   "runners": len(rendered["projection"]["airunners"]), "scopes": len(rendered["projection"]["scopes"]),
                   "inventory_sha256": comparison["effective_inventory_sha256"], "policy_sha256": comparison["policy_sha256"],
                   "private_input_sha256": {name: hashlib.sha256(value).hexdigest() for name, value in inputs.items()},
-                  "source_unchanged": True, "temporary_fixture_removed": True, "published": False}
+                  "source_unchanged": True, "temporary_fixture_removed": True, "published": False,
+                  "review_only_plan_contracts": len(plans), "plan_sha256": plans, "installed_toolchain_verified": False}
         (output / "result.json").write_text(canonical(result) + "\n")
         print(canonical(result))
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, checker.PlanError) as error:

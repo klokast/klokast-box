@@ -8,7 +8,7 @@ ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
 export ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH"
 
 COMMAND=""
-INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 BUILDER_HOST="yii-bak"
 BUILDER_USER="neo"
 OOB_HOST="oob"
@@ -36,7 +36,7 @@ Commands:
   all             Run build-builder, build-iso, transfer-iso, stop-builder, remove-builder.
 
 Options:
-  --inventory PATH      Ansible inventory. Default: ansible/inventory/hosts.yml
+  --inventory PATH      Ansible inventory. Default: ansible/execution-inventory/hosts
   --builder-host HOST   Builder SSH host. Default: yii-bak, resolved to full MagicDNS
   --builder-user USER   Builder SSH user. Default: neo
   --oob-host HOST       NanoKVM SSH host. Default: oob

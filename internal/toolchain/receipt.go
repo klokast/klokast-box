@@ -11,7 +11,8 @@ import (
 	"klokast-box/internal/strictjson"
 )
 
-const Kind = "klokast.controller-toolchain.v5"
+const Kind = "klokast.controller-toolchain.v6"
+const KindV5 = "klokast.controller-toolchain.v5"
 const KindV4 = "klokast.controller-toolchain.v4"
 const KindV3 = "klokast.controller-toolchain.v3"
 
@@ -21,6 +22,7 @@ var Components = []string{
 	"freebox_broker",
 	"ksa_apply",
 	"ops_network_helper",
+	"platform_inventory",
 	"platform_registry",
 	"platform_resources",
 	"policy_mutation_helper",
@@ -72,11 +74,14 @@ func Load(path string, engineCommit string) (Receipt, error) {
 }
 
 func Validate(receipt Receipt, engineCommit string) error {
-	if !((receipt.SchemaVersion == 5 && receipt.Kind == Kind) || (receipt.SchemaVersion == 4 && receipt.Kind == KindV4) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
+	if !((receipt.SchemaVersion == 6 && receipt.Kind == Kind) || (receipt.SchemaVersion == 5 && receipt.Kind == KindV5) || (receipt.SchemaVersion == 4 && receipt.Kind == KindV4) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
 		return fmt.Errorf("controller toolchain receipt identity does not match the selected clean engine commit")
 	}
 	components := []string{}
 	for _, name := range Components {
+		if receipt.SchemaVersion < 6 && name == "platform_inventory" {
+			continue
+		}
 		if receipt.SchemaVersion < 5 && name == "platform_registry" {
 			continue
 		}

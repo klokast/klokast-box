@@ -494,6 +494,16 @@
   tags:
     - ops-controller-apply
 
+- name: Install the checked Platform inventory source client
+  ansible.builtin.copy:
+    src: "{{ ops_controller_apply_platform_inventory_source }}"
+    dest: /usr/local/sbin/platform-inventory
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - ops-controller-apply
+
 - name: Install the checked Platform registry source client
   ansible.builtin.copy:
     src: "{{ ops_controller_apply_platform_registry_source }}"

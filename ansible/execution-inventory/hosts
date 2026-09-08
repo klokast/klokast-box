@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Ansible entry point for the installed, checked inventory source reader."""
+import os
+import sys
+
+try:
+    os.execv('/usr/local/sbin/platform-inventory', ['platform-inventory', *sys.argv[1:]])
+except OSError:
+    print('execution inventory: install the matching controller toolchain before use', file=sys.stderr)
+    raise SystemExit(1)

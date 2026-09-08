@@ -9,7 +9,7 @@ DECOMMISSION_BOX="$SCRIPT_DIR/decommission-box"
 PROVISION_BOX="$SCRIPT_DIR/provision-box"
 
 BOX=""
-INVENTORY="$ANSIBLE_DIR/inventory/hosts.yml"
+INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
 MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
 OOB_HOST="oob"
@@ -36,7 +36,7 @@ the operator to enroll the rebooted ISO as BOX-bootstrap, then runs provision-bo
 
 Options:
   --box BOX                 Box short name, for example boxa
-  --inventory PATH          Base Ansible inventory. Default: ansible/inventory/hosts.yml
+  --inventory PATH          Base Ansible inventory. Default: ansible/execution-inventory/hosts
   --target-disk-device DEV  Provisioning install target. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX  Tailscale MagicDNS suffix. Default: auto-discovered
   --oob-host HOST           NanoKVM SSH host. Default: oob

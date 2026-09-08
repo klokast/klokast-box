@@ -2,6 +2,21 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-08 - Ansible omits empty groups from its inventory output
+
+The first sealed private comparison stopped because Ansible retained child
+references to empty `usr`, `ungrouped`, and legacy `jump` groups but omitted
+their objects from `--list`. The comparison now treats those missing output
+objects as empty. The sealed input graph still requires every group object and
+rejects missing references or cycles. Rechecking the saved controller output
+showed equal variables and memberships for all 14 instance hosts.
+
+The full review must exercise both Ansible static parsing and its script
+plugin. Normal inventory source failure must stop Ansible, even when another
+generated inventory is valid. The new default configuration makes any
+unparsed source fatal. Toolchain bootstrap uses explicit retained inventory
+arguments; normal operation has no missing-helper fallback.
+
 # 2026-09-08 - Inventory migration must compare Ansible's merged variables
 
 The generated box graph alone does not contain all execution settings.
