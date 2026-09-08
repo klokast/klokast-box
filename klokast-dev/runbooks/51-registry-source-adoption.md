@@ -1,6 +1,7 @@
 # Registry source adoption
 
-Status: `implemented`; live acceptance is pending. The bounded decision is in
+Status: `implemented`; signed adoption passed on 2026-09-08. Signed
+verification and exact replay refusal are pending. The bounded decision is in
 [the target architecture](../../doc/upstream-instance-target-architecture.md#registry-source-adoption).
 The [compatibility checkpoint](50-registry-migration-checkpoint.md) is active.
 Its acceptance record is complete and remains the rollback-checker baseline.
@@ -9,25 +10,23 @@ Engine `e05a713` was promoted and private commit `317af096` published the exact
 checked registry candidate. Matching Toolchain v5, both controller markers,
 and router configuration baselines passed. The first unsigned preflight refused
 an unrelated pending airunner action because of a validator vocabulary mismatch.
-No source transition or signed execution occurred. Promote the corrected
-validator before continuing. Preserve this controller-held attempt:
+No source transition or signed execution occurred in that attempt. Preserve
+this controller-held evidence:
 
 ```text
 /home/smith/private/klokast/registry-source-acceptance/e05a713cd32f859d75858ad1943f4ef88edb80f3
 ```
 
 The directory contains publication synchronization, input and router baselines,
-the initial Plan, and the refusal in `initial-preflight/`. New acceptance must
-use the corrected engine, matching installed tools, and fresh evidence.
+the initial Plan, and the refusal in `initial-preflight/`.
 
 The attempt to promote validator correction `1dc2dd6` then exposed a Mac
 candidate-selector omission for the published `inactive-apps` field. It stopped
-before approval or private publication. The combined correction must pass the
-actual Mac candidate generator and installed controller promotion preflight
-with the published private input. Keep both sealed-engine checks and the
-metadata-only diff. Use the direct `smith` controller contact during this
-pending promotion because the public checkout has advanced while installed
-Apply tools still match `e05a713`.
+before approval or private publication. Combined correction `db61bc7` passed
+the actual Mac candidate generator, installed controller promotion preflight,
+both sealed-engine checks, and the metadata-only diff. The human promoted it
+to private commit `366efc194d2efd82080d59f87222129eb309b51e`. Matching controller
+tools were installed before the new acceptance baselines were captured.
 
 ## Scope and authority
 
@@ -160,3 +159,67 @@ controller-held evidence references here and in the target architecture.
 Commit and push acceptance documentation without deploying that documentation
 commit. Continue with the final Plan's remaining execution-inventory setting
 groups under the user's existing migration authorization.
+
+## Interrupted acceptance, 2026-09-08
+
+Engine `db61bc775a0e30babd202be7ab96a26533d79fad` is active with the private
+commit above. The sealed build operation is `fb2dcfa3f83a`. Its 524 Python
+tests, sealed Go tests/build, and relevant shell and Ansible syntax checks
+passed. The controller-held acceptance directory is:
+
+```text
+/home/smith/private/klokast/registry-source-acceptance/db61bc775a0e30babd202be7ab96a26533d79fad
+```
+
+Signed adoption completed at `2026-09-08T05:28:46Z`. It changed only the
+registry group's source and preserved the original controller identity
+adoption reference. All five source groups now use the instance. The source
+changed from
+`0b34c848ef2008f74259593ce7c869473a16cfa1e4f130b47eb49b556c0d8005`
+to `e2ef84b6c703be23e5c74c413799c7c8cde8c4f180f1eed3d24f3feb240eb1de`.
+The successful adoption receipt is:
+
+```text
+/var/lib/klokast/apply-executions/NB7AQ6VjWIqy3t6eLv8WB-EI/d92b3a6b02975db644e83d4387e8c59f5ff448f55060f2100aab7c4e340af2d7.json
+```
+
+`after-adoption-checks.json` records exact source-transition, desired-state
+file and metadata, controller-marker, normal registry-reader, and persistent
+router-configuration checks. The human interrupted the remaining approval
+workflow. Inspection found no receipt for verification Plan
+`2e8d0bc3346295d9ca9b6a0cd6f887db75b0cc6d99b1b379ffe5c796a1547828`.
+Its preparation nonce `oP-9WS0-17EvMUKhmMg-Qn0Z` was unused and expired;
+its temporary runtime copies were removed. Keep these artifacts.
+
+Restarting adoption correctly refuses the changed active source. The original
+`prepare-verification` step also refuses to overwrite an existing attempt.
+After inspection, run `resume-registry-verification.py` in the directory
+above as `smith` on the active controller. It accepts no arguments. It checks
+the original helpers, adoption receipt and source transition, copies the
+original configuration baselines into a new attempt directory, checks current
+settings, and refreshes source, recovery, observation, Plan, and unsigned
+preparation evidence. Each invocation creates separate evidence and returns
+an `approval_args` object. It does not sign or execute a request.
+
+Pass those seven arguments to the matching MacBook `apply-platform-intent`
+helper with `--prove-replay-refusal`. Require action `verify_instance_authority`
+and executor `registry_source_v1`. If preparation or approval is interrupted
+again, inspect any execution receipt and start fresh verification when needed.
+Do not repeat adoption or reuse a signed request. After successful signed
+verification and exact replay refusal, repeat the unchanged-setting checks
+and store the final Plan before marking acceptance complete.
+
+`interrupted-acceptance-inspection.json` records the inspection and resume
+helper hash. Each `resumed-verification-*/` directory retains its copied
+baseline hashes, configuration checks, refreshed evidence references, and
+unsigned preparation result. This documentation checkpoint requires no
+engine promotion or controller-tool installation.
+
+The resume helper passed unsigned live verification in
+`resumed-verification-20260908T204536.571713Z/`. Plan
+`f1f5855da98458a5dd532dc8a0e05e1fbf4959b54dbbc2e495655465839b624a`
+reports all five groups as verification-only. The protected archive check
+passed for nonce `IcNLbmT43JW4azi6CirZrUIh`: seven root-owned files, directory
+mode `0700`, file mode `0600`, equal complete registry and controller values,
+unused nonce, and no runtime copies. The source remained unchanged. This is
+unsigned preparation evidence; refresh it when the human starts approval.

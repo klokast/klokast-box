@@ -2,6 +2,26 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-08 - Resume registry acceptance after completed adoption
+
+The human interrupted acceptance after registry adoption and preparation of
+the verification request. Restarting the two-step command ran adoption again
+and correctly refused `input changed: active-authority-state`. Inspection
+confirmed the exact Authority State v4 transition and a successful adoption
+receipt. Desired-state files, controller markers, and router configuration
+matched the original baselines. No signed verification receipt existed; the
+old verification nonce was unused and its request had expired.
+
+Resume at verification after inspecting the source and receipts. Keep the
+original baselines and all old requests. The controller-held resume helper
+creates a separate attempt, checks current settings against those baselines,
+and refreshes evidence before unsigned verification preparation. It accepts
+no operation selector and cannot execute adoption. Do not rerun the original
+two-step command, overwrite its verification arguments, or relax input and
+expiry checks. The [registry runbook](../klokast-dev/runbooks/51-registry-source-adoption.md#interrupted-acceptance-2026-09-08)
+records this checkpoint. Signed verification and exact replay refusal remain
+required before the milestone is `live-verified`.
+
 # 2026-09-07 - Test promotion after publishing optional instance fields
 
 After the registry candidate was published, the Mac promotion helper refused

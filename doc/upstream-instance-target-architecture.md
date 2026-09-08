@@ -1264,7 +1264,8 @@ The checkpoint runbook holds the acceptance references.
 
 ### Registry source adoption
 
-Status: `implemented`; live acceptance is pending. Adopt the remaining
+Status: `implemented`; signed adoption passed on 2026-09-08. Signed
+verification and exact replay refusal are pending. Adopt the remaining
 registry settings as one atomic group. The
 [registry source runbook](../klokast-dev/runbooks/51-registry-source-adoption.md)
 contains the implementation and acceptance workflow.
@@ -1406,7 +1407,7 @@ complete.
 | Controller box connectivity source migration and Plan v4 | `live-verified` | On 2026-09-07, source-only adoption, fresh signed verification, and exact replay refusal passed with engine `cc68fc6`. Both planner targets report both box groups and Tailnet as verification-only. Only the k002 source changed; private desired-state files and persistent router configuration remained unchanged. Section 11.3 links the acceptance evidence. |
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
-| Registry source adoption | `implemented` | Engine `e05a713` and the exact private candidate are active. Unsigned preparation found a pending-action vocabulary mismatch. The next promotion found a Mac candidate-selector omission for `inactive-apps`. Promote the combined correction, install matching tools, and refresh baselines and evidence before signed live acceptance. Source ownership is unchanged. Runbook 51 records the attempts and checks. |
+| Registry source adoption | `implemented` | Engine `db61bc7` and private commit `366efc19` are active. Signed adoption passed on 2026-09-08 with an exact registry-only source transition and unchanged-setting checks. The human interrupted verification. Resume with fresh verification evidence and exact replay refusal; do not repeat adoption. Runbook 51 records the source, receipt, and resume checkpoint. |
 | Remaining registry and inventory migration | `proposed` | Section 11.5 records the combined schema, consumer, retained-data, and inventory dependencies. Continued scope development is authorized; the bounded design is not complete. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
