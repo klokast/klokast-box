@@ -24,7 +24,11 @@ class InputAbsenceTest(unittest.TestCase):
         value={'schema_version':1,'apps':{},'boxes':{'boxa':{},'boxb':{}}}
         registry={'valid':True,'engine':{'commit':'a'*40},'projection':{'registry':value,'registry_sha256':digest(value)}}
         with tempfile.TemporaryDirectory() as tmp:
-            result=module.compare(inventory,registry,Path(tmp))
+            try:
+                result=module.compare(inventory,registry,Path(tmp))
+            except ValueError as error:
+                logs='\n'.join(p.read_text() for p in Path(tmp).glob('*.stderr'))
+                self.fail(str(error)+'\n'+logs)
             self.assertTrue(result['equal'])
             self.assertTrue(result['temporary_views_removed'])
             self.assertFalse(result['live_execution_authority'])

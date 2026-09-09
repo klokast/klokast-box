@@ -4229,7 +4229,7 @@ def verification_consumers(binding, work):
     compiler, routers = {}, {}
     for command in ("show", "show-box-configs"):
         values = []
-        for result in (run_plan_as_controller([PLATFORM_RESOURCES, command]), run_platform_resources_as_controller(effective, [command])):
+        for result in (run_plan_as_controller([PLATFORM_RESOURCES, "--registry", REGISTRY, command]), run_platform_resources_as_controller(effective, [command])):
             value = decode_helper_json(result, "verify instance compiler consumers")
             if "registry_path" not in value or "registry_sha256" not in value:
                 raise ApplyError("compiler result lacks registry provenance")
@@ -4241,7 +4241,7 @@ def verification_consumers(binding, work):
     for box in plan["inventory"]["boxes"]:
         arguments = ["--box", box, "show-box-access-vars"]
         values = [decode_helper_json(result, "verify instance router variables") for result in
-                  (run_plan_as_controller([PLATFORM_RESOURCES, *arguments]), run_platform_resources_as_controller(effective, arguments))]
+                  (run_plan_as_controller([PLATFORM_RESOURCES, "--registry", REGISTRY, *arguments]), run_platform_resources_as_controller(effective, arguments))]
         if values[0] != values[1]:
             raise ApplyError("normal router variables differ from the checked instance registry")
         routers[box] = inventory_digest(values[0])

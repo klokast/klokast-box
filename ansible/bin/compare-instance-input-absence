@@ -71,6 +71,7 @@ reader.INSTANCE=root/'private/instance/klokast-instance.json'
 status={'schema_version':1,'kind':'klokast.registry-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':registry}
 compiler=module('compiler','ansible/bin/platform-resources')
 compiler.registry_source_input=lambda args:reader.read_registry(reader.REGISTRY,status)
+if '--registry' not in sys.argv: sys.argv[1:1]=['--registry',str(reader.REGISTRY)]
 compiler.main()
 ''');compiler.chmod(0o700)
             dynamic = view/'inventory-reader'
