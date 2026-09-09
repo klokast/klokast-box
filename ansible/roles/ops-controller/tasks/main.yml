@@ -269,12 +269,22 @@
       group: root
       mode: "0750"
 
+- name: Check instance state before legacy account migration
+  ansible.builtin.stat:
+    path: "{{ ops_infra_private_root }}/instance/klokast-instance.json"
+  register: ops_controller_instance_marker
+  when:
+    - ops_account_migration_enabled | default(true) | bool
+    - ops_legacy_infra_user | default('') | length > 0
+    - ops_legacy_infra_user != ops_infra_user
+
 - name: Check legacy infra private state before account rename
   ansible.builtin.stat:
     path: "/home/{{ ops_legacy_infra_user }}/private/klokast"
   register: ops_controller_legacy_private_root
   when:
     - ops_account_migration_enabled | default(true) | bool
+    - not (ops_controller_instance_marker.stat.exists | default(false))
     - ops_legacy_infra_user | default('') | length > 0
     - ops_legacy_infra_user != ops_infra_user
 
@@ -284,6 +294,7 @@
   register: ops_controller_renamed_private_marker
   when:
     - ops_account_migration_enabled | default(true) | bool
+    - not (ops_controller_instance_marker.stat.exists | default(false))
     - ops_legacy_infra_user | default('') | length > 0
     - ops_legacy_infra_user != ops_infra_user
 
@@ -299,6 +310,7 @@
   no_log: true
   when:
     - ops_account_migration_enabled | default(true) | bool
+    - not (ops_controller_instance_marker.stat.exists | default(false))
     - ops_controller_legacy_private_root.stat.isdir | default(false)
     - not (ops_controller_renamed_private_marker.stat.exists | default(false))
 

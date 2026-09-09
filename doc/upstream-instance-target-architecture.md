@@ -1536,7 +1536,7 @@ Dependency audit and required disposition:
 | `platform-inventory`, normal execution inventory | The adopted source uses the sealed instance graph. Generic policy moves to `ansible/inventory-policy/group_vars`; old hosts and host variables remain explicit compatibility inputs. Preserve all declared variables and the memory-cache exclusion. |
 | `platform-resources`, mapping, application wrappers | Normal commands use the adopted registry reader and generic inventory policy. Explicit registry arguments remain compatibility or recovery inputs. They must not become a fallback after an adopted-source error. |
 | Tailnet rendering and suffix resolution | Normal rendering uses instance authority. An explicit deployment document remains a comparison or recovery input; no implicit YAML fallback is allowed. |
-| Installation and builder | Normal inventory uses the checked source. Explicit bootstrap and builder compatibility inventory remain recovery inputs. App manifests named `platform-resources.yml` are public implementation, not legacy private registries. |
+| Installation and builder | Normal inventory uses the checked source. Controller account migration does not probe or copy legacy private state when instance state exists. Explicit controller private-state transfer, bootstrap, and builder compatibility inventory remain recovery inputs. App manifests named `platform-resources.yml` are public implementation, not legacy private registries. |
 | Source brokers | Original signed adoption intents, immutable Plans, receipts, source history, and adoption anchors remain historical evidence required to validate adopted authority. Absence causes refusal. |
 
 Plan v8 has a separate `--instance-only` entry point. It rejects every
