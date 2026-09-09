@@ -22,13 +22,15 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def compare(inventory, registry, output):
+def compare(inventory, registry, output, controller_pair):
     projection = registry['projection']
     digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
     if digest(inventory['inventory']) != inventory['inventory_sha256'] or registry.get('valid') is not True:
         raise ValueError('review projections are invalid')
     env = {**os.environ, 'ANSIBLE_CACHE_PLUGIN': 'memory', 'ANSIBLE_INVENTORY_UNPARSED_IS_FAILED':'true',
            'ANSIBLE_INVENTORY_ANY_UNPARSED_IS_FAILED':'true', 'PYTHONDONTWRITEBYTECODE':'1'}
+    if set(controller_pair) != {'active','standby'} or sorted(v['box'] for v in controller_pair.values()) != inventory['boxes'] or any(set(v) != {'box','hostname'} or v['hostname'] != v['box']+'-ops' for v in controller_pair.values()):
+        raise ValueError('controller pair differs from the checked instance box set')
     results = []
     tracked = subprocess.check_output(['git','-C',str(REPO),'ls-files','-z']).decode().split('\0')
     with tempfile.TemporaryDirectory(prefix='isolated-inputs-',dir=output) as temporary:
@@ -50,6 +52,7 @@ def compare(inventory, registry, output):
                     (private/name).write_text('not a legacy authority\n')
             (view/'inventory.json').write_text(canonical(inventory)+'\n')
             (view/'registry.json').write_text(canonical(registry)+'\n')
+            (view/'controller.json').write_text(canonical(controller_pair)+'\n')
             prelude = '''#!/usr/bin/env python3
 import importlib.util,json,sys,os
 from pathlib import Path
@@ -96,8 +99,7 @@ print(json.dumps(value,sort_keys=True))
             controller = view/'controller'
             controller.write_text(prelude+'''
 reader=module('controllers','ansible/bin/ops-controller-ha')
-boxes=inventory['boxes']
-pair={role:{'box':box,'hostname':box+'-ops'} for role,box in zip(('active','standby'),boxes)}
+pair=json.loads((root/'controller.json').read_text())
 status={'schema_version':1,'kind':'klokast.controller-identity-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'controllers':pair}
 reader.getpass.getuser=lambda:'smith'
 reader.socket.gethostname=lambda:pair['active']['hostname']
@@ -124,6 +126,8 @@ reader.main(['resolve-active'])
                        'box_configs':invoke([compiler,'show-box-configs'],'box-configs'),
                        'mapping':invoke([map_reader],'mapping'),
                        'controller':invoke([controller],'controller',False)}
+            if consumers['controller'] != controller_pair['active']['hostname']:
+                raise ValueError('normal controller resolution differs from the checked instance pair')
             consumers['routers']={box:invoke([compiler,'--box',box,'show-box-access-vars'],'router-'+box) for box in inventory['boxes']}
             results.append(consumers)
             # Ansible role variables can contain repository-relative paths. Both
@@ -139,13 +143,17 @@ reader.main(['resolve-active'])
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--plan',type=Path,required=True)
     parser.add_argument('--inventory-projection',type=Path,required=True)
     parser.add_argument('--registry-projection',type=Path,required=True)
     parser.add_argument('--output-directory',type=Path,required=True)
     args=parser.parse_args();os.umask(0o077)
     try:
         args.output_directory.mkdir(parents=True,mode=0o700)
-        result=compare(json.loads(args.inventory_projection.read_text()),json.loads(args.registry_projection.read_text()),args.output_directory)
+        plan=json.loads(args.plan.read_text())
+        control=plan['projection']['control_plane']
+        pair={role:{'box':control[role+'_controller']['box_id'],'hostname':control[role+'_controller']['hostname']} for role in ('active','standby')}
+        result=compare(json.loads(args.inventory_projection.read_text()),json.loads(args.registry_projection.read_text()),args.output_directory,pair)
         (args.output_directory/'result.json').write_text(canonical(result)+'\n')
         print(canonical(result))
     except (OSError,ValueError,KeyError,subprocess.CalledProcessError) as error:

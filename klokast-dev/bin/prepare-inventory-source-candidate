@@ -177,7 +177,7 @@ def main():
                 registry_projection = output / "registry-projection.json"
                 registry_projection.write_text(canonical(registry) + "\n")
                 absence = checked([REPO / "ansible/bin/compare-instance-input-absence", "--inventory-projection", projection,
-                                   "--registry-projection", registry_projection, "--output-directory", output / "absence"], "legacy-input-absence")
+                                   "--registry-projection", registry_projection, "--plan", path, "--output-directory", output / "absence"], "legacy-input-absence")
                 if absence.get("equal") is not True:
                     raise ValueError("isolated legacy absence comparison failed")
             else:

@@ -25,7 +25,7 @@ class InputAbsenceTest(unittest.TestCase):
         registry={'valid':True,'engine':{'commit':'a'*40},'projection':{'registry':value,'registry_sha256':digest(value)}}
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                result=module.compare(inventory,registry,Path(tmp))
+                result=module.compare(inventory,registry,Path(tmp),{'active':{'box':'boxb','hostname':'boxb-ops'},'standby':{'box':'boxa','hostname':'boxa-ops'}})
             except ValueError as error:
                 logs='\n'.join(p.read_text() for p in Path(tmp).glob('*.stderr'))
                 self.fail(str(error)+'\n'+logs)
@@ -33,6 +33,7 @@ class InputAbsenceTest(unittest.TestCase):
             self.assertTrue(result['temporary_views_removed'])
             self.assertFalse(result['live_execution_authority'])
             data=json.loads((Path(tmp)/'absent.json').read_text())
+            self.assertEqual(data['controller'],'boxb-ops')
             self.assertEqual(data['inventory']['hostvars']['boxa-ops']['ansible_memtotal_mb'],123)
 
 if __name__=='__main__':unittest.main()
