@@ -21,7 +21,7 @@ func checkInstanceOnly(t *testing.T, previous Options, state authoritystate.Stat
 	receipt.SchemaVersion, receipt.Kind = 7, toolchain.KindV7
 	receipt.ReceiptSHA256, _ = toolchain.Hash(receipt)
 	receiptPath := filepath.Join(t.TempDir(), "toolchain.json")
-	content, _ := json.Marshal(receipt)
+	content := canonicalTestJSON(t, receipt)
 	if err := os.WriteFile(receiptPath, content, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func checkInstanceOnly(t *testing.T, previous Options, state authoritystate.Stat
 		bad.SettingGroups = append([]authoritystate.SettingGroup{}, state.SettingGroups...)
 		bad.SettingGroups[0].Source = source
 		bad.AuthorityStateSHA256, _ = authoritystate.HashV2(bad)
-		content, _ := json.Marshal(bad)
+		content := canonicalTestJSON(t, bad)
 		os.WriteFile(options.AuthorityState, content, 0600)
 		if _, err := Build(options, testEngine); err == nil {
 			t.Fatal("instance-only accepted unsupported ownership")
@@ -84,11 +84,11 @@ func checkInstanceOnly(t *testing.T, previous Options, state authoritystate.Stat
 		}
 	}
 	bad.AuthorityStateSHA256, _ = authoritystate.HashV2(bad)
-	content, _ = json.Marshal(bad)
+	content = canonicalTestJSON(t, bad)
 	os.WriteFile(options.AuthorityState, content, 0600)
 	if _, err := Build(options, testEngine); err == nil || !strings.Contains(err.Error(), "scope") {
 		t.Fatalf("changed membership accepted: %v", err)
 	}
-	content, _ = json.Marshal(state)
+	content = canonicalTestJSON(t, state)
 	os.WriteFile(options.AuthorityState, content, 0600)
 }

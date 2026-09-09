@@ -1032,3 +1032,9 @@ execution. Complete the installed unsigned and signed checks in
 after human engine promotion. Preserve the retained source history, adoption
 archives, receipts, and legacy recovery inputs. The work queue remains in
 [the target architecture](upstream-instance-target-architecture.md#current-work-queue).
+
+The first instance-only sealed test run rejected a test receipt written with
+Go struct-field order instead of canonical stored JSON. Keep test evidence
+canonical through `canonicalTestJSON`; the production verifier must continue
+to reject non-canonical stored receipts. The isolated consumer views must also
+reuse one temporary path so public manifest path provenance stays equal.

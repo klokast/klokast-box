@@ -33,7 +33,7 @@ def compare(inventory, registry, output):
     tracked = subprocess.check_output(['git','-C',str(REPO),'ls-files','-z']).decode().split('\0')
     with tempfile.TemporaryDirectory(prefix='isolated-inputs-',dir=output) as temporary:
         for absent in (False, True):
-            view = Path(temporary) / ('absent' if absent else 'present')
+            view = Path(temporary) / 'view'
             view.mkdir(mode=0o700)
             for name in tracked:
                 if not name or name.startswith(('vendor/','.run/')) or (absent and name.startswith('ansible/inventory/')):
@@ -129,6 +129,7 @@ reader.main(['resolve-active'])
             # views have identical declared bytes; runtime file provenance alone
             # was excluded by normalized_inventory above.
             (output/('absent.json' if absent else 'present.json')).write_text(canonical(consumers)+'\n')
+            shutil.rmtree(view)
     if results[0] != results[1]: raise ValueError('effective consumer settings differ with legacy inputs absent')
     return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
             'consumers':sorted(results[0]),'effective_settings_sha256':digest(results[0]),
