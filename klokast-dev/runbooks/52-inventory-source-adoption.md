@@ -30,6 +30,13 @@ are excluded. Host addresses, connection users, runner enablement, and role
 policy must be equal. Unknown or incomplete graphs refuse. These commands
 perform no host contact, configuration, or service operation.
 
+Comparison and the retained inventory reader use Ansible's process-local
+memory cache. Saved setup facts are runtime observations and must not enter
+the desired-state hash. Inventory variables are not filtered by their names;
+declared values that resemble facts must still compare exactly. Acceptance
+snapshots of inventory settings must also set `ANSIBLE_CACHE_PLUGIN=memory`.
+Normal playbooks keep the configured persistent fact cache.
+
 Evidence stays below
 `~/private/klokast/inventory-source-candidates/ENGINE/UTC_TIMESTAMP/`.
 The safe result contains counts, hashes, and paths. Raw Ansible output and
@@ -133,3 +140,25 @@ The correction adds joint legacy parsing and comparison through the actual
 reader in both source states. Promote the corrected sealed commit, install its
 matching tools, and create a new acceptance directory with fresh baselines.
 Do not overwrite or resume the failed baseline above.
+
+## Fact-cache correction after promotion, 2026-09-09
+
+Engine `c1324ea36dc3c4aad6361b072c5f5c95558c32f6` was activated with
+private commit `5b4add1b4c846d8dfd99c8d1eb8a4d9041d169f0`.
+Matching Toolchain v6 receipt `71fb8e48` passed. Its new baseline confirmed
+equal inventory settings and preserved k002 runner enablement. Source
+ownership remained at Authority State v4 `e2ef84b6`.
+
+Follow-up analysis of the earlier unsigned preparation failure found cached
+router facts in the comparison output. Immediate repeated comparisons had
+matched because no fact refresh occurred between them. The correction now
+prevents cached observations from entering source inventory or comparison.
+Controller evidence and the real fact-cache regression result stay below:
+
+```text
+/home/smith/private/klokast/inventory-source-acceptance/c1324ea36dc3c4aad6361b072c5f5c95558c32f6/
+```
+
+Do not use this baseline for adoption: it includes cached observations.
+Promote the corrected sealed engine, install matching tools, and save a fresh
+baseline with the cache mode above before signed adoption and verification.

@@ -2,8 +2,11 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stderr
 from unittest.mock import Mock, patch
@@ -79,6 +82,32 @@ class PlatformInventoryTest(unittest.TestCase):
     def test_legacy_reader_refuses_source_change_after_parsing(self):
         with patch.object(self.m, "invoke", side_effect=[self.legacy_status(), dict(self.legacy_status(), authority_state_sha256="c" * 64)]), patch.object(self.m, "read_legacy_inventory", return_value=self.graph), self.assertRaisesRegex(self.m.InventoryError, "inventory source changed"):
             self.m.read_inventory()
+
+    @unittest.skipUnless(shutil.which("ansible-inventory") and shutil.which("ansible-playbook"), "requires controller Ansible")
+    def test_real_fact_cache_changes_do_not_change_inventory_settings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inventory = root / "hosts.json"
+            inventory.write_text(json.dumps({"all": {"hosts": {"fixture": {"ansible_connection": "local", "declared_limit": 42, "ansible_memtotal_mb": 123}}}}))
+            playbook = root / "cache.json"
+            playbook.write_text(json.dumps([{"hosts": "fixture", "gather_facts": False, "tasks": [{"ansible.builtin.set_fact": {"cached_observation": "{{ observation }}", "cacheable": True}}]}]))
+            config = root / "ansible.cfg"
+            config.write_text("[defaults]\nstdout_callback = default\n")
+            env = {**os.environ, "ANSIBLE_CONFIG": str(config), "ANSIBLE_CACHE_PLUGIN": "jsonfile", "ANSIBLE_CACHE_PLUGIN_CONNECTION": str(root / "facts")}
+            command = ["ansible-inventory", "-i", str(inventory), "--list"]
+            first = None
+            for value in ("before-router-verification", "after-router-verification"):
+                subprocess.run(["ansible-playbook", "-i", str(inventory), str(playbook), "-e", "observation=" + value], env=env, capture_output=True, text=True, check=True)
+                cached = json.loads(subprocess.check_output(command, env=env, text=True))
+                self.assertEqual(cached["_meta"]["hostvars"]["fixture"]["cached_observation"], value)
+                with patch.dict(os.environ, env, clear=True):
+                    actual = self.m.invoke(command)
+                variables = actual["_meta"]["hostvars"]["fixture"]
+                self.assertNotIn("cached_observation", variables)
+                self.assertEqual(variables["declared_limit"], 42)
+                self.assertEqual(variables["ansible_memtotal_mb"], 123)
+                if first is None: first = actual
+                else: self.assertEqual(actual, first)
 
     def test_reader_refuses_helper_failure_unknown_source_and_contract(self):
         values = [{**self.status, "source":"unknown"}, {**self.status, "extra":True}, {**self.status, "rendered":None}, {**self.status, "rendered": {"valid":False}}]

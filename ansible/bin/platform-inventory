@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -27,8 +28,11 @@ def unique_object(pairs):
 
 
 def invoke(command):
+    # Inventory is desired state. Cached setup facts are runtime observations
+    # and must not be flattened into the source reader's host variables.
+    options = {"env": {**os.environ, "ANSIBLE_CACHE_PLUGIN": "memory"}} if str(command[0]) == "ansible-inventory" else {}
     try:
-        result = subprocess.run([str(v) for v in command], text=True, capture_output=True, check=False)
+        result = subprocess.run([str(v) for v in command], text=True, capture_output=True, check=False, **options)
     except OSError as error:
         raise InventoryError("inventory source helper is unavailable; install the matching controller toolchain") from error
     if result.returncode or not 0 < len(result.stdout) <= MAXIMUM:

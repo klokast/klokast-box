@@ -39,6 +39,7 @@ def compare(projection, output):
     policy = {name: read_regular(legacy / "group_vars" / (name + ".yml")) for name in POLICY_GROUPS}
     policy_hashes = {name: hashlib.sha256(value).hexdigest() for name, value in policy.items()}
     env = {**os.environ, "ANSIBLE_CONFIG": str(REPO / "ansible/ansible.cfg"),
+           "ANSIBLE_CACHE_PLUGIN": "memory",
            "ANSIBLE_INVENTORY_UNPARSED_IS_FAILED": "true", "ANSIBLE_INVENTORY_ANY_UNPARSED_IS_FAILED": "true"}
 
     def invoke(command, label):

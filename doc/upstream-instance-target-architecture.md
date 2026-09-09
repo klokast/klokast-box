@@ -1436,6 +1436,12 @@ inputs; they must not provide an automatic fallback after adoption. Existing
 one-box limits stay explicit. Audit shell wrappers, Python entry points,
 application launchers, builder paths, and default Ansible configuration.
 
+The source reader and inventory comparison must not load saved Ansible setup
+facts. Use the process-local memory cache for inventory extraction and its
+acceptance snapshots. Runtime observations remain separate evidence; normal
+playbooks can retain their persistent fact cache. Do not remove declared
+inventory fields by name to hide observation changes.
+
 The reader has read authority over private topology and protected evidence.
 The root source executor can append one source record after verification; it
 cannot run arbitrary commands, configure hosts, restart services, launch or
@@ -1533,7 +1539,7 @@ complete.
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
-| Remaining inventory and runner adoption | `implemented` | Engine `87cd6d7` passed sealed review and was promoted, but the installed-reader baseline found a lost legacy host override before adoption. The correction must pass comparison through the actual reader and a new sealed promotion. Source ownership remains at the registry milestone. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md) defines the gates. |
+| Remaining inventory and runner adoption | `implemented` | Engine `c1324ea` corrected the lost legacy host override and passed the installed-reader baseline. Follow-up analysis found cached router observations in inventory hashes. The cache correction requires sealed review and promotion before fresh adoption evidence. Source ownership remains at the registry milestone. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md) defines the gates. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue

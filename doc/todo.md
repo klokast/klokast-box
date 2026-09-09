@@ -2,6 +2,29 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-09 - Cached router facts changed the inventory approval hash
+
+Unsigned preparation on engine `87cd6d7` passed router verification but refused
+its final input recheck. Two immediate diagnostic comparisons later matched,
+so that check did not explain the failure. After `c1324ea` promotion and tool
+installation, comparison of the saved evidence identified cached router facts
+in the inventory output. Router verification had populated uptime, free
+memory, interface facts, and other observations between the two comparisons.
+The host-override correction was valid, but the approval hash still included
+these runtime observations.
+
+Inventory comparison and the retained inventory reader now explicitly select
+Ansible's process-local memory cache. They do not load the controller's saved
+setup facts. All declared inventory variables remain checked, including names
+that resemble facts; only the two existing provenance fields are excluded
+from normalization. Normal playbooks keep their configured fact cache.
+
+The regression test writes and changes a real temporary Ansible fact cache,
+proves that ordinary inventory output changes, and requires identical output
+from the source reader with declared values preserved. Run this test with
+controller Ansible; the runner skips it when Ansible is absent. Keep the
+earlier evidence and create a fresh baseline after corrective promotion.
+
 # 2026-09-09 - Normal legacy inventory lost a generated host override
 
 After promotion of engine `87cd6d7` and matching Toolchain v6 installation,
