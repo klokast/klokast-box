@@ -2,6 +2,31 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-09 - Normal legacy inventory lost a generated host override
+
+After promotion of engine `87cd6d7` and matching Toolchain v6 installation,
+the read-only baseline found that the normal reader reported
+`ops_airunner_enabled: false` for k002. The retained base lists sample hosts;
+the real k002 host enters through a generated box file. Parsing the base alone
+inside the reader omitted `host_vars/k002-ops.yml`. No runner convergence,
+router configuration, or source adoption ran.
+
+The correction derives both boxes from checked controller identity and parses
+the retained base with both generated box graphs. This loads the existing host
+overrides before the reader returns. It resolves the normal MagicDNS suffix
+before Ansible flattens group variables. Controller and source records are
+rechecked, and temporary files are removed on success and failure. The adopted
+reader still uses only the sealed instance graph.
+
+The comparison now runs the actual reader through Ansible in both source
+states, with normal generated box files and with the adopted graph alone.
+Only protected status responses are fixtures. Rendering, host-variable loading,
+group merging, and the source reader are real. The root executor independently
+compares these saved results. Keep this gate in every sealed private review;
+testing a script that merely prints the desired graph did not cover the bug.
+The [inventory runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md)
+records the stopped acceptance and next promotion gate.
+
 # 2026-09-08 - Ansible omits empty groups from its inventory output
 
 The first sealed private comparison stopped because Ansible retained child

@@ -2,6 +2,8 @@
 import copy
 import io
 import json
+from pathlib import Path
+import subprocess
 import unittest
 from contextlib import redirect_stderr
 from unittest.mock import Mock, patch
@@ -19,6 +21,64 @@ class PlatformInventoryTest(unittest.TestCase):
         with patch.object(self.m.subprocess, "run", return_value=Mock(returncode=0, stdout=json.dumps(self.status))) as command:
             self.assertEqual(self.m.read_inventory(), self.graph)
             command.assert_called_once_with(["/usr/bin/doas", str(self.m.HELPER), "inventory-source-status"], text=True, capture_output=True, check=False)
+
+    def legacy_status(self):
+        return {k: v for k, v in dict(self.status, source="legacy_engine_inventory").items() if k != "rendered"}
+
+    def controller_status(self):
+        return dict(self.legacy_status(), kind="klokast.controller-identity-status.v1", source="instance_specification_v1",
+                    controllers={role: {"box": box, "hostname": box + "-ops"} for role, box in (("active", "boxa"), ("standby", "boxb"))})
+
+    def test_legacy_reader_parses_real_boxes_with_retained_host_variables_and_cleans_up(self):
+        paths = []
+        run = subprocess.run
+        for changed in (False, True):
+            controller_calls = 0
+            def invoke(command):
+                nonlocal controller_calls
+                if str(command[0]) == "/usr/bin/doas":
+                    if command[2] == "inventory-source-status": return self.legacy_status()
+                    controller_calls += 1
+                    controller = self.controller_status()
+                    if changed and controller_calls == 2: controller["authority_state_sha256"] = "c" * 64
+                    return controller
+                self.assertEqual(command[:3], ["ansible-inventory", "-i", ROOT / "ansible/inventory/hosts.yml"])
+                self.assertEqual(command[-1], "--list")
+                for box, path in zip(("boxa", "boxb"), (Path(command[4]), Path(command[6]))):
+                    self.assertIn(box + "-ops:", path.read_text())
+                    self.assertIn("fixture.ts.net", path.read_text())
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+                    paths.append(path)
+                return self.graph
+            def command(args, **kwargs):
+                if Path(args[0]).name == "magicdns-suffix": return Mock(returncode=0, stdout="fixture.ts.net\n")
+                return run(args, **kwargs)
+            with patch.object(self.m, "REPO", ROOT), patch.object(self.m, "invoke", side_effect=invoke), patch.object(self.m.subprocess, "run", side_effect=command):
+                if changed:
+                    with self.assertRaisesRegex(self.m.InventoryError, "controller source changed"): self.m.read_inventory()
+                else: self.assertEqual(self.m.read_inventory(), self.graph)
+            self.assertTrue(paths)
+            self.assertTrue(all(not p.parent.exists() for p in paths))
+
+    def test_legacy_reader_rejects_wrong_or_incomplete_controllers_before_rendering(self):
+        for change in (
+            lambda c: c.update(engine_commit="c" * 40),
+            lambda c: c.update(authority_state_sha256="c" * 64),
+            lambda c: c.update(extra=True),
+            lambda c: c["controllers"].pop("standby"),
+            lambda c: c["controllers"].update(standby=c["controllers"]["active"]),
+            lambda c: c["controllers"]["active"].update(box="../boxa"),
+            lambda c: c["controllers"]["active"].update(hostname="other-ops"),
+        ):
+            controller = self.controller_status(); change(controller)
+            with patch.object(self.m, "invoke", return_value=controller), patch.object(self.m.subprocess, "run") as command, self.assertRaises(self.m.InventoryError):
+                self.m.read_legacy_inventory(self.legacy_status())
+            command.assert_not_called()
+
+    def test_legacy_reader_refuses_source_change_after_parsing(self):
+        with patch.object(self.m, "invoke", side_effect=[self.legacy_status(), dict(self.legacy_status(), authority_state_sha256="c" * 64)]), patch.object(self.m, "read_legacy_inventory", return_value=self.graph), self.assertRaisesRegex(self.m.InventoryError, "inventory source changed"):
+            self.m.read_inventory()
 
     def test_reader_refuses_helper_failure_unknown_source_and_contract(self):
         values = [{**self.status, "source":"unknown"}, {**self.status, "extra":True}, {**self.status, "rendered":None}, {**self.status, "rendered": {"valid":False}}]

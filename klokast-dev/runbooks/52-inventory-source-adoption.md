@@ -1,6 +1,6 @@
 # Inventory and runner source adoption
 
-Status: `implemented`; sealed private review and live acceptance are pending.
+Status: `implemented`; corrective promotion and live acceptance are pending.
 Plan v7, Authority State v5, Controller Toolchain v6, the signed source executor,
 and normal inventory consumers are implemented. Source ownership remains at
 the completed registry milestone until signed adoption succeeds.
@@ -50,7 +50,10 @@ Normal consumers select `ansible/execution-inventory/hosts`. This executable
 calls the installed `platform-inventory` client. Only generic upstream group
 policy is present beside it; legacy host variables and example-box policy are
 absent. Ansible must fail if any inventory source cannot be parsed. Before
-adoption, the client reads the retained inventory and rechecks the source.
+adoption, the client derives both boxes from checked controller identity and
+parses their generated box graphs with the retained base. This includes legacy
+host overrides for hosts absent from the sample base. It resolves the normal
+MagicDNS suffix before parsing and rechecks controller identity and the source.
 After adoption, it returns the checked sealed graph. It has no fallback for a
 missing helper, unknown source, failed check, or changed inputs.
 
@@ -106,3 +109,27 @@ Mark this milestone `live-verified` only after all acceptance checks pass.
 Commit and push the evidence references and result; do not automatically deploy
 that final documentation commit. Legacy removal, rollback, and recovery-source
 switches remain deferred.
+
+## Acceptance stopped before adoption, 2026-09-09
+
+The human promoted engine `87cd6d7b199658f185dd54c8444e56e7ff0642d9`
+with private commit `b50cd721eb3e766ad7cbe217918101747aa315d0`.
+Matching tools were installed, and Toolchain v6 receipt `ac663859` passed.
+The controller saved seven input hashes and file metadata, both controller
+markers, and both routers' persistent configuration hashes below:
+
+```text
+/home/smith/private/klokast/inventory-source-acceptance/87cd6d7b199658f185dd54c8444e56e7ff0642d9/
+```
+
+The normal inventory baseline then found that k002's runner enablement was
+false while the retained inventory and sealed projection both specified true.
+The reader had parsed the sample base without the generated real hosts.
+Adoption preparation stopped. Authority State v4 remained `e2ef84b6`.
+No Apply signature, source transition, runner convergence, or router apply was
+performed. Keep the failed baseline as evidence; do not adopt against it.
+
+The correction adds joint legacy parsing and comparison through the actual
+reader in both source states. Promote the corrected sealed commit, install its
+matching tools, and create a new acceptance directory with fresh baselines.
+Do not overwrite or resume the failed baseline above.

@@ -4,8 +4,10 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
 
 HELPER = Path("/usr/local/sbin/ksa-apply")
 REPO = Path("/home/smith/src/klokast/klokast-box")
@@ -39,6 +41,46 @@ def invoke(command):
     return value
 
 
+def read_legacy_inventory(status):
+    command = ["/usr/bin/doas", HELPER, "controller-identity-status"]
+    controller = invoke(command)
+    fields = {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit", "controllers"}
+    if set(controller) != fields or controller.get("schema_version") != 1 or controller.get("kind") != "klokast.controller-identity-status.v1" or controller.get("source") not in {"legacy_controller_ha", "instance_specification_v1"}:
+        raise InventoryError("legacy inventory lacks a checked controller set")
+    if any(controller[k] != status[k] for k in ("authority_state_sha256", "engine_commit")):
+        raise InventoryError("controller and inventory sources differ")
+    pair = controller["controllers"]
+    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
+        raise InventoryError("legacy inventory requires the exact controller pair")
+    boxes = []
+    for item in pair.values():
+        if not isinstance(item, dict) or set(item) != {"box", "hostname"} or not isinstance(item["box"], str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", item["box"]) or item["hostname"] != item["box"] + "-ops":
+            raise InventoryError("legacy inventory controller identity is invalid")
+        boxes.append(item["box"])
+    if len(set(boxes)) != 2:
+        raise InventoryError("legacy inventory requires two distinct controller boxes")
+    # The retained base has sample hosts only. Include the existing generated
+    # box graphs in this same Ansible parse so host_vars for real boxes load.
+    # Resolve the same suffix as normal wrappers before Ansible flattens group
+    # variables into host variables. Caller box files retain port overrides.
+    suffix = subprocess.run([str(REPO / "ansible/bin/magicdns-suffix")], text=True, capture_output=True, check=False)
+    if suffix.returncode or not re.fullmatch(r"[a-zA-Z0-9.-]+\.ts\.net", suffix.stdout.strip()):
+        raise InventoryError("legacy inventory MagicDNS suffix resolution failed")
+    with tempfile.TemporaryDirectory(prefix="klokast-legacy-inventory-") as temporary:
+        arguments = ["ansible-inventory", "-i", REPO / "ansible/inventory/hosts.yml"]
+        for box in sorted(boxes):
+            path = Path(temporary) / (box + ".yml")
+            result = subprocess.run([str(REPO / "ansible/bin/render-node-inventory"), "--node", box, "--magicdns-suffix", suffix.stdout.strip(), "--output", str(path)], text=True, capture_output=True, check=False)
+            if result.returncode:
+                raise InventoryError("legacy box inventory rendering failed")
+            path.chmod(0o600)
+            arguments.extend(["-i", path])
+        graph = invoke([*arguments, "--list"])
+        if invoke(command) != controller:
+            raise InventoryError("controller source changed during legacy inventory resolution")
+    return graph
+
+
 def read_inventory():
     status = invoke(["/usr/bin/doas", HELPER, "inventory-source-status"])
     fields = {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit"}
@@ -53,7 +95,7 @@ def read_inventory():
             raise InventoryError("inventory source has no valid sealed projection")
         graph = rendered["projection"]["inventory"]
     else:
-        graph = invoke(["ansible-inventory", "-i", REPO / "ansible/inventory/hosts.yml", "--list"])
+        graph = read_legacy_inventory(status)
         if invoke(["/usr/bin/doas", HELPER, "inventory-source-status"]) != status:
             raise InventoryError("inventory source changed during legacy resolution")
     if not isinstance(graph.get("_meta", {}).get("hostvars"), dict):

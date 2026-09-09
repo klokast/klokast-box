@@ -1424,7 +1424,10 @@ Dynamic application inventories remain compiler outputs from the adopted
 registry. Keep bootstrap and recovery target selection explicit.
 
 Normal Platform inventory consumers must select a controller-local reader.
-Before adoption it supplies the existing inventory. After adoption it supplies
+Before adoption it parses the retained base and both generated box graphs
+together. The already checked controller identity selects the two boxes; no
+caller can select another box. This preserves legacy host overrides that
+Ansible cannot load from the sample base alone. After adoption it supplies
 the sealed instance projection and upstream group policy from an inventory
 directory that does not load legacy host variables. Unknown source versions,
 missing installed helpers, modified inputs, and incomplete source evidence
@@ -1530,7 +1533,7 @@ complete.
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
-| Remaining inventory and runner adoption | `implemented` | Final live Plan `2d2bfbe5` retains execution inventory and one pending runner identity action. Plan v7, Authority State v5, Toolchain v6, the signed executor, and normal readers are implemented. Sealed private review and live acceptance remain pending. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md) defines the gates. |
+| Remaining inventory and runner adoption | `implemented` | Engine `87cd6d7` passed sealed review and was promoted, but the installed-reader baseline found a lost legacy host override before adoption. The correction must pass comparison through the actual reader and a new sealed promotion. Source ownership remains at the registry milestone. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md) defines the gates. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue

@@ -12,7 +12,7 @@ import tempfile
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "ansible/lib"))
-from platform_inventory import POLICY_GROUPS, canonical, compare_inventories, digest, static_inventory
+from platform_inventory import POLICY_GROUPS, canonical, compare_inventories, digest, normalized_inventory, static_inventory
 
 
 def read_regular(path):
@@ -69,20 +69,56 @@ def compare(projection, output):
         effective_path.write_text(canonical(effective_static) + "\n")
         old = json.loads(invoke([*old_args, "--list"], "old-inventory"))
         effective = json.loads(invoke(["ansible-inventory", "-i", effective_path, "--list"], "effective-inventory"))
-        # Exercise Ansible's script plugin as used by the normal source reader.
+        # Exercise the real reader through Ansible's script plugin. Only its
+        # protected status replies are fixtures; parsing and rendering are real.
         dynamic_dir = work / "dynamic"
         dynamic_dir.mkdir(mode=0o700)
         (dynamic_dir / "group_vars").mkdir(mode=0o700)
         for name, value in policy.items():
             (dynamic_dir / "group_vars" / (name + ".yml")).write_bytes(value)
-        (dynamic_dir / "graph.json").write_text(canonical(graph) + "\n")
+        status = {"schema_version": 1, "kind": "klokast.inventory-source-status.v1",
+                  "source": "instance_specification_v1", "authority_state_sha256": "a" * 64, "engine_commit": "b" * 40,
+                  "rendered": {"valid": True, "kind": "klokast.inventory.v1", "projection": projection}}
+        controller = {"schema_version": 1, "kind": "klokast.controller-identity-status.v1", "source": "instance_specification_v1",
+                      "authority_state_sha256": "a" * 64, "engine_commit": "b" * 40,
+                      "controllers": {role: {"box": box, "hostname": box + "-ops"} for role, box in zip(("active", "standby"), boxes)}}
+        (dynamic_dir / "status.json").write_text(canonical(status) + "\n")
+        (dynamic_dir / "controller.json").write_text(canonical(controller) + "\n")
         dynamic_path = dynamic_dir / "hosts"
-        dynamic_path.write_text("#!/usr/bin/env python3\nimport json,sys\nfrom pathlib import Path\ng=json.loads(Path(__file__).with_name('graph.json').read_text())\nprint(json.dumps(g if sys.argv[1:] == ['--list'] else g['_meta']['hostvars'].get(sys.argv[2], {})))\n")
+        dynamic_path.write_text("""#!/usr/bin/env python3
+import importlib.util,json,os,sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+""" + "repo = Path(" + repr(str(REPO)) + ")\nos.environ['KLOKAST_MAGICDNS_SUFFIX'] = " + repr(suffix) + "\n" + """
+loader=SourceFileLoader('checked_reader',str(repo/'ansible/bin/platform-inventory'))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+reader=importlib.util.module_from_spec(spec);loader.exec_module(reader)
+reader.REPO=repo
+invoke=reader.invoke
+def fixture(command):
+    if str(command[0])=='/usr/bin/doas':
+        assert len(command)==3 and Path(command[1])==reader.HELPER
+        names={'inventory-source-status':'status.json','controller-identity-status':'controller.json'}
+        return json.loads(Path(__file__).with_name(names[command[2]]).read_text())
+    return invoke(command)
+reader.invoke=fixture
+raise SystemExit(reader.main())
+""")
         dynamic_path.chmod(0o700)
         dynamic = json.loads(invoke(["ansible-inventory", "-i", dynamic_path, "--list"], "dynamic-inventory"))
         result = compare_inventories(old, effective, projection)
         if compare_inventories(old, dynamic, projection) != result:
             raise ValueError("normal dynamic inventory differs from the static comparison")
+        with_boxes = json.loads(invoke(["ansible-inventory", "-i", dynamic_path, *old_args[3:], "--list"], "dynamic-with-box-files"))
+        if compare_inventories(old, with_boxes, projection) != result:
+            raise ValueError("adopted reader differs when normal box files are added")
+        status.pop("rendered")
+        status["source"] = "legacy_engine_inventory"
+        (dynamic_dir / "status.json").write_text(canonical(status) + "\n")
+        retained = json.loads(invoke(["ansible-inventory", "-i", dynamic_path, *old_args[3:], "--list"], "legacy-reader-with-box-files"))
+        selected = set(graph["_meta"]["hostvars"])
+        if set(retained["_meta"]["hostvars"]) != set(old["_meta"]["hostvars"]) or normalized_inventory(retained, selected) != normalized_inventory(old, selected):
+            raise ValueError("legacy reader lost host variables or role membership before adoption")
     current_sources = {str(p.relative_to(REPO)): hashlib.sha256(read_regular(p)).hexdigest()
                        for p in sorted(legacy.rglob("*.yml"))}
     if current_sources != source_files:

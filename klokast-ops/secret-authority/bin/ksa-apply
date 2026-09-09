@@ -3829,6 +3829,12 @@ def prepare_inventory_comparison(work, plan):
         dynamic = load_json(output / "dynamic-inventory.stdout", 16 * 1024 * 1024)
         if compare_execution_inventories(old, dynamic, plan["inventory"]) != checked:
             raise ApplyError("normal dynamic inventory differs from the static comparison")
+        with_boxes = load_json(output / "dynamic-with-box-files.stdout", 16 * 1024 * 1024)
+        if compare_execution_inventories(old, with_boxes, plan["inventory"]) != checked:
+            raise ApplyError("adopted inventory differs with normal box files")
+        retained = load_json(output / "legacy-reader-with-box-files.stdout", 16 * 1024 * 1024)
+        if set(retained.get("_meta", {}).get("hostvars", {})) != set(old["_meta"]["hostvars"]) or normalize_execution_inventory(retained, checked["hosts"]) != normalize_execution_inventory(old, checked["hosts"]):
+            raise ApplyError("legacy inventory reader changes host settings before adoption")
     except ValueError as error:
         raise ApplyError(str(error)) from error
     legacy = REPO_ROOT / "ansible/inventory"
