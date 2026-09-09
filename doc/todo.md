@@ -1058,3 +1058,8 @@ comments. All other policy lines match. The verifier must keep its exact-byte
 gate; this milestone does not authorize policy repair. The
 [instance-only runbook](../klokast-dev/runbooks/53-instance-only-verification.md#installed-preparation-2026-09-09)
 records the diff, protected recovery manifest, and remaining approval steps.
+
+The cleanup audit also found an unrelated retained runtime directory,
+`/run/klokast/apply-box/huawei-test-20260830T2204Z`, dated 2026-08-30. It was
+preserved. Inspect its ownership and evidence purpose before a separate cleanup;
+do not attribute it to the current verification attempt.

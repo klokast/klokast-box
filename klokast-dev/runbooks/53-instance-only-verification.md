@@ -134,6 +134,9 @@ consumer ran in that view. Verification reached the same policy-comment
 refusal. This proves no additional legacy-input refusal before that gate; it
 does not claim successful full verification. Namespace mounts and temporary
 public/runtime views were removed. Production legacy files remained present.
+The unrelated runtime directory
+`/run/klokast/apply-box/huawei-test-20260830T2204Z` predates this work and was
+preserved. It is not a runtime copy from this verification attempt.
 
 Controller-held preparation evidence is below:
 
