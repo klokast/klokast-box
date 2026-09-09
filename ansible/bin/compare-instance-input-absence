@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Compare actual consumers in isolated public views with legacy inputs absent.
+
+The only simulated boundary is the protected source broker reply. Its input is
+an explicitly supplied sealed projection. This is unsigned review evidence,
+not proof of installation, publication, live health, or execution authority.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def compare(inventory, registry, output):
+    projection = registry['projection']
+    digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
+    if digest(inventory['inventory']) != inventory['inventory_sha256'] or registry.get('valid') is not True:
+        raise ValueError('review projections are invalid')
+    env = {**os.environ, 'ANSIBLE_CACHE_PLUGIN': 'memory', 'ANSIBLE_INVENTORY_UNPARSED_IS_FAILED':'true',
+           'ANSIBLE_INVENTORY_ANY_UNPARSED_IS_FAILED':'true', 'PYTHONDONTWRITEBYTECODE':'1'}
+    results = []
+    tracked = subprocess.check_output(['git','-C',str(REPO),'ls-files','-z']).decode().split('\0')
+    with tempfile.TemporaryDirectory(prefix='isolated-inputs-',dir=output) as temporary:
+        for absent in (False, True):
+            view = Path(temporary) / ('absent' if absent else 'present')
+            view.mkdir(mode=0o700)
+            for name in tracked:
+                if not name or name.startswith(('vendor/','.run/')) or (absent and name.startswith('ansible/inventory/')):
+                    continue
+                source, target = REPO/name, view/name
+                if not source.is_file(): continue
+                target.parent.mkdir(parents=True,exist_ok=True)
+                if source.is_symlink(): target.symlink_to(os.readlink(source))
+                else: shutil.copyfile(source,target); target.chmod(source.stat().st_mode & 0o777)
+            private = view/'private';private.mkdir(mode=0o700)
+            if not absent:
+                # Deliberately unusable shadows prove these cannot supply settings.
+                for name in ('deployment.yml','platform-resources.yml','controller-ha.yml'):
+                    (private/name).write_text('not a legacy authority\n')
+            (view/'inventory.json').write_text(canonical(inventory)+'\n')
+            (view/'registry.json').write_text(canonical(registry)+'\n')
+            prelude = '''#!/usr/bin/env python3
+import importlib.util,json,sys,os
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+from types import SimpleNamespace
+root=Path(__file__).resolve().parent
+sys.path.insert(0,str(root/'ansible/lib'))
+def module(name,path):
+    loader=SourceFileLoader(name,str(root/path));spec=importlib.util.spec_from_loader(name,loader)
+    value=importlib.util.module_from_spec(spec);loader.exec_module(value);return value
+inventory=json.loads((root/'inventory.json').read_text())
+registry=json.loads((root/'registry.json').read_text())
+'''
+            compiler = view/'compiler'
+            compiler.write_text(prelude+'''
+reader=module('registry_reader','ansible/bin/platform-registry')
+reader.REGISTRY=root/'private/platform-resources.yml'
+reader.INSTANCE=root/'private/instance/klokast-instance.json'
+status={'schema_version':1,'kind':'klokast.registry-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':registry}
+compiler=module('compiler','ansible/bin/platform-resources')
+compiler.registry_source_input=lambda args:reader.read_registry(reader.REGISTRY,status)
+compiler.main()
+''');compiler.chmod(0o700)
+            dynamic = view/'inventory-reader'
+            dynamic.write_text(prelude+'''
+reader=module('inventory_reader','ansible/bin/platform-inventory')
+reader.REPO=root
+status={'schema_version':1,'kind':'klokast.inventory-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':{'valid':True,'kind':'klokast.inventory.v1','projection':inventory}}
+reader.invoke=lambda command:status
+raise SystemExit(reader.main())
+''');dynamic.chmod(0o700)
+            # Ansible applies the same generic policy beside either reader.
+            (view/'group_vars').symlink_to(view/'ansible/inventory-policy/group_vars',target_is_directory=True)
+            map_reader = view/'mapping'
+            map_reader.write_text(prelude+'''
+mapper=module('mapper','ansible/bin/platform-map')
+mapper.PLATFORM_RESOURCES=root/'compiler'
+warnings=[]
+value=mapper.compile_platform_resources_registry(root/'private/platform-resources.yml',warnings)
+if warnings: raise SystemExit('mapping consumer failed: '+str(warnings))
+print(json.dumps(value,sort_keys=True))
+''');map_reader.chmod(0o700)
+            controller = view/'controller'
+            controller.write_text(prelude+'''
+reader=module('controllers','ansible/bin/ops-controller-ha')
+boxes=inventory['boxes']
+pair={role:{'box':box,'hostname':box+'-ops'} for role,box in zip(('active','standby'),boxes)}
+status={'schema_version':1,'kind':'klokast.controller-identity-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'controllers':pair}
+reader.getpass.getuser=lambda:'smith'
+reader.socket.gethostname=lambda:pair['active']['hostname']
+reader.CONTROLLER_CONFIG=root/'private/controller-ha.yml'
+def forbidden(*args): raise SystemExit('normal controller resolution read a contact file')
+reader.load_config=forbidden
+reader.run=lambda *args,**kwargs:SimpleNamespace(returncode=0,stdout=json.dumps(status),stderr='')
+reader.main(['resolve-active'])
+''');controller.chmod(0o700)
+            def invoke(argv,label,json_output=True):
+                completed=subprocess.run([str(v) for v in argv],cwd=view,env={**env,'ANSIBLE_CONFIG':str(view/'ansible/ansible.cfg')},text=True,capture_output=True)
+                (output/(("absent-" if absent else "present-")+label+'.stderr')).write_text(completed.stderr)
+                if completed.returncode: raise ValueError(label+' failed in isolated view; inspect private logs')
+                value=json.loads(completed.stdout) if json_output else completed.stdout.strip()
+                if isinstance(value,dict):
+                    value.pop('registry_path',None);value.pop('registry_sha256',None)
+                return value
+            from_path=view/'ansible/lib'
+            sys.path.insert(0,str(from_path))
+            from platform_inventory import normalized_inventory
+            graph=invoke(['ansible-inventory','-i',dynamic,'--list'],'inventory')
+            consumers={'inventory':normalized_inventory(graph,inventory['inventory']['_meta']['hostvars']),
+                       'compiler':invoke([compiler,'show'],'compiler'),
+                       'box_configs':invoke([compiler,'show-box-configs'],'box-configs'),
+                       'mapping':invoke([map_reader],'mapping'),
+                       'controller':invoke([controller],'controller',False)}
+            consumers['routers']={box:invoke([compiler,'--box',box,'show-box-access-vars'],'router-'+box) for box in inventory['boxes']}
+            results.append(consumers)
+            # Ansible role variables can contain repository-relative paths. Both
+            # views have identical declared bytes; runtime file provenance alone
+            # was excluded by normalized_inventory above.
+            (output/('absent.json' if absent else 'present.json')).write_text(canonical(consumers)+'\n')
+    if results[0] != results[1]: raise ValueError('effective consumer settings differ with legacy inputs absent')
+    return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
+            'consumers':sorted(results[0]),'effective_settings_sha256':digest(results[0]),
+            'temporary_views_removed':True,'source_broker':'sealed-projection-fixture','live_execution_authority':False}
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--inventory-projection',type=Path,required=True)
+    parser.add_argument('--registry-projection',type=Path,required=True)
+    parser.add_argument('--output-directory',type=Path,required=True)
+    args=parser.parse_args();os.umask(0o077)
+    try:
+        args.output_directory.mkdir(parents=True,mode=0o700)
+        result=compare(json.loads(args.inventory_projection.read_text()),json.loads(args.registry_projection.read_text()),args.output_directory)
+        (args.output_directory/'result.json').write_text(canonical(result)+'\n')
+        print(canonical(result))
+    except (OSError,ValueError,KeyError,subprocess.CalledProcessError) as error:
+        print('compare-instance-input-absence: '+str(error),file=sys.stderr);return 1
+    return 0
+
+if __name__=='__main__':raise SystemExit(main())

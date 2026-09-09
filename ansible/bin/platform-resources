@@ -48,7 +48,7 @@ REPO_ROOT = (
     if SCRIPT_PATH == Path("/usr/local/sbin/platform-resources")
     else SCRIPT_PATH.parents[2]
 )
-TOPOLOGY_PATH = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
+TOPOLOGY_PATH = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "all.yml"
 WORKLOAD_ROLES = ("backend", "dmz", "iot", "usr")
 DEBIAN_APP_VM_SECURITY_MIRROR = "http://security.debian.org/debian-security"
 DEBIAN_APP_VM_ARCHITECTURE = "amd64"

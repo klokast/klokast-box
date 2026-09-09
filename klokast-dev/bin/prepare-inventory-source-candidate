@@ -24,6 +24,7 @@ def canonical(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--instance-only", action="store_true", help="check Plan v8 against the complete adopted source without new adoption")
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--observation", required=True, help="fresh controller-local Observation v1 for offline Plan contract checks")
     args = parser.parse_args()
@@ -112,7 +113,7 @@ def main():
                 components.append({"name": name, "source_sha256": digest, "installed_sha256": digest})
             digest = hashlib.sha256(binary.read_bytes()).hexdigest()
             components.append({"name": "sealed_engine", "source_sha256": digest, "installed_sha256": digest})
-            receipt_fixture = hashed({"schema_version": 6, "kind": "klokast.controller-toolchain.v6", "engine_commit": engine, "public_checkout_clean": True, "public_checkout_commit": engine, "components": components})
+            receipt_fixture = hashed({"schema_version": 7 if args.instance_only else 6, "kind": "klokast.controller-toolchain.v7" if args.instance_only else "klokast.controller-toolchain.v6", "engine_commit": engine, "public_checkout_clean": True, "public_checkout_commit": engine, "components": components})
             synthetic_toolchain = output / "review-only-toolchain.json"
             synthetic_toolchain.write_text(canonical(receipt_fixture) + "\n")
             state_path = Path("/var/lib/klokast/authority-states") / (pointer.decode().strip() + ".json")
@@ -136,23 +137,41 @@ def main():
                     raise ValueError("root Plan contract refused: " + str(error)) from error
                 plans.append(plan["plan_sha256"])
                 return plan
-            adoption = check_plan(state_path, "inventory", "non-controller")
-            # Check post-adoption reporting without publishing or approving a
-            # source change. The synthetic state has no signed archive.
-            state = json.loads(state_path.read_text())
-            state.update(schema_version=5, kind=apply.KIND_AUTHORITY_V5, prior_state_kind=apply.KIND_AUTHORITY_V4,
-                         prior_state_sha256=state["authority_state_sha256"], transition_id="review-only-inventory", signed_intent_sha256="a" * 64)
-            state["inventory_adoption"] = {"nonce": state["transition_id"], "intent_sha256": state["signed_intent_sha256"], "plan_sha256": adoption["plan_sha256"]}
-            state["setting_groups"] = sorted([*state["setting_groups"], {"id": apply.INVENTORY_GROUP, "source": "instance_specification_v1", "scopes": rendered["projection"]["scopes"]}], key=lambda g: g["id"])
-            state["authority_state_sha256"] = apply.authority_v2_hash(state)
-            apply.validate_authority_current_document(state)
-            synthetic_state = output / "review-only-authority.json"
-            synthetic_state.write_text(canonical(state) + "\n")
-            for target in ("inventory", "registry", "controller-identity", "connectivity"):
-                for connectivity in ("non-controller", "active-controller"):
-                    plan = check_plan(synthetic_state, target, connectivity)
-                    if any(g["operation"] != "verify_instance_authority" for g in plan["action_groups"]) or any(a.get("executor") == "unimplemented_action" for a in plan["actions"]) or any(a["id"] == "legacy_engine_inventory" for a in plan["authorities"]):
-                        raise ValueError("final private Plan retains inventory or pending runner authority")
+            if args.instance_only:
+                command = [binary, "plan", "--instance-only", "--instance", fixture,
+                           "--observation", observation_path, "--instance-source-receipt", synthetic_source,
+                           "--controller-toolchain-receipt", synthetic_toolchain, "--authority-state", state_path, "--json"]
+                plan = checked(command, "review-plan-instance-only")
+                path = apply.PLAN_ROOT / fixture_commit / (plan["plan_sha256"] + ".json")
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path.write_text(canonical(plan) + "\n")
+                apply.verify_plan_v8(path)
+                plans.append(plan["plan_sha256"])
+                registry = checked([binary, "registry", "--instance", fixture, "--json"], "sealed-registry")
+                registry_projection = output / "registry-projection.json"
+                registry_projection.write_text(canonical(registry) + "\n")
+                absence = checked([REPO / "ansible/bin/compare-instance-input-absence", "--inventory-projection", projection,
+                                   "--registry-projection", registry_projection, "--output-directory", output / "absence"], "legacy-input-absence")
+                if absence.get("equal") is not True:
+                    raise ValueError("isolated legacy absence comparison failed")
+            else:
+                adoption = check_plan(state_path, "inventory", "non-controller")
+                # Check post-adoption reporting without publishing or approving a
+                # source change. The synthetic state has no signed archive.
+                state = json.loads(state_path.read_text())
+                state.update(schema_version=5, kind=apply.KIND_AUTHORITY_V5, prior_state_kind=apply.KIND_AUTHORITY_V4,
+                             prior_state_sha256=state["authority_state_sha256"], transition_id="review-only-inventory", signed_intent_sha256="a" * 64)
+                state["inventory_adoption"] = {"nonce": state["transition_id"], "intent_sha256": state["signed_intent_sha256"], "plan_sha256": adoption["plan_sha256"]}
+                state["setting_groups"] = sorted([*state["setting_groups"], {"id": apply.INVENTORY_GROUP, "source": "instance_specification_v1", "scopes": rendered["projection"]["scopes"]}], key=lambda g: g["id"])
+                state["authority_state_sha256"] = apply.authority_v2_hash(state)
+                apply.validate_authority_current_document(state)
+                synthetic_state = output / "review-only-authority.json"
+                synthetic_state.write_text(canonical(state) + "\n")
+                for target in ("inventory", "registry", "controller-identity", "connectivity"):
+                    for connectivity in ("non-controller", "active-controller"):
+                        plan = check_plan(synthetic_state, target, connectivity)
+                        if any(g["operation"] != "verify_instance_authority" for g in plan["action_groups"]) or any(a.get("executor") == "unimplemented_action" for a in plan["actions"]) or any(a["id"] == "legacy_engine_inventory" for a in plan["authorities"]):
+                            raise ValueError("final private Plan retains inventory or pending runner authority")
         clean(REPO, engine)
         clean(INSTANCE, private_commit)
         if observation_path.read_bytes() != observation_bytes or Path("/var/lib/klokast/active-authority-state").read_bytes() != pointer or any((INSTANCE / name).read_bytes() != value for name, value in inputs.items()):

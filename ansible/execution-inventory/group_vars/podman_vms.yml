@@ -1,1 +1,1 @@
-../../inventory/group_vars/podman_vms.yml
+../../inventory-policy/group_vars/podman_vms.yml

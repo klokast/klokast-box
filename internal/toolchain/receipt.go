@@ -12,6 +12,7 @@ import (
 )
 
 const Kind = "klokast.controller-toolchain.v6"
+const KindV7 = "klokast.controller-toolchain.v7"
 const KindV5 = "klokast.controller-toolchain.v5"
 const KindV4 = "klokast.controller-toolchain.v4"
 const KindV3 = "klokast.controller-toolchain.v3"
@@ -74,7 +75,7 @@ func Load(path string, engineCommit string) (Receipt, error) {
 }
 
 func Validate(receipt Receipt, engineCommit string) error {
-	if !((receipt.SchemaVersion == 6 && receipt.Kind == Kind) || (receipt.SchemaVersion == 5 && receipt.Kind == KindV5) || (receipt.SchemaVersion == 4 && receipt.Kind == KindV4) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
+	if !((receipt.SchemaVersion == 7 && receipt.Kind == KindV7) || (receipt.SchemaVersion == 6 && receipt.Kind == Kind) || (receipt.SchemaVersion == 5 && receipt.Kind == KindV5) || (receipt.SchemaVersion == 4 && receipt.Kind == KindV4) || (receipt.SchemaVersion == 3 && receipt.Kind == KindV3)) || !receipt.PublicCheckoutClean || receipt.EngineCommit != engineCommit || receipt.PublicCheckoutCommit != engineCommit {
 		return fmt.Errorf("controller toolchain receipt identity does not match the selected clean engine commit")
 	}
 	components := []string{}

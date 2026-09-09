@@ -20,6 +20,7 @@ import (
 )
 
 type Options struct {
+	InstanceOnly               bool
 	MigrationTarget            string
 	ConnectivityTarget         string
 	InstancePath               string
@@ -138,6 +139,9 @@ type Refusal struct {
 }
 
 func Build(options Options, engine contract.Engine) (Artifact, error) {
+	if options.InstanceOnly {
+		return buildInstanceOnly(options, engine)
+	}
 	if options.MigrationTarget == "" {
 		options.MigrationTarget = "connectivity"
 	}
@@ -194,7 +198,7 @@ func Build(options Options, engine contract.Engine) (Artifact, error) {
 		}
 		artifact.Inventory = inventory.Projection
 	}
-	if (artifact.SchemaVersion == 7 && toolchainReceipt.SchemaVersion != 6) || (artifact.SchemaVersion == 6 && toolchainReceipt.SchemaVersion != 5 && toolchainReceipt.SchemaVersion != 6) {
+	if (artifact.SchemaVersion == 7 && toolchainReceipt.SchemaVersion != 6 && toolchainReceipt.SchemaVersion != 7) || (artifact.SchemaVersion == 6 && toolchainReceipt.SchemaVersion != 5 && toolchainReceipt.SchemaVersion != 6 && toolchainReceipt.SchemaVersion != 7) {
 		return Artifact{}, fmt.Errorf("Plan v7 requires Toolchain v6; Plan v6 requires Toolchain v5 or v6")
 	}
 	artifact.AuthorityState = AuthorityStateReference{

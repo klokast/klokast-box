@@ -650,7 +650,15 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     explicit_contact = getattr(args, "controller", "auto")
-    if args.command in {"resolve-active", "run"} and explicit_contact != "auto" and args.config is None and not os.environ.get(CONFIG_ENV):
+    if getpass.getuser() == "smith" and not args.legacy_recovery and args.command != "validate-config":
+        # On the active controller, the local broker supplies authority and the
+        # complete pair. Contact files are only transport hints outside it.
+        local = socket.gethostname().split(".", 1)[0]
+        if not local.endswith("-ops") or not valid_box(local[:-4]):
+            die("local controller hostname must have the exact box-ops form")
+        config = {"remote_user": FIXED_REMOTE_USER, "repo_dir": FIXED_REPO_DIR,
+                  "controllers": {local[:-4]: {"box": local[:-4], "hostname": local}}}
+    elif args.command in {"resolve-active", "run"} and explicit_contact != "auto" and args.config is None and not os.environ.get(CONFIG_ENV):
         if not explicit_contact.endswith("-ops") or not valid_box(explicit_contact[:-4]):
             die("explicit controller contact must have the exact box-ops form")
         box = explicit_contact[:-4]
@@ -664,7 +672,7 @@ def main(argv=None):
             die("legacy recovery cannot resolve or dispatch normal controller commands")
         print("ops-controller-ha: explicit legacy recovery uses saved contacts; normal source authority is not changed", file=sys.stderr)
     elif args.command != "validate-config":
-        if args.command == "resolve-active" and args.controller != "auto":
+        if args.command == "resolve-active" and args.controller != "auto" and getpass.getuser() != "smith":
             if not args.controller.endswith("-ops") or not valid_box(args.controller[:-4]):
                 die("explicit controller contact must have the exact box-ops form")
             box = args.controller[:-4]

@@ -202,6 +202,7 @@ func TestRegistryAdoptionAndFinalPlannerTargets(t *testing.T) {
 			}
 		}
 	}
+	checkInstanceOnly(t, options, state)
 	for _, badScopes := range [][]string{{authoritystate.InventoryScope}, {authoritystate.InventoryScope, "shell"}, {authoritystate.RunnerScopePrefix + "boxa-ops", authoritystate.InventoryScope}} {
 		bad := state
 		bad.SettingGroups = append([]authoritystate.SettingGroup{}, state.SettingGroups...)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"klokast-box/internal/contract"
 	"klokast-box/internal/deploymentplan"
@@ -177,6 +178,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 func runPlan(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	instanceOnly := flags.Bool("instance-only", false, "verify complete instance authority without compatibility inputs")
 	instancePath := flags.String("instance", "", "path to a standalone instance repository")
 	deploymentPath := flags.String("compatibility-deployment", "", "path to the transitional deployment document")
 	registryPath := flags.String("compatibility-registry", "", "path to the transitional platform-resources registry")
@@ -188,9 +190,22 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	migrationTarget := flags.String("migration-target", "connectivity", "migration target: connectivity, controller-identity, registry, or inventory")
 	connectivityTarget := flags.String("connectivity-target", "non-controller", "connectivity target: non-controller or active-controller")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity" && *migrationTarget != "registry" && *migrationTarget != "inventory") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || *deploymentPath == "" || *registryPath == "" || *controllerPath == "" {
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity" && *migrationTarget != "registry" && *migrationTarget != "inventory") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || (!*instanceOnly && (*deploymentPath == "" || *registryPath == "" || *controllerPath == "")) {
 		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json]")
 		return 2
+	}
+	if *instanceOnly {
+		conflict := false
+		flags.Visit(func(f *flag.Flag) {
+			if strings.HasPrefix(f.Name, "compatibility-") || f.Name == "migration-target" || f.Name == "connectivity-target" {
+				conflict = true
+			}
+		})
+		if conflict || *observationPath == "" {
+			fmt.Fprintln(stderr, "instance-only requires observation evidence and rejects compatibility inputs and migration targets")
+			return 2
+		}
+		*migrationTarget, *connectivityTarget = "", ""
 	}
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
 	if *observationPath == "" {
@@ -208,6 +223,7 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	result, err := deploymentplan.Build(deploymentplan.Options{
+		InstanceOnly:               *instanceOnly,
 		MigrationTarget:            *migrationTarget,
 		ConnectivityTarget:         *connectivityTarget,
 		InstancePath:               *instancePath,

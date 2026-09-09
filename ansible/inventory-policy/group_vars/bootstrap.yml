@@ -1,0 +1,120 @@
+---
+ansible_user: root
+ansible_become: false
+
+force_blank_slate_install: true
+target_disk_device: /dev/nvme0n1
+target_disk_model_hint: ""
+efi_partition_device: /dev/nvme0n1p1
+lvm_partition_device: /dev/nvme0n1p2
+volume_group_name: vg0
+
+efi_partition_label: ALPINE_EFI
+efi_partition_fs: vfat
+efi_mount_path: /media/nvme
+apk_repository_arch: "{{ ansible_architecture | default('x86_64') }}"
+efi_boot_directory: /media/nvme/boot
+efi_grub_directory: /media/nvme/boot/grub
+efi_bootloader_id: "{{ node_hostname }}"
+efi_bootloader_legacy_ids:
+  - alpine
+efi_fallback_directory: /media/nvme/EFI/BOOT
+efi_fallback_bootloader_path: /media/nvme/EFI/BOOT/BOOTX64.EFI
+efi_bootloader_grub_config_path: "{{ efi_mount_path }}/EFI/{{ efi_bootloader_id }}/grub.cfg"
+efi_fallback_grub_config_path: "{{ efi_fallback_directory }}/grub.cfg"
+efi_grub_loader_config_paths:
+  - "{{ efi_bootloader_grub_config_path }}"
+  - "{{ efi_fallback_grub_config_path }}"
+# Follow the working `yii-dom0` layout from the runbook: keep the early-boot
+# repository under `apks/`, keep `/etc/apk/cache` as a normal runtime cache,
+# and keep the apkovl at the EFI root.
+apk_boot_repository_root: "{{ efi_mount_path }}/apks"
+apk_boot_repository_path: "{{ apk_boot_repository_root }}/{{ apk_repository_arch }}"
+apk_cache_path: "{{ efi_mount_path }}/cache"
+apk_boot_repository_marker: "{{ apk_boot_repository_root }}/.boot_repository"
+apk_boot_repository_index: "{{ apk_boot_repository_path }}/APKINDEX.tar.gz"
+# On the first SSD diskless boot, Alpine mounts the EFI media under the block
+# device basename rather than the Debian live mountpoint. Phase 20 still
+# redetects the steady-state runtime mountpoint before persisting later changes.
+diskless_first_boot_media_mount_path: "/media/{{ efi_partition_device | basename }}"
+diskless_first_boot_repository_root: "{{ diskless_first_boot_media_mount_path }}/apks"
+diskless_first_boot_repositories:
+  - "{{ diskless_first_boot_repository_root }}"
+diskless_first_boot_cache_path: "{{ diskless_first_boot_media_mount_path }}/cache"
+diskless_first_boot_authkey_wrapper: /usr/local/sbin/ts-authkey-bootstrap
+diskless_first_boot_authkey_relative_path: bootstrap/tailscale-bootstrap.authkey
+diskless_first_boot_authkey_stage_path: "{{ efi_mount_path }}/{{ diskless_first_boot_authkey_relative_path }}"
+diskless_first_boot_authkey_runtime_path: "{{ diskless_first_boot_media_mount_path }}/{{ diskless_first_boot_authkey_relative_path }}"
+apkovl_archive_name: "{{ node_hostname }}.apkovl.tar.gz"
+apkovl_archive_path: "{{ efi_mount_path }}/{{ apkovl_archive_name }}"
+# Keep the first SSD boot as close as possible to the known-good manual
+# `yii-dom0` diskless boot contract: mount the installer media via
+# `alpine_dev=LABEL=...`, use the relative modloop path from that mounted EFI
+# partition, and let Alpine autodetect the single managed root-level apkovl.
+# A bare `apkovl=<filename>` kernel argument is interpreted as a relative path
+# by Alpine's initramfs instead of being searched on the mounted EFI media, so
+# the explicit kernel parameter stays empty here.
+diskless_modloop_kernel_param: >-
+  modloop=/boot/modloop-lts
+diskless_alpine_repo_kernel_param: ""
+diskless_apkovl_kernel_param: ""
+# Remove both older wrong layouts on reruns so recovery boots do not keep
+# treating the whole EFI filesystem or the runtime cache as the boot repo.
+legacy_apk_root_boot_repository_marker: "{{ efi_mount_path }}/.boot_repository"
+legacy_apk_cache_boot_repository_marker: "{{ apk_cache_path }}/.boot_repository"
+# Stage 1 is now the Debian live carrier. Phase 12 downloads the signed Alpine
+# standard ISO directly on that bootstrap host and extracts the boot artifacts
+# and `apks/<arch>` repository needed for the first SSD boot.
+alpine_diskless_seed_release: 3.23.3
+alpine_diskless_seed_remote_directory: /tmp/alpine-diskless-seed
+lbu_media_name: nvme
+lbu_protected_paths_file: /etc/apk/protected_paths.d/lbu.list
+diskless_bootstrap_host_packages:
+  Alpine:
+    - efibootmgr
+    - grub-efi
+    - lvm2
+  Debian:
+    - efibootmgr
+    - grub-efi-amd64
+    - lvm2
+# Keep the first SSD boot package set minimal and local-repo-friendly. The
+# bootstrap helper staged in the apkovl brings up networking dynamically, then
+# installs Python and Tailscale from the normal managed repositories before
+# phase 20 reconnects over Tailscale SSH. LVM stays deferred until the later
+# dom0 storage phase so the first SSD boot does not depend on extra APKs beyond
+# the signed Alpine standard seed.
+diskless_first_boot_world_packages:
+  - alpine-base
+  - alpine-conf
+  - busybox-mdev-openrc
+diskless_first_boot_runtime_packages:
+  - python3
+  - tailscale
+  - tailscale-openrc
+diskless_first_boot_debug_mode: false
+diskless_first_boot_debug_log_directory: "{{ diskless_first_boot_media_mount_path }}/debug"
+diskless_first_boot_debug_log_path: "{{ diskless_first_boot_debug_log_directory }}/klokast-first-boot.log"
+diskless_first_boot_interface_wait_seconds: 30
+diskless_first_boot_link_wait_max: 100
+diskless_first_boot_network_wait_seconds: 20
+diskless_first_boot_tailscale_wait_seconds: 60
+diskless_first_boot_tailscale_up_attempts: 3
+diskless_first_boot_trace_setup_interfaces: true
+# Do not include the mounted EFI media root in `lbu`. That would recurse the
+# whole persistent partition into the apkovl archive and eventually exhaust the
+# EFI filesystem during `lbu commit`.
+diskless_lbu_include_paths: []
+diskless_required_paths:
+  - "{{ efi_boot_directory }}/vmlinuz-lts"
+  - "{{ efi_boot_directory }}/initramfs-lts"
+  - "{{ efi_boot_directory }}/modloop-lts"
+  - "{{ efi_grub_directory }}/grub.cfg"
+  - "{{ efi_mount_path }}/EFI/{{ efi_bootloader_id }}/grubx64.efi"
+  - "{{ efi_fallback_bootloader_path }}"
+  - "{{ efi_bootloader_grub_config_path }}"
+  - "{{ efi_fallback_grub_config_path }}"
+  - "{{ apk_boot_repository_marker }}"
+  - "{{ apk_boot_repository_index }}"
+  - "{{ diskless_first_boot_authkey_stage_path }}"
+  - "{{ apkovl_archive_path }}"

@@ -286,7 +286,7 @@ def verify_plan(content):
         plan = json.loads(content)
     except json.JSONDecodeError as error:
         raise PlanError("klokast returned invalid Plan v5 JSON") from error
-    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4"), (5, "klokast.plan.v5"), (6, "klokast.plan.v6"), (7, "klokast.plan.v7")}:
+    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4"), (5, "klokast.plan.v5"), (6, "klokast.plan.v6"), (7, "klokast.plan.v7"), (8, "klokast.plan.v8")}:
         raise PlanError("klokast returned an unsupported plan artifact")
     if not plan.get("valid"):
         raise PlanError("klokast did not produce a valid plan artifact")
@@ -351,18 +351,29 @@ def install_plan(plan, content):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--migration-target", choices=("connectivity", "controller-identity", "registry", "inventory"), default="connectivity")
-    parser.add_argument("--connectivity-target", choices=("non-controller", "active-controller"), default="non-controller")
+    parser.add_argument("--instance-only", action="store_true")
+    parser.add_argument("--migration-target", choices=("connectivity", "controller-identity", "registry", "inventory"), default=None)
+    parser.add_argument("--connectivity-target", choices=("non-controller", "active-controller"), default=None)
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--instance", required=True)
-    parser.add_argument("--compatibility-deployment", required=True)
-    parser.add_argument("--compatibility-registry", required=True)
-    parser.add_argument("--compatibility-controller-ha", required=True)
+    parser.add_argument("--compatibility-deployment")
+    parser.add_argument("--compatibility-registry")
+    parser.add_argument("--compatibility-controller-ha")
     parser.add_argument("--observation", required=True)
     parser.add_argument("--instance-source-receipt", required=True)
     parser.add_argument("--authority-state", required=True)
     parser.add_argument("--controller-toolchain-receipt", required=True)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    compatibility = [args.compatibility_deployment, args.compatibility_registry, args.compatibility_controller_ha]
+    if args.instance_only:
+        if any(value is not None for value in [*compatibility, args.migration_target, args.connectivity_target]):
+            parser.error("--instance-only rejects compatibility inputs and migration-target flags")
+    elif not all(compatibility):
+        parser.error("compatibility planning requires all three compatibility inputs")
+    if not args.instance_only:
+        args.migration_target = args.migration_target or "connectivity"
+        args.connectivity_target = args.connectivity_target or "non-controller"
+    return args
 
 
 def main(argv=None):
@@ -379,21 +390,26 @@ def main(argv=None):
         )
         plan_arguments = [
             "--instance", args.instance,
-            "--compatibility-deployment", args.compatibility_deployment,
-            "--compatibility-registry", args.compatibility_registry,
-            "--compatibility-controller-ha", args.compatibility_controller_ha,
             "--observation", args.observation,
             "--instance-source-receipt", instance_source_receipt,
             "--authority-state", authority_state,
             "--controller-toolchain-receipt", toolchain_receipt,
         ]
+        if args.instance_only:
+            plan_arguments.append("--instance-only")
+        else:
+            plan_arguments.extend(["--compatibility-deployment", args.compatibility_deployment,
+                                   "--compatibility-registry", args.compatibility_registry,
+                                   "--compatibility-controller-ha", args.compatibility_controller_ha])
         # Keep the default usable with a historical sealed engine. New engines
         # emit Plan v6 and default to the non-controller target.
         if args.connectivity_target == "active-controller":
             plan_arguments.extend(["--connectivity-target", args.connectivity_target])
-        if args.migration_target != "connectivity":
+        if args.migration_target and args.migration_target != "connectivity":
             plan_arguments.extend(["--migration-target", args.migration_target])
         plan, content = create_plan(binary, plan_arguments)
+        if args.instance_only and plan.get("kind") != "klokast.plan.v8":
+            raise PlanError("instance-only planning requires Plan v8")
         if args.migration_target == "inventory" and (plan.get("kind") != "klokast.plan.v7" or plan.get("migration_target") != "inventory"):
             raise PlanError("inventory source requires explicit Plan v7 selection")
         if args.migration_target == "registry" and (plan.get("kind") not in {"klokast.plan.v6", "klokast.plan.v7"} or plan.get("migration_target") != "registry"):

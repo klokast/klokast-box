@@ -32,6 +32,9 @@ KIND_PLAN_V4 = "klokast.plan.v4"
 KIND_PLAN_V5 = "klokast.plan.v5"
 KIND_PLAN_V6 = "klokast.plan.v6"
 KIND_PLAN_V7 = "klokast.plan.v7"
+KIND_PLAN_V8 = "klokast.plan.v8"
+KIND_VERIFICATION_INTENT = "klokast.instance-verification-intent.v1"
+VERIFICATION_EXECUTOR = "instance_verification_v1"
 KIND_AUTHORITY_V5 = "klokast.authority-state.v5"
 KIND_INVENTORY_INTENT = "klokast.inventory-source-intent.v1"
 INVENTORY_EXECUTOR = "inventory_source_v1"
@@ -421,6 +424,8 @@ def box_scopes(box):
 
 def verify_plan_v3(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
+    if plan.get("kind") == KIND_PLAN_V8:
+        return verify_plan_v8(path)
     if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5), (KIND_PLAN_V6, 6), (KIND_PLAN_V7, 7)}:
         raise ApplyError("box connectivity Apply requires Plan v3 or v4")
     version = plan["schema_version"]
@@ -770,6 +775,12 @@ def validate_authority_v2(path, plan, group):
     reference = plan.get("authority_state") or {}
     if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != state["kind"] or reference.get("setting_groups") != state["setting_groups"]:
         raise ApplyError("Plan v3 binds another Authority State v2")
+    if plan.get("kind") == KIND_PLAN_V8:
+        if state["kind"] != KIND_AUTHORITY_V5:
+            raise ApplyError("instance-only verification requires Authority State v5")
+        verify_inventory_anchor(state, plan["inventory"]["scopes"])
+        verify_registry_anchor(state, plan["projection"]["registry"]["scopes"])
+        return resolved, state
     if group["id"] == INVENTORY_GROUP:
         expected_kind = KIND_AUTHORITY_V4 if group["operation"] == "adopt_instance_specification" else KIND_AUTHORITY_V5
         if state["kind"] != expected_kind:
@@ -839,21 +850,23 @@ def validate_toolchain(path, plan, build_binary):
         "schema_version", "kind", "engine_commit", "public_checkout_clean",
         "public_checkout_commit", "components", "receipt_sha256",
     }
-    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5"), (6, "klokast.controller-toolchain.v6")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
+    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5"), (6, "klokast.controller-toolchain.v6"), (7, "klokast.controller-toolchain.v7")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
     components = COMPONENTS
     if receipt.get("schema_version") >= 4:
         components = sorted([*COMPONENTS, "controller_ha"])
     if receipt.get("schema_version") >= 5:
         components = sorted([*components, "platform_registry"])
-    if receipt.get("schema_version") == 6:
+    if receipt.get("schema_version") >= 6:
         components = sorted([*components, "platform_inventory"])
-    if plan.get("schema_version") == 7 and receipt.get("schema_version") != 6:
+    if plan.get("schema_version") == 7 and receipt.get("schema_version") not in {6, 7}:
         raise ApplyError("Plan v7 requires Controller Toolchain v6")
-    if plan.get("schema_version") == 6 and receipt.get("schema_version") not in {5, 6}:
+    if plan.get("schema_version") == 6 and receipt.get("schema_version") not in {5, 6, 7}:
         raise ApplyError("Plan v6 requires Controller Toolchain v5")
     if plan.get("schema_version") == 5 and receipt.get("schema_version") != 4:
         raise ApplyError("Plan v5 requires Controller Toolchain v4")
+    if plan.get("schema_version") == 8 and receipt.get("schema_version") != 7:
+        raise ApplyError("Plan v8 requires Controller Toolchain v7")
     entries = receipt.get("components")
     if not isinstance(entries, list) or [item.get("name") for item in entries] != components:
         raise ApplyError("controller toolchain receipt has an unknown component set")
@@ -1172,6 +1185,11 @@ def validate_inputs_v3(args, work=None):
         command.extend(["--connectivity-target", plan["connectivity_target"]])
     if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         command.extend(["--migration-target", plan["migration_target"]])
+    if plan.get("kind") == KIND_PLAN_V8:
+        for flag in ("--compatibility-deployment", "--compatibility-registry", "--compatibility-controller-ha"):
+            index = command.index(flag)
+            del command[index:index + 2]
+        command.append("--instance-only")
     rerun = run_plan_as_controller(command)
     try:
         rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
@@ -1180,7 +1198,7 @@ def validate_inputs_v3(args, work=None):
     if rerun.returncode != 0 or rerun_plan != plan:
         raise ApplyError("Plan v3 inputs changed during exact revalidation")
     comparison = {}
-    if work:
+    if work and plan.get("kind") != KIND_PLAN_V8:
         if group["id"] == INVENTORY_GROUP:
             comparison = prepare_inventory_comparison(work, plan)
         elif group["id"] == REGISTRY_GROUP:
@@ -1546,7 +1564,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT, KIND_VERIFICATION_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -3295,6 +3313,8 @@ def controller_identity_status():
         raise ApplyError("active controller identity source pointer is invalid")
     _, state = resolve_hashed(AUTHORITY_ROOT / (digest + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
     validate_authority_current_document(state)
+    if state["kind"] == KIND_AUTHORITY_V5:
+        verification_adoption_evidence(state)
     if state["kind"] == KIND_AUTHORITY_V2:
         input_path = CONTROLLER_HA
         input_bytes = read_regular(input_path)
@@ -4063,12 +4083,388 @@ def inventory_source_status():
     return result
 
 
+VERIFICATION_PRECONDITIONS = ["exact_plan_v8_revalidated", "complete_instance_ownership", "read_only_consumers_verified"]
+VERIFICATION_EVIDENCE_FIELDS = {
+    "plan_sha256", "authority_state_sha256", "source_receipt_sha256", "source_recovery_receipt_sha256",
+    "observation_sha256", "toolchain_receipt_sha256", "binary_sha256", "builder_receipt_sha256",
+    "private_inputs_sha256", "projection_sha256", "inventory_projection_sha256", "inventory_policy_sha256",
+    "registry_projection_sha256", "compiler_sha256", "router_variables_sha256", "inventory_sha256",
+    "controller_roles_sha256", "runner_identities_sha256", "source_status_sha256", "adoption_evidence_sha256",
+    "candidate_policy_sha256", "live_policy_sha256",
+}
+VERIFICATION_BINDING_FIELDS = {"plan_path", "authority_path", "toolchain_path", "source_path", "recovery_path", "observation", "build_dir"}
+
+
+def verification_groups(plan):
+    pair = controller_pair(plan)
+    registry = plan.get("projection", {}).get("registry")
+    inventory = plan.get("inventory")
+    if not isinstance(registry, dict) or not isinstance(inventory, dict):
+        raise ApplyError("instance verification requires complete registry and inventory projections")
+    boxes = sorted(v["box"] for v in pair.values())
+    validate_registry_scopes(registry.get("scopes"), boxes)
+    validate_inventory_scopes(inventory.get("scopes"), boxes)
+    runners = plan["projection"]["control_plane"]["airunners"]
+    if inventory.get("boxes") != boxes or inventory.get("airunners") != runners or inventory["scopes"] != sorted([INVENTORY_SCOPE, *(RUNNER_SCOPE_PREFIX + v for v in runners)]):
+        raise ApplyError("instance inventory scope membership differs from the projection")
+    if inventory_digest(inventory.get("inventory")) != inventory.get("inventory_sha256"):
+        raise ApplyError("instance inventory graph hash differs")
+    scopes = {TAILNET_GROUP_ID: SCOPES, IDENTITY_GROUP: IDENTITY_SCOPES,
+              REGISTRY_GROUP: registry["scopes"], INVENTORY_GROUP: inventory["scopes"]}
+    scopes.update({BOX_GROUP_PREFIX + box: box_scopes(box) for box in boxes})
+    return [{"id": name, "operation": "verify_instance_authority", "scopes": values,
+             "executor": VERIFICATION_EXECUTOR, "rollback_type": "no_mutation"} for name, values in sorted(scopes.items())]
+
+
+def verify_plan_v8(path):
+    resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
+    fields = {"schema_version", "kind", "valid", "substrate_healthy", "deployable", "authority_ready",
+              "legacy_removal_ready", "health_scope", "engine", "instance", "instance_source", "authority_state",
+              "controller_toolchain", "inputs", "projection", "inventory", "projection_sha256", "observation",
+              "authorities", "actions", "action_groups", "refusals", "diagnostics", "plan_sha256"}
+    if set(plan) != fields or plan.get("kind") != KIND_PLAN_V8 or plan.get("schema_version") != 8:
+        raise ApplyError("instance verification accepts only the closed Plan v8 contract")
+    candidate = dict(plan)
+    supplied = candidate.pop("plan_sha256")
+    if inventory_digest(candidate) != supplied or any(plan[k] is not True for k in ("valid", "substrate_healthy", "deployable", "authority_ready")) or plan["legacy_removal_ready"] is not False or plan["health_scope"] != "standard_substrate_v1" or plan["refusals"] != [] or plan["diagnostics"] != []:
+        raise ApplyError("Plan v8 must be canonical, healthy, and authority-ready with removal disabled")
+    groups = verification_groups(plan)
+    if plan["action_groups"] != groups or plan["authority_state"].get("kind") != KIND_AUTHORITY_V5 or plan["authority_state"].get("setting_groups") != [{"id": g["id"], "scopes": g["scopes"], "source": "instance_specification_v1"} for g in groups]:
+        raise ApplyError("Plan v8 requires exact six-group instance ownership")
+    actions = []
+    for group in groups:
+        for scope in group["scopes"]:
+            operation = "verify_instance_authority"
+            actions.append({"id": operation + "-" + sha256_bytes((operation + "\0" + scope).encode())[:16],
+                            "scope": scope, "operation": operation, "executor": VERIFICATION_EXECUTOR,
+                            "authority_before": "instance_specification_v1", "authority_after": "instance_specification_v1",
+                            "preconditions": VERIFICATION_PRECONDITIONS,
+                            "rollback": {"strategy": "no_mutation", "authority": "instance_specification_v1"}})
+    if plan["actions"] != sorted(actions, key=lambda a: a["id"]):
+        raise ApplyError("Plan v8 verification action coverage is partial or unknown")
+    return resolved, plan, {"id": VERIFICATION_EXECUTOR, "operation": "verify_instance_authority", "executor": VERIFICATION_EXECUTOR}
+
+
+def verification_source_history(state):
+    paths, seen = set(), set()
+    current = state
+    while True:
+        digest = current["authority_state_sha256"]
+        if digest in seen or len(seen) >= 256:
+            raise ApplyError("source history contains a cycle or exceeds its bound")
+        seen.add(digest)
+        path = AUTHORITY_ROOT / (digest + ".json")
+        _, stored = resolve_hashed(path, AUTHORITY_ROOT, "authority_state_sha256")
+        if stored != current:
+            raise ApplyError("source history differs from its immutable record")
+        if current["kind"] == KIND_AUTHORITY:
+            validate_authority_v1_document(current)
+        else:
+            validate_authority_current_document(current)
+        paths.add(path)
+        if current.get("signed_intent_sha256"):
+            nonce = current["transition_id"]
+            intent_path = PREFLIGHT_ROOT / nonce / "intent.json"
+            intent = load_json(intent_path, canonical_stored=True)
+            if sha256_file(intent_path) != current["signed_intent_sha256"]:
+                raise ApplyError("source history lacks its exact signed intent")
+            paths.add(intent_path)
+            binding_path = PREFLIGHT_ROOT / nonce / "binding.json"
+            if binding_path.is_file():
+                binding = load_json(binding_path, canonical_stored=True)
+                paths.add(binding_path)
+                if binding.get("plan_path"):
+                    plan_path = Path(binding["plan_path"])
+                    _, plan = resolve_hashed(plan_path, PLAN_ROOT, "plan_sha256", nested=True)
+                    body = dict(plan); plan_hash = body.pop("plan_sha256")
+                    if inventory_digest(body) != plan_hash or intent.get("plan_sha256") != plan_hash:
+                        raise ApplyError("historical source Plan differs from its signed intent")
+                    paths.add(plan_path)
+            receipts = list((EXECUTION_ROOT / nonce).glob("*.json"))
+            if len(receipts) != 1:
+                raise ApplyError("source history requires its completed execution receipt")
+            _, receipt = resolve_hashed(receipts[0], EXECUTION_ROOT, "receipt_sha256", nested=True)
+            body = dict(receipt); receipt_hash = body.pop("receipt_sha256")
+            if inventory_digest(body) != receipt_hash or receipt.get("intent_sha256") != current["signed_intent_sha256"] or receipt.get("nonce") != nonce or receipt.get("result") not in {"success", "verified"}:
+                raise ApplyError("source history execution evidence is incomplete")
+            paths.add(receipts[0])
+        prior = current.get("prior_state_sha256")
+        if not prior: break
+        _, current = resolve_hashed(AUTHORITY_ROOT / (prior + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
+    return sorted(paths)
+
+
+def verification_adoption_evidence(state):
+    """Retained signed archives and completed receipts are required evidence."""
+    hashes = {}
+    for name in ("controller_identity_adoption", "registry_adoption", "inventory_adoption"):
+        anchor = state[name]
+        directory = PREFLIGHT_ROOT / anchor["nonce"]
+        for filename in ("intent.json", "binding.json"):
+            path = directory / filename
+            hashes[name + "/" + filename] = sha256_bytes(read_regular(path))
+        if hashes[name + "/intent.json"] != anchor["intent_sha256"]:
+            raise ApplyError("adoption intent differs from its immutable anchor")
+        receipts = list((EXECUTION_ROOT / anchor["nonce"]).glob("*.json"))
+        if len(receipts) != 1:
+            raise ApplyError("adopted source requires exactly one completed execution receipt")
+        path = receipts[0]
+        _, receipt = resolve_hashed(path, EXECUTION_ROOT, "receipt_sha256", nested=True)
+        body = dict(receipt)
+        digest = body.pop("receipt_sha256")
+        if inventory_digest(body) != digest or receipt.get("intent_sha256") != anchor["intent_sha256"] or receipt.get("plan_sha256") != anchor["plan_sha256"] or receipt.get("nonce") != anchor["nonce"] or receipt.get("action") != "adopt_instance_specification" or receipt.get("result") != "success":
+            raise ApplyError("adoption execution receipt differs from the source anchor")
+        hashes[name + "/receipt"] = digest
+    for path in verification_source_history(state):
+        hashes["history/" + str(path)] = sha256_bytes(read_regular(path))
+    return inventory_digest(hashes)
+
+
+def verification_consumers(binding, work):
+    plan = binding["plan"]
+    effective = work / "effective-registry.yml"
+    effective.write_text(canonical(plan["projection"]["registry"]["registry"]) + "\n")
+    os.chown(effective, 0, smith_gid())
+    effective.chmod(0o440)
+    compiler, routers = {}, {}
+    for command in ("show", "show-box-configs"):
+        values = []
+        for result in (run_plan_as_controller([PLATFORM_RESOURCES, command]), run_platform_resources_as_controller(effective, [command])):
+            value = decode_helper_json(result, "verify instance compiler consumers")
+            if "registry_path" not in value or "registry_sha256" not in value:
+                raise ApplyError("compiler result lacks registry provenance")
+            value.pop("registry_path"); value.pop("registry_sha256")
+            values.append(value)
+        if values[0] != values[1]:
+            raise ApplyError("normal compiler differs from the checked instance registry")
+        compiler[command] = inventory_digest(values[0])
+    for box in plan["inventory"]["boxes"]:
+        arguments = ["--box", box, "show-box-access-vars"]
+        values = [decode_helper_json(result, "verify instance router variables") for result in
+                  (run_plan_as_controller([PLATFORM_RESOURCES, *arguments]), run_platform_resources_as_controller(effective, arguments))]
+        if values[0] != values[1]:
+            raise ApplyError("normal router variables differ from the checked instance registry")
+        routers[box] = inventory_digest(values[0])
+    # Real Ansible consumers: the normal broker-backed dynamic entry point and
+    # an independent static representation of the exact sealed graph.
+    graph = plan["inventory"]["inventory"]
+    groups = {}
+    for name, value in graph.items():
+        if name == "_meta": continue
+        groups[name] = {"children": {v: {} for v in value.get("children", [])},
+                        "hosts": {v: graph["_meta"]["hostvars"][v] for v in value.get("hosts", [])}}
+        if "vars" in value: groups[name]["vars"] = value["vars"]
+    root = groups.pop("all")
+    root["children"] = groups
+    static = work / "inventory.yml"
+    static.write_text(canonical({"all": root}) + "\n")
+    os.chown(static, 0, smith_gid()); static.chmod(0o440)
+    (work / "group_vars").symlink_to(REPO_ROOT / "ansible/inventory-policy/group_vars", target_is_directory=True)
+    policy = {name: sha256_bytes(read_regular(REPO_ROOT / "ansible/inventory-policy/group_vars" / (name + ".yml"))) for name in INVENTORY_POLICY_GROUPS}
+    outputs = []
+    for path in (REPO_ROOT / "ansible/execution-inventory/hosts", static):
+        command = ["env", "ANSIBLE_CACHE_PLUGIN=memory", "ANSIBLE_INVENTORY_UNPARSED_IS_FAILED=true", "ANSIBLE_INVENTORY_ANY_UNPARSED_IS_FAILED=true",
+                   "ANSIBLE_CONFIG=" + str(REPO_ROOT / "ansible/ansible.cfg"), "ansible-inventory", "-i", path, "--list"]
+        outputs.append(decode_helper_json(run_plan_as_controller(command), "verify instance inventory consumer"))
+    compared = compare_execution_inventories(outputs[1], outputs[0], plan["inventory"])
+    return {"compiler_sha256": inventory_digest(compiler), "router_variables_sha256": inventory_digest(routers),
+            "inventory_sha256": compared["effective_inventory_sha256"], "inventory_policy_sha256": inventory_digest(policy)}, effective
+
+
+def verification_collect(args, nonce):
+    work = new_box_work(nonce)
+    policy_work = None
+    try:
+        binding = validate_inputs_v3(args)
+        plan = binding["plan"]
+        if plan["kind"] != KIND_PLAN_V8:
+            raise ApplyError("instance verification requires Plan v8")
+        pair = controller_pair(plan)
+        status = controller_identity_status()
+        if status["source"] != "instance_specification_v1" or status["controllers"] != pair or status["authority_state_sha256"] != binding["state"]["authority_state_sha256"]:
+            raise ApplyError("checked controller source differs from Plan v8")
+        roles = verify_controller_pair(pair)
+        runners = verify_declared_runners(plan["inventory"]["airunners"])
+        consumers, effective = verification_consumers(binding, work)
+        for box in plan["inventory"]["boxes"]:
+            run_box_resource(effective, box, "verify-box-access", plan_magicdns_suffix(plan))
+        policy_work = new_work(nonce)
+        run([RENDERER, "--instance", INSTANCE / "klokast-instance.json", "--template", POLICY_TEMPLATE, "--output", policy_work / "candidate.body"], capture=True)
+        run([MUTATION_HELPER, "get-before", nonce], capture=True)
+        candidate, live = (read_regular(policy_work / name, 1024 * 1024) for name in ("candidate.body", "live.body"))
+        if candidate != live:
+            raise ApplyError("live Tailnet policy differs from the instance rendering")
+        run([MUTATION_HELPER, "validate-candidate", nonce], capture=True)
+        evidence = {
+            "plan_sha256": plan["plan_sha256"], "authority_state_sha256": binding["state"]["authority_state_sha256"],
+            "source_receipt_sha256": plan["instance_source"]["receipt_sha256"], "source_recovery_receipt_sha256": Path(binding["recovery_path"]).stem,
+            "observation_sha256": plan["observation"]["generation_sha256"], "toolchain_receipt_sha256": plan["controller_toolchain"]["receipt_sha256"],
+            "binary_sha256": binding["binary_sha256"], "builder_receipt_sha256": binding["builder_receipt_sha256"],
+            "private_inputs_sha256": inventory_digest(plan["inputs"]), "projection_sha256": plan["projection_sha256"],
+            "inventory_projection_sha256": inventory_digest(plan["inventory"]), "registry_projection_sha256": inventory_digest(plan["projection"]["registry"]),
+            "controller_roles_sha256": inventory_digest(roles), "runner_identities_sha256": inventory_digest(runners),
+            "source_status_sha256": inventory_digest(status), "adoption_evidence_sha256": verification_adoption_evidence(binding["state"]),
+            "candidate_policy_sha256": sha256_bytes(candidate), "live_policy_sha256": sha256_bytes(live), **consumers,
+        }
+        # Revalidate exact private inputs, evidence, policy, and source after all
+        # consumers finish. No source publication or automatic repair exists.
+        final = validate_inputs_v3(args)
+        final_consumers, _ = verification_consumers(final, new_subwork(work, "recheck"))
+        if final != binding or controller_identity_status() != status or final_consumers != consumers or verification_adoption_evidence(final["state"]) != evidence["adoption_evidence_sha256"]:
+            raise ApplyError("instance inputs, source, or policy changed during verification")
+        return {"binding": {k: binding[k] for k in VERIFICATION_BINDING_FIELDS}, "evidence": evidence,
+                "controller_pair": pair, "action_groups": plan["action_groups"], "private_commit": plan["instance"]["commit"], "engine_commit": plan["engine"]["commit"]}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if policy_work is not None: shutil.rmtree(policy_work, ignore_errors=True)
+
+
+def new_subwork(work, name):
+    path = work / name
+    path.mkdir(mode=0o750)
+    os.chown(path, 0, smith_gid())
+    path.chmod(0o750)
+    return path
+
+
+def verification_intent(collected, nonce, issued):
+    return {"schema_version": 1, "kind": KIND_VERIFICATION_INTENT, "action": "verify_instance_authority",
+            "executor": VERIFICATION_EXECUTOR, "rollback_type": "no_mutation", "plan_sha256": collected["evidence"]["plan_sha256"],
+            **{k: collected[k] for k in ("evidence", "controller_pair", "action_groups", "private_commit", "engine_commit")},
+            "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + dt.timedelta(minutes=10))}
+
+
+def validate_verification_intent(intent):
+    fields = {"schema_version", "kind", "action", "executor", "rollback_type", "plan_sha256", "evidence", "controller_pair", "action_groups", "private_commit", "engine_commit", "nonce", "issued_at", "expires_at"}
+    if set(intent) != fields or intent.get("schema_version") != 1 or intent.get("kind") != KIND_VERIFICATION_INTENT or intent.get("action") != "verify_instance_authority" or intent.get("executor") != VERIFICATION_EXECUTOR or intent.get("rollback_type") != "no_mutation":
+        raise ApplyError("instance verification intent contains unknown fields or action")
+    evidence = intent["evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != VERIFICATION_EVIDENCE_FIELDS or any(not isinstance(v, str) or not DIGEST_RE.fullmatch(v) for v in evidence.values()) or intent["plan_sha256"] != evidence["plan_sha256"] or evidence["candidate_policy_sha256"] != evidence["live_policy_sha256"]:
+        raise ApplyError("instance verification evidence is incomplete or changed")
+    pair = intent["controller_pair"]
+    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
+        raise ApplyError("instance verification controller pair is incomplete")
+    for v in pair.values():
+        if not isinstance(v, dict) or set(v) != {"box", "hostname"} or not isinstance(v["box"], str) or not BOX_RE.fullmatch(v["box"]) or v["hostname"] != v["box"] + "-ops":
+            raise ApplyError("instance verification controller identity is invalid")
+    if pair["active"] == pair["standby"]:
+        raise ApplyError("instance verification controller pair is duplicated")
+    groups = intent["action_groups"]
+    if not isinstance(groups, list) or len(groups) != 6 or any(not isinstance(g, dict) or set(g) != {"id", "operation", "scopes", "executor", "rollback_type"} or g["operation"] != "verify_instance_authority" or g["executor"] != VERIFICATION_EXECUTOR or g["rollback_type"] != "no_mutation" for g in groups):
+        raise ApplyError("instance verification requires six verification-only groups")
+    if any(not isinstance(intent[k], str) or not COMMIT_RE.fullmatch(intent[k]) for k in ("private_commit", "engine_commit")) or not isinstance(intent["nonce"], str) or not NONCE_RE.fullmatch(intent["nonce"]):
+        raise ApplyError("instance verification commit or nonce is invalid")
+    issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+        raise ApplyError("instance verification intent is expired or has an invalid lifetime")
+
+
+def verification_recovery_manifest(args):
+    binding = validate_inputs_v3(args)
+    if binding["plan"]["kind"] != KIND_PLAN_V8:
+        raise ApplyError("routine recovery manifest requires Plan v8")
+    status = controller_identity_status()
+    paths = set(verification_source_history(binding["state"]))
+    paths.update({INSTANCE / "klokast-instance.json", INSTANCE / "klokast.lock.json", DEPLOYMENT, REGISTRY, CONTROLLER_HA,
+                  Path(binding["build_dir"]) / "klokast", Path(binding["build_dir"]) / "receipt.json"})
+    paths.update(Path(binding[k]) for k in VERIFICATION_BINDING_FIELDS if k != "build_dir")
+    for root in (REPO_ROOT / "ansible/inventory", REPO_ROOT / "ansible/inventory-policy", ROLLBACK_ROOT, SOURCE_ROOT, RECOVERY_ROOT):
+        paths.update(p for p in root.rglob("*") if p.is_file())
+    entries = []
+    for path in sorted(paths):
+        # Only checked compatibility links to the new generic policy are allowed.
+        resolved = path.resolve(strict=True)
+        if path.is_symlink() and (path.parent != REPO_ROOT / "ansible/inventory/group_vars" or resolved != REPO_ROOT / "ansible/inventory-policy/group_vars" / path.name):
+            raise ApplyError("recovery input contains an unsupported link")
+        content = read_regular(resolved, MAX_BINARY if path.name == "klokast" else MAX_JSON)
+        entries.append({"path": str(path), "sha256": sha256_bytes(content), "bytes": len(content), "link_target": str(resolved) if resolved != path else None})
+    root = Path("/var/lib/klokast/instance-recovery-manifests")
+    ensure_dir(root)
+    # Reconstruct a detached file tree only. Credentials are never copied, and
+    # no controller pointer, network configuration, or live source is activated.
+    with tempfile.TemporaryDirectory(prefix="reconstruction-", dir=root) as temporary:
+        reconstructed = Path(temporary)
+        for entry in entries:
+            destination = reconstructed / entry["path"].lstrip("/")
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            content = read_regular(Path(entry["path"]).resolve(), MAX_BINARY if Path(entry["path"]).name == "klokast" else MAX_JSON)
+            if sha256_bytes(content) != entry["sha256"]:
+                raise ApplyError("recovery input changed before reconstruction")
+            destination.write_bytes(content); destination.chmod(0o600)
+            if sha256_file(destination) != entry["sha256"]:
+                raise ApplyError("detached recovery reconstruction failed")
+    if validate_inputs_v3(args) != binding or controller_identity_status() != status:
+        raise ApplyError("source changed during recovery reconstruction")
+    manifest = {"schema_version": 1, "kind": "klokast.instance-recovery-manifest.v1", "plan_sha256": binding["plan"]["plan_sha256"],
+                "authority_state_sha256": binding["state"]["authority_state_sha256"], "engine": binding["plan"]["engine"],
+                "build_dir": binding["build_dir"], "binary_sha256": binding["binary_sha256"], "builder_receipt_sha256": binding["builder_receipt_sha256"],
+                "inputs": entries, "reconstruction": "verified-detached-copy", "activated": False,
+                "credential_reseed": [
+                    "Fence the old active controller before recovery promotion.",
+                    "Reseed the private-instance read-only deploy key from the trusted Mac; verify repository access and source recovery receipts.",
+                    "Reseed Tailscale enrollment, policy, and device-lifecycle OAuth authority from the trusted Mac through the credential installers.",
+                    "Reseed Secret Authority allowed signers and broker provider credentials from the trusted Mac; never restore ambient runner authority.",
+                    "Restore dom0 console password hashes from controller-private recovery storage and confirm human password-manager access.",
+                    "Follow doc/secret-authority.md and klokast-dev/runbooks/40-private-instance-bootstrap.md before activation."],
+                "credentials_copied": False, "checked_at": format_utc(now_utc())}
+    manifest["manifest_sha256"] = inventory_digest(manifest)
+    path = root / (manifest["manifest_sha256"] + ".json")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(canonical(manifest) + "\n"); handle.flush(); os.fsync(handle.fileno())
+    path.chmod(0o400)
+    print(canonical({"schema_version": 1, "result": "verified-recovery-manifest", "path": str(path), "manifest_sha256": manifest["manifest_sha256"], "files": len(entries), "activated": False}))
+
+
+def verification_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    collected = verification_collect(args, nonce)
+    intent = verification_intent(collected, nonce, now_utc())
+    validate_verification_intent(intent)
+    ensure_dir(PREFLIGHT_ROOT)
+    directory = PREFLIGHT_ROOT / nonce
+    directory.mkdir(mode=0o700)
+    for name, value in (("binding", collected["binding"]), ("intent", intent)):
+        path = directory / (name + ".json")
+        path.write_text(canonical(value) + "\n"); path.chmod(0o600)
+    append_audit("instance-verification.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"])
+    print(canonical(intent))
+
+
+def verification_execute(args, intent):
+    validate_verification_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed verification differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    if set(binding) != VERIFICATION_BINDING_FIELDS:
+        raise ApplyError("protected verification binding has unknown fields")
+    consume_nonce(intent)
+    try:
+        evidence_args = argparse.Namespace(**{key: binding[field] for key, field in (("plan", "plan_path"), ("authority_state", "authority_path"), ("controller_toolchain_receipt", "toolchain_path"), ("source_recovery_receipt", "recovery_path"), ("instance_source_receipt", "source_path"), ("observation", "observation"), ("build_dir", "build_dir"))})
+        collected = verification_collect(evidence_args, intent["nonce"] + "-execute")
+        if verification_intent(collected, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
+            raise ApplyError("approved verification inputs, policy, controllers, or runners changed")
+        validate_verification_intent(intent)
+        receipt = {"schema_version": 6, "kind": "klokast.apply-execution.v6", "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode()),
+                   "plan_sha256": intent["plan_sha256"], "nonce": intent["nonce"], "action": intent["action"], "executor": VERIFICATION_EXECUTOR,
+                   "action_groups": intent["action_groups"], "controller_pair": intent["controller_pair"], "evidence": intent["evidence"],
+                   "result": "verified", "recovery_result": "not_needed", "authority_state_sha256": intent["evidence"]["authority_state_sha256"], "finished_at": format_utc(now_utc())}
+        path = store_identity_receipt(receipt)
+        append_audit("instance-verification.executed", nonce=intent["nonce"], receipt_sha256=receipt["receipt_sha256"])
+        print(canonical({"schema_version": 1, "result": "verified", "receipt_path": str(path), "authority_state_sha256": receipt["authority_state_sha256"]}))
+    except (ApplyError, OSError) as error:
+        raise ApplyError("verification failed or receipt storage is incomplete; inspect evidence and obtain fresh approval; do not retry the used request: " + str(error)) from error
+
+
 def evidence_kind(path):
     return load_json(path).get("kind")
 
 
 def preflight(args):
-    if evidence_kind(args.plan) == KIND_PLAN_V7 and load_json(args.plan).get("migration_target") == "inventory":
+    if evidence_kind(args.plan) == KIND_PLAN_V8:
+        verification_preflight(args)
+    elif evidence_kind(args.plan) == KIND_PLAN_V7 and load_json(args.plan).get("migration_target") == "inventory":
         inventory_preflight(args)
     elif evidence_kind(args.plan) in {KIND_PLAN_V6, KIND_PLAN_V7} and load_json(args.plan).get("migration_target") == "registry":
         registry_preflight(args)
@@ -4099,6 +4495,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_VERIFICATION_INTENT:
+        verification_execute(args, intent)
     elif intent.get("kind") == KIND_INVENTORY_INTENT:
         inventory_execute(args, intent)
     elif intent.get("kind") == KIND_REGISTRY_INTENT:
@@ -4123,6 +4521,9 @@ def parse_args(argv):
     commands.add_parser("controller-identity-status")
     commands.add_parser("registry-source-status")
     commands.add_parser("inventory-source-status")
+    recovery_manifest_parser = commands.add_parser("recovery-manifest")
+    for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
+        recovery_manifest_parser.add_argument("--" + name, required=True)
     preflight_parser = commands.add_parser("preflight")
     for name in (
         "plan", "authority-state", "controller-toolchain-receipt",
@@ -4169,6 +4570,8 @@ def main(argv=None):
             print(canonical(inventory_source_status()))
         elif args.operation == "registry-source-status":
             print(canonical(registry_source_status()))
+        elif args.operation == "recovery-manifest":
+            verification_recovery_manifest(args)
         elif args.operation == "preflight":
             preflight(args)
         elif args.operation == "execute":

@@ -1521,6 +1521,74 @@ Recognized DERP on k001 passed access checks. The
 holds full controller evidence references. Source adoption for the represented
 settings is complete; `legacy_removal_ready: false` remains expected.
 
+## 11.7 Instance-only routine verification
+
+State: `decided`. Baseline: engine `cf8cf5f`, Authority State v5
+`8622695e`, and Plan `540bae24`. This milestone removes routine input
+requirements. It adopts no source and deletes no retained input.
+
+Dependency audit and required disposition:
+
+| Consumer | Dependency and disposition |
+| --- | --- |
+| `klokast plan`, `platform-plan`, `ksa-apply` | The three legacy YAML inputs and comparison findings remain explicit compatibility inputs for Plans v1–v7. Plan v8 uses only checked instance inputs, full Authority State v5, source evidence, Toolchain v7, and Observation v1. |
+| `ops-controller-ha` | Normal controller commands obtain the pair from the local source broker. Mac contact hints and `--legacy-recovery` contacts remain transport and recovery inputs. |
+| `platform-inventory`, normal execution inventory | The adopted source uses the sealed instance graph. Generic policy moves to `ansible/inventory-policy/group_vars`; old hosts and host variables remain explicit compatibility inputs. Preserve all declared variables and the memory-cache exclusion. |
+| `platform-resources`, mapping, application wrappers | Normal commands use the adopted registry reader and generic inventory policy. Explicit registry arguments remain compatibility or recovery inputs. They must not become a fallback after an adopted-source error. |
+| Tailnet rendering and suffix resolution | Normal rendering uses instance authority. An explicit deployment document remains a comparison or recovery input; no implicit YAML fallback is allowed. |
+| Installation and builder | Normal inventory uses the checked source. Explicit bootstrap and builder compatibility inventory remain recovery inputs. App manifests named `platform-resources.yml` are public implementation, not legacy private registries. |
+| Source brokers | Original signed adoption intents, immutable Plans, receipts, source history, and adoption anchors remain historical evidence required to validate adopted authority. Absence causes refusal. |
+
+Plan v8 has a separate `--instance-only` entry point. It rejects every
+compatibility input and migration-target flag, including explicitly supplied
+defaults. It has no compatibility findings or compatibility input fields.
+All six groups and exact scopes come from the checked projection, independent
+inventory projection, and complete Authority State v5. Missing groups,
+changed scope membership, or unsupported ownership cause refusal. Each action
+is verification-only. Instance Specification v1 and Authority State v5 stay
+unchanged, and `legacy_removal_ready` stays false.
+
+The closed `instance_verification_v1` root executor is Control TCB code. It
+accepts only a versioned, short-lived intent signed by the existing Touch ID
+identity. It binds the exact Plan, source, controller pair, private input
+hashes, sealed build, Toolchain receipt, source/recovery evidence, Observation,
+projections, inventory policy, rendered/live Tailnet policy, controller roles,
+and runner identities. Older Plans cannot select this executor. Untrusted
+caller paths select protected evidence only, never commands or credentials.
+
+Preparation and execution use the actual compiler and Ansible inventory
+consumers, controller-role checks, runner checks, router verification, and
+Tailnet read-only checks. The health claim remains `standard_substrate_v1`;
+it does not include application, backup, or retained-data health. Consume the
+nonce before execution-time checks. Recheck all inputs and source after live
+verification and before receipt storage. Store Execution Receipt v6 without
+publishing an Authority State, changing networking, restarting services, or
+repairing a failure. Failure or incomplete storage requires inspection and a
+fresh approval. Recovery is a fresh verification after the cause is resolved;
+there is no runtime rollback for this read-only executor.
+
+Test absence through isolated filesystem views only. Never rename or hide
+production inputs globally. Require equal effective settings with the three
+legacy YAML files and old inventory tree present and absent. Test incomplete
+ownership, changed scopes and policies, absent adoption evidence, wrong peers,
+expiry, replay, source changes during verification, storage failure, and direct
+or recognized DERP transport. Preserve historical parser and recovery tests.
+Keep a controller-held recovery manifest of retained inputs, engine/build
+references, source history, adoption evidence, and credential-reseed steps.
+Test reconstruction in a temporary directory without activation or transfer
+of private material to a runner.
+
+Promotion uses one reviewed implementation commit, its sealed tests/build,
+and the existing human Mac workflow. Test the exact promotion candidate and
+synchronize the canonical controller checkout before the handoff. After
+promotion install matching tools, capture fresh baselines, run unsigned
+instance-only and isolated-absence preparation, obtain one verification
+signature, and prove exact replay refusal. Store a fresh Plan v8 and check
+unchanged source/settings, protected receipts, consumed nonce, and runtime
+cleanup. Commit acceptance documentation separately and do not deploy that
+commit. File deletion, controller switching, runner retirement, direct-IPv6
+repair, and live recovery-source changes remain outside this milestone.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -1562,6 +1630,7 @@ complete.
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
 | Inventory and runner adoption | `live-verified` | Engine `cf8cf5f` and private commit `35577f92` passed signed adoption, fresh signed verification, exact replay refusal, protected evidence inspection, and final unchanged-setting checks on 2026-09-09. Final Plan `540bae24` reports six verification-only groups and no remaining legacy authority or pending adoption action. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09) holds the evidence. |
+| Instance-only routine operation | `decided` | Plan v8 and verification implementation is under test. Section 11.7 owns the dependency audit and acceptance gates. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue
@@ -1570,8 +1639,8 @@ complete.
    The remaining legacy-owned setting-group list is empty. Preserve the
    [completed acceptance evidence](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09);
    do not repeat adoption or automatically deploy its documentation commit.
-2. The next design work is the retained legacy comparison and recovery
-   dependency audit. Keep legacy removal `proposed` until its recovery,
+2. Implement and verify the instance-only routine dependency change in section
+   11.7, then complete its existing human promotion and signed verification gates. Keep legacy removal `proposed` until its recovery,
    rollback, observation, and exact live-action gates are complete. The human
    authorized continued migration design and implementation without separate
    scope-selection questions. This does not authorize deletion of retained

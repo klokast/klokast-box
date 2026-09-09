@@ -129,7 +129,7 @@ class PlatformInventoryTest(unittest.TestCase):
         self.assertFalse((root / "host_vars").exists())
         for path in (root / "group_vars").iterdir():
             self.assertTrue(path.is_symlink())
-            self.assertEqual(path.resolve().parent, ROOT / "ansible/inventory/group_vars")
+            self.assertEqual(path.resolve().parent, ROOT / "ansible/inventory-policy/group_vars")
         self.assertNotIn("yii.yml", [p.name for p in (root / "group_vars").iterdir()])
         config = (ROOT / "ansible/ansible.cfg").read_text()
         self.assertIn("inventory = execution-inventory/hosts", config)

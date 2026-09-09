@@ -26,6 +26,7 @@ def parse_args(argv):
     commands = parser.add_subparsers(dest="operation", required=True)
     preflight = commands.add_parser("preflight")
     common_evidence(preflight)
+    common_evidence(commands.add_parser("recovery-manifest"))
     execute = commands.add_parser("execute")
     execute.add_argument("--approval-intent", required=True)
     execute.add_argument("--approval-signature", required=True)
@@ -62,7 +63,7 @@ def main(argv=None):
         print("platform-apply: installed ksa-apply is missing", file=sys.stderr)
         return 1
     command = ["sudo", "-n", INSTALLED, args.operation]
-    if args.operation == "preflight":
+    if args.operation in {"preflight", "recovery-manifest"}:
         for name in (
             "plan", "authority_state", "controller_toolchain_receipt",
             "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",

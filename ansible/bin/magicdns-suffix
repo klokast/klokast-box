@@ -31,8 +31,8 @@ print(parts[1] if len(parts) == 2 else "")
   fi
 fi
 
-deployment="${KLOKAST_DEPLOYMENT_CONFIG:-$HOME/private/klokast/deployment.yml}"
-if [ -r "$deployment" ]; then
+deployment="${KLOKAST_DEPLOYMENT_CONFIG:-}"
+if [ -n "$deployment" ] && [ -r "$deployment" ]; then
   suffix="$(
     python3 - "$deployment" <<'PY'
 import sys
@@ -46,5 +46,5 @@ PY
   exit 0
 fi
 
-echo "magicdns-suffix: set KLOKAST_MAGICDNS_SUFFIX, join Tailscale, or provide $deployment" >&2
+echo "magicdns-suffix: set KLOKAST_MAGICDNS_SUFFIX, join Tailscale, or provide an explicit KLOKAST_DEPLOYMENT_CONFIG recovery input" >&2
 exit 2

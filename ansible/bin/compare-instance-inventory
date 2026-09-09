@@ -16,7 +16,12 @@ from platform_inventory import POLICY_GROUPS, canonical, compare_inventories, di
 
 
 def read_regular(path):
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+    if path.is_symlink():
+        expected = REPO / "ansible/inventory-policy/group_vars" / path.name
+        if path.parent != REPO / "ansible/inventory/group_vars" or path.resolve() != expected:
+            raise ValueError("inventory input has an unsafe policy link")
+        path = expected
+    if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("inventory input must be a bounded regular file: " + path.name)
     return path.read_bytes()
 

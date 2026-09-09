@@ -1016,3 +1016,19 @@ underlay:
 It does not yet specify automatic compiler allocation. Architecturally, deterministic
 compiler allocation and uniqueness validation would be preferable, allowing applications
 to request an identity symbolically without choosing infrastructure port numbers themselves.
+
+## Instance-only verification acceptance
+
+The dependency audit found that normal inventory policy links still entered
+the retained inventory tree, and `platform-check` skipped registry checks when
+the old YAML file was absent. The instance-only change removes these two
+dependencies. Keep the memory-cache regression check: observed Ansible facts
+must not enter desired-state comparisons, but declared variables must remain.
+
+The isolated consumer comparison uses sealed projection replies at the source
+broker boundary. It does not prove installed broker behavior or live signed
+execution. Complete the installed unsigned and signed checks in
+[the instance-only runbook](../klokast-dev/runbooks/53-instance-only-verification.md)
+after human engine promotion. Preserve the retained source history, adoption
+archives, receipts, and legacy recovery inputs. The work queue remains in
+[the target architecture](upstream-instance-target-architecture.md#current-work-queue).
