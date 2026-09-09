@@ -79,6 +79,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runInventory(args[1:], stdout, stderr)
 	}
 	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json] | klokast doctor --instance PATH --observation FILE [--json] | klokast registry --instance PATH --json | klokast inventory --instance PATH --json")
+	fmt.Fprintln(stderr, "instance-only: klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
 	return 2
 }
 
@@ -192,6 +193,7 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity" && *migrationTarget != "registry" && *migrationTarget != "inventory") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || (!*instanceOnly && (*deploymentPath == "" || *registryPath == "" || *controllerPath == "")) {
 		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json]")
+		fmt.Fprintln(stderr, "instance-only: klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
 		return 2
 	}
 	if *instanceOnly {

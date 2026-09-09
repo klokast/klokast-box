@@ -267,6 +267,7 @@ The implemented offline commands are:
 ```text
 klokast init --instance PATH --values FILE [--json]
 klokast check --instance PATH [--json]
+klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]
 klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]
 klokast doctor --instance PATH --observation FILE [--json]
 ```
@@ -338,17 +339,20 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 `unsupported`. A disabled legacy app that is omitted from `apps` resolves to
 absent. An enabled legacy app must have explicit present intent.
 
-With fresh Observation v1, Instance Source Receipt v1, Authority State v2 or
-v3, and Controller Toolchain v4 evidence, `plan` emits a hashed Plan v5 artifact.
-The deployment planner accepts `--connectivity-target non-controller|active-controller`.
-The default is `non-controller`; the private instance supplies the selected box.
-The planner also accepts `--migration-target connectivity|controller-identity`,
-with `connectivity` as the default. Controller identity adoption requires
-explicit selection and a complete current active/standby pair. The
-[target architecture](upstream-instance-target-architecture.md#114-controller-identity-source-migration)
-defines the Plan v5 source-action rules. Instance Specification v1 is unchanged.
-It does not apply changes. Plan v1 remains read-only historical evidence and
-cannot authorize Apply. `doctor` uses the same
+With `--instance-only`, fresh Observation v1 and Instance Source Receipt v1,
+complete Authority State v5, and Controller Toolchain v7, `plan` emits Plan v8.
+It requires all six setting groups and their exact instance scopes. It rejects
+all compatibility-input and migration-target flags. It emits verification-only
+actions without comparison findings or legacy-input fields.
+
+Explicit compatibility and migration planning retains the prior interfaces,
+including `--connectivity-target non-controller|active-controller` and
+`--migration-target connectivity|controller-identity|registry|inventory`.
+Their defaults are `non-controller` and `connectivity`. The
+[target architecture](upstream-instance-target-architecture.md) owns versioned
+Plan semantics and signed execution gates. Historical Plans retain their
+original contracts. Instance Specification v1 is unchanged. Planning applies
+no changes, and Plan v1 cannot authorize execution. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy
 resources do not become desired state. `doctor` checks every listed airunner
 for presence, online state, and its required tag. It does not select a runner,
