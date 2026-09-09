@@ -97,6 +97,7 @@ TOOLCHAIN_ROOT = Path("/var/lib/klokast/controller-toolchains")
 SOURCE_ROOT = Path("/var/lib/klokast/instance-sources")
 RECOVERY_ROOT = Path("/var/lib/klokast/private-source-recoveries")
 PREFLIGHT_ROOT = Path("/var/lib/klokast/apply-preflights")
+RECOVERY_MANIFEST_ROOT = Path("/var/lib/klokast/instance-recovery-manifests")
 EXECUTION_ROOT = Path("/var/lib/klokast/apply-executions")
 ROLLBACK_ROOT = Path("/var/lib/klokast/apply-rollback-material")
 NONCE_ROOT = Path("/var/lib/klokast/apply-used-nonces")
@@ -4352,6 +4353,16 @@ def validate_verification_intent(intent):
     groups = intent["action_groups"]
     if not isinstance(groups, list) or len(groups) != 6 or any(not isinstance(g, dict) or set(g) != {"id", "operation", "scopes", "executor", "rollback_type"} or g["operation"] != "verify_instance_authority" or g["executor"] != VERIFICATION_EXECUTOR or g["rollback_type"] != "no_mutation" for g in groups):
         raise ApplyError("instance verification requires six verification-only groups")
+    boxes = sorted(v["box"] for v in pair.values())
+    expected = {TAILNET_GROUP_ID: SCOPES, IDENTITY_GROUP: IDENTITY_SCOPES,
+                **{BOX_GROUP_PREFIX + box: box_scopes(box) for box in boxes}}
+    if [g["id"] for g in groups] != sorted([*expected, REGISTRY_GROUP, INVENTORY_GROUP]):
+        raise ApplyError("instance verification group membership is incomplete or changed")
+    for group in groups:
+        if group["id"] in expected and group["scopes"] != expected[group["id"]]:
+            raise ApplyError("instance verification group scope changed")
+        if group["id"] == REGISTRY_GROUP: validate_registry_scopes(group["scopes"], boxes)
+        if group["id"] == INVENTORY_GROUP: validate_inventory_scopes(group["scopes"], boxes)
     if any(not isinstance(intent[k], str) or not COMMIT_RE.fullmatch(intent[k]) for k in ("private_commit", "engine_commit")) or not isinstance(intent["nonce"], str) or not NONCE_RE.fullmatch(intent["nonce"]):
         raise ApplyError("instance verification commit or nonce is invalid")
     issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
@@ -4378,7 +4389,7 @@ def verification_recovery_manifest(args):
             raise ApplyError("recovery input contains an unsupported link")
         content = read_regular(resolved, MAX_BINARY if path.name == "klokast" else MAX_JSON)
         entries.append({"path": str(path), "sha256": sha256_bytes(content), "bytes": len(content), "link_target": str(resolved) if resolved != path else None})
-    root = Path("/var/lib/klokast/instance-recovery-manifests")
+    root = RECOVERY_MANIFEST_ROOT
     ensure_dir(root)
     # Reconstruct a detached file tree only. Credentials are never copied, and
     # no controller pointer, network configuration, or live source is activated.
