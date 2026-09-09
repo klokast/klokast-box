@@ -1044,3 +1044,11 @@ consumed nonce, and a published state, but no separate Apply execution receipt.
 Source-history verification must retain this exact historical contract. It
 must require execution receipts for adoption actions and must not invent a
 conversion receipt or omit the conversion archive and nonce.
+
+The first installed Plan v8 source check rejected an old failed box operation
+with a recorded restoration and `recovery_required`. A later signed adoption
+of that same group succeeded. Historical verification must preserve the failed
+receipt, reconstruct both of its source records, and require the later successful
+same-group adoption. It must not treat the historical failure as current health
+or accept an unresolved latest failure. Test the complete controller-held history
+before the next engine promotion; synthetic success-only histories missed this case.

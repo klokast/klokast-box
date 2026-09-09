@@ -178,6 +178,68 @@ class InstanceVerificationTest(unittest.TestCase):
             self.assertEqual(Path(result['path']).stat().st_mode & 0o777,0o400)
             self.assertEqual(list(m.RECOVERY_MANIFEST_ROOT.glob('reconstruction-*')),[])
 
+    def test_failed_box_history_requires_exact_restoration_and_later_adoption(self):
+        from contextlib import ExitStack
+        import test_platform_apply
+        fixture = test_platform_apply.PlatformApplyTest(); fixture.setUp()
+        m = self.m
+        for recovery in ('restored', 'recovery_required'):
+            with self.subTest(recovery=recovery), tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+                root = Path(tmp)
+                for name in ('AUTHORITY_ROOT', 'PREFLIGHT_ROOT', 'EXECUTION_ROOT', 'NONCE_ROOT', 'PLAN_ROOT'):
+                    path = root / name; path.mkdir(); stack.enter_context(patch.object(m, name, path))
+                def state_file(value):
+                    path = m.AUTHORITY_ROOT / (value['authority_state_sha256'] + '.json')
+                    path.write_text(m.canonical(value) + '\n')
+                    return path
+                initial = {'schema_version': 1, 'kind': m.KIND_AUTHORITY, 'prior_state_sha256': '',
+                           'transitioned_scopes': [], 'resulting_authorities': [], 'signed_intent_sha256': '', 'transition_id': 'initial'}
+                initial['authority_state_sha256'] = m.authority_hash(initial); state_file(initial)
+                old = m.now_utc() - dt.timedelta(days=1)
+                conversion = {'schema_version': 1, 'kind': m.KIND_CONVERSION_INTENT, 'action': 'convert_authority_state_v1_to_v2',
+                              'authority_state_sha256': initial['authority_state_sha256'], 'private_instance_sha256': 'a'*64,
+                              'boxes': ['boxa','boxb'], 'nonce': 'historical-conversion', 'issued_at': m.format_utc(old),
+                              'expires_at': m.format_utc(old + dt.timedelta(minutes=10))}
+                prior = m.make_authority_v2(initial, conversion, boxes=conversion['boxes']); state_file(prior)
+                def archive(intent, binding, nonce_binding):
+                    directory = m.PREFLIGHT_ROOT / intent['nonce']; directory.mkdir()
+                    for name, value in [('intent', intent), ('binding', binding)]:
+                        (directory / (name+'.json')).write_text(m.canonical(value)+'\n')
+                    (m.NONCE_ROOT / intent['nonce']).write_text(nonce_binding+'\n')
+                archive(conversion, {'authority_path': str(state_file(initial))}, initial['authority_state_sha256'])
+                plan_path = self.store_plan(m.PLAN_ROOT, self.plan())
+                plan_hash = plan_path.stem
+                failed = fixture.valid_box_intent(box='boxb')
+                failed.update(nonce='historical-failed-box', authority_state_sha256=prior['authority_state_sha256'],
+                              plan_sha256=plan_hash, issued_at=conversion['issued_at'], expires_at=conversion['expires_at'])
+                group = failed['action_group_id']
+                transitioned = m.make_authority_v2(prior, failed, group_id=group, source='instance_specification_v1'); state_file(transitioned)
+                restored = m.make_authority_v2(transitioned, failed, group_id=group, source=m.LEGACY_REGISTRY_SOURCE); state_file(restored)
+                later = dict(failed, nonce='historical-later-adoption', authority_state_sha256=restored['authority_state_sha256'])
+                current = m.make_authority_v2(restored, later, group_id=group, source='instance_specification_v1'); state_file(current)
+                for intent, state, result in ((failed, restored, 'failed'), (later, current, 'success')):
+                    archive(intent, {'plan_path': str(plan_path)}, plan_hash)
+                    receipt = {'schema_version': 2, 'kind': 'klokast.apply-execution.v2', 'executor': m.BOX_EXECUTOR,
+                               'action': intent['action'], 'action_group_id': group, 'selected_box': 'boxb', 'result': result,
+                               'recovery_result': recovery if result == 'failed' else 'not_needed', 'nonce': intent['nonce'],
+                               'plan_sha256': plan_hash, 'intent_sha256': m.sha256_bytes((m.canonical(intent)+'\n').encode()),
+                               'authority_state_sha256': state['authority_state_sha256']}
+                    receipt['receipt_sha256'] = m.inventory_digest(receipt)
+                    directory = m.EXECUTION_ROOT / intent['nonce']; directory.mkdir()
+                    (directory / (receipt['receipt_sha256']+'.json')).write_text(m.canonical(receipt)+'\n')
+                    if result == 'failed': failed_receipt = receipt
+                self.assertTrue(m.verification_source_history(current))
+                with self.assertRaisesRegex(m.ApplyError, 'later successful'):
+                    m.verification_source_history(restored)
+                seen = {s['authority_state_sha256'] for s in (current, restored, transitioned)}
+                for groups, changes in ((set(), {}), ({m.BOX_GROUP_PREFIX+'boxa'}, {}), ({group}, {'recovery_result': 'unknown'}),
+                                        ({group}, {'authority_state_sha256': transitioned['authority_state_sha256']}),
+                                        ({group}, {'selected_box': 'boxa'})):
+                    with self.assertRaises(m.ApplyError):
+                        m.verification_historical_box_failure(restored, failed, dict(failed_receipt, **changes), groups, seen)
+                state_file(prior).unlink()
+                with self.assertRaises(m.ApplyError): m.verification_source_history(current)
+
     def test_unsigned_collection_rechecks_source_and_cleans_runtime(self):
         from contextlib import ExitStack
         import os

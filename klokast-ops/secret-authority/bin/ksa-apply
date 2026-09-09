@@ -1388,7 +1388,7 @@ def validate_controller_box_intent(intent):
     validate_box_intent(legacy_shape)
 
 
-def validate_box_intent(intent):
+def validate_box_intent(intent, *, check_time=True):
     expected = {
         "schema_version", "kind", "action", "plan_sha256",
         "authority_state_sha256", "source_recovery_receipt_sha256",
@@ -1422,7 +1422,7 @@ def validate_box_intent(intent):
         raise ApplyError("box connectivity intent identity is invalid")
     issued = parse_utc(intent.get("issued_at"), "issued_at")
     expires = parse_utc(intent.get("expires_at"), "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != dt.timedelta(minutes=10) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("box connectivity intent is expired or has an invalid lifetime")
 
 
@@ -4146,8 +4146,28 @@ def verify_plan_v8(path):
     return resolved, plan, {"id": VERIFICATION_EXECUTOR, "operation": "verify_instance_authority", "executor": VERIFICATION_EXECUTOR}
 
 
+def verification_historical_box_failure(current, intent, receipt, successful_groups, seen):
+    """Retain failed history only behind a later successful same-group adoption."""
+    validate_box_intent(intent, check_time=False)
+    group = intent["action_group_id"]
+    if (current["kind"] != KIND_AUTHORITY_V2 or receipt.get("kind") != "klokast.apply-execution.v2"
+            or receipt.get("schema_version") != 2 or receipt.get("executor") != BOX_EXECUTOR
+            or receipt.get("action") != intent["action"] or intent["action"] != "adopt_instance_specification"
+            or receipt.get("selected_box") != intent["selected_box"] or receipt.get("action_group_id") != group
+            or receipt.get("recovery_result") not in {"restored", "recovery_required"}
+            or group not in successful_groups or receipt.get("authority_state_sha256") not in seen):
+        raise ApplyError("historical box failure lacks a later successful same-group adoption")
+    _, prior = resolve_hashed(AUTHORITY_ROOT / (intent["authority_state_sha256"] + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
+    if prior["kind"] != KIND_AUTHORITY_V2:
+        raise ApplyError("historical box failure has an unsupported prior source")
+    transitioned = make_authority_v2(prior, intent, group_id=group, source="instance_specification_v1")
+    restored = make_authority_v2(transitioned, intent, group_id=group, source=LEGACY_REGISTRY_SOURCE)
+    if current not in (transitioned, restored) or receipt["authority_state_sha256"] != restored["authority_state_sha256"]:
+        raise ApplyError("historical box failure differs from its exact recorded restoration")
+
+
 def verification_source_history(state):
-    paths, seen = set(), set()
+    paths, seen, successful_groups = set(), set(), set()
     current = state
     while True:
         digest = current["authority_state_sha256"]
@@ -4192,8 +4212,16 @@ def verification_source_history(state):
                     raise ApplyError("source history requires its completed execution receipt")
                 _, receipt = resolve_hashed(receipts[0], EXECUTION_ROOT, "receipt_sha256", nested=True)
                 body = dict(receipt); receipt_hash = body.pop("receipt_sha256")
-                if inventory_digest(body) != receipt_hash or receipt.get("intent_sha256") != current["signed_intent_sha256"] or receipt.get("nonce") != nonce or receipt.get("result") not in {"success", "verified"}:
+                if inventory_digest(body) != receipt_hash or receipt.get("intent_sha256") != current["signed_intent_sha256"] or receipt.get("nonce") != nonce or receipt.get("plan_sha256") != plan_hash:
                     raise ApplyError("source history execution evidence is incomplete")
+                if receipt.get("result") == "failed":
+                    verification_historical_box_failure(current, intent, receipt, successful_groups, seen)
+                elif receipt.get("result") not in {"success", "verified"} or receipt.get("authority_state_sha256") != digest:
+                    raise ApplyError("source history execution result differs from its published source")
+                elif receipt.get("result") == "success" and receipt.get("action") == "adopt_instance_specification":
+                    group = receipt.get("action_group_id")
+                    if any(g["id"] == group and g["source"] == "instance_specification_v1" for g in current.get("setting_groups", [])):
+                        successful_groups.add(group)
                 paths.add(receipts[0])
                 nonce_binding = plan_hash
             nonce_path = NONCE_ROOT / nonce
