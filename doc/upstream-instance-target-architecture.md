@@ -1158,16 +1158,18 @@ Do not repeat adoption or automatically deploy acceptance documentation.
 
 Registry status: `live-verified`. Registry schema, consumers, and source
 adoption are complete. Execution inventory and runner identity adoption are
-`decided`; continued implementation is already authorized. The offline
-renderer and comparison checkpoint precede the new source executor.
+also `live-verified`. Final inventory Plan `540bae24` reports six
+verification-only groups and no remaining legacy authority or pending
+adoption action. The [inventory acceptance record](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09)
+holds the final evidence. Legacy removal remains a separate gate.
 
 The batch started from identity Plan `9866249`, which contained 22 legacy-source
-actions and continuing execution inventory. Final registry Plan `2d2bfbe5`
-now has no retained legacy setting actions. It keeps `execution_inventory`
+actions and continuing execution inventory. Historical registry Plan `2d2bfbe5`
+had no retained legacy setting actions. It kept `execution_inventory`
 under `legacy_engine_inventory` and one pending runner adoption action with
 prior authority `none`. The
 [registry acceptance record](../klokast-dev/runbooks/51-registry-source-adoption.md#remaining-authority-and-action)
-holds the exact remaining list.
+holds that milestone's remaining list, now completed by inventory adoption.
 
 The batch addresses these connected dependencies:
 
@@ -1388,19 +1390,20 @@ holds the full controller evidence references.
 
 ### Remaining inventory and runner dependencies
 
-Status: `decided`; implementation scope is already authorized. Final Plan
-`2d2bfbe5` retains only `execution_inventory` as a legacy authority. Its one
-pending adoption action is the declared controller-container runner identity;
-the action has prior authority `none`, not a retained legacy registry field.
+Status: `live-verified` on 2026-09-09. The design below completed the
+dependencies from historical registry Plan `2d2bfbe5`, which retained only
+`execution_inventory` as a legacy authority. Its one pending adoption action
+was the declared controller-container runner identity. The action had prior
+authority `none`, not a retained legacy registry field.
 
-The consumer audit found that `converge-ops-controller` combines the static
-base inventory with `render-node-inventory` output. Ansible still loads a
-box-specific host-variable file that enables the runner, while the generic
-group default disables it. The current generator accepts a caller-supplied
-box and suffix. Complete the next design around instance-derived membership,
-runner selection, and upstream role topology. Compare effective host groups
-and variables, preserve exact target limits and recovery inventory, and audit
-all normal consumers before changing the Plan's continuing-authority report.
+The consumer audit found that `converge-ops-controller` combined the static
+base inventory with `render-node-inventory` output. Ansible loaded a
+box-specific host-variable file that enabled the runner, while the generic
+group default disabled it. The old generator accepted a caller-supplied
+box and suffix. The completed design derives membership and runner selection
+from the instance and uses upstream role topology. Effective host groups and
+variables compare equally, target limits and recovery inventory are preserved,
+and normal consumers use the checked source reader.
 The existing private `airunners` list supplies intent; this work does not
 authorize runner retirement, controller changes, or removal of recovery files.
 
@@ -1499,6 +1502,25 @@ workflow, install matching tools, then obtain signed adoption and fresh signed
 verification with exact replay refusal. Preserve baseline files, source-only
 transition checks, and final Plan/evidence before marking this step live-verified.
 
+#### Recorded inventory execution result
+
+Engine `cf8cf5f` and private commit `35577f92` passed signed source adoption,
+fresh signed verification, and exact replay refusal on 2026-09-09. Authority
+State v5 `8622695e` adds only the inventory group and its signed reference,
+with required transition metadata. All five prior groups and both prior
+adoption references remain unchanged. Final Plan `540bae24` reports all six
+groups as verification-only, with instance-owned execution inventory and no
+pending runner action or continuing legacy authority.
+
+Final desired-state files and metadata, controller markers, persistent router
+configuration, complete registry values, all 14 selected inventory hosts, and
+the existing runner identity match the original baselines. Both signed
+archives and receipts, consumed nonces, and runtime cleanup passed inspection.
+Recognized DERP on k001 passed access checks. The
+[acceptance record](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09)
+holds full controller evidence references. Source adoption for the represented
+settings is complete; `legacy_removal_ready: false` remains expected.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:
@@ -1539,20 +1561,21 @@ complete.
 | Controller identity sources | `live-verified` | Signed source adoption, fresh signed verification, exact replay refusal, unchanged-setting checks, controller and MacBook resolution, and all three final Plan selections passed for engine `c8f863b`. Section 11.4 links the completed acceptance evidence. |
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
-| Remaining inventory and runner adoption | `implemented` | Engine `c1324ea` corrected the lost legacy host override and passed the installed-reader baseline. Follow-up analysis found cached router observations in inventory hashes. The cache correction requires sealed review and promotion before fresh adoption evidence. Source ownership remains at the registry milestone. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md) defines the gates. |
+| Inventory and runner adoption | `live-verified` | Engine `cf8cf5f` and private commit `35577f92` passed signed adoption, fresh signed verification, exact replay refusal, protected evidence inspection, and final unchanged-setting checks on 2026-09-09. Final Plan `540bae24` reports six verification-only groups and no remaining legacy authority or pending adoption action. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09) holds the evidence. |
 | Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
 
 ### Current work queue
 
-1. Complete the bounded design and implementation of the
-   [remaining inventory and runner dependencies](#remaining-inventory-and-runner-dependencies)
-   from final registry Plan `2d2bfbe5`. The human authorized continued scope
-   development without another scope-selection question. Record bounded
-   designs, preserve data and recovery, and use the existing exact signed
-   promotion and live-action workflows.
-2. Keep legacy removal `proposed` until its recovery, rollback, observation,
-   and exact live-action gates are complete. Continued migration work does
-   not by itself authorize deletion of retained data or recovery evidence.
+1. Source adoption is complete for all setting groups in final Plan `540bae24`.
+   The remaining legacy-owned setting-group list is empty. Preserve the
+   [completed acceptance evidence](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09);
+   do not repeat adoption or automatically deploy its documentation commit.
+2. The next design work is the retained legacy comparison and recovery
+   dependency audit. Keep legacy removal `proposed` until its recovery,
+   rollback, observation, and exact live-action gates are complete. The human
+   authorized continued migration design and implementation without separate
+   scope-selection questions. This does not authorize deletion of retained
+   data or recovery evidence. Use the existing signed workflows for live actions.
 
 Deferred work: direct-IPv6 repair and live first-box rollback and re-adoption
 testing. Neither blocks continued development. Keep their recovery code,

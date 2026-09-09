@@ -2,6 +2,27 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-09 - Inventory source adoption completed
+
+Engine `cf8cf5f` passed signed adoption, fresh signed verification, exact replay
+refusal, and final unchanged-setting checks. Final Plan `540bae24` has six
+verification-only groups, no remaining legacy-owned setting groups, no
+continuing legacy authority, and no pending adoption action. The
+[acceptance record](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09)
+holds controller evidence. The host-override and fact-cache corrections below
+passed real controller acceptance. Keep their failed historical baselines.
+
+Evidence inspection must use each artifact's defined comparison: parse both
+complete registry documents before comparing values, because YAML formatting
+differs. Plan hashing omits `plan_sha256`; Authority State hashing uses an
+empty hash field. Applying the wrong rule causes a false audit refusal.
+Both checks passed with the defined rules; no source or setting repair ran.
+
+Source adoption does not authorize removal of comparison inputs or recovery
+files. `legacy_removal_ready` remains false. Continue from the
+[current work queue](upstream-instance-target-architecture.md#current-work-queue).
+Do not automatically promote this acceptance documentation commit.
+
 # 2026-09-09 - Cached router facts changed the inventory approval hash
 
 Unsigned preparation on engine `87cd6d7` passed router verification but refused
@@ -48,7 +69,7 @@ group merging, and the source reader are real. The root executor independently
 compares these saved results. Keep this gate in every sealed private review;
 testing a script that merely prints the desired graph did not cover the bug.
 The [inventory runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md)
-records the stopped acceptance and next promotion gate.
+records the stopped acceptance and the completed corrective acceptance.
 
 # 2026-09-08 - Ansible omits empty groups from its inventory output
 
