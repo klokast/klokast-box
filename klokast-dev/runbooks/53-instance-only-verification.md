@@ -15,8 +15,9 @@ klokast-dev/bin/prepare-inventory-source-candidate --instance-only \
   --build-dir BUILD_DIR --observation FRESH_OBSERVATION
 ```
 
-The candidate helper adjusts only the engine metadata in a temporary private
-fixture. It compares the retained inventory with the sealed inventory, parses
+The candidate helper runs the exact Python candidate constructor from the Mac
+promotion helper. It checks the resulting Git tree and permits only a metadata
+change in the temporary private fixture. It compares the retained inventory with the sealed inventory, parses
 Plan v8 with the root verifier, and compares inventory, compiler, mapping,
 controller resolution, and router-variable consumers in isolated public views.
 The absent view has no old inventory tree or legacy YAML inputs. The source

@@ -8,6 +8,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -67,17 +68,42 @@ def main():
             return json.loads(result.stdout)
 
         with tempfile.TemporaryDirectory(prefix="inventory-fixture-", dir=output) as temporary:
-            fixture = Path(temporary)
-            for name, content in inputs.items():
-                value = json.loads(content)
-                schema = "klokast-instance-v1" if name == "klokast-instance.json" else "klokast-lock-v1"
-                value["$schema"] = f"https://raw.githubusercontent.com/klokast/klokast-box/{engine}/schemas/{schema}.schema.json"
-                if name == "klokast.lock.json":
-                    value["engine"]["commit"] = engine
-                (fixture / name).write_text(canonical(value) + "\n")
-            git(fixture, "init", "-q", "-b", "main")
-            git(fixture, "add", "-A")
-            git(fixture, "-c", "user.name=Klokast inventory check", "-c", "user.email=validation@example.invalid", "commit", "-qm", "Temporary inventory comparison")
+            if args.instance_only:
+                fixture = Path(temporary) / "instance"
+                helper = (REPO / "klokast-dev/bin/promote-private-instance-engine").read_text()
+                blocks = re.findall(r"""python3 - "\$PRIVATE_WORKTREE" "\$CANDIDATE".*?<<'PY'\n(.*?)\nPY\n""", helper, re.S)
+                if len(blocks) != 1:
+                    raise ValueError("cannot identify the exact Mac promotion candidate constructor")
+                constructor = blocks[0]
+                envelope_path = output / "mac-promotion-candidate.json"
+                transition_path = output / "mac-schema-transition"
+                old_engine = json.loads(inputs["klokast.lock.json"])["engine"]["commit"]
+                result = subprocess.run(["python3", "-", str(INSTANCE), str(fixture), str(envelope_path), old_engine, engine,
+                                         private_commit, git(INSTANCE, "rev-parse", "HEAD^{tree}"), "false", "", str(transition_path)],
+                                        input=constructor, text=True, capture_output=True)
+                (output / "mac-candidate.stderr").write_text(result.stderr)
+                if result.returncode:
+                    raise ValueError("exact Mac promotion candidate construction failed; inspect private logs")
+                envelope = json.loads(envelope_path.read_text())
+                if envelope["schema_transition"] != "metadata-only":
+                    raise ValueError("instance-only milestone permits metadata-only engine promotion")
+                mac_candidate = {"tree": envelope["candidate_tree"], "schema_transition": envelope["schema_transition"],
+                                 "constructor_sha256": hashlib.sha256(constructor.encode()).hexdigest()}
+                git(fixture, "-c", "user.name=Klokast inventory check", "-c", "user.email=validation@example.invalid", "commit", "-qm", "Temporary exact Mac promotion candidate")
+                if git(fixture, "rev-parse", "HEAD^{tree}") != envelope["candidate_tree"]:
+                    raise ValueError("review fixture differs from the exact Mac promotion candidate tree")
+            else:
+                fixture = Path(temporary)
+                for name, content in inputs.items():
+                    value = json.loads(content)
+                    schema = "klokast-instance-v1" if name == "klokast-instance.json" else "klokast-lock-v1"
+                    value["$schema"] = f"https://raw.githubusercontent.com/klokast/klokast-box/{engine}/schemas/{schema}.schema.json"
+                    if name == "klokast.lock.json":
+                        value["engine"]["commit"] = engine
+                    (fixture / name).write_text(canonical(value) + "\n")
+                git(fixture, "init", "-q", "-b", "main")
+                git(fixture, "add", "-A")
+                git(fixture, "-c", "user.name=Klokast inventory check", "-c", "user.email=validation@example.invalid", "commit", "-qm", "Temporary inventory comparison")
             rendered = checked([binary, "inventory", "--instance", fixture, "--json"], "sealed-inventory")
             if rendered.get("kind") != "klokast.inventory.v1" or rendered.get("valid") is not True or rendered["repository"].get("clean") is not True:
                 raise ValueError("sealed inventory did not bind a valid clean instance")
@@ -184,6 +210,8 @@ def main():
                   "private_input_sha256": {name: hashlib.sha256(value).hexdigest() for name, value in inputs.items()},
                   "source_unchanged": True, "temporary_fixture_removed": True, "published": False,
                   "review_only_plan_contracts": len(plans), "plan_sha256": plans, "installed_toolchain_verified": False}
+        if args.instance_only:
+            result["mac_promotion_candidate"] = mac_candidate
         (output / "result.json").write_text(canonical(result) + "\n")
         print(canonical(result))
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, checker.PlanError) as error:
