@@ -164,6 +164,8 @@ def main():
                 plans.append(plan["plan_sha256"])
                 return plan
             if args.instance_only:
+                # Explicit retained comparison remains a separate Plan v7 check.
+                check_plan(state_path, "inventory", "non-controller")
                 command = [binary, "plan", "--instance-only", "--instance", fixture,
                            "--observation", observation_path, "--instance-source-receipt", synthetic_source,
                            "--controller-toolchain-receipt", synthetic_toolchain, "--authority-state", state_path, "--json"]
@@ -176,6 +178,22 @@ def main():
                 registry = checked([binary, "registry", "--instance", fixture, "--json"], "sealed-registry")
                 registry_projection = output / "registry-projection.json"
                 registry_projection.write_text(canonical(registry) + "\n")
+                effective_registry = output / "effective-registry.yml"
+                effective_registry.write_text(canonical(registry["projection"]["registry"]) + "\n")
+                compiler_comparisons = {}
+                consumer_commands = {"show": ["show"], "box-configs": ["show-box-configs"]}
+                consumer_commands.update({"router-" + box: ["--box", box, "show-box-access-vars"] for box in rendered["projection"]["boxes"]})
+                for label, arguments in consumer_commands.items():
+                    values = []
+                    for name, input_path in (("legacy", PRIVATE / "platform-resources.yml"), ("instance", effective_registry)):
+                        value = checked([REPO / "ansible/bin/platform-resources", "--registry", input_path,
+                                         "--compatibility-registry", *arguments], name + "-compiler-" + label)
+                        value.pop("registry_path", None)
+                        value.pop("registry_sha256", None)
+                        values.append(value)
+                    if values[0] != values[1]:
+                        raise ValueError("private compiler settings differ for " + label)
+                    compiler_comparisons[label] = hashlib.sha256(canonical(values[0]).encode()).hexdigest()
                 absence = checked([REPO / "ansible/bin/compare-instance-input-absence", "--inventory-projection", projection,
                                    "--registry-projection", registry_projection, "--plan", path, "--output-directory", output / "absence"], "legacy-input-absence")
                 if absence.get("equal") is not True:
@@ -212,6 +230,7 @@ def main():
                   "review_only_plan_contracts": len(plans), "plan_sha256": plans, "installed_toolchain_verified": False}
         if args.instance_only:
             result["mac_promotion_candidate"] = mac_candidate
+            result["private_compiler_comparisons"] = compiler_comparisons
         (output / "result.json").write_text(canonical(result) + "\n")
         print(canonical(result))
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, checker.PlanError) as error:

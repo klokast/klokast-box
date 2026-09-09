@@ -1038,3 +1038,9 @@ Go struct-field order instead of canonical stored JSON. Keep test evidence
 canonical through `canonicalTestJSON`; the production verifier must continue
 to reject non-canonical stored receipts. The isolated consumer views must also
 reuse one temporary path so public manifest path provenance stays equal.
+
+Historical Authority State v1-to-v2 conversion produced a signed archive, a
+consumed nonce, and a published state, but no separate Apply execution receipt.
+Source-history verification must retain this exact historical contract. It
+must require execution receipts for adoption actions and must not invent a
+conversion receipt or omit the conversion archive and nonce.

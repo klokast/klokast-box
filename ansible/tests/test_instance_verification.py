@@ -120,6 +120,33 @@ class InstanceVerificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp,patch.object(m,'PREFLIGHT_ROOT',Path(tmp)):
             with self.assertRaises(m.ApplyError):m.verification_adoption_evidence(self.fixture.state(True))
 
+    def test_historical_conversion_requires_its_original_evidence_protocol(self):
+        from contextlib import ExitStack
+        m=self.m
+        with tempfile.TemporaryDirectory() as tmp,ExitStack() as stack:
+            root=Path(tmp)
+            for name in ('AUTHORITY_ROOT','PREFLIGHT_ROOT','EXECUTION_ROOT','NONCE_ROOT'):
+                path=root/name;path.mkdir();stack.enter_context(patch.object(m,name,path))
+            initial={'schema_version':1,'kind':m.KIND_AUTHORITY,'prior_state_sha256':'','transitioned_scopes':[],
+                     'resulting_authorities':[],'signed_intent_sha256':'','transition_id':'initial'}
+            initial['authority_state_sha256']=m.authority_hash(initial)
+            old=m.now_utc()-dt.timedelta(days=1)
+            intent={'schema_version':1,'kind':m.KIND_CONVERSION_INTENT,'action':'convert_authority_state_v1_to_v2',
+                    'authority_state_sha256':initial['authority_state_sha256'],'private_instance_sha256':'a'*64,
+                    'boxes':['boxa','boxb'],'nonce':'conversion-test-nonce','issued_at':m.format_utc(old),'expires_at':m.format_utc(old+dt.timedelta(minutes=10))}
+            state=m.make_authority_v2(initial,intent,boxes=intent['boxes'])
+            for value in (initial,state):(m.AUTHORITY_ROOT/(value['authority_state_sha256']+'.json')).write_text(m.canonical(value)+'\n')
+            archive=m.PREFLIGHT_ROOT/intent['nonce'];archive.mkdir()
+            (archive/'intent.json').write_text(m.canonical(intent)+'\n')
+            (archive/'binding.json').write_text(m.canonical({'authority_path':str(m.AUTHORITY_ROOT/(initial['authority_state_sha256']+'.json'))})+'\n')
+            nonce=m.NONCE_ROOT/intent['nonce'];nonce.write_text(initial['authority_state_sha256']+'\n')
+            self.assertEqual(len(m.verification_source_history(state)),5)
+            nonce.unlink()
+            with self.assertRaises(m.ApplyError):m.verification_source_history(state)
+            nonce.write_text(initial['authority_state_sha256']+'\n')
+            (archive/'binding.json').unlink()
+            with self.assertRaises(m.ApplyError):m.verification_source_history(state)
+
     def test_recovery_manifest_reconstructs_only_in_detached_controller_tree(self):
         from contextlib import ExitStack
         m=self.m

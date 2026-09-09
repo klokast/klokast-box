@@ -1708,7 +1708,7 @@ def make_authority_v2(prior, intent, *, group_id=None, source=None, boxes=None):
     return state
 
 
-def validate_conversion_intent(intent):
+def validate_conversion_intent(intent, *, check_time=True):
     expected = {
         "schema_version", "kind", "action", "authority_state_sha256",
         "private_instance_sha256", "boxes", "nonce", "issued_at", "expires_at",
@@ -1722,7 +1722,7 @@ def validate_conversion_intent(intent):
         raise ApplyError("Authority conversion intent box list is invalid")
     issued = parse_utc(intent.get("issued_at"), "issued_at")
     expires = parse_utc(intent.get("expires_at"), "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != dt.timedelta(minutes=10) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("Authority conversion intent is expired or has an invalid lifetime")
 
 
@@ -4171,24 +4171,35 @@ def verification_source_history(state):
                 raise ApplyError("source history lacks its exact signed intent")
             paths.add(intent_path)
             binding_path = PREFLIGHT_ROOT / nonce / "binding.json"
-            if binding_path.is_file():
-                binding = load_json(binding_path, canonical_stored=True)
-                paths.add(binding_path)
-                if binding.get("plan_path"):
-                    plan_path = Path(binding["plan_path"])
-                    _, plan = resolve_hashed(plan_path, PLAN_ROOT, "plan_sha256", nested=True)
-                    body = dict(plan); plan_hash = body.pop("plan_sha256")
-                    if inventory_digest(body) != plan_hash or intent.get("plan_sha256") != plan_hash:
-                        raise ApplyError("historical source Plan differs from its signed intent")
-                    paths.add(plan_path)
-            receipts = list((EXECUTION_ROOT / nonce).glob("*.json"))
-            if len(receipts) != 1:
-                raise ApplyError("source history requires its completed execution receipt")
-            _, receipt = resolve_hashed(receipts[0], EXECUTION_ROOT, "receipt_sha256", nested=True)
-            body = dict(receipt); receipt_hash = body.pop("receipt_sha256")
-            if inventory_digest(body) != receipt_hash or receipt.get("intent_sha256") != current["signed_intent_sha256"] or receipt.get("nonce") != nonce or receipt.get("result") not in {"success", "verified"}:
-                raise ApplyError("source history execution evidence is incomplete")
-            paths.add(receipts[0])
+            binding = load_json(binding_path, canonical_stored=True)
+            paths.add(binding_path)
+            if intent.get("kind") == KIND_CONVERSION_INTENT:
+                # This historical conversion published its Authority State as
+                # evidence. Its closed v1 protocol never made an Apply receipt.
+                validate_conversion_intent(intent, check_time=False)
+                if current["kind"] != KIND_AUTHORITY_V2 or current.get("prior_state_kind") != KIND_AUTHORITY or intent["authority_state_sha256"] != current["prior_state_sha256"] or intent["nonce"] != nonce or binding != {"authority_path": str(AUTHORITY_ROOT / (current["prior_state_sha256"] + ".json"))}:
+                    raise ApplyError("historical conversion differs from its published source")
+                nonce_binding = intent["authority_state_sha256"]
+            else:
+                plan_path = Path(binding.get("plan_path", ""))
+                _, plan = resolve_hashed(plan_path, PLAN_ROOT, "plan_sha256", nested=True)
+                body = dict(plan); plan_hash = body.pop("plan_sha256")
+                if inventory_digest(body) != plan_hash or intent.get("plan_sha256") != plan_hash:
+                    raise ApplyError("historical source Plan differs from its signed intent")
+                paths.add(plan_path)
+                receipts = list((EXECUTION_ROOT / nonce).glob("*.json"))
+                if len(receipts) != 1:
+                    raise ApplyError("source history requires its completed execution receipt")
+                _, receipt = resolve_hashed(receipts[0], EXECUTION_ROOT, "receipt_sha256", nested=True)
+                body = dict(receipt); receipt_hash = body.pop("receipt_sha256")
+                if inventory_digest(body) != receipt_hash or receipt.get("intent_sha256") != current["signed_intent_sha256"] or receipt.get("nonce") != nonce or receipt.get("result") not in {"success", "verified"}:
+                    raise ApplyError("source history execution evidence is incomplete")
+                paths.add(receipts[0])
+                nonce_binding = plan_hash
+            nonce_path = NONCE_ROOT / nonce
+            if read_regular(nonce_path, 66) != (nonce_binding + "\n").encode():
+                raise ApplyError("source history lacks its exact consumed nonce")
+            paths.add(nonce_path)
         prior = current.get("prior_state_sha256")
         if not prior: break
         _, current = resolve_hashed(AUTHORITY_ROOT / (prior + ".json"), AUTHORITY_ROOT, "authority_state_sha256")
