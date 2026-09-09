@@ -1052,3 +1052,9 @@ receipt, reconstruct both of its source records, and require the later successfu
 same-group adoption. It must not treat the historical failure as current health
 or accept an unresolved latest failure. Test the complete controller-held history
 before the next engine promotion; synthetic success-only histories missed this case.
+
+Installed unsigned verification now stops on two stale live Tailnet header
+comments. All other policy lines match. The verifier must keep its exact-byte
+gate; this milestone does not authorize policy repair. The
+[instance-only runbook](../klokast-dev/runbooks/53-instance-only-verification.md#installed-preparation-2026-09-09)
+records the diff, protected recovery manifest, and remaining approval steps.
