@@ -1053,12 +1053,23 @@ same-group adoption. It must not treat the historical failure as current health
 or accept an unresolved latest failure. Test the complete controller-held history
 before the next engine promotion; synthetic success-only histories missed this case.
 
-Installed unsigned verification now stops on two stale live Tailnet header
-comments. All other policy lines match. The verifier must keep its exact-byte
-gate. The human authorized policy repair on 2026-09-11; the bounded
-maintenance procedure is specified in target architecture section 11.7.1. The
+Installed unsigned verification stopped on two stale live Tailnet header
+comments. All other policy lines matched. The human authorized policy repair
+on 2026-09-11, and the bounded Ansible maintenance procedure corrected the
+comments with exact API read-back and unchanged settings and Authority State.
+The verifier keeps its exact-byte gate. Target architecture section 11.7.1
+records this task-specific maintenance exception. The
 [instance-only runbook](../klokast-dev/runbooks/53-instance-only-verification.md#installed-preparation-2026-09-09)
 records the diff, protected recovery manifest, and remaining approval steps.
+
+General upstream policy updates still need a closed signed action. The current
+adoption flow requires byte-preserving inputs, and the instance verifier is
+read-only. Do not reuse the one-time repair as a general mutation interface.
+[Policy ownership](upstream-instance-target-architecture.md#1172-tailnet-policy-file-ownership)
+keeps authored policy in the upstream template and supported private bindings
+in the instance. Rendered and pulled full-policy files are generated or
+recovery artifacts. A future semantic comparator or private policy extension
+needs a versioned design and tests before implementation.
 
 The cleanup audit also found an unrelated retained runtime directory,
 `/run/klokast/apply-box/huawei-test-20260830T2204Z`, dated 2026-08-30. It was

@@ -1,6 +1,7 @@
 # Instance-only routine verification
 
-Status: installed; unsigned verification is blocked by two live policy comments.
+Status: installed; the authorized policy-comment repair is complete.
+Fresh normal and isolated-absence unsigned verification passed.
 No signed live acceptance is claimed.
 The [design](../../doc/upstream-instance-target-architecture.md#117-instance-only-routine-verification)
 owns the dependency audit and gates. Baseline: engine `cf8cf5f`, Authority
@@ -151,3 +152,73 @@ configuration. Refresh source/recovery evidence and Observation before retrying;
 the recorded Plan is preparation evidence, not a fresh approval request.
 `mounted-absence-audit/` records the installed namespace test;
 `cleanup-result.json` records cleanup and protected manifest checks.
+
+## Authorized repair, 2026-09-11
+
+The human permitted repairs and authorized the Tailnet policy update. Public
+maintenance commit `05b0aa8` supplies
+`ansible/playbooks/69-repair-policy-comments-20260911.yml`. It ran from the
+isolated controller review checkout, using the installed renderer, input
+validator, active-controller guard, and credential broker. The canonical
+checkout, activated engine `1b08129`, private commit `b10523b`, and installed
+Toolchain v7 remained unchanged. This maintenance procedure installs no tool.
+
+Preparation passed with `policy_comment_mode=prepare`, then the separately
+authorized `execute` mode completed one conditional policy POST. Only the
+two comments recorded above changed. Exact API read-back matched rendered
+hash `67bbf6e4`; Authority State stayed `8622695e`. This is a maintenance
+result under the explicit task authorization, not a signed Apply receipt.
+Do not repeat the repair: the protected attempt directory forbids another
+write, including after an uncertain attempt.
+
+Protected root-only evidence is in:
+
+```text
+/var/lib/klokast/policy-comment-repair-20260911/
+```
+
+It contains the exact preimage, candidate, API read-back, ETags, Plan input
+references, attempt record, and maintenance result. Files are root-owned
+`0400` within a `0700` directory. The runtime copy was removed.
+
+Fresh controller-held preparation evidence is in the `20260911/` child of
+the acceptance directory above. `repair-prepare.log`, `repair-execute.log`,
+and `repair-audit/` record the operation and protected-file checks.
+Before/after comparisons passed for private input bytes and metadata,
+controller markers, router configurations, all 14 inventory hosts, and the
+declared runner identity. The maintenance candidate passed all 558 Python
+tests and its Ansible syntax check. The activated engine's sealed Go tests
+and build remain those of operation `6b135c2023f8`; no Go code changed.
+
+The [policy ownership decision](../../doc/upstream-instance-target-architecture.md#1172-tailnet-policy-file-ownership)
+defines the template and instance as authored inputs, rendered HuJSON as a
+private generated artifact, and API output as observed state. General policy
+updates still need a closed signed action; this repair does not add one.
+
+Normal installed preflight passed for all six verification-only groups using
+Plan v8 `b7f402a4613a193cfb914ce1a90b82ad006fa8ce1711e9cd9a0fdaee1409bf9a`.
+The protected recovery manifest
+`f03fa4232a392f7803b7d74b5b9dbaeb3368bd9bb4787a970510d60bee016062`
+reconstructed 474 retained files. The maintenance archive also contains a
+`recovery-supplement.json` with hash
+`8f6570d41641f4d961b90f71222541ed9fd4a362ec0dcace097867ae2aea5f4e`.
+It binds that instance manifest to the maintenance commit and ten checked
+repair artifacts, including the procedure source and policy preimage. Its
+separate temporary reconstruction passed. No credentials were copied and no
+recovery source was activated.
+
+The installed verifier then passed in a private mount namespace with all three
+legacy YAML files and the old inventory tree absent. Its complete verification
+evidence matched the normal preflight exactly. Controller resolution and the
+actual mapping consumer also matched; the mapping hash remained `e586c915`.
+`mounted-absence-audit/` records this successful check. Production legacy inputs
+remained present, and the namespace and temporary public view were removed.
+`completion-audit.json` records final input, protected-evidence, and cleanup
+checks. The unrelated August Huawei runtime directory remains preserved.
+
+Signed verification and exact signed replay refusal are still pending. The
+unsigned intent has no execution receipt or consumed nonce. Use fresh evidence
+with the existing trusted-Mac helper; do not treat this maintenance result or
+the unsigned checks as signed acceptance. After successful signing, complete
+the receipt, nonce, final Plan, and unchanged-state checks above, then record
+acceptance in a documentation-only commit without deploying it.
