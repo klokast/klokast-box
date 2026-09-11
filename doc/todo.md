@@ -1055,7 +1055,8 @@ before the next engine promotion; synthetic success-only histories missed this c
 
 Installed unsigned verification now stops on two stale live Tailnet header
 comments. All other policy lines match. The verifier must keep its exact-byte
-gate; this milestone does not authorize policy repair. The
+gate. The human authorized policy repair on 2026-09-11; the bounded
+maintenance procedure is specified in target architecture section 11.7.1. The
 [instance-only runbook](../klokast-dev/runbooks/53-instance-only-verification.md#installed-preparation-2026-09-09)
 records the diff, protected recovery manifest, and remaining approval steps.
 

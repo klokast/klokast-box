@@ -1589,6 +1589,67 @@ cleanup. Commit acceptance documentation separately and do not deploy that
 commit. File deletion, controller switching, runner retirement, direct-IPv6
 repair, and live recovery-source changes remain outside this milestone.
 
+### 11.7.1 Authorized comment repair, 2026-09-11
+
+The human now permits repairs in this milestone and explicitly authorizes a
+Tailnet policy update. This supersedes the earlier milestone-wide prohibition
+on repair. It does not change the read-only `instance_verification_v1`
+executor or let its signature authorize a mutation.
+
+One controller-local Ansible maintenance procedure may correct the two stale
+policy header comments recorded in runbook 53. This is a task-specific
+exception to the normal signed Apply entry point. It adds no installed
+command or sudo grant. The procedure uses the installed credential broker;
+OAuth material stays on the active controller. Its authority is Control TCB,
+and compromise could change Tailnet access. The procedure therefore accepts
+no policy body, template, target, or API operation from the caller.
+
+Before mutation, validate a fresh Plan v8 and all its inputs with the installed
+verifier. Require engine `1b08129`, Authority State `8622695e`, the exact
+recorded live hash `f83add11`, and rendered hash `67bbf6e4`. Check that only
+the two complete header comment lines differ. Validate the candidate through
+the API. Save protected preimage, candidate, ETag, and input references before
+one conditional POST. Recheck the inputs and live bytes before the POST.
+Use the installed helper's `If-Match` contract to refuse concurrent changes.
+Get the live policy afterward and require exact candidate bytes and unchanged
+inputs and Authority State. Retain a separate maintenance result; never
+present it as a signed execution receipt. A durable attempt marker forbids a
+second POST. Failure or uncertain storage requires inspection; there is no
+automatic retry or rollback. Retained preimage and ETag support a separately
+authorized recovery. Remove this procedure's temporary runtime files.
+
+### 11.7.2 Tailnet policy file ownership
+
+The intended policy has two authored inputs: the upstream engine owns the
+policy template, supported grants, tag relationships, and policy tests; the
+private instance owns deployment identities and supported private bindings.
+The current v1 renderer substitutes operator and family membership. The
+instance also owns the MagicDNS suffix, which other consumers use. It is not
+currently substituted into this template.
+
+The rendered HuJSON file is a private generated artifact. Do not maintain a
+second editable full policy in the instance repository or import live API
+output as desired state. Normal rendering must use the checked instance and
+the template from its activated engine. Keep exact rendered bytes, engine and
+input references, and live preimages with controller-held execution evidence.
+The API is observed deployed state. A pulled local file is comparison or
+recovery material. Existing copies and historical adoption evidence remain.
+
+Retain byte equality for this milestone, including comments. A comment change
+can require an explicit deployment, as this repair demonstrates. A future
+semantic comparison would need a versioned HuJSON interpretation and separate
+raw-byte hashes for approval, concurrency, and recovery; it is not enabled by
+this decision. Tailscale documents the conditional update behavior in its
+[API client](https://github.com/tailscale/tailscale/blob/main/client/tailscale/acl.go).
+
+General policy evolution remains a separate implementation: add a closed,
+signed policy-update action that binds the selected engine, checked instance,
+complete candidate, preimage, ETag, and policy tests without re-adopting the
+six groups. Deployment-specific exceptions must use a reviewed, versioned
+instance schema and constrained compiler inputs. Do not add arbitrary HuJSON
+overlays or let an app grant itself network authority. This maintenance
+exception does not establish a general policy-mutation interface.
+
 ## 12. Implementation status and design work queue
 
 Design loops use only these state labels:

@@ -1,0 +1,31 @@
+---
+# Task-specific authorization and limits: target architecture section 11.7.1.
+# Run from an isolated maintenance checkout on the active controller.
+# No installation, canonical engine change, or additional sudo grant.
+- name: Correct the two authorized Tailnet policy header comments
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require explicit evidence and prepare or execute mode
+      ansible.builtin.assert:
+        that:
+          - policy_comment_evidence is defined
+          - policy_comment_evidence is match('^/home/smith/private/klokast/[A-Za-z0-9_./-]+$')
+          - policy_comment_mode | default('prepare') in ['prepare', 'execute']
+
+    - name: Run the fixed repair with the installed guarded policy broker
+      ansible.builtin.script:
+        cmd: >-
+          ../maintenance/repair-policy-comments-20260911.py
+          --evidence {{ policy_comment_evidence | quote }}
+          {{ '--execute' if policy_comment_mode | default('prepare') == 'execute' else '' }}
+        executable: /usr/bin/python3
+      register: policy_comment_result
+      changed_when: policy_comment_mode | default('prepare') == 'execute'
+
+    - name: Report the maintenance result without private policy values
+      ansible.builtin.debug:
+        var: policy_comment_result.stdout

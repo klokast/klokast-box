@@ -7,9 +7,11 @@
 - To update public Tailscale Access Control topology:
   1. Read Tailscale API documentation on `https://tailscale.com/api`.
   2. Edit public topology and grants in `policy.hujson.j2`; keep family
-     identities in `~/private/klokast/deployment.yml`.
-  3. Render with `ansible/bin/render-tailscale-policy --deployment-config
-     ~/private/klokast/deployment.yml --output
+     identities in the checked private Instance Specification. Read
+     [policy ownership](../../doc/upstream-instance-target-architecture.md#1172-tailnet-policy-file-ownership)
+     before changing this split.
+  3. Render with `ansible/bin/render-tailscale-policy --instance
+     ~/private/klokast/instance/klokast-instance.json --output
      ~/private/klokast/tailscale-policy.hujson`.
   4. Validate with `sudo /usr/local/sbin/ts-policy-validate
      /home/smith/private/klokast/tailscale-policy.hujson`.
@@ -17,7 +19,10 @@
      validate policy, but it cannot mutate policy. Use the closed
      `tailnet_policy_inputs_v1` Apply flow for the three migrated private
      inputs. A later architecture decision must authorize any public-template
-     mutation flow.
+     mutation flow. The human-authorized, two-comment maintenance exception
+     of 2026-09-11 is defined in
+     [section 11.7.1](../../doc/upstream-instance-target-architecture.md#1171-authorized-comment-repair-2026-09-11).
+     It is not a general policy update interface.
   6. `sudo /usr/local/sbin/ts-policy-pull` imports the live API policy into
      that private path for comparison; it never writes identities into Git.
 
@@ -69,7 +74,8 @@ This source code is editable by user `codex`. It must not be executed with sudo 
 
 # Tailscale policy
 - Edit the public template for topology/grant changes and the private
-  deployment file for family membership. The wrappers accept only
+  instance for family membership. Explicit legacy deployment inputs remain
+  comparison or recovery material. The pull/validate wrappers accept only
   `/home/smith/private/klokast/tailscale-policy.hujson`.
 
 # using the tailscale scripts

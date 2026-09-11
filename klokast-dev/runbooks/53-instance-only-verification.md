@@ -116,10 +116,11 @@ The live policy hash is
 `f83add11a151ef8a9beb5d09d16bef1eed78f800ddfe67d03165cbc349e3854a`.
 The rendered policy hash is
 `67bbf6e4cf51badb07c007f76c94c9ade3080a6a348a37ad5f3521e77a2f05a5`.
-Keep the byte comparison strict. This verification-only milestone does not
-authorize a policy repair, and the current Apply flow cannot update public
-template comments. Obtain a separate authorized correction before fresh
-preparation and the verification signature.
+Keep the byte comparison strict. At this preparation date, the milestone did
+not authorize policy repair. On 2026-09-11 the human authorized repairs and a
+Tailnet policy update. The bounded maintenance procedure in
+[section 11.7.1](../../doc/upstream-instance-target-architecture.md#1171-authorized-comment-repair-2026-09-11)
+corrects the comments separately from the read-only verification executor.
 
 After the refused preflight, private input bytes and metadata, both controller
 markers, both router configurations, inventory settings, and runner identity
