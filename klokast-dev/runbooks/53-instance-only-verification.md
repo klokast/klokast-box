@@ -217,8 +217,19 @@ remained present, and the namespace and temporary public view were removed.
 checks. The unrelated August Huawei runtime directory remains preserved.
 
 Signed verification and exact signed replay refusal are still pending. The
-unsigned intent has no execution receipt or consumed nonce. Use fresh evidence
+unsigned preparation had no execution receipt; its later signed intent is
+permanently consumed after the failed revalidation below. Use fresh evidence
 with the existing trusted-Mac helper; do not treat this maintenance result or
 the unsigned checks as signed acceptance. After successful signing, complete
 the receipt, nonce, final Plan, and unchanged-state checks above, then record
 acceptance in a documentation-only commit without deploying it.
+
+## Signed attempt expired during revalidation, 2026-09-11
+
+The trusted-Mac helper signed the fresh intent, but execution stopped at
+`Plan v3 inputs changed during exact revalidation`. The verifier had already
+consumed nonce `e2VJO5AZI1DRyn0UcbTe9AH2`, so that intent must never be retried.
+The controller audit found no execution receipt, no authority transition, and
+the unchanged Authority State hash `8622695e`. No Platform mutation occurred.
+Create a new Observation, source and recovery receipts, Plan v8, and approval
+before the next signed attempt.

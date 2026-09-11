@@ -1071,6 +1071,12 @@ in the instance. Rendered and pulled full-policy files are generated or
 recovery artifacts. A future semantic comparator or private policy extension
 needs a versioned design and tests before implementation.
 
+The first signed instance-verification attempt after policy repair consumed its
+nonce and stopped during exact Plan revalidation. It created no execution
+receipt, changed no Authority State, and performed no Platform mutation. The
+nonce is permanently unusable; refresh source, recovery, Observation, and Plan
+evidence before obtaining a new Touch ID approval.
+
 The cleanup audit also found an unrelated retained runtime directory,
 `/run/klokast/apply-box/huawei-test-20260830T2204Z`, dated 2026-08-30. It was
 preserved. Inspect its ownership and evidence purpose before a separate cleanup;
