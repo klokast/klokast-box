@@ -8,7 +8,7 @@ ROLE_PATH="${APP_DIR}/ansible/roles:${REPO_ROOT}/ansible/roles"
 BASE_INVENTORY="${REPO_ROOT}/ansible/execution-inventory/hosts"
 ANSIBLE_CONFIG_PATH="${REPO_ROOT}/ansible/ansible.cfg"
 MAGICDNS_SUFFIX="${STATIC_SITE_MAGICDNS_SUFFIX:-${KLOKAST_MAGICDNS_SUFFIX:-example.ts.net}}"
-RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-/home/smith/private/klokast/platform-resources.yml}}"
 STATIC_SITE_GITHUB_OWNER_DEFAULT="${STATIC_SITE_GITHUB_OWNER:-klokast}"
 STATIC_SITE_GITHUB_REPO_NAME_DEFAULT="${STATIC_SITE_GITHUB_REPO_NAME:-klokast-site}"
 STATIC_SITE_GIT_BRANCH_DEFAULT="${STATIC_SITE_GIT_BRANCH:-main}"
@@ -240,7 +240,6 @@ check_github_token() {
 
 require_resources_registry() {
     [[ -n "${resources_registry:-}" ]] || die "--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY"
-    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
 }
 
 load_static_site_resource_state() {

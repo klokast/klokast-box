@@ -10,7 +10,7 @@ ANSIBLE_CONFIG_PATH="${REPO_ROOT}/ansible/ansible.cfg"
 MAGICDNS_SUFFIX="${IMMICH_MAGICDNS_SUFFIX:-${KLOKAST_MAGICDNS_SUFFIX:-example.ts.net}}"
 PRIVATE_TAILSCALE_HOSTNAME="${IMMICH_PRIVATE_TAILSCALE_HOSTNAME:-photos}"
 PRIVATE_DOMAIN="${IMMICH_PRIVATE_DOMAIN:-${PRIVATE_TAILSCALE_HOSTNAME}.${MAGICDNS_SUFFIX}}"
-RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-/home/smith/private/klokast/platform-resources.yml}}"
 RESOURCE_GRANT_DEFAULT="${KLOKAST_PLATFORM_RESOURCE_GRANT:-}"
 APPROVED_COMMIT_MARKER_DEFAULT="${KLOKAST_APPROVED_COMMIT_MARKER:-${REPO_ROOT}/.klokast-approved-commit}"
 COMMON_ANSIBLE_ARGS=(-vv)
@@ -173,7 +173,6 @@ check_secret_env() {
 
 require_resources_registry() {
     [[ -n "${resources_registry:-}" ]] || die "--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY"
-    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
 }
 
 require_one_resource_source() {

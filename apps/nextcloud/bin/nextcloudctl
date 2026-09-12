@@ -11,7 +11,7 @@ MAGICDNS_SUFFIX="${NEXTCLOUD_MAGICDNS_SUFFIX:-example.ts.net}"
 PRIVATE_TAILSCALE_HOSTNAME="${NEXTCLOUD_PRIVATE_TAILSCALE_HOSTNAME:-next}"
 PRIVATE_DOMAIN="${NEXTCLOUD_PRIVATE_DOMAIN:-${PRIVATE_TAILSCALE_HOSTNAME}.${MAGICDNS_SUFFIX}}"
 LOCAL_DOMAIN="${NEXTCLOUD_LOCAL_DOMAIN:-${KLOKAST_HOUSEHOLD_LOCAL_DOMAIN:-}}"
-RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
+RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-/home/smith/private/klokast/platform-resources.yml}}"
 COMMON_ANSIBLE_ARGS=(-vv)
 
 usage() {
@@ -209,7 +209,6 @@ check_secret_env() {
 
 require_resources_registry() {
     [[ -n "${resources_registry:-}" ]] || die "--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY"
-    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
 }
 
 load_nextcloud_resource_state() {

@@ -387,7 +387,7 @@ PY
 cmd_infra_prepare() {
     active_master=
     passive_backup=
-    resources_registry=
+    resources_registry="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-/home/smith/private/klokast/platform-resources.yml}}"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --active-master)
@@ -404,7 +404,6 @@ cmd_infra_prepare() {
     [[ -n "$resources_registry" ]] || die "--resources-registry is required"
     require_box "$active_master" "--active-master"
     require_box "$passive_backup" "--passive-backup"
-    [[ -f "$resources_registry" ]] || die "platform resources registry does not exist: $resources_registry"
     local approved_commit grant_dir grant_path
     approved_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     "${REPO_ROOT}/ansible/bin/platform-resources" \

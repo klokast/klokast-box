@@ -15,6 +15,7 @@ INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
 RESOURCES_REGISTRY="auto"
+COMPATIBILITY_REGISTRY=0
 REMOTE_SCOPE="full"
 STRICT=0
 PROBE_OOB_SSH=0
@@ -40,7 +41,11 @@ Options:
   --resources-registry auto|none|PATH
                           Private Platform resource registry for app-VM and
                           app-resource expectations. Default: auto, which uses
-                          ~/private/klokast/platform-resources.yml when present
+                          /home/smith/private/klokast/platform-resources.yml as
+                          the active source selector
+  --compatibility-registry
+                          Read an alternate legacy registry only for this
+                          read-only check
   --remote-scope SCOPE    platform-map remote scope for --target map/all.
                           Supported: full, dom0, podman, none. Default: full
   --strict                Make platform-map warning findings fail validation
@@ -133,7 +138,7 @@ resolve_resources_registry() {
   local default_path
   case "$RESOURCES_REGISTRY" in
     auto)
-      default_path="$HOME/private/klokast/platform-resources.yml"
+      default_path="/home/smith/private/klokast/platform-resources.yml"
       printf '%s\n' "$default_path"
       ;;
     none)
@@ -232,7 +237,11 @@ preflight() {
 
   registry="$(resolve_resources_registry)"
   if [ -n "$registry" ]; then
-    "$PLATFORM_RESOURCES" --registry "$registry" show-box-configs >"$RESOURCE_PLAN_FILE"
+    set -- "$PLATFORM_RESOURCES" --registry "$registry"
+    if [ "$COMPATIBILITY_REGISTRY" -eq 1 ]; then
+      set -- "$@" --compatibility-registry
+    fi
+    "$@" show-box-configs >"$RESOURCE_PLAN_FILE"
   else
     printf '{}\n' >"$RESOURCE_PLAN_FILE"
   fi
@@ -319,6 +328,9 @@ run_map_check() {
   )
   if [ -n "$registry" ]; then
     refresh_cmd+=(--resources-registry "$registry")
+    if [ "$COMPATIBILITY_REGISTRY" -eq 1 ]; then
+      refresh_cmd+=(--compatibility-registry)
+    fi
   fi
   if [ "$PROBE_OOB_SSH" -eq 1 ]; then
     refresh_cmd+=(--probe-oob-ssh)
@@ -352,17 +364,15 @@ run_resources_check() {
     printf 'platform-check: no resources registry is available; pass --resources-registry PATH or use --resources-registry auto on the controller\n' >&2
     return 1
   fi
-  if [ ! -f "$registry" ]; then
-    printf 'platform-check: resources registry not found: %s\n' "$registry" >&2
-    return 1
-  fi
-
   resources_cmd=(
     "$PLATFORM_RESOURCES"
     --registry "$registry"
     --magicdns-suffix "$MAGICDNS_SUFFIX"
-    verify
   )
+  if [ "$COMPATIBILITY_REGISTRY" -eq 1 ]; then
+    resources_cmd+=(--compatibility-registry)
+  fi
+  resources_cmd+=(verify)
   printf 'Command: '
   quote_command "${resources_cmd[@]}"
   "${resources_cmd[@]}"
@@ -441,6 +451,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--resources-registry requires a value"
       RESOURCES_REGISTRY="$2"
       shift 2
+      ;;
+    --compatibility-registry)
+      COMPATIBILITY_REGISTRY=1
+      shift
       ;;
     --remote-scope)
       [ "$#" -ge 2 ] || die "--remote-scope requires a value"

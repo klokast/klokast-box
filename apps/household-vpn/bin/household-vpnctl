@@ -20,7 +20,10 @@ ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
 MAGICDNS_SUFFIX = os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net")
 RESOURCES_REGISTRY_DEFAULT = os.environ.get(
     "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
-    os.environ.get("KLOKAST_APP_RESOURCES_REGISTRY", ""),
+    os.environ.get(
+        "KLOKAST_APP_RESOURCES_REGISTRY",
+        "/home/smith/private/klokast/platform-resources.yml",
+    ),
 )
 VPN_CONFIG_DEFAULT = os.environ.get(
     "KLOKAST_HOUSEHOLD_VPN_CONFIG",
@@ -79,11 +82,7 @@ def load_yaml(path):
 
 
 def load_resources(registry, box):
-    if not registry:
-        die("--resources-registry is required, or export KLOKAST_PLATFORM_RESOURCES_REGISTRY")
     registry_path = Path(registry).expanduser()
-    if not registry_path.is_file():
-        die(f"platform resources registry does not exist: {registry_path}")
     data = json.loads(
         output(
             [

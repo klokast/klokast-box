@@ -35,6 +35,12 @@ MAXIMUM_SOURCE_MAP_FILE = 16 * 1024 * 1024
 PLATFORM_MAP_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "70-platform-map.yml"
 RENDER_NODE_INVENTORY = SCRIPT_DIR / "render-node-inventory"
 PLATFORM_RESOURCES = SCRIPT_DIR / "platform-resources"
+DEFAULT_RESOURCES_REGISTRY = Path(
+    os.environ.get(
+        "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
+        "/home/smith/private/klokast/platform-resources.yml",
+    )
+)
 PLATFORM_MAP_EMPTY_TARGET = "all:!all"
 CLOUD_PROVIDERS_FILE = REPO_DIR / "cloud-providers.json"
 
@@ -874,11 +880,16 @@ def desired_platform_resources_from_fact(fact: dict[str, Any]) -> dict[str, Any]
     return desired if isinstance(desired, dict) else {}
 
 
-def compile_platform_resources_registry(registry: Path, warnings: list[str]) -> dict[str, Any]:
+def compile_platform_resources_registry(
+    registry: Path, warnings: list[str], *, compatibility: bool = False
+) -> dict[str, Any]:
     if not registry:
         return {}
+    command = [str(PLATFORM_RESOURCES), "--registry", str(registry)]
+    if compatibility:
+        command.append("--compatibility-registry")
     result = run_command(
-        [str(PLATFORM_RESOURCES), "--registry", str(registry), "show"],
+        [*command, "show"],
         cwd=REPO_DIR,
         timeout=120,
     )
@@ -888,7 +899,7 @@ def compile_platform_resources_registry(registry: Path, warnings: list[str]) -> 
             f"{(result.stderr or result.stdout or '').strip()[:240]}"
         )
         result = run_command(
-            [str(PLATFORM_RESOURCES), "--registry", str(registry), "show-box-configs"],
+            [*command, "show-box-configs"],
             cwd=REPO_DIR,
             timeout=120,
         )
@@ -1705,7 +1716,11 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     remote_facts = load_remote_facts(artifact_dir, warnings)
     overrides = load_overrides(args.overrides, warnings)
     platform_resources_plan = (
-        compile_platform_resources_registry(args.resources_registry, warnings)
+        compile_platform_resources_registry(
+            args.resources_registry,
+            warnings,
+            compatibility=args.compatibility_registry,
+        )
         if args.resources_registry
         else {}
     )
@@ -1910,7 +1925,17 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--artifact-dir", type=Path, default=RUN_DIR, help="runtime artifact directory")
     refresh.add_argument("--output", type=Path, default=DEFAULT_STATE_FILE, help="summary JSON output path")
     refresh.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES_FILE, help="local uncommitted override YAML")
-    refresh.add_argument("--resources-registry", type=Path, default=None, help="private platform-resource registry used to expect dynamic app VMs")
+    refresh.add_argument(
+        "--resources-registry",
+        type=Path,
+        default=DEFAULT_RESOURCES_REGISTRY,
+        help="registry selector used to expect dynamic app VMs",
+    )
+    refresh.add_argument(
+        "--compatibility-registry",
+        action="store_true",
+        help="read an alternate legacy registry for a read-only comparison",
+    )
     refresh.add_argument("--skip-ansible", action="store_true", help="only collect local/Tailscale/provider facts")
     refresh.add_argument(
         "--remote-scope",

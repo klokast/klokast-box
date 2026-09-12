@@ -299,8 +299,14 @@ def parse_args():
     )
     parser.add_argument(
         "--registry",
-        required=True,
-        help="Deployment platform resource registry YAML.",
+        default=os.environ.get(
+            "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
+            "/home/smith/private/klokast/platform-resources.yml",
+        ),
+        help=(
+            "Registry selector. The canonical legacy path selects the active "
+            "private-instance source after adoption."
+        ),
     )
     parser.add_argument("--compatibility-registry", action="store_true",
                         help="Read an explicit registry only for comparison or verification; mutations are refused.")
