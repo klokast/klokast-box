@@ -232,4 +232,32 @@ consumed nonce `e2VJO5AZI1DRyn0UcbTe9AH2`, so that intent must never be retried.
 The controller audit found no execution receipt, no authority transition, and
 the unchanged Authority State hash `8622695e`. No Platform mutation occurred.
 Create a new Observation, source and recovery receipts, Plan v8, and approval
-before the next signed attempt.
+before another signed attempt.
+
+## Signed acceptance, 2026-09-12
+
+Fresh source and recovery receipts, Observation, and Plan v8 passed unsigned
+preflight. The Plan hash was
+`b3316b4fb9f911b18928c3d318a696a1707422a97c37341995ec6bb56d7fd5f8` and it
+contained six verification-only groups. The isolated absence check also
+passed with the legacy YAML inputs and old inventory tree unavailable.
+
+The trusted Mac signed the new intent. The installed executor completed all
+six verification groups and stored Execution Receipt v6:
+
+```text
+/var/lib/klokast/apply-executions/BAvO1ifehW6hIbtCP2d94yCJ/e78bc4948c1d490ef65b0cce63ae013f8e3d635c8e13132967d4a988fed66dc6.json
+```
+
+Receipt hash: `e78bc4948c1d490ef65b0cce63ae013f8e3d635c8e13132967d4a988fed66dc6`.
+Authority State remained
+`8622695e9361d281620dc5f69d9b556f2ab637f748899985899d929cf3eaf188`.
+The nonce was consumed and the helper confirmed exact replay refusal. The
+recognized DERP notice for the k001 router was informational; access checks
+passed and direct transport is optional.
+
+The signed receipt is root-owned and canonical. No Authority State record,
+network configuration, service restart, application repair, or legacy-input
+deletion occurred. `legacy_removal_ready` remains false. The remaining work is
+the separate recovery and deletion gates recorded in section 11.7; this
+milestone is live-verified.
