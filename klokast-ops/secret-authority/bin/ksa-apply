@@ -3,6 +3,7 @@
 
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import ipaddress
@@ -33,8 +34,13 @@ KIND_PLAN_V5 = "klokast.plan.v5"
 KIND_PLAN_V6 = "klokast.plan.v6"
 KIND_PLAN_V7 = "klokast.plan.v7"
 KIND_PLAN_V8 = "klokast.plan.v8"
+KIND_PLAN_V9 = "klokast.plan.v9"
 KIND_VERIFICATION_INTENT = "klokast.instance-verification-intent.v1"
 VERIFICATION_EXECUTOR = "instance_verification_v1"
+KIND_RETIREMENT_EVIDENCE = "klokast.legacy-retirement-evidence.v1"
+KIND_RETIREMENT_INTENT = "klokast.legacy-input-retirement-intent.v1"
+RETIREMENT_EXECUTOR = "legacy_input_retirement_v1"
+RETIREMENT_GROUP = "legacy-input-retirement-v1"
 KIND_AUTHORITY_V5 = "klokast.authority-state.v5"
 KIND_INVENTORY_INTENT = "klokast.inventory-source-intent.v1"
 INVENTORY_EXECUTOR = "inventory_source_v1"
@@ -98,6 +104,9 @@ SOURCE_ROOT = Path("/var/lib/klokast/instance-sources")
 RECOVERY_ROOT = Path("/var/lib/klokast/private-source-recoveries")
 PREFLIGHT_ROOT = Path("/var/lib/klokast/apply-preflights")
 RECOVERY_MANIFEST_ROOT = Path("/var/lib/klokast/instance-recovery-manifests")
+RETIREMENT_ARCHIVE_ROOT = Path("/var/lib/klokast/legacy-input-recovery")
+RETIREMENT_EVIDENCE_ROOT = Path("/var/lib/klokast/legacy-input-retirement-evidence")
+RETIREMENT_MATRIX_ROOT = Path("/var/lib/klokast/legacy-input-retirement-matrices")
 EXECUTION_ROOT = Path("/var/lib/klokast/apply-executions")
 ROLLBACK_ROOT = Path("/var/lib/klokast/apply-rollback-material")
 NONCE_ROOT = Path("/var/lib/klokast/apply-used-nonces")
@@ -123,6 +132,14 @@ MAX_BINARY = 64 * 1024 * 1024
 ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
 OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
 BOX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+LEGACY_INPUTS = (DEPLOYMENT, REGISTRY, CONTROLLER_HA)
+OBSOLETE_BACKUPS = tuple(
+    PRIVATE_ROOT / name for name in (
+        "platform-resources.yml.20260611T010611Z.bak",
+        "platform-resources.yml.20260611T011900Z.bak",
+        "platform-resources.yml.20260611T015423Z.bak",
+    )
+)
 
 
 class ApplyError(Exception):
@@ -181,6 +198,23 @@ def read_regular(path, maximum=MAX_JSON):
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0 or metadata.st_size > maximum:
         raise ApplyError(f"required evidence is not one bounded regular file: {path.name}")
     return path.read_bytes()
+
+
+def write_all(descriptor, content):
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("short write while storing protected evidence")
+        remaining = remaining[written:]
+
+
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def load_json(path, maximum=MAX_JSON, *, expected_fields=None, canonical_stored=False):
@@ -425,6 +459,8 @@ def box_scopes(box):
 
 def verify_plan_v3(path):
     resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
+    if plan.get("kind") == KIND_PLAN_V9:
+        return verify_plan_v9(path)
     if plan.get("kind") == KIND_PLAN_V8:
         return verify_plan_v8(path)
     if (plan.get("kind"), plan.get("schema_version")) not in {(KIND_PLAN_V3, 3), (KIND_PLAN_V4, 4), (KIND_PLAN_V5, 5), (KIND_PLAN_V6, 6), (KIND_PLAN_V7, 7)}:
@@ -776,7 +812,7 @@ def validate_authority_v2(path, plan, group):
     reference = plan.get("authority_state") or {}
     if reference.get("authority_state_sha256") != state["authority_state_sha256"] or reference.get("kind") != state["kind"] or reference.get("setting_groups") != state["setting_groups"]:
         raise ApplyError("Plan v3 binds another Authority State v2")
-    if plan.get("kind") == KIND_PLAN_V8:
+    if plan.get("kind") in {KIND_PLAN_V8, KIND_PLAN_V9}:
         if state["kind"] != KIND_AUTHORITY_V5:
             raise ApplyError("instance-only verification requires Authority State v5")
         verify_inventory_anchor(state, plan["inventory"]["scopes"])
@@ -851,7 +887,7 @@ def validate_toolchain(path, plan, build_binary):
         "schema_version", "kind", "engine_commit", "public_checkout_clean",
         "public_checkout_commit", "components", "receipt_sha256",
     }
-    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5"), (6, "klokast.controller-toolchain.v6"), (7, "klokast.controller-toolchain.v7")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
+    if set(receipt) != expected or (receipt.get("schema_version"), receipt.get("kind")) not in {(3, KIND_TOOLCHAIN), (4, "klokast.controller-toolchain.v4"), (5, "klokast.controller-toolchain.v5"), (6, "klokast.controller-toolchain.v6"), (7, "klokast.controller-toolchain.v7"), (8, "klokast.controller-toolchain.v8")} or receipt.get("engine_commit") != plan.get("engine", {}).get("commit") or receipt.get("public_checkout_clean") is not True or receipt.get("public_checkout_commit") != receipt.get("engine_commit"):
         raise ApplyError("controller toolchain receipt does not bind the selected clean engine")
     components = COMPONENTS
     if receipt.get("schema_version") >= 4:
@@ -868,6 +904,8 @@ def validate_toolchain(path, plan, build_binary):
         raise ApplyError("Plan v5 requires Controller Toolchain v4")
     if plan.get("schema_version") == 8 and receipt.get("schema_version") != 7:
         raise ApplyError("Plan v8 requires Controller Toolchain v7")
+    if plan.get("schema_version") == 9 and receipt.get("schema_version") != 8:
+        raise ApplyError("Plan v9 requires Controller Toolchain v8")
     entries = receipt.get("components")
     if not isinstance(entries, list) or [item.get("name") for item in entries] != components:
         raise ApplyError("controller toolchain receipt has an unknown component set")
@@ -1134,6 +1172,17 @@ def validate_inputs_v3(args, work=None):
     status = require_root_active()
     require_self_match()
     plan_path, plan, group = verify_plan_v3(args.plan)
+    retirement_evidence_path = ""
+    if plan.get("kind") == KIND_PLAN_V9:
+        supplied = getattr(args, "retirement_evidence", None)
+        if not supplied:
+            raise ApplyError("Plan v9 requires its immutable retirement evidence")
+        retirement_evidence_path, retirement_evidence = resolve_hashed(
+            supplied, RETIREMENT_EVIDENCE_ROOT, "evidence_sha256"
+        )
+        if (retirement_evidence.get("kind") != KIND_RETIREMENT_EVIDENCE
+                or retirement_evidence.get("evidence_sha256") != plan.get("legacy_retirement", {}).get("evidence_sha256")):
+            raise ApplyError("retirement evidence differs from Plan v9")
     active = plan.get("projection", {}).get("control_plane", {}).get("active_controller", {})
     if (active.get("hostname") != status.get("hostname")
             or active.get("box_id", "") + "-ops" != status.get("hostname")):
@@ -1186,11 +1235,17 @@ def validate_inputs_v3(args, work=None):
         command.extend(["--connectivity-target", plan["connectivity_target"]])
     if plan.get("kind") in {KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
         command.extend(["--migration-target", plan["migration_target"]])
-    if plan.get("kind") == KIND_PLAN_V8:
+    if plan.get("kind") in {KIND_PLAN_V8, KIND_PLAN_V9}:
         for flag in ("--compatibility-deployment", "--compatibility-registry", "--compatibility-controller-ha"):
             index = command.index(flag)
             del command[index:index + 2]
-        command.append("--instance-only")
+        if plan.get("kind") == KIND_PLAN_V8:
+            command.append("--instance-only")
+        else:
+            command.extend([
+                "--legacy-retirement", "--retirement-phase", plan["legacy_retirement"]["phase"],
+                "--retirement-evidence", retirement_evidence_path,
+            ])
     rerun = run_plan_as_controller(command)
     try:
         rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
@@ -1199,7 +1254,7 @@ def validate_inputs_v3(args, work=None):
     if rerun.returncode != 0 or rerun_plan != plan:
         raise ApplyError("Plan v3 inputs changed during exact revalidation")
     comparison = {}
-    if work and plan.get("kind") != KIND_PLAN_V8:
+    if work and plan.get("kind") not in {KIND_PLAN_V8, KIND_PLAN_V9}:
         if group["id"] == INVENTORY_GROUP:
             comparison = prepare_inventory_comparison(work, plan)
         elif group["id"] == REGISTRY_GROUP:
@@ -1214,6 +1269,7 @@ def validate_inputs_v3(args, work=None):
         "observation": str(Path(args.observation).resolve()),
         "build_dir": str(build_dir), "binary_sha256": build_receipt["binary_sha256"],
         "builder_receipt_sha256": sha256_file(build_dir / "receipt.json"),
+        **({"retirement_evidence_path": str(retirement_evidence_path)} if retirement_evidence_path else {}),
         **comparison,
     }
 
@@ -1223,6 +1279,14 @@ def ensure_dir(path, mode=0o700):
     if path.is_symlink() or not path.is_dir():
         raise ApplyError("controller evidence directory is unsafe")
     os.chmod(path, mode)
+
+
+def ensure_protected_dir(path, mode, group):
+    ensure_dir(path, mode)
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
+            or metadata.st_gid != group or stat.S_IMODE(metadata.st_mode) != mode):
+        raise ApplyError(f"protected evidence directory has unsafe ownership or mode: {path}")
 
 
 def smith_gid():
@@ -1264,7 +1328,7 @@ def append_audit(event, **fields):
     record = {"ts": format_utc(now_utc()), "event": event, **fields}
     descriptor = os.open(AUDIT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(descriptor, (canonical(record) + "\n").encode("utf-8"))
+        write_all(descriptor, (canonical(record) + "\n").encode("utf-8"))
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -1565,7 +1629,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT, KIND_VERIFICATION_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT, KIND_VERIFICATION_INTENT, KIND_RETIREMENT_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -1576,7 +1640,7 @@ def consume_nonce(intent):
     except FileExistsError as error:
         raise ApplyError("Apply intent nonce was already used") from error
     try:
-        os.write(descriptor, (binding_sha256 + "\n").encode("ascii"))
+        write_all(descriptor, (binding_sha256 + "\n").encode("ascii"))
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -4146,6 +4210,98 @@ def verify_plan_v8(path):
     return resolved, plan, {"id": VERIFICATION_EXECUTOR, "operation": "verify_instance_authority", "executor": VERIFICATION_EXECUTOR}
 
 
+def validate_retirement_file_set(entries, paths):
+    if not isinstance(entries, list) or [item.get("path") for item in entries if isinstance(item, dict)] != [str(path) for path in paths]:
+        raise ApplyError("Plan v9 retirement file set differs from the closed list")
+    fields = {"path", "sha256", "size", "uid", "gid", "mode", "nlink"}
+    for item in entries:
+        if (set(item) != fields or not DIGEST_RE.fullmatch(item.get("sha256", ""))
+                or not isinstance(item.get("size"), int) or item["size"] <= 0
+                or not isinstance(item.get("uid"), int) or item["uid"] < 0
+                or not isinstance(item.get("gid"), int) or item["gid"] < 0
+                or not re.fullmatch(r"0[0-7]{3}", item.get("mode", ""))
+                or item.get("nlink") != 1):
+            raise ApplyError("Plan v9 retirement file metadata is incomplete or unsafe")
+
+
+def verify_plan_v9(path):
+    resolved, plan = resolve_hashed(path, PLAN_ROOT, "plan_sha256", nested=True)
+    fields = {"schema_version", "kind", "valid", "substrate_healthy", "deployable", "authority_ready",
+              "legacy_removal_ready", "health_scope", "engine", "instance", "instance_source", "authority_state",
+              "controller_toolchain", "legacy_retirement", "inputs", "projection", "inventory", "projection_sha256",
+              "observation", "authorities", "actions", "action_groups", "refusals", "diagnostics", "plan_sha256"}
+    if set(plan) != fields or plan.get("kind") != KIND_PLAN_V9 or plan.get("schema_version") != 9:
+        raise ApplyError("legacy retirement accepts only the closed Plan v9 contract")
+    candidate = dict(plan)
+    supplied = candidate.pop("plan_sha256")
+    if (inventory_digest(candidate) != supplied
+            or any(plan.get(key) is not True for key in ("valid", "substrate_healthy", "deployable", "authority_ready"))
+            or plan.get("health_scope") != "standard_substrate_v1" or plan.get("refusals") != [] or plan.get("diagnostics") != []):
+        raise ApplyError("Plan v9 must be canonical, healthy, and authority-ready")
+    groups = verification_groups(plan)
+    if (plan["action_groups"][:6] != groups
+            or plan["authority_state"].get("kind") != KIND_AUTHORITY_V5
+            or plan["authority_state"].get("setting_groups") != [
+                {"id": group["id"], "scopes": group["scopes"], "source": "instance_specification_v1"}
+                for group in groups
+            ]):
+        raise ApplyError("Plan v9 requires exact six-group instance ownership")
+    retirement = plan["legacy_retirement"]
+    retirement_fields = {
+        "phase", "evidence_sha256", "consumer_matrix_sha256", "settings_sha256",
+        "recovery_archive_path", "recovery_archive_sha256", "recovery_manifest_sha256",
+        "detached_reconstruction_sha256", "consumer_absence_complete",
+        "recovery_reconstruction_verified", "settings_unchanged", "live_inputs_state",
+        "approved_backups_state", "live_inputs", "approved_backups",
+        "exercise_receipt_sha256", "retirement_receipt_sha256",
+    }
+    phase = retirement.get("phase") if isinstance(retirement, dict) else None
+    operations = {"exercise": "exercise_legacy_input_retirement", "retire": "retire_legacy_inputs", "verify": "verify_legacy_retirement"}
+    rollbacks = {"exercise": "restore_exact_legacy_inputs", "retire": "recovery_archive_only", "verify": "no_mutation"}
+    if (not isinstance(retirement, dict) or set(retirement) != retirement_fields or phase not in operations
+            or any(retirement.get(field) is not True for field in ("consumer_absence_complete", "recovery_reconstruction_verified", "settings_unchanged"))
+            or any(not DIGEST_RE.fullmatch(retirement.get(field, "")) for field in (
+                "evidence_sha256", "consumer_matrix_sha256", "settings_sha256", "recovery_archive_sha256",
+                "recovery_manifest_sha256", "detached_reconstruction_sha256"))
+            or not isinstance(retirement.get("recovery_archive_path"), str)
+            or not retirement["recovery_archive_path"].startswith(str(RETIREMENT_ARCHIVE_ROOT) + "/")):
+        raise ApplyError("Plan v9 retirement evidence is incomplete or unknown")
+    validate_retirement_file_set(retirement["live_inputs"], LEGACY_INPUTS)
+    validate_retirement_file_set(retirement["approved_backups"], OBSOLETE_BACKUPS)
+    expected_states = {"exercise": ("present", "present", False), "retire": ("present", "present", True), "verify": ("absent", "absent", True)}
+    live_state, backup_state, ready = expected_states[phase]
+    if (retirement["live_inputs_state"] != live_state or retirement["approved_backups_state"] != backup_state
+            or plan["legacy_removal_ready"] is not ready
+            or (phase == "exercise" and (retirement["exercise_receipt_sha256"] or retirement["retirement_receipt_sha256"]))
+            or (phase in {"retire", "verify"} and not DIGEST_RE.fullmatch(retirement["exercise_receipt_sha256"]))
+            or (phase == "retire" and retirement["retirement_receipt_sha256"])
+            or (phase == "verify" and not DIGEST_RE.fullmatch(retirement["retirement_receipt_sha256"]))):
+        raise ApplyError("Plan v9 phase state or prior receipt binding is invalid")
+    lifecycle = {"id": RETIREMENT_GROUP, "operation": operations[phase], "scopes": ["legacy_private_inputs"],
+                 "executor": RETIREMENT_EXECUTOR, "rollback_type": rollbacks[phase]}
+    if len(plan["action_groups"]) != 7 or plan["action_groups"][6] != lifecycle:
+        raise ApplyError("Plan v9 lifecycle group is partial or changed")
+    actions = []
+    for group in groups:
+        for scope in group["scopes"]:
+            operation = "verify_instance_authority"
+            actions.append({"id": operation + "-" + sha256_bytes((operation + "\0" + scope).encode())[:16],
+                            "scope": scope, "operation": operation, "executor": VERIFICATION_EXECUTOR,
+                            "authority_before": "instance_specification_v1", "authority_after": "instance_specification_v1",
+                            "preconditions": ["exact_plan_v9_revalidated", "complete_instance_ownership", "read_only_consumers_verified"],
+                            "rollback": {"strategy": "no_mutation", "authority": "instance_specification_v1"}})
+    operation = operations[phase]
+    actions.append({"id": operation + "-" + sha256_bytes((operation + "\0legacy_private_inputs").encode())[:16],
+                    "operation": operation, "scope": "legacy_private_inputs", "authority_before": "retained_legacy_inputs",
+                    "authority_after": "retained_legacy_inputs" if phase == "exercise" else "immutable_recovery_archive",
+                    "executor": RETIREMENT_EXECUTOR,
+                    "preconditions": ["exact_plan_v9_revalidated", "complete_instance_ownership", "consumer_absence_verified", "recovery_reconstruction_verified", "single_use_approval"],
+                    "rollback": {"strategy": rollbacks[phase], "authority": "immutable_recovery_archive", "source_sha256": retirement["recovery_archive_sha256"]}})
+    if plan["actions"] != sorted(actions, key=lambda item: item["id"]):
+        raise ApplyError("Plan v9 action coverage is partial or unknown")
+    return resolved, plan, lifecycle
+
+
 def verification_historical_box_failure(current, intent, receipt, successful_groups, seen):
     """Retain failed history only behind a later successful same-group adoption."""
     validate_box_intent(intent, check_time=False)
@@ -4317,8 +4473,8 @@ def verification_collect(args, nonce):
     try:
         binding = validate_inputs_v3(args)
         plan = binding["plan"]
-        if plan["kind"] != KIND_PLAN_V8:
-            raise ApplyError("instance verification requires Plan v8")
+        if plan["kind"] not in {KIND_PLAN_V8, KIND_PLAN_V9}:
+            raise ApplyError("instance verification requires Plan v8 or Plan v9")
         pair = controller_pair(plan)
         status = controller_identity_status()
         if status["source"] != "instance_specification_v1" or status["controllers"] != pair or status["authority_state_sha256"] != binding["state"]["authority_state_sha256"]:
@@ -4352,7 +4508,10 @@ def verification_collect(args, nonce):
         final_consumers, _ = verification_consumers(final, new_subwork(work, "recheck"))
         if final != binding or controller_identity_status() != status or final_consumers != consumers or verification_adoption_evidence(final["state"]) != evidence["adoption_evidence_sha256"]:
             raise ApplyError("instance inputs, source, or policy changed during verification")
-        return {"binding": {k: binding[k] for k in VERIFICATION_BINDING_FIELDS}, "evidence": evidence,
+        binding_fields = set(VERIFICATION_BINDING_FIELDS)
+        if plan["kind"] == KIND_PLAN_V9:
+            binding_fields.add("retirement_evidence_path")
+        return {"binding": {k: binding[k] for k in binding_fields}, "evidence": evidence,
                 "controller_pair": pair, "action_groups": plan["action_groups"], "private_commit": plan["instance"]["commit"], "engine_commit": plan["engine"]["commit"]}
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -4407,6 +4566,282 @@ def validate_verification_intent(intent):
     issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
     if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
         raise ApplyError("instance verification intent is expired or has an invalid lifetime")
+
+
+RETIREMENT_CONSUMERS = {
+    "compiler", "inventory", "mapping", "controller", "routers", "platform-check",
+    "platform-app", "platform-guest", "tailnet-rendering", "household-vpn",
+    "local-ingress", "music", "print-server", "torrent", "nextcloud",
+    "nextcloud-v2", "static-site", "immich",
+}
+
+
+def retirement_metadata(path):
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ApplyError(f"legacy retirement input is missing: {path}") from error
+    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size <= 0 or metadata.st_size > MAX_JSON:
+        raise ApplyError(f"legacy retirement input is not one safe regular file: {path}")
+    content = read_regular(path, MAX_JSON)
+    return {"path": str(path), "sha256": sha256_bytes(content), "size": len(content),
+            "uid": metadata.st_uid, "gid": metadata.st_gid,
+            "mode": format(stat.S_IMODE(metadata.st_mode), "04o"), "nlink": metadata.st_nlink}
+
+
+def retirement_absent(paths):
+    for path in paths:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        raise ApplyError(f"retired input must be absent: {path}")
+
+
+def retirement_matrix(path):
+    matrix = load_json(path, MAX_JSON)
+    if (matrix.get("schema_version") != 1 or matrix.get("kind") != "klokast.instance-input-absence.v1"
+            or matrix.get("equal") is not True or matrix.get("temporary_views_removed") is not True
+            or not DIGEST_RE.fullmatch(matrix.get("effective_settings_sha256", ""))
+            or not RETIREMENT_CONSUMERS.issubset(set(matrix.get("consumers") or []))):
+        raise ApplyError("consumer absence matrix is incomplete or invalid")
+    return matrix, sha256_file(Path(path))
+
+
+def archive_payload(directory):
+    manifest_metadata = (directory / "manifest.json").lstat()
+    if (not stat.S_ISREG(manifest_metadata.st_mode) or manifest_metadata.st_uid != 0
+            or manifest_metadata.st_gid != 0 or stat.S_IMODE(manifest_metadata.st_mode) != 0o400
+            or manifest_metadata.st_nlink != 1):
+        raise ApplyError("legacy recovery manifest ownership or mode is unsafe")
+    manifest = load_json(directory / "manifest.json", MAX_JSON, canonical_stored=True)
+    if manifest.get("schema_version") != 1 or manifest.get("kind") != "klokast.legacy-input-recovery.v1":
+        raise ApplyError("legacy recovery manifest has an unknown contract")
+    candidate = dict(manifest)
+    supplied = candidate.pop("manifest_sha256", None)
+    if inventory_digest(candidate) != supplied:
+        raise ApplyError("legacy recovery manifest hash changed")
+    files = manifest.get("files")
+    if not isinstance(files, list) or [item.get("path") for item in files] != [str(path) for path in LEGACY_INPUTS]:
+        raise ApplyError("legacy recovery archive has a partial input set")
+    expected_names = {"manifest.json"}
+    for index, item in enumerate(files):
+        archive_name = f"{index:02d}-{Path(item['path']).name}"
+        if item.get("archive_name") != archive_name:
+            raise ApplyError("legacy recovery archive filename changed")
+        archive_file = directory / archive_name
+        metadata = archive_file.lstat()
+        if (archive_file.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_gid != 0
+                or stat.S_IMODE(metadata.st_mode) != 0o400 or metadata.st_nlink != 1
+                or sha256_file(archive_file) != item.get("sha256") or metadata.st_size != item.get("size")):
+            raise ApplyError("legacy recovery archive file is unsafe or changed")
+        expected_names.add(archive_name)
+    if {item.name for item in directory.iterdir()} != expected_names:
+        raise ApplyError("legacy recovery archive contains an unexpected file")
+    archive_hash = inventory_digest({"manifest_sha256": supplied, "files": [item["sha256"] for item in files]})
+    if directory.name != archive_hash:
+        raise ApplyError("legacy recovery archive path is not content-addressed")
+    return manifest, archive_hash
+
+
+def validate_retirement_archive(path):
+    supplied = Path(path)
+    try:
+        root = RETIREMENT_ARCHIVE_ROOT.resolve(strict=True)
+        resolved = supplied.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError) as error:
+        raise ApplyError("legacy recovery archive is outside its protected root") from error
+    metadata = resolved.lstat()
+    if supplied != resolved or resolved.parent != root or resolved.is_symlink() or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_gid != 0 or stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise ApplyError("legacy recovery archive directory is unsafe")
+    manifest, archive_hash = archive_payload(resolved)
+    return resolved, manifest, archive_hash
+
+
+def create_retirement_archive():
+    entries = [retirement_metadata(path) for path in LEGACY_INPUTS]
+    ensure_protected_dir(RETIREMENT_ARCHIVE_ROOT, 0o700, 0)
+    temporary = Path(tempfile.mkdtemp(prefix="archive-", dir=RETIREMENT_ARCHIVE_ROOT))
+    temporary.chmod(0o700)
+    try:
+        files = []
+        for index, (source, entry) in enumerate(zip(LEGACY_INPUTS, entries)):
+            name = f"{index:02d}-{source.name}"
+            destination = temporary / name
+            descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+            try:
+                content = read_regular(source, MAX_JSON)
+                write_all(descriptor, content)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.chown(destination, 0, 0); destination.chmod(0o400)
+            if sha256_file(destination) != entry["sha256"]:
+                raise ApplyError("legacy input changed during archive creation")
+            files.append({**entry, "archive_name": name})
+        manifest = {"schema_version": 1, "kind": "klokast.legacy-input-recovery.v1", "files": files}
+        manifest["manifest_sha256"] = inventory_digest(manifest)
+        manifest_path = temporary / "manifest.json"
+        descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        try:
+            write_all(descriptor, (canonical(manifest) + "\n").encode()); os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.chown(manifest_path, 0, 0); manifest_path.chmod(0o400)
+        archive_hash = inventory_digest({"manifest_sha256": manifest["manifest_sha256"], "files": [item["sha256"] for item in files]})
+        destination = RETIREMENT_ARCHIVE_ROOT / archive_hash
+        try:
+            os.rename(temporary, destination)
+            temporary = None
+            fsync_directory(RETIREMENT_ARCHIVE_ROOT)
+        except OSError as error:
+            if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise
+            existing, existing_manifest, existing_hash = validate_retirement_archive(destination)
+            if existing_hash != archive_hash or existing_manifest != manifest:
+                raise ApplyError("immutable legacy recovery archive path contains different content")
+        resolved, checked, checked_hash = validate_retirement_archive(destination)
+        if checked != manifest or checked_hash != archive_hash:
+            raise ApplyError("legacy recovery archive verification failed")
+        reconstruction = tempfile.mkdtemp(prefix="legacy-reconstruction-")
+        try:
+            reconstruction_root = Path(reconstruction)
+            reconstructed = []
+            for item in checked["files"]:
+                target = reconstruction_root / item["path"].lstrip("/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(resolved / item["archive_name"], target)
+                target.chmod(int(item["mode"], 8))
+                if sha256_file(target) != item["sha256"] or target.stat().st_size != item["size"]:
+                    raise ApplyError("detached legacy reconstruction failed")
+                reconstructed.append({key: item[key] for key in ("path", "sha256", "size", "uid", "gid", "mode", "nlink")})
+            reconstruction_hash = inventory_digest(reconstructed)
+        finally:
+            shutil.rmtree(reconstruction, ignore_errors=True)
+        return resolved, checked, archive_hash, reconstruction_hash
+    finally:
+        if temporary is not None:
+            shutil.rmtree(temporary, ignore_errors=True)
+
+
+def completed_retirement_receipt(path, action, result):
+    resolved, receipt = resolve_hashed(path, EXECUTION_ROOT, "receipt_sha256", nested=True)
+    candidate = dict(receipt)
+    supplied = candidate.pop("receipt_sha256", None)
+    if (inventory_digest(candidate) != supplied or receipt.get("schema_version") != 7
+            or receipt.get("kind") != "klokast.apply-execution.v7" or receipt.get("executor") != RETIREMENT_EXECUTOR
+            or receipt.get("action") != action or receipt.get("result") != result):
+        raise ApplyError("legacy retirement receipt is incomplete or does not match its phase")
+    return resolved, receipt
+
+
+def store_retirement_evidence(evidence):
+    evidence["evidence_sha256"] = inventory_digest(evidence)
+    ensure_protected_dir(RETIREMENT_EVIDENCE_ROOT, 0o750, smith_gid())
+    path = RETIREMENT_EVIDENCE_ROOT / (evidence["evidence_sha256"] + ".json")
+    content = (canonical(evidence) + "\n").encode()
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    except FileExistsError:
+        if read_regular(path, MAX_JSON) != content:
+            raise ApplyError("immutable retirement evidence path contains different content")
+        return path
+    try:
+        write_all(descriptor, content); os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chown(path, 0, smith_gid()); path.chmod(0o440)
+    fsync_directory(path.parent)
+    return path
+
+
+def store_retirement_matrix(source, digest):
+    content = read_regular(Path(source), MAX_JSON)
+    if sha256_bytes(content) != digest:
+        raise ApplyError("consumer absence matrix changed during evidence preparation")
+    ensure_protected_dir(RETIREMENT_MATRIX_ROOT, 0o750, smith_gid())
+    path = RETIREMENT_MATRIX_ROOT / (digest + ".json")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    except FileExistsError:
+        if read_regular(path, MAX_JSON) != content:
+            raise ApplyError("immutable consumer matrix path contains different content")
+        return path
+    try:
+        write_all(descriptor, content); os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chown(path, 0, smith_gid()); path.chmod(0o440)
+    fsync_directory(path.parent)
+    return path
+
+
+def retirement_evidence_prepare(args):
+    require_root_active(); require_self_match()
+    matrix, matrix_file_hash = retirement_matrix(args.consumer_matrix)
+    store_retirement_matrix(args.consumer_matrix, matrix_file_hash)
+    phase = args.phase
+    exercise_receipt = retirement_receipt = None
+    if phase == "exercise":
+        if args.recovery_archive or args.exercise_receipt or args.retirement_receipt:
+            raise ApplyError("exercise evidence creates a new archive and accepts no prior retirement receipt")
+        archive, manifest, archive_hash, reconstruction_hash = create_retirement_archive()
+        live_inputs = [retirement_metadata(path) for path in LEGACY_INPUTS]
+        archived_inputs = [
+            {key: item[key] for key in ("path", "sha256", "size", "uid", "gid", "mode", "nlink")}
+            for item in manifest["files"]
+        ]
+        if live_inputs != archived_inputs:
+            raise ApplyError("legacy inputs changed during recovery archive creation")
+        backups = [retirement_metadata(path) for path in OBSOLETE_BACKUPS]
+        settings_hash = matrix["effective_settings_sha256"]
+    elif phase == "retire":
+        if not args.recovery_archive or not args.exercise_receipt or args.retirement_receipt:
+            raise ApplyError("retire evidence requires the archive and exercise receipt only")
+        _, exercise_receipt = completed_retirement_receipt(args.exercise_receipt, "exercise_legacy_input_retirement", "exercised")
+        archive, manifest, archive_hash = validate_retirement_archive(args.recovery_archive)
+        reconstruction_hash = exercise_receipt["retirement"]["detached_reconstruction_sha256"]
+        live_inputs = [retirement_metadata(path) for path in LEGACY_INPUTS]
+        backups = [retirement_metadata(path) for path in OBSOLETE_BACKUPS]
+        if live_inputs != exercise_receipt["retirement"]["live_inputs"] or backups != exercise_receipt["retirement"]["approved_backups"]:
+            raise ApplyError("restored legacy inputs or approved backups changed after the exercise")
+        extras = sorted(set(PRIVATE_ROOT.glob("platform-resources.yml.*.bak")) - set(OBSOLETE_BACKUPS))
+        if extras:
+            raise ApplyError("another platform-resources backup exists; review the exact retirement set")
+        settings_hash = exercise_receipt["retirement"]["settings_sha256"]
+        if matrix["effective_settings_sha256"] != settings_hash:
+            raise ApplyError("effective settings changed after the retirement exercise")
+    else:
+        if not args.recovery_archive or not args.exercise_receipt or not args.retirement_receipt:
+            raise ApplyError("verify evidence requires the archive and both prior receipts")
+        _, exercise_receipt = completed_retirement_receipt(args.exercise_receipt, "exercise_legacy_input_retirement", "exercised")
+        _, retirement_receipt = completed_retirement_receipt(args.retirement_receipt, "retire_legacy_inputs", "retired")
+        archive, manifest, archive_hash = validate_retirement_archive(args.recovery_archive)
+        reconstruction_hash = retirement_receipt["retirement"]["detached_reconstruction_sha256"]
+        retirement_absent((*LEGACY_INPUTS, *OBSOLETE_BACKUPS))
+        live_inputs = retirement_receipt["retirement"]["live_inputs"]
+        backups = retirement_receipt["retirement"]["approved_backups"]
+        settings_hash = retirement_receipt["retirement"]["settings_sha256"]
+        if matrix["effective_settings_sha256"] != settings_hash:
+            raise ApplyError("effective settings changed after final retirement")
+    if archive_hash != Path(archive).name or manifest["manifest_sha256"] != inventory_digest({key: value for key, value in manifest.items() if key != "manifest_sha256"}):
+        raise ApplyError("legacy recovery archive binding changed")
+    evidence = {"schema_version": 1, "kind": KIND_RETIREMENT_EVIDENCE, "phase": phase,
+                "consumer_matrix_sha256": matrix_file_hash, "settings_sha256": settings_hash,
+                "recovery_archive_path": str(archive), "recovery_archive_sha256": archive_hash,
+                "recovery_manifest_sha256": manifest["manifest_sha256"], "detached_reconstruction_sha256": reconstruction_hash,
+                "consumer_absence_complete": True, "recovery_reconstruction_verified": True, "settings_unchanged": True,
+                "live_inputs_state": "absent" if phase == "verify" else "present",
+                "approved_backups_state": "absent" if phase == "verify" else "present",
+                "live_inputs": live_inputs, "approved_backups": backups,
+                "exercise_receipt_sha256": exercise_receipt.get("receipt_sha256", "") if exercise_receipt else "",
+                "retirement_receipt_sha256": retirement_receipt.get("receipt_sha256", "") if retirement_receipt else ""}
+    path = store_retirement_evidence(evidence)
+    append_audit("legacy-retirement.evidence", phase=phase, evidence_sha256=evidence["evidence_sha256"])
+    print(canonical({"schema_version": 1, "kind": KIND_RETIREMENT_EVIDENCE, "phase": phase,
+                     "evidence_sha256": evidence["evidence_sha256"], "path": str(path), "recovery_archive": str(archive)}))
 
 
 def verification_recovery_manifest(args):
@@ -4507,12 +4942,337 @@ def verification_execute(args, intent):
         raise ApplyError("verification failed or receipt storage is incomplete; inspect evidence and obtain fresh approval; do not retry the used request: " + str(error)) from error
 
 
+RETIREMENT_BINDING_FIELDS = VERIFICATION_BINDING_FIELDS | {"retirement_evidence_path"}
+
+
+def retirement_reference_from_evidence(evidence):
+    return {key: value for key, value in evidence.items() if key not in {"schema_version", "kind"}}
+
+
+def find_retirement_receipt(digest, action, result):
+    matches = list(EXECUTION_ROOT.glob("*/" + digest + ".json"))
+    if len(matches) != 1:
+        raise ApplyError("Plan v9 prior execution receipt is absent or ambiguous")
+    return completed_retirement_receipt(matches[0], action, result)[1]
+
+
+def retirement_assert_reference(plan):
+    reference = plan["legacy_retirement"]
+    evidence_path = RETIREMENT_EVIDENCE_ROOT / (reference["evidence_sha256"] + ".json")
+    _, evidence = resolve_hashed(evidence_path, RETIREMENT_EVIDENCE_ROOT, "evidence_sha256")
+    if retirement_reference_from_evidence(evidence) != reference:
+        raise ApplyError("Plan v9 retirement evidence changed")
+    matrix_path = RETIREMENT_MATRIX_ROOT / (reference["consumer_matrix_sha256"] + ".json")
+    matrix, matrix_hash = retirement_matrix(matrix_path)
+    if matrix_hash != reference["consumer_matrix_sha256"] or matrix["effective_settings_sha256"] != reference["settings_sha256"]:
+        raise ApplyError("Plan v9 consumer matrix or effective settings changed")
+    archive, manifest, archive_hash = validate_retirement_archive(reference["recovery_archive_path"])
+    archived_metadata = [{key: item[key] for key in ("path", "sha256", "size", "uid", "gid", "mode", "nlink")} for item in manifest["files"]]
+    if (archive_hash != reference["recovery_archive_sha256"]
+            or manifest["manifest_sha256"] != reference["recovery_manifest_sha256"]
+            or archived_metadata != reference["live_inputs"]
+            or inventory_digest(archived_metadata) != reference["detached_reconstruction_sha256"]):
+        raise ApplyError("Plan v9 protected recovery archive differs from its exact binding")
+    phase = reference["phase"]
+    if phase in {"exercise", "retire"}:
+        if [retirement_metadata(path) for path in LEGACY_INPUTS] != reference["live_inputs"]:
+            raise ApplyError("live legacy input bytes or metadata changed")
+        if [retirement_metadata(path) for path in OBSOLETE_BACKUPS] != reference["approved_backups"]:
+            raise ApplyError("approved obsolete backup bytes or metadata changed")
+        if phase == "retire":
+            extras = sorted(set(PRIVATE_ROOT.glob("platform-resources.yml.*.bak")) - set(OBSOLETE_BACKUPS))
+            if extras:
+                raise ApplyError("another platform-resources backup exists; final retirement is refused")
+            exercise = find_retirement_receipt(reference["exercise_receipt_sha256"], "exercise_legacy_input_retirement", "exercised")
+            if exercise["retirement"]["recovery_archive_sha256"] != archive_hash:
+                raise ApplyError("exercise receipt binds another recovery archive")
+    else:
+        retirement_absent((*LEGACY_INPUTS, *OBSOLETE_BACKUPS))
+        find_retirement_receipt(reference["exercise_receipt_sha256"], "exercise_legacy_input_retirement", "exercised")
+        retired = find_retirement_receipt(reference["retirement_receipt_sha256"], "retire_legacy_inputs", "retired")
+        if retired["retirement"]["recovery_archive_sha256"] != archive_hash:
+            raise ApplyError("retirement receipt binds another recovery archive")
+    return evidence, matrix, archive, manifest
+
+
+def run_bound_retirement_matrix(plan, nonce):
+    work = new_box_work(nonce + "-consumer-matrix")
+    account = pwd.getpwnam("smith")
+    os.chown(work, account.pw_uid, account.pw_gid); work.chmod(0o700)
+    try:
+        inventory_path = work / "inventory.json"
+        registry_path = work / "registry.json"
+        for path, value in (
+            (inventory_path, plan["inventory"]),
+            (registry_path, {"valid": True, "engine": plan["engine"], "projection": plan["projection"]["registry"]}),
+        ):
+            path.write_text(canonical(value) + "\n"); path.chmod(0o600)
+        result = run_plan_as_controller([
+            REPO_ROOT / "ansible/bin/compare-instance-input-absence",
+            "--plan", PLAN_ROOT / plan["instance"]["commit"] / (plan["plan_sha256"] + ".json"),
+            "--inventory-projection", inventory_path, "--registry-projection", registry_path,
+            "--output-directory", work,
+        ])
+        if result.returncode != 0:
+            raise ApplyError("complete legacy-input absence consumer matrix failed")
+        try:
+            matrix = json.loads(result.stdout, object_pairs_hook=unique_object)
+        except json.JSONDecodeError as error:
+            raise ApplyError("complete consumer matrix returned invalid JSON") from error
+        checked, matrix_hash = retirement_matrix(work / "result.json")
+        if matrix != checked or matrix_hash != plan["legacy_retirement"]["consumer_matrix_sha256"]:
+            raise ApplyError("complete consumer matrix differs from Plan v9")
+        return matrix
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def retirement_collect(args, nonce):
+    collected = verification_collect(args, nonce)
+    plan_path = collected["binding"]["plan_path"]
+    _, plan, _ = verify_plan_v9(plan_path)
+    evidence, _matrix, _archive, _manifest = retirement_assert_reference(plan)
+    run_bound_retirement_matrix(plan, nonce)
+    collected["retirement"] = plan["legacy_retirement"]
+    collected["phase"] = evidence["phase"]
+    return collected
+
+
+def retirement_intent(collected, nonce, issued):
+    phase = collected["phase"]
+    action = {"exercise": "exercise_legacy_input_retirement", "retire": "retire_legacy_inputs", "verify": "verify_legacy_retirement"}[phase]
+    rollback = {"exercise": "restore_exact_legacy_inputs", "retire": "recovery_archive_only", "verify": "no_mutation"}[phase]
+    return {"schema_version": 1, "kind": KIND_RETIREMENT_INTENT, "action": action,
+            "executor": RETIREMENT_EXECUTOR, "rollback_type": rollback,
+            "phase": phase, "plan_sha256": collected["evidence"]["plan_sha256"],
+            **{key: collected[key] for key in ("evidence", "retirement", "controller_pair", "action_groups", "private_commit", "engine_commit")},
+            "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + dt.timedelta(minutes=10))}
+
+
+def validate_retirement_intent(intent):
+    fields = {"schema_version", "kind", "action", "executor", "rollback_type", "phase", "plan_sha256",
+              "evidence", "retirement", "controller_pair", "action_groups", "private_commit", "engine_commit",
+              "nonce", "issued_at", "expires_at"}
+    actions = {"exercise": ("exercise_legacy_input_retirement", "restore_exact_legacy_inputs"),
+               "retire": ("retire_legacy_inputs", "recovery_archive_only"),
+               "verify": ("verify_legacy_retirement", "no_mutation")}
+    phase = intent.get("phase")
+    if (set(intent) != fields or intent.get("schema_version") != 1 or intent.get("kind") != KIND_RETIREMENT_INTENT
+            or intent.get("executor") != RETIREMENT_EXECUTOR or phase not in actions
+            or (intent.get("action"), intent.get("rollback_type")) != actions[phase]):
+        raise ApplyError("legacy retirement intent contains unknown fields or action")
+    evidence = intent.get("evidence")
+    if (not isinstance(evidence, dict) or set(evidence) != VERIFICATION_EVIDENCE_FIELDS
+            or any(not isinstance(value, str) or not DIGEST_RE.fullmatch(value) for value in evidence.values())
+            or intent["plan_sha256"] != evidence["plan_sha256"]):
+        raise ApplyError("legacy retirement verification evidence is incomplete")
+    retirement = intent.get("retirement")
+    retirement_fields = {
+        "phase", "evidence_sha256", "consumer_matrix_sha256", "settings_sha256",
+        "recovery_archive_path", "recovery_archive_sha256", "recovery_manifest_sha256",
+        "detached_reconstruction_sha256", "consumer_absence_complete",
+        "recovery_reconstruction_verified", "settings_unchanged", "live_inputs_state",
+        "approved_backups_state", "live_inputs", "approved_backups",
+        "exercise_receipt_sha256", "retirement_receipt_sha256",
+    }
+    if (not isinstance(retirement, dict) or set(retirement) != retirement_fields
+            or retirement.get("phase") != phase
+            or any(retirement.get(field) is not True for field in (
+                "consumer_absence_complete", "recovery_reconstruction_verified", "settings_unchanged"))
+            or any(not DIGEST_RE.fullmatch(retirement.get(field, "")) for field in (
+                "evidence_sha256", "consumer_matrix_sha256", "settings_sha256",
+                "recovery_archive_sha256", "recovery_manifest_sha256",
+                "detached_reconstruction_sha256"))
+            or not isinstance(retirement.get("recovery_archive_path"), str)
+            or not retirement["recovery_archive_path"].startswith(str(RETIREMENT_ARCHIVE_ROOT) + "/")):
+        raise ApplyError("legacy retirement reference is missing or has another phase")
+    validate_retirement_file_set(retirement.get("live_inputs"), LEGACY_INPUTS)
+    validate_retirement_file_set(retirement.get("approved_backups"), OBSOLETE_BACKUPS)
+    expected_states = {
+        "exercise": ("present", "present", "", ""),
+        "retire": ("present", "present", "digest", ""),
+        "verify": ("absent", "absent", "digest", "digest"),
+    }
+    live_state, backup_state, exercise_receipt, retirement_receipt = expected_states[phase]
+    if (retirement["live_inputs_state"] != live_state
+            or retirement["approved_backups_state"] != backup_state
+            or (exercise_receipt == "digest") != bool(DIGEST_RE.fullmatch(retirement["exercise_receipt_sha256"]))
+            or (retirement_receipt == "digest") != bool(DIGEST_RE.fullmatch(retirement["retirement_receipt_sha256"]))):
+        raise ApplyError("legacy retirement reference has invalid phase state or receipt bindings")
+    groups = intent.get("action_groups")
+    if (not isinstance(groups, list) or len(groups) != 7 or groups[-1] != {
+            "id": RETIREMENT_GROUP, "operation": actions[phase][0], "scopes": ["legacy_private_inputs"],
+            "executor": RETIREMENT_EXECUTOR, "rollback_type": actions[phase][1]}):
+        raise ApplyError("legacy retirement intent does not bind the closed lifecycle group")
+    pair = intent.get("controller_pair")
+    if not isinstance(pair, dict) or set(pair) != {"active", "standby"} or pair["active"] == pair["standby"]:
+        raise ApplyError("legacy retirement controller pair is incomplete")
+    for value in pair.values():
+        if not isinstance(value, dict) or set(value) != {"box", "hostname"} or not BOX_RE.fullmatch(value.get("box", "")) or value.get("hostname") != value["box"] + "-ops":
+            raise ApplyError("legacy retirement controller identity is invalid")
+    if any(not COMMIT_RE.fullmatch(intent.get(key, "")) for key in ("private_commit", "engine_commit")) or not NONCE_RE.fullmatch(intent.get("nonce", "")):
+        raise ApplyError("legacy retirement commit or nonce is invalid")
+    issued, expires = parse_utc(intent.get("issued_at"), "issued_at"), parse_utc(intent.get("expires_at"), "expires_at")
+    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+        raise ApplyError("legacy retirement intent is expired or has an invalid lifetime")
+
+
+def retirement_preflight(args):
+    nonce = secrets.token_urlsafe(18)
+    with authority_publication_lock():
+        collected = retirement_collect(args, nonce)
+        intent = retirement_intent(collected, nonce, now_utc())
+        validate_retirement_intent(intent)
+        ensure_dir(PREFLIGHT_ROOT)
+        directory = PREFLIGHT_ROOT / nonce
+        directory.mkdir(mode=0o700)
+        for name, value in (("binding", collected["binding"]), ("intent", intent)):
+            path = directory / (name + ".json")
+            path.write_text(canonical(value) + "\n"); path.chmod(0o600)
+    append_audit("legacy-retirement.preflight", phase=intent["phase"], nonce=nonce, plan_sha256=intent["plan_sha256"])
+    print(canonical(intent))
+
+
+def remove_retirement_paths(paths, expected):
+    if [retirement_metadata(path) for path in paths] != expected:
+        raise ApplyError("legacy retirement prior state changed before removal")
+    for path in paths:
+        path.unlink()
+        fsync_directory(path.parent)
+        if path.exists() or path.is_symlink():
+            raise ApplyError(f"legacy retirement could not remove {path}")
+
+
+def restore_legacy_inputs(reference, archive, manifest):
+    entries = {item["path"]: item for item in manifest["files"]}
+    for expected, path in zip(reference["live_inputs"], LEGACY_INPUTS):
+        if path.exists() or path.is_symlink():
+            if retirement_metadata(path) != expected:
+                raise ApplyError("automatic restoration found an unknown live input")
+            continue
+        item = entries[str(path)]
+        temporary = path.with_name("." + path.name + ".retirement-restore")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, int(item["mode"], 8))
+        try:
+            content = read_regular(archive / item["archive_name"], MAX_JSON)
+            write_all(descriptor, content); os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.chown(temporary, item["uid"], item["gid"]); temporary.chmod(int(item["mode"], 8))
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+    if [retirement_metadata(path) for path in LEGACY_INPUTS] != reference["live_inputs"]:
+        raise ApplyError("automatic restoration did not reproduce exact bytes and metadata")
+
+
+def store_retirement_receipt(receipt):
+    receipt["receipt_sha256"] = inventory_digest(receipt)
+    ensure_dir(EXECUTION_ROOT, 0o750)
+    directory = EXECUTION_ROOT / receipt["nonce"]
+    directory.mkdir(mode=0o750)
+    os.chown(directory, 0, smith_gid()); directory.chmod(0o750)
+    path = directory / (receipt["receipt_sha256"] + ".json")
+    content = (canonical(receipt) + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    try:
+        write_all(descriptor, content); os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chown(path, 0, smith_gid()); path.chmod(0o440)
+    fsync_directory(path.parent)
+    return path
+
+
+def retirement_result_receipt(intent, result, recovery_result):
+    return {"schema_version": 7, "kind": "klokast.apply-execution.v7",
+            "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode()), "plan_sha256": intent["plan_sha256"],
+            "nonce": intent["nonce"], "action": intent["action"], "executor": RETIREMENT_EXECUTOR,
+            "action_group_id": RETIREMENT_GROUP, "action_groups": intent["action_groups"],
+            "controller_pair": intent["controller_pair"], "evidence": intent["evidence"], "retirement": intent["retirement"],
+            "result": result, "recovery_result": recovery_result,
+            "authority_state_sha256": intent["evidence"]["authority_state_sha256"], "finished_at": format_utc(now_utc())}
+
+
+def retirement_execute(args, intent):
+    validate_retirement_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed retirement intent differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    if set(binding) != RETIREMENT_BINDING_FIELDS:
+        raise ApplyError("protected retirement binding has unknown fields")
+    consume_nonce(intent)
+    namespace = argparse.Namespace(**{key: binding[field] for key, field in (
+        ("plan", "plan_path"), ("authority_state", "authority_path"),
+        ("controller_toolchain_receipt", "toolchain_path"), ("source_recovery_receipt", "recovery_path"),
+        ("instance_source_receipt", "source_path"), ("observation", "observation"), ("build_dir", "build_dir"),
+        ("retirement_evidence", "retirement_evidence_path"))})
+    phase = intent["phase"]
+    removal_started = False
+    restored = False
+    with authority_publication_lock():
+        current = retirement_collect(namespace, intent["nonce"] + "-execute")
+        if retirement_intent(current, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
+            raise ApplyError("approved retirement inputs, consumers, policy, controllers, or runners changed")
+        archive, manifest, _ = validate_retirement_archive(intent["retirement"]["recovery_archive_path"])
+        try:
+            if phase == "exercise":
+                removal_started = True
+                remove_retirement_paths(LEGACY_INPUTS, intent["retirement"]["live_inputs"])
+                absent = verification_collect(namespace, intent["nonce"] + "-absent")
+                if absent["evidence"] != intent["evidence"]:
+                    raise ApplyError("effective consumers changed while legacy inputs were absent")
+                run_bound_retirement_matrix(load_json(binding["plan_path"]), intent["nonce"] + "-absent")
+                restore_legacy_inputs(intent["retirement"], archive, manifest); restored = True
+                result, recovery_result = "exercised", "restored"
+            elif phase == "retire":
+                removal_started = True
+                remove_retirement_paths(LEGACY_INPUTS, intent["retirement"]["live_inputs"])
+                remove_retirement_paths(OBSOLETE_BACKUPS, intent["retirement"]["approved_backups"])
+                absent = verification_collect(namespace, intent["nonce"] + "-retired")
+                if absent["evidence"] != intent["evidence"]:
+                    raise ApplyError("effective consumers changed after final retirement")
+                run_bound_retirement_matrix(load_json(binding["plan_path"]), intent["nonce"] + "-retired")
+                retirement_absent((*LEGACY_INPUTS, *OBSOLETE_BACKUPS))
+                result, recovery_result = "retired", "archive_verified"
+            else:
+                retirement_absent((*LEGACY_INPUTS, *OBSOLETE_BACKUPS))
+                final = verification_collect(namespace, intent["nonce"] + "-verify")
+                if final["evidence"] != intent["evidence"]:
+                    raise ApplyError("retired-state verification differs from approved evidence")
+                run_bound_retirement_matrix(load_json(binding["plan_path"]), intent["nonce"] + "-verify")
+                result, recovery_result = "verified", "not_needed"
+            receipt = retirement_result_receipt(intent, result, recovery_result)
+            path = store_retirement_receipt(receipt)
+        except (ApplyError, OSError) as error:
+            if phase == "exercise" and removal_started and not restored:
+                try:
+                    restore_legacy_inputs(intent["retirement"], archive, manifest); restored = True
+                except (ApplyError, OSError) as recovery_error:
+                    raise ApplyError("retirement exercise failed and exact automatic restoration is not provable; recovery is required: " + str(recovery_error)) from error
+            if phase == "exercise" and restored:
+                try:
+                    failure = retirement_result_receipt(intent, "failed", "restored")
+                    store_retirement_receipt(failure)
+                except (ApplyError, OSError):
+                    pass
+                raise ApplyError("retirement exercise failed; exact legacy inputs were restored; obtain fresh evidence and approval: " + str(error)) from error
+            state = "retired files may have been removed" if phase == "retire" and removal_started else "retired state was unchanged"
+            raise ApplyError(f"legacy retirement failed or receipt storage is incomplete; {state}; inspect the recovery archive and obtain fresh approval; do not retry the used request: {error}") from error
+    append_audit("legacy-retirement.executed", phase=phase, nonce=intent["nonce"], result=result, receipt_sha256=receipt["receipt_sha256"])
+    print(canonical({"schema_version": 1, "result": result, "receipt_path": str(path),
+                     "authority_state_sha256": receipt["authority_state_sha256"]}))
+
+
 def evidence_kind(path):
     return load_json(path).get("kind")
 
 
 def preflight(args):
-    if evidence_kind(args.plan) == KIND_PLAN_V8:
+    if evidence_kind(args.plan) == KIND_PLAN_V9:
+        retirement_preflight(args)
+    elif evidence_kind(args.plan) == KIND_PLAN_V8:
         verification_preflight(args)
     elif evidence_kind(args.plan) == KIND_PLAN_V7 and load_json(args.plan).get("migration_target") == "inventory":
         inventory_preflight(args)
@@ -4545,6 +5305,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_RETIREMENT_INTENT:
+        retirement_execute(args, intent)
     elif intent.get("kind") == KIND_VERIFICATION_INTENT:
         verification_execute(args, intent)
     elif intent.get("kind") == KIND_INVENTORY_INTENT:
@@ -4571,6 +5333,12 @@ def parse_args(argv):
     commands.add_parser("controller-identity-status")
     commands.add_parser("registry-source-status")
     commands.add_parser("inventory-source-status")
+    retirement_evidence_parser = commands.add_parser("retirement-evidence")
+    retirement_evidence_parser.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
+    retirement_evidence_parser.add_argument("--consumer-matrix", required=True)
+    retirement_evidence_parser.add_argument("--recovery-archive")
+    retirement_evidence_parser.add_argument("--exercise-receipt")
+    retirement_evidence_parser.add_argument("--retirement-receipt")
     recovery_manifest_parser = commands.add_parser("recovery-manifest")
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
         recovery_manifest_parser.add_argument("--" + name, required=True)
@@ -4580,6 +5348,7 @@ def parse_args(argv):
         "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir",
     ):
         preflight_parser.add_argument(f"--{name}", required=True)
+    preflight_parser.add_argument("--retirement-evidence")
     execute_parser = commands.add_parser("execute")
     execute_parser.add_argument("--approval-intent", required=True)
     execute_parser.add_argument("--approval-signature", required=True)
@@ -4620,6 +5389,9 @@ def main(argv=None):
             print(canonical(inventory_source_status()))
         elif args.operation == "registry-source-status":
             print(canonical(registry_source_status()))
+        elif args.operation == "retirement-evidence":
+            with authority_publication_lock():
+                retirement_evidence_prepare(args)
         elif args.operation == "recovery-manifest":
             verification_recovery_manifest(args)
         elif args.operation == "preflight":

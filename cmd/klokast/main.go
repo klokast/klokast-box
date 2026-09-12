@@ -80,6 +80,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json] | klokast doctor --instance PATH --observation FILE [--json] | klokast registry --instance PATH --json | klokast inventory --instance PATH --json")
 	fmt.Fprintln(stderr, "instance-only: klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
+	fmt.Fprintln(stderr, "legacy retirement: klokast plan --legacy-retirement --retirement-phase exercise|retire|verify --retirement-evidence FILE --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
 	return 2
 }
 
@@ -180,6 +181,9 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	instanceOnly := flags.Bool("instance-only", false, "verify complete instance authority without compatibility inputs")
+	legacyRetirement := flags.Bool("legacy-retirement", false, "use the closed legacy-input retirement contract")
+	retirementPhase := flags.String("retirement-phase", "", "legacy retirement phase: exercise, retire, or verify")
+	retirementEvidence := flags.String("retirement-evidence", "", "path to Legacy Retirement Evidence v1")
 	instancePath := flags.String("instance", "", "path to a standalone instance repository")
 	deploymentPath := flags.String("compatibility-deployment", "", "path to the transitional deployment document")
 	registryPath := flags.String("compatibility-registry", "", "path to the transitional platform-resources registry")
@@ -187,13 +191,18 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
 	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
 	authorityState := flags.String("authority-state", "", "path to an Authority State v2, v3, or v4 JSON document")
-	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to a Controller Toolchain v5 receipt")
+	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to the required versioned Controller Toolchain receipt")
 	migrationTarget := flags.String("migration-target", "connectivity", "migration target: connectivity, controller-identity, registry, or inventory")
 	connectivityTarget := flags.String("connectivity-target", "non-controller", "connectivity target: non-controller or active-controller")
 	jsonOutput := flags.Bool("json", false, "write machine-readable output")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity" && *migrationTarget != "registry" && *migrationTarget != "inventory") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || (!*instanceOnly && (*deploymentPath == "" || *registryPath == "" || *controllerPath == "")) {
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity" && *migrationTarget != "registry" && *migrationTarget != "inventory") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || (!*instanceOnly && !*legacyRetirement && (*deploymentPath == "" || *registryPath == "" || *controllerPath == "")) {
 		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json]")
 		fmt.Fprintln(stderr, "instance-only: klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
+		fmt.Fprintln(stderr, "legacy retirement: klokast plan --legacy-retirement --retirement-phase exercise|retire|verify --retirement-evidence FILE --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
+		return 2
+	}
+	if *instanceOnly && *legacyRetirement {
+		fmt.Fprintln(stderr, "instance-only and legacy-retirement are mutually exclusive")
 		return 2
 	}
 	if *instanceOnly {
@@ -208,6 +217,22 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		*migrationTarget, *connectivityTarget = "", ""
+	}
+	if *legacyRetirement {
+		conflict := false
+		flags.Visit(func(f *flag.Flag) {
+			if strings.HasPrefix(f.Name, "compatibility-") || f.Name == "migration-target" || f.Name == "connectivity-target" || f.Name == "instance-only" {
+				conflict = true
+			}
+		})
+		if conflict || *observationPath == "" || *retirementEvidence == "" || (*retirementPhase != "exercise" && *retirementPhase != "retire" && *retirementPhase != "verify") {
+			fmt.Fprintln(stderr, "legacy-retirement requires a phase, retirement evidence, and observation; it rejects compatibility inputs and migration targets")
+			return 2
+		}
+		*migrationTarget, *connectivityTarget = "", ""
+	} else if *retirementPhase != "" || *retirementEvidence != "" {
+		fmt.Fprintln(stderr, "retirement-phase and retirement-evidence require --legacy-retirement")
+		return 2
 	}
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
 	if *observationPath == "" {
@@ -226,6 +251,9 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	}
 	result, err := deploymentplan.Build(deploymentplan.Options{
 		InstanceOnly:               *instanceOnly,
+		LegacyRetirement:           *legacyRetirement,
+		RetirementPhase:            *retirementPhase,
+		RetirementEvidence:         *retirementEvidence,
 		MigrationTarget:            *migrationTarget,
 		ConnectivityTarget:         *connectivityTarget,
 		InstancePath:               *instancePath,

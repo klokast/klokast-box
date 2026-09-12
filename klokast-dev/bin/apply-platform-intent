@@ -18,12 +18,14 @@ source_recovery=""
 source_receipt=""
 observation=""
 build_dir=""
+retirement_evidence=""
 
 usage() {
   cat <<EOF
 Usage: $0 --controller HOST --plan FILE --authority-state FILE \
   --controller-toolchain-receipt FILE --source-recovery-receipt FILE \
   --instance-source-receipt FILE --observation FILE --build-dir DIR \
+  [--retirement-evidence FILE] \
   [--check | --prove-replay-refusal]
 
 Add --repair-overlay-ipv6-direct to prepare the one closed ops-only IPv6
@@ -50,6 +52,7 @@ while [ "$#" -gt 0 ]; do
     --instance-source-receipt) source_receipt=$2; shift 2 ;;
     --observation) observation=$2; shift 2 ;;
     --build-dir) build_dir=$2; shift 2 ;;
+    --retirement-evidence) retirement_evidence=$2; shift 2 ;;
     --rollback-execution-receipt) rollback_execution=$2; shift 2 ;;
     --convert-authority-state) convert_authority=true; shift ;;
     --repair-overlay-ipv6-direct) repair_overlay=true; shift ;;
@@ -77,7 +80,7 @@ ksa_valid_controller "$controller" || ksa_die "--controller is required and must
 controller="$(ksa_resolve_controller "$controller")"
 if [ "$convert_authority" = true ]; then
   [ -n "$authority_state" ] || ksa_die "--authority-state is required for conversion"
-  for absent in "$plan" "$toolchain" "$source_recovery" "$source_receipt" "$observation" "$build_dir"; do
+  for absent in "$plan" "$toolchain" "$source_recovery" "$source_receipt" "$observation" "$build_dir" "$retirement_evidence"; do
     [ -z "$absent" ] || ksa_die "authority conversion accepts only controller and authority-state evidence"
   done
 else
@@ -139,13 +142,18 @@ SH
 else
   tailscale ssh "smith@$controller" sh -s -- \
     "$plan" "$authority_state" "$toolchain" "$source_recovery" \
-    "$source_receipt" "$observation" "$build_dir" >"$intent" <<'SH'
+    "$source_receipt" "$observation" "$build_dir" "$retirement_evidence" >"$intent" <<'SH'
 set -eu
 cd "$HOME/src/klokast/klokast-box"
-exec ansible/bin/platform-apply preflight \
+retirement_evidence=$8
+set -- ansible/bin/platform-apply preflight \
   --plan "$1" --authority-state "$2" --controller-toolchain-receipt "$3" \
   --source-recovery-receipt "$4" --instance-source-receipt "$5" \
   --observation "$6" --build-dir "$7"
+if [ -n "$retirement_evidence" ]; then
+  set -- "$@" --retirement-evidence "$retirement_evidence"
+fi
+exec "$@"
 SH
 fi
 
@@ -163,6 +171,15 @@ if kind == "klokast.authority-conversion-intent.v1":
 elif kind == "klokast.instance-verification-intent.v1":
     if value.get("action") != "verify_instance_authority" or value.get("executor") != "instance_verification_v1" or value.get("rollback_type") != "no_mutation" or len(value.get("action_groups", [])) != 6:
         raise SystemExit("controller returned an unsupported instance verification intent")
+elif kind == "klokast.legacy-input-retirement-intent.v1":
+    actions = {
+        "exercise": ("exercise_legacy_input_retirement", "restore_exact_legacy_inputs"),
+        "retire": ("retire_legacy_inputs", "recovery_archive_only"),
+        "verify": ("verify_legacy_retirement", "no_mutation"),
+    }
+    phase = value.get("phase")
+    if (value.get("action"), value.get("rollback_type")) != actions.get(phase) or value.get("executor") != "legacy_input_retirement_v1" or len(value.get("action_groups", [])) != 7:
+        raise SystemExit("controller returned an unsupported legacy retirement intent")
 elif kind == "klokast.inventory-source-intent.v1":
     if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority"} or value.get("executor") != "inventory_source_v1" or value.get("rollback_type") != "no_mutation":
         raise SystemExit("controller returned an unsupported inventory source intent")
@@ -253,7 +270,12 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     intent = json.load(handle)
 with open(sys.argv[2], encoding="utf-8") as handle:
     result = json.load(handle)
-expected = "verified" if intent["action"] == "verify_instance_authority" else "success"
+expected = {
+    "verify_instance_authority": "verified",
+    "exercise_legacy_input_retirement": "exercised",
+    "retire_legacy_inputs": "retired",
+    "verify_legacy_retirement": "verified",
+}.get(intent["action"], "success")
 if (
     result.get("schema_version") != 1
     or result.get("result") != expected
@@ -278,7 +300,7 @@ PY
       adopt_instance_specification)
         expected_refusal="ksa-apply: authority state is not active"
         ;;
-      verify_instance_authority|controller_box_source)
+      verify_instance_authority|controller_box_source|exercise_legacy_input_retirement|retire_legacy_inputs|verify_legacy_retirement)
         expected_refusal="ksa-apply: Apply intent nonce was already used"
         ;;
       repair_overlay_ipv6_direct)

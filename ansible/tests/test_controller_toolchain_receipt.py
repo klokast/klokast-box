@@ -132,6 +132,11 @@ class ControllerToolchainReceiptTest(unittest.TestCase):
                     with self.assertRaisesRegex(self.mod.ToolchainError, "differs"):
                         self.mod.build_receipt(root)
 
+    def test_current_receipt_is_controller_toolchain_v8(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('"schema_version": 8', source)
+        self.assertIn('"kind": "klokast.controller-toolchain.v8"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

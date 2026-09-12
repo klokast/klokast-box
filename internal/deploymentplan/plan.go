@@ -21,6 +21,9 @@ import (
 
 type Options struct {
 	InstanceOnly               bool
+	LegacyRetirement           bool
+	RetirementPhase            string
+	RetirementEvidence         string
 	MigrationTarget            string
 	ConnectivityTarget         string
 	InstancePath               string
@@ -50,6 +53,7 @@ type Artifact struct {
 	InstanceSource      instancesource.Reference     `json:"instance_source"`
 	AuthorityState      AuthorityStateReference      `json:"authority_state"`
 	ControllerToolchain ToolchainReference           `json:"controller_toolchain"`
+	LegacyRetirement   *LegacyRetirementReference     `json:"legacy_retirement,omitempty"`
 	Inputs              []planner.InputDigest        `json:"inputs"`
 	CompatibilityInputs []planner.CompatibilityInput `json:"compatibility_inputs"`
 	Projection          *planner.Projection          `json:"projection,omitempty"`
@@ -139,6 +143,9 @@ type Refusal struct {
 }
 
 func Build(options Options, engine contract.Engine) (Artifact, error) {
+	if options.LegacyRetirement {
+		return buildLegacyRetirement(options, engine)
+	}
 	if options.InstanceOnly {
 		return buildInstanceOnly(options, engine)
 	}

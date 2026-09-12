@@ -56,3 +56,12 @@ func TestHistoricalToolchainsRemainClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestToolchainV8UsesTheClosedCurrentComponents(t *testing.T) {
+	receipt := validReceipt(t)
+	receipt.SchemaVersion, receipt.Kind = 8, KindV8
+	receipt.ReceiptSHA256, _ = Hash(receipt)
+	if err := Validate(receipt, receipt.EngineCommit); err != nil {
+		t.Fatal(err)
+	}
+}

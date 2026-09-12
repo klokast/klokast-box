@@ -22,7 +22,7 @@ const VerificationExecutor = "instance_verification_v1"
 func (a Artifact) MarshalJSON() ([]byte, error) {
 	type plain Artifact
 	content, err := json.Marshal(plain(a))
-	if err != nil || a.SchemaVersion != 8 {
+	if err != nil || (a.SchemaVersion != 8 && a.SchemaVersion != 9) {
 		return content, err
 	}
 	var fields map[string]json.RawMessage
@@ -36,12 +36,16 @@ func (a Artifact) MarshalJSON() ([]byte, error) {
 }
 
 func buildInstanceOnly(options Options, engine contract.Engine) (Artifact, error) {
-	a := Artifact{SchemaVersion: 8, Kind: "klokast.plan.v8", HealthScope: "standard_substrate_v1",
+	return buildCompleteInstancePlan(options, engine, 8, "klokast.plan.v8", 7)
+}
+
+func buildCompleteInstancePlan(options Options, engine contract.Engine, schemaVersion int, kind string, toolchainVersion int) (Artifact, error) {
+	a := Artifact{SchemaVersion: schemaVersion, Kind: kind, HealthScope: "standard_substrate_v1",
 		Engine: planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
 		Inputs: []planner.InputDigest{}, Authorities: []AuthorityAssignment{}, Actions: []Action{},
 		ActionGroups: []ActionGroup{}, Refusals: []Refusal{}, Diagnostics: []contract.Diagnostic{}}
 	if options.MigrationTarget != "" || options.ConnectivityTarget != "" || options.CompatibilityDeployment != "" || options.CompatibilityRegistry != "" || options.CompatibilityControllerHA != "" {
-		return a, fmt.Errorf("instance-only planning rejects compatibility inputs and migration targets")
+		return a, fmt.Errorf("complete instance planning rejects compatibility inputs and migration targets")
 	}
 	snapshot, checked, err := contract.Load(options.InstancePath, engine)
 	if err != nil {
@@ -85,8 +89,8 @@ func buildInstanceOnly(options Options, engine contract.Engine) (Artifact, error
 	if err != nil {
 		return a, err
 	}
-	if receipt.SchemaVersion != 7 {
-		return a, fmt.Errorf("Plan v8 requires Controller Toolchain v7")
+	if receipt.SchemaVersion != toolchainVersion {
+		return a, fmt.Errorf("Plan v%d requires Controller Toolchain v%d", schemaVersion, toolchainVersion)
 	}
 	a.ControllerToolchain = ToolchainReference{ReceiptSHA256: receipt.ReceiptSHA256, EngineCommit: receipt.EngineCommit}
 	if state.Kind != authoritystate.KindV5 || !authorityGroupsMatchProjection(state, a.Projection) || len(state.SettingGroups) != 6 || a.Inventory == nil {
@@ -101,7 +105,7 @@ func buildInstanceOnly(options Options, engine contract.Engine) (Artifact, error
 		a.ActionGroups = append(a.ActionGroups, ActionGroup{ID: group.ID, Operation: "verify_instance_authority", Scopes: group.Scopes, Executor: VerificationExecutor, RollbackType: "no_mutation"})
 		for _, scope := range group.Scopes {
 			a.Actions = append(a.Actions, Action{ID: actionID("verify_instance_authority", scope), Scope: scope, Operation: "verify_instance_authority", AuthorityBefore: group.Source, AuthorityAfter: group.Source, Executor: VerificationExecutor,
-				Preconditions: []string{"exact_plan_v8_revalidated", "complete_instance_ownership", "read_only_consumers_verified"}, Rollback: Rollback{Strategy: "no_mutation", Authority: group.Source}})
+				Preconditions: []string{fmt.Sprintf("exact_plan_v%d_revalidated", schemaVersion), "complete_instance_ownership", "read_only_consumers_verified"}, Rollback: Rollback{Strategy: "no_mutation", Authority: group.Source}})
 		}
 	}
 	source, diagnostics, err := instancesource.Load(options.InstanceSourceReceipt, time.Now().UTC())

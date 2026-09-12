@@ -91,4 +91,81 @@ func checkInstanceOnly(t *testing.T, previous Options, state authoritystate.Stat
 	}
 	content = canonicalTestJSON(t, state)
 	os.WriteFile(options.AuthorityState, content, 0600)
+	checkLegacyRetirement(t, previous, state)
+}
+
+func checkLegacyRetirement(t *testing.T, previous Options, state authoritystate.StateV2) {
+	t.Helper()
+	receipt, err := toolchain.Load(previous.ControllerToolchainReceipt, testCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.SchemaVersion, receipt.Kind = 8, toolchain.KindV8
+	receipt.ReceiptSHA256, _ = toolchain.Hash(receipt)
+	receiptPath := filepath.Join(t.TempDir(), "toolchain-v8.json")
+	if err := os.WriteFile(receiptPath, canonicalTestJSON(t, receipt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file := func(path string, index int) RetirementFileReference {
+		return RetirementFileReference{Path: path, SHA256: fmt.Sprintf("%064x", index), Size: int64(index), UID: 1000, GID: 1000, Mode: "0600", NLink: 1}
+	}
+	evidence := RetirementEvidence{
+		SchemaVersion: 1, Kind: RetirementEvidenceKind, Phase: "exercise",
+		ConsumerMatrixSHA256: strings.Repeat("1", 64), SettingsSHA256: strings.Repeat("2", 64),
+		RecoveryArchivePath: "/var/lib/klokast/legacy-input-recovery/" + strings.Repeat("3", 64),
+		RecoveryArchiveSHA256: strings.Repeat("3", 64), RecoveryManifestSHA256: strings.Repeat("4", 64),
+		DetachedReconstructionSHA256: strings.Repeat("5", 64), ConsumerAbsenceComplete: true,
+		RecoveryReconstructionVerified: true, SettingsUnchanged: true, LiveInputsState: "present", ApprovedBackupsState: "present",
+	}
+	for index, path := range legacyInputPaths {
+		evidence.LiveInputs = append(evidence.LiveInputs, file(path, index+1))
+	}
+	for index, name := range obsoleteBackupNames {
+		evidence.ApprovedBackups = append(evidence.ApprovedBackups, file(filepath.Join("/home/smith/private/klokast", name), index+10))
+	}
+	writeEvidence := func(value RetirementEvidence) string {
+		value.EvidenceSHA256, err = retirementEvidenceHash(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), value.Phase+".json")
+		if err := os.WriteFile(path, canonicalTestJSON(t, value), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	base := Options{LegacyRetirement: true, InstancePath: previous.InstancePath, ObservationPath: previous.ObservationPath,
+		InstanceSourceReceipt: previous.InstanceSourceReceipt, AuthorityState: previous.AuthorityState, ControllerToolchainReceipt: receiptPath}
+	base.RetirementPhase, base.RetirementEvidence = "exercise", writeEvidence(evidence)
+	exercise, err := Build(base, testEngine)
+	if err != nil || !exercise.Deployable || exercise.SchemaVersion != 9 || exercise.LegacyRemovalReady || len(exercise.ActionGroups) != 7 {
+		t.Fatalf("exercise Plan v9: %v %#v", err, exercise)
+	}
+	group := actionGroup(exercise, LegacyRetirementGroupID)
+	if group.Operation != "exercise_legacy_input_retirement" || group.Executor != LegacyRetirementExecutor {
+		t.Fatalf("exercise lifecycle group is not closed: %#v", group)
+	}
+	evidence.Phase, evidence.ExerciseReceiptSHA256 = "retire", strings.Repeat("6", 64)
+	base.RetirementPhase, base.RetirementEvidence = "retire", writeEvidence(evidence)
+	retire, err := Build(base, testEngine)
+	if err != nil || !retire.LegacyRemovalReady || actionGroup(retire, LegacyRetirementGroupID).Operation != "retire_legacy_inputs" {
+		t.Fatalf("retire Plan v9: %v %#v", err, retire)
+	}
+	evidence.Phase, evidence.LiveInputsState, evidence.ApprovedBackupsState = "verify", "absent", "absent"
+	evidence.RetirementReceiptSHA256 = strings.Repeat("7", 64)
+	base.RetirementPhase, base.RetirementEvidence = "verify", writeEvidence(evidence)
+	verify, err := Build(base, testEngine)
+	if err != nil || !verify.LegacyRemovalReady || actionGroup(verify, LegacyRetirementGroupID).Operation != "verify_legacy_retirement" {
+		t.Fatalf("verify Plan v9: %v %#v", err, verify)
+	}
+	bad := base
+	bad.MigrationTarget = "inventory"
+	if _, err := Build(bad, testEngine); err == nil {
+		t.Fatal("Plan v9 accepted a migration target")
+	}
+	bad = base
+	bad.RetirementPhase = "exercise"
+	if _, err := Build(bad, testEngine); err == nil {
+		t.Fatal("Plan v9 accepted evidence from another phase")
+	}
 }

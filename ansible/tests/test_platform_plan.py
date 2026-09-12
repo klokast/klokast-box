@@ -198,6 +198,29 @@ class PlatformPlanTest(unittest.TestCase):
         self.assertIn('run(["doas", "rm", "-f", target_temporary], check=False)', source)
         self.assertNotIn("os.replace", source)
 
+    def test_legacy_retirement_is_a_separate_closed_mode(self):
+        common = [
+            "--build-dir", "/build", "--instance", "/instance",
+            "--observation", "/observation", "--instance-source-receipt", "/source",
+            "--authority-state", "/authority", "--controller-toolchain-receipt", "/toolchain",
+        ]
+        args = self.mod.parse_args([
+            "--legacy-retirement", "--retirement-phase", "exercise",
+            "--retirement-evidence", "/evidence", *common,
+        ])
+        self.assertTrue(args.legacy_retirement)
+        self.assertEqual(args.retirement_phase, "exercise")
+        for extra in (
+            ["--instance-only"],
+            ["--migration-target", "inventory"],
+            ["--compatibility-registry", "/legacy"],
+        ):
+            with self.assertRaises(SystemExit):
+                self.mod.parse_args([
+                    "--legacy-retirement", "--retirement-phase", "retire",
+                    "--retirement-evidence", "/evidence", *extra, *common,
+                ])
+
 
 if __name__ == "__main__":
     unittest.main()

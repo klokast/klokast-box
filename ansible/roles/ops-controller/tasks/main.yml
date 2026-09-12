@@ -580,6 +580,9 @@
     - {path: /var/lib/klokast/controller-toolchains, group: "{{ ops_infra_user }}", mode: "0750"}
     - {path: /var/lib/klokast/private-source-recoveries, group: "{{ ops_infra_user }}", mode: "0750"}
     - {path: /var/lib/klokast/instance-recovery-manifests, group: root, mode: "0700"}
+    - {path: /var/lib/klokast/legacy-input-recovery, group: root, mode: "0700"}
+    - {path: /var/lib/klokast/legacy-input-retirement-evidence, group: "{{ ops_infra_user }}", mode: "0750"}
+    - {path: /var/lib/klokast/legacy-input-retirement-matrices, group: "{{ ops_infra_user }}", mode: "0750"}
     - {path: /var/lib/klokast/apply-preflights, group: root, mode: "0700"}
     - {path: /var/lib/klokast/apply-executions, group: "{{ ops_infra_user }}", mode: "0750"}
     - {path: /var/lib/klokast/apply-rollback-material, group: root, mode: "0700"}

@@ -19,11 +19,18 @@ def common_evidence(parser):
     parser.add_argument("--instance-source-receipt", required=True)
     parser.add_argument("--observation", required=True)
     parser.add_argument("--build-dir", required=True)
+    parser.add_argument("--retirement-evidence")
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
+    retirement_evidence = commands.add_parser("retirement-evidence")
+    retirement_evidence.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
+    retirement_evidence.add_argument("--consumer-matrix", required=True)
+    retirement_evidence.add_argument("--recovery-archive")
+    retirement_evidence.add_argument("--exercise-receipt")
+    retirement_evidence.add_argument("--retirement-receipt")
     preflight = commands.add_parser("preflight")
     common_evidence(preflight)
     common_evidence(commands.add_parser("recovery-manifest"))
@@ -63,12 +70,20 @@ def main(argv=None):
         print("platform-apply: installed ksa-apply is missing", file=sys.stderr)
         return 1
     command = ["sudo", "-n", INSTALLED, args.operation]
-    if args.operation in {"preflight", "recovery-manifest"}:
+    if args.operation == "retirement-evidence":
+        command.extend(["--phase", args.phase, "--consumer-matrix", args.consumer_matrix])
+        for name in ("recovery_archive", "exercise_receipt", "retirement_receipt"):
+            value = getattr(args, name)
+            if value:
+                command.extend(["--" + name.replace("_", "-"), value])
+    elif args.operation in {"preflight", "recovery-manifest"}:
         for name in (
             "plan", "authority_state", "controller_toolchain_receipt",
             "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
         ):
             command.extend(["--" + name.replace("_", "-"), getattr(args, name)])
+        if args.retirement_evidence:
+            command.extend(["--retirement-evidence", args.retirement_evidence])
     elif args.operation == "overlay-repair":
         if not args.prepare:
             print("platform-apply: overlay-repair requires --prepare", file=sys.stderr)

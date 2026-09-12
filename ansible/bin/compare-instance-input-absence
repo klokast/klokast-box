@@ -77,6 +77,15 @@ compiler.registry_source_input=lambda args:reader.read_registry(reader.REGISTRY,
 if '--registry' not in sys.argv: sys.argv[1:1]=['--registry',str(reader.REGISTRY)]
 compiler.main()
 ''');compiler.chmod(0o700)
+            registry_client = view/'platform-registry'
+            registry_client.write_text(prelude+'''
+reader=module('registry_client_reader','ansible/bin/platform-registry')
+reader.REGISTRY=root/'private/platform-resources.yml'
+reader.INSTANCE=root/'private/instance/klokast-instance.json'
+status={'schema_version':1,'kind':'klokast.registry-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':registry}
+if sys.argv[1]=='assert-writable': raise SystemExit('adopted registry is read-only')
+print(json.dumps(reader.read_registry(reader.REGISTRY,status),sort_keys=True))
+''');registry_client.chmod(0o700)
             dynamic = view/'inventory-reader'
             dynamic.write_text(prelude+'''
 reader=module('inventory_reader','ansible/bin/platform-inventory')
@@ -109,8 +118,17 @@ reader.load_config=forbidden
 reader.run=lambda *args,**kwargs:SimpleNamespace(returncode=0,stdout=json.dumps(status),stderr='')
 reader.main(['resolve-active'])
 ''');controller.chmod(0o700)
+            guest = view/'guest-reader'
+            guest.write_text(prelude+'''
+guest=module('guest_consumer','ansible/bin/platform-guest')
+def invoke_compiler(argv,**kwargs):
+    command=[str(root/'compiler'),*map(str,argv[3:])]
+    return __import__('subprocess').run(command,cwd=root,text=True,capture_output=True)
+guest.run=invoke_compiler
+guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
+''');guest.chmod(0o700)
             def invoke(argv,label,json_output=True):
-                completed=subprocess.run([str(v) for v in argv],cwd=view,env={**env,'ANSIBLE_CONFIG':str(view/'ansible/ansible.cfg')},text=True,capture_output=True)
+                completed=subprocess.run([str(v) for v in argv],cwd=view,env={**env,'PATH':str(view)+os.pathsep+env['PATH'],'ANSIBLE_CONFIG':str(view/'ansible/ansible.cfg')},text=True,capture_output=True)
                 (output/(("absent-" if absent else "present-")+label+'.stderr')).write_text(completed.stderr)
                 if completed.returncode: raise ValueError(label+' failed in isolated view; inspect private logs')
                 value=json.loads(completed.stdout) if json_output else completed.stdout.strip()
@@ -125,10 +143,21 @@ reader.main(['resolve-active'])
                        'compiler':invoke([compiler,'show'],'compiler'),
                        'box_configs':invoke([compiler,'show-box-configs'],'box-configs'),
                        'mapping':invoke([map_reader],'mapping'),
-                       'controller':invoke([controller],'controller',False)}
+                       'controller':invoke([controller],'controller',False),
+                       'platform-app':invoke([view/'ansible/bin/platform-app','--registry',view/'private/platform-resources.yml','list'],'platform-app',False),
+                       'platform-guest':invoke([guest],'platform-guest',False)}
             if consumers['controller'] != controller_pair['active']['hostname']:
                 raise ValueError('normal controller resolution differs from the checked instance pair')
             consumers['routers']={box:invoke([compiler,'--box',box,'show-box-access-vars'],'router-'+box) for box in inventory['boxes']}
+            app_views={}
+            for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich'):
+                app_views[app]=invoke([compiler,'--app',app,'show'],'app-'+app)
+            consumers.update(app_views)
+            consumers['platform-check']=consumers['box_configs']
+            consumers['tailnet-rendering']={
+                'resources': consumers['compiler'].get('tailnet_policy_resources',[]),
+                'airunners': inventory.get('airunners',[]),
+            }
             results.append(consumers)
             # Ansible role variables can contain repository-relative paths. Both
             # views have identical declared bytes; runtime file provenance alone

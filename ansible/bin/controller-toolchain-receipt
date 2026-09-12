@@ -132,8 +132,8 @@ def build_receipt(build_dir):
         "installed_sha256": binary_digest,
     })
     receipt = {
-        "schema_version": 7,
-        "kind": "klokast.controller-toolchain.v7",
+        "schema_version": 8,
+        "kind": "klokast.controller-toolchain.v8",
         "engine_commit": commit,
         "public_checkout_clean": True,
         "public_checkout_commit": commit,

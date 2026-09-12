@@ -21,6 +21,7 @@ INSTANCE_SOURCE_ROOT = Path("/var/lib/klokast/instance-sources")
 AUTHORITY_STATE_ROOT = Path("/var/lib/klokast/authority-states")
 AUTHORITY_STATE_POINTER = Path("/var/lib/klokast/active-authority-state")
 TOOLCHAIN_ROOT = Path("/var/lib/klokast/controller-toolchains")
+RETIREMENT_EVIDENCE_ROOT = Path("/var/lib/klokast/legacy-input-retirement-evidence")
 ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 OPERATION_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -196,7 +197,10 @@ def resolve_hashed_evidence(value, root, label, *, commit_directory=False):
         document = json.loads(content)
     except json.JSONDecodeError as error:
         raise PlanError(f"--{label} is not valid JSON") from error
-    hash_field = "authority_state_sha256" if label == "authority-state" else "receipt_sha256"
+    hash_field = {
+        "authority-state": "authority_state_sha256",
+        "retirement-evidence": "evidence_sha256",
+    }.get(label, "receipt_sha256")
     if document.get(hash_field) != digest:
         raise PlanError(f"--{label} content does not match its immutable path")
     return resolved, document
@@ -286,7 +290,7 @@ def verify_plan(content):
         plan = json.loads(content)
     except json.JSONDecodeError as error:
         raise PlanError("klokast returned invalid Plan v5 JSON") from error
-    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4"), (5, "klokast.plan.v5"), (6, "klokast.plan.v6"), (7, "klokast.plan.v7"), (8, "klokast.plan.v8")}:
+    if (plan.get("schema_version"), plan.get("kind")) not in {(3, "klokast.plan.v3"), (4, "klokast.plan.v4"), (5, "klokast.plan.v5"), (6, "klokast.plan.v6"), (7, "klokast.plan.v7"), (8, "klokast.plan.v8"), (9, "klokast.plan.v9")}:
         raise PlanError("klokast returned an unsupported plan artifact")
     if not plan.get("valid"):
         raise PlanError("klokast did not produce a valid plan artifact")
@@ -352,6 +356,9 @@ def install_plan(plan, content):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--instance-only", action="store_true")
+    parser.add_argument("--legacy-retirement", action="store_true")
+    parser.add_argument("--retirement-phase", choices=("exercise", "retire", "verify"))
+    parser.add_argument("--retirement-evidence")
     parser.add_argument("--migration-target", choices=("connectivity", "controller-identity", "registry", "inventory"), default=None)
     parser.add_argument("--connectivity-target", choices=("non-controller", "active-controller"), default=None)
     parser.add_argument("--build-dir", required=True)
@@ -365,12 +372,17 @@ def parse_args(argv):
     parser.add_argument("--controller-toolchain-receipt", required=True)
     args = parser.parse_args(argv)
     compatibility = [args.compatibility_deployment, args.compatibility_registry, args.compatibility_controller_ha]
+    if args.instance_only and args.legacy_retirement:
+        parser.error("--instance-only and --legacy-retirement are mutually exclusive")
     if args.instance_only:
         if any(value is not None for value in [*compatibility, args.migration_target, args.connectivity_target]):
             parser.error("--instance-only rejects compatibility inputs and migration-target flags")
+    elif args.legacy_retirement:
+        if any(value is not None for value in [*compatibility, args.migration_target, args.connectivity_target]) or not args.retirement_phase or not args.retirement_evidence:
+            parser.error("--legacy-retirement requires phase and evidence and rejects compatibility and migration flags")
     elif not all(compatibility):
         parser.error("compatibility planning requires all three compatibility inputs")
-    if not args.instance_only:
+    if not args.instance_only and not args.legacy_retirement:
         args.migration_target = args.migration_target or "connectivity"
         args.connectivity_target = args.connectivity_target or "non-controller"
     return args
@@ -388,6 +400,15 @@ def main(argv=None):
         toolchain_receipt, toolchain = resolve_toolchain_receipt(
             args.controller_toolchain_receipt, commit
         )
+        if args.legacy_retirement and (toolchain.get("schema_version"), toolchain.get("kind")) != (8, "klokast.controller-toolchain.v8"):
+            raise PlanError("legacy retirement requires Controller Toolchain v8")
+        retirement_evidence = None
+        if args.legacy_retirement:
+            retirement_evidence, _ = resolve_hashed_evidence(
+                args.retirement_evidence,
+                RETIREMENT_EVIDENCE_ROOT,
+                "retirement-evidence",
+            )
         plan_arguments = [
             "--instance", args.instance,
             "--observation", args.observation,
@@ -397,6 +418,12 @@ def main(argv=None):
         ]
         if args.instance_only:
             plan_arguments.append("--instance-only")
+        elif args.legacy_retirement:
+            plan_arguments.extend([
+                "--legacy-retirement",
+                "--retirement-phase", args.retirement_phase,
+                "--retirement-evidence", retirement_evidence,
+            ])
         else:
             plan_arguments.extend(["--compatibility-deployment", args.compatibility_deployment,
                                    "--compatibility-registry", args.compatibility_registry,
@@ -410,6 +437,8 @@ def main(argv=None):
         plan, content = create_plan(binary, plan_arguments)
         if args.instance_only and plan.get("kind") != "klokast.plan.v8":
             raise PlanError("instance-only planning requires Plan v8")
+        if args.legacy_retirement and (plan.get("kind") != "klokast.plan.v9" or plan.get("legacy_retirement", {}).get("phase") != args.retirement_phase):
+            raise PlanError("legacy retirement requires the selected Plan v9 phase")
         if args.migration_target == "inventory" and (plan.get("kind") != "klokast.plan.v7" or plan.get("migration_target") != "inventory"):
             raise PlanError("inventory source requires explicit Plan v7 selection")
         if args.migration_target == "registry" and (plan.get("kind") not in {"klokast.plan.v6", "klokast.plan.v7"} or plan.get("migration_target") != "registry"):
