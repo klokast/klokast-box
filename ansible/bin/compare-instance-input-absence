@@ -22,6 +22,17 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+def stable_consumer(value, output_root):
+    """Remove per-run isolated-view paths from consumer evidence."""
+    if isinstance(value, str):
+        return value.replace(str(output_root), "<isolated-output>")
+    if isinstance(value, list):
+        return [stable_consumer(item, output_root) for item in value]
+    if isinstance(value, dict):
+        return {key: stable_consumer(item, output_root) for key, item in value.items()}
+    return value
+
+
 def compare(inventory, registry, output, controller_pair):
     projection = registry['projection']
     digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
@@ -134,7 +145,7 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
                 value=json.loads(completed.stdout) if json_output else completed.stdout.strip()
                 if isinstance(value,dict):
                     value.pop('registry_path',None);value.pop('registry_sha256',None)
-                return value
+                return stable_consumer(value, output)
             from_path=view/'ansible/lib'
             sys.path.insert(0,str(from_path))
             from platform_inventory import normalized_inventory
