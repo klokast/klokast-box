@@ -151,7 +151,15 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             consumers['routers']={box:invoke([compiler,'--box',box,'show-box-access-vars'],'router-'+box) for box in inventory['boxes']}
             app_views={}
             for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich'):
-                app_views[app]=invoke([compiler,'--app',app,'show'],'app-'+app)
+                # The instance projection may intentionally omit a supported
+                # wrapper when that application has no desired-state entry.
+                # Record that adopted-source absence explicitly so every
+                # wrapper remains covered without asking the compiler to
+                # invent a registry entry.
+                if app not in registry.get('projection', {}).get('registry', {}).get('apps', {}):
+                    app_views[app]={'source':'instance_specification_v1','status':'absent'}
+                else:
+                    app_views[app]=invoke([compiler,'--app',app,'show'],'app-'+app)
             consumers.update(app_views)
             consumers['platform-check']=consumers['box_configs']
             consumers['tailnet-rendering']={
