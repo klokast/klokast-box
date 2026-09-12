@@ -2,6 +2,27 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-12 - Retirement evidence failed before human approval
+
+The retirement checker retained its random temporary directory in manifest
+paths and command logs. A partial correction then left an undefined variable
+in recursive normalization. The runner's Python suite skipped the actual
+Ansible consumer test, so its success did not prove this path. Require both a
+dependency-free nested normalization test and repeated actual consumer runs
+on the controller before the next promotion handoff.
+
+The root matrix caller also passed an existing output directory to a checker
+that requires a new directory, and staged root-only projections for a smith
+process. Keep the projections root-owned and group-readable; give the checker
+a separate output parent owned by smith and a new child directory. Verify
+this account boundary before signing a retirement intent.
+
+Use an isolated public checkout and explicit `--compatibility-inventory` for
+sealed builder bootstrap. Keep the canonical controller checkout at its
+active engine until promotion preparation is complete. The agent must supply
+the verified build operation with the Mac command; no human build placeholder
+is a completed approval handoff. No signed retirement has passed yet.
+
 # 2026-09-09 - Inventory source adoption completed
 
 Engine `cf8cf5f` passed signed adoption, fresh signed verification, exact replay

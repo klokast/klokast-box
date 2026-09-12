@@ -3,6 +3,8 @@
 import copy
 import datetime as dt
 import io
+import json
+import os
 import tempfile
 import unittest
 from contextlib import nullcontext, redirect_stdout
@@ -18,6 +20,41 @@ class LegacyInputRetirementTest(unittest.TestCase):
         self.base = test_instance_verification.InstanceVerificationTest()
         self.base.setUp()
         self.m = self.base.m
+
+    def test_matrix_handoff_has_readable_projections_and_new_output(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary) / 'matrix'
+            work.mkdir()
+            matrix = {'schema_version': 1, 'kind': 'klokast.instance-input-absence.v1',
+                      'equal': True, 'temporary_views_removed': True,
+                      'effective_settings_sha256': 'a' * 64,
+                      'consumers': sorted(m.RETIREMENT_CONSUMERS)}
+            content = m.canonical(matrix) + '\n'
+            plan = self.plan()
+            plan['plan_sha256'] = 'b' * 64
+            plan['legacy_retirement']['consumer_matrix_sha256'] = m.sha256_bytes(content.encode())
+            owners = {}
+            def invoke(argv):
+                for option, value in (('--inventory-projection', plan['inventory']),
+                        ('--registry-projection', {'valid': True, 'engine': plan['engine'],
+                                                  'projection': plan['projection']['registry']})):
+                    path = Path(argv[argv.index(option) + 1])
+                    self.assertEqual(json.loads(path.read_text()), value)
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o440)
+                    self.assertEqual(owners[path], (0, os.getgid()))
+                output = Path(argv[argv.index('--output-directory') + 1])
+                self.assertFalse(output.exists())
+                self.assertEqual(output.parent.stat().st_mode & 0o777, 0o700)
+                output.mkdir()
+                (output/'result.json').write_text(content)
+                return SimpleNamespace(returncode=0, stdout=content)
+            with patch.object(m, 'new_box_work', return_value=work), patch.object(
+                    m.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())), patch.object(
+                    m.os, 'chown', side_effect=lambda path, uid, gid: owners.update({path: (uid, gid)})), patch.object(
+                    m, 'run_plan_as_controller', side_effect=invoke):
+                self.assertEqual(m.run_bound_retirement_matrix(plan, 'test-matrix'), matrix)
+            self.assertFalse(work.exists())
 
     def reference(self, phase="exercise"):
         m = self.m

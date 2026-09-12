@@ -4998,20 +4998,26 @@ def retirement_assert_reference(plan):
 def run_bound_retirement_matrix(plan, nonce):
     work = new_box_work(nonce + "-consumer-matrix")
     account = pwd.getpwnam("smith")
-    os.chown(work, account.pw_uid, account.pw_gid); work.chmod(0o700)
     try:
+        # Keep Plan projections protected while the unprivileged checker owns
+        # its output. The checker creates a new output directory itself.
+        consumer_work = work / "consumer"
+        consumer_work.mkdir(mode=0o700)
+        os.chown(consumer_work, account.pw_uid, account.pw_gid)
+        output = consumer_work / "output"
         inventory_path = work / "inventory.json"
         registry_path = work / "registry.json"
         for path, value in (
             (inventory_path, plan["inventory"]),
             (registry_path, {"valid": True, "engine": plan["engine"], "projection": plan["projection"]["registry"]}),
         ):
-            path.write_text(canonical(value) + "\n"); path.chmod(0o600)
+            path.write_text(canonical(value) + "\n")
+            os.chown(path, 0, account.pw_gid); path.chmod(0o440)
         result = run_plan_as_controller([
             REPO_ROOT / "ansible/bin/compare-instance-input-absence",
             "--plan", PLAN_ROOT / plan["instance"]["commit"] / (plan["plan_sha256"] + ".json"),
             "--inventory-projection", inventory_path, "--registry-projection", registry_path,
-            "--output-directory", work,
+            "--output-directory", output,
         ])
         if result.returncode != 0:
             raise ApplyError("complete legacy-input absence consumer matrix failed")
@@ -5019,7 +5025,7 @@ def run_bound_retirement_matrix(plan, nonce):
             matrix = json.loads(result.stdout, object_pairs_hook=unique_object)
         except json.JSONDecodeError as error:
             raise ApplyError("complete consumer matrix returned invalid JSON") from error
-        checked, matrix_hash = retirement_matrix(work / "result.json")
+        checked, matrix_hash = retirement_matrix(output / "result.json")
         if matrix != checked or matrix_hash != plan["legacy_retirement"]["consumer_matrix_sha256"]:
             raise ApplyError("complete consumer matrix differs from Plan v9")
         return matrix

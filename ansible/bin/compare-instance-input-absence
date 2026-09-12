@@ -27,9 +27,9 @@ def stable_consumer(value, temporary_root):
     if isinstance(value, str):
         return value.replace(str(temporary_root), "<isolated-output>")
     if isinstance(value, list):
-        return [stable_consumer(item, output_root) for item in value]
+        return [stable_consumer(item, temporary_root) for item in value]
     if isinstance(value, dict):
-        return {key: stable_consumer(item, output_root) for key, item in value.items()}
+        return {key: stable_consumer(item, temporary_root) for key, item in value.items()}
     return value
 
 

@@ -11,6 +11,23 @@ import unittest
 ROOT=Path(__file__).resolve().parents[2]
 
 
+class StableConsumerTest(unittest.TestCase):
+    def test_nested_paths_are_stable_across_runs_without_hiding_settings(self):
+        loader = SourceFileLoader('stable_absence', str(ROOT/'ansible/bin/compare-instance-input-absence'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        results = []
+        for root in (Path('/tmp/one/isolated-inputs-abc'), Path('/tmp/two/isolated-inputs-xyz')):
+            value = {'manifests': [{'path': str(root/'view/apps/music/platform-resources.yml')}],
+                     'enabled': False, 'other_path': '/srv/music'}
+            results.append(module.stable_consumer(value, root))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0]['manifests'][0]['path'], '<isolated-output>/view/apps/music/platform-resources.yml')
+        self.assertEqual(results[0]['other_path'], '/srv/music')
+        self.assertIs(results[0]['enabled'], False)
+
+
 @unittest.skipUnless(shutil.which('ansible-inventory'), 'Ansible is required for the actual consumer check')
 class InputAbsenceTest(unittest.TestCase):
     def test_effective_settings_are_equal_without_legacy_tree_or_yaml(self):
@@ -35,5 +52,11 @@ class InputAbsenceTest(unittest.TestCase):
             data=json.loads((Path(tmp)/'absent.json').read_text())
             self.assertEqual(data['controller'],'boxb-ops')
             self.assertEqual(data['inventory']['hostvars']['boxa-ops']['ansible_memtotal_mb'],123)
+            # A new temporary view must produce the same signed matrix hash.
+            with tempfile.TemporaryDirectory() as second:
+                repeated = module.compare(inventory, registry, Path(second),
+                    {'active': {'box': 'boxb', 'hostname': 'boxb-ops'},
+                     'standby': {'box': 'boxa', 'hostname': 'boxa-ops'}})
+                self.assertEqual(result, repeated)
 
 if __name__=='__main__':unittest.main()
