@@ -1,0 +1,28 @@
+---
+# Separate human authorization on 2026-09-13, recorded in runbook 53.
+# Run from an isolated maintenance checkout on the active controller.
+# No tool installation, engine promotion, or signed retirement action.
+- name: Delete the nine explicitly authorized extra registry backups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require prepare or execute mode
+      ansible.builtin.assert:
+        that:
+          - extra_backup_mode | default('prepare') in ['prepare', 'execute']
+
+    - name: Check the exact files and optionally delete them under the controller lock
+      ansible.builtin.script:
+        cmd: >-
+          ../maintenance/delete-extra-registry-backups-20260913.py
+          {{ '--execute' if extra_backup_mode | default('prepare') == 'execute' else '' }}
+        executable: /usr/bin/python3
+      register: extra_backup_result
+      changed_when: extra_backup_mode | default('prepare') == 'execute'
+
+    - name: Report the result without backup contents
+      ansible.builtin.debug:
+        var: extra_backup_result.stdout
