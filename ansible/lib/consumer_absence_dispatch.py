@@ -18,8 +18,10 @@ def main(program):
     engine = fixtures['registry-source-status']['engine_commit']
 
     def record(boundary, value):
+        payload = dict(boundary=boundary, program=program)
+        payload.update(value)
         with Path(os.environ['KLOKAST_ABSENCE_TRACE']).open('a') as stream:
-            stream.write(json.dumps(stable(dict(boundary=boundary, program=program, **value), view), sort_keys=True) + '\n')
+            stream.write(json.dumps(stable(payload, view), sort_keys=True) + '\n')
 
     def digest(value):
         return hashlib.sha256(json.dumps(stable(value, view), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
