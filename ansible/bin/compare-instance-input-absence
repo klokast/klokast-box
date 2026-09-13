@@ -36,20 +36,20 @@ def stable_consumer(value, temporary_root):
     return value
 
 
-def differing_fields(left, right, prefix=''):
+def differing_fields(left, right, prefix=()):
     if isinstance(left, dict) and isinstance(right, dict):
         return [field for key in sorted(set(left) | set(right))
-                for field in differing_fields(left.get(key), right.get(key), prefix + '/' + str(key))]
+                for field in differing_fields(left.get(key), right.get(key), prefix + (key,))]
     if isinstance(left, list) and isinstance(right, list) and len(left) == len(right):
         return [field for index, (a, b) in enumerate(zip(left, right))
-                for field in differing_fields(a, b, prefix + '/' + str(index))]
+                for field in differing_fields(a, b, prefix + (index,))]
     return [prefix] if left != right else []
 
 
 def value_at(value, field):
-    for part in field.split('/')[1:]:
+    for part in field:
         if isinstance(value, list):
-            value = value[int(part)]
+            value = value[part]
         elif not isinstance(value, dict) or part not in value:
             return '<missing>'
         else:
@@ -198,7 +198,7 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             shutil.rmtree(view)
     if results[0] != results[1]:
         fields = differing_fields(results[0], results[1])[:10]
-        detail = '; '.join(field + '=' + repr(value_at(results[0], field)) + ' != ' +
+        detail = '; '.join('/' + '/'.join(map(str, field)) + '=' + repr(value_at(results[0], field)) + ' != ' +
                           repr(value_at(results[1], field)) for field in fields)
         raise ValueError('effective consumer settings differ with legacy inputs absent: ' + detail)
     return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
