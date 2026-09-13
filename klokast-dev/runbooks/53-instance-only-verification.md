@@ -1,12 +1,15 @@
 # Instance-only routine verification
 
-Status: installed; the authorized policy-comment repair is complete.
-Fresh normal and isolated-absence unsigned verification passed.
-No signed live acceptance is claimed.
+Status: Plan v8 signed verification and exact replay refusal passed on
+2026-09-12. The separate Plan v9 removal exercise passed on 2026-09-13 and
+restored the live inputs. Final retirement is blocked; see the
+[exercise record](#legacy-retirement-exercise-2026-09-13) below.
 The [design](../../doc/upstream-instance-target-architecture.md#117-instance-only-routine-verification)
-owns the dependency audit and gates. Baseline: engine `cf8cf5f`, Authority
-State v5 `8622695e`, final Plan `540bae24`. All six groups already use the
-instance. This procedure performs no source adoption.
+owns the dependency audit and gates. The historical Plan v8 acceptance used
+engine `1b08129` and Authority State v5 `8622695e`. All six groups use the
+instance. The Plan v8 procedure below performs no source adoption and cannot
+authorize retirement. Its absence evidence covers the named consumers, not
+every supported app-controller command or application health.
 
 From an isolated public checkout on the active controller, build the reviewed
 commit through `platform-builder build-klokast-cli`. Keep the canonical
@@ -125,8 +128,9 @@ corrects the comments separately from the read-only verification executor.
 
 After the refused preflight, private input bytes and metadata, both controller
 markers, both router configurations, inventory settings, and runner identity
-matched their baselines. No verification signature or execution receipt exists
-for this milestone. Legacy removal remains false.
+matched their baselines. At this preparation checkpoint, no verification
+signature or execution receipt existed for this milestone. Legacy removal
+remained false.
 
 An additional test ran the installed verifier in a private mount namespace.
 Its clean sparse public checkout excluded `ansible/inventory/`, and its private
@@ -216,7 +220,7 @@ remained present, and the namespace and temporary public view were removed.
 `completion-audit.json` records final input, protected-evidence, and cleanup
 checks. The unrelated August Huawei runtime directory remains preserved.
 
-Signed verification and exact signed replay refusal are still pending. The
+At this checkpoint, signed verification and exact replay refusal were pending. The
 unsigned preparation had no execution receipt; its later signed intent is
 permanently consumed after the failed revalidation below. Use fresh evidence
 with the existing trusted-Mac helper; do not treat this maintenance result or
@@ -260,4 +264,89 @@ The signed receipt is root-owned and canonical. No Authority State record,
 network configuration, service restart, application repair, or legacy-input
 deletion occurred. `legacy_removal_ready` remains false. The remaining work is
 the separate recovery and deletion gates recorded in section 11.7; this
-milestone is live-verified.
+milestone is live-verified for the consumers tested: installed source readers,
+inventory, compiler, mapping, controller resolution, router checks, and Tailnet
+verification. It did not test every supported app wrapper with inputs absent.
+
+## Legacy retirement exercise, 2026-09-13
+
+The active engine is `079019624ad811978a761ba3889401ec845d5f60`, with private
+commit `909699ab8db34e3ead708587f70164e8dca2cdae` and matching Controller
+Toolchain v8. Plan v9 adds the closed `legacy-input-retirement-v1` lifecycle
+group to six verification-only source groups. Instance Specification v1 and
+Authority State v5 are unchanged. Plans v1–v8 cannot authorize retirement.
+
+The trusted Mac signed the exercise. Execution Receipt v7 reports
+`exercised`, with `recovery_result: restored`, at `2026-09-13T05:45:05Z`:
+
+```text
+/var/lib/klokast/apply-executions/5nTqjywn-5bO9tTTGiItL18_/bd20bc19836d33aabc42a470102e2db3f8f14114d6340337b1a1b7988c6349ed.json
+```
+
+The receipt hash and restored input bytes, ownership, modes, sizes, and link
+counts were checked on the controller. The three approved backups also matched
+their recorded metadata. The human confirmed refusal of the exact signed
+replay. Authority State remains
+`8622695e9361d281620dc5f69d9b556f2ab637f748899985899d929cf3eaf188`.
+The exercise Plan retains `legacy_removal_ready: false`:
+
+```text
+/var/lib/klokast/plans/909699ab8db34e3ead708587f70164e8dca2cdae/376ad6cec0b9dbbd3776c71fc26649d1576d2e27b96ed08e6b3e452f160aaeb4.json
+```
+
+The protected recovery archive contains the exact three live input files,
+not the obsolete backups:
+
+```text
+/var/lib/klokast/legacy-input-recovery/a084037311ebf953e13f311af23fa7476446f531835645f0ac0a4a236bc4d032
+```
+
+After restoration, fresh source and recovery receipts, consumer comparison,
+and Observation refresh passed. The effective settings hash stayed
+`6aa99282bf52ef16dc219e046a8e73ffbd4b62f998c6b98890f3ce55f16a1672`.
+The Observation was refreshed at `2026-09-13T05:54:45Z`. The controller holds
+the fresh comparison under
+`/home/smith/private/klokast/evidence/retire-consumers.eOeMDN/` and the
+Observation at
+`/home/smith/private/klokast/evidence/retirement-final-observation.json`.
+
+Coverage limit: `compare-instance-input-absence` records app compiler views,
+or declared absence, under the nine app names. It does not invoke those nine
+app wrappers. Its `platform-check` entry reuses box-config output, and its
+Tailnet entry compares projected inputs rather than invoking the renderer.
+These entries must not be treated as complete wrapper execution evidence.
+Direct status, verify, approved-runtime-apply, and legacy-write-refusal tests
+still need complete absence coverage before final retirement approval.
+
+### Additional backup scope refusal
+
+Fresh `retirement-evidence --phase retire` refused with
+`another platform-resources backup exists; review the exact retirement set`.
+No final-retirement evidence or signature was produced. No live input or
+backup was removed by this preparation. The final deletion allowlist remains:
+
+- `platform-resources.yml.20260611T010611Z.bak`
+- `platform-resources.yml.20260611T011900Z.bak`
+- `platform-resources.yml.20260611T015423Z.bak`
+
+The following nine additional files exist in `/home/smith/private/klokast`.
+All were regular files with one link and owner/group `1002:1002` at inspection.
+This list records evidence; it does not authorize deletion or relocation.
+
+| Additional file | SHA-256 |
+| --- | --- |
+| `platform-resources.yml.20260611T020145Z.bak` | `ebb17e0e3a4c87350219246b95136662762bfd7356a321596e5562eb14fd3da4` |
+| `platform-resources.yml.20260611T073643Z.pre-k001-reboot.bak` | `d0d289b6b877ca79a5637a65c3faaf6472cea2546c344174985a36f00de265a7` |
+| `platform-resources.yml.20260611T091728Z.bak` | `40f7cb2c5f8856a0a94a62c5d1363bd5ad545ff41519f848856379ee0ac297cc` |
+| `platform-resources.yml.20260719T075235Z.bak` | `15e21c63dce00ba5ffda5420238dc47b6bf2a828f95e837642b6b0368806ad1f` |
+| `platform-resources.yml.20260719T080153Z.bak` | `f51f618f853aff02f882a76fc93ad8497245170e0812e90a27dc12787de340cf` |
+| `platform-resources.yml.20260808T110239Z.bak` | `f51f618f853aff02f882a76fc93ad8497245170e0812e90a27dc12787de340cf` |
+| `platform-resources.yml.20260820T152236Z.bak` | `d265a35661d9e93d16e18302061991b83ea5bd5b120eafb1e1f94bfdc438090e` |
+| `platform-resources.yml.20260823T235503Z.elementary-connectivity.bak` | `9acca978533a92022a4648c8333699332ce9a7cc8e19c7516f03b78792acc64d` |
+| `platform-resources.yml.pre-ap-20260608T053746Z.bak` | `6eafeb8c30194b42fc431729d26641fae876a7f9891b44b03e255c064c26242d` |
+
+Do not move these files to bypass the guard or expand its allowlist without
+human approval. The exercise does not check for extra backup names; final
+preparation does. Its success therefore does not establish final removal
+readiness. Follow the [current work queue](../../doc/upstream-instance-target-architecture.md#current-work-queue).
+This record is a documentation-only checkpoint, not final retirement acceptance.

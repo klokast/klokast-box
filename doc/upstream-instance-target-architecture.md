@@ -1691,8 +1691,8 @@ complete.
 | Registry compatibility checkpoint | `live-verified` | Engine `e12b426` passed sealed tests/build, private round-trip checks, and metadata-only promotion to private commit `de8e252`. Settings, source ownership, and controller identity stayed unchanged. |
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
 | Inventory and runner adoption | `live-verified` | Engine `cf8cf5f` and private commit `35577f92` passed signed adoption, fresh signed verification, exact replay refusal, protected evidence inspection, and final unchanged-setting checks on 2026-09-09. Final Plan `540bae24` reports six verification-only groups and no remaining legacy authority or pending adoption action. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09) holds the evidence. |
-| Instance-only routine operation | `live-verified` | Engine `1b08129` and Toolchain v7 are installed. The authorized comment repair, unsigned verification, signed verification, and exact replay refusal passed on 2026-09-12. Authority State v5 and all six settings remain unchanged. Section 11.7 owns the gates; [the runbook](../klokast-dev/runbooks/53-instance-only-verification.md#signed-acceptance-2026-09-12) records the evidence. Legacy removal remains unresolved. |
-| Legacy removal | `proposed` | Keep old files and recovery evidence until the exact removal and recovery gates are complete. No data deletion is inferred from migration authorization. |
+| Instance-only routine operation | `live-verified` | Historical acceptance used engine `1b08129` and Toolchain v7. The authorized comment repair, unsigned verification, signed verification, and exact replay refusal passed on 2026-09-12 for the tested consumers, not every supported app wrapper. Authority State v5 and all six settings remained unchanged. Section 11.7 owns the gates; [the runbook](../klokast-dev/runbooks/53-instance-only-verification.md#signed-acceptance-2026-09-12) records the evidence. |
+| Legacy removal | `implemented; exercise live-verified; retirement blocked` | Engine `0790196` and matching Toolchain v8 are active. The signed Plan v9 exercise restored the three live inputs exactly on 2026-09-13. Final preparation refused nine additional backups outside the deletion allowlist. Direct consumer absence coverage also remains incomplete. Keep the inputs and all recovery evidence; [the exercise record](../klokast-dev/runbooks/53-instance-only-verification.md#legacy-retirement-exercise-2026-09-13) defines the evidence and limits. |
 
 ### Current work queue
 
@@ -1700,12 +1700,26 @@ complete.
    The remaining legacy-owned setting-group list is empty. Preserve the
    [completed acceptance evidence](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09);
    do not repeat adoption or automatically deploy its documentation commit.
-2. Implement and verify the instance-only routine dependency change in section
-   11.7, then complete its existing human promotion and signed verification gates. Keep legacy removal `proposed` until its recovery,
-   rollback, observation, and exact live-action gates are complete. The human
-   authorized continued migration design and implementation without separate
-   scope-selection questions. This does not authorize deletion of retained
-   data or recovery evidence. Use the existing signed workflows for live actions.
+2. Preserve the completed Plan v8 acceptance in section 11.7. Its isolated
+   verification does not establish complete app-wrapper absence coverage.
+   Extend retirement tests to invoke each supported consumer and cover normal
+   status, verification, apply from approved intent, and legacy-write refusal.
+   Promote any required code correction through the sealed build and human
+   approval workflow; do not deploy documentation-only commits.
+3. Resolve the [additional backup scope refusal](../klokast-dev/runbooks/53-instance-only-verification.md#additional-backup-scope-refusal)
+   with the human. The current deletion authority covers only the original
+   three obsolete backups. Do not delete or relocate the nine extra files to
+   bypass the guard. The signed exercise has completed, with exact restoration;
+   it does not authorize final removal.
+4. After complete consumer evidence and an approved backup disposition, create
+   fresh evidence and obtain a separate signed Plan v9 retirement approval.
+   Keep six source groups verification-only and Authority State v5 unchanged.
+   Require the valid exercise receipt, detached reconstruction, and unchanged
+   settings before `legacy_removal_ready: true`. Then complete a fresh signed
+   absent-state verification, exact replay refusal, and final Plan v9. Record
+   final acceptance in a pushed documentation-only commit without deploying it.
+   Plans v1–v8 and the retained inventory stay available for explicit
+   compatibility, bootstrap, recovery, tests, and history, never normal fallback.
 
 Deferred work: direct-IPv6 repair and live first-box rollback and re-adoption
 testing. Neither blocks continued development. Keep their recovery code,

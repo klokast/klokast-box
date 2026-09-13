@@ -2,6 +2,30 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-13 - Retirement stopped at backup scope and consumer coverage gates
+
+Engine `0790196` completed the signed Plan v9 removal exercise and restored
+the three live inputs exactly. The human confirmed exact replay refusal.
+Fresh source recovery, consumer comparison, and Observation refresh passed.
+Final evidence preparation then refused nine extra matching backups outside
+the authorized three-file deletion list. The exercise checks the approved
+backups but does not reject extra names; final preparation does. Do not treat
+exercise success as final readiness or move files to bypass the guard. The
+[runbook](../klokast-dev/runbooks/53-instance-only-verification.md#additional-backup-scope-refusal)
+records the exact extra names and hashes. All remain in place pending human
+direction; no final removal or retirement signature occurred.
+
+Review also found that the absence matrix labels app compiler views as app
+consumers without invoking the wrappers. Its `platform-check` entry reuses
+box-config output, and its Tailnet entry uses projected inputs. Equality is
+valid for those data views, not proof of the complete requested command paths.
+Extend the matrix with actual wrapper status, verification, approved-intent
+apply, and desired-state-write refusal tests. Keep runtime mutations isolated.
+Do not request final removal approval until that evidence is complete. The
+[current work queue](upstream-instance-target-architecture.md#current-work-queue)
+owns the remaining gates. This checkpoint is documentation-only; keep the
+active engine at `0790196`.
+
 # 2026-09-12 - Retirement evidence failed before human approval
 
 The retirement checker retained its random temporary directory in manifest
@@ -21,7 +45,8 @@ Use an isolated public checkout and explicit `--compatibility-inventory` for
 sealed builder bootstrap. Keep the canonical controller checkout at its
 active engine until promotion preparation is complete. The agent must supply
 the verified build operation with the Mac command; no human build placeholder
-is a completed approval handoff. No signed retirement has passed yet.
+is a completed approval handoff. At this checkpoint, no signed retirement
+operation had passed. The September 13 record above supersedes that status.
 
 # 2026-09-09 - Inventory source adoption completed
 
