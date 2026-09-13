@@ -24,6 +24,15 @@ def main(program):
     def digest(value):
         return hashlib.sha256(json.dumps(stable(value, view), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
+    def input_digest(path):
+        path = Path(path)
+        files = sorted(p for p in path.rglob('*') if p.is_file()) if path.is_dir() else [path]
+        value = []
+        for item in files:
+            relative = str(item.relative_to(path)) if path.is_dir() else item.name
+            value.append((relative, hashlib.sha256(item.read_bytes()).hexdigest()))
+        return digest(value)
+
     if program in ('doas', 'sudo'):
         if len(argv) == 2 and argv[0] == '/usr/local/sbin/ksa-apply' and argv[1] in fixtures:
             record('source-broker', {'operation': argv[1]})
@@ -76,9 +85,20 @@ def main(program):
                 playbooks.append(dict(path=str(path), sha256=hashlib.sha256(stable(path.read_text(), view).encode()).hexdigest()))
         if not inventories or not playbooks:
             raise SystemExit('absence fixture requires actual inventory and playbook inputs')
-        checked = subprocess.run([os.environ['KLOKAST_ABSENCE_INVENTORY'], *inventories, '--list'],
-                                 text=True, capture_output=True, check=True)
-        graph = json.loads(checked.stdout)
+        sources = inventories[1::2]
+        cache = Path(os.environ['KLOKAST_ABSENCE_CACHE'])
+        cache.mkdir(exist_ok=True)
+        cache_key = digest([input_digest(source) for source in sources])
+        cached = cache / (cache_key + '.json')
+        try:
+            graph = json.loads(cached.read_text())
+        except FileNotFoundError:
+            checked = subprocess.run([os.environ['KLOKAST_ABSENCE_INVENTORY'], *inventories, '--list'],
+                                     text=True, capture_output=True, check=True)
+            graph = json.loads(checked.stdout)
+            temporary = cache / (cache_key + '.' + str(os.getpid()))
+            temporary.write_text(json.dumps(graph))
+            os.replace(temporary, cached)
         record('runtime-dispatch', {'args': argv, 'playbooks': playbooks,
                'variables_sha256': digest(variables), 'inventory_sha256': digest(graph)})
         return

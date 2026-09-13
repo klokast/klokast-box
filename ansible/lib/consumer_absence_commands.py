@@ -119,6 +119,7 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
     environment = {
         'PATH': str(bindir), 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1',
         'TMPDIR': str(view / 'runtime'), 'KLOKAST_ABSENCE_VIEW': str(view),
+        'KLOKAST_ABSENCE_CACHE': str(view.parent / 'inventory-cache'),
         'KLOKAST_ABSENCE_INVENTORY': real_inventory,
         'KLOKAST_MAGICDNS_SUFFIX': tailnet['magicdns_suffix'],
         'ANSIBLE_CONFIG': str(view / 'ansible/ansible.cfg'),
