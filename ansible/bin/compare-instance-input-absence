@@ -46,6 +46,12 @@ def differing_fields(left, right, prefix=''):
     return [prefix] if left != right else []
 
 
+def value_at(value, field):
+    for part in field.split('/')[1:]:
+        value = value[int(part)] if isinstance(value, list) else value[part]
+    return value
+
+
 def compare(inventory, registry, output, controller_pair, tailnet):
     projection = registry['projection']
     digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
@@ -186,8 +192,10 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             (output/('absent.json' if absent else 'present.json')).write_text(canonical(consumers)+'\n')
             shutil.rmtree(view)
     if results[0] != results[1]:
-        raise ValueError('effective consumer settings differ with legacy inputs absent: ' +
-                         ', '.join(differing_fields(results[0], results[1])[:20]))
+        fields = differing_fields(results[0], results[1])[:10]
+        detail = '; '.join(field + '=' + repr(value_at(results[0], field)) + ' != ' +
+                          repr(value_at(results[1], field)) for field in fields)
+        raise ValueError('effective consumer settings differ with legacy inputs absent: ' + detail)
     return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
             'consumers':sorted(results[0]),'effective_settings_sha256':digest(results[0]),
             'command_matrix_contract': CONTRACT,
