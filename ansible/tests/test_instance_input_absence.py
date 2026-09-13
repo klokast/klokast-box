@@ -12,6 +12,19 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 class StableConsumerTest(unittest.TestCase):
+    def test_command_paths_keep_operation_and_unrelated_data_paths(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'ansible/lib'))
+        from consumer_absence_commands import stable
+        view = Path('/tmp/fixture-view')
+        value = {'input': str(view / '.run/platform-resources/shared-guests-apply-abcdefgh/boxa.yml'),
+                 'data': '/srv/app/abcdefgh',
+                 'remote': '/home/neo/.cache/klokast-platform-resources/verify-12345678/desired.json'}
+        result = stable(value, view)
+        self.assertEqual(result['input'], '<view>/.run/platform-resources/shared-guests-apply-<temporary>/boxa.yml')
+        self.assertEqual(result['data'], value['data'])
+        self.assertIn('verify-<temporary>', result['remote'])
+
     def test_nested_paths_are_stable_across_runs_without_hiding_settings(self):
         loader = SourceFileLoader('stable_absence', str(ROOT/'ansible/bin/compare-instance-input-absence'))
         spec = importlib.util.spec_from_loader(loader.name, loader)

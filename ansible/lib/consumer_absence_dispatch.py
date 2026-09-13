@@ -21,6 +21,9 @@ def main(program):
         with Path(os.environ['KLOKAST_ABSENCE_TRACE']).open('a') as stream:
             stream.write(json.dumps(stable(dict(boundary=boundary, program=program, **value), view), sort_keys=True) + '\n')
 
+    def digest(value):
+        return hashlib.sha256(json.dumps(stable(value, view), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
     if program in ('doas', 'sudo'):
         if len(argv) == 2 and argv[0] == '/usr/local/sbin/ksa-apply' and argv[1] in fixtures:
             record('source-broker', {'operation': argv[1]})
@@ -70,14 +73,14 @@ def main(program):
                 variables.append(Path(value[1:]).read_text() if value.startswith('@') else value)
             if arg.endswith(('.yml', '.yaml')) and '/playbooks/' in arg:
                 path = Path(arg)
-                playbooks.append(dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+                playbooks.append(dict(path=str(path), sha256=hashlib.sha256(stable(path.read_text(), view).encode()).hexdigest()))
         if not inventories or not playbooks:
             raise SystemExit('absence fixture requires actual inventory and playbook inputs')
         checked = subprocess.run([os.environ['KLOKAST_ABSENCE_INVENTORY'], *inventories, '--list'],
                                  text=True, capture_output=True, check=True)
         graph = json.loads(checked.stdout)
         record('runtime-dispatch', {'args': argv, 'playbooks': playbooks,
-               'variables': variables, 'inventory': graph})
+               'variables_sha256': digest(variables), 'inventory_sha256': digest(graph)})
         return
     raise SystemExit('unrecognized absence fixture program: ' + program)
 

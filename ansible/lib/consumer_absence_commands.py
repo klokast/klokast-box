@@ -26,7 +26,13 @@ def stable(value, view):
     if isinstance(value, str):
         value = value.replace(str(view), '<view>')
         # Only test-created per-command temporary directories are normalized.
-        return re.sub(r'<view>/runtime/[^/\s"\']+', '<view>/runtime/<temporary>', value)
+        value = re.sub(r'<view>/runtime/[^/\s"\']+', '<view>/runtime/<temporary>', value)
+        # The real compiler stages requests in mkdtemp directories. Retain the
+        # operation prefix; normalize only its generated random suffix.
+        for root in ('<view>/.run/platform-resources/', '/home/neo/.cache/klokast-platform-resources/'):
+            value = re.sub(re.escape(root) + r'((?:(?:shared-guests|box-access)-)?(?:apply|verify)-)[a-z0-9_]{8}',
+                           lambda match: root + match[1] + '<temporary>', value)
+        return value
     if isinstance(value, list):
         return [stable(v, view) for v in value]
     if isinstance(value, dict):
@@ -134,6 +140,10 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
 
 def run_commands(view, registry, inventory, controller_pair, tailnet):
     env = prepare(view, registry, inventory, controller_pair, tailnet)
+    def private_snapshot():
+        return {str(p.relative_to(view / 'private')): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mode & 0o777)
+                for p in (view / 'private').rglob('*') if p.is_file()}
+    private_before = private_snapshot()
     records = {}
     traces = view / 'command-traces'
     traces.mkdir()
@@ -237,9 +247,12 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         raise ValueError('normal source reader did not refuse an alternate registry')
     records['registry/alternate-refusal'] = {'result': 'adopted-source-refusal'}
     invoke('compiler/explicit-compatibility', [compiler, '--registry', alternate, '--compatibility-registry', 'show'])
+    alternate.unlink()
     invoke('tailnet/render', [view / 'ansible/bin/render-tailscale-policy', '--instance',
            view / 'private/instance/klokast-instance.json', '--output', view / 'policy.hujson'])
     records['tailnet/render']['policy_sha256'] = hashlib.sha256((view / 'policy.hujson').read_bytes()).hexdigest()
+    if private_snapshot() != private_before:
+        raise ValueError('controller command changed private input bytes, modes, or file set')
     return dict(contract=CONTRACT, commands=records,
                 simulated_boundaries=['source-broker', 'approval', 'builder', 'runtime-dispatch'],
                 live_execution_authority=False)
