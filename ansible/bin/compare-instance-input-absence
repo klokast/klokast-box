@@ -36,6 +36,16 @@ def stable_consumer(value, temporary_root):
     return value
 
 
+def differing_fields(left, right, prefix=''):
+    if isinstance(left, dict) and isinstance(right, dict):
+        return [field for key in sorted(set(left) | set(right))
+                for field in differing_fields(left.get(key), right.get(key), prefix + '/' + str(key))]
+    if isinstance(left, list) and isinstance(right, list) and len(left) == len(right):
+        return [field for index, (a, b) in enumerate(zip(left, right))
+                for field in differing_fields(a, b, prefix + '/' + str(index))]
+    return [prefix] if left != right else []
+
+
 def compare(inventory, registry, output, controller_pair, tailnet):
     projection = registry['projection']
     digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
@@ -175,7 +185,9 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             # was excluded by normalized_inventory above.
             (output/('absent.json' if absent else 'present.json')).write_text(canonical(consumers)+'\n')
             shutil.rmtree(view)
-    if results[0] != results[1]: raise ValueError('effective consumer settings differ with legacy inputs absent')
+    if results[0] != results[1]:
+        raise ValueError('effective consumer settings differ with legacy inputs absent: ' +
+                         ', '.join(differing_fields(results[0], results[1])[:20]))
     return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
             'consumers':sorted(results[0]),'effective_settings_sha256':digest(results[0]),
             'command_matrix_contract': CONTRACT,

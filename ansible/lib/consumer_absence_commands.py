@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 
 APPS = ('household-vpn', 'local-ingress', 'music', 'print-server', 'torrent',
@@ -134,14 +135,17 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
 def run_commands(view, registry, inventory, controller_pair, tailnet):
     env = prepare(view, registry, inventory, controller_pair, tailnet)
     records = {}
-    trace = view / 'dispatch.jsonl'
+    traces = view / 'command-traces'
+    traces.mkdir()
     apps = registry['projection']['registry'].get('apps', {})
     boxes = inventory['boxes']
 
     def invoke(label, command, expected='success'):
+        trace = traces / (hashlib.sha256(label.encode()).hexdigest() + '.jsonl')
         trace.write_text('')
-        result = subprocess.run([str(x) for x in command], cwd=view, env=env,
-                                text=True, capture_output=True, timeout=120)
+        command_env = dict(env, KLOKAST_ABSENCE_TRACE=str(trace))
+        result = subprocess.run([str(x) for x in command], cwd=view, env=command_env,
+                                text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
         log = result.stdout + result.stderr
         if expected == 'success' and result.returncode:
             raise ValueError(f'{label}: wrapper failed ({result.returncode}): {log[-4000:]}')
@@ -160,7 +164,7 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         return result
 
     compiler = view / 'ansible/bin/platform-resources'
-    for app in APPS:
+    def app_commands(app):
         entry = apps.get(app) or {}
         placement = entry.get('placement') or {}
         app_boxes = placement.get('boxes') or [placement.get('active_master') or boxes[0]]
@@ -182,7 +186,7 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
             # The normal registry-side wrapper must run, even for absent apps.
             invoke(app + '/infra-prepare', [ctl, 'infra-prepare', *pair], expectation)
             if not enabled:
-                continue
+                return
             common += ['--resource-grant', view / 'approved-state/apps/nextcloud-v2/grant.json']
         for operation in ('verify', 'install'):
             args = list(common)
@@ -198,6 +202,8 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         if app in ('music', 'print-server'):
             invoke(app + '/preflight', [ctl, 'preflight', *common], expectation)
 
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(app_commands, APPS))
     appctl = view / 'ansible/bin/platform-app'
     guest = view / 'ansible/bin/platform-guest'
     invoke('platform-app/list', [appctl, 'list'])
@@ -208,7 +214,7 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         if operation == 'destroy':
             args += ['--yes', '--wipe-data']
         invoke('platform-app/' + operation, args, 'write-refusal')
-    for box in boxes:
+    def box_commands(box):
         for operation in ('list', 'verify', 'apply'):
             invoke('platform-guest/' + box + '/' + operation, [guest, operation, '--box', box])
         for operation in ('start', 'stop'):
@@ -217,15 +223,19 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         for target in ('dom0', 'router', 'podman', 'ops', 'resources'):
             invoke('platform-check/' + box + '/' + target,
                    [view / 'ansible/bin/platform-check', '--box', box, '--target', target])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(box_commands, boxes))
     # The legacy Immich destroy path must refuse before reading or changing files.
     invoke('immich/destroy', [view / 'apps/immich/bin/immichctl', 'destroy',
            '--active-master', boxes[0], '--passive-backup', boxes[1], '--yes', '--wipe-data'], 'write-refusal')
     alternate = view / 'private/alternate.yml'
     alternate.write_text('schema_version: 1\napps: {}\n')
-    result = subprocess.run([str(compiler), '--registry', str(alternate), 'show'],
-                            cwd=view, env=env, text=True, capture_output=True)
-    if not result.returncode or 'registry source verification failed' not in result.stderr:
-        raise ValueError('normal compiler accepted an alternate registry')
+    alternate_env = dict(env, KLOKAST_ABSENCE_TRACE=str(traces / 'alternate.jsonl'))
+    result = subprocess.run([str(view / 'ansible/bin/platform-registry'), 'read', '--registry', str(alternate)],
+                            cwd=view, env=alternate_env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
+    if not result.returncode or 'registry overrides cannot replace the adopted private-instance source' not in result.stderr:
+        raise ValueError('normal source reader did not refuse an alternate registry')
+    records['registry/alternate-refusal'] = {'result': 'adopted-source-refusal'}
     invoke('compiler/explicit-compatibility', [compiler, '--registry', alternate, '--compatibility-registry', 'show'])
     invoke('tailnet/render', [view / 'ansible/bin/render-tailscale-policy', '--instance',
            view / 'private/instance/klokast-instance.json', '--output', view / 'policy.hujson'])

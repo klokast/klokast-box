@@ -18,7 +18,7 @@ def main(program):
     engine = fixtures['registry-source-status']['engine_commit']
 
     def record(boundary, value):
-        with (view / 'dispatch.jsonl').open('a') as stream:
+        with Path(os.environ['KLOKAST_ABSENCE_TRACE']).open('a') as stream:
             stream.write(json.dumps(stable(dict(boundary=boundary, program=program, **value), view), sort_keys=True) + '\n')
 
     if program in ('doas', 'sudo'):
