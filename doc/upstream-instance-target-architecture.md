@@ -1692,7 +1692,7 @@ complete.
 | Registry source adoption | `live-verified` | Engine `db61bc7` and private commit `366efc19` passed signed adoption, fresh signed verification, exact replay refusal, and final unchanged-setting checks on 2026-09-08. Final Plan `2d2bfbe5` reports all five source groups as verification-only. Runbook 51 holds the completed evidence. |
 | Inventory and runner adoption | `live-verified` | Engine `cf8cf5f` and private commit `35577f92` passed signed adoption, fresh signed verification, exact replay refusal, protected evidence inspection, and final unchanged-setting checks on 2026-09-09. Final Plan `540bae24` reports six verification-only groups and no remaining legacy authority or pending adoption action. The [runbook](../klokast-dev/runbooks/52-inventory-source-adoption.md#acceptance-record-2026-09-09) holds the evidence. |
 | Instance-only routine operation | `live-verified` | Historical acceptance used engine `1b08129` and Toolchain v7. The authorized comment repair, unsigned verification, signed verification, and exact replay refusal passed on 2026-09-12 for the tested consumers, not every supported app wrapper. Authority State v5 and all six settings remained unchanged. Section 11.7 owns the gates; [the runbook](../klokast-dev/runbooks/53-instance-only-verification.md#signed-acceptance-2026-09-12) records the evidence. |
-| Legacy removal | `implemented; exercise live-verified; retirement blocked` | Engine `0790196` and matching Toolchain v8 are active. The signed Plan v9 exercise restored the three live inputs exactly on 2026-09-13. Final preparation refused nine additional backups outside the deletion allowlist. Direct consumer absence coverage also remains incomplete. Keep the inputs and all recovery evidence; [the exercise record](../klokast-dev/runbooks/53-instance-only-verification.md#legacy-retirement-exercise-2026-09-13) defines the evidence and limits. |
+| Legacy removal | `implemented; exercise live-verified; retirement blocked` | Engine `0790196` and matching Toolchain v8 are active. The signed Plan v9 exercise restored the three live inputs exactly on 2026-09-13. The human separately authorized deletion of the nine extra backups; that maintenance and its audit passed. Direct consumer absence coverage remains incomplete. Keep the live inputs, original three backups, and recovery evidence until signed retirement; [the exercise record](../klokast-dev/runbooks/53-instance-only-verification.md#legacy-retirement-exercise-2026-09-13) defines the evidence and limits. |
 
 ### Current work queue
 
@@ -1706,12 +1706,12 @@ complete.
    status, verification, apply from approved intent, and legacy-write refusal.
    Promote any required code correction through the sealed build and human
    approval workflow; do not deploy documentation-only commits.
-3. Resolve the [additional backup scope refusal](../klokast-dev/runbooks/53-instance-only-verification.md#additional-backup-scope-refusal)
-   with the human. The current deletion authority covers only the original
-   three obsolete backups. Do not delete or relocate the nine extra files to
-   bypass the guard. The signed exercise has completed, with exact restoration;
-   it does not authorize final removal.
-4. After complete consumer evidence and an approved backup disposition, create
+3. Preserve the [authorized extra backup deletion record](../klokast-dev/runbooks/53-instance-only-verification.md#authorized-extra-backup-deletion-2026-09-13).
+   The nine extra backups were permanently removed under separate human task
+   authorization. The signed retirement deletion list still contains only the
+   original three obsolete backups. The signed exercise has completed, with
+   exact restoration; neither operation authorizes final live-input removal.
+4. After complete consumer evidence, create
    fresh evidence and obtain a separate signed Plan v9 retirement approval.
    Keep six source groups verification-only and Authority State v5 unchanged.
    Require the valid exercise receipt, detached reconstruction, and unchanged

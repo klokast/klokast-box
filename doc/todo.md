@@ -2,7 +2,7 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
-# 2026-09-13 - Retirement stopped at backup scope and consumer coverage gates
+# 2026-09-13 - Extra backup scope resolved; consumer coverage remains incomplete
 
 Engine `0790196` completed the signed Plan v9 removal exercise and restored
 the three live inputs exactly. The human confirmed exact replay refusal.
@@ -12,8 +12,13 @@ the authorized three-file deletion list. The exercise checks the approved
 backups but does not reject extra names; final preparation does. Do not treat
 exercise success as final readiness or move files to bypass the guard. The
 [runbook](../klokast-dev/runbooks/53-instance-only-verification.md#additional-backup-scope-refusal)
-records the exact extra names and hashes. All remain in place pending human
-direction; no final removal or retirement signature occurred.
+records the exact extra names and hashes. The human then authorized permanent
+deletion of those nine files. The bounded Ansible maintenance in `ed2dbf4`
+completed under the installed controller lock, with exact prechecks and a
+metadata-only audit. The original three backups and three live inputs still
+match the exercise receipt; the recovery archive and Authority State remain
+unchanged. The [deletion record](../klokast-dev/runbooks/53-instance-only-verification.md#authorized-extra-backup-deletion-2026-09-13)
+holds the result. No final live-input removal or retirement signature occurred.
 
 Review also found that the absence matrix labels app compiler views as app
 consumers without invoking the wrappers. Its `platform-check` entry reuses
@@ -23,8 +28,8 @@ Extend the matrix with actual wrapper status, verification, approved-intent
 apply, and desired-state-write refusal tests. Keep runtime mutations isolated.
 Do not request final removal approval until that evidence is complete. The
 [current work queue](upstream-instance-target-architecture.md#current-work-queue)
-owns the remaining gates. This checkpoint is documentation-only; keep the
-active engine at `0790196`.
+owns the remaining gates. The maintenance task installed no tools and did not
+change the active engine `0790196`. Do not deploy its documentation update.
 
 # 2026-09-12 - Retirement evidence failed before human approval
 

@@ -329,7 +329,8 @@ backup was removed by this preparation. The final deletion allowlist remains:
 - `platform-resources.yml.20260611T011900Z.bak`
 - `platform-resources.yml.20260611T015423Z.bak`
 
-The following nine additional files exist in `/home/smith/private/klokast`.
+The following nine additional files existed in `/home/smith/private/klokast`
+at the refused preparation. Their later authorized deletion is recorded below.
 All were regular files with one link and owner/group `1002:1002` at inspection.
 This list records evidence; it does not authorize deletion or relocation.
 
@@ -350,3 +351,45 @@ human approval. The exercise does not check for extra backup names; final
 preparation does. Its success therefore does not establish final removal
 readiness. Follow the [current work queue](../../doc/upstream-instance-target-architecture.md#current-work-queue).
 This record is a documentation-only checkpoint, not final retirement acceptance.
+
+### Authorized extra backup deletion, 2026-09-13
+
+After reviewing the nine-file list above, the human explicitly authorized
+permanent deletion instead of a separate recovery archive. Maintenance commit
+`ed2dbf468b5694fbd5feb6997a3f6d97093650b0` supplies
+[`69-delete-extra-registry-backups-20260913.yml`](../../ansible/playbooks/69-delete-extra-registry-backups-20260913.yml).
+This is separate task authorization, not a signed Apply intent or permission
+to delete the three live inputs. The signed retirement backup allowlist is
+unchanged.
+
+The maintenance task ran from an isolated public checkout on the active
+controller. Preparation checked all nine exact names, hashes, ownership,
+modes, sizes, and link counts before deletion. Execution held the installed
+authority-publication lock, repeated the checks, and removed only those nine
+files. No backup contents were archived. Deletion is permanent; the maintenance
+record cannot restore these files.
+
+The post-deletion audit confirmed that all nine paths are absent and that
+only the original three approved backups match the backup pattern. Those
+three backups and the three restored live inputs still match the signed
+exercise receipt. The immutable recovery archive passed validation before and
+after deletion with the same hash `a0840373`. Authority State remains
+`8622695e`. The canonical checkout, active engine `0790196`, private commit,
+and installed tools were not changed.
+
+Root-owned metadata-only evidence is in:
+
+```text
+/var/lib/klokast/extra-registry-backup-deletion-20260913/
+```
+
+The directory is `0700`; its twelve audit files are `0400`. `before.json`
+records exact target and preserved-file metadata, `attempt.json` records the
+human task authorization, nine per-file records identify completed deletions,
+and `result.json` reports `deleted`. A prior attempt prevents automatic retry.
+
+All 582 Python tests passed, with two Ansible-dependent tests skipped on the
+runner. The eight focused maintenance tests also passed on the controller,
+as did Ansible syntax validation and live preparation. The extra-backup scope
+blocker is resolved. Complete direct consumer absence coverage and the
+separate signed retirement and verification gates remain required.
