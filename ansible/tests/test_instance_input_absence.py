@@ -40,9 +40,12 @@ class InputAbsenceTest(unittest.TestCase):
         inventory={'inventory':graph,'inventory_sha256':digest(graph),'boxes':['boxa','boxb'],'airunners':['boxa-ops-airunner'],'scopes':['execution_inventory']}
         value={'schema_version':1,'apps':{},'boxes':{'boxa':{},'boxb':{}}}
         registry={'valid':True,'engine':{'commit':'a'*40},'projection':{'registry':value,'registry_sha256':digest(value)}}
+        tailnet = {'magicdns_suffix': 'example.ts.net', 'groups': [
+            {'name': 'operators', 'members': ['operator@example.test']},
+            {'name': 'family', 'members': ['operator@example.test']}]}
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                result=module.compare(inventory,registry,Path(tmp),{'active':{'box':'boxb','hostname':'boxb-ops'},'standby':{'box':'boxa','hostname':'boxa-ops'}})
+                result=module.compare(inventory,registry,Path(tmp),{'active':{'box':'boxb','hostname':'boxb-ops'},'standby':{'box':'boxa','hostname':'boxa-ops'}}, tailnet)
             except ValueError as error:
                 logs='\n'.join(p.read_text() for p in Path(tmp).glob('*.stderr'))
                 self.fail(str(error)+'\n'+logs)
@@ -56,7 +59,7 @@ class InputAbsenceTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as second:
                 repeated = module.compare(inventory, registry, Path(second),
                     {'active': {'box': 'boxb', 'hostname': 'boxb-ops'},
-                     'standby': {'box': 'boxa', 'hostname': 'boxa-ops'}})
+                     'standby': {'box': 'boxa', 'hostname': 'boxa-ops'}}, tailnet)
                 self.assertEqual(result, repeated)
 
 if __name__=='__main__':unittest.main()

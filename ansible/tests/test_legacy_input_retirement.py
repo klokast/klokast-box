@@ -29,6 +29,8 @@ class LegacyInputRetirementTest(unittest.TestCase):
             matrix = {'schema_version': 1, 'kind': 'klokast.instance-input-absence.v1',
                       'equal': True, 'temporary_views_removed': True,
                       'effective_settings_sha256': 'a' * 64,
+                      'command_matrix_contract': 'controller-wrapper-commands-v1',
+                      'command_matrix_sha256': 'c' * 64,
                       'consumers': sorted(m.RETIREMENT_CONSUMERS)}
             content = m.canonical(matrix) + '\n'
             plan = self.plan()
@@ -55,6 +57,15 @@ class LegacyInputRetirementTest(unittest.TestCase):
                     m, 'run_plan_as_controller', side_effect=invoke):
                 self.assertEqual(m.run_bound_retirement_matrix(plan, 'test-matrix'), matrix)
             self.assertFalse(work.exists())
+
+    def test_old_compiler_only_matrix_cannot_authorize_retirement(self):
+        matrix = {'schema_version': 1, 'kind': 'klokast.instance-input-absence.v1',
+                  'equal': True, 'temporary_views_removed': True,
+                  'effective_settings_sha256': 'a' * 64,
+                  'consumers': sorted(self.m.RETIREMENT_CONSUMERS)}
+        with patch.object(self.m, 'load_json', return_value=matrix):
+            with self.assertRaisesRegex(self.m.ApplyError, 'incomplete or invalid'):
+                self.m.retirement_matrix(Path('/unused'))
 
     def reference(self, phase="exercise"):
         m = self.m

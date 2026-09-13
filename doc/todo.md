@@ -2,6 +2,18 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-13 - Direct wrapper absence evidence needs a closed runtime boundary
+
+The replacement matrix invokes wrapper commands and parses their generated
+inventory with real Ansible. It relocates fixed controller paths into the
+temporary view and gives child commands a closed PATH. Source-broker replies,
+approval status, image builds, and remote runtime dispatch are explicit test
+fixtures. They must not be reported as live application verification. The
+root retirement validator now requires the versioned command-matrix contract
+and rejects old compiler-only matrix evidence. Complete actual controller
+tests, positive fixtures for every supported app, and repeat-run comparison
+before promotion. No new retirement approval is ready at this checkpoint.
+
 # 2026-09-13 - Extra backup scope resolved; consumer coverage remains incomplete
 
 Engine `0790196` completed the signed Plan v9 removal exercise and restored

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Compare actual consumers in isolated public views with legacy inputs absent.
 
-The only simulated boundary is the protected source broker reply. Its input is
-an explicitly supplied sealed projection. This is unsigned review evidence,
-not proof of installation, publication, live health, or execution authority.
+Protected source replies use explicitly supplied sealed projections. Command
+tests also simulate approval and remote runtime/builder boundaries. Readers,
+compilers, wrapper dispatch, and inventory parsing are real. This is unsigned
+dependency evidence, not installation, publication, or live health evidence.
 """
 import argparse
 import hashlib
@@ -16,6 +17,8 @@ import sys
 import tempfile
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+from consumer_absence_commands import CONTRACT, run_commands
 
 
 def canonical(value):
@@ -33,7 +36,7 @@ def stable_consumer(value, temporary_root):
     return value
 
 
-def compare(inventory, registry, output, controller_pair):
+def compare(inventory, registry, output, controller_pair, tailnet):
     projection = registry['projection']
     digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
     if digest(inventory['inventory']) != inventory['inventory_sha256'] or registry.get('valid') is not True:
@@ -160,23 +163,12 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             if consumers['controller'] != controller_pair['active']['hostname']:
                 raise ValueError('normal controller resolution differs from the checked instance pair')
             consumers['routers']={box:invoke([compiler,'--box',box,'show-box-access-vars'],'router-'+box) for box in inventory['boxes']}
-            app_views={}
-            for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich'):
-                # The instance projection may intentionally omit a supported
-                # wrapper when that application has no desired-state entry.
-                # Record that adopted-source absence explicitly so every
-                # wrapper remains covered without asking the compiler to
-                # invent a registry entry.
-                if app not in registry.get('projection', {}).get('registry', {}).get('apps', {}):
-                    app_views[app]={'source':'instance_specification_v1','status':'absent'}
-                else:
-                    app_views[app]=invoke([compiler,'--app',app,'show'],'app-'+app)
-            consumers.update(app_views)
-            consumers['platform-check']=consumers['box_configs']
-            consumers['tailnet-rendering']={
-                'resources': consumers['compiler'].get('tailnet_policy_resources',[]),
-                'airunners': inventory.get('airunners',[]),
-            }
+            commands = run_commands(view, registry, inventory, controller_pair, tailnet)
+            consumers['controller-commands'] = commands
+            for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich','platform-check'):
+                consumers[app] = {name: record for name, record in commands['commands'].items()
+                                  if name.startswith(app + '/')}
+            consumers['tailnet-rendering'] = commands['commands']['tailnet/render']
             results.append(consumers)
             # Ansible role variables can contain repository-relative paths. Both
             # views have identical declared bytes; runtime file provenance alone
@@ -186,6 +178,8 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
     if results[0] != results[1]: raise ValueError('effective consumer settings differ with legacy inputs absent')
     return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
             'consumers':sorted(results[0]),'effective_settings_sha256':digest(results[0]),
+            'command_matrix_contract': CONTRACT,
+            'command_matrix_sha256': digest(results[0]['controller-commands']),
             'temporary_views_removed':True,'source_broker':'sealed-projection-fixture','live_execution_authority':False}
 
 
@@ -201,7 +195,7 @@ def main():
         plan=json.loads(args.plan.read_text())
         control=plan['projection']['control_plane']
         pair={role:{'box':control[role+'_controller']['box_id'],'hostname':control[role+'_controller']['hostname']} for role in ('active','standby')}
-        result=compare(json.loads(args.inventory_projection.read_text()),json.loads(args.registry_projection.read_text()),args.output_directory,pair)
+        result=compare(json.loads(args.inventory_projection.read_text()),json.loads(args.registry_projection.read_text()),args.output_directory,pair,plan['projection']['tailnet'])
         (args.output_directory/'result.json').write_text(canonical(result)+'\n')
         print(canonical(result))
     except (OSError,ValueError,KeyError,subprocess.CalledProcessError) as error:

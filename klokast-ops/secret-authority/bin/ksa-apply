@@ -4603,6 +4603,8 @@ def retirement_matrix(path):
     matrix = load_json(path, MAX_JSON)
     if (matrix.get("schema_version") != 1 or matrix.get("kind") != "klokast.instance-input-absence.v1"
             or matrix.get("equal") is not True or matrix.get("temporary_views_removed") is not True
+            or matrix.get("command_matrix_contract") != "controller-wrapper-commands-v1"
+            or not DIGEST_RE.fullmatch(matrix.get("command_matrix_sha256", ""))
             or not DIGEST_RE.fullmatch(matrix.get("effective_settings_sha256", ""))
             or not RETIREMENT_CONSUMERS.issubset(set(matrix.get("consumers") or []))):
         raise ApplyError("consumer absence matrix is incomplete or invalid")
