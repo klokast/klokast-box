@@ -48,7 +48,12 @@ def differing_fields(left, right, prefix=''):
 
 def value_at(value, field):
     for part in field.split('/')[1:]:
-        value = value[int(part)] if isinstance(value, list) else value[part]
+        if isinstance(value, list):
+            value = value[int(part)]
+        elif not isinstance(value, dict) or part not in value:
+            return '<missing>'
+        else:
+            value = value[part]
     return value
 
 
