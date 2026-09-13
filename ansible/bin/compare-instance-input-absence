@@ -67,6 +67,7 @@ def compare(inventory, registry, output, controller_pair, tailnet):
     if set(controller_pair) != {'active','standby'} or sorted(v['box'] for v in controller_pair.values()) != inventory['boxes'] or any(set(v) != {'box','hostname'} or v['hostname'] != v['box']+'-ops' for v in controller_pair.values()):
         raise ValueError('controller pair differs from the checked instance box set')
     results = []
+    settings_results = []
     tracked = subprocess.check_output(['git','-C',str(REPO),'ls-files','-z']).decode().split('\0')
     with tempfile.TemporaryDirectory(prefix='isolated-inputs-',dir=output) as temporary:
         for absent in (False, True):
@@ -184,6 +185,22 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             if consumers['controller'] != controller_pair['active']['hostname']:
                 raise ValueError('normal controller resolution differs from the checked instance pair')
             consumers['routers']={box:invoke([compiler,'--box',box,'show-box-access-vars'],'router-'+box) for box in inventory['boxes']}
+            app_views={}
+            for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich'):
+                if app not in registry.get('projection', {}).get('registry', {}).get('apps', {}):
+                    app_views[app]={'source':'instance_specification_v1','status':'absent'}
+                else:
+                    app_views[app]=invoke([compiler,'--app',app,'show'],'app-'+app)
+            settings={**consumers, **app_views,
+                      'platform-check':consumers['box_configs'],
+                      'tailnet-rendering':{
+                          'resources':consumers['compiler'].get('tailnet_policy_resources',[]),
+                          'airunners':inventory.get('airunners',[]),
+                      }}
+            # Preserve the settings digest used by the signed exercise. The
+            # direct command matrix is additional evidence with its own digest;
+            # it must not make unchanged instance settings appear to change.
+            settings_results.append(settings)
             commands = run_commands(view, registry, inventory, controller_pair, tailnet)
             consumers['controller-commands'] = commands
             for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich','platform-check'):
@@ -201,8 +218,10 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
         detail = '; '.join('/' + '/'.join(map(str, field)) + '=' + repr(value_at(results[0], field)) + ' != ' +
                           repr(value_at(results[1], field)) for field in fields)
         raise ValueError('effective consumer settings differ with legacy inputs absent: ' + detail)
+    if settings_results[0] != settings_results[1]:
+        raise ValueError('effective settings projection differs with legacy inputs absent')
     return {'schema_version':1,'kind':'klokast.instance-input-absence.v1','equal':True,
-            'consumers':sorted(results[0]),'effective_settings_sha256':digest(results[0]),
+            'consumers':sorted(results[0]),'effective_settings_sha256':digest(settings_results[0]),
             'command_matrix_contract': CONTRACT,
             'command_matrix_sha256': digest(results[0]['controller-commands']),
             'temporary_views_removed':True,'source_broker':'sealed-projection-fixture','live_execution_authority':False}
