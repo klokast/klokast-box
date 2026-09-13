@@ -92,6 +92,9 @@ def main(program):
         cached = cache / (cache_key + '.json')
         try:
             graph = json.loads(cached.read_text())
+            # A real parse invokes the adopted inventory source once. Keep the
+            # semantic broker event when an identical parse is reused.
+            record('source-broker', {'operation': 'inventory-source-status'})
         except FileNotFoundError:
             checked = subprocess.run([os.environ['KLOKAST_ABSENCE_INVENTORY'], *inventories, '--list'],
                                      text=True, capture_output=True, check=True)
