@@ -170,6 +170,9 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         events = [json.loads(line) for line in trace.read_text().splitlines()]
         if expected == 'write-refusal' and any(e['boundary'] != 'source-broker' for e in events):
             raise ValueError(f'{label}: legacy write reached a runtime boundary')
+        # Resource verification can dispatch independent hosts in parallel.
+        # Their complete request set is authoritative; completion order is not.
+        events.sort(key=lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')))
         records[label] = stable(dict(command=[str(x) for x in command], result=expected,
                                     stdout=result.stdout.strip(), events=events), view)
         return result
