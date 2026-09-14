@@ -418,6 +418,13 @@ class PlatformApplyTest(unittest.TestCase):
         self.assertNotIn("ts-policy-mutate-internal\n  -", OPS_VARS)
         self.assertIn("/usr/local/libexec/klokast/ts-policy-mutate-internal", OPS_TASKS)
 
+    def test_apply_preflight_retention_is_indefinite_and_root_owned(self):
+        self.assertIn("Install the Apply preflight retention policy", OPS_TASKS)
+        self.assertIn("/var/lib/klokast/apply-preflights/README.retention", OPS_TASKS)
+        self.assertIn('mode: "0400"', OPS_TASKS)
+        self.assertIn("Do not delete or move a preflight automatically", OPS_TASKS)
+        self.assertIn("content-addressed", OPS_TASKS)
+
     def test_exact_plan_revalidation_drops_to_controller_checkout_owner(self):
         command = [Path("/sealed/klokast"), "plan", "--json"]
         completed = Mock(returncode=0, stdout="{}", stderr="")

@@ -366,6 +366,19 @@ removed:
 - audit logs and policy recovery material;
 - the root-only legacy-input recovery archive.
 
+Apply preflight evidence has indefinite local retention. No scheduled task,
+controller convergence, or Apply command can delete or move it. A preflight is
+permanent evidence if its nonce was consumed, it has an execution receipt, an
+Authority State history record refers to it, or its recovery result is not
+resolved.
+
+An expired unsigned or check-only preflight can enter a future archive only
+through a separate reviewed workflow. That workflow must copy exact bytes to a
+root-owned, content-addressed archive, record and verify a manifest, and keep
+the source until deletion has separate human authorization. The current
+implementation does not delete or archive preflights. The installed
+`README.retention` file records this rule at the evidence root.
+
 The public transition narrative is available in Git at commit `186cfa9`.
 Current verification commands are in
 [Instance Authority Verification](../klokast-dev/runbooks/53-instance-only-verification.md).

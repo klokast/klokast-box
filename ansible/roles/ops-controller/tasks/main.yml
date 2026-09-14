@@ -592,6 +592,22 @@
   tags:
     - ops-controller-apply
 
+- name: Install the Apply preflight retention policy
+  ansible.builtin.copy:
+    dest: /var/lib/klokast/apply-preflights/README.retention
+    owner: root
+    group: root
+    mode: "0400"
+    content: |
+      Apply preflight evidence has indefinite local retention.
+      Do not delete or move a preflight automatically.
+      A consumed nonce, an execution receipt, an authority-history reference,
+      or an unresolved recovery result makes the preflight permanent evidence.
+      A future archive must copy exact bytes to a root-owned content-addressed
+      archive and verify its manifest before separate deletion approval.
+  tags:
+    - ops-controller-apply
+
 - name: Create the stable authority publication lock inode
   ansible.builtin.copy:
     dest: /var/lib/klokast/.authority-publication.lock
