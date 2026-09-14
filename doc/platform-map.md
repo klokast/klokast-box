@@ -77,6 +77,11 @@ Important options:
   Platform resources during refresh so dynamic app VMs are expected even before
   collected host metadata is available.
 
+Remote collection uses an eight-second SSH connection timeout, one connection
+attempt, and bounded server-alive probes. These limits are fixed safety policy;
+the CLI does not provide an option to increase them. An unreachable host is
+absent from the new host facts and is reported as unavailable.
+
 Scope examples:
 
 ```sh
@@ -96,9 +101,16 @@ ansible/bin/platform-map refresh \
   --remote-scope none
 ```
 
-When `--remote-scope dom0` is used, Podman VM facts are intentionally not
-refreshed. Podman container findings may be stale or absent until the next
-`--remote-scope full` or `--remote-scope podman` refresh.
+When `--remote-scope dom0` is used, Podman VM facts are intentionally absent.
+Run the next refresh with `--remote-scope full` or `--remote-scope podman` to
+collect Podman container facts.
+
+Each refresh invalidates the prior summary and deletes prior per-host facts
+before it starts collection. If collection stops before the atomic summary
+write, there is no `current.json` to export. The tool does not use an older
+host fact as a fallback. `export-observation` reads the specified file without
+a refresh, so the caller must use the new summary from the current operation.
+An observation is evidence. It is not desired-state authority.
 
 ## Runtime Files
 

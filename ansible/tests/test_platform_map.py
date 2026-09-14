@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -547,6 +548,53 @@ class PlatformMapTest(unittest.TestCase):
         path = self.mod.ansible_ssh_control_path_dir()
         self.assertEqual(path, Path("/tmp") / f"klokast-platform-map-ssh-{os.getuid()}")
         self.assertLess(len(str(path / "31b2341e46.YQuNWlZVxP8dQpgh")), 100)
+
+    def test_refresh_invalidates_prior_summary_and_host_facts(self):
+        with tempfile.TemporaryDirectory() as raw_directory:
+            artifact_dir = Path(raw_directory)
+            output = artifact_dir / "current.json"
+            hosts = artifact_dir / "hosts"
+            hosts.mkdir()
+            output.write_text('{"generated_at":"old"}\n', encoding="utf-8")
+            (hosts / "boxa-dom0.json").write_text('{"old":true}\n', encoding="utf-8")
+            override = artifact_dir / "overrides.yml"
+            override.write_text("boxes: {}\n", encoding="utf-8")
+
+            self.mod.prepare_refresh_artifacts(artifact_dir, output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(hosts.glob("*.json")), [])
+            self.assertTrue(override.exists())
+
+    def test_ansible_collection_has_bounded_ssh_connections(self):
+        with tempfile.TemporaryDirectory() as raw_directory:
+            artifact_dir = Path(raw_directory)
+            warnings = []
+            completed = self.mod.subprocess.CompletedProcess([], 0)
+            with (
+                patch.object(self.mod, "shutil_which", return_value=True),
+                patch.object(self.mod, "render_inventory"),
+                patch.object(self.mod, "run_command", return_value=completed) as run,
+            ):
+                self.mod.run_ansible_collection(
+                    ["boxa"],
+                    base_inventory=Path("inventory"),
+                    magicdns_suffix="example.ts.net",
+                    artifact_dir=artifact_dir,
+                    remote_scope="full",
+                    verbose=False,
+                    warnings=warnings,
+                )
+
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(environment["ANSIBLE_TIMEOUT"], "8")
+            self.assertEqual(environment["ANSIBLE_SSH_RETRIES"], "0")
+            ssh_args = environment["ANSIBLE_SSH_COMMON_ARGS"]
+            self.assertIn("-o ConnectTimeout=8", ssh_args)
+            self.assertIn("-o ConnectionAttempts=1", ssh_args)
+            self.assertIn("-o ServerAliveInterval=5", ssh_args)
+            self.assertIn("-o ServerAliveCountMax=2", ssh_args)
+            self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":

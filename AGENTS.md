@@ -58,7 +58,9 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - Before you answer questions about current Platform state, box inventory, Tailscale enrollment, NanoKVM status, storage, RAM pressure, Xen guests, or Podman workloads: read `doc/platform-map.md`.
 
-- Before installing or updating an application, read `apps/STORE.md`: it contains the list of applications supported by the Platform, and link to the app-specific deployment instructions.
+- Before installing or updating an application, read `apps/README.md`: it is
+  the authoritative catalog of supported applications and links to the
+  application-specific deployment instructions.
 
 - Before you write Ansible or Terraform playbooks & roles: read `ansible/ansible.md`.
 

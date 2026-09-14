@@ -43,6 +43,9 @@ DEFAULT_RESOURCES_REGISTRY = Path(
 )
 PLATFORM_MAP_EMPTY_TARGET = "all:!all"
 CLOUD_PROVIDERS_FILE = REPO_DIR / "cloud-providers.json"
+REMOTE_CONNECT_TIMEOUT_SECONDS = 8
+REMOTE_SERVER_ALIVE_INTERVAL_SECONDS = 5
+REMOTE_SERVER_ALIVE_COUNT_MAX = 2
 
 ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops")
 RESERVED_BOX_SUFFIXES = (*ROLE_SUFFIXES, "agent", "agt")
@@ -571,6 +574,19 @@ def ansible_ssh_control_path_dir() -> Path:
     return root / f"klokast-platform-map-ssh-{os.getuid()}"
 
 
+def prepare_refresh_artifacts(artifact_dir: Path, output: Path) -> None:
+    """Invalidate the prior generation before a new collection starts."""
+    artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    host_artifact_dir = artifact_dir / "hosts"
+    host_artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    try:
+        output.unlink()
+    except FileNotFoundError:
+        pass
+    for stale in host_artifact_dir.glob("*.json"):
+        stale.unlink()
+
+
 def run_ansible_collection(
     boxes: list[str],
     *,
@@ -604,10 +620,16 @@ def run_ansible_collection(
     env = os.environ.copy()
     env["ANSIBLE_CONFIG"] = str(ANSIBLE_DIR / "ansible.cfg")
     env["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(control_path_dir)
+    env["ANSIBLE_TIMEOUT"] = str(REMOTE_CONNECT_TIMEOUT_SECONDS)
+    env["ANSIBLE_SSH_RETRIES"] = "0"
     env["ANSIBLE_SSH_COMMON_ARGS"] = (
         "-o StrictHostKeyChecking=accept-new "
         f"-o UserKnownHostsFile={known_hosts} "
-        "-o BatchMode=yes"
+        "-o BatchMode=yes "
+        f"-o ConnectTimeout={REMOTE_CONNECT_TIMEOUT_SECONDS} "
+        "-o ConnectionAttempts=1 "
+        f"-o ServerAliveInterval={REMOTE_SERVER_ALIVE_INTERVAL_SECONDS} "
+        f"-o ServerAliveCountMax={REMOTE_SERVER_ALIVE_COUNT_MAX}"
     )
 
     extra_vars: dict[str, str] = {"platform_map_artifact_dir": str(artifact_dir)}
@@ -1689,10 +1711,7 @@ def cmd_export_observation(args: argparse.Namespace) -> int:
 def cmd_refresh(args: argparse.Namespace) -> int:
     warnings: list[str] = []
     artifact_dir = args.artifact_dir
-    artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-    (artifact_dir / "hosts").mkdir(parents=True, mode=0o700, exist_ok=True)
-    for stale in (artifact_dir / "hosts").glob("*.json"):
-        stale.unlink()
+    prepare_refresh_artifacts(artifact_dir, args.output)
 
     tailnet = collect_tailscale(warnings)
     boxes = parse_box_list(args.boxes)
