@@ -341,8 +341,10 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 absent. An enabled legacy app must have explicit present intent.
 
 With `--instance-only`, fresh Observation v1 and Instance Source Receipt v1,
-complete Authority State v5, and Controller Toolchain v7, `plan` emits the
-closed Plan v8 contract retained for historical verification and recovery.
+complete Authority State v5, and Controller Toolchain v7 or v8, `plan` emits
+the closed Plan v8 contract. Use the current exact v8 receipt for a new
+operation. Toolchain v7 support reads historical verification and recovery
+artifacts.
 With `--legacy-retirement --retirement-phase verify`, immutable retirement
 evidence, and Controller Toolchain v8, it emits the current Plan v9
 retired-state verification contract. Both require all six setting groups and

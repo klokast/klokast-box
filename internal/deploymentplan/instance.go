@@ -89,7 +89,14 @@ func buildCompleteInstancePlan(options Options, engine contract.Engine, schemaVe
 	if err != nil {
 		return a, err
 	}
-	if receipt.SchemaVersion != toolchainVersion {
+	toolchainMatches := receipt.SchemaVersion == toolchainVersion
+	if schemaVersion == 8 && receipt.SchemaVersion == 8 {
+		toolchainMatches = true
+	}
+	if !toolchainMatches {
+		if schemaVersion == 8 {
+			return a, fmt.Errorf("Plan v8 requires Controller Toolchain v7 or v8")
+		}
 		return a, fmt.Errorf("Plan v%d requires Controller Toolchain v%d", schemaVersion, toolchainVersion)
 	}
 	a.ControllerToolchain = ToolchainReference{ReceiptSHA256: receipt.ReceiptSHA256, EngineCommit: receipt.EngineCommit}

@@ -159,7 +159,7 @@ class PlatformApplyTest(unittest.TestCase):
         now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
         active, peer = "boxa", "boxb"
         value = {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": self.mod.KIND_OVERLAY_INTENT,
             "action": "repair_overlay_ipv6_direct",
             "executor": self.mod.OVERLAY_EXECUTOR,
@@ -181,9 +181,8 @@ class PlatformApplyTest(unittest.TestCase):
             "plan_sha256", "authority_state_sha256",
             "source_recovery_receipt_sha256", "source_receipt_sha256",
             "observation_sha256", "private_instance_sha256",
-            "legacy_deployment_sha256", "legacy_registry_sha256",
-            "legacy_controller_ha_sha256", "binary_sha256",
-            "builder_receipt_sha256", "toolchain_receipt_sha256",
+            "binary_sha256", "builder_receipt_sha256",
+            "toolchain_receipt_sha256",
             "freebox_gateway_id_sha256", "freebox_preimage_sha256",
             "router_preimage_sha256", "ops_preimage_sha256",
             "huawei_prerequisite_sha256",
@@ -629,6 +628,7 @@ class PlatformApplyTest(unittest.TestCase):
         }
         current = {
             "plan": {
+                "kind": self.mod.KIND_PLAN_V8,
                 "plan_sha256": "f" * 64,
                 "projection": {
                     "boxes": [{"id": "boxa"}, {"id": "boxb"}],
@@ -636,7 +636,11 @@ class PlatformApplyTest(unittest.TestCase):
                     "tailnet": {"magicdns_suffix": "example.ts.net"},
                 },
             },
-            "group": {"operation": "verify_instance_authority", "box": "boxb"},
+            "group": {
+                "id": self.mod.VERIFICATION_EXECUTOR,
+                "operation": "verify_instance_authority",
+                "executor": self.mod.VERIFICATION_EXECUTOR,
+            },
             "state": {"kind": self.mod.KIND_AUTHORITY_V2, "authority_state_sha256": intent["authority_state_sha256"]},
             "binary_sha256": intent["binary_sha256"],
             "builder_receipt_sha256": intent["builder_receipt_sha256"],
@@ -678,9 +682,23 @@ class PlatformApplyTest(unittest.TestCase):
         source = MACBOOK_APPLY.read_text(encoding="utf-8")
         self.assertIn("--repair-overlay-ipv6-direct", source)
         self.assertIn("overlay-repair --prepare", source)
-        self.assertIn("klokast.overlay-direct-repair-intent.v1", source)
+        self.assertIn("klokast.overlay-direct-repair-intent.v2", source)
+        self.assertIn("overlay_ipv6_direct_repair_v2", source)
         self.assertNotIn("--repair-command", source)
         self.assertNotIn("--repair-prefix", source)
+
+    def test_overlay_repair_uses_only_instance_authority(self):
+        source = KSA_APPLY.read_text(encoding="utf-8")
+        start = source.index("def overlay_repair_prepare")
+        prepare = source[start:source.index("def rollback_prepare", start)]
+        intent = source[source.index("def overlay_common_intent"):source.index("def validate_overlay_intent")]
+        self.assertIn("evidence_kind(args.plan) != KIND_PLAN_V8", prepare)
+        self.assertNotIn("KIND_PLAN_V3", prepare)
+        self.assertNotIn("compatibility_inputs", intent)
+        self.assertNotIn("legacy_deployment_sha256", intent)
+        self.assertNotIn("legacy_registry_sha256", intent)
+        self.assertNotIn("legacy_controller_ha_sha256", intent)
+        self.assertNotIn("legacy_deployment_sha256", self.valid_overlay_intent())
 
     def test_effective_registry_preserves_every_field_and_ignores_only_provenance(self):
         access = {

@@ -29,7 +29,7 @@ Usage: $0 --controller HOST --plan FILE --authority-state FILE \
   [--check | --prove-replay-refusal]
 
 Add --repair-overlay-ipv6-direct to prepare the one closed ops-only IPv6
-direct-path repair from a verification-only Plan v3.
+direct-path repair from an instance-only Plan v8.
 
 Use --convert-authority-state with only --controller and --authority-state to
 approve the one-time Authority State v1 to v2 conversion.
@@ -162,9 +162,10 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
-if value.get("schema_version") != 1:
-    raise SystemExit("controller did not return a version 1 approval intent")
 kind = value.get("kind")
+expected_schema = 2 if kind == "klokast.overlay-direct-repair-intent.v2" else 1
+if value.get("schema_version") != expected_schema:
+    raise SystemExit("controller returned an unsupported approval intent version")
 if kind == "klokast.authority-conversion-intent.v1":
     if value.get("action") != "convert_authority_state_v1_to_v2":
         raise SystemExit("controller returned an unknown authority conversion")
@@ -199,8 +200,8 @@ elif kind == "klokast.box-connectivity-intent.v1":
         raise SystemExit("controller returned an unknown box Apply executor")
     if value.get("action") not in {"adopt_instance_specification", "verify_instance_authority", "rollback_to_legacy"}:
         raise SystemExit("controller returned an unknown box Apply action")
-elif kind == "klokast.overlay-direct-repair-intent.v1":
-    if value.get("executor") != "overlay_ipv6_direct_repair_v1":
+elif kind == "klokast.overlay-direct-repair-intent.v2":
+    if value.get("executor") != "overlay_ipv6_direct_repair_v2":
         raise SystemExit("controller returned an unknown overlay repair executor")
     if value.get("action") != "repair_overlay_ipv6_direct":
         raise SystemExit("controller returned an unknown overlay repair action")

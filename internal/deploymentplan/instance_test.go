@@ -32,6 +32,20 @@ func checkInstanceOnly(t *testing.T, previous Options, state authoritystate.Stat
 	if err != nil || !first.Deployable || first.SchemaVersion != 8 || len(first.ActionGroups) != 6 || first.AuthorityState.AuthorityStateSHA256 != state.AuthorityStateSHA256 || first.LegacyRemovalReady {
 		t.Fatalf("instance-only: %v %#v", err, first)
 	}
+	receipt.SchemaVersion, receipt.Kind = 8, toolchain.KindV8
+	receipt.ReceiptSHA256, _ = toolchain.Hash(receipt)
+	if err := os.WriteFile(receiptPath, canonicalTestJSON(t, receipt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	current, err := Build(options, testEngine)
+	if err != nil || !current.Deployable || current.SchemaVersion != 8 || current.ControllerToolchain.ReceiptSHA256 != receipt.ReceiptSHA256 {
+		t.Fatalf("instance-only with current toolchain: %v %#v", err, current)
+	}
+	receipt.SchemaVersion, receipt.Kind = 7, toolchain.KindV7
+	receipt.ReceiptSHA256, _ = toolchain.Hash(receipt)
+	if err := os.WriteFile(receiptPath, canonicalTestJSON(t, receipt), 0600); err != nil {
+		t.Fatal(err)
+	}
 	encoded, err := json.Marshal(first)
 	if err != nil {
 		t.Fatal(err)

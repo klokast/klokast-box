@@ -67,8 +67,8 @@ CONTROLLER_BOX_EXECUTOR = "controller_box_connectivity_source_v1"
 KIND_AUTHORITY_V2 = "klokast.authority-state.v2"
 KIND_CONVERSION_INTENT = "klokast.authority-conversion-intent.v1"
 KIND_BOX_INTENT = "klokast.box-connectivity-intent.v1"
-KIND_OVERLAY_INTENT = "klokast.overlay-direct-repair-intent.v1"
-OVERLAY_EXECUTOR = "overlay_ipv6_direct_repair_v1"
+KIND_OVERLAY_INTENT = "klokast.overlay-direct-repair-intent.v2"
+OVERLAY_EXECUTOR = "overlay_ipv6_direct_repair_v2"
 OVERLAY_ROLLBACK_TYPE = "overlay_ipv6_direct_preimages_v1"
 BOX_EXECUTOR = "box_connectivity_v1"
 BOX_ROLLBACK_TYPE = "box_connectivity_registry_v1"
@@ -907,8 +907,8 @@ def validate_toolchain(path, plan, build_binary):
         raise ApplyError("Plan v6 requires Controller Toolchain v5")
     if plan.get("schema_version") == 5 and receipt.get("schema_version") != 4:
         raise ApplyError("Plan v5 requires Controller Toolchain v4")
-    if plan.get("schema_version") == 8 and receipt.get("schema_version") != 7:
-        raise ApplyError("Plan v8 requires Controller Toolchain v7")
+    if plan.get("schema_version") == 8 and receipt.get("schema_version") not in {7, 8}:
+        raise ApplyError("Plan v8 requires Controller Toolchain v7 or v8")
     if plan.get("schema_version") == 9 and receipt.get("schema_version") != 8:
         raise ApplyError("Plan v9 requires Controller Toolchain v8")
     entries = receipt.get("components")
@@ -2237,15 +2237,18 @@ def overlay_boxes(plan, group):
         .get("active_controller", {}).get("box_id")
     )
     if (
-        len(boxes) != 2
+        plan.get("kind") != KIND_PLAN_V8
+        or len(boxes) != 2
         or len(set(boxes)) != 2
         or active not in boxes
-        or group.get("operation") != "verify_instance_authority"
+        or group != {
+            "id": VERIFICATION_EXECUTOR,
+            "operation": "verify_instance_authority",
+            "executor": VERIFICATION_EXECUTOR,
+        }
     ):
-        raise ApplyError("overlay repair requires a verification-only two-box Plan v3")
+        raise ApplyError("overlay repair requires a verification-only two-box Plan v8")
     peer = next(item for item in boxes if item != active)
-    if group.get("box") != peer:
-        raise ApplyError("overlay repair Plan selected the wrong peer box")
     return active, peer
 
 
@@ -2364,9 +2367,8 @@ def overlay_binding_for_storage(binding, directory):
 
 def overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, issued):
     plan = binding["plan"]
-    compatibility = {item["name"]: item["sha256"] for item in plan["compatibility_inputs"]}
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": KIND_OVERLAY_INTENT,
         "action": "repair_overlay_ipv6_direct",
         "executor": OVERLAY_EXECUTOR,
@@ -2381,9 +2383,6 @@ def overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, is
         "observation_sha256": plan["observation"]["generation_sha256"],
         "private_commit": plan["instance"]["commit"],
         "private_instance_sha256": next(item["sha256"] for item in plan["inputs"] if item["path"] == "klokast-instance.json"),
-        "legacy_deployment_sha256": compatibility["legacy_deployment"],
-        "legacy_registry_sha256": compatibility[LEGACY_REGISTRY_SOURCE],
-        "legacy_controller_ha_sha256": compatibility["legacy_controller_ha"],
         "engine_commit": plan["engine"]["commit"],
         "binary_sha256": binding["binary_sha256"],
         "builder_receipt_sha256": binding["builder_receipt_sha256"],
@@ -2409,16 +2408,15 @@ def validate_overlay_intent(intent):
         "action_set", "active_controller_box", "peer_box", "plan_sha256",
         "authority_state_sha256", "source_recovery_receipt_sha256",
         "source_receipt_sha256", "observation_sha256", "private_commit",
-        "private_instance_sha256", "legacy_deployment_sha256",
-        "legacy_registry_sha256", "legacy_controller_ha_sha256",
-        "engine_commit", "binary_sha256", "builder_receipt_sha256",
+        "private_instance_sha256", "engine_commit", "binary_sha256",
+        "builder_receipt_sha256",
         "toolchain_receipt_sha256", "freebox_gateway_id_sha256",
         "freebox_api_version", "delegation_slot", "delegated_prefix",
         "router_next_hop", "freebox_preimage_sha256",
         "router_preimage_sha256", "ops_preimage_sha256",
         "huawei_prerequisite_sha256", "nonce", "issued_at", "expires_at",
     }
-    if set(intent) != expected or intent.get("schema_version") != 1 or intent.get("kind") != KIND_OVERLAY_INTENT or intent.get("action") != "repair_overlay_ipv6_direct" or intent.get("executor") != OVERLAY_EXECUTOR or intent.get("rollback_type") != OVERLAY_ROLLBACK_TYPE:
+    if set(intent) != expected or intent.get("schema_version") != 2 or intent.get("kind") != KIND_OVERLAY_INTENT or intent.get("action") != "repair_overlay_ipv6_direct" or intent.get("executor") != OVERLAY_EXECUTOR or intent.get("rollback_type") != OVERLAY_ROLLBACK_TYPE:
         raise ApplyError("overlay direct repair intent fields do not match the closed schema")
     active, peer = intent.get("active_controller_box"), intent.get("peer_box")
     if not isinstance(active, str) or not BOX_RE.fullmatch(active) or not isinstance(peer, str) or not BOX_RE.fullmatch(peer) or active == peer or intent.get("action_set") != overlay_action_set(active, peer):
@@ -2499,6 +2497,7 @@ def overlay_preflight(args):
     nonce = secrets.token_urlsafe(18)
     work = new_box_work(nonce)
     try:
+        progress("validating fresh instance-only overlay repair evidence")
         binding = validate_inputs_v3(args)
         active, peer = overlay_boxes(binding["plan"], binding["group"])
         require_overlay_controller_box(active)
@@ -2528,6 +2527,7 @@ def overlay_preflight(args):
         for item in directory.iterdir():
             item.chmod(0o600)
         append_audit("overlay-repair.preflight", nonce=nonce, plan_sha256=intent["plan_sha256"], active_controller_box=active, peer_box=peer, gateway_id_sha256=intent["freebox_gateway_id_sha256"], delegation_slot=intent["delegation_slot"])
+        progress("stored the instance-only overlay repair preflight")
         print(canonical(intent))
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -2535,8 +2535,8 @@ def overlay_preflight(args):
 
 def store_overlay_execution(intent, result, recovery_result="not_needed"):
     receipt = {
-        "schema_version": 3,
-        "kind": "klokast.apply-execution.v3",
+        "schema_version": 8,
+        "kind": "klokast.apply-execution.v8",
         "intent_sha256": sha256_bytes((canonical(intent) + "\n").encode("utf-8")),
         "plan_sha256": intent["plan_sha256"],
         "nonce": intent["nonce"],
@@ -2760,6 +2760,7 @@ def overlay_execute(args, intent):
     mutation_started = False
     freebox_configured = False
     try:
+        progress("revalidating the approved instance-only overlay repair")
         current, suffix = overlay_revalidate(binding, intent, work)
         verify_public_checkout(intent["engine_commit"])
         router_snapshot = stage_overlay_snapshot(binding["router_preimage_path"], work, "router-preimage.json")
@@ -2771,6 +2772,7 @@ def overlay_execute(args, intent):
             shutil.copyfile(source, rollback / name)
             (rollback / name).chmod(0o600)
         mutation_started = True
+        progress("applying the bounded router, Freebox, and controller IPv6 changes")
         run_overlay_helper(ROUTER_NETWORK_HELPER, "prepare", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"])
         run_freebox_action("configure-ops-delegation", intent)
         freebox_configured = True
@@ -2781,6 +2783,7 @@ def overlay_execute(args, intent):
         run_freebox_action("verify", intent)
         run_overlay_helper(ROUTER_NETWORK_HELPER, "verify", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"])
         run_overlay_helper(OPS_NETWORK_HELPER, "verify", intent["active_controller_box"], intent["peer_box"], suffix, prefix=intent["delegated_prefix"])
+        progress("verified the direct IPv6 overlay path")
     except ApplyError as mutation_error:
         recovery_result = "not_needed" if not mutation_started else "recovery_required"
         restoration_error = None
@@ -2806,6 +2809,7 @@ def overlay_execute(args, intent):
         shutil.rmtree(work, ignore_errors=True)
     path, receipt = store_overlay_execution(intent, "success")
     append_audit("overlay-repair.executed", nonce=intent["nonce"], result="success", receipt_sha256=receipt["receipt_sha256"], gateway_id_sha256=intent["freebox_gateway_id_sha256"], delegation_slot=intent["delegation_slot"])
+    progress("stored the overlay repair execution receipt")
     print(canonical({"schema_version": 1, "result": "success", "receipt_path": str(path)}))
 
 
@@ -5305,8 +5309,8 @@ def preflight(args):
 
 
 def overlay_repair_prepare(args):
-    if evidence_kind(args.plan) not in {KIND_PLAN_V3, KIND_PLAN_V4, KIND_PLAN_V5, KIND_PLAN_V6, KIND_PLAN_V7}:
-        raise ApplyError("overlay repair requires Plan v3")
+    if evidence_kind(args.plan) != KIND_PLAN_V8:
+        raise ApplyError("overlay repair requires an instance-only Plan v8")
     overlay_preflight(args)
 
 

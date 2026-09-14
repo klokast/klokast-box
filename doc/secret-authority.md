@@ -341,12 +341,21 @@ of replay protection. Expiry validation remains before nonce validation. Do
 not weaken the lifetime or reorder validation to obtain a preferred message.
 
 All six desired-state groups use Instance Specification v1. Plan v8 is the
-closed verification-only contract for Controller Toolchain v7. Plan v9 with
-Controller Toolchain v8 is the closed legacy-retirement lifecycle contract.
+closed verification-only contract for Controller Toolchain v7 or v8. New
+operations must use the current exact v8 receipt. Plan v9 with Controller
+Toolchain v8 is the closed legacy-retirement lifecycle contract.
 After retirement, its `verify` phase is the supported signed proof that the
 old inputs remain absent and current consumers remain unchanged. Earlier Plan
 versions and explicit compatibility inputs exist only for recovery, tests, and
 reading historical artifacts. They are not a normal authority fallback.
+
+The direct overlay IPv6 repair uses intent v2 and executor v2. It accepts only
+a two-box Plan v8 and removes all legacy-input hashes from its signed contract.
+It binds the current instance source, Authority State v5, Observation, sealed
+engine, current toolchain, Freebox selection, Huawei prerequisite, and exact
+host preimages. Direct transport is a repair-specific result. It is not a
+general Platform health requirement. See
+[Direct Overlay IPv6 Repair](../klokast-dev/runbooks/47-overlay-ipv6-direct-repair.md).
 
 Keep these controller-held artifacts even when public acceptance notes are
 removed:

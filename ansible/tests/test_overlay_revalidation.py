@@ -216,6 +216,21 @@ class OverlayRevalidationTest(unittest.TestCase):
                 with self.subTest(field=field), self.assertRaisesRegex(self.mod.ApplyError, "evidence changed"):
                     self.mod.overlay_revalidate(self.binding, dict(self.intent, **{field: "changed"}), self.directory)
 
+    def test_overlay_box_selection_requires_instance_only_plan_v8(self):
+        group = {
+            "id": self.mod.VERIFICATION_EXECUTOR,
+            "operation": "verify_instance_authority",
+            "executor": self.mod.VERIFICATION_EXECUTOR,
+        }
+        projection = {
+            "boxes": [{"id": "boxa"}, {"id": "boxb"}],
+            "control_plane": {"active_controller": {"box_id": "boxa"}},
+        }
+        plan = {"kind": self.mod.KIND_PLAN_V8, "projection": projection}
+        self.assertEqual(self.mod.overlay_boxes(plan, group), ("boxa", "boxb"))
+        with self.assertRaisesRegex(self.mod.ApplyError, "Plan v8"):
+            self.mod.overlay_boxes(dict(plan, kind=self.mod.KIND_PLAN_V7), group)
+
 
 if __name__ == "__main__":
     unittest.main()
