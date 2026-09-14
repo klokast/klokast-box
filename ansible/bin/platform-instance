@@ -29,6 +29,8 @@ SEED_PATH = PRIVATE_ROOT / "instance-seed"
 COMPATIBILITY_DEPLOYMENT = PRIVATE_ROOT / "deployment.yml"
 COMPATIBILITY_REGISTRY = PRIVATE_ROOT / "platform-resources.yml"
 COMPATIBILITY_CONTROLLER_HA = PRIVATE_ROOT / "controller-ha.yml"
+AUTHORITY_STATE_ROOT = Path("/var/lib/klokast/authority-states")
+AUTHORITY_STATE_POINTER = Path("/var/lib/klokast/active-authority-state")
 MAXIMUM_VALUES_SIZE = 64 * 1024
 ENGINE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SCHEMA_TRANSITION_METADATA_ONLY = "metadata-only"
@@ -1012,9 +1014,36 @@ def transition_instance_v1(instance, transition, target_commit):
     }
 
 
+def validate_instance_authority_document(authority, boxes):
+    expected_groups = {
+        "tailnet-policy-inputs-v1",
+        "controller-identity-v1",
+        "registry-settings-v1",
+        "execution-inventory-v1",
+        *(f"box-connectivity-v1:{box}" for box in boxes),
+    }
+    groups = authority.get("setting_groups", [])
+    if (
+        authority.get("schema_version") != 5
+        or authority.get("kind") != "klokast.authority-state.v5"
+        or len(groups) != len(expected_groups)
+        or any(not isinstance(group, dict) for group in groups)
+        or {group.get("id") for group in groups} != expected_groups
+        or any(group.get("source") != "instance_specification_v1" for group in groups)
+    ):
+        raise InstanceError("private candidate requires complete Instance Specification v1 authority")
+
+
 def check_candidate(args):
+    authority_modes = sum(getattr(args, name, False) is True for name in (
+        "require_bootstrap", "require_compatible", "require_instance_authority"
+    ))
+    if authority_modes != 1:
+        raise InstanceError("candidate validation requires exactly one authority mode")
     binary = verify_configure_engine(args)
     if (DEPLOYMENT_CHECKOUT / ".git").is_dir():
+        if getattr(args, "require_bootstrap", False) is True:
+            raise InstanceError("bootstrap candidate validation requires an unborn seed")
         base, engine_status = validate_deployment_base(args)
     else:
         if getattr(args, "base_commit", "") or getattr(args, "base_tree", ""):
@@ -1102,7 +1131,9 @@ def check_candidate(args):
             rollback_lock_path.write_bytes(active_lock_content)
             run(["git", "-C", candidate, "add", "--", "klokast-instance.json", "klokast.lock.json"])
         compatibility_summary = None
-        if getattr(args, "require_compatible", False):
+        bootstrap_validated = getattr(args, "require_bootstrap", False) is True
+        instance_authoritative = False
+        if getattr(args, "require_compatible", False) is True:
             completed = run(
                 [
                     binary,
@@ -1119,6 +1150,26 @@ def check_candidate(args):
             if completed.returncode not in (0, 2):
                 raise InstanceError("sealed compatibility planner failed operationally")
             compatibility_summary = parse_compatibility_result(completed)
+        elif getattr(args, "require_instance_authority", False) is True:
+            plan = load_plan_wrapper()
+            try:
+                pointer = plan.read_bounded_regular(
+                    AUTHORITY_STATE_POINTER, 66, "active authority-state pointer"
+                ).decode("ascii").strip()
+                authority_path = AUTHORITY_STATE_ROOT / f"{pointer}.json"
+                _, authority = plan.resolve_authority_state(str(authority_path))
+            except (UnicodeDecodeError, plan.PlanError) as error:
+                raise InstanceError("active instance authority cannot be verified") from error
+            candidate_document = json.loads(content)
+            boxes = candidate_document.get("boxes", {})
+            validate_instance_authority_document(authority, boxes)
+            if any(path.exists() or path.is_symlink() for path in (
+                COMPATIBILITY_DEPLOYMENT,
+                COMPATIBILITY_REGISTRY,
+                COMPATIBILITY_CONTROLLER_HA,
+            )):
+                raise InstanceError("retired compatibility input path is present; refuse mixed authority")
+            instance_authoritative = True
         tree = run(["git", "-C", candidate, "write-tree"], capture=True).stdout.strip()
         if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
             raise InstanceError("validated candidate returned an invalid Git tree")
@@ -1131,6 +1182,10 @@ def check_candidate(args):
         if compatibility_summary is not None:
             result["compatible"] = True
             result["compatibility_summary"] = compatibility_summary
+        if bootstrap_validated:
+            result["bootstrap_validated"] = True
+        if instance_authoritative:
+            result["instance_authoritative"] = True
         print(json.dumps(result, sort_keys=True))
     finally:
         shutil.rmtree(validation_root)
@@ -1217,6 +1272,8 @@ def parse_args(argv):
     candidate_parser.add_argument("--engine-commit", required=True)
     candidate_parser.add_argument("--build-dir", required=True)
     candidate_parser.add_argument("--require-compatible", action="store_true")
+    candidate_parser.add_argument("--require-bootstrap", action="store_true")
+    candidate_parser.add_argument("--require-instance-authority", action="store_true")
     candidate_parser.add_argument("--base-commit", default="")
     candidate_parser.add_argument("--base-tree", default="")
     seed_parser = commands.add_parser("seed")

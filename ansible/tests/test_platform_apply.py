@@ -258,6 +258,11 @@ class PlatformApplyTest(unittest.TestCase):
         self.assertIn("run_remote_execute", source)
         self.assertIn("ksa-apply: authority state is not active", source)
         self.assertIn("ksa-apply: Apply intent nonce was already used", source)
+        self.assertIn("ksa-apply: legacy retirement intent is expired or has an invalid lifetime", source)
+        self.assertIn("classify_replay_refusal", source)
+        self.assertIn("grep -Fqx", source)
+        self.assertIn("controller replay failure was not proof of nonce reuse or intent expiry", source)
+        self.assertNotIn("controller returned an unexpected replay refusal", source)
         self.assertIn("controller accepted a replayed Apply intent", source)
 
         combined = subprocess.run(
@@ -284,6 +289,19 @@ class PlatformApplyTest(unittest.TestCase):
         )
         self.assertNotEqual(rollback.returncode, 0)
         self.assertIn("only adoption or verification", rollback.stderr)
+
+    def test_progress_uses_stderr_and_does_not_change_json_results(self):
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.mod.progress("collecting fresh instance verification evidence")
+        self.assertEqual(
+            output.getvalue(),
+            "ksa-apply: progress: collecting fresh instance verification evidence\n",
+        )
+        source = KSA_APPLY.read_text(encoding="utf-8")
+        self.assertIn('file=sys.stderr, flush=True', source)
+        self.assertIn('progress("stored the verified execution receipt")', source)
+        self.assertIn('progress("stored the legacy retirement execution receipt")', source)
 
     def test_apply_refuses_plan_v1(self):
         with tempfile.TemporaryDirectory() as temporary:

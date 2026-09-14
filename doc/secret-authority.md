@@ -209,18 +209,17 @@ ansible/bin/platform-instance seed \
 ansible/bin/platform-instance validate-candidate \
   --engine-commit ENGINE-COMMIT \
   --build-dir /var/lib/klokast/builds/klokast-cli/ENGINE-COMMIT/OPERATION \
-  --require-compatible \
+  --require-bootstrap \
   <klokast-instance.json
 ```
 
 `validate-candidate` accepts at most one 64 KiB instance document through
 standard input. It copies the owner-only unborn seed to a temporary private
-directory, replaces only `klokast-instance.json`, checks it with the sealed
-binary, and compares it with the fixed private `deployment.yml`,
-`platform-resources.yml`, and `controller-ha.yml` inputs. It returns the
-checked Git tree only when there is no `conflict` or `unsupported` finding,
-and removes the temporary directory. It does not use an Observation, create a
-Plan, or change the seed or values file.
+directory, replaces only `klokast-instance.json`, and checks it with the sealed
+binary. Bootstrap mode requires the unborn seed. Later publication requires
+complete active Instance Specification v1 authority and absent retired input
+paths. It returns the checked Git tree and removes the temporary directory. It
+does not use an Observation, create a Plan, or change the seed or values file.
 
 Review and publish the transferred worktree with the MacBook helper:
 
@@ -229,7 +228,7 @@ klokast-dev/bin/publish-private-instance
 ```
 
 Use `publish-private-instance --check` to run the same sealed contract and
-compatibility validation without a commit, push, or publication.
+authority validation without a commit, push, or publication.
 
 The helper commits and pushes `main` with the human private-repository
 identity. It can also publish a later staged `klokast-instance.json` update
@@ -313,3 +312,51 @@ It never rewinds or force-pushes private `main`. Promotion receipts are below
 `/var/lib/klokast/engine-activations/`. Both are immutable root-owned evidence
 that is readable by `smith` and contains no private repository name, private
 path, or private JSON.
+
+## Platform Apply
+
+Only the active `<box>-ops` controller can execute a Platform Apply action.
+The human reviews and signs one canonical intent on the trusted MacBook. The
+root executor verifies the active-controller fence, exact Plan, sealed engine,
+controller toolchain, private source receipt, source recovery receipt,
+Observation, signature, expiry, and single-use nonce. An airunner cannot sign
+or execute the action and does not receive these inputs.
+
+An intent is valid for exactly ten minutes. The executor consumes its nonce
+before it starts the operation checks. A used intent cannot be retried. Create
+fresh evidence and obtain a new approval after a failure. The executor writes
+the final machine-readable result to stdout. Bounded, non-secret progress and
+errors go to stderr.
+
+The MacBook helper can repeat the exact signed request after success when
+`--prove-replay-refusal` is selected. It accepts only one exact controller
+diagnostic:
+
+- the nonce was already used; or
+- the intent expired before the replay.
+
+The helper reports which condition refused the replay. It does not treat an
+SSH error, transport failure, malformed result, or unknown diagnostic as proof
+of replay protection. Expiry validation remains before nonce validation. Do
+not weaken the lifetime or reorder validation to obtain a preferred message.
+
+All six desired-state groups use Instance Specification v1. Plan v8 is the
+closed verification-only contract for Controller Toolchain v7. Plan v9 with
+Controller Toolchain v8 is the closed legacy-retirement lifecycle contract.
+After retirement, its `verify` phase is the supported signed proof that the
+old inputs remain absent and current consumers remain unchanged. Earlier Plan
+versions and explicit compatibility inputs exist only for recovery, tests, and
+reading historical artifacts. They are not a normal authority fallback.
+
+Keep these controller-held artifacts even when public acceptance notes are
+removed:
+
+- execution receipts and consumed nonce records;
+- authority states and Plans;
+- source and source-recovery receipts;
+- audit logs and policy recovery material;
+- the root-only legacy-input recovery archive.
+
+The public transition narrative is available in Git at commit `186cfa9`.
+Current verification commands are in
+[Instance Authority Verification](../klokast-dev/runbooks/53-instance-only-verification.md).

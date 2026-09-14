@@ -47,7 +47,9 @@ class PlatformInstanceValidateCandidateTest(unittest.TestCase):
         self.args = argparse.Namespace(
             engine_commit=ENGINE_COMMIT,
             build_dir=str(self.root / "build"),
+            require_bootstrap=True,
             require_compatible=False,
+            require_instance_authority=False,
         )
 
     def tearDown(self):
@@ -171,6 +173,7 @@ raise SystemExit(0 if valid else 1)
             self.run_candidate(self.candidate())
 
     def test_required_compatibility_uses_all_private_inputs(self):
+        self.args.require_bootstrap = False
         self.args.require_compatible = True
         planned = {
             "valid": True,
@@ -197,6 +200,7 @@ raise SystemExit(0 if valid else 1)
         self.assertNotIn("--observation", command)
 
     def test_required_compatibility_refuses_conflict(self):
+        self.args.require_bootstrap = False
         self.args.require_compatible = True
         planned = {
             "valid": True,

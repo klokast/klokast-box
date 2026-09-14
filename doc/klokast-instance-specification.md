@@ -23,10 +23,9 @@ manifests, connectivity capabilities, automation, and neutral tests. The private
 repository owns deployment intent and the engine lock. It must not contain
 secrets, generated state, live status, or user data.
 
-The [upstream/instance target architecture](upstream-instance-target-architecture.md)
-records implementation status, transition Plan semantics, engine promotion,
-future authorized apply, migration, and legacy-removal gates. This document
-remains the normative source for the JSON contract and `klokast` CLI behavior.
+This document is the normative source for the JSON contract and `klokast` CLI
+behavior. [Secret Authority](secret-authority.md) owns signed execution rules.
+The completed transition narrative is available in Git at commit `186cfa9`.
 
 ## Repository layout
 
@@ -268,6 +267,7 @@ The implemented offline commands are:
 klokast init --instance PATH --values FILE [--json]
 klokast check --instance PATH [--json]
 klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]
+klokast plan --legacy-retirement --retirement-phase verify --retirement-evidence FILE --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]
 klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]
 klokast doctor --instance PATH --observation FILE [--json]
 ```
@@ -294,11 +294,12 @@ input to the active controller. Before the first commit, the controller uses
 the owner-only unborn seed and its bootstrap engine. After a deployment
 checkout exists, it uses that exact clean commit, a fresh source receipt, and
 the engine selected by the lock and its immutable activation receipt. It
-checks the candidate with the sealed binary and compares it with the exact
-three controller-private legacy inputs. It also checks the rollback form with
-the recorded previous sealed engine. It returns the checked Git tree only when
-there is no `conflict` or `unsupported` finding, and it removes the temporary
-copy. The helper commits only when that tree equals the staged MacBook tree.
+checks the candidate with the sealed binary, requires complete Authority State
+v5 with all setting groups owned by Instance Specification v1, and refuses any
+restored legacy input path. It also checks the rollback form with the recorded
+previous sealed engine. It returns the checked Git tree and removes the
+temporary copy. The helper commits only when that tree equals the staged
+MacBook tree.
 For a later update, it also requires MacBook, GitHub, source receipt, and
 controller `main` to have the same base commit and tree.
 `publish-private-instance --check` performs the same check without a commit,
@@ -340,19 +341,22 @@ finding is `matched`, `derived`, `compatibility_only`, `conflict`, or
 absent. An enabled legacy app must have explicit present intent.
 
 With `--instance-only`, fresh Observation v1 and Instance Source Receipt v1,
-complete Authority State v5, and Controller Toolchain v7, `plan` emits Plan v8.
-It requires all six setting groups and their exact instance scopes. It rejects
-all compatibility-input and migration-target flags. It emits verification-only
-actions without comparison findings or legacy-input fields.
+complete Authority State v5, and Controller Toolchain v7, `plan` emits the
+closed Plan v8 contract retained for historical verification and recovery.
+With `--legacy-retirement --retirement-phase verify`, immutable retirement
+evidence, and Controller Toolchain v8, it emits the current Plan v9
+retired-state verification contract. Both require all six setting groups and
+their exact instance scopes. They reject compatibility inputs and migration
+targets and emit verification-only source actions.
 
-Explicit compatibility and migration planning retains the prior interfaces,
+Explicit compatibility and migration planning retains the prior interfaces
+only for recovery, tests, and reading historical artifacts,
 including `--connectivity-target non-controller|active-controller` and
 `--migration-target connectivity|controller-identity|registry|inventory`.
-Their defaults are `non-controller` and `connectivity`. The
-[target architecture](upstream-instance-target-architecture.md) owns versioned
-Plan semantics and signed execution gates. Historical Plans retain their
-original contracts. Instance Specification v1 is unchanged. Planning applies
-no changes, and Plan v1 cannot authorize execution. `doctor` uses the same
+Their defaults are `non-controller` and `connectivity`. Historical Plans retain
+their original contracts. Normal operation must not use these interfaces as a
+fallback source of authority. Planning applies no changes, and Plan v1 cannot
+authorize execution. `doctor` uses the same
 projection and checks only the declared standard substrate. Extra legacy
 resources do not become desired state. `doctor` checks every listed airunner
 for presence, online state, and its required tag. It does not select a runner,
@@ -384,9 +388,6 @@ evidence in `/var/lib/klokast`, and rebuildable artifacts in
 
 ## Deferred work
 
-The [upstream/instance target architecture](upstream-instance-target-architecture.md)
-owns the ordered design work for engine promotion, Plan hardening, authorized
-apply, migration, and legacy removal. Later specification versions can add
-more connectivity providers, app feature types, data operations, and site
-executors. Version 1 does not give an app or an airunner authority to grant
-itself resources or delete undeclared data.
+Later specification versions can add more connectivity providers, app feature
+types, data operations, and site executors. Version 1 does not give an app or
+an airunner authority to grant itself resources or delete undeclared data.

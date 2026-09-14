@@ -93,7 +93,7 @@ the active controller renders the deployable policy to
 
 ## Terraform
 
-From [hetzner-ops](/home/codex/src/klokast/klokast-box/klokast-ops/terraform/hetzner-ops):
+From [hetzner-ops](../terraform/hetzner-ops/):
 
 ```bash
 cd /path/to/klokast/klokast-box/klokast-ops/terraform/hetzner-ops
@@ -124,7 +124,7 @@ server later.
 
 ## Ansible
 
-From [ansible](/home/codex/src/klokast/klokast-box/klokast-ops/ansible):
+From [ansible](../ansible/):
 
 ```bash
 cd /path/to/klokast/klokast-box/klokast-ops/ansible

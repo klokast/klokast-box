@@ -1,15 +1,10 @@
 # Private Instance Bootstrap: Human Procedure
 
-Use this procedure to create the private Klokast Instance Specification v1 repository,
-and give the active controller read-only access to it.
-
-The Platform got one active controller `<box>-ops`.
-The current approved engine is:
-
-```text
-commit: 09afa3e1e677da25ffdbdb1f22378e9f97a71e71
-build:  /var/lib/klokast/builds/klokast-cli/09afa3e1e677da25ffdbdb1f22378e9f97a71e71/d57fa19b5b58
-```
+Use this procedure to create the private Klokast Instance Specification v1
+repository and give the active `<box>-ops` controller read-only access. Use the
+exact reviewed engine commit and sealed build that the current controller
+reports. Do not copy a commit or build identifier from this runbook. A full
+initial-bootstrap recovery exercise remains separate work in `doc/todo.md`.
 
 Do not paste the GitHub App PEM, private deployment values, signed intents,
 approval signatures, or private repository contents into chat. Do not run
@@ -23,7 +18,7 @@ an airunner, authors and pushes the first private commit.
 ## 0. Pre-requisites
 
 Complete `klokast-dev/runbooks/15-touchid-secret-authority.md` before Step 1.
-That migration installs the separate private-instance, static-site, and
+That setup installs the separate private-instance, static-site, and
 platform-apply signers
 and deploys their scope enforcement to the active controller.
 
@@ -495,33 +490,16 @@ step. The publication helper runs the sealed checker on that staged content.
 Continue to Step 11 only when the two JSON files contain the exact intended
 state.
 
-For a migration from legacy authority, first install the exact transitional
-controller HA registry. Create an owner-only candidate on the MacBook with the
-closed shape shown in `ops/controller-ha.example.yml`. Use only the real one
-or two controller identities, keep the active controller first, and run:
-
-```sh
-cd "$HOME/src/klokast/klokast-box"
-klokast-dev/bin/install-controller-ha-config \
-  --candidate /owner-only/path/controller-ha.yml \
-  --controller <active-box>-ops
-```
-
-The helper requires the exact terminal phrase that it displays. It archives
-the prior MacBook and controller files, installs mode `0600` files atomically,
-and restores the prior files if the selected controller is not active. This
-development migration does not use Touch ID. Do not put the HA registry in
-the private instance repository or on an airunner.
-
-Run the no-publication compatibility check before the final review:
+Run the no-publication authority check before the final review:
 
 ```sh
 klokast-dev/bin/publish-private-instance --check
 ```
 
-The check uses the sealed engine and the exact controller-private deployment,
-platform-resource, and HA files. It succeeds only when there is no `conflict`
-or `unsupported` finding. It does not derive or rewrite private intent.
+For an initial repository, the check binds the reviewed document to the exact
+unborn sealed seed. For a later update, it requires complete active Instance
+Specification v1 authority and absence of all retired compatibility paths. It
+does not derive or rewrite private intent.
 
 ## 11. Commit and push as the human
 
@@ -536,8 +514,8 @@ The helper rechecks the exact five-file staged tree, engine pins, local Git
 state, registered repository, and sealed controller seed. If the human edited
 only `klokast-instance.json`, it sends that one document through standard
 input to a temporary owner-only controller check. The sealed checker validates
-it and requires compatibility with the three controller-private legacy
-inputs. The controller removes the temporary check directory, and the helper
+it against the bootstrap authority boundary. The controller removes the
+temporary check directory, and the helper
 requires the checked Git tree to equal the staged MacBook tree. Support files
 and `klokast.lock.json` must still equal the seed. The helper displays the
 complete private diff only in the current MacBook terminal and asks before it
@@ -575,7 +553,7 @@ klokast-dev/bin/publish-private-instance
 ```
 
 The helper refuses unstaged changes, changes to another file, remote
-divergence, and incompatible current legacy intent. Run it first with
+divergence, incomplete instance authority, and any restored legacy input. Run it first with
 `--check` when you want a no-publication result. It validates the exact staged
 tree with the sealed controller checker before it displays the private diff
 and asks for approval. After the push, synchronize and validate the controller
@@ -659,10 +637,8 @@ The temporary App bootstrap authority is retired.
 The temporary App is deleted.
 ```
 
-The agent can then run `platform-instance sync`, create a fresh Observation
-v1 file, and generate a read-only Plan v2 artifact with the active authority
-state and exact controller toolchain receipt. Legacy deployment authority
-stays active until a separate platform-apply approval changes it.
+The agent can then synchronize the controller's read-only checkout, create a
+fresh Observation v1, and run the current authority verification procedure.
 
 ## 14. Promote the active engine
 
@@ -681,14 +657,8 @@ klokast-dev/bin/promote-private-instance-engine \
   --check
 ```
 
-The helper shows the complete private diff only in this terminal. It permits
-either the two schema URLs and lock commit, or the closed legacy Instance v1
-transition that it identifies in the intent. That transition renames the
-legacy Tailnet and connectivity keys, inlines referenced site metadata, and
-removes only the redundant instance ID and site map. Confirm that no private
-value changes. A later connectivity transition maps `tailscale` to `overlay`
-and maps `local-ap-direct-egress` to the adjacent `local-ap-uplink` and
-`direct-wan-egress` pair. Its inverse refuses partial or non-invertible sets.
+The helper shows the complete private diff only in this terminal. Confirm the
+exact schema URLs, engine lock, and any declared reversible schema transform.
 Run the same command without `--check`, review the 10-minute
 intent, answer `y`, and approve Touch ID. The helper commits and pushes from
 the MacBook, synchronizes the controller read-only checkout, and creates
@@ -704,79 +674,8 @@ klokast-dev/bin/promote-private-instance-engine \
 ```
 
 After activation, later `publish-private-instance` runs resolve the active
-controller from the private HA registry. They use the active engine evidence
-instead of the bootstrap engine and build pins.
-
-## 15. Align elementary connectivity capabilities
-
-Use this section only for the controlled capability migration. It does not
-apply resources or change an application runtime.
-
-On the trusted MacBook, stage `klokast-instance.json` with
-`"connectivity": ["overlay"]` on each current box. Keep applications absent
-and preserve the intended Music `library` data declaration. Do not publish.
-
-In an interactive `smith` shell on the active controller, create an owner-only
-backup of the resource registry and record its hash:
-
-```sh
-cd ~/src/klokast/klokast-box
-umask 077
-REG=~/private/klokast/platform-resources.yml
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP="$REG.$STAMP.elementary-connectivity.bak"
-cp -- "$REG" "$BACKUP"
-chmod 0600 "$BACKUP"
-sha256sum "$BACKUP"
-```
-
-Edit only the active registry. Set every legacy app entry to `enabled: false`.
-Keep placement, resource, cleanup, and retained metadata. Give every box this
-exact access declaration and delete the box `policy` field:
-
-```yaml
-access:
-  available_capabilities: [overlay]
-  enabled_capabilities: [overlay]
-  prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
-```
-
-Run lint only:
-
-```sh
-ansible/bin/platform-resources --registry "$REG" lint
-```
-
-Do not run `apply`, `verify`, Ansible, a service command, or an app command.
-On the MacBook, run `publish-private-instance --check`. If it fails before
-publication, restore the exact backup and confirm its recorded SHA-256. If it
-passes, publish through the same helper and synchronize the controller
-checkout.
-
-For acceptance, use the active controller. Verify source and activation
-receipts, refresh the Platform map without repair, export a fresh owner-only
-Observation v1, and call `platform-plan` with the exact sealed build directory
-and all three private compatibility inputs. Keep the immutable Plan path that
-the command reports. Verify its SHA-256, root ownership, directory mode
-`0750`, and file mode `0440`.
-
-The Plan must report:
-
-```text
-valid: true
-compatible: true
-substrate_healthy: true
-deployable: true
-authority_ready: true
-refusals: 0
-conflict: 0
-unsupported: 0
-legacy_removal_ready: false
-```
-
-The human must review every compatibility-only finding and confirm its one
-continuing authority. Only then mark this migration and read-only acceptance
-`live-verified`.
+controller from the private instance. They use active engine evidence instead
+of bootstrap pins and require complete instance authority.
 
 ## Troubleshooting
 

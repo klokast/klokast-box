@@ -169,7 +169,12 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
             "    ;;\n"
             "  *validate-candidate*)\n"
             "    cat >/dev/null\n"
-            "    printf '{\"compatible\":true,\"engine_commit\":\"%s\",\"schema_version\":1,\"tree\":\"%s\",\"valid\":true}\\n' \"$FAKE_ENGINE_COMMIT\" \"$FAKE_CANDIDATE_TREE\"\n"
+            "    case \"$*\" in\n"
+            "      *--require-bootstrap*) authority_field=bootstrap_validated ;;\n"
+            "      *--require-instance-authority*) authority_field=instance_authoritative ;;\n"
+            "      *) exit 2 ;;\n"
+            "    esac\n"
+            "    printf '{\"%s\":true,\"engine_commit\":\"%s\",\"schema_version\":1,\"tree\":\"%s\",\"valid\":true}\\n' \"$authority_field\" \"$FAKE_ENGINE_COMMIT\" \"$FAKE_CANDIDATE_TREE\"\n"
             "    exit 0\n"
             "    ;;\n"
             "esac\n"
@@ -297,7 +302,7 @@ class PrivateInstancePublishHelperTest(unittest.TestCase):
         os.close(master)
         self.assertEqual(process.wait(timeout=15), 0, output.decode(errors="replace"))
         text = output.decode(errors="replace")
-        self.assertIn("compatibility check passed", text)
+        self.assertIn("authority check passed", text)
         self.assertIn("No commit, push, or publication", text)
         self.assertNotEqual(
             self.git("-C", self.worktree, "rev-parse", "--verify", "HEAD", check=False).returncode,

@@ -146,6 +146,11 @@ class ApplyError(Exception):
     pass
 
 
+def progress(message):
+    """Write one bounded, non-secret update outside the JSON result stream."""
+    print(f"ksa-apply: progress: {message}", file=sys.stderr, flush=True)
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -4928,6 +4933,7 @@ def verification_execute(args, intent):
         raise ApplyError("protected verification binding has unknown fields")
     consume_nonce(intent)
     try:
+        progress("collecting fresh instance verification evidence")
         evidence_args = argparse.Namespace(**{key: binding[field] for key, field in (("plan", "plan_path"), ("authority_state", "authority_path"), ("controller_toolchain_receipt", "toolchain_path"), ("source_recovery_receipt", "recovery_path"), ("instance_source_receipt", "source_path"), ("observation", "observation"), ("build_dir", "build_dir"))})
         collected = verification_collect(evidence_args, intent["nonce"] + "-execute")
         if verification_intent(collected, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
@@ -4939,6 +4945,7 @@ def verification_execute(args, intent):
                    "result": "verified", "recovery_result": "not_needed", "authority_state_sha256": intent["evidence"]["authority_state_sha256"], "finished_at": format_utc(now_utc())}
         path = store_identity_receipt(receipt)
         append_audit("instance-verification.executed", nonce=intent["nonce"], receipt_sha256=receipt["receipt_sha256"])
+        progress("stored the verified execution receipt")
         print(canonical({"schema_version": 1, "result": "verified", "receipt_path": str(path), "authority_state_sha256": receipt["authority_state_sha256"]}))
     except (ApplyError, OSError) as error:
         raise ApplyError("verification failed or receipt storage is incomplete; inspect evidence and obtain fresh approval; do not retry the used request: " + str(error)) from error
@@ -5211,6 +5218,7 @@ def retirement_execute(args, intent):
     if set(binding) != RETIREMENT_BINDING_FIELDS:
         raise ApplyError("protected retirement binding has unknown fields")
     consume_nonce(intent)
+    progress("revalidating protected retirement evidence")
     namespace = argparse.Namespace(**{key: binding[field] for key, field in (
         ("plan", "plan_path"), ("authority_state", "authority_path"),
         ("controller_toolchain_receipt", "toolchain_path"), ("source_recovery_receipt", "recovery_path"),
@@ -5245,6 +5253,7 @@ def retirement_execute(args, intent):
                 retirement_absent((*LEGACY_INPUTS, *OBSOLETE_BACKUPS))
                 result, recovery_result = "retired", "archive_verified"
             else:
+                progress("checking the retired input state and current consumers")
                 retirement_absent((*LEGACY_INPUTS, *OBSOLETE_BACKUPS))
                 final = verification_collect(namespace, intent["nonce"] + "-verify")
                 if final["evidence"] != intent["evidence"]:
@@ -5269,6 +5278,7 @@ def retirement_execute(args, intent):
             state = "retired files may have been removed" if phase == "retire" and removal_started else "retired state was unchanged"
             raise ApplyError(f"legacy retirement failed or receipt storage is incomplete; {state}; inspect the recovery archive and obtain fresh approval; do not retry the used request: {error}") from error
     append_audit("legacy-retirement.executed", phase=phase, nonce=intent["nonce"], result=result, receipt_sha256=receipt["receipt_sha256"])
+    progress("stored the legacy retirement execution receipt")
     print(canonical({"schema_version": 1, "result": result, "receipt_path": str(path),
                      "authority_state_sha256": receipt["authority_state_sha256"]}))
 

@@ -1102,6 +1102,49 @@ class PlatformInstanceTest(unittest.TestCase):
         self.assertEqual(command[:3], ["sudo", "-n", self.mod.INSTALLED_AUTHORITY])
         self.assertNotIn("git", command)
 
+    def test_post_retirement_publication_has_a_closed_authority_mode(self):
+        source = PLATFORM_INSTANCE.read_text(encoding="utf-8")
+        publisher = (REPO_ROOT / "klokast-dev/bin/publish-private-instance").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--require-instance-authority", source)
+        self.assertIn("--require-bootstrap", source)
+        self.assertIn("klokast.authority-state.v5", source)
+        self.assertIn("private candidate requires complete Instance Specification v1 authority", source)
+        self.assertIn("retired compatibility input path is present; refuse mixed authority", source)
+        self.assertIn('authority_option="--require-instance-authority"', publisher)
+        self.assertIn('authority_option="--require-bootstrap"', publisher)
+        self.assertIn('value.get(expected_authority) is not True', publisher)
+        self.assertNotIn("the instance document did not pass sealed compatibility validation", publisher)
+
+    def test_post_retirement_publication_rejects_partial_or_legacy_authority(self):
+        boxes = {"boxa": {}, "boxb": {}}
+        groups = [
+            "tailnet-policy-inputs-v1",
+            "controller-identity-v1",
+            "registry-settings-v1",
+            "execution-inventory-v1",
+            "box-connectivity-v1:boxa",
+            "box-connectivity-v1:boxb",
+        ]
+        authority = {
+            "schema_version": 5,
+            "kind": "klokast.authority-state.v5",
+            "setting_groups": [
+                {"id": group, "scopes": [], "source": "instance_specification_v1"}
+                for group in groups
+            ],
+        }
+        self.mod.validate_instance_authority_document(authority, boxes)
+        partial = json.loads(json.dumps(authority))
+        partial["setting_groups"].pop()
+        with self.assertRaisesRegex(self.mod.InstanceError, "complete Instance"):
+            self.mod.validate_instance_authority_document(partial, boxes)
+        legacy = json.loads(json.dumps(authority))
+        legacy["setting_groups"][0]["source"] = "legacy_deployment"
+        with self.assertRaisesRegex(self.mod.InstanceError, "complete Instance"):
+            self.mod.validate_instance_authority_document(legacy, boxes)
+
     def test_seed_accepts_only_successful_init_at_the_requested_private_path(self):
         class Plan:
             class PlanError(Exception):

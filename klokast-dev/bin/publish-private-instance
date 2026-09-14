@@ -29,7 +29,7 @@ the human GitHub credential, and verifies the remote commit.
 The helper can resume an exact local initial commit after a failed push. It
 also publishes later staged instance-document updates when GitHub main equals
 the local base commit.
-With --check, it validates the staged tree and current compatibility only. It
+With --check, it validates the staged tree against the current authority. It
 does not commit, push, publish, or change private desired state.
 It does not give the controller or an airunner write access.
 EOF
@@ -345,8 +345,12 @@ SH
 
 validate_controller_candidate() {
   local remote_command=""
+  local authority_option="--require-instance-authority"
 
-  remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance validate-candidate --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION --require-compatible"
+  if [ "$LOCAL_STATE" = unborn ]; then
+    authority_option="--require-bootstrap"
+  fi
+  remote_command="cd /home/smith/src/klokast/klokast-box && exec ansible/bin/platform-instance validate-candidate --engine-commit $ENGINE_COMMIT --build-dir /var/lib/klokast/builds/klokast-cli/$ENGINE_COMMIT/$BUILD_OPERATION $authority_option"
   if [ -n "${LOCAL_COMMIT:-}" ]; then
     remote_command="$remote_command --base-commit $LOCAL_COMMIT --base-tree $BASE_TREE"
   fi
@@ -511,32 +515,33 @@ if value.get("private_commit") != sys.argv[1] or value.get("private_tree") != sy
     ksa_die "MacBook, GitHub, source receipt, and controller private bases do not match"
 fi
 candidate_result="$(validate_controller_candidate)" || \
-  ksa_die "the instance document did not pass sealed compatibility validation"
+  ksa_die "the instance document did not pass sealed authority validation"
 candidate_tree="$(printf '%s\n' "$candidate_result" | python3 -c '
 import json
 import re
 import sys
 expected_engine = sys.argv[1]
+expected_authority = sys.argv[2]
 value = json.load(sys.stdin)
 tree = value.get("tree", "")
 if (value.get("schema_version") != 1 or value.get("valid") is not True
-        or value.get("compatible") is not True
+        or value.get(expected_authority) is not True
         or value.get("engine_commit") != expected_engine
         or not re.fullmatch(r"[0-9a-f]{40,64}", tree)):
-    raise SystemExit("controller returned an invalid compatible candidate result")
+    raise SystemExit("controller returned an invalid authority-bound candidate result")
 print(tree)
-' "$ENGINE_COMMIT")" || ksa_die "cannot verify the controller candidate result"
+' "$ENGINE_COMMIT" "$([ "$LOCAL_STATE" = unborn ] && printf bootstrap_validated || printf instance_authoritative)")" || ksa_die "cannot verify the controller candidate result"
 [ "$candidate_tree" = "$LOCAL_TREE" ] || \
   ksa_die "the staged tree differs from the tree checked by the sealed controller"
 
 if [ "$CONTROLLER_TREE" = "$LOCAL_TREE" ]; then
   TREE_VALIDATION="exact sealed seed"
 else
-  TREE_VALIDATION="human-edited instance document accepted by sealed compatibility check"
+  TREE_VALIDATION="human-edited instance document accepted by sealed authority check"
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
-  printf 'Private instance compatibility check passed.\n'
+  printf 'Private instance authority check passed.\n'
   printf '  Engine: %s\n' "$ENGINE_COMMIT"
   printf '  Tree: %s (%s)\n' "$LOCAL_TREE" "$TREE_VALIDATION"
   printf 'No commit, push, or publication was performed.\n'

@@ -440,10 +440,8 @@ topology, membership, connectivity-capability, controller, airunner, app, and
 retained-data intent. It has no secrets, generated state, observed status,
 inventory, or site-executor interface. The
 [Klokast Instance Specification v1](klokast-instance-specification.md) owns
-the normative JSON contract and CLI behavior. The
-[upstream/instance target architecture](upstream-instance-target-architecture.md)
-owns the transition design, Plan semantics, future apply gates, and legacy
-removal requirements.
+the normative JSON contract and CLI behavior. [Secret Authority](secret-authority.md)
+owns signed Platform Apply, replay, rollback, receipt, and recovery rules.
 
 Legacy controller input retirement passed signed execution and signed
 verification on 2026-09-14. The live `deployment.yml`, private
@@ -451,8 +449,10 @@ verification on 2026-09-14. The live `deployment.yml`, private
 consumers use Instance Specification v1. The canonical old registry path can
 still select adopted authority; it does not require a file. The root-only
 recovery archive, historical Plans, and explicit compatibility inventory remain
-available. See the [retirement acceptance record](../klokast-dev/runbooks/53-instance-only-verification.md#retirement-and-verification-2026-09-14)
-for receipts, final Plan v9, and the replay-message reporting limitation.
+available. The public acceptance narrative is in Git at commit `186cfa9`.
+Controller-held receipts, Plans, audit logs, source history, policy recovery
+material, and the recovery archive remain operational evidence and must not be
+deleted as documentation cleanup.
 
 The active controller is the only Platform mutation locus and secret custodian.
 The human authors and pushes private instance changes from a trusted
@@ -463,8 +463,7 @@ URL. Airunners may author and push reviewed public implementation changes, but
 they do not clone the private instance repository or hold controller-private
 state. Deployable `klokast` binaries are built only by the active controller through the
 networkless Xen `platform-builder` profile.
-The target architecture records the current source-custody and sealed-build
-implementation. Exact human and controller procedures are in
+Exact human and controller procedures are in
 [Private Instance Bootstrap](../klokast-dev/runbooks/40-private-instance-bootstrap.md).
 Platform site time is always `Etc/UTC` (GMT), so instance inputs do not contain
 a timezone.

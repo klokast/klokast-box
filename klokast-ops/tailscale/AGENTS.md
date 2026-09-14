@@ -8,7 +8,7 @@
   1. Read Tailscale API documentation on `https://tailscale.com/api`.
   2. Edit public topology and grants in `policy.hujson.j2`; keep family
      identities in the checked private Instance Specification. Read
-     [policy ownership](../../doc/upstream-instance-target-architecture.md#1172-tailnet-policy-file-ownership)
+     [Platform Apply](../../doc/secret-authority.md#platform-apply)
      before changing this split.
   3. Render with `ansible/bin/render-tailscale-policy --instance
      ~/private/klokast/instance/klokast-instance.json --output
@@ -19,10 +19,9 @@
      validate policy, but it cannot mutate policy. Use the closed
      `tailnet_policy_inputs_v1` Apply flow for the three migrated private
      inputs. A later architecture decision must authorize any public-template
-     mutation flow. The human-authorized, two-comment maintenance exception
-     of 2026-09-11 is defined in
-     [section 11.7.1](../../doc/upstream-instance-target-architecture.md#1171-authorized-comment-repair-2026-09-11).
-     It is not a general policy update interface.
+     mutation flow. The prior two-comment maintenance action was a closed,
+     one-time exception. It is not a general policy update interface and must
+     not be reused.
   6. `sudo /usr/local/sbin/ts-policy-pull` imports the live API policy into
      that private path for comparison; it never writes identities into Git.
 

@@ -217,7 +217,14 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
-    print("controller_box_source" if value["kind"] in {"klokast.controller-box-connectivity-source-intent.v1", "klokast.controller-identity-source-intent.v1", "klokast.registry-source-intent.v1", "klokast.inventory-source-intent.v1", "klokast.instance-verification-intent.v1"} else value["action"])
+    labels = {
+        "klokast.controller-box-connectivity-source-intent.v1": "controller_box_source",
+        "klokast.controller-identity-source-intent.v1": "controller_identity_source",
+        "klokast.registry-source-intent.v1": "registry_source",
+        "klokast.inventory-source-intent.v1": "registry_source",
+        "klokast.instance-verification-intent.v1": "verify_instance_authority",
+    }
+    print(labels.get(value["kind"], value["action"]))
 PY
 )"
 
@@ -252,6 +259,26 @@ exec ansible/bin/platform-apply execute \
 SH
 }
 
+bounded_replay_diagnostic() {
+  awk 'NR <= 20 { print substr($0, 1, 512) }' "$1" >&2
+}
+
+classify_replay_refusal() {
+  diagnostic=$1
+  expected_nonce=$2
+  expected_expiry=$3
+  ksa_lines="$(grep -Ec '^ksa-apply: ' "$diagnostic" || true)"
+  if [ "$ksa_lines" = 1 ] && grep -Fqx "$expected_nonce" "$diagnostic"; then
+    printf '%s\n' nonce-reuse
+    return 0
+  fi
+  if [ "$ksa_lines" = 1 ] && grep -Fqx "$expected_expiry" "$diagnostic"; then
+    printf '%s\n' expired-intent
+    return 0
+  fi
+  return 1
+}
+
 if [ -n "$rollback_execution" ]; then
   tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'SH'
 set -eu
@@ -262,6 +289,7 @@ exec ansible/bin/platform-apply rollback \
 SH
 else
   execution_result="$work/execution-result.json"
+  ksa_log "Executing the approved Platform operation on $controller..."
   run_remote_execute >"$execution_result"
   python3 - "$intent" "$execution_result" <<'PY'
 import json
@@ -289,6 +317,7 @@ if (
     raise SystemExit("controller returned an invalid Apply execution result")
 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 PY
+  ksa_log "The controller completed the approved Platform operation."
 
   if [ "$prove_replay_refusal" = true ]; then
     replay_stdout="$work/replay.stdout"
@@ -299,20 +328,41 @@ PY
     case "$intent_action" in
       adopt_instance_specification)
         expected_refusal="ksa-apply: authority state is not active"
+        expected_expiry="ksa-apply: Apply intent is expired or has an invalid lifetime"
         ;;
-      verify_instance_authority|controller_box_source|exercise_legacy_input_retirement|retire_legacy_inputs|verify_legacy_retirement)
+      verify_instance_authority)
         expected_refusal="ksa-apply: Apply intent nonce was already used"
+        expected_expiry="ksa-apply: instance verification intent is expired or has an invalid lifetime"
+        ;;
+      controller_box_source)
+        expected_refusal="ksa-apply: Apply intent nonce was already used"
+        expected_expiry="ksa-apply: box connectivity intent is expired or has an invalid lifetime"
+        ;;
+      controller_identity_source)
+        expected_refusal="ksa-apply: Apply intent nonce was already used"
+        expected_expiry="ksa-apply: controller identity intent is expired or has an invalid lifetime"
+        ;;
+      registry_source)
+        expected_refusal="ksa-apply: Apply intent nonce was already used"
+        expected_expiry="ksa-apply: registry source intent is expired or has an invalid lifetime"
+        ;;
+      exercise_legacy_input_retirement|retire_legacy_inputs|verify_legacy_retirement)
+        expected_refusal="ksa-apply: Apply intent nonce was already used"
+        expected_expiry="ksa-apply: legacy retirement intent is expired or has an invalid lifetime"
         ;;
       repair_overlay_ipv6_direct)
         expected_refusal="ksa-apply: Apply intent nonce was already used"
+        expected_expiry="ksa-apply: overlay direct repair intent is expired or has an invalid lifetime"
         ;;
       *)
         ksa_die "--prove-replay-refusal received an unsupported intent action"
         ;;
     esac
-    if ! grep -Fq "$expected_refusal" "$replay_stderr"; then
-      ksa_die "controller returned an unexpected replay refusal"
+    if ! replay_class="$(classify_replay_refusal "$replay_stderr" "$expected_refusal" "$expected_expiry")"; then
+      ksa_log "The controller returned an unrecognized replay failure:"
+      bounded_replay_diagnostic "$replay_stderr"
+      ksa_die "controller replay failure was not proof of nonce reuse or intent expiry"
     fi
-    printf 'Replay refusal confirmed for the exact signed Apply intent.\n'
+    printf 'Replay refusal confirmed for the exact signed Apply intent: %s.\n' "$replay_class"
   fi
 fi
