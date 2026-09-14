@@ -83,7 +83,9 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 - Use ASD-STE100 Simplified Technical English when writing documentation and answering the user.
 - Docs must be non-duplicative, contradiction-free, located where future agents will find it easily when working on a relate task.
 - If you find broken links in the documentation, try and repair them.
-- Describe in `doc/todo.md` any difficulties encountered during work, to allow an AI agent to later fix them and avoid future reliance on work arounds.
+- Describe unresolved difficulties in `.run/todo.md`, so a later agent can fix
+  them and avoid workarounds. Keep this ignored working file current. Do not
+  commit it.
 - Error messages should be expressive and understandable.
 - Operating the wrappers and other code should generate best-practices logs.
 

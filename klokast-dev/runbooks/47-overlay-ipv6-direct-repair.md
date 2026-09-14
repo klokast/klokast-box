@@ -31,4 +31,4 @@ the current peer-router `/128`, UDP, port `41641`. Do not use a whole `/64`,
 DMZ, an unrestricted destination, or an assumed device-to-address binding.
 
 The old design and acceptance notes are available in Git at commit `186cfa9`.
-Track the replacement contract in `doc/todo.md` before implementation.
+Track the replacement contract in `.run/todo.md` before implementation.

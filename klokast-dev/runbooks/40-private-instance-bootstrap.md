@@ -4,7 +4,7 @@ Use this procedure to create the private Klokast Instance Specification v1
 repository and give the active `<box>-ops` controller read-only access. Use the
 exact reviewed engine commit and sealed build that the current controller
 reports. Do not copy a commit or build identifier from this runbook. A full
-initial-bootstrap recovery exercise remains separate work in `doc/todo.md`.
+initial-bootstrap recovery exercise remains separate work in `.run/todo.md`.
 
 Do not paste the GitHub App PEM, private deployment values, signed intents,
 approval signatures, or private repository contents into chat. Do not run
