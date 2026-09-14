@@ -445,6 +445,15 @@ the normative JSON contract and CLI behavior. The
 owns the transition design, Plan semantics, future apply gates, and legacy
 removal requirements.
 
+Legacy controller input retirement passed signed execution and signed
+verification on 2026-09-14. The live `deployment.yml`, private
+`platform-resources.yml`, and `controller-ha.yml` paths are absent. Normal
+consumers use Instance Specification v1. The canonical old registry path can
+still select adopted authority; it does not require a file. The root-only
+recovery archive, historical Plans, and explicit compatibility inventory remain
+available. See the [retirement acceptance record](../klokast-dev/runbooks/53-instance-only-verification.md#retirement-and-verification-2026-09-14)
+for receipts, final Plan v9, and the replay-message reporting limitation.
+
 The active controller is the only Platform mutation locus and secret custodian.
 The human authors and pushes private instance changes from a trusted
 workstation. This human-only rule applies to the private instance repository,

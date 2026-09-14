@@ -1,9 +1,10 @@
 # Instance-only routine verification
 
 Status: Plan v8 signed verification and exact replay refusal passed on
-2026-09-12. The separate Plan v9 removal exercise passed on 2026-09-13 and
-restored the live inputs. Final retirement is blocked; see the
-[exercise record](#legacy-retirement-exercise-2026-09-13) below.
+2026-09-12. The separate Plan v9 removal exercise passed on 2026-09-13.
+Signed final retirement and signed retired-state verification passed on
+2026-09-14. See the [acceptance record](#retirement-and-verification-2026-09-14)
+for final evidence and the replay-message reporting limitation.
 The [design](../../doc/upstream-instance-target-architecture.md#117-instance-only-routine-verification)
 owns the dependency audit and gates. The historical Plan v8 acceptance used
 engine `1b08129` and Authority State v5 `8622695e`. All six groups use the
@@ -270,7 +271,7 @@ verification. It did not test every supported app wrapper with inputs absent.
 
 ## Legacy retirement exercise, 2026-09-13
 
-The active engine is `079019624ad811978a761ba3889401ec845d5f60`, with private
+The exercise used engine `079019624ad811978a761ba3889401ec845d5f60`, with private
 commit `909699ab8db34e3ead708587f70164e8dca2cdae` and matching Controller
 Toolchain v8. Plan v9 adds the closed `legacy-input-retirement-v1` lifecycle
 group to six verification-only source groups. Instance Specification v1 and
@@ -393,3 +394,100 @@ runner. The eight focused maintenance tests also passed on the controller,
 as did Ansible syntax validation and live preparation. The extra-backup scope
 blocker is resolved. Complete direct consumer absence coverage and the
 separate signed retirement and verification gates remain required.
+
+## Retirement and verification, 2026-09-14
+
+Engine `85f351ffd1d5fc7b91f77817ddc88bd1f9cce70f`, sealed build operation
+`459ddc9133c5`, is active at private commit
+`26f4fb0e552db8b922d7f77cfb66095e7a0db726`. Matching Controller Toolchain v8
+is installed. Authority State v5 remains
+`8622695e9361d281620dc5f69d9b556f2ab637f748899985899d929cf3eaf188`.
+
+The human signed final retirement and then a separate retired-state
+verification. Both Receipt v7 hashes, protected intent hashes, root ownership,
+`0440` receipt modes, consumed nonce records, and runtime cleanup passed
+controller inspection. The two operation runtime trees are absent.
+
+| Operation | Finished (UTC) | Receipt |
+| --- | --- | --- |
+| Final retirement | 2026-09-14 07:08:13 | `/var/lib/klokast/apply-executions/e2Q4Y_yMo4KR9C73veKz44Wa/54072c3910af44568fa104994ed47189a62c705fe25fd1d60b9b9657a441c1a7.json` |
+| Retired-state verification | 2026-09-14 07:41:56 | `/var/lib/klokast/apply-executions/e0yU2p33WUcO1i5ZE-RxkAKe/2bbd91bb1c26043468dc8327892e33de55dcc96d1051230517560fe02cf4a25a.json` |
+
+The three live YAML paths and the original three approved backups are absent,
+with no links at those paths and no remaining matching registry backup.
+The backups were permanently deleted. The three live input files remain
+recoverable from the protected archive `a0840373` recorded above. The installed
+archive validator rechecked its three exact files and metadata after signed
+verification; the archive directory remains root-owned `0700`, with root-owned
+`0400` archive files. `dom0-console.yml`, `platform-users.yml`, and
+`openclaw-vpn.yml` remain present. Application data is outside the deletion
+scope. Source history, adoption evidence, policy recovery material, Plans,
+receipts, and audit logs remain required recovery inputs.
+
+The direct command matrix now invokes all nine supported app wrappers,
+`platform-check`, inventory parsing, mapping, compiler, Tailnet rendering,
+and controller resolution. Both absent-entry and declared-app fixtures passed
+on the controller, including repeatability. Approval, image build, source
+broker, and remote app-runtime boundaries are explicit fixtures. This proves
+controller dependency closure and dispatch from approved intent; it does not
+claim live application installation or application health. Live signed
+verification separately checked adopted source, routers, policy, controller
+roles, runner identities, and effective settings. Recognized DERP is accepted.
+
+The post-retirement matrix is at
+`/home/smith/private/klokast/evidence/verify-retired-consumers.PhIEFD/output/result.json`.
+Its hashes match the pre-retirement matrix:
+
+- Effective settings: `6aa99282bf52ef16dc219e046a8e73ffbd4b62f998c6b98890f3ce55f16a1672`.
+- Command matrix: `49dc1d06877b35f473bc43508e2fcfce158f4baa52fecc9ca1857f675f8fbaff`.
+- Complete matrix file: `08591b9e8148e83b91585a7c042b8e8ff5a8e4e7fd1900a6f466eaf9da240b34`.
+
+Fresh source synchronization and source recovery followed signed verification.
+Final Plan v9 is stored at:
+
+```text
+/var/lib/klokast/plans/26f4fb0e552db8b922d7f77cfb66095e7a0db726/e30552a5b47a14698e161b437b2352a65dad362a2ddeb46a9e75579cac14c264.json
+```
+
+It is valid and deployable at creation, requires `legacy_removal_ready: true`,
+keeps six source groups verification-only, and selects only
+`verify_legacy_retirement` for the lifecycle group. Both legacy-input and
+approved-backup states are `absent`. The immutable verify evidence is
+`/var/lib/klokast/legacy-input-retirement-evidence/1513771f821e1b4ed2dac2f6fb10022378bd28bc4179162ae26b693e0133f4c7.json`.
+Final source receipt `148ccb68` and recovery receipt `b9d99a3e` are stored
+under their standard roots for the same private commit. The final Plan is
+read-only reporting evidence; the signed verification receipt above binds
+Plan `346bde9f`.
+
+The 585-test Python suite passed, with three environment-dependent skips.
+Both controller absence fixtures and 22 focused controller tests passed.
+Sealed vendored Go tests and build passed with Go 1.24.13. Relevant Ansible
+syntax and shell syntax checks passed; shellcheck retained its existing
+warnings. Exact private candidate comparison passed before promotion.
+
+### Replay reporting limitation
+
+Both Mac helpers submitted the exact signed request again after successful
+execution. Both replay commands returned failure, but the helper reported
+`controller returned an unexpected replay refusal`. This establishes refusal,
+not the helper's expected nonce-specific diagnostic. The helper removed its
+temporary replay stderr on exit, so the original error text was not retained.
+
+The protected retirement intent expired at `07:05:39Z`, before execution
+finished at `07:08:13Z`. The verification intent expired at `07:38:46Z`,
+before execution finished at `07:41:56Z`. Both nonces were consumed before
+expiry and bind their exact Plans. The installed validator checks expiry
+before signature and nonce reuse; read-only validation of both stored intents
+reproduces `legacy retirement intent is expired or has an invalid lifetime`.
+Expiry is therefore the supported explanation for the message mismatch.
+Do not report these two runs as live nonce-specific replay tests. The earlier
+exercise did pass that exact diagnostic. Preserve the ten-minute approval
+lifetime and single-use nonce rule; do not retry deletion to test reporting.
+
+The remaining reporting improvement is tracked in
+[the difficulty record](../../doc/todo.md#2026-09-14---successful-retirement-replay-reporting-and-evidence-freshness).
+This acceptance update is documentation only. Do not deploy it. Keep engine
+`85f351f` active. Plans v1–v8 and `ansible/inventory` remain explicit
+compatibility, bootstrap, recovery, test, and historical inputs, never normal
+fallback. Recovery-source activation, controller switching, runner retirement,
+direct-IPv6 repair, and application-data deletion remain outside this milestone.

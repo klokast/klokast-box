@@ -2,6 +2,36 @@ Write below the difficulties encountered during work.
 Include context to allow an AI agent to later solve the issues.
 Format of the first line: `# yyyy-mm-dd - title`
 
+# 2026-09-14 - Successful retirement, replay reporting, and evidence freshness
+
+Signed retirement and signed retired-state verification passed with engine
+`85f351f`, Toolchain v8, and unchanged Authority State v5. The
+[acceptance record](../klokast-dev/runbooks/53-instance-only-verification.md#retirement-and-verification-2026-09-14)
+supersedes the incomplete checkpoints below. Both exact signed replay commands
+failed, but the Mac helper expected only the consumed-nonce error and discarded
+its temporary stderr before inspection. Both executions finished after their
+ten-minute intents expired. The installed validator checks expiry first;
+read-only validation of their protected intents reproduces that expiry error.
+Consumed nonce records and canonical successful receipts were checked.
+
+Improve the helper to preserve bounded replay diagnostics and distinguish
+expiry, nonce reuse, and unrelated transport failures. Do not label an unknown
+nonzero exit as a successful nonce-specific replay test. Keep signature and
+nonce validation strict. Long operations also need progress messages on stderr
+while stdout remains the documented JSON result. These are follow-up reporting
+changes; the retirement receipts remain valid. Do not repeat deletion.
+
+An earlier approval attempt failed exact Plan revalidation because its source
+receipt was older than 30 minutes. Refresh the Observation and other slow
+evidence first, then synchronize source and reconstruct source recovery just
+before creating the Plan. Do not relax freshness or signature lifetimes.
+The canonical public checkout must reach the reviewed commit before the Mac
+promotion preflight. Controller tool installation can require explicit retained
+compatibility inventory while the old installed source checker refuses the new
+engine. Plan v8 requires Toolchain v7; use Plan v9 with Toolchain v8. The
+retirement settings hash must preserve its historical projection semantics;
+the added command matrix has a separate hash.
+
 # 2026-09-13 - Direct wrapper absence evidence needs a closed runtime boundary
 
 The replacement matrix invokes wrapper commands and parses their generated
