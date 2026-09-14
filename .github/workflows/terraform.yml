@@ -1,0 +1,61 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/terraform.yml
+      - klokast-ops/terraform/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/terraform.yml
+      - klokast-ops/terraform/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hetzner-ops
+            directory: klokast-ops/terraform/hetzner-ops
+          - name: vultr-ops
+            directory: klokast-ops/terraform/vultr-ops
+    env:
+      CHECKPOINT_DISABLE: "1"
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Terraform CLI
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.2
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform -chdir="${{ matrix.directory }}" fmt -check -recursive
+
+      - name: Initialize locked providers without a backend
+        run: terraform -chdir="${{ matrix.directory }}" init -backend=false -input=false -lockfile=readonly
+
+      - name: Validate configuration
+        run: terraform -chdir="${{ matrix.directory }}" validate
+
+      - name: Run mock-provider tests
+        run: terraform -chdir="${{ matrix.directory }}" test
