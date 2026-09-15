@@ -15,7 +15,7 @@
     - name: Require one closed router operation
       ansible.builtin.assert:
         that:
-          - overlay_ipv6_router_operation in ['huawei-instructions', 'verify-prerequisite', 'snapshot', 'prepare', 'apply', 'verify', 'refresh-endpoints', 'restore', 'verify-recovery']
+          - overlay_ipv6_router_operation in ['huawei-instructions', 'connectivity-check', 'verify-prerequisite', 'snapshot', 'prepare', 'apply', 'verify', 'refresh-endpoints', 'restore', 'verify-recovery']
           - inventory_hostname in [overlay_ipv6_active_box ~ '-router', overlay_ipv6_peer_box ~ '-router']
         fail_msg: The overlay IPv6 router operation or host selection is invalid.
 
@@ -106,8 +106,21 @@
       changed_when: false
       failed_when: overlay_ipv6_peer_global.stdout_lines | length != 1
       when:
-        - overlay_ipv6_router_operation in ['huawei-instructions', 'verify-prerequisite']
+        - overlay_ipv6_router_operation in ['huawei-instructions', 'connectivity-check', 'verify-prerequisite']
         - inventory_hostname == overlay_ipv6_peer_box ~ '-router'
+
+    - name: Check DERP reachability from each router
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - netcheck
+          - --format
+          - json
+      register: overlay_ipv6_router_netcheck
+      changed_when: false
+      failed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'connectivity-check'
 
     - name: Prove the active router reaches the peer directly over IPv6
       ansible.builtin.command:
@@ -119,8 +132,45 @@
           - "{{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}"
       register: overlay_ipv6_router_direct_ping
       changed_when: false
-      when:
+      failed_when:
+        - overlay_ipv6_router_direct_ping.rc != 0
         - overlay_ipv6_router_operation == 'verify-prerequisite'
+      when:
+        - overlay_ipv6_router_operation in ['connectivity-check', 'verify-prerequisite']
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Store overlay connectivity evidence on the controller
+      ansible.builtin.copy:
+        dest: "{{ overlay_ipv6_evidence_output }}"
+        mode: "0600"
+        content: >-
+          {{ {
+            'schema_version': 1,
+            'kind': 'klokast.overlay-connectivity-check.v1',
+            'active_router': overlay_ipv6_active_box ~ '-router',
+            'peer_router': overlay_ipv6_peer_box ~ '-router',
+            'peer_global_ipv6': hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout,
+            'udp_port': 41641,
+            'ping': {
+              'rc': overlay_ipv6_router_direct_ping.rc,
+              'stdout': overlay_ipv6_router_direct_ping.stdout,
+              'stderr': overlay_ipv6_router_direct_ping.stderr,
+            },
+            'netcheck': {
+              overlay_ipv6_active_box ~ '-router': {
+                'rc': hostvars[overlay_ipv6_active_box ~ '-router'].overlay_ipv6_router_netcheck.rc,
+                'stdout': hostvars[overlay_ipv6_active_box ~ '-router'].overlay_ipv6_router_netcheck.stdout,
+              },
+              overlay_ipv6_peer_box ~ '-router': {
+                'rc': hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_router_netcheck.rc,
+                'stdout': hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_router_netcheck.stdout,
+              },
+            },
+          } | to_nice_json }}
+      delegate_to: localhost
+      become: false
+      when:
+        - overlay_ipv6_router_operation == 'connectivity-check'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
     - name: Require the Huawei direct-path prerequisite

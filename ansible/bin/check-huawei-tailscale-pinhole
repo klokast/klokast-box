@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Check the peer Huawei pinhole, direct Tailscale path, and DERP access."""
+
+import argparse
+import getpass
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+INSTANCE = Path("/home/smith/private/klokast/instance/klokast-instance.json")
+BASELINE = Path("/home/smith/private/klokast/huawei-tailscale-pinhole.json")
+HELPER = Path("/usr/local/sbin/overlay-ipv6-router")
+GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+MANUAL_ROOT = Path("/home/smith/src/klokast/klokast-box/.run/overlay-ipv6-router/manual")
+ENDPOINT_RE = re.compile(r"via \[([0-9A-Fa-f:]+)\]:(\d+)")
+
+
+class CheckError(Exception):
+    pass
+
+
+def load_instance():
+    try:
+        instance = json.loads(INSTANCE.read_text(encoding="utf-8"))
+        boxes = sorted(instance["boxes"])
+        active = instance["controllers"]["active"]
+        suffix = instance["tailscale"]["tailnet-dns-name"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise CheckError("private instance shape is invalid") from error
+    peers = [box for box in boxes if box != active]
+    if len(boxes) != 2 or len(peers) != 1:
+        raise CheckError("the connectivity check requires exactly two boxes")
+    return active, peers[0], suffix
+
+
+def collect(active, peer, suffix):
+    MANUAL_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="check-", dir=MANUAL_ROOT) as temporary:
+        output = Path(temporary) / "evidence.json"
+        result = subprocess.run(
+            [
+                HELPER,
+                "connectivity-check",
+                "--box",
+                active,
+                "--peer-box",
+                peer,
+                "--magicdns-suffix",
+                suffix,
+                "--evidence-output",
+                output,
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            diagnostic = "\n".join((result.stderr + "\n" + result.stdout).splitlines()[-20:])
+            raise CheckError(f"router connectivity collection failed:\n{diagnostic[:4096]}")
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise CheckError("router connectivity evidence is invalid") from error
+
+
+def validate_evidence(value, active, peer):
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "kind", "active_router", "peer_router",
+        "peer_global_ipv6", "udp_port", "ping", "netcheck",
+    }:
+        raise CheckError("router connectivity evidence shape is invalid")
+    if value["schema_version"] != 1 or value["kind"] != "klokast.overlay-connectivity-check.v1":
+        raise CheckError("router connectivity evidence identity is invalid")
+    if value["active_router"] != f"{active}-router" or value["peer_router"] != f"{peer}-router":
+        raise CheckError("router connectivity evidence host identity is invalid")
+    if type(value["udp_port"]) is not int or value["udp_port"] != 41641:
+        raise CheckError("router connectivity evidence port is invalid")
+    try:
+        address = ipaddress.IPv6Address(value["peer_global_ipv6"])
+    except (ipaddress.AddressValueError, TypeError) as error:
+        raise CheckError("peer router global IPv6 address is invalid") from error
+    if not address.is_global:
+        raise CheckError("peer router does not have one global IPv6 address")
+    if not isinstance(value["ping"], dict) or not isinstance(value["netcheck"], dict):
+        raise CheckError("router connectivity result shape is invalid")
+    return address
+
+
+def derp_status(result):
+    if not isinstance(result, dict) or result.get("rc") != 0 or not isinstance(result.get("stdout"), str):
+        return False, "netcheck failed"
+    try:
+        value = json.loads(result["stdout"])
+    except json.JSONDecodeError:
+        return False, "netcheck returned invalid JSON"
+    preferred = value.get("PreferredDERP")
+    latency = value.get("RegionLatency")
+    if type(preferred) is not int or preferred <= 0 or not isinstance(latency, dict):
+        return False, "no preferred DERP region"
+    delay = latency.get(str(preferred), latency.get(preferred))
+    if type(delay) is not int or delay <= 0:
+        return False, f"preferred DERP region {preferred} did not reply"
+    return True, f"region {preferred}, {delay / 1_000_000:.1f} ms"
+
+
+def ping_status(result, current_address):
+    if not isinstance(result, dict) or result.get("rc") != 0 or not isinstance(result.get("stdout"), str):
+        return False, "unreachable"
+    output = result["stdout"]
+    for raw_address, raw_port in ENDPOINT_RE.findall(output):
+        try:
+            endpoint = ipaddress.IPv6Address(raw_address)
+        except ipaddress.AddressValueError:
+            continue
+        if endpoint == current_address and int(raw_port) == 41641:
+            return True, "direct IPv6 UDP 41641"
+    if "via DERP(" in output:
+        return False, "DERP relay only"
+    if "pong from " in output:
+        return False, "direct path does not use the expected IPv6 UDP 41641 endpoint"
+    return False, "unreachable"
+
+
+def load_baseline(peer):
+    if BASELINE.is_symlink():
+        raise CheckError("pinhole baseline path is unsafe")
+    if not BASELINE.exists():
+        return None
+    if not BASELINE.is_file():
+        raise CheckError("pinhole baseline path is unsafe")
+    try:
+        value = json.loads(BASELINE.read_text(encoding="utf-8"))
+        expected = {
+            "schema_version", "kind", "peer_router", "destination",
+            "prefix", "udp_port", "recorded_at",
+        }
+        if not isinstance(value, dict) or set(value) != expected:
+            raise ValueError
+        address = ipaddress.IPv6Address(value["destination"])
+        prefix = ipaddress.IPv6Network(value["prefix"], strict=True)
+        if (
+            value["schema_version"] != 1
+            or value["kind"] != "klokast.huawei-tailscale-pinhole.v1"
+            or value["peer_router"] != f"{peer}-router"
+            or type(value["udp_port"]) is not int
+            or value["udp_port"] != 41641
+            or prefix.prefixlen != 64
+            or address not in prefix
+            or not isinstance(value["recorded_at"], str)
+        ):
+            raise ValueError
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        raise CheckError("pinhole baseline is invalid") from error
+    return address, prefix
+
+
+def record_baseline(peer, address):
+    if BASELINE.is_symlink() or (BASELINE.exists() and not BASELINE.is_file()):
+        raise CheckError("pinhole baseline path is unsafe")
+    prefix = ipaddress.IPv6Network((address, 64), strict=False)
+    value = {
+        "schema_version": 1,
+        "kind": "klokast.huawei-tailscale-pinhole.v1",
+        "peer_router": f"{peer}-router",
+        "destination": str(address),
+        "prefix": str(prefix),
+        "udp_port": 41641,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    BASELINE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".huawei-tailscale-pinhole.", dir=BASELINE.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, BASELINE)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return prefix
+
+
+def require_controller():
+    if getpass.getuser() != "smith":
+        raise CheckError("run as smith on the active controller")
+    result = subprocess.run(
+        [GUARD, "--status", "--json", "--require-active"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CheckError("this is not the active controller")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--record",
+        action="store_true",
+        help="record the current /128 only after its direct UDP 41641 path works",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        require_controller()
+        active, peer, suffix = load_instance()
+        evidence = collect(active, peer, suffix)
+        current = validate_evidence(evidence, active, peer)
+        current_prefix = ipaddress.IPv6Network((current, 64), strict=False)
+        direct_ok, path = ping_status(evidence["ping"], current)
+        active_name = f"{active}-router"
+        peer_name = f"{peer}-router"
+        active_derp, active_derp_detail = derp_status(evidence["netcheck"].get(active_name))
+        peer_derp, peer_derp_detail = derp_status(evidence["netcheck"].get(peer_name))
+
+        if args.record:
+            if not direct_ok:
+                raise CheckError("refusing to record a baseline because the exact direct pinhole path does not work")
+            recorded_prefix = record_baseline(peer, current)
+            print(f"Recorded pinhole: {current}/128")
+            print(f"Recorded prefix: {recorded_prefix}")
+        baseline = load_baseline(peer)
+
+        print(f"Peer router: {peer_name}")
+        print(f"Current address: {current}/128")
+        print(f"Current prefix: {current_prefix}")
+        if baseline is None:
+            print("Recorded pinhole: missing")
+            address_same = prefix_same = False
+        else:
+            recorded_address, recorded_prefix = baseline
+            address_same = recorded_address == current
+            prefix_same = recorded_prefix == current_prefix
+            print(f"Recorded pinhole: {recorded_address}/128 ({'unchanged' if address_same else 'CHANGED'})")
+            print(f"Recorded prefix: {recorded_prefix} ({'unchanged' if prefix_same else 'CHANGED'})")
+        print(f"Overlay path: {path}")
+        print(f"DERP from {active_name}: {'reachable' if active_derp else 'FAILED'} ({active_derp_detail})")
+        print(f"DERP from {peer_name}: {'reachable' if peer_derp else 'FAILED'} ({peer_derp_detail})")
+
+        healthy = baseline is not None and address_same and prefix_same and direct_ok and active_derp and peer_derp
+        print(f"Status: {'OK' if healthy else 'ACTION REQUIRED'}")
+        if baseline is None:
+            print("Run again with --record while the Huawei /128 rule is known to work.", file=sys.stderr)
+        return 0 if healthy else 1
+    except CheckError as error:
+        print(f"check-huawei-tailscale-pinhole: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

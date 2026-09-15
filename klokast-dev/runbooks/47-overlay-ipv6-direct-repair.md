@@ -51,6 +51,25 @@ prefix changes, update the exact `/128` before repair preparation.
 This manual rule is a prerequisite. The signed repair does not automate the
 Huawei interface.
 
+After the direct path works, record the exact address that you put in the
+Huawei rule:
+
+```sh
+ansible/bin/check-huawei-tailscale-pinhole --record
+```
+
+For later checks, run:
+
+```sh
+ansible/bin/check-huawei-tailscale-pinhole
+```
+
+The check compares the current peer-router `/64` and exact `/128` with the
+private recorded baseline. It also checks that Tailscale uses the exact IPv6
+UDP `41641` endpoint and that both routers can reach a DERP region. It does not
+read or change the Huawei gateway. Run `--record` again only after you update
+the Huawei rule and prove that the new exact direct path works.
+
 ## Create current instance-only evidence
 
 Use the exact active engine, its sealed build, and its exact Controller

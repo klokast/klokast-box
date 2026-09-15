@@ -106,7 +106,7 @@ def run_playbook(args, variables, limit):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("huawei-instructions", "verify-prerequisite", "snapshot", "prepare", "apply", "verify", "refresh-endpoints", "restore", "verify-recovery"))
+    parser.add_argument("command", choices=("huawei-instructions", "connectivity-check", "verify-prerequisite", "snapshot", "prepare", "apply", "verify", "refresh-endpoints", "restore", "verify-recovery"))
     parser.add_argument("--box", required=True)
     parser.add_argument("--peer-box")
     parser.add_argument("--magicdns-suffix", required=True)
@@ -127,7 +127,7 @@ def main(argv=None):
             validate_box(args.peer_box)
         if args.command in {"prepare", "apply", "verify", "restore"}:
             args.prefix, args.next_hop = validate_ipv6(args.prefix, args.next_hop)
-        if args.command in {"huawei-instructions", "verify-prerequisite", "refresh-endpoints", "verify-recovery"} and not args.peer_box:
+        if args.command in {"huawei-instructions", "connectivity-check", "verify-prerequisite", "refresh-endpoints", "verify-recovery"} and not args.peer_box:
             raise HelperError("peer box is required")
         variables = {
             "overlay_ipv6_router_operation": args.command,
@@ -138,7 +138,7 @@ def main(argv=None):
         }
         if args.command in {"snapshot", "verify-prerequisite"}:
             variables["overlay_ipv6_evidence_output"] = str(runtime_path(args.evidence_output))
-        if args.command == "huawei-instructions":
+        if args.command in {"huawei-instructions", "connectivity-check"}:
             variables["overlay_ipv6_evidence_output"] = str(manual_output_path(args.evidence_output))
         if args.command == "restore":
             snapshot = runtime_path(args.snapshot, existing=True)
@@ -147,7 +147,7 @@ def main(argv=None):
                 raise HelperError("router snapshot kind is invalid")
             variables["overlay_ipv6_router_preimage"] = value
         limit = f"{args.box}-router"
-        if args.command in {"huawei-instructions", "verify-prerequisite", "refresh-endpoints", "verify-recovery"}:
+        if args.command in {"huawei-instructions", "connectivity-check", "verify-prerequisite", "refresh-endpoints", "verify-recovery"}:
             limit = f"{args.box}-router,{args.peer_box}-router"
         run_playbook(args, variables, limit)
         if args.command == "huawei-instructions":
@@ -158,6 +158,8 @@ def main(argv=None):
             print(f"Destination: {address}/128")
             print("Protocol: UDP")
             print("Port: 41641")
+        elif args.command == "connectivity-check":
+            print(Path(args.evidence_output).read_text(encoding="utf-8"), end="")
         else:
             print(json.dumps({"schema_version": 1, "result": "check" if args.check else "success", "command": args.command, "box": args.box}, sort_keys=True))
     except (HelperError, ValueError, json.JSONDecodeError) as error:
