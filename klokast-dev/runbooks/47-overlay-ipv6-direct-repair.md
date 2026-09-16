@@ -27,7 +27,7 @@ two-box instance. It binds:
 
 The Freebox broker uses only `mafreebox.freebox.fr` and keeps its token
 root-only. It refuses redirects, identity or API drift, occupied slots,
-prefix drift, and unsafe next hops. The executor has a ten-minute lifetime and
+prefix drift, and unsafe next hops. The intent has a one-hour lifetime and
 a single-use nonce. It does not change Authority State.
 
 If verification fails after mutation starts, the executor restores the exact

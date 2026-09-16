@@ -43,6 +43,7 @@ DEFAULT_ALLOWED_SIGNERS = "/etc/klokast/secret-authority/allowed-signers-private
 EXPECTED_SIGNER_ID = "human-private-instance"
 EXPECTED_REPO_NAME = "klokast-instance"
 DEFAULT_TTL_SECONDS = 600
+PROMOTION_TTL_SECONDS = 3600
 CANONICAL_ENGINE_REPOSITORY = "https://github.com/klokast/klokast-box"
 CANONICAL_ENGINE_REF = "main"
 SCHEMA_TRANSITION_METADATA_ONLY = "metadata-only"
@@ -2058,8 +2059,8 @@ def validate_promotion_intent(value):
         raise InstanceAuthorityError("engine promotion intent signer or nonce is invalid")
     issued = parse_utc(value.get("issued_at"), "issued_at")
     expires = parse_utc(value.get("expires_at"), "expires_at")
-    if expires <= issued or expires > issued + dt.timedelta(seconds=DEFAULT_TTL_SECONDS):
-        raise InstanceAuthorityError("engine promotion intent lifetime exceeds 10 minutes")
+    if expires <= issued or expires > issued + dt.timedelta(seconds=PROMOTION_TTL_SECONDS):
+        raise InstanceAuthorityError("engine promotion intent lifetime exceeds one hour")
     return issued, expires
 
 
@@ -2159,7 +2160,7 @@ def cmd_promotion_preflight(args):
         "signer_id": EXPECTED_SIGNER_ID,
         "nonce": secrets.token_urlsafe(18),
         "issued_at": format_utc(issued),
-        "expires_at": format_utc(issued + dt.timedelta(seconds=DEFAULT_TTL_SECONDS)),
+        "expires_at": format_utc(issued + dt.timedelta(seconds=PROMOTION_TTL_SECONDS)),
     }
     validate_promotion_intent(intent)
     audit(args, "instance.engine-promotion.preflight", action=intent["action"],

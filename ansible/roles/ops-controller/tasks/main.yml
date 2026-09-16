@@ -601,6 +601,8 @@
     content: |
       Apply preflight evidence has indefinite local retention.
       Do not delete or move a preflight automatically.
+      Root-only revalidation-* directories retain private planner diagnostics
+      under this same policy. Do not print their contents in public logs.
       A consumed nonce, an execution receipt, an authority-history reference,
       or an unresolved recovery result makes the preflight permanent evidence.
       A future archive must copy exact bytes to a root-owned content-addressed

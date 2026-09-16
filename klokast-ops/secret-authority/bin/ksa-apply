@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -24,6 +25,9 @@ import yaml
 
 
 KIND_PLAN = "klokast.plan.v2"
+INTENT_LIFETIME = dt.timedelta(hours=1)
+EVIDENCE_LIFETIME = dt.timedelta(hours=1)
+PREFLIGHT_EXECUTION_RESERVE = dt.timedelta(minutes=15)
 KIND_INTENT = "klokast.apply-intent.v1"
 KIND_AUTHORITY = "klokast.authority-state.v1"
 KIND_RECOVERY = "klokast.private-source-recovery.v1"
@@ -1173,6 +1177,76 @@ def prepare_registry_comparison(work, plan, box):
     }
 
 
+def check_evidence_deadline(source, observation, *, reserve=dt.timedelta(0)):
+    now = now_utc()
+    deadlines = []
+    for label, value, field in (("instance source", source, "fetched_at"),
+                                ("Observation", observation, "observed_at")):
+        issued = parse_utc(value.get(field), field)
+        if issued > now + dt.timedelta(minutes=5):
+            raise ApplyError(f"{label} timestamp is more than five minutes in the future")
+        deadline = issued + EVIDENCE_LIFETIME
+        if deadline <= now:
+            raise ApplyError(f"{label} evidence expired at {format_utc(deadline)}; create fresh evidence and a new Plan")
+        deadlines.append((deadline, label))
+    deadline, label = min(deadlines)
+    if deadline - now < reserve:
+        raise ApplyError(f"{label} evidence expires at {format_utc(deadline)}; less than 15 minutes remain for execution; create fresh evidence and a new Plan")
+    return deadline, label
+
+
+def valid_intent_lifetime(issued, expires, *, check_time=True):
+    lifetime = expires - issued
+    # Retained adoption receipts bind historical ten-minute intents. They
+    # remain valid history, but must never be accepted for new execution.
+    return lifetime == INTENT_LIFETIME or (
+        not check_time and lifetime == dt.timedelta(minutes=10)
+    )
+
+
+def preflight_evidence_deadline(binding):
+    deadline, label = check_evidence_deadline(
+        load_json(binding["source_path"]), load_json(binding["observation"]),
+        reserve=PREFLIGHT_EXECUTION_RESERVE,
+    )
+    progress(f"earliest evidence deadline: {format_utc(deadline)} ({label}); approval does not extend this deadline")
+
+
+def verify_revalidation_result(rerun, plan):
+    try:
+        actual = json.loads(rerun.stdout, object_pairs_hook=unique_object)
+    except (TypeError, ValueError, ApplyError):
+        actual = None
+    if rerun.returncode == 0 and actual == plan:
+        return
+    # Retain private diagnostics on the controller, under the same indefinite
+    # retention policy as preflights. Never echo arbitrary planner text.
+    ensure_dir(PREFLIGHT_ROOT)
+    directory = Path(tempfile.mkdtemp(prefix="revalidation-", dir=PREFLIGHT_ROOT))
+    for name, value in (("stdout", rerun.stdout), ("stderr", rerun.stderr)):
+        path = directory / name
+        with path.open("x", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(value or "")
+    known = {"fetched-at.stale": "instance source evidence expired",
+             "time.stale": "Observation evidence expired",
+             "fetched-at.future": "instance source timestamp is in the future",
+             "time.future": "Observation timestamp is in the future"}
+    diagnostics = actual.get("diagnostics", []) if isinstance(actual, dict) else []
+    codes = sorted({item["code"] for item in diagnostics
+                    if isinstance(item, dict) and isinstance(item.get("code"), str)
+                    and item["code"] in known}) if isinstance(diagnostics, list) else []
+    if codes:
+        reason = "; ".join(f"{known[code]} ({code})" for code in codes)
+    elif actual is None:
+        reason = "sealed engine returned invalid Plan JSON"
+    elif rerun.returncode != 0:
+        reason = "sealed engine rejected Plan revalidation"
+    else:
+        reason = "Plan content changed during exact revalidation"
+    raise ApplyError(f"{reason}; private diagnostics: {directory}; create fresh evidence and a new Plan")
+
+
 def validate_inputs_v3(args, work=None):
     status = require_root_active()
     require_self_match()
@@ -1225,6 +1299,7 @@ def validate_inputs_v3(args, work=None):
     )
     if observation.get("generation_sha256") != plan.get("observation", {}).get("generation_sha256") or observation.get("source_controller") != status.get("hostname"):
         raise ApplyError("Observation v1 changed or came from another controller")
+    check_evidence_deadline(source, observation)
     command = [
         binary, "plan", "--instance", INSTANCE,
         "--compatibility-deployment", DEPLOYMENT,
@@ -1252,12 +1327,8 @@ def validate_inputs_v3(args, work=None):
                 "--retirement-evidence", retirement_evidence_path,
             ])
     rerun = run_plan_as_controller(command)
-    try:
-        rerun_plan = json.loads(rerun.stdout, object_pairs_hook=unique_object)
-    except (TypeError, json.JSONDecodeError) as error:
-        raise ApplyError("sealed engine returned invalid Plan v3 JSON") from error
-    if rerun.returncode != 0 or rerun_plan != plan:
-        raise ApplyError("Plan v3 inputs changed during exact revalidation")
+    verify_revalidation_result(rerun, plan)
+    check_evidence_deadline(source, observation)
     comparison = {}
     if work and plan.get("kind") not in {KIND_PLAN_V8, KIND_PLAN_V9}:
         if group["id"] == INVENTORY_GROUP:
@@ -1375,7 +1446,7 @@ def preflight_tailnet(args):
             "live_policy_sha256": sha256_bytes(live), "live_etag": etag,
             "candidate_policy_sha256": sha256_bytes(candidate),
             "nonce": nonce, "issued_at": format_utc(issued),
-            "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+            "expires_at": format_utc(issued + INTENT_LIFETIME),
         }
         directory = PREFLIGHT_ROOT / nonce
         ensure_dir(PREFLIGHT_ROOT)
@@ -1430,7 +1501,7 @@ def box_intent_common(binding, action, nonce, issued):
         "router_vars_sha256": binding["router_vars_sha256"],
         "nonce": nonce,
         "issued_at": format_utc(issued),
-        "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+        "expires_at": format_utc(issued + INTENT_LIFETIME),
     }
 
 
@@ -1491,7 +1562,7 @@ def validate_box_intent(intent, *, check_time=True):
         raise ApplyError("box connectivity intent identity is invalid")
     issued = parse_utc(intent.get("issued_at"), "issued_at")
     expires = parse_utc(intent.get("expires_at"), "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
+    if not valid_intent_lifetime(issued, expires, check_time=check_time) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("box connectivity intent is expired or has an invalid lifetime")
 
 
@@ -1615,7 +1686,7 @@ def validate_intent(intent):
     if not NONCE_RE.fullmatch(intent.get("nonce", "")) or not COMMIT_RE.fullmatch(intent.get("private_commit", "")) or not COMMIT_RE.fullmatch(intent.get("engine_commit", "")) or not isinstance(intent.get("live_etag"), str) or not intent["live_etag"]:
         raise ApplyError("Apply intent identity is invalid")
     issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != INTENT_LIFETIME or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
         raise ApplyError("Apply intent is expired or has an invalid lifetime")
 
 
@@ -1791,7 +1862,7 @@ def validate_conversion_intent(intent, *, check_time=True):
         raise ApplyError("Authority conversion intent box list is invalid")
     issued = parse_utc(intent.get("issued_at"), "issued_at")
     expires = parse_utc(intent.get("expires_at"), "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
+    if not valid_intent_lifetime(issued, expires, check_time=check_time) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("Authority conversion intent is expired or has an invalid lifetime")
 
 
@@ -1810,7 +1881,7 @@ def authority_conversion_prepare(args):
         "boxes": boxes,
         "nonce": secrets.token_urlsafe(18),
         "issued_at": format_utc(issued),
-        "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+        "expires_at": format_utc(issued + INTENT_LIFETIME),
     }
     directory = PREFLIGHT_ROOT / intent["nonce"]
     ensure_dir(PREFLIGHT_ROOT)
@@ -2398,7 +2469,7 @@ def overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, is
         "huawei_prerequisite_sha256": binding["huawei_prerequisite_sha256"],
         "nonce": nonce,
         "issued_at": format_utc(issued),
-        "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+        "expires_at": format_utc(issued + INTENT_LIFETIME),
     }
 
 
@@ -2441,7 +2512,7 @@ def validate_overlay_intent(intent):
         raise ApplyError("overlay direct repair IPv6 binding is not the stable ops-only selection")
     issued = parse_utc(intent["issued_at"], "issued_at")
     expires = parse_utc(intent["expires_at"], "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != INTENT_LIFETIME or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
         raise ApplyError("overlay direct repair intent is expired or has an invalid lifetime")
 
 
@@ -2978,7 +3049,7 @@ def rollback_prepare_tailnet(args):
             "live_policy_sha256": sha256_bytes(live), "live_etag": etag,
             "candidate_policy_sha256": sha256_bytes(preimage),
             "nonce": nonce, "issued_at": format_utc(issued),
-            "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+            "expires_at": format_utc(issued + INTENT_LIFETIME),
         }
         directory = PREFLIGHT_ROOT / nonce
         ensure_dir(PREFLIGHT_ROOT)
@@ -3240,7 +3311,7 @@ def identity_intent(binding, nonce, issued):
         "binary_sha256": binding["binary_sha256"], "builder_receipt_sha256": binding["builder_receipt_sha256"],
         "controller_pair": binding["controller_pair"], "old_controller_sha256": binding["old_controller_sha256"],
         "effective_controller_sha256": binding["effective_controller_sha256"], "controller_roles_sha256": binding["controller_roles_sha256"],
-        "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + dt.timedelta(minutes=10)),
+        "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + INTENT_LIFETIME),
     }
 
 
@@ -3262,7 +3333,7 @@ def validate_identity_intent(intent, *, check_time=True):
     if pair["active"] == pair["standby"] or intent["old_controller_sha256"] != intent["effective_controller_sha256"]:
         raise ApplyError("controller identity intent changes controller settings")
     issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
+    if not valid_intent_lifetime(issued, expires, check_time=check_time) or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("controller identity intent is expired or has an invalid lifetime")
 
 
@@ -4539,7 +4610,7 @@ def verification_intent(collected, nonce, issued):
     return {"schema_version": 1, "kind": KIND_VERIFICATION_INTENT, "action": "verify_instance_authority",
             "executor": VERIFICATION_EXECUTOR, "rollback_type": "no_mutation", "plan_sha256": collected["evidence"]["plan_sha256"],
             **{k: collected[k] for k in ("evidence", "controller_pair", "action_groups", "private_commit", "engine_commit")},
-            "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + dt.timedelta(minutes=10))}
+            "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + INTENT_LIFETIME)}
 
 
 def validate_verification_intent(intent):
@@ -4573,7 +4644,7 @@ def validate_verification_intent(intent):
     if any(not isinstance(intent[k], str) or not COMMIT_RE.fullmatch(intent[k]) for k in ("private_commit", "engine_commit")) or not isinstance(intent["nonce"], str) or not NONCE_RE.fullmatch(intent["nonce"]):
         raise ApplyError("instance verification commit or nonce is invalid")
     issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != INTENT_LIFETIME or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
         raise ApplyError("instance verification intent is expired or has an invalid lifetime")
 
 
@@ -4914,6 +4985,7 @@ def verification_recovery_manifest(args):
 def verification_preflight(args):
     nonce = secrets.token_urlsafe(18)
     collected = verification_collect(args, nonce)
+    preflight_evidence_deadline(collected["binding"])
     intent = verification_intent(collected, nonce, now_utc())
     validate_verification_intent(intent)
     ensure_dir(PREFLIGHT_ROOT)
@@ -5047,11 +5119,18 @@ def run_bound_retirement_matrix(plan, nonce):
 
 
 def retirement_collect(args, nonce):
+    started = time.monotonic()
     collected = verification_collect(args, nonce)
+    progress(f"authority verification (live and local checks) completed in {time.monotonic() - started:.1f} seconds")
     plan_path = collected["binding"]["plan_path"]
     _, plan, _ = verify_plan_v9(plan_path)
     evidence, _matrix, _archive, _manifest = retirement_assert_reference(plan)
+    started = time.monotonic()
     run_bound_retirement_matrix(plan, nonce)
+    progress(f"local consumer matrix completed in {time.monotonic() - started:.1f} seconds; revalidating evidence")
+    final = validate_inputs_v3(args)
+    if final["plan"] != plan or {key: final[key] for key in RETIREMENT_BINDING_FIELDS} != collected["binding"]:
+        raise ApplyError("retirement inputs changed during the complete consumer matrix")
     collected["retirement"] = plan["legacy_retirement"]
     collected["phase"] = evidence["phase"]
     return collected
@@ -5065,7 +5144,7 @@ def retirement_intent(collected, nonce, issued):
             "executor": RETIREMENT_EXECUTOR, "rollback_type": rollback,
             "phase": phase, "plan_sha256": collected["evidence"]["plan_sha256"],
             **{key: collected[key] for key in ("evidence", "retirement", "controller_pair", "action_groups", "private_commit", "engine_commit")},
-            "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + dt.timedelta(minutes=10))}
+            "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + INTENT_LIFETIME)}
 
 
 def validate_retirement_intent(intent):
@@ -5132,7 +5211,7 @@ def validate_retirement_intent(intent):
     if any(not COMMIT_RE.fullmatch(intent.get(key, "")) for key in ("private_commit", "engine_commit")) or not NONCE_RE.fullmatch(intent.get("nonce", "")):
         raise ApplyError("legacy retirement commit or nonce is invalid")
     issued, expires = parse_utc(intent.get("issued_at"), "issued_at"), parse_utc(intent.get("expires_at"), "expires_at")
-    if expires - issued != dt.timedelta(minutes=10) or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != INTENT_LIFETIME or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
         raise ApplyError("legacy retirement intent is expired or has an invalid lifetime")
 
 
@@ -5140,6 +5219,7 @@ def retirement_preflight(args):
     nonce = secrets.token_urlsafe(18)
     with authority_publication_lock():
         collected = retirement_collect(args, nonce)
+        preflight_evidence_deadline(collected["binding"])
         intent = retirement_intent(collected, nonce, now_utc())
         validate_retirement_intent(intent)
         ensure_dir(PREFLIGHT_ROOT)
@@ -5236,6 +5316,7 @@ def retirement_execute(args, intent):
         if retirement_intent(current, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
             raise ApplyError("approved retirement inputs, consumers, policy, controllers, or runners changed")
         archive, manifest, _ = validate_retirement_archive(intent["retirement"]["recovery_archive_path"])
+        validate_retirement_intent(intent)
         try:
             if phase == "exercise":
                 removal_started = True

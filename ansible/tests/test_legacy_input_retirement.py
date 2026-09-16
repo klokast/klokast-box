@@ -147,7 +147,7 @@ class LegacyInputRetirementTest(unittest.TestCase):
             with self.assertRaises(m.ApplyError):
                 m.retirement_metadata(source)
 
-    def test_intent_is_ten_minute_single_phase_and_rejects_expiry(self):
+    def test_intent_is_one_hour_single_phase_and_rejects_expiry(self):
         m = self.m
         plan = self.plan("exercise")
         collected = self.base.collected()
@@ -155,9 +155,9 @@ class LegacyInputRetirementTest(unittest.TestCase):
         intent = m.retirement_intent(collected, "retirement-test-nonce", m.now_utc())
         m.validate_retirement_intent(intent)
         expired = copy.deepcopy(intent)
-        issued = m.now_utc() - dt.timedelta(minutes=11)
+        issued = m.now_utc() - dt.timedelta(minutes=61)
         expired["issued_at"] = m.format_utc(issued)
-        expired["expires_at"] = m.format_utc(issued + dt.timedelta(minutes=10))
+        expired["expires_at"] = m.format_utc(issued + dt.timedelta(hours=1))
         with self.assertRaisesRegex(m.ApplyError, "expired"):
             m.validate_retirement_intent(expired)
         changed = copy.deepcopy(intent)
@@ -199,6 +199,27 @@ class LegacyInputRetirementTest(unittest.TestCase):
         (preflight / "intent.json").write_text(m.canonical(intent) + "\n")
         (preflight / "binding.json").write_text(m.canonical(collected["binding"]) + "\n")
         return collected, intent
+
+    def test_expiry_at_execution_entry_burns_nonce_without_removal_or_receipt(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, intent = self.execution_fixture(root, "verify")
+            with patch.object(m, "PREFLIGHT_ROOT", root), patch.object(m, "NONCE_ROOT", root / "nonces"), patch.object(
+                m, "verify_signature"
+            ), patch.object(m, "authority_publication_lock", return_value=nullcontext()), patch.object(
+                m, "retirement_collect", side_effect=m.ApplyError("Observation evidence expired")
+            ), patch.object(m, "remove_retirement_paths") as remove, patch.object(
+                m, "publish_authority"
+            ) as publish, patch.object(m, "store_retirement_receipt") as store, patch.object(m, "append_audit"):
+                with self.assertRaisesRegex(m.ApplyError, "Observation evidence expired"):
+                    m.retirement_execute(SimpleNamespace(), intent)
+                self.assertTrue((root / "nonces" / intent["nonce"]).is_file())
+                with self.assertRaisesRegex(m.ApplyError, "already used"):
+                    m.retirement_execute(SimpleNamespace(), intent)
+                remove.assert_not_called()
+                publish.assert_not_called()
+                store.assert_not_called()
 
     def test_exercise_consumes_nonce_before_removal_and_restores(self):
         m = self.m

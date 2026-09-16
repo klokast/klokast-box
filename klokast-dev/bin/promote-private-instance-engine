@@ -701,8 +701,8 @@ for field, wanted in expected.items():
 issued = dt.datetime.fromisoformat(value["issued_at"].replace("Z", "+00:00"))
 expires = dt.datetime.fromisoformat(value["expires_at"].replace("Z", "+00:00"))
 now = dt.datetime.now(dt.timezone.utc)
-if not issued <= now < expires <= issued + dt.timedelta(minutes=10):
-    raise SystemExit("promotion intent is stale or exceeds 10 minutes")
+if not issued <= now < expires <= issued + dt.timedelta(hours=1):
+    raise SystemExit("promotion intent is stale or exceeds one hour")
 nonce = value.get("nonce", "")
 if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", nonce):
     raise SystemExit("promotion intent nonce is invalid")

@@ -15,6 +15,12 @@ Authority State v5, all six instance-owned setting groups, the protected
 legacy-input recovery archive, and the prior exercise and retirement receipts
 must remain available.
 
+Use an engine and controller wrappers with the same freshness policy. Source
+receipts and Observations each have a one-hour lifetime. Run slow preparation
+before collecting these inputs where possible. Do not change timestamps in
+existing evidence. After a refresh, regenerate every receipt and Plan that
+binds the replaced input.
+
 Synchronize the private source and keep the reported commit and receipt:
 
 ```sh
@@ -96,6 +102,13 @@ authorizes only retired-state verification. The helper writes the final JSON
 result to stdout and progress to stderr. It must classify the exact replay as
 `nonce-reuse` or `expired-intent`. An SSH error or unknown controller message
 is a failed replay test.
+
+Review the earliest evidence deadline printed by preflight. It requires at
+least 15 minutes to remain for execution; the one-hour signature window does
+not extend evidence validity. If review or checks use that reserve, prepare
+fresh evidence and a new Plan before signing. An expired or failed consumed
+request must not be retried. See `doc/secret-authority.md` for retained private
+revalidation diagnostics.
 
 ## Acceptance
 

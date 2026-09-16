@@ -112,7 +112,7 @@ class InstanceVerificationTest(unittest.TestCase):
 
     def test_expiry_unknown_intent_and_missing_adoption_archive(self):
         m=self.m
-        intent=m.verification_intent(self.collected(),'verification-test-nonce',m.now_utc()-dt.timedelta(minutes=11))
+        intent=m.verification_intent(self.collected(),'verification-test-nonce',m.now_utc()-dt.timedelta(minutes=61))
         with self.assertRaisesRegex(m.ApplyError,'expired'):m.validate_verification_intent(intent)
         intent=m.verification_intent(self.collected(),'verification-test-nonce',m.now_utc())
         intent['legacy_registry_sha256']='a'*64

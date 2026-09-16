@@ -199,8 +199,8 @@ func loadObservation(path string, now time.Time) (Observation, []contract.Diagno
 	if err != nil || !strings.HasSuffix(observation.ObservedAt, "Z") {
 		return Observation{}, add("time.utc", "observed_at must be a whole-second UTC timestamp"), nil
 	}
-	if observedAt.Before(now.Add(-30 * time.Minute)) {
-		return Observation{}, add("time.stale", "observation is older than 30 minutes"), nil
+	if !observedAt.Add(time.Hour).After(now) {
+		return Observation{}, add("time.stale", "observation is at least one hour old"), nil
 	}
 	if observedAt.After(now.Add(5 * time.Minute)) {
 		return Observation{}, add("time.future", "observation is more than five minutes in the future"), nil

@@ -46,7 +46,7 @@ class PlatformApplyTest(unittest.TestCase):
             "live_etag": '"etag-value"',
             "nonce": "nonce_123456789",
             "issued_at": self.mod.format_utc(now),
-            "expires_at": self.mod.format_utc(now + dt.timedelta(minutes=10)),
+            "expires_at": self.mod.format_utc(now + dt.timedelta(hours=1)),
             "private_commit": "a" * 40,
             "engine_commit": "b" * 40,
         }
@@ -137,7 +137,7 @@ class PlatformApplyTest(unittest.TestCase):
             "rollback_type": self.mod.BOX_ROLLBACK_TYPE,
             "nonce": "box_nonce_123456",
             "issued_at": self.mod.format_utc(now),
-            "expires_at": self.mod.format_utc(now + dt.timedelta(minutes=10)),
+            "expires_at": self.mod.format_utc(now + dt.timedelta(hours=1)),
         }
         digest_fields = {
             "plan_sha256", "authority_state_sha256",
@@ -175,7 +175,7 @@ class PlatformApplyTest(unittest.TestCase):
             "router_next_hop": self.mod.stable_router_next_hop(active),
             "nonce": "overlay_nonce_123456",
             "issued_at": self.mod.format_utc(now),
-            "expires_at": self.mod.format_utc(now + dt.timedelta(minutes=10)),
+            "expires_at": self.mod.format_utc(now + dt.timedelta(hours=1)),
         }
         digest_fields = {
             "plan_sha256", "authority_state_sha256",
@@ -212,9 +212,9 @@ class PlatformApplyTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.ApplyError, "partial"):
             self.mod.validate_intent(unknown)
         expired = dict(intent)
-        past = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(minutes=20)
+        past = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(hours=2)
         expired["issued_at"] = self.mod.format_utc(past)
-        expired["expires_at"] = self.mod.format_utc(past + dt.timedelta(minutes=10))
+        expired["expires_at"] = self.mod.format_utc(past + dt.timedelta(hours=1))
         with self.assertRaisesRegex(self.mod.ApplyError, "expired"):
             self.mod.validate_intent(expired)
 

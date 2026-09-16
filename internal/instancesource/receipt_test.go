@@ -27,6 +27,17 @@ func TestLoadAcceptsCanonicalFreshPrivateSourceReceipt(t *testing.T) {
 	}
 }
 
+func TestReceiptExpiresAtOneHourWithoutContentChange(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	path := writeReceipt(t, validReceipt(now))
+	for _, age := range []time.Duration{45 * time.Minute, time.Hour - time.Second, time.Hour, time.Hour + time.Second} {
+		_, diagnostics, err := Load(path, now.Add(age))
+		if err != nil || hasCode(diagnostics, "fetched-at.stale") != (age >= time.Hour) {
+			t.Fatalf("age=%v diagnostics=%#v err=%v", age, diagnostics, err)
+		}
+	}
+}
+
 func TestLoadRejectsPublicStaleAndTamperedReceipts(t *testing.T) {
 	tests := []struct {
 		name   string

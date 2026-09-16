@@ -183,7 +183,7 @@ func TestObservationValidation(t *testing.T) {
 		mutate func(*Observation)
 		code string
 	}{
-		{"stale", func(o *Observation) { o.ObservedAt = "2026-08-10T11:39:59Z" }, "time.stale"},
+		{"stale", func(o *Observation) { o.ObservedAt = "2026-08-10T11:09:59Z" }, "time.stale"},
 		{"future", func(o *Observation) { o.ObservedAt = "2026-08-10T12:15:01Z" }, "time.future"},
 		{"non-utc", func(o *Observation) { o.ObservedAt = "2026-08-10T12:00:00+00:00" }, "time.utc"},
 		{"duplicate-machine", func(o *Observation) { o.TailnetMachines = append(o.TailnetMachines, o.TailnetMachines[0]) }, "identity.duplicate"},
@@ -201,6 +201,22 @@ func TestObservationValidation(t *testing.T) {
 				t.Fatalf("invalid observation was accepted: %#v", result)
 			}
 		})
+	}
+}
+
+func TestObservationExpiresAtOneHourWithoutContentChange(t *testing.T) {
+	observation := singleBoxObservation()
+	observation.ObservedAt = testNow.Format("2006-01-02T15:04:05Z")
+	path := writeObservation(t, observation)
+	for _, age := range []time.Duration{45 * time.Minute, time.Hour - time.Second, time.Hour, time.Hour + time.Second} {
+		_, diagnostics, err := loadObservation(path, testNow.Add(age))
+		stale := false
+		for _, diagnostic := range diagnostics {
+			stale = stale || diagnostic.Code == "time.stale"
+		}
+		if err != nil || stale != (age >= time.Hour) {
+			t.Fatalf("age=%v diagnostics=%#v err=%v", age, diagnostics, err)
+		}
 	}
 }
 

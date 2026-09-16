@@ -20,7 +20,7 @@ import (
 const (
 	Kind              = "klokast.instance-source.v1"
 	MaximumReceipt    = 64 * 1024
-	MaximumAge        = 30 * time.Minute
+	MaximumAge        = time.Hour
 	MaximumFutureSkew = 5 * time.Minute
 )
 
@@ -159,8 +159,8 @@ func validate(receipt Receipt, content []byte, now time.Time) []contract.Diagnos
 		if fetched.After(now.Add(MaximumFutureSkew)) {
 			add("fetched-at.future", "instance source receipt is more than five minutes in the future")
 		}
-		if fetched.Before(now.Add(-MaximumAge)) {
-			add("fetched-at.stale", "instance source receipt is more than 30 minutes old")
+		if !fetched.Add(MaximumAge).After(now) {
+			add("fetched-at.stale", "instance source receipt is at least one hour old")
 		}
 	}
 	actual, err := hashContent(content)

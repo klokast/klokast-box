@@ -268,7 +268,7 @@ ansible/bin/platform-instance sync \
 
 The checkout is `/home/smith/private/klokast/instance`. Its push URL is
 disabled. The receipt is below `/var/lib/klokast/instance-sources/` and is valid
-for 30 minutes. Pass its exact path to `ansible/bin/platform-plan` with
+for one hour from its fetch time. Pass its exact path to `ansible/bin/platform-plan` with
 `--instance-source-receipt`. Redacted status is:
 
 ```sh
@@ -322,11 +322,29 @@ controller toolchain, private source receipt, source recovery receipt,
 Observation, signature, expiry, and single-use nonce. An airunner cannot sign
 or execute the action and does not receive these inputs.
 
-An intent is valid for exactly ten minutes. The executor consumes its nonce
+An Apply intent is valid for exactly one hour. Engine-promotion intents have
+a maximum lifetime of one hour. This does not change enrollment-key lifetimes.
+Archived ten-minute Apply intents remain valid historical evidence, not
+requests that can be executed under the new lifetime policy.
+The executor consumes its nonce
 before it starts the operation checks. A used intent cannot be retried. Create
 fresh evidence and obtain a new approval after a failure. The executor writes
 the final machine-readable result to stdout. Bounded, non-secret progress and
 errors go to stderr.
+
+Source receipts and Observations expire one hour after collection. Approval
+does not extend either deadline. Verification preflight reports the earliest
+evidence deadline and requires at least 15 minutes to remain for execution.
+This reserve is not a runtime guarantee. Retirement revalidates the exact Plan
+after the complete consumer matrix, before it offers approval or proceeds
+with execution. Expired evidence requires a new evidence set and Plan.
+
+If sealed Plan revalidation fails, the controller retains its private stdout
+and stderr in a root-only `revalidation-*` directory under
+`/var/lib/klokast/apply-preflights/`. These diagnostics have indefinite
+retention. User-facing errors show only known diagnostic codes and safe labels,
+not arbitrary private planner output. Content changes and expiry are distinct
+failures.
 
 The MacBook helper can repeat the exact signed request after success when
 `--prove-replay-refusal` is selected. It accepts only one exact controller

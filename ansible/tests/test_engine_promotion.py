@@ -350,7 +350,26 @@ class EnginePromotionTest(unittest.TestCase):
         ):
             self.mod.read_promotion_envelope()
 
-    def test_intent_lifetime_is_limited_to_ten_minutes(self):
+    def test_mac_intent_validator_accepts_one_hour_and_rejects_overlong_or_stale(self):
+        source = PROMOTION_HELPER.read_text().split('INTENT_NONCE="$(python3', 1)[1]
+        code = source.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        now = self.mod.now_utc().replace(microsecond=0)
+        arguments = [OLD_COMMIT, NEW_COMMIT, "c" * 40, "d" * 40, "e" * 40, "f" * 40, "metadata-only"]
+        value = dict(zip(("old_engine_commit", "new_engine_commit", "private_base_commit", "private_base_tree",
+                          "candidate_tree", "controller_public_commit", "schema_transition"), arguments))
+        value.update(engine_repository="https://github.com/klokast/klokast-box", engine_ref="main",
+                     signer_id="human-private-instance", nonce="promotion-test-nonce")
+        for age, lifetime, accepted in ((0, 3600, True), (1800, 3600, True), (0, 3601, False), (3601, 3600, False)):
+            with self.subTest(age=age, lifetime=lifetime):
+                issued = now - dt.timedelta(seconds=age)
+                value.update(issued_at=self.mod.format_utc(issued),
+                             expires_at=self.mod.format_utc(issued + dt.timedelta(seconds=lifetime)))
+                path = self.root / "mac-intent.json"
+                path.write_text(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+                result = subprocess.run([sys.executable, "-", str(path), *arguments], input=code, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_intent_lifetime_is_limited_to_one_hour(self):
         issued = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
         intent = {
             "schema_version": 1,
@@ -379,11 +398,11 @@ class EnginePromotionTest(unittest.TestCase):
             "signer_id": "human-private-instance",
             "nonce": "nonce_123456789",
             "issued_at": self.mod.format_utc(issued),
-            "expires_at": self.mod.format_utc(issued + dt.timedelta(minutes=10)),
+            "expires_at": self.mod.format_utc(issued + dt.timedelta(hours=1)),
         }
         self.mod.validate_promotion_intent(intent)
-        intent["expires_at"] = self.mod.format_utc(issued + dt.timedelta(minutes=10, seconds=1))
-        with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "exceeds 10 minutes"):
+        intent["expires_at"] = self.mod.format_utc(issued + dt.timedelta(hours=1, seconds=1))
+        with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "exceeds one hour"):
             self.mod.validate_promotion_intent(intent)
 
     def test_immutable_receipt_has_required_hash_and_modes(self):
