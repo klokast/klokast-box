@@ -360,6 +360,29 @@ One box only is the "Active Controller".
     - Codex caches, plugins and temp files
     - OpenAI API env files
 
+- `klokast` (Go contract and planning engine):
+  - `klokast` is a versioned Go CLI. It is the contract and planning engine for the Platform.
+  - It reads the private Instance Specification and other approved evidence. It validates these inputs and produces deterministic derived output.
+  - The main commands are:
+    - `init`: create a private instance from input values and the canonical instance template.
+    - `check`: validate an instance and its engine lock.
+    - `plan`: validate the required authority and evidence, and create a deployment Plan.
+    - `doctor`: compare the desired instance state with an Observation and report findings.
+    - `registry`: create a read-only resource registry view from the instance.
+    - `inventory`: create a read-only inventory view from the instance.
+    - `version`: report the identity of the engine binary.
+  - Each deployable binary contains its engine repository, Git ref, and Git commit. The engine uses this identity when it validates the instance and produces derived output.
+  - The binary contains the public data that is part of its contract:
+    - Instance Specification schemas;
+    - the canonical instance template;
+    - the cloud-provider catalog;
+    - public application resource manifests.
+  - The private instance owns deployment-specific desired state. The `klokast` engine does not own this state.
+  - An Observation contains observed state. The `klokast` engine can use an Observation as evidence, but the Observation does not become desired state.
+  - A Plan does not change the Platform. The active controller performs approved changes from verified authority.
+  - The `klokast` engine and the resource compiler have different roles. The engine validates Platform contracts and produces Plans and derived views. The resource compiler renders approved resource state into concrete infrastructure configuration.
+  - Deployable `klokast` binaries are built only through the sealed, networkless `platform-builder` profile.
+
 - `compiler` (= "resources compiler" or " Infrastructure reconciler"): versioned CLI tooling in `<box>-ops` that renders resources. It enforces approved state within a fixed scope. It doesn't independently choose placement, ownership, policy, or privilege.
   - The broader app/infra contract is the Platform Resource Control Plane described in `doc/platform-resource-control-plane.md`.
   - Account `smith` applies infrastructure security controls from an approved Git commit.
@@ -407,6 +430,7 @@ deployment and security gates are implemented and validated.
     binaries. The controller also verifies the canonical repository and safe
     upstream branch. The guest binds that repository, ref, and commit into the
     binary and its receipt, and the controller verifies the receipt values.
+  - The resulting sealed binary is the `klokast` contract and planning engine described above.
 
 - `store`: rootless blob-distribution containers in `<box>-bak` on the active- and standby-controller boxes. The store is an untrusted distribution layer, outside the TCB:
   - content-addressed, immutable blobs;
@@ -552,7 +576,10 @@ Persistence uses separate assets with separate authority:
 - application storage: persistent user-service data.
 
 Klokast Instance Specification v1 contains only `klokast-instance.json` and
-`klokast.lock.json` as authoritative inputs. The instance file owns private
+`klokast.lock.json` as authoritative inputs. `klokast.lock.json` binds the
+private instance to the approved `klokast` engine identity. The sealed engine
+binary contains its repository, Git ref, and Git commit, and validates the
+instance against that identity. The instance file owns private
 topology, membership, connectivity-capability, controller, airunner, app, and
 retained-data intent. It has no secrets, generated state, observed status,
 inventory, or site-executor interface. The
