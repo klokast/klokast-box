@@ -1,5 +1,122 @@
 # Standard architecture of the boxes
-Each box of the Platform is one mini-PC that implements the same 4-layers architecture:
+Each box of the Platform is one mini-PC that implements the same 4-layers architecture.
+
+## Top-level control flow
+
+The Platform has two main control flows:
+
+1. the desired-state and Apply flow;
+2. the artifact build and distribution flow.
+
+These flows keep desired state, observed state, human approval, build authority, and runtime state separate.
+
+### Desired-state and Apply flow
+
+The public `klokast-box` repository contains the Platform implementation. The private instance repository contains the desired state for one installation.
+
+The private `klokast.lock.json` selects one approved `klokast-box` engine commit. The active controller builds the `klokast` binary from this commit. It uses the sealed, networkless `platform-builder`.
+
+The control flow is:
+
+```text
+public klokast-box engine
+        +
+private Instance and engine lock
+        |
+        v
+sealed klokast binary
+        +
+Instance source receipt
+        +
+Authority State
+        +
+Controller Toolchain receipt
+        +
+current Observation
+        |
+        v
+immutable Plan
+        |
+        v
+human review and signed Apply intent
+        |
+        v
+verified Platform Apply
+        |
+        v
+compiler + Ansible + app reconcilers
+        |
+        v
+Platform runtime
+        |
+        v
+new Observation
+        |
+        +----> input to the next Plan
+```
+
+The Instance is desired state. An Observation is observed state. An Observation is evidence only. It must not become desired state.
+
+The sealed `klokast` binary creates the Plan from the approved inputs and evidence. The Plan defines the exact change that an Apply can make.
+
+The human reviews the Apply intent and signs it on the trusted workstation. The approval applies to one exact Plan.
+
+Before an Apply, the root executor verifies the required evidence. This includes the active-controller state, Plan, sealed engine, controller toolchain, source receipts, Observation, signature, expiry, and single-use nonce.
+
+If an input changes or expires, the controller must create new evidence and a new Plan. An old approval does not authorize a different Plan.
+
+Only the active controller can execute the Apply. Infrastructure changes run through the approved compiler and Ansible workflows. App changes run through the approved app workflows with their restricted authority.
+
+After the change, the mapper and verifier can create a new Observation. This closes the control loop without changing the desired-state authority.
+
+For the normative rules, see [Klokast Instance Specification v1](klokast-instance-specification.md) and [Secret Authority](secret-authority.md).
+
+### Artifact build and distribution flow
+
+Deployable artifacts have a separate build and distribution flow.
+
+The control flow is:
+
+```text
+public source
+        +
+digest-pinned upstream inputs
+        |
+        v
+artifact-specific build boundary
+        |
+        v
+built artifact
+        +
+provenance
+        +
+digest or checksum lock
+        |
+        v
+artifact store or controlled distribution path
+        |
+        v
+target verification
+        |
+        v
+target load or installation
+```
+
+The build boundary depends on the artifact type. There is not one build environment for all artifacts.
+
+The deployable `klokast` Go binary uses the sealed, networkless Xen `platform-builder`. The controller injects the approved source, vendored Go modules, and the digest-pinned Go build image. The builder has no network interface.
+
+The current app OCI image workflow uses `platform-image-build` on the active controller. It uses digest-pinned upstream images. It builds the image with Podman and creates an OCI archive.
+
+The build workflow records immutable artifact identity. Depending on the artifact type, this can include an image digest, an archive SHA-256 checksum, a build receipt, or another approved provenance record.
+
+The artifact store is a distribution service. It is not an authority. An artifact does not become trusted because the store contains it.
+
+A distribution path can also transfer an artifact directly from the active controller to its target. The trust rule is the same for both distribution methods.
+
+The target must verify the artifact against approved provenance before it uses the artifact. For the current OCI workflow, the target verifies the OCI archive SHA-256 checksum before `podman load`.
+
+The target must not use a mutable tag, store contents, or an unverified downloaded file as the source of artifact authority.
 
 ## Layer 1: baremetal Host & Xen hypervisor
 - Tailscale tag: `tag:<box>-dom0`
