@@ -4,12 +4,6 @@
   3. `doc/platform-deploy.md`
   4. `ops/ops.md`
 
-# Active implementation plan
-
-- Read `.run/instance-transition-closeout-plan.md` before work on the instance
-  transition closeout. Keep that ignored working plan current until its
-  completion criteria pass. Do not commit the plan file.
-
 # Execution locus
 
 Before running any Platform operation, identify where the command must execute.
