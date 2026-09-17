@@ -107,3 +107,8 @@ record to `~/private/klokast/app-lifecycle-audit.jsonl`.
 `destroy music --wipe-data --yes` also removes the two declared data volumes.
 Do not use destroy when the private Instance Specification keeps the Music
 `library` data with `retention: preserve`.
+
+VM update discovery recognizes these two volumes through
+[`vm-retention.json`](vm-retention.json), including when Music is absent.
+See the [storage assessment](../../doc/platform-updates.md#storage-assessment)
+for its limits. A catalog match does not approve migration or deletion.

@@ -25,10 +25,12 @@ from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, 
 from platform_update_metadata import collect_branch, compare_versions
 import vm_template_inputs
 import vm_app_compatibility
+import vm_storage_inventory
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
 PROFILE = REPO / "ansible/update-profiles/shared-alpine-v1.json"
+RETENTION_CATALOGS = (REPO / 'apps/music/vm-retention.json',)
 GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
@@ -188,6 +190,7 @@ def scan(refresh=True):
                 if any(v["runtime"] == "unknown" for v in targets.values()):
                     report["findings"].append(findings("inventory.runtime-unknown", "Xen inventory is incomplete; configured or running VMs may be missing.", "critical"))
                 profile = load(PROFILE)
+                retention_catalogs = [load(path) for path in RETENTION_CATALOGS]
                 facts = {}
                 with tempfile.TemporaryDirectory(prefix="facts-", dir=STATE) as work:
                     directory = Path(work)
@@ -218,6 +221,9 @@ def scan(refresh=True):
                 compare = functools.lru_cache(maxsize=16384)(compare_versions)
                 for host, target in sorted(targets.items()):
                     result = assess_host(host, facts[host], metadata, profile["packages"], compare, now())
+                    if result['profile'] == 'shared-alpine-v1':
+                        result['storage_assessment'] = vm_storage_inventory.assess(facts[host], retention_catalogs, host)
+                        result['findings'].extend(result['storage_assessment']['findings'])
                     result["target"] = target
                     if target["runtime"] == "stopped":
                         result["findings"] = [v for v in result["findings"] if v["code"] != "inventory.unknown"]
@@ -332,6 +338,12 @@ def display(report, as_json):
     print("VM update report: " + report.get("generated_at", "missing"))
     for item in report.get("hosts", []):
         print(f"{item['host']}: {item['update_status']}; profile={item['profile']}; updates={len(item['updates'])}; security={len(item['security_fixes'])}; replacement=blocked")
+        if 'storage_assessment' in item:
+            storage = item['storage_assessment']
+            for volume in storage['volumes']:
+                match = volume['catalog_match']
+                label = match['app'] + '/' + match['dataset'] if match else 'unclassified'
+                print(f"  volume {volume['name']}: catalog={label}; path={'supported' if volume['path_supported'] else 'blocked'}; retention=unapproved")
         for finding in item["findings"]:
             print("  " + finding["code"] + ": " + finding["message"])
         if item.get("metadata_error"):

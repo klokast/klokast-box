@@ -8,6 +8,8 @@ offline base-image boot tests, and an optional Static Site web component test.
 A dom0 disk-switch transaction and boot recovery helper are implemented but are not connected to a production executor.
 An offline retained-data copy primitive is implemented and included in the
 synthetic candidate tests. It is not a complete data-adoption workflow.
+Discovery also reports storage refusals and catalog matches for the Music
+library dataset. These matches are not approved retention or copy requests.
 It does not implement unattended VM replacement. `adopt` and `run` are not available.
 The existing guest installer remains in use. Do not activate automatic
 replacement or treat a report as an
@@ -68,6 +70,44 @@ OS, architecture, packages, running kernel and Tailscale versions, module
 directories, configuration hashes, template markers, mounts, capacity,
 numeric runtime ownership, subordinate IDs, container image IDs, and volume
 mounts. It does not emit container environment variables or credentials.
+
+### Storage assessment
+
+Each supported running VM has a `storage_assessment` in its scan report.
+The text report lists named volumes, catalog matches, and path checks. JSON
+also includes bind mounts, observed numeric ownership, and unresolved adoption
+checks. The Music `library` catalog mapping includes both the library and
+playlist volumes, including volumes with no remaining containers.
+
+The collector reads native Podman container, volume, and store inspection
+output. It compares two inventories and the mount table to detect changes
+during collection. A failed inspection stays unknown. It does not become an
+empty inventory. Environment variables, labels, volume option values, and
+mount options stay out of the result. The supported volume layout requires
+the standard persistent `neo` store, local volumes with no options, directory
+paths without symlinks, and no nested mounts. Custom stores, remote volumes,
+ambiguous identities, conflicting mount paths, overlapping subordinate IDs,
+and partial catalog datasets produce findings. Unknown volumes, host bind
+mounts (including read-only mounts), and writable container layers also block
+adoption assessment.
+
+A catalog match identifies public software conventions only. It cannot prove
+that Instance intent retains that dataset on this box. The report always sets
+`adoption_ready: false` and `retention_approved: false`. It cannot account for
+all host files, host services, other container accounts, or unregistered
+storage. It does not read application files, measure copy capacity, verify a
+backup, freeze writers, or approve application configuration. The future
+adoption executor must obtain sealed retention intent and fresh complete
+evidence before producing a copy request. In particular, it must not infer
+retention from the current compatibility registry projection, which omits
+the Instance's retained datasets.
+
+The catalog is reviewed public implementation in
+[`apps/music/vm-retention.json`](../apps/music/vm-retention.json). Its paths
+and names do not expand app authority or authorize deletion. Other apps and
+Music runtime or identity volumes remain unclassified by this initial mapping.
+
+### Evidence storage and freshness
 
 `scan --existing-map` uses a map no more than two hours old, but still collects
 new guest facts. Use it only to repeat a failed discovery check. The normal
@@ -425,7 +465,8 @@ The following work is required before enabling replacement:
    adapters. Require a verified backup, ownership and mapping checks, writer
    quiescence, and retention of the original disk. Block unknown data and
    unrecorded container changes. The offline copy primitive above supplies only
-   directory copying and integrity checks.
+   directory copying and integrity checks. The discovery storage assessment
+   provides catalog matches and refusals, not approved adoption mappings.
 4. Connect the dom0 transaction above to approved input staging, network
    fencing, data copying, and the signed executor. Verify recovery independence
    and capacity for separate old and candidate disks before stopping the guest.

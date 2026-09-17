@@ -191,7 +191,8 @@ create another desired-state source.
 The retained-data copy primitive runs inside a disposable networkless Xen VM.
 It reads a read-only source filesystem and writes a separate new filesystem.
 Dom0 handles block devices and opaque bytes only. Synthetic template tests
-exercise this primitive; backup qualification, catalog mappings, writer fencing,
+exercise this primitive. Discovery reports catalog storage matches and unsafe
+or unknown storage. Backup qualification, approved mappings, writer fencing,
 and production adoption remain executor responsibilities.
 
 The steady-state guest lifecycle is:

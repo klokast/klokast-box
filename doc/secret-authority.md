@@ -357,6 +357,10 @@ writer shutdown, or adoption. The future signed executor must derive and verify
 its mappings, backup evidence, fencing, and disk identities before it exposes
 data to the disposable networkless guest. Treat filesystem contents as
 untrusted input. Keep that parser and copy boundary out of dom0.
+The discovery storage assessment has inspection authority only. Catalog
+matches and path checks do not authorize copying, deletion, or adoption.
+Its unprivileged report cannot replace fresh executor checks or sealed
+Instance retention intent.
 
 The optional application component test has no production authority. The
 controller can stage only its fixed public catalog image. A separate read-only

@@ -1,0 +1,11 @@
+{
+  "kind": "klokast.vm-retention-catalog.v1",
+  "app": "music",
+  "role": "bak",
+  "datasets": {
+    "library": {
+      "volumes": ["klokast-music-library", "klokast-music-playlists"],
+      "legacy_directories": ["/srv/music/library", "/srv/music/playlists"]
+    }
+  }
+}

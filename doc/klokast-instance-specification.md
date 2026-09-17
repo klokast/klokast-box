@@ -291,6 +291,10 @@ A retained-data copy request maps approved logical datasets to exact physical
 directories and filesystem identities. Its result records integrity and numeric
 ownership evidence. These are operation records, not Instance inputs, and a
 successful copy does not establish an accepted adoption or release assignment.
+Discovery may compare observed volumes with public catalog mappings. A match
+does not establish the box's retention intent. The executor must resolve
+`apps.<app>.data` from the sealed Instance before approving physical mappings;
+the compatibility registry projection is not a retention authority.
 
 An accepted operation also needs a narrow persistent copy on its box. That
 copy permits offline boot and recovery of that exact operation. It cannot

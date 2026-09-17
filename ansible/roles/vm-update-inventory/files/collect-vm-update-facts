@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import pwd
 import re
+import stat
 import subprocess
 
 
@@ -39,6 +40,99 @@ def read_json_command(argv):
         return None
 
 
+def mount_inventory():
+    """Do not export mount options: network mounts can contain credentials."""
+    records = []
+    try:
+        content = text('/proc/self/mountinfo', 1024 * 1024)
+        if not content:
+            return None
+        for line in content.splitlines():
+            fields = line.split()
+            split = fields.index('-')
+            records.append({'device': fields[2], 'root': fields[3], 'path': fields[4],
+                            'type': fields[split + 1]})
+        return records
+    except (ValueError, IndexError):
+        return None
+
+
+def directory_verified(value, mounts):
+    """Inspect directory metadata only. Refuse symlinks and nested mounts."""
+    if (not isinstance(value, str) or not value.startswith('/') or len(value) > 4096 or
+            any(part in ('', '.', '..') for part in value[1:].split('/')) or
+            any(ord(c) < 32 or ord(c) == 127 or c == '\\' for c in value) or not mounts):
+        return False
+    try:
+        current = Path('/')
+        for part in value[1:].split('/'):
+            current /= part
+            if not stat.S_ISDIR(current.lstat().st_mode):
+                return False
+        if any(m['path'] == value or m['path'].startswith(value + '/') for m in mounts):
+            return False
+        parents = [m for m in mounts if m['path'] == '/' or value.startswith(m['path'] + '/')]
+        parent = max(parents, key=lambda m: len(m['path']))
+        return parent['type'] == 'ext4' and parent['root'] == '/'
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def podman_snapshot(podman):
+    """Drop secrets on the guest, and never accept partial inspect coverage."""
+    listed = podman('ps --all --format=json')
+    if not isinstance(listed, list) or len(listed) > 4096:
+        return None
+    ids = [item.get('Id') if isinstance(item, dict) else None for item in listed]
+    if any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in ids) or len(set(ids)) != len(ids):
+        return None
+    inspected = podman('container inspect ' + ' '.join(ids)) if ids else []
+    volumes = podman('volume inspect --all')
+    if (not isinstance(inspected, list) or len(inspected) != len(ids) or
+            any(not isinstance(v, dict) for v in inspected) or
+            any(not isinstance(v.get('Id'), str) for v in inspected) or
+            sorted(v.get('Id', '') for v in inspected) != sorted(ids) or
+            not isinstance(volumes, list) or len(volumes) > 4096 or
+            any(not isinstance(v, dict) for v in volumes)):
+        return None
+    containers = []
+    for item in inspected:
+        mounts = item.get('Mounts')
+        config = item.get('HostConfig')
+        if not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts) or not isinstance(config, dict):
+            return None
+        containers.append({'id': item['Id'], 'name': item.get('Name'), 'image_id': item.get('Image'),
+                           'read_only_root': config.get('ReadonlyRootfs'),
+                           'mounts': [{k: m.get(k) for k in ('Type', 'Name', 'Source', 'Destination', 'RW')} for m in mounts]})
+    selected_volumes = [{**{k: item.get(k) for k in ('Name', 'Mountpoint', 'Driver')},
+                         'options_empty': 'Options' in item and item['Options'] in ({}, None)} for item in volumes]
+    if any(not isinstance(v['Name'], str) for v in selected_volumes):
+        return None
+    return {'containers': sorted(containers, key=lambda v: v['id']),
+            'volumes': sorted(selected_volumes, key=lambda v: v['Name'])}
+
+
+def collect_storage(podman):
+    result = {'containers': None, 'volumes': None, 'podman_storage': None, 'podman_inventory_stable': False}
+    before = podman_snapshot(podman)
+    info = podman('info --format=json')
+    mounts = mount_inventory()
+    if isinstance(info, dict) and isinstance(info.get('host'), dict) and isinstance(info.get('store'), dict):
+        store = info['store']
+        security = info['host'].get('security')
+        result['podman_storage'] = {'rootless': security.get('rootless') if isinstance(security, dict) else None,
+                                    'graph_root': store.get('graphRoot'), 'volume_path': store.get('volumePath'),
+                                    'transient': store.get('transientStore'),
+                                    'graph_root_directory': directory_verified(store.get('graphRoot'), mounts)}
+    if before is not None:
+        result.update(before)
+        # Physical checks are observations, not permissions to copy these paths.
+        result['volumes'] = [{**v, 'directory_verified': directory_verified(v['Mountpoint'], mounts)} for v in before['volumes']]
+    after = podman_snapshot(podman)
+    result['podman_inventory_stable'] = before is not None and before == after and mounts == mount_inventory()
+    return result
+
+
 def main():
     release = {}
     for line in text("/etc/os-release", 16384).splitlines():
@@ -65,7 +159,7 @@ def main():
         "configuration": {"status": "unknown", "sha256": configs},
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
-        "storage": {"mounts": text("/proc/mounts", 1024 * 1024), "capacity": capture(["df", "-Pk"])["stdout"]},
+        "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},
         "subuid": text("/etc/subuid", 65536), "subgid": text("/etc/subgid", 65536),
         "containers": None, "volumes": None,
     }
@@ -75,19 +169,7 @@ def main():
         def podman(arguments):
             # Fixed commands only; no instance or guest strings become shell code.
             return read_json_command(["su", "-s", "/bin/sh", "-c", "podman " + arguments, "neo"])
-        containers = podman("ps --all --format=json")
-        if isinstance(containers, list):
-            fact["containers"] = [{k: item.get(k) for k in ("Id", "Names", "ImageID", "Image", "State")} for item in containers]
-            # Full inspect results can contain secrets. Select storage and image fields on the guest.
-            ids = [item.get("Id", "") for item in containers]
-            inspected = podman("container inspect " + " ".join(ids)) if ids and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in ids) else ([] if not ids else None)
-            if isinstance(inspected, list):
-                fact["containers"] = [{"id": item.get("Id"), "name": item.get("Name"), "image_id": item.get("Image"),
-                                       "mounts": [{k: m.get(k) for k in ("Type", "Name", "Source", "Destination", "RW")} for m in item.get("Mounts", [])]}
-                                      for item in inspected]
-        volumes = podman("volume inspect --all")
-        if isinstance(volumes, list):
-            fact["volumes"] = [{k: item.get(k) for k in ("Name", "Mountpoint", "Driver")} for item in volumes]
+        fact.update(collect_storage(podman))
     except KeyError:
         fact["runtime_owner"] = None
     print(json.dumps(fact, sort_keys=True))

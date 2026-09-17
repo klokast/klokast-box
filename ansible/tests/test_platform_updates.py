@@ -167,6 +167,36 @@ class SafetyRulesTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_scan_integrates_storage_refusals_and_catalog_without_adoption(self):
+        from test_vm_storage_inventory import fact as storage_fact
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.run/platform-map').mkdir(parents=True)
+            mapping = {'generated_at': u.timestamp(NOW), 'tailnet': {'magicdns_suffix': 'example.ts.net'},
+                       'boxes': {'boxa': {'dom0': {'xen': {'available': True, 'domains': [{'name': 'bak'}]}}}}}
+            (root / '.run/platform-map/current.json').write_text(json.dumps(mapping))
+            def collect(targets, directory, log, suffix):
+                value = {**storage_fact(), 'observed_at': u.timestamp(NOW),
+                         'os': {'id': 'alpine', 'version_id': '3.23.0'}, 'architecture': 'x86_64',
+                         'apk_database': 'P:linux-virt\nV:1\nA:x86_64\n'}
+                (directory / 'boxa-bak.json').write_text(json.dumps(value))
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
+                    patch.object(cli, 'APPROVED_REPO', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'command', return_value='a' * 40), patch.object(cli, 'now', return_value=NOW), \
+                    patch.object(cli, 'collect_facts', side_effect=collect), \
+                    patch.object(cli, 'collect_branch', return_value={}):
+                report = cli.scan(refresh=False)
+            self.assertTrue(report['complete'])
+            bak = next(host for host in report['hosts'] if host['host'] == 'boxa-bak')
+            self.assertFalse(bak['replacement_ready'])
+            self.assertFalse(bak['storage_assessment']['adoption_ready'])
+            self.assertEqual(bak['storage_assessment']['volumes'][0]['catalog_match']['dataset'], 'library')
+            self.assertIn('storage.adoption-unverified', {f['code'] for f in bak['findings']})
+            self.assertEqual(json.loads((root / 'current.json').read_text()), report)
+            stopped = next(host for host in report['hosts'] if host['host'] == 'boxa-iot')
+            self.assertNotIn('storage_assessment', stopped)
+
     def test_collection_uses_tailnet_names_local_controller_and_preserves_stopped(self):
         cli = load_cli()
         with tempfile.TemporaryDirectory() as temporary, patch.object(cli, "command") as command, patch.object(cli.socket, "gethostname", return_value="boxa-ops"):

@@ -1,0 +1,181 @@
+"""Read-only storage assessment. Catalog matches are not retention authority.
+
+Inputs are untrusted guest observations and reviewed public catalog mappings.
+This module has no disk, filesystem, subprocess, or private-source access.
+No result is a copy request, a deletion list, or an accepted adoption record.
+"""
+import re
+
+from platform_updates import UpdateError, digest, findings
+
+NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}')
+HASH = re.compile(r'(?:sha256:)?[0-9a-f]{64}')
+UNVERIFIED = [
+    'instance-retention', 'recoverable-backup', 'host-data-completeness',
+    'other-container-accounts', 'filesystem-identities', 'application-configuration',
+    'writer-fencing', 'accepted-release',
+]
+
+
+def path(value):
+    return (isinstance(value, str) and value.startswith('/') and len(value) <= 4096 and
+            all(part not in ('', '.', '..') for part in value[1:].split('/')) and
+            all(ord(c) >= 32 and ord(c) != 127 for c in value))
+
+
+def catalog_index(catalogs, role):
+    """Require closed public mappings; never load paths named by observations."""
+    result = {}
+    apps = set()
+    for catalog in catalogs:
+        if (not isinstance(catalog, dict) or set(catalog) != {'kind', 'app', 'role', 'datasets'} or
+                catalog['kind'] != 'klokast.vm-retention-catalog.v1' or
+                not isinstance(catalog['app'], str) or not NAME.fullmatch(catalog['app']) or
+                catalog['app'] in apps or catalog['role'] not in ('bak', 'dmz', 'iot') or
+                not isinstance(catalog['datasets'], dict) or not catalog['datasets']):
+            raise UpdateError('retention catalog has an invalid or duplicate app contract')
+        apps.add(catalog['app'])
+        for dataset, entry in catalog['datasets'].items():
+            if (not isinstance(dataset, str) or not NAME.fullmatch(dataset) or
+                    not isinstance(entry, dict) or set(entry) != {'volumes', 'legacy_directories'} or
+                    not isinstance(entry['volumes'], list) or not entry['volumes'] or
+                    any(not isinstance(v, str) or not NAME.fullmatch(v) for v in entry['volumes']) or
+                    len(set(entry['volumes'])) != len(entry['volumes']) or
+                    not isinstance(entry['legacy_directories'], list) or
+                    any(not path(p) or len(p.split('/')) < 4 for p in entry['legacy_directories']) or
+                    len(set(entry['legacy_directories'])) != len(entry['legacy_directories'])):
+                raise UpdateError('retention catalog dataset has invalid physical mappings')
+            if catalog['role'] != role:
+                continue
+            for volume in entry['volumes']:
+                if volume in result:
+                    raise UpdateError('retention catalog volume has more than one owner')
+                result[volume] = {'app': catalog['app'], 'dataset': dataset}
+    return result
+
+
+def subids(content, uid, allocation_id):
+    """Preserve numeric ranges and reject ambiguous or overlapping allocations."""
+    if not isinstance(content, str) or not content or len(content) > 65536:
+        raise UpdateError('subordinate identity inventory is missing or too large')
+    ranges, selected = [], []
+    for line in content.splitlines():
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split(':')
+        if len(parts) != 3 or not parts[0] or any(not re.fullmatch('[0-9]{1,10}', p) for p in parts[1:]):
+            raise UpdateError('subordinate identity inventory has an invalid record')
+        start, count = map(int, parts[1:])
+        if not 0 < start < start + count < 2**32 or any(start < end and old < start + count for old, end in ranges):
+            raise UpdateError('subordinate identity allocations overlap or are invalid')
+        ranges.append((start, start + count))
+        if parts[0] in ('neo', str(uid)):
+            if start <= allocation_id < start + count:
+                raise UpdateError('subordinate allocation includes the runtime identity')
+            selected.append([start, count])
+    if not 1 <= len(selected) <= 16:
+        raise UpdateError('neo has no supported subordinate identity allocation')
+    return sorted(selected)
+
+
+def assess(fact, catalogs, host):
+    result = {'kind': 'klokast.vm-storage-assessment.v1', 'adoption_ready': False,
+              'catalog_sha256': digest(catalogs), 'volumes': [], 'bind_mounts': [],
+              'runtime_identity': None, 'unverified_gates': list(UNVERIFIED), 'findings': []}
+
+    def add(code, message, critical=True):
+        result['findings'].append(findings(code, message, 'critical' if critical else 'warning', host))
+
+    add('storage.adoption-unverified', 'Storage observations require approved retention intent, complete host-data accounting, a recoverable backup, and an authorized adoption.', False)
+    index = catalog_index(catalogs, fact.get('role'))
+    owner = fact.get('runtime_owner')
+    try:
+        if (not isinstance(owner, dict) or set(owner) != {'uid', 'gid'} or
+                any(type(v) is not int or not 0 < v < 2**32 - 1 for v in owner.values())):
+            raise UpdateError('numeric runtime UID/GID inventory is missing')
+        result['runtime_identity'] = {**owner, 'subuid': subids(fact.get('subuid'), owner['uid'], owner['uid']),
+                                      'subgid': subids(fact.get('subgid'), owner['uid'], owner['gid'])}
+    except UpdateError:
+        add('storage.identity-unknown', 'Runtime UID, GID, or non-overlapping subordinate ranges are not established.')
+
+    runtime = fact.get('podman_storage')
+    expected_root = '/home/neo/.local/share/containers/storage'
+    store_ok = (isinstance(runtime, dict) and runtime.get('rootless') is True and
+                runtime.get('graph_root') == expected_root and
+                runtime.get('volume_path') == expected_root + '/volumes' and
+                runtime.get('graph_root_directory') is True and runtime.get('transient') is False)
+    if not store_ok:
+        add('storage.runtime-unknown', 'The rootless persistent Podman store has no supported verified path.')
+    if fact.get('podman_inventory_stable') is not True:
+        add('storage.inventory-unstable', 'Container or volume inventory failed or changed during collection.')
+
+    volumes = fact.get('volumes')
+    by_name = {}
+    if not isinstance(volumes, list) or len(volumes) > 4096:
+        add('storage.volumes-unknown', 'Complete named-volume inspection is unavailable.')
+        volumes = []
+    for item in volumes:
+        if (not isinstance(item, dict) or not isinstance(item.get('Name'), str) or
+                not NAME.fullmatch(item['Name']) or item['Name'] in by_name):
+            add('storage.volume-invalid', 'Named-volume inventory has an invalid or duplicate identity.')
+            continue
+        name = item['Name']
+        by_name[name] = item
+        source = item.get('Mountpoint')
+        safe = (store_ok and source == expected_root + '/volumes/' + name + '/_data' and
+                item.get('Driver') == 'local' and item.get('options_empty') is True and
+                item.get('directory_verified') is True)
+        resource = {'name': name, 'source': source if path(source) else None,
+                    'catalog_match': index.get(name), 'path_supported': safe,
+                    'retention_approved': False}
+        result['volumes'].append(resource)
+        if not safe:
+            add('storage.volume-unsafe', 'A volume uses an unverified path, driver, mount option, or filesystem boundary.')
+        if name not in index:
+            add('storage.volume-unclassified', 'A named volume has no reviewed retained-dataset mapping. Preserve it pending review.')
+    matched_datasets = {(index[name]['app'], index[name]['dataset']) for name in by_name if name in index}
+    for app, dataset in sorted(matched_datasets):
+        if any(name not in by_name for name, entry in index.items() if (entry['app'], entry['dataset']) == (app, dataset)):
+            add('storage.dataset-incomplete', 'An observed catalog dataset is missing one or more required volumes.')
+
+    containers = fact.get('containers')
+    if not isinstance(containers, list) or len(containers) > 4096:
+        add('storage.containers-unknown', 'Complete container inspection is unavailable.')
+        containers = []
+    seen = set()
+    for container in containers:
+        if (not isinstance(container, dict) or not isinstance(container.get('id'), str) or
+                not re.fullmatch('[0-9a-f]{64}', container['id']) or container['id'] in seen or
+                not isinstance(container.get('name'), str) or not NAME.fullmatch(container['name']) or
+                not isinstance(container.get('image_id'), str) or not HASH.fullmatch(container['image_id']) or
+                not isinstance(container.get('mounts'), list)):
+            add('storage.container-invalid', 'Container inspection has an incomplete or duplicate identity.')
+            continue
+        seen.add(container['id'])
+        # A catalog name or image ID is not an approved deployment receipt.
+        add('storage.container-unqualified', 'A deployed container needs an approved image, configuration, and maintenance adapter.', False)
+        if container.get('read_only_root') is not True:
+            add('storage.writable-layer', 'A container has a writable or unknown root layer; its changes are not accounted for.')
+        destinations = set()
+        for mount in container['mounts']:
+            if (not isinstance(mount, dict) or not path(mount.get('Destination')) or
+                    mount['Destination'] in destinations or type(mount.get('RW')) is not bool):
+                add('storage.mount-invalid', 'Container mounts contain an ambiguous path or access mode.')
+                continue
+            destinations.add(mount['Destination'])
+            if mount.get('Type') == 'volume':
+                volume = by_name.get(mount.get('Name')) if isinstance(mount.get('Name'), str) else None
+                if volume is None or mount.get('Source') != volume.get('Mountpoint'):
+                    add('storage.mount-conflict', 'A container volume mount differs from the named-volume inventory.')
+            elif mount.get('Type') == 'bind':
+                source = mount.get('Source')
+                result['bind_mounts'].append({'container': container['name'], 'source': source if path(source) else None,
+                                             'destination': mount['Destination'], 'writable': mount['RW']})
+                add('storage.bind-unclassified', 'A host bind mount needs a reviewed configuration or retained-data mapping, including read-only mounts.')
+            elif mount.get('Type') != 'tmpfs':
+                add('storage.mount-unsupported', 'A container mount uses an unsupported storage type.')
+    result['volumes'].sort(key=lambda v: v['name'])
+    result['bind_mounts'].sort(key=lambda v: (v['container'], v['destination']))
+    # Report each refusal once even if several resources have the same issue.
+    result['findings'] = list({entry['code']: entry for entry in result['findings']}.values())
+    return result
