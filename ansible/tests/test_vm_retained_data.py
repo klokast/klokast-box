@@ -146,6 +146,16 @@ class RetainedData(unittest.TestCase):
             self.copy()
         self.assertEqual(list(self.target.iterdir()), [])
 
+    def test_expired_budget_starts_no_child_and_excess_budget_is_refused(self):
+        with patch.object(d.subprocess, 'Popen') as child:
+            with self.assertRaisesRegex(d.CopyError, 'deadline'):
+                d.run(['rsync'], time.monotonic() - 1)
+            child.assert_not_called()
+        self.deadline = time.monotonic() + 3600
+        with self.assertRaisesRegex(d.CopyError, '30 minutes'):
+            self.copy()
+        self.assertEqual(list(self.target.iterdir()), [])
+
     def test_identity_reads_exact_numeric_and_subordinate_ids(self):
         (self.source / 'etc').mkdir()
         (self.source / 'etc/passwd').write_text('neo:x:2000:3000::/home/neo:/bin/sh\n')
@@ -172,6 +182,19 @@ class RetainedData(unittest.TestCase):
                     patch.object(d, 'mount_records', return_value=records):
                 with self.assertRaisesRegex(d.CopyError, 'wrong access'):
                     d.check_mounts(self.request)
+
+    def test_busybox_uuid_probe_and_ambiguous_output(self):
+        value = self.request['source_uuid']
+        native = f'/dev/xvdc: LABEL="data with spaces" UUID="{value}" TYPE="ext4"\n'
+        with patch.object(d.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=native)) as run:
+            self.assertEqual(d.filesystem_uuid('/dev/xvdc'), value)
+            self.assertEqual(run.call_args.args[0], ['/bin/busybox', 'blkid', '/dev/xvdc'])
+        for output in (native + native, native.replace('xvdc', 'xvdd'),
+                       native.rstrip() + f' UUID="{value}"\n', native.replace('ext4', 'xfs'),
+                       native.replace(value, 'unknown'), native.replace('LABEL="data with spaces"', 'LABEL="unterminated')):
+            with self.subTest(output=output), patch.object(d.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=output)):
+                with self.assertRaises(d.CopyError):
+                    d.filesystem_uuid('/dev/xvdc')
 
 
 if __name__ == '__main__':

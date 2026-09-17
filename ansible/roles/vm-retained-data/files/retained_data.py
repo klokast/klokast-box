@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -42,11 +43,12 @@ def remaining(deadline):
 def run(argv, deadline):
     # Child output can contain private filenames. Discard it rather than send
     # it to the console. Neither a filename nor a secret becomes shell code.
+    timeout = remaining(deadline)
     with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, start_new_session=True,
                           env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'}) as child:
         try:
-            child.wait(timeout=remaining(deadline))
+            child.wait(timeout=timeout)
         except BaseException:
             try:
                 os.killpg(child.pid, signal.SIGKILL)
@@ -55,7 +57,7 @@ def run(argv, deadline):
             child.wait()
             raise
         if child.returncode:
-            raise CopyError('retained-data copy command failed; partial destination is not reusable')
+            raise CopyError(f'retained-data command {argv[0]} failed (exit {child.returncode}); partial destination is not reusable')
 
 
 def validate(request):
@@ -128,6 +130,30 @@ def mount_records():
     return records
 
 
+def filesystem_uuid(device):
+    # The approved Alpine base supplies BusyBox blkid, which has no util-linux
+    # -s/-o options. Require one exact device record and unique native fields.
+    result = subprocess.run(['/bin/busybox', 'blkid', device], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode or len(result.stdout) > 8192 or len(result.stdout.splitlines()) != 1:
+        raise CopyError('filesystem identity probe failed or returned ambiguous output')
+    try:
+        tokens = shlex.split(result.stdout)
+    except ValueError as error:
+        raise CopyError('filesystem identity probe returned malformed fields') from error
+    if not tokens or tokens.pop(0) != device + ':':
+        raise CopyError('filesystem identity probe returned the wrong device')
+    fields = {}
+    for token in tokens:
+        key, separator, value = token.partition('=')
+        if not separator or key in fields or not re.fullmatch('[A-Z_]+', key):
+            raise CopyError('filesystem identity probe returned duplicate or invalid fields')
+        fields[key] = value
+    if fields.get('TYPE') != 'ext4' or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', fields.get('UUID', '')):
+        raise CopyError('filesystem identity probe has no valid ext4 UUID')
+    return fields['UUID']
+
+
 def check_mounts(request):
     records = mount_records()
     selected = []
@@ -147,9 +173,7 @@ def check_mounts(request):
         info = Path(device).lstat()
         if not stat.S_ISBLK(info.st_mode) or record['device'] != f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}':
             raise CopyError('retained-data device identity differs from the mount')
-        result = subprocess.run(['blkid', '-s', 'UUID', '-o', 'value', device],
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
-        if result.returncode or result.stdout.strip() != request[key]:
+        if filesystem_uuid(device) != request[key]:
             raise CopyError('retained-data filesystem UUID differs from the request')
         selected.append(record['device'])
     if len(set(selected)) != 2 or SOURCE.stat().st_dev == TARGET.stat().st_dev:
