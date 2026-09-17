@@ -154,6 +154,14 @@ configuration, credentials, runtime state, and user data. They need separate
 approved classifications before adoption. A matching package path, unchanged
 script checksum, or empty path list cannot grant adoption authority.
 
+On 2026-09-17, a native scan at `3a8c9f4` completed stable host metadata
+collection on all five running shared VMs. The scan kept every target blocked
+on unclassified paths, unqualified maintenance files, and incomplete adoption
+checks. It also distinguished stopped application containers from running
+services. The report is retained on the controller at
+`/var/lib/klokast/updates/discovery/host-assessment-validation-3a8c9f4.json`.
+No application, VM, or update schedule changed during this inspection.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
@@ -521,7 +529,8 @@ command. It keeps both data markers unchanged. The test stops its workers
 before removing its disks, including after a failure. It publishes success
 only after cleanup passes. The receipt includes candidate and test-code
 checksums. This mode has a 70-minute limit to allow the full replacement and recovery budgets plus test
-setup. A physical dom0 reboot remains a separate acceptance gate.
+setup. Physical dom0 reboot testing is deferred as described in the acceptance
+section below; this test does not establish physical reboot recovery.
 
 On 2026-09-17, operation `61ab8c3297a98b8828a5e86f` passed all three native
 Xen cases on k002-dom0 with candidate `0d66858d5082567778a3d3b3`. Test data
