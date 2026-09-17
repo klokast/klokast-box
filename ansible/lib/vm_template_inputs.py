@@ -21,6 +21,7 @@ KIND = "klokast.vm-template-inputs.v1"
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9+_.-]*")
 VERSION = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9+_.~-]*")
 HASH = re.compile(r"[0-9a-f]{64}")
+KEY = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@+_.-]*\.pub")
 MAX_PACKAGE = 512 * 1024 * 1024
 MAX_INPUTS = 2 * 1024 * 1024 * 1024
 MAX_PACKAGES = 512
@@ -218,7 +219,7 @@ def verify_inputs(directory, manifest):
         raise UpdateError("frozen APK signing key set changed")
     for name, expected in manifest["keys"].items():
         path = directory / "keys" / name
-        if (not matches(NAME, name) or not name.endswith(".pub") or not matches(HASH, expected) or
+        if (not matches(KEY, name) or not matches(HASH, expected) or
                 not regular(path, 16384) or sha256(path) != expected):
             raise UpdateError("frozen APK signing key changed")
     if (not isinstance(manifest["indexes"], dict) or len(manifest["indexes"]) != 2 or

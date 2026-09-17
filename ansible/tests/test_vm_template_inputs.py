@@ -112,6 +112,16 @@ class InputsTests(unittest.TestCase):
             path.rename(root / "wrong.apk")
             with self.assertRaises(UpdateError): v.read_package(root / "wrong.apk")
 
+    def test_official_key_email_filename_is_supported(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            name = "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
+            (root / "keys/example.pub").rename(root / "keys" / name)
+            manifest["keys"] = {name: v.sha256(root / "keys" / name)}
+            self.seal(root, manifest)
+            v.verify_inputs(root, manifest)
+
     def test_bootstrap_cannot_run_as_root(self):
         with patch.object(v.os, "geteuid", return_value=0), patch.object(v, "invoke") as invoke:
             with self.assertRaises(UpdateError): v.bootstrap("missing", "missing", "missing")
