@@ -160,6 +160,7 @@ class Native:
             child = subprocess.Popen(['/usr/bin/python3', str(helper), 'watch', '--operation-id', operation],
                                      stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                      start_new_session=True, close_fds=True)
+        self._watch_process = child
         # Bind the watchdog to this process incarnation and this boot. A
         # reused PID or a watchdog for another operation cannot satisfy arm.
         identity = {'pid': child.pid, 'start_ticks': self.process_start(child.pid),
@@ -236,6 +237,12 @@ class Native:
                 raise Refused('transaction disk is mounted on dom0')
 
     def stop(self, record, graceful):
+        current = [item for item in self.inventory() if item['domid'] == record['domid']]
+        if not current:
+            return
+        if (current[0]['config']['c_info']['uuid'] != record['config']['c_info']['uuid'] or
+                current[0]['config']['c_info']['name'] != record['config']['c_info']['name']):
+            raise Refused('domain identity changed immediately before shutdown')
         domid = str(record['domid'])
         if graceful:
             command(['xl', 'shutdown', domid])
@@ -323,9 +330,9 @@ class Transaction:
         store(self.work / 'journal.json', value)
         self.journal = value
 
-    def disks(self):
+    def disks(self, sides=('old', 'new')):
         actual = {}
-        for side in ('old', 'new'):
+        for side in sides:
             for path, expected in self.request[side + '_disks'].items():
                 item = self.native.lv(path)
                 if {k: item[k] for k in ('uuid', 'bytes')} != expected:
@@ -336,8 +343,8 @@ class Transaction:
         self.native.check_unmounted(actual)
         return actual
 
-    def guest(self):
-        actual = self.disks()
+    def guest(self, sides=('old', 'new')):
+        actual = self.disks(sides)
         found = None
         for record in self.native.inventory():
             if record['domid'] == 0:
@@ -359,6 +366,8 @@ class Transaction:
                 if found or info['uuid'] not in {self.request['old_uuid'], self.request['new_uuid']}:
                     raise Refused('target domain identity changed')
                 side = 'old' if info['uuid'] == self.request['old_uuid'] else 'new'
+                if side not in sides:
+                    raise Refused('running guest uses the wrong accepted disk generation')
                 expected = {actual[p]['device'] for p in self.request[side + '_disks']}
                 if devices != expected:
                     raise Refused('target live disks differ from its recorded identity')
@@ -470,6 +479,8 @@ class Transaction:
             self.record('accepted')
             self.assignment('new')
         elif action == 'complete' and self.journal['stage'] == 'accepted':
+            if self.guest(('new',)) is None:
+                raise Refused('accepted guest is absent; completion requires verification')
             self.assignment('new')
             self.record('complete')
         else:
@@ -481,9 +492,14 @@ class Transaction:
         stage = self.journal['stage']
         if stage in {'accepted', 'complete'}:
             # A crash can interrupt config publication after acceptance.
+            # Old LVs can later be retired. The selected LVs must still have
+            # their recorded identities before Xen can autostart them.
+            self.guest(('new',))
             self.assignment('new')
             return 'preserve-production-data'
         if stage == 'recovered':
+            self.guest(('old',))
+            self.assignment('old')
             return 'recovered'
         if stage == 'recovery-failed':
             raise Refused('recovery previously failed; keep the VM fenced for inspection')

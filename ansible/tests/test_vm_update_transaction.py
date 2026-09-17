@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -165,6 +166,41 @@ class Transactions(unittest.TestCase):
         self.assertEqual(self.tx().journal['stage'], 'accepted')
         self.backend.crash = None
         self.assertEqual(self.tx().recover(), 'preserve-production-data')
+
+    def test_accepted_boot_checks_new_disks_without_requiring_retired_old_disks(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
+        original = self.backend.lv
+        def retired(path):
+            if 'old-' in path: raise FileNotFoundError('retired old disk')
+            return original(path)
+        with patch.object(self.backend, 'lv', side_effect=retired):
+            self.assertEqual(self.tx().recover(), 'preserve-production-data')
+        with patch.object(self.backend, 'lv', side_effect=lambda p: {**original(p), 'uuid': 'replacement-id'}):
+            with self.assertRaisesRegex(t.Refused, 'replaced or resized'): self.tx().recover()
+        self.assertEqual(self.tx().journal['stage'], 'complete')
+
+    def test_native_watchdog_identity_is_bound_to_process_and_operation(self):
+        helper = Path(self.temp.name) / 'watch-test.py'
+        helper.write_text('import time\ntime.sleep(15)\n')
+        backend = t.Native()
+        with patch.object(t, 'HELPER', str(helper)):
+            identity = backend.watch(self.work.name, self.work)
+            try:
+                self.assertTrue(backend.watcher_alive(identity, self.work.name))
+                self.assertFalse(backend.watcher_alive(identity, 'f' * 24))
+                self.assertFalse(backend.watcher_alive({**identity, 'start_ticks': '0'}, self.work.name))
+                self.assertFalse(backend.watcher_alive({**identity, 'boot_id': 'other'}, self.work.name))
+            finally:
+                os.kill(identity['pid'], 15)
+                backend._watch_process.wait(timeout=3)
+
+    def test_watchdog_expiry_recovers_but_accepted_watch_exits(self):
+        for stage in ('booted', 'accepted'):
+            with patch.object(t, 'require_dom0'), patch.object(t, 'invoke', return_value={
+                    'stage': stage, 'deadline': 0}) as invoke:
+                t.main(['watch', '--operation-id', self.work.name])
+            self.assertEqual([call.args[1] for call in invoke.call_args_list],
+                             ['status', 'recover'] if stage == 'booted' else ['status'])
 
     def test_deadline_missing_watch_and_unknown_uuid_refuse_mutation(self):
         tx = self.tx(); tx.arm()

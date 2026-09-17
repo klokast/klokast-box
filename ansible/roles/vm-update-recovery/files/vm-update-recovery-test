@@ -7,6 +7,7 @@ interfaces. Disk checks, native Xen transitions, and durable journals use the
 production transaction implementation. It does not qualify application health.
 """
 import argparse
+import fcntl
 import hashlib
 from importlib.machinery import SourceFileLoader
 import importlib.util
@@ -52,6 +53,10 @@ def main():
     (t.XEN / 'auto').mkdir(parents=True)
     candidate = Path('/mnt/dom0_data/klokast-vm-templates/candidates') / args.candidate_id
     t.secure(candidate, True)
+    # Use the builder's box-local lock, so disposable jobs cannot race their
+    # memory and storage preflight checks on this box.
+    lock = os.open(candidate.parent.parent / 'build.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     manifest = t.read(candidate / 'candidate.json')
     native = t.Native()
     if manifest.get('validation') != 'base-boot-tested' or manifest.get('accepted') is not False:
@@ -218,6 +223,7 @@ def main():
             raise RuntimeError('domain inventory changed during the recovery test')
         t.store(work / 'cleanup.json', {'disks_removed': True, 'guest_absent': True, 'production_uuids_unchanged': True})
     print(t.canonical(t.read(work / 'result.json')))
+    os.close(lock)
 
 
 if __name__ == '__main__':

@@ -207,6 +207,29 @@ not install the production helper, change `/etc/xen`, or test real applications.
 The test substitutes watchdog and apkovl persistence interfaces. Native
 watchdog expiry and physical dom0 reboot tests remain separate acceptance gates.
 
+On 2026-09-17, operation `61ab8c3297a98b8828a5e86f` passed all three native
+Xen cases on k002-dom0 with candidate `0d66858d5082567778a3d3b3`. Test data
+markers stayed unchanged. Cleanup removed the disposable guest and all four
+test LVs, and verified that production domain UUIDs stayed unchanged. No
+production VM was replaced and the production boot hook was not installed.
+
+To repeat on an approved test target, run from the active controller's public
+candidate checkout. Use a new random 24-character lowercase hex operation ID
+and an existing base-boot-tested candidate ID:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook \
+  -i /home/smith/src/klokast/klokast-box/ansible/execution-inventory/hosts \
+  ansible/playbooks/74-platform-update-recovery-test.yml --limit BOX-dom0 \
+  -e 'recovery_box=BOX recovery_operation_id=NEW_ID recovery_candidate_id=CANDIDATE_ID'
+```
+
+The test requires 10 GiB of free LVM capacity and 3 GiB of free Xen memory.
+Evidence stays under `/mnt/dom0_data/klokast-vm-recovery-tests/OPERATION`.
+If interrupted, use its `resources.json` to check exact domain and LV identities
+before cleanup. Do not reuse the operation or remove disks still attached to a
+guest. This test does not authorize a production update.
+
 ## Package evidence
 
 Use the official [release metadata](https://alpinelinux.org/releases.json),
