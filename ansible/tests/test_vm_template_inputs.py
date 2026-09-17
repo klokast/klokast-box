@@ -141,9 +141,11 @@ class HostBoundaryTests(unittest.TestCase):
     def test_build_configuration_has_only_operation_disks_and_no_network(self):
         work = Path("/mnt/dom0_data/klokast-vm-templates/staging/" + "a" * 24)
         request = {"operation_id": "a" * 24, "inputs_sha256": "b" * 64, "capsule": {"sha256": "c" * 64, "bytes": 10240}}
-        config = self.host.configuration(work, "vm-build-" + "a" * 24, "test-uuid", request)
+        loops = {name: "/dev/loop" + str(i) for i, name in enumerate(("input", *self.host.SLOTS))}
+        config = self.host.configuration(work, "vm-build-" + "a" * 24, "test-uuid", request, loops)
         self.assertIn("vif = []", config)
-        self.assertIn("access=ro", config)
+        self.assertIn("phy:/dev/loop0,xvda,r", config)
+        self.assertNotIn("qdisk", config)
         self.assertNotIn("/dev/vg", config)
         self.assertNotIn("/etc/xen/auto", config)
 
@@ -155,6 +157,12 @@ class HostBoundaryTests(unittest.TestCase):
         with patch.object(self.host, "run", side_effect=RuntimeError("xl failed")):
             with self.assertRaisesRegex(RuntimeError, "xl failed"):
                 self.host.domain("vm-build-example")
+
+    def test_reassigned_loop_is_never_detached(self):
+        with patch.object(self.host, "loop_devices", return_value=["/dev/loop2"]), patch.object(self.host, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "loop identity changed"):
+                self.host.detach_loop(Path("/operation/root.slot"), "/dev/loop1")
+            run.assert_not_called()
 
     def test_reused_domain_refused_before_disk_creation(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(self.host, "domain", return_value={"domid": 5}):

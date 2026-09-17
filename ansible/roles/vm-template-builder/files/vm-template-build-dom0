@@ -121,9 +121,10 @@ def require_identity(record, identity):
         raise RuntimeError("builder domain UUID changed; refusing to control it")
 
 
-def configuration(work, name, identity, request):
-    disks = [f"format=raw,vdev=xvda,access=ro,target={work}/capsule.tar"]
-    disks += [f"format=raw,vdev=xvd{letter},access=rw,target={work}/{slot}.slot"
+def configuration(work, name, identity, request, loops):
+    # Kernel blkback and loop devices avoid starting a QEMU disk backend.
+    disks = [f"phy:{loops['input']},xvda,r"]
+    disks += [f"phy:{loops[slot]},xvd{letter},w"
               for slot, letter in zip(SLOTS, "bcde")]
     extra = ("console=hvc0 panic=1 klokast_operation=" + request["operation_id"] +
              " klokast_inputs=" + request["inputs_sha256"] + " klokast_capsule=" + request["capsule"]["sha256"] +
@@ -170,6 +171,29 @@ def capture_console(process, path):
             written += len(kept)
 
 
+def loop_devices(path):
+    return sorted("/dev/" + item.parents[1].name for item in Path("/sys/block").glob("loop*/loop/backing_file")
+                  if item.read_text().strip().lstrip("/") == str(path).lstrip("/"))
+
+
+def attach_loop(path, readonly=False):
+    if loop_devices(path):
+        raise RuntimeError("builder file already has a loop attachment")
+    run(["losetup", *( ["-r"] if readonly else []), "-f", path])
+    devices = loop_devices(path)
+    if len(devices) != 1 or not re.fullmatch(r"/dev/loop[0-9]+", devices[0]):
+        raise RuntimeError("builder loop attachment is ambiguous")
+    return devices[0]
+
+
+def detach_loop(path, device):
+    if loop_devices(path) != [device]:
+        raise RuntimeError("builder loop identity changed; refusing to detach it")
+    run(["losetup", "-d", device])
+    if loop_devices(path):
+        raise RuntimeError("builder loop device remains; retain its backing file")
+
+
 def execute(work, request):
     name = "vm-build-" + request["operation_id"]
     identity = str(uuid.uuid4())
@@ -187,11 +211,15 @@ def execute(work, request):
             # growth while package scripts run.
             os.posix_fallocate(stream.fileno(), 0, size)
     config = work / "builder.cfg"
-    config.write_text(configuration(work, name, identity, request))
     write(work / "lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
     console = None
     collector = None
+    loops = {}
+    backing = {"input": work / "capsule.tar", **{slot: work / (slot + ".slot") for slot in SLOTS}}
     try:
+        for slot, path in backing.items():
+            loops[slot] = attach_loop(path, readonly=slot == "input")
+        config.write_text(configuration(work, name, identity, request, loops))
         run(["xl", "create", "-p", config])
         current = domain(name)
         if current is None:
@@ -212,6 +240,9 @@ def execute(work, request):
                 raise RuntimeError("isolated builder exceeded its 30-minute deadline")
             time.sleep(2)
         result = read_result(work, request)
+        for slot, device in list(loops.items()):
+            detach_loop(backing[slot], device)
+            del loops[slot]
         result["artifacts"]["root"] = {"bytes": SLOTS["root"], "sha256": checksum(work / "root.slot")}
         result.update(kind="klokast.vm-template-candidate.v1", box=request["box"], accepted=False,
                       validation="construction-only")
@@ -248,6 +279,9 @@ def execute(work, request):
                 if collector is not None:
                     collector.join(timeout=10)
                 console.stdout.close()
+        for slot, device in list(loops.items()):
+            detach_loop(backing[slot], device)
+            del loops[slot]
         config.unlink(missing_ok=True)
         for name_slot in SLOTS:
             (work / (name_slot + ".slot")).unlink(missing_ok=True)

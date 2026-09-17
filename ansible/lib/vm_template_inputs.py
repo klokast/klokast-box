@@ -301,7 +301,15 @@ def bootstrap(directory, output, guest_job):
         paths = []
         for parent, directories, files in os.walk(root, followlinks=False):
             for name in sorted(directories + files):
-                paths.append(str((Path(parent) / name).relative_to(root)))
+                path = Path(parent) / name
+                # Some signed packages contain execute-only files (bbsuid).
+                # smith owns these scriptlessly extracted files, so grant the
+                # builder read access and remove set-ID bits in the transient
+                # boot archive. The real guest installation restores package
+                # ownership and modes from verified archives.
+                if not path.is_symlink():
+                    path.chmod((path.stat().st_mode & 0o777) | (0o500 if path.is_dir() else 0o400))
+                paths.append(str(path.relative_to(root)))
         raw = output / "bootstrap.cpio"
         with raw.open("xb") as stream:
             process = subprocess.run(["/usr/bin/cpio", "-0", "-o", "-H", "newc", "-R", "0:0"], cwd=root,
