@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Execute the recovery state machine against a strict simulated Xen backend."""
 import copy
+from contextlib import nullcontext
 import hashlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
@@ -178,6 +179,17 @@ class Transactions(unittest.TestCase):
         with patch.object(self.backend, 'lv', side_effect=lambda p: {**original(p), 'uuid': 'replacement-id'}):
             with self.assertRaisesRegex(t.Refused, 'replaced or resized'): self.tx().recover()
         self.assertEqual(self.tx().journal['stage'], 'complete')
+
+    def test_later_boot_validates_recovered_assignment_after_original_budget(self):
+        tx = self.boot(); tx.recover()
+        # A completed recovery's old deadline must not disable this guest on
+        # every subsequent boot. Only an unfinished recovery uses that budget.
+        with patch.object(t, 'Native', return_value=self.backend), \
+                patch.object(t.socket, 'gethostname', return_value='boxa-dom0'), \
+                patch.object(t, 'operation_lock', return_value=nullcontext()):
+            result = t.invoke(self.work.name, 'boot-recover')
+        self.assertEqual(result['stage'], 'recovered')
+        self.assertEqual(self.backend.running, 'old')
 
     def test_native_watchdog_identity_is_bound_to_process_and_operation(self):
         helper = Path(self.temp.name) / 'watch-test.py'

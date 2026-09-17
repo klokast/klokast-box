@@ -599,7 +599,7 @@ def invoke(operation, action):
             if not tx.journal:
                 raise Refused('transaction is not armed')
             seconds = 180
-            if action in {'recover', 'boot-recover'}:
+            if action in {'recover', 'boot-recover'} and tx.journal['stage'] in PRE_ACCEPT:
                 seconds = max(0, tx.journal.get('recovery_started_at', time.time()) + 1800 - time.time())
             elif tx.journal['stage'] in PRE_ACCEPT:
                 seconds = min(seconds, max(0, tx.journal['deadline'] - time.time()))
