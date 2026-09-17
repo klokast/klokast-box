@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 REPO = Path(__file__).resolve().parents[2]
+APPROVED_REPO = Path("/home/smith/src/klokast/klokast-box")
 sys.path.insert(0, str(REPO / "ansible/lib"))
 from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, digest,
                               findings, fresh, health, parse_apk_database, timestamp,
@@ -133,7 +134,7 @@ def targets_from_map(mapping):
 def collect_facts(targets, directory, log):
     hosts = {}
     for host, target in targets.items():
-        if target["runtime"] != "running" or target["role"] == "unknown":
+        if target["runtime"] != "running":
             continue
         hosts[host] = {"ansible_host": host, "ansible_user": "smith" if target["role"] == "ops" else "neo",
                        "ansible_become_method": "doas", "ansible_become_flags": "-n",
@@ -168,12 +169,17 @@ def scan(refresh=True):
         write(STATE / "current.json", {**report, "findings": [findings("discovery.incomplete", "Discovery has started but has not completed.", "critical")]})
         with (STATE / "scan.log").open("w") as log:
             try:
+                # The mapper can emit a partial report after an Ansible source
+                # failure. Check the authoritative reader independently first.
+                command(["/usr/local/sbin/platform-inventory", "--list"])
                 if refresh:
-                    command([REPO / "ansible/bin/platform-map", "refresh", "--remote-scope", "dom0"], timeout=600, log=log)
-                mapping = load(REPO / ".run/platform-map/current.json")
+                    command([APPROVED_REPO / "ansible/bin/platform-map", "refresh", "--remote-scope", "dom0"], timeout=600, log=log)
+                mapping = load(APPROVED_REPO / ".run/platform-map/current.json")
                 if not fresh(mapping.get("generated_at"), now(), VERIFY_AGE):
                     raise UpdateError("the Platform map is stale; refresh it on the active controller")
                 targets = targets_from_map(mapping)
+                if any(v["runtime"] == "unknown" for v in targets.values()):
+                    report["findings"].append(findings("inventory.runtime-unknown", "Xen inventory is incomplete; configured or running VMs may be missing.", "critical"))
                 profile = load(PROFILE)
                 facts = {}
                 with tempfile.TemporaryDirectory(prefix="facts-", dir=STATE) as work:

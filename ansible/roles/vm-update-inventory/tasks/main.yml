@@ -1,4 +1,17 @@
 ---
+- name: Read the VM operating system before selecting its existing escalation tool
+  ansible.builtin.raw: cat /etc/os-release
+  become: false
+  register: vm_update_os_release
+  changed_when: false
+  failed_when: false
+  ignore_unreachable: true
+
+- name: Use the declared Platform escalation convention for each OS family
+  ansible.builtin.set_fact:
+    ansible_become_method: >-
+      {{ 'sudo' if (vm_update_os_release.stdout | default('') is regex('(?m)^ID="?(debian|ubuntu)"?\r?$')) else 'doas' }}
+
 - name: Collect VM update evidence without changing packages or services
   ansible.builtin.script:
     cmd: collect-vm-update-facts

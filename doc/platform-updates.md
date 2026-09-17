@@ -38,15 +38,25 @@ ansible/bin/platform-update verify
 ansible/bin/platform-check --box BOX --target updates
 ```
 
-The setup playbook creates the discovery directories and two OS cron entries.
-Discovery runs daily at 00:10 UTC. Evidence verification runs hourly at minute
-20. Commands have time limits. There is no replacement schedule or new daemon.
+The setup playbook creates the discovery directories. After this code is in
+the approved controller engine, use
+`-e '{"platform_update_discovery_scheduled":true}'` to enable two OS cron entries.
+The default leaves the schedules disabled. Discovery runs daily at 00:10 UTC.
+Evidence verification runs hourly at minute 20. Commands have time limits.
+There is no replacement schedule or new daemon.
 Only the explicitly active controller can run discovery. The existing
 `platform-check-remote` dispatcher can request the `updates` health target.
 
+Before engine promotion, keep candidate source in a separate public checkout
+on the controller. Do not pull candidate source into the fixed approved
+checkout: the installed source reader requires that checkout to match the
+private engine lock. A candidate `platform-update` uses the fixed approved
+mapper and verifies its source reader before collecting facts. Candidate code
+does not become a sealed engine through this inspection test.
+
 `scan` refreshes the Platform map, inventories every configured or observed
-Xen VM, and collects fresh facts from running, classified guests. Stopped VMs
-stay stopped. Unclassified guests remain visible with unknown facts. Missing
+Xen VM, and collects fresh facts from running guests. Stopped VMs
+stay stopped. Unclassified guests remain visible as unsupported profiles. Missing
 or failed guest collection does not reuse old facts. The collector records
 OS, architecture, packages, running kernel and Tailscale versions, module
 directories, configuration hashes, template markers, mounts, capacity,

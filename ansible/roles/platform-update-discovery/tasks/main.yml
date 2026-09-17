@@ -36,6 +36,7 @@
 
 - name: Schedule bounded daily VM discovery with the OS cron facility
   ansible.builtin.cron:
+    state: "{{ 'present' if platform_update_discovery_scheduled | default(false) | bool else 'absent' }}"
     name: klokast-vm-update-discovery
     user: smith
     minute: "10"
@@ -46,6 +47,7 @@
 
 - name: Schedule bounded hourly update evidence verification
   ansible.builtin.cron:
+    state: "{{ 'present' if platform_update_discovery_scheduled | default(false) | bool else 'absent' }}"
     name: klokast-vm-update-verification
     user: smith
     minute: "20"
