@@ -140,7 +140,7 @@ class AssessmentTests(unittest.TestCase):
             self.assertIn('storage.writable-layer', self.codes(value))
 
     def test_invalid_container_and_mount_evidence_blocks(self):
-        for bad in ({}, {**container(), 'id': []}, {**container(), 'image_id': 'latest'}, None):
+        for bad in ({}, {**container(), 'id': []}, None):
             value = fact(); value['containers'] = [bad]
             self.assertIn('storage.container-invalid', self.codes(value))
         for mount in ({'Type': 'bind', 'Destination': '/a/../b', 'RW': True},
@@ -149,6 +149,20 @@ class AssessmentTests(unittest.TestCase):
             self.assertIn('storage.mount-invalid', self.codes(value))
         value = fact(); value['containers'] = [container(), container()]
         self.assertIn('storage.container-invalid', self.codes(value))
+
+    def test_image_less_pod_infrastructure_needs_adapter_and_keeps_mounts(self):
+        value = fact()
+        value['containers'] = [{**container([{'Type': 'bind', 'Source': '/srv/private/data', 'Destination': '/data', 'RW': True}]),
+                                'image_id': '', 'infra': True, 'pod': 'c' * 64}]
+        result = self.assess(value)
+        self.assertIn('storage.infra-unqualified', self.codes(value))
+        self.assertNotIn('storage.image-unknown', self.codes(value))
+        self.assertFalse(result['adoption_ready'])
+        self.assertEqual(len(result['bind_mounts']), 1)
+        for change in ({'infra': False}, {'infra': 'true'}, {'pod': ''}, {'image_id': 'latest'}):
+            bad = copy.deepcopy(value); bad['containers'][0].update(change)
+            self.assertIn('storage.image-unknown', self.codes(bad))
+            self.assertEqual(len(self.assess(bad)['bind_mounts']), 1)
 
     def test_catalog_rejects_duplicate_owners_and_unsafe_mappings(self):
         with self.assertRaises(UpdateError): storage.catalog_index([CATALOG, CATALOG], 'bak')
@@ -174,6 +188,7 @@ class CollectorTests(unittest.TestCase):
         self.collector = load_collector()
         self.responses = {'ps --all --format=json': [{'Id': 'a' * 64}],
                           'container inspect ' + 'a' * 64: [{'Id': 'a' * 64, 'Name': 'sample', 'Image': 'b' * 64,
+                              'IsInfra': False, 'Pod': '',
                               'HostConfig': {'ReadonlyRootfs': True}, 'Mounts': [], 'Config': {'Env': ['SECRET=hidden']}}],
                           'volume inspect --all': [{'Name': 'sample', 'Driver': 'local', 'Mountpoint': '/safe',
                                                    'Options': {'password': 'hidden'}, 'Labels': {'secret': 'hidden'}}],
@@ -185,6 +200,7 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn('hidden', json.dumps(result))
         self.assertFalse(result['volumes'][0]['options_empty'])
         self.assertTrue(result['containers'][0]['read_only_root'])
+        self.assertIs(result['containers'][0]['infra'], False)
 
     def test_inspect_failure_and_partial_coverage_stay_unknown(self):
         for inspected in (None, [], [{'Id': 'b' * 64}], [{'Id': []}]):
@@ -221,6 +237,13 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn('hidden', json.dumps(result))
         with patch.object(self.collector, 'text', return_value='broken'):
             self.assertIsNone(self.collector.mount_inventory())
+
+    def test_missing_mount_evidence_cannot_claim_stable_inventory(self):
+        with patch.object(self.collector, 'mount_inventory', return_value=None):
+            result = self.collector.collect_storage(self.responses.get)
+        self.assertFalse(result['podman_inventory_stable'])
+        self.assertFalse(result['podman_storage']['graph_root_directory'])
+        self.assertFalse(result['volumes'][0]['directory_verified'])
 
     def test_directory_probe_rejects_symlinks_and_nested_mounts(self):
         mounts = [{'path': '/', 'type': 'ext4', 'root': '/'}]

@@ -79,8 +79,9 @@ also includes bind mounts, observed numeric ownership, and unresolved adoption
 checks. The Music `library` catalog mapping includes both the library and
 playlist volumes, including volumes with no remaining containers.
 
-The collector reads native Podman container, volume, and store inspection
-output. It compares two inventories and the mount table to detect changes
+The collector reads native [Podman container](https://docs.podman.io/en/latest/markdown/podman-container-inspect.1.html),
+[volume](https://docs.podman.io/en/latest/markdown/podman-volume-inspect.1.html),
+and store inspection output. It compares two inventories and the mount table to detect changes
 during collection. A failed inspection stays unknown. It does not become an
 empty inventory. Environment variables, labels, volume option values, and
 mount options stay out of the result. The supported volume layout requires
@@ -90,6 +91,8 @@ ambiguous identities, conflicting mount paths, overlapping subordinate IDs,
 and partial catalog datasets produce findings. Unknown volumes, host bind
 mounts (including read-only mounts), and writable container layers also block
 adoption assessment.
+Image-less pod infrastructure remains visible and requires a fixed
+reconstruction adapter. Missing image identity never hides a container's mounts.
 
 A catalog match identifies public software conventions only. It cannot prove
 that Instance intent retains that dataset on this box. The report always sets

@@ -102,6 +102,7 @@ def podman_snapshot(podman):
         if not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts) or not isinstance(config, dict):
             return None
         containers.append({'id': item['Id'], 'name': item.get('Name'), 'image_id': item.get('Image'),
+                           'infra': item.get('IsInfra'), 'pod': item.get('Pod'),
                            'read_only_root': config.get('ReadonlyRootfs'),
                            'mounts': [{k: m.get(k) for k in ('Type', 'Name', 'Source', 'Destination', 'RW')} for m in mounts]})
     selected_volumes = [{**{k: item.get(k) for k in ('Name', 'Mountpoint', 'Driver')},
@@ -129,7 +130,7 @@ def collect_storage(podman):
         # Physical checks are observations, not permissions to copy these paths.
         result['volumes'] = [{**v, 'directory_verified': directory_verified(v['Mountpoint'], mounts)} for v in before['volumes']]
     after = podman_snapshot(podman)
-    result['podman_inventory_stable'] = before is not None and before == after and mounts == mount_inventory()
+    result['podman_inventory_stable'] = before is not None and before == after and bool(mounts) and mounts == mount_inventory()
     return result
 
 

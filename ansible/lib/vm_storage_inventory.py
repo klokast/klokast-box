@@ -147,11 +147,17 @@ def assess(fact, catalogs, host):
         if (not isinstance(container, dict) or not isinstance(container.get('id'), str) or
                 not re.fullmatch('[0-9a-f]{64}', container['id']) or container['id'] in seen or
                 not isinstance(container.get('name'), str) or not NAME.fullmatch(container['name']) or
-                not isinstance(container.get('image_id'), str) or not HASH.fullmatch(container['image_id']) or
                 not isinstance(container.get('mounts'), list)):
             add('storage.container-invalid', 'Container inspection has an incomplete or duplicate identity.')
             continue
         seen.add(container['id'])
+        image_id = container.get('image_id')
+        if not isinstance(image_id, str) or not HASH.fullmatch(image_id):
+            if (container.get('infra') is True and image_id == '' and
+                    isinstance(container.get('pod'), str) and re.fullmatch('[0-9a-f]{64}', container['pod'])):
+                add('storage.infra-unqualified', 'An image-less Podman infrastructure container needs a fixed pod reconstruction adapter.', False)
+            else:
+                add('storage.image-unknown', 'A container has no exact image identity; its mounts still require accounting.')
         # A catalog name or image ID is not an approved deployment receipt.
         add('storage.container-unqualified', 'A deployed container needs an approved image, configuration, and maintenance adapter.', False)
         if container.get('read_only_root') is not True:
