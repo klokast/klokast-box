@@ -323,6 +323,8 @@ class Transaction:
                              type(self.journal.get('deadline')) not in {int, float} or
                              self.journal.get('recovery_seconds') != 1800):
             raise Refused('transaction journal differs from its immutable request')
+        if self.journal and 'old_shutdown_pending' in self.journal and type(self.journal['old_shutdown_pending']) is not bool:
+            raise Refused('transaction shutdown state is invalid')
 
     def artifacts(self, side):
         for path, expected in self.request[side + '_artifacts'].items():
@@ -449,7 +451,7 @@ class Transaction:
         if action == 'stop' and self.journal['stage'] == 'armed':
             if not self.native.watcher_alive(self.journal.get('watcher'), self.request['operation_id']):
                 raise Refused('bounded local recovery is not running; old guest remains in place')
-            self.record('stopping')
+            self.record('stopping', old_shutdown_pending=True)
             guest = self.guest()
             if guest:
                 if guest['config']['c_info']['uuid'] != self.request['old_uuid']:
@@ -457,7 +459,7 @@ class Transaction:
                 self.native.stop(guest, True)
             if self.guest() is not None:
                 raise Refused('old guest still holds its disks')
-            self.record('stopped')
+            self.record('stopped', old_shutdown_pending=False)
         elif action == 'start' and self.journal['stage'] == 'stopped':
             if self.guest() is not None:
                 raise Refused('a guest appeared before candidate start')
@@ -517,7 +519,8 @@ class Transaction:
         if stage == 'recovery-failed':
             raise Refused('recovery previously failed; keep the VM fenced for inspection')
         started = self.journal.get('recovery_started_at', self.clock())
-        self.record('recovering', recovery_started_at=started)
+        pending_shutdown = self.journal.get('old_shutdown_pending', stage == 'stopping')
+        self.record('recovering', recovery_started_at=started, old_shutdown_pending=pending_shutdown)
         try:
             if self.clock() >= started + 1800:
                 raise Refused('local recovery exceeded its 30-minute budget')
@@ -527,6 +530,18 @@ class Transaction:
             guest = self.guest()
             if guest and guest['config']['c_info']['uuid'] != self.request['old_uuid']:
                 raise Refused('candidate still holds disks during recovery')
+            if pending_shutdown:
+                # An interrupted xl shutdown can finish after this method
+                # returns. Do not declare that still-running old VM recovered
+                # and then lose it to the outstanding shutdown request.
+                if guest:
+                    self.native.stop(guest, True)
+                guest = self.guest()
+                if guest is not None:
+                    raise Refused('old guest shutdown is still pending; recovery cannot restart it')
+                # Persist completion before starting old disks. A reboot or
+                # process crash cannot turn the new start into another stop.
+                self.record('recovering', old_shutdown_pending=False)
             self.assignment('old')
             if guest is None:
                 self.native.start(XEN / (self.request['role'] + '.cfg'))

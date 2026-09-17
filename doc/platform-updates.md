@@ -190,7 +190,9 @@ It waits at most 30 minutes for acceptance, then allows up to 30 minutes for
 recovery. It does not require the controller, DNS, a backend VM, or a download.
 Native commands and lock waits have time limits. Nested limits retain the
 outer deadline, including time already spent waiting for the operation lock.
-A permanent daemon is not added.
+A permanent daemon is not added. Recovery completes a pending graceful old-VM
+shutdown before restarting that VM. It never force-stops old writers or treats
+a guest with an outstanding shutdown request as recovered.
 
 Acceptance is written and synced before the new boot assignment is published.
 After acceptance, recovery can republish the new assignment but cannot select
@@ -208,7 +210,9 @@ expired budgets, foreign disk attachments, and stale role pointers.
 using a previously boot-tested candidate. It allocates two new OS/data LV
 pairs and tests recovery from stopped, booted, and accepted stages. It repeats
 these stages through the boot-recovery entry point in a new process after
-stopping the disposable guest. The accepted case also checks a synthetic
+stopping the disposable guest. Another case interrupts control immediately
+after the native old-guest shutdown request, then starts boot recovery from
+the pending journal. The accepted case also checks a synthetic
 post-acceptance write. This tests restart from persistent records, not a
 physical reboot or OpenRC ordering. It does not install the production helper, change `/etc/xen`, or test real applications.
 The test runs the native detached watchdog, with its process identity checks,

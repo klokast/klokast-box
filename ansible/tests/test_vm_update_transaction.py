@@ -172,6 +172,40 @@ class Transactions(unittest.TestCase):
         self.backend.crash = None
         self.assertEqual(self.tx().recover(), 'preserve-production-data')
 
+    def test_recovery_finishes_pending_old_shutdown_before_restart(self):
+        tx = self.tx(); tx.arm()
+        with patch.object(self.backend, 'stop', side_effect=InterruptedError('shutdown request sent')):
+            with self.assertRaises(InterruptedError): tx.step('stop')
+        self.assertEqual(self.backend.running, 'old')
+        self.assertEqual(self.tx().recover(), 'recovered')
+        self.assertIn(('stop', 'old', True), self.backend.calls)
+        self.assertIn(('start', 'old'), self.backend.calls)
+        self.assertFalse(self.tx().journal['old_shutdown_pending'])
+
+    def test_pending_old_shutdown_never_forces_or_duplicates_old_guest(self):
+        tx = self.tx(); tx.arm()
+        with patch.object(self.backend, 'stop') as stop:
+            with self.assertRaisesRegex(t.Refused, 'still holds'): tx.step('stop')
+            with self.assertRaisesRegex(t.Refused, 'still pending'): self.tx().recover()
+            self.assertTrue(all(call.args[1] is True for call in stop.call_args_list))
+        self.assertEqual(self.backend.running, 'old')
+        self.assertEqual(self.tx().journal['stage'], 'recovery-failed')
+        self.assertNotIn(('start', 'old'), self.backend.calls)
+
+    def test_crash_after_recovery_restart_does_not_stop_old_guest_again(self):
+        tx = self.tx(); tx.arm(); tx.record('stopping')
+        # Reproduce power loss, which cannot be caught as a normal command
+        # error, immediately after the recovery start has reached Xen.
+        original = self.backend.start
+        def crash(path):
+            original(path)
+            raise SystemExit('power loss')
+        with patch.object(self.backend, 'start', side_effect=crash):
+            with self.assertRaises(SystemExit): self.tx().recover()
+        count = len(self.backend.calls)
+        self.assertEqual(self.tx().recover(), 'recovered')
+        self.assertNotIn(('stop', 'old', True), self.backend.calls[count:])
+
     def test_accepted_boot_checks_new_disks_without_requiring_retired_old_disks(self):
         tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
         original = self.backend.lv

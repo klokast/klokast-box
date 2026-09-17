@@ -40,6 +40,8 @@ def test_backend(t, work, resources):
     name, identities, allocated = resources['domain'], resources['uuids'], resources['disks']
 
     class TestNative(t.Native):
+        interrupt_shutdown = False
+
         def inventory(self):
             rows = super().inventory()
             for row in rows:
@@ -80,6 +82,10 @@ def test_backend(t, work, resources):
             if (len(matches) != 1 or matches[0]['config']['c_info']['name'] != name or
                     matches[0]['config']['c_info']['uuid'] != record['config']['c_info']['uuid']):
                 raise RuntimeError('test cannot stop a production domain')
+            if graceful and type(self).interrupt_shutdown:
+                type(self).interrupt_shutdown = False
+                t.command(['xl', 'shutdown', str(record['domid'])])
+                raise InterruptedError('test interruption after the native shutdown request')
             return super().stop(record, graceful)
 
         def persist(self):
@@ -212,7 +218,7 @@ def main():
                     with open(path, 'wb', buffering=0) as target:
                         target.write((side + '-retained-data\n').encode()); os.fsync(target.fileno())
         scenarios = ['stopped', 'booted', 'accepted',
-                     'restart-stopped', 'restart-booted', 'restart-accepted']
+                     'restart-stopping', 'restart-stopped', 'restart-booted', 'restart-accepted']
         if args.watchdog_expiry:
             scenarios.append('watchdog-expiry')
         for scenario in scenarios:
@@ -239,8 +245,18 @@ def main():
             t.atomic(t.XEN / 'bak.cfg', (directory / 'old.cfg').read_bytes())
             backend.start(directory / 'old.cfg')
             started = time.monotonic()
-            t.invoke(operation, 'arm'); t.invoke(operation, 'stop')
-            if stage != 'stopped': t.invoke(operation, 'start')
+            t.invoke(operation, 'arm')
+            if stage == 'stopping':
+                t.Native.interrupt_shutdown = True
+                try:
+                    t.invoke(operation, 'stop')
+                except InterruptedError:
+                    pass
+                else:
+                    raise RuntimeError('shutdown interruption was not exercised')
+            else:
+                t.invoke(operation, 'stop')
+            if stage not in {'stopping', 'stopped'}: t.invoke(operation, 'start')
             if stage == 'accepted':
                 # Synthetic success exercises acceptance ordering only. It is
                 # never exported as release or application-test evidence.
@@ -276,7 +292,7 @@ def main():
                     raise RuntimeError('native watchdog failed or recovered before the deadline')
             elif scenario.startswith('restart-'):
                 guest = t.Transaction(directory, backend).guest()
-                if guest:
+                if guest and stage != 'stopping':
                     backend.stop(guest, False)
                 # This exercises the boot entry point in a new interpreter
                 # after loss of the guest and all parent transaction objects.
