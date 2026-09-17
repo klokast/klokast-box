@@ -167,6 +167,52 @@ class SafetyRulesTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_prepare_accepts_complete_stage_evidence_and_refuses_missing_or_failed_stage(self):
+        cli = load_cli()
+        operation = 'a' * 24
+        inputs = {'inputs_sha256': 'b' * 64, 'packages': [{'name': 'linux-virt', 'version': '1'}]}
+        for mode in ('valid', 'missing-stage', 'failed-stage'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                def command(argv, **kwargs):
+                    if argv[0] == 'git':
+                        return '' if 'status' in argv else 'a' * 40
+                    if argv[0] == 'ansible-playbook':
+                        tests = dict.fromkeys(('boot', 'kernel_modules', 'tailscale_offline', 'rootless_podman',
+                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage'), True)
+                        if mode == 'missing-stage':
+                            del tests['retained_data_stage']
+                        if mode == 'failed-stage':
+                            tests['retained_data_stage'] = False
+                        candidate = {'kind': 'klokast.vm-template-candidate.v1', 'accepted': False,
+                                     'success': True, 'box': 'boxa', 'validation': 'base-boot-tested',
+                                     'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
+                                     'packages': {'linux-virt': '1'}, 'kernel_release': 'test-kernel',
+                                     'artifacts': {'root': {'sha256': 'c' * 64}},
+                                     'boot_test': {'kind': 'klokast.vm-template-test-result.v1', 'success': True,
+                                         'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
+                                         'kernel_release': 'test-kernel', 'tested_root_sha256': 'c' * 64,
+                                         'tests': tests}}
+                        directory = root / 'builds' / operation
+                        (directory / 'candidate.json').write_text(json.dumps(candidate))
+                        for filename, domain in (('lifecycle.json', 'vm-build-'), ('test-lifecycle.json', 'vm-test-')):
+                            (directory / filename).write_text(json.dumps({'stage': 'cleaned', 'domain': domain + operation}))
+                    return '{}'
+                with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
+                        patch.object(cli, 'require_controller'), patch.object(cli, 'command', side_effect=command), \
+                        patch.object(cli.secrets, 'token_hex', return_value=operation), \
+                        patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
+                        patch.object(cli.vm_template_inputs, 'capsule', return_value={}), \
+                        patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}):
+                    if mode == 'valid':
+                        result = cli.prepare('boxa', 'v3.23')
+                        self.assertEqual(result['state'], 'candidate-built')
+                        self.assertFalse(result['accepted'])
+                        self.assertTrue(result['base_tests']['retained_data_stage'])
+                    else:
+                        with self.assertRaisesRegex(u.UpdateError, 'candidate or cleanup evidence'):
+                            cli.prepare('boxa', 'v3.23')
+
     def test_scan_integrates_storage_refusals_and_catalog_without_adoption(self):
         from test_vm_storage_inventory import fact as storage_fact
         cli = load_cli()
