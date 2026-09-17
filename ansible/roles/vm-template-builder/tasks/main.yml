@@ -93,13 +93,28 @@
   register: template_build
   failed_when: false
 
-- name: Fetch candidate evidence after successful construction
+- name: Inspect bounded build and test evidence
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/{{ item }}"
+    get_checksum: false
+  loop:
+    - candidate.json
+    - lifecycle.json
+    - test-lifecycle.json
+    - "vm-build-{{ template_operation_id }}.log"
+    - "vm-test-{{ template_operation_id }}.log"
+  register: template_evidence
+
+- name: Fetch available bounded evidence including failed guest diagnostics
   ansible.builtin.fetch:
-    src: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/{{ item }}"
-    dest: "{{ template_result_dir }}/{{ item }}"
+    src: "{{ item.stat.path }}"
+    dest: "{{ template_result_dir }}/{{ item.item }}"
     flat: true
-  loop: [candidate.json, lifecycle.json]
-  when: template_build.rc | default(1) == 0
+  loop: "{{ template_evidence.results }}"
+  when:
+    - item.stat.isreg | default(false)
+    - not (item.stat.islnk | default(false))
+    - item.stat.size | default(1048577) <= 1048576
 
 - name: Require successful build and bounded cleanup
   ansible.builtin.assert:

@@ -175,6 +175,11 @@ class HostBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "UUID changed"):
             self.host.require_identity({"domid": 0, "config": {"c_info": {"uuid": "expected"}}}, "expected")
 
+    def test_native_dom0_record_has_no_uuid(self):
+        records = [{"domid": 0, "config": {"c_info": {"type": "pv", "name": "Domain-0"}}}]
+        with patch.object(self.host, "run", return_value=SimpleNamespace(stdout=json.dumps(records))):
+            self.assertIsNone(self.host.domain("vm-build-example"))
+
     def test_reassigned_loop_is_never_detached(self):
         with patch.object(self.host, "loop_devices", return_value=["/dev/loop2"]), patch.object(self.host, "run") as run:
             with self.assertRaisesRegex(RuntimeError, "loop identity changed"):

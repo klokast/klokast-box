@@ -288,11 +288,20 @@ def prepare(box, branch, inputs_only=False):
                 raise UpdateError("candidate construction failed; inspect " + str(result / "build.log")) from error
         candidate = load(result / "candidate.json")
         lifecycle = load(result / "lifecycle.json")
+        test_lifecycle = load(result / "test-lifecycle.json")
+        base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel")}
+        boot_test = candidate.get("boot_test", {})
         if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
+                candidate.get("success") is not True or candidate.get("box") != box or
                 candidate.get("validation") != "base-boot-tested" or candidate.get("operation_id") != operation or
                 candidate.get("inputs_sha256") != inputs["inputs_sha256"] or
                 candidate.get("packages") != {v["name"]: v["version"] for v in inputs["packages"]} or
-                lifecycle.get("stage") != "cleaned"):
+                boot_test.get("kind") != "klokast.vm-template-test-result.v1" or boot_test.get("success") is not True or
+                boot_test.get("operation_id") != operation or boot_test.get("inputs_sha256") != inputs["inputs_sha256"] or
+                boot_test.get("tests") != base_tests or boot_test.get("kernel_release") != candidate.get("kernel_release") or
+                boot_test.get("tested_root_sha256") != candidate.get("artifacts", {}).get("root", {}).get("sha256") or
+                lifecycle.get("stage") != "cleaned" or lifecycle.get("domain") != "vm-build-" + operation or
+                test_lifecycle.get("stage") != "cleaned" or test_lifecycle.get("domain") != "vm-test-" + operation):
             raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
         return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"]}

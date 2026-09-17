@@ -116,7 +116,8 @@ def domain(name):
     for record in records:
         info = record.get("config", {}).get("c_info", {})
         if (type(record.get("domid")) is not int or not isinstance(info.get("name"), str) or
-                not isinstance(info.get("uuid"), str)):
+                (record["domid"] == 0 and info["name"] != "Domain-0") or
+                (record["domid"] != 0 and not isinstance(info.get("uuid"), str))):
             raise RuntimeError("Xen returned an unsupported domain inventory format")
     matches = [item for item in records if item.get("config", {}).get("c_info", {}).get("name") == name]
     if len(matches) > 1:
