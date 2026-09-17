@@ -25,6 +25,11 @@
     group: root
     mode: '0700'
 
+- name: Verify recovery records use the writable persistent LVM filesystem
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/vm-update-transaction, check-storage]
+  changed_when: false
+
 - name: Install boot recovery before Xen guest autostart
   ansible.builtin.copy:
     src: klokast-vm-update-recovery.openrc

@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -35,7 +36,8 @@ class Xen:
         if self.running:
             records.append({'domid': 7, 'config': {'c_info': {'name': 'bak',
                 'uuid': 'unexpected' if self.bad_uuid else self.request[self.running + '_uuid']},
-                'disks': [{'pdev_path': p} for p in self.request[self.running + '_disks']]}})
+                'disks': [{'pdev_path': p, 'vdev': 'xvd' + letter, 'readwrite': 1}
+                          for p, letter in zip(self.request[self.running + '_disks'], 'ab')]}})
         return records
 
     def device(self, path):
@@ -267,6 +269,23 @@ class Transactions(unittest.TestCase):
             with self.assertRaisesRegex(t.Refused, 'another Xen guest'): self.tx().arm()
         self.assertEqual(self.backend.calls, [])
 
+    def test_swapped_readonly_and_duplicate_live_disk_mappings_refuse_arm(self):
+        for change in ('swapped', 'readonly', 'duplicate', 'missing-mode'):
+            rows = self.backend.inventory()
+            disks = rows[1]['config']['disks']
+            if change == 'swapped':
+                disks[0]['vdev'], disks[1]['vdev'] = disks[1]['vdev'], disks[0]['vdev']
+            elif change == 'readonly':
+                disks[1]['readwrite'] = 0
+            elif change == 'duplicate':
+                disks.append(copy.deepcopy(disks[0]))
+            else:
+                del disks[1]['readwrite']
+            with self.subTest(change=change), patch.object(self.backend, 'inventory', return_value=rows):
+                with self.assertRaisesRegex(t.Refused, 'device names or write modes'):
+                    self.tx().arm()
+            self.assertEqual(self.backend.calls, [])
+
     def test_autostart_fencing_preserves_router_and_controller(self):
         for role in ('bak', 'dmz', 'iot', 'router', 'ops'):
             (self.xen / 'auto' / (role + '.cfg')).symlink_to('../' + role + '.cfg')
@@ -315,6 +334,31 @@ class Budgets(unittest.TestCase):
                     time.sleep(0.02)
                 self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 0)
                 time.sleep(0.2)
+
+
+class PersistentStorage(unittest.TestCase):
+    def verify(self, mount, state_device=253, lv_device=253):
+        def read(path):
+            return 'control_d\n' if str(path) == '/proc/xen/capabilities' else mount
+        with patch.object(t.os, 'geteuid', return_value=0), patch.object(t, 'secure'), \
+                patch.object(t.Path, 'read_text', read), \
+                patch.object(t.Path, 'stat', return_value=SimpleNamespace(st_dev=state_device)), \
+                patch.object(t.Native, 'lv', return_value={'device': lv_device}):
+            t.require_dom0()
+
+    def test_only_persistent_writable_data_lv_accepts_journals(self):
+        device = os.makedev(253, 0)
+        good = '39 27 253:0 / /mnt/dom0_data rw,relatime - ext4 /dev/vg0/lv_dom0_data rw\n'
+        self.verify(good, device, device)
+        for bad in ('', good + good, good.replace('ext4', 'tmpfs'),
+                    good.replace(' / /mnt', ' /bound /mnt'),
+                    good.replace('rw,relatime', 'ro,relatime')):
+            with self.subTest(mount=bad), self.assertRaises(t.Refused):
+                self.verify(bad, device, device)
+        with self.assertRaisesRegex(t.Refused, 'mounted persistent'):
+            self.verify(good, device + 1, device)
+        with self.assertRaisesRegex(t.Refused, 'mounted persistent'):
+            self.verify(good, device, device + 1)
 
 
 if __name__ == '__main__':

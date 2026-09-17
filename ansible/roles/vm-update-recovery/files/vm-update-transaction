@@ -376,6 +376,14 @@ class Transaction:
                 expected = {actual[p]['device'] for p in self.request[side + '_disks']}
                 if devices != expected:
                     raise Refused('target live disks differ from its recorded identity')
+                mappings = {(self.native.device(d['pdev_path']), d.get('vdev'), d.get('readwrite'))
+                            for d in disk_records}
+                expected_mappings = set()
+                for entry in self.configs[side]['disk']:
+                    path, vdev, _mode = entry.removeprefix('phy:').split(',')
+                    expected_mappings.add((actual[path]['device'], vdev, 1))
+                if len(disk_records) != len(expected_mappings) or mappings != expected_mappings:
+                    raise Refused('target live disk device names or write modes differ from its definition')
                 found = record
             elif overlaps:
                 raise Refused('another Xen guest holds a transaction disk')
@@ -577,10 +585,22 @@ def require_dom0():
     secure(BASE, True)
     secure(BASE / 'operations', True)
     secure(BASE / 'active', True)
-    # A tmpfs fallback must never receive recovery journals.
-    mounts = [line.split()[4] for line in Path('/proc/self/mountinfo').read_text().splitlines()]
-    if '/mnt/dom0_data' not in mounts:
-        raise Refused('persistent dom0 data volume is not mounted')
+    # A mountpoint alone is insufficient: a tmpfs or a bind mount would lose
+    # recovery records at reboot. Require the declared ordinary ext4 LVM mount.
+    mounts = [line.split(' - ', 1) for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    matches = [(left.split(), right.split()) for left, right in mounts
+               if left.split()[4] == '/mnt/dom0_data']
+    if len(matches) != 1:
+        raise Refused('persistent dom0 data volume is not mounted exactly once')
+    mount, filesystem = matches[0]
+    if (mount[3] != '/' or 'rw' not in mount[5].split(',') or filesystem[0] != 'ext4' or
+            not LV.fullmatch(filesystem[1])):
+        raise Refused('recovery storage requires the writable ext4 dom0 data LV')
+    major, minor = map(int, mount[2].split(':'))
+    device = os.makedev(major, minor)
+    if (Native().lv(filesystem[1])['device'] != device or
+            any(path.stat().st_dev != device for path in (BASE, BASE / 'operations', BASE / 'active'))):
+        raise Refused('recovery records are not on the mounted persistent data LV')
 
 
 def fence_autostart():
@@ -624,7 +644,7 @@ def invoke(operation, action):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover',
-                                           'status', 'watch', 'boot-recover', 'fence-autostart'))
+                                           'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage'))
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -634,6 +654,11 @@ def main(argv=None):
         fence_autostart()
         return 0
     require_dom0()
+    if args.action == 'check-storage':
+        if args.operation_id:
+            raise Refused('storage verification accepts no selected operation')
+        print(canonical({'persistent_storage': True}))
+        return 0
     if args.action == 'boot-recover':
         if args.operation_id:
             raise Refused('boot recovery accepts no selected operation')

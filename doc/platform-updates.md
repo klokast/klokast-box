@@ -170,14 +170,16 @@ must supply its inputs before production use.
 The helper accepts only `bak`, `dmz`, and `iot`. Its protected request records
 the policy and release hashes, distinct old and candidate Xen UUIDs, LV UUIDs
 and sizes, exact Xen definitions, and kernel/initramfs hashes. The candidate definition must include its recorded UUID. It checks live
-disk attachments before each switch. Dom0 never mounts a guest filesystem.
+disk attachments, guest device names, and write modes before each switch. Dom0 never mounts a guest filesystem.
 Old and candidate writable LVs must be separate ordinary volumes. Recovery
 selects the unchanged old volumes; it does not merge snapshots. This requires
 capacity for both generations and a verified data copy before candidate boot.
 
 The request, journal, and active role pointer stay under
 `/mnt/dom0_data/klokast-vm-updates`. They are generated operation records,
-outside the instance repository and diskless apkovl. The selected `/etc/xen`
+outside the instance repository and diskless apkovl. Setup and execution verify
+that these directories are on the writable ext4 data LV; an absent mount,
+RAM filesystem, read-only mount, or different device is refused. The selected `/etc/xen`
 definition and autostart link are derived configuration. Only the current role
 pointer can select its boot assignment; historical records cannot override it.
 An interrupted operation must retain both disk generations and its boot files.
@@ -187,7 +189,8 @@ The process identity includes its PID, start time, boot ID, and operation ID.
 It waits at most 30 minutes for acceptance, then allows up to 30 minutes for
 recovery. It does not require the controller, DNS, a backend VM, or a download.
 Native commands and lock waits have time limits. Nested limits retain the
-outer deadline, including time already spent waiting for the operation lock. A permanent daemon is not added.
+outer deadline, including time already spent waiting for the operation lock.
+A permanent daemon is not added.
 
 Acceptance is written and synced before the new boot assignment is published.
 After acceptance, recovery can republish the new assignment but cannot select
@@ -207,18 +210,17 @@ pairs and tests recovery from stopped, booted, and accepted stages. It repeats
 these stages through the boot-recovery entry point in a new process after
 stopping the disposable guest. The accepted case also checks a synthetic
 post-acceptance write. This tests restart from persistent records, not a
-physical reboot or OpenRC ordering. It does
-not install the production helper, change `/etc/xen`, or test real applications.
+physical reboot or OpenRC ordering. It does not install the production helper, change `/etc/xen`, or test real applications.
 The test runs the native detached watchdog, with its process identity checks,
 operation locks, command budgets, and journal dispatch. It substitutes only
 the test domain name, assignment directory, and apkovl persistence interface.
 Add `-e '{"recovery_watchdog_expiry":true}'` to test the full 30-minute
-replacement deadline. This fourth case leaves the candidate unaccepted and
+replacement deadline. This additional case leaves the candidate unaccepted and
 requires the watchdog to restore the old guest without a controller recovery
 command. It keeps both data markers unchanged. The test stops its workers
 before removing its disks, including after a failure. It publishes success
-only after cleanup passes. This mode has a
-70-minute limit to allow the full replacement and recovery budgets plus test
+only after cleanup passes. The receipt includes candidate and test-code
+checksums. This mode has a 70-minute limit to allow the full replacement and recovery budgets plus test
 setup. A physical dom0 reboot remains a separate acceptance gate.
 
 On 2026-09-17, operation `61ab8c3297a98b8828a5e86f` passed all three native

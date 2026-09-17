@@ -150,6 +150,7 @@ def main():
     (t.BASE / 'operations').mkdir(parents=True)
     (t.BASE / 'active').mkdir()
     (t.XEN / 'auto').mkdir(parents=True)
+    t.require_dom0()
     candidate = Path('/mnt/dom0_data/klokast-vm-templates/candidates') / args.candidate_id
     t.secure(candidate, True)
     # Use the builder's box-local lock, so disposable jobs cannot race their
@@ -329,7 +330,10 @@ def main():
     result = {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': args.operation_id,
               'success': True, 'tests': results, 'production_replacement': False,
               'watchdog_tested': args.watchdog_expiry, 'process_restart_tested': True,
-              'dom0_reboot_tested': False}
+              'dom0_reboot_tested': False, 'candidate_id': args.candidate_id,
+              'candidate_sha256': t.digest(manifest),
+              'transaction_sha256': hashlib.sha256((work / 'vm-update-transaction').read_bytes()).hexdigest(),
+              'harness_sha256': hashlib.sha256((work / 'vm-update-recovery-test').read_bytes()).hexdigest()}
     t.store(work / 'result.json', result)
     print(t.canonical(result))
     os.close(lock)
