@@ -21,7 +21,9 @@ import uuid
 
 BASE = Path("/mnt/dom0_data/klokast-vm-templates")
 MIB = 1024 * 1024
-SLOTS = {"root": 8192 * MIB, "kernel": 32 * MIB, "initramfs": 128 * MIB, "result": MIB}
+# The generic base contains packages only, with no application image store.
+# Production OS volumes must use their declared capacity during personalization.
+SLOTS = {"root": 4096 * MIB, "kernel": 32 * MIB, "initramfs": 128 * MIB, "result": MIB}
 MEMORY = 4096
 TIMEOUT = 1500
 
@@ -339,7 +341,7 @@ def execute(work, request):
         raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
     capacity = os.statvfs(work)
     if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + SLOTS["root"] + MIB + 1024 * MIB:
-        raise RuntimeError("builder and boot test require eighteen GiB of free persistent storage")
+        raise RuntimeError("builder and boot test require ten GiB of free persistent storage")
     for name_slot, size in SLOTS.items():
         with (work / (name_slot + ".slot")).open("xb") as stream:
             # Reserve physical capacity before boot; do not depend on sparse-file

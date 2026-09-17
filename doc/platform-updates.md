@@ -128,7 +128,9 @@ a disposable kernel and initramfs. Installation scripts, filesystem creation,
 and initramfs generation then run in a new Xen guest with no network interface
 or production credentials. The guest receives read-only package input and four
 new writable output disks. It has 4096 MiB of RAM, two vCPUs, and a 25-minute
-construction deadline. A second networkless guest has five minutes to boot a
+construction deadline. The generic root image is 4 GiB and contains no
+application image store. This does not set the capacity of a production VM's
+OS or retained-data volume. A second networkless guest has five minutes to boot a
 copy of the root image with its matching kernel and initramfs. It tests module
 availability, unenrolled Tailscale startup, a rootless Podman container made
 from installed BusyBox files, and kernel support for nftables. The original
