@@ -1,0 +1,8 @@
+---
+- name: Install bounded shared VM recovery on selected dom0 hosts
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  roles:
+    - role: vm-update-recovery

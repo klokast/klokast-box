@@ -4,7 +4,8 @@
 
 This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
-and offline base-image boot tests.
+and offline base-image boot tests. A dom0 disk-switch transaction and boot
+recovery helper are implemented but are not connected to a production executor.
 It does not implement unattended VM replacement. `adopt` and `run` are not available.
 The existing guest installer remains in use. Do not activate automatic
 replacement or treat a report as an
@@ -19,8 +20,8 @@ separate `prepare` command freezes the full base-package closure for a build.
 
 The separate Python safety rules test artifact identity, kernel/module
 agreement, dependency independence, the maintenance cutoff, and pre-acceptance
-versus post-acceptance recovery. They are not a privileged executor, local
-recovery job, or proof of a successful production replacement.
+versus post-acceptance recovery. They do not prove a successful production
+replacement. The separate dom0 helper is described below.
 
 Normative input and state ownership rules are in the
 [Instance specification](klokast-instance-specification.md#shared-vm-update-intent).
@@ -158,6 +159,54 @@ Application containers are not downloaded or updated. This path installs base
 packages, including Tailscale and Podman, into the new generic image. It does
 not enroll Tailscale or copy machine credentials into that image.
 
+## Dom0 transaction and recovery
+
+`74-platform-update-recovery.yml` installs the root-only
+`vm-update-transaction` helper and an OpenRC boot check. Do not install it as
+proof that automatic replacement is ready. The signed controller executor,
+data adoption, configuration staging, network fencing, and application checks
+must supply its inputs before production use.
+
+The helper accepts only `bak`, `dmz`, and `iot`. Its protected request records
+the policy and release hashes, distinct old and candidate Xen UUIDs, LV UUIDs
+and sizes, exact Xen definitions, and kernel/initramfs hashes. It checks live
+disk attachments before each switch. Dom0 never mounts a guest filesystem.
+Old and candidate writable LVs must be separate ordinary volumes. Recovery
+selects the unchanged old volumes; it does not merge snapshots. This requires
+capacity for both generations and a verified data copy before candidate boot.
+
+The request, journal, and active role pointer stay under
+`/mnt/dom0_data/klokast-vm-updates`. They are generated operation records,
+outside the instance repository and diskless apkovl. The selected `/etc/xen`
+definition and autostart link are derived configuration. Only the current role
+pointer can select its boot assignment; historical records cannot override it.
+An interrupted operation must retain both disk generations and its boot files.
+
+Before old-guest shutdown, the helper starts a bounded local recovery process.
+The process identity includes its PID, start time, boot ID, and operation ID.
+It waits at most 30 minutes for acceptance, then allows up to 30 minutes for
+recovery. It does not require the controller, DNS, a backend VM, or a download.
+Native commands and lock waits have time limits. A permanent daemon is not added.
+
+Acceptance is written and synced before the new boot assignment is published.
+After acceptance, recovery can republish the new assignment but cannot select
+old data. The boot check runs before normal Xen autostart. If a record is
+invalid or recovery fails, it removes shared-VM autostart entries and reports a
+critical error. Router and controller autostart remain available. Existing
+OpenRC dependencies are retained. See the upstream
+[OpenRC service guide](https://github.com/OpenRC/openrc/blob/master/service-script-guide.md)
+for dependency ordering.
+
+The unit suite covers interrupted shutdown and start, interrupted acceptance,
+changed boot artifacts and disk identities, missing recovery processes,
+expired budgets, foreign disk attachments, and stale role pointers.
+`74-platform-update-recovery-test.yml` runs an additional disposable Xen test
+using a previously boot-tested candidate. It allocates two new OS/data LV
+pairs and tests recovery from stopped, booted, and accepted stages. It does
+not install the production helper, change `/etc/xen`, or test real applications.
+The test substitutes watchdog and apkovl persistence interfaces. Native
+watchdog expiry and physical dom0 reboot tests remain separate acceptance gates.
+
 ## Package evidence
 
 Use the official [release metadata](https://alpinelinux.org/releases.json),
@@ -194,9 +243,9 @@ The following work is required before enabling replacement:
    adapters. Require a verified backup, ownership and mapping checks, writer
    quiescence, and retention of the original disk. Block unknown data and
    unrecorded container changes.
-4. Stage all dependencies locally, verify recovery independence, fence the old
-   guest, and arm bounded box-local recovery before stopping it. Check retained
-   storage capacity and checkpoint health before acceptance.
+4. Connect the dom0 transaction above to approved input staging, network
+   fencing, data copying, and the signed executor. Verify recovery independence
+   and capacity for separate old and candidate disks before stopping the guest.
 5. Persist acceptance on dom0 before production access or background work.
    Verify a 24-hour healthy canary for each template before wider rollout.
    Use one installation-wide operation lock and stable box/role ordering.
@@ -212,6 +261,6 @@ critical finding. Recovery before acceptance must use only the recorded old
 VM, OS disk, boot files, and checkpoint. Keep the router and controller running.
 
 For console access, see [Platform deployment recovery](platform-deploy.md).
-The future boot-time recovery check must run before normal guest autostart and
+The boot-time recovery check must run before normal guest autostart and
 must require no controller, backend VM, internet, DNS service in the target, or
 package download.

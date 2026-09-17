@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+description="Recover interrupted shared VM updates before guest autostart"
+
+depend() {
+    need localmount xenstored xenconsoled
+    before xendomains
+}
+
+start() {
+    ebegin "Verify and recover shared VM boot assignments"
+    if /usr/local/sbin/vm-update-transaction boot-recover; then
+        eend 0
+        return 0
+    fi
+    # A shared-guest journal problem must not prevent router and controller
+    # autostart. Fence shared guests for inspection and let those recover.
+    eerror "Shared VM recovery failed; shared guest autostart is fenced"
+    /usr/local/sbin/vm-update-transaction fence-autostart || return 1
+    logger -t klokast-vm-update-recovery "CRITICAL: shared guest recovery failed; bak/dmz/iot autostart fenced"
+    eend 0
+}

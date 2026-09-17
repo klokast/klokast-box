@@ -1,0 +1,54 @@
+---
+- name: Verify the shared VM recovery installation target
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == node_name ~ '-dom0'
+
+- name: Verify persistent dom0 data storage before installing recovery
+  ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+  changed_when: false
+
+- name: Create restricted persistent transaction storage
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-vm-updates/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', operations, active]
+
+- name: Install the closed shared VM transaction helper
+  ansible.builtin.copy:
+    src: vm-update-transaction
+    dest: /usr/local/sbin/vm-update-transaction
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Install boot recovery before Xen guest autostart
+  ansible.builtin.copy:
+    src: klokast-vm-update-recovery.openrc
+    dest: /etc/init.d/klokast-vm-update-recovery
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Make successful recovery a prerequisite for Xen guest autostart
+  ansible.builtin.blockinfile:
+    path: /etc/conf.d/xendomains
+    create: true
+    mode: '0644'
+    marker: '# {mark} KLOKAST VM UPDATE RECOVERY'
+    block: 'rc_need="${rc_need:-} localmount klokast-vm-update-recovery"'
+
+- name: Enable the boot recovery oneshot without changing running guests
+  ansible.builtin.command: /sbin/rc-update add klokast-vm-update-recovery default
+  changed_when: false
+
+- name: Include the recovery helper in diskless persistence
+  ansible.builtin.command: /sbin/lbu include /usr/local/sbin/vm-update-transaction
+  changed_when: false
+
+- name: Persist recovery configuration without including persistent data
+  ansible.builtin.command: /sbin/lbu commit -d
+  changed_when: false

@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""Recover one controller-staged shared-VM disk switch, without guest access.
+
+The controller must stage a protected request before arm. This helper does not
+select templates, create authority, mount filesystems, or allocate disks. Old
+and candidate writable disks must be disjoint. Pre-acceptance recovery starts
+the unchanged old disks; acceptance permanently forbids that rollback.
+"""
+import argparse
+import ast
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+BASE = Path('/mnt/dom0_data/klokast-vm-updates')
+XEN = Path('/etc/xen')
+OP = re.compile(r'[0-9a-f]{24}')
+HEX = re.compile(r'[0-9a-f]{64}')
+LV = re.compile(r'/dev/[A-Za-z0-9_+.-]+/[A-Za-z0-9_+.-]+')
+PRE_ACCEPT = {'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested', 'recovering'}
+TERMINAL = {'accepted', 'complete', 'recovered', 'recovery-failed'}
+HELPER = '/usr/local/sbin/vm-update-transaction'
+
+
+class Refused(RuntimeError):
+    pass
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+
+
+def digest(value):
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refused('duplicate JSON field')
+        result[key] = value
+    return result
+
+
+def secure(path, directory=False, limit=1024 * 1024):
+    info = path.lstat()
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not expected(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or
+            (not directory and (info.st_nlink != 1 or info.st_size > limit))):
+        raise Refused('transaction path has unsafe type, owner, mode, or size: ' + path.name)
+    return path
+
+
+def syncdir(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic(path, data):
+    secure(path.parent, True)
+    temporary = path.with_name('.' + path.name + '-' + secrets.token_hex(8))
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        syncdir(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def store(path, value):
+    atomic(path, (canonical(value) + '\n').encode())
+
+
+def read(path):
+    return json.loads(secure(path).read_text(), object_pairs_hook=unique)
+
+
+def command(argv, timeout=60):
+    try:
+        result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise Refused('transaction command unavailable or timed out: ' + str(argv[0])) from error
+    if result.returncode or len(result.stdout) > 8 * 1024 * 1024:
+        raise Refused('transaction command failed: ' + str(argv[0]))
+    return result.stdout
+
+
+def configuration(content, role, identity):
+    """Parse the supported xl literal subset, without executing Python."""
+    allowed = {'name', 'uuid', 'type', 'memory', 'maxmem', 'vcpus', 'cpus', 'kernel',
+               'ramdisk', 'extra', 'disk', 'vif', 'on_crash', 'on_reboot', 'on_poweroff'}
+    result = {}
+    try:
+        for node in ast.parse(content).body:
+            if (not isinstance(node, ast.Assign) or len(node.targets) != 1 or
+                    not isinstance(node.targets[0], ast.Name)):
+                raise Refused('Xen configuration must contain literal assignments only')
+            name = node.targets[0].id
+            if name not in allowed or name in result:
+                raise Refused('Xen configuration contains an unknown or repeated setting')
+            result[name] = ast.literal_eval(node.value)
+    except (SyntaxError, ValueError, TypeError) as error:
+        raise Refused('invalid Xen literal configuration') from error
+    if result.get('name') != role or result.get('type') != 'pvh':
+        raise Refused('configuration does not describe the selected shared PVH guest')
+    if result.get('uuid', identity) != identity:
+        raise Refused('Xen configuration UUID differs from the recorded domain')
+    disks = result.get('disk')
+    if not isinstance(disks, list) or not 1 <= len(disks) <= 8:
+        raise Refused('guest requires a bounded explicit disk list')
+    paths, devices = [], []
+    for disk in disks:
+        if not isinstance(disk, str):
+            raise Refused('invalid Xen disk entry')
+        match = re.fullmatch(r'phy:([^,]+),(xvd[a-z]),w', disk)
+        if not match or not LV.fullmatch(match[1]):
+            raise Refused('only explicit writable LVM guest disks are supported')
+        if any(part in {'.', '..'} for part in Path(match[1]).parts):
+            raise Refused('disk path contains an alias')
+        paths.append(match[1]); devices.append(match[2])
+    if len(set(paths)) != len(paths) or len(set(devices)) != len(devices):
+        raise Refused('guest disk mappings overlap')
+    for name in ('kernel', 'ramdisk'):
+        value = result.get(name)
+        if (not isinstance(value, str) or not value.startswith('/mnt/dom0_data/') or
+                any(part in {'.', '..'} for part in Path(value).parts)):
+            raise Refused('boot artifact must use persistent dom0 storage')
+    return result, paths
+
+
+class Native:
+    def device(self, path):
+        return Path(path).stat().st_rdev
+
+    def watch(self, operation, work):
+        helper = secure(Path(HELPER))
+        descriptor = os.open(work / 'recovery.log', os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'ab') as log:
+            child = subprocess.Popen(['/usr/bin/python3', str(helper), 'watch', '--operation-id', operation],
+                                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                     start_new_session=True, close_fds=True)
+        # Bind the watchdog to this process incarnation and this boot. A
+        # reused PID or a watchdog for another operation cannot satisfy arm.
+        identity = {'pid': child.pid, 'start_ticks': self.process_start(child.pid),
+                    'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+        for _ in range(100):
+            if self.watcher_alive(identity, operation):
+                return identity
+            time.sleep(0.02)
+        raise Refused('local recovery process did not start')
+
+    def process_start(self, pid):
+        return Path('/proc/' + str(pid) + '/stat').read_text().rsplit(')', 1)[1].split()[19]
+
+    def watcher_alive(self, identity, operation):
+        try:
+            pid = identity['pid']
+            args = Path('/proc/' + str(pid) + '/cmdline').read_bytes().split(b'\0')
+            return (args == [b'/usr/bin/python3', HELPER.encode(), b'watch', b'--operation-id', operation.encode(), b''] and
+                    self.process_start(pid) == identity['start_ticks'] and
+                    Path('/proc/sys/kernel/random/boot_id').read_text().strip() == identity['boot_id'])
+        except (OSError, KeyError, TypeError, IndexError):
+            return False
+
+    def artifact(self, path):
+        path = Path(path)
+        for parent in path.parents:
+            secure(parent, True)
+        secure(path, limit=512 * 1024 * 1024)
+        result, size = hashlib.sha256(), 0
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                result.update(block); size += len(block)
+        return {'sha256': result.hexdigest(), 'bytes': size}
+
+    def inventory(self):
+        records = json.loads(command(['xl', 'list', '-l']), object_pairs_hook=unique)
+        if not isinstance(records, list) or not records:
+            raise Refused('Xen returned an incomplete inventory')
+        names, ids = set(), set()
+        for item in records:
+            info = item.get('config', {}).get('c_info', {})
+            name, domid = info.get('name'), item.get('domid')
+            if (not isinstance(name, str) or type(domid) is not int or domid < 0 or
+                    name in names or domid in ids or (domid == 0 and name != 'Domain-0')):
+                raise Refused('Xen returned an invalid domain identity')
+            if domid and not isinstance(info.get('uuid'), str):
+                raise Refused('Xen returned a guest without a UUID')
+            names.add(name); ids.add(domid)
+        if 0 not in ids:
+            raise Refused('Xen inventory does not include dom0')
+        return records
+
+    def lv(self, path):
+        value = json.loads(command(['lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix',
+                                    '-o', 'lv_path,lv_uuid,lv_size,lv_attr,origin', path]))
+        rows = value['report'][0]['lv']
+        if len(rows) != 1 or rows[0]['lv_path'].strip() != path:
+            raise Refused('logical volume identity is ambiguous')
+        row = {k: v.strip() for k, v in rows[0].items()}
+        # Full independent LVs make rollback a disk selection, not a merge that
+        # can destroy data or require online snapshot recovery after power loss.
+        if row['origin'] or row['lv_attr'][0] != '-':
+            raise Refused('replacement requires independent ordinary logical volumes')
+        info = Path(path).stat()
+        if not stat.S_ISBLK(info.st_mode):
+            raise Refused('logical volume is not a block device')
+        return {'uuid': row['lv_uuid'], 'bytes': int(float(row['lv_size'])), 'device': info.st_rdev}
+
+    def check_unmounted(self, disks):
+        devices = {v['device'] for v in disks.values()}
+        for line in Path('/proc/self/mountinfo').read_text().splitlines():
+            major, minor = map(int, line.split()[2].split(':'))
+            if os.makedev(major, minor) in devices:
+                raise Refused('transaction disk is mounted on dom0')
+
+    def stop(self, record, graceful):
+        domid = str(record['domid'])
+        if graceful:
+            command(['xl', 'shutdown', domid])
+            # Do not force-stop old writers. A failed graceful stop aborts the
+            # replacement while the original disk remains authoritative.
+            deadline = time.monotonic() + 120
+            identity = record['config']['c_info']['uuid']
+            while time.monotonic() < deadline:
+                matches = [r for r in self.inventory() if r['config']['c_info'].get('uuid') == identity]
+                if not matches:
+                    return
+                time.sleep(1)
+            raise Refused('old guest did not stop cleanly; replacement refused')
+        command(['xl', 'destroy', domid])
+
+    def start(self, path):
+        command(['xl', 'create', path])
+
+    def persist(self):
+        command(['lbu', 'commit', '-d'], timeout=120)
+
+
+class Transaction:
+    def __init__(self, work, backend=None, clock=time.time):
+        self.work, self.native, self.clock = work, backend or Native(), clock
+        self.request = read(work / 'request.json')
+        r = self.request
+        fields = {'kind', 'operation_id', 'box', 'role', 'engine_commit', 'policy_sha256',
+                  'old_uuid', 'new_uuid', 'old_config_sha256', 'new_config_sha256',
+                  'old_disks', 'new_disks', 'old_artifacts', 'new_artifacts', 'autostart', 'release_sha256'}
+        if (not isinstance(r, dict) or set(r) != fields or r['kind'] != 'klokast.vm-switch.v1' or
+                r['operation_id'] != work.name or not OP.fullmatch(work.name) or
+                not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
+                r['role'] not in {'bak', 'dmz', 'iot'} or type(r['autostart']) is not bool or
+                not isinstance(r['engine_commit'], str) or not re.fullmatch(r'[0-9a-f]{40}', r['engine_commit'])):
+            raise Refused('invalid or unsupported transaction request')
+        for key in ('policy_sha256', 'old_config_sha256', 'new_config_sha256', 'release_sha256'):
+            if not isinstance(r[key], str) or not HEX.fullmatch(r[key]):
+                raise Refused('transaction has an invalid checksum')
+        for key in ('old_uuid', 'new_uuid'):
+            if not isinstance(r[key], str) or str(uuid.UUID(r[key])) != r[key]:
+                raise Refused('transaction has an invalid domain UUID')
+        if r['old_uuid'] == r['new_uuid']:
+            raise Refused('old and candidate Xen UUIDs must differ')
+        self.configs = {}
+        for side in ('old', 'new'):
+            content = secure(work / (side + '.cfg')).read_bytes()
+            if hashlib.sha256(content).hexdigest() != r[side + '_config_sha256']:
+                raise Refused('staged Xen configuration checksum differs')
+            config, paths = configuration(content.decode(), r['role'], r[side + '_uuid'])
+            disks = r[side + '_disks']
+            if not isinstance(disks, dict) or set(disks) != set(paths):
+                raise Refused('disk identities differ from the Xen configuration')
+            for expected in disks.values():
+                if (not isinstance(expected, dict) or set(expected) != {'uuid', 'bytes'} or
+                        not isinstance(expected['uuid'], str) or not re.fullmatch(r'[A-Za-z0-9-]{6,128}', expected['uuid']) or
+                        type(expected['bytes']) is not int or expected['bytes'] <= 0):
+                    raise Refused('logical volume identity is incomplete')
+            self.configs[side] = config
+            artifacts = r[side + '_artifacts']
+            if not isinstance(artifacts, dict) or set(artifacts) != {config['kernel'], config['ramdisk']}:
+                raise Refused('boot artifact identities differ from the Xen configuration')
+            for item in artifacts.values():
+                if (not isinstance(item, dict) or set(item) != {'sha256', 'bytes'} or
+                        not isinstance(item['sha256'], str) or not HEX.fullmatch(item['sha256']) or
+                        type(item['bytes']) is not int or not 0 < item['bytes'] <= 512 * 1024 * 1024):
+                    raise Refused('boot artifact identity is incomplete')
+        if set(r['old_disks']) & set(r['new_disks']):
+            raise Refused('old and candidate writable disks must be disjoint')
+        self.journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
+        if self.journal and (self.journal.get('request_sha256') != digest(r) or
+                             self.journal.get('stage') not in PRE_ACCEPT | TERMINAL or
+                             type(self.journal.get('deadline')) not in {int, float} or
+                             self.journal.get('recovery_seconds') != 1800):
+            raise Refused('transaction journal differs from its immutable request')
+
+    def artifacts(self, side):
+        for path, expected in self.request[side + '_artifacts'].items():
+            if self.native.artifact(path) != expected:
+                raise Refused('recorded boot artifact was changed: ' + Path(path).name)
+
+    def record(self, stage, **fields):
+        value = dict(self.journal or {})
+        value.update(fields, stage=stage, request_sha256=digest(self.request), updated_at=self.clock())
+        store(self.work / 'journal.json', value)
+        self.journal = value
+
+    def disks(self):
+        actual = {}
+        for side in ('old', 'new'):
+            for path, expected in self.request[side + '_disks'].items():
+                item = self.native.lv(path)
+                if {k: item[k] for k in ('uuid', 'bytes')} != expected:
+                    raise Refused('logical volume was replaced or resized during the transaction')
+                actual[path] = item
+        if len({v['device'] for v in actual.values()}) != len(actual):
+            raise Refused('transaction disk device identities overlap')
+        self.native.check_unmounted(actual)
+        return actual
+
+    def guest(self):
+        actual = self.disks()
+        found = None
+        for record in self.native.inventory():
+            if record['domid'] == 0:
+                continue
+            config = record['config']; info = config['c_info']
+            disk_records = config.get('disks')
+            if not isinstance(disk_records, list):
+                raise Refused('Xen did not report guest disk attachments')
+            used = {d.get('pdev_path') for d in disk_records}
+            # Native disk paths can be device-mapper aliases. Resolve device
+            # numbers before allowing any VM to attach a transaction disk.
+            devices = set()
+            for path in used:
+                if not isinstance(path, str) or not path.startswith('/dev/'):
+                    raise Refused('guest has an unsupported disk attachment')
+                devices.add(self.native.device(path))
+            overlaps = devices & {v['device'] for v in actual.values()}
+            if info['name'] == self.request['role']:
+                if found or info['uuid'] not in {self.request['old_uuid'], self.request['new_uuid']}:
+                    raise Refused('target domain identity changed')
+                side = 'old' if info['uuid'] == self.request['old_uuid'] else 'new'
+                expected = {actual[p]['device'] for p in self.request[side + '_disks']}
+                if devices != expected:
+                    raise Refused('target live disks differ from its recorded identity')
+                found = record
+            elif overlaps:
+                raise Refused('another Xen guest holds a transaction disk')
+        return found
+
+    def assignment(self, side):
+        # Persist the selected config before adding its normal autostart link.
+        self.artifacts(side)
+        content = (self.work / (side + '.cfg')).read_text()
+        if 'uuid' not in self.configs[side]:
+            content += '\nuuid = ' + repr(self.request[side + '_uuid']) + '\n'
+        atomic(XEN / (self.request['role'] + '.cfg'), content.encode())
+        link = XEN / 'auto' / (self.request['role'] + '.cfg')
+        if link.is_symlink():
+            if os.readlink(link) not in {'../' + link.name, str(XEN / link.name)}:
+                raise Refused('autostart link has an unexpected destination')
+            link.unlink()
+        elif link.exists():
+            raise Refused('autostart path is not a managed symbolic link')
+        if self.request['autostart']:
+            link.symlink_to('../' + link.name)
+        syncdir(link.parent)
+        self.native.persist()
+
+    def arm(self):
+        if self.journal is not None:
+            raise Refused('operation has already been armed; do not replay it')
+        pointer = BASE / 'active' / (self.request['role'] + '.json')
+        for existing in sorted((BASE / 'active').iterdir()):
+            if existing.name not in {'bak.json', 'dmz.json', 'iot.json'}:
+                raise Refused('unexpected active transaction pointer')
+            previous = read(existing)
+            if set(previous) != {'operation_id', 'request_sha256'} or not OP.fullmatch(previous['operation_id']):
+                raise Refused('active transaction pointer is invalid')
+            older = Transaction(BASE / 'operations' / previous['operation_id'], self.native, self.clock)
+            if (previous['request_sha256'] != digest(older.request) or
+                    existing.name != older.request['role'] + '.json'):
+                raise Refused('active transaction pointer does not match its request')
+            if not older.journal or older.journal['stage'] not in {'complete', 'recovered'}:
+                raise Refused('another guest transaction is not complete')
+        active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
+        if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
+            raise Refused('live Xen definition changed before arm')
+        guest = self.guest()
+        if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+            raise Refused('arm requires the exact running old guest')
+        self.artifacts('old'); self.artifacts('new')
+        # The recovery record is durable before autostart or guest state changes.
+        self.record('armed', deadline=self.clock() + 1800, recovery_seconds=1800)
+        store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
+        watcher = self.native.watch(self.request['operation_id'], self.work)
+        self.record('armed', watcher=watcher)
+
+    def step(self, action):
+        if not self.journal:
+            raise Refused('transaction is not armed')
+        if action in {'recover', 'boot-recover'}:
+            return self.recover()
+        if self.journal['stage'] in PRE_ACCEPT and self.clock() >= self.journal['deadline']:
+            raise Refused('replacement exceeded 30 minutes; local recovery is required')
+        if action == 'stop' and self.journal['stage'] == 'armed':
+            if not self.native.watcher_alive(self.journal.get('watcher'), self.request['operation_id']):
+                raise Refused('bounded local recovery is not running; old guest remains in place')
+            self.record('stopping')
+            guest = self.guest()
+            if guest:
+                if guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+                    raise Refused('candidate appeared before old guest stopped')
+                self.native.stop(guest, True)
+            if self.guest() is not None:
+                raise Refused('old guest still holds its disks')
+            self.record('stopped')
+        elif action == 'start' and self.journal['stage'] == 'stopped':
+            if self.guest() is not None:
+                raise Refused('a guest appeared before candidate start')
+            self.artifacts('new')
+            self.record('starting')
+            # Do not alter the old autostart assignment until acceptance.
+            self.native.start(self.work / 'new.cfg')
+            guest = self.guest()
+            if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
+                raise Refused('candidate did not start with the recorded identity')
+            self.record('booted')
+        elif action == 'tested' and self.journal['stage'] == 'booted':
+            # A controller-side executor is responsible for the test evidence.
+            # This internal command is root-only, not an approval interface.
+            evidence = read(self.work / 'checks.json')
+            required = {'boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
+                        'application_compatibility', 'data', 'application_images_unchanged', 'quarantine'}
+            if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
+                    set(evidence['checks']) != required or any(v is not True for v in evidence['checks'].values())):
+                raise Refused('controller compatibility evidence is incomplete')
+            self.record('tested', checks_sha256=digest(evidence))
+        elif action == 'accept' and self.journal['stage'] == 'tested':
+            evidence = read(self.work / 'checks.json')
+            if digest(evidence) != self.journal['checks_sha256']:
+                raise Refused('test evidence changed before acceptance')
+            guest = self.guest()
+            if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
+                raise Refused('candidate is absent before acceptance')
+            self.artifacts('new')
+            # Durable acceptance MUST precede assignment publication and all
+            # production writes. Recovery never rolls this record backward.
+            self.record('accepted')
+            self.assignment('new')
+        elif action == 'complete' and self.journal['stage'] == 'accepted':
+            self.assignment('new')
+            self.record('complete')
+        else:
+            raise Refused('operation cannot skip, repeat, or reverse a transaction stage')
+
+    def recover(self):
+        if not self.journal:
+            raise Refused('cannot recover an unarmed operation')
+        stage = self.journal['stage']
+        if stage in {'accepted', 'complete'}:
+            # A crash can interrupt config publication after acceptance.
+            self.assignment('new')
+            return 'preserve-production-data'
+        if stage == 'recovered':
+            return 'recovered'
+        if stage == 'recovery-failed':
+            raise Refused('recovery previously failed; keep the VM fenced for inspection')
+        started = self.journal.get('recovery_started_at', self.clock())
+        self.record('recovering', recovery_started_at=started)
+        try:
+            if self.clock() >= started + 1800:
+                raise Refused('local recovery exceeded its 30-minute budget')
+            guest = self.guest()
+            if guest and guest['config']['c_info']['uuid'] == self.request['new_uuid']:
+                self.native.stop(guest, False)
+            guest = self.guest()
+            if guest and guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+                raise Refused('candidate still holds disks during recovery')
+            self.assignment('old')
+            if guest is None:
+                self.native.start(XEN / (self.request['role'] + '.cfg'))
+            guest = self.guest()
+            if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+                raise Refused('old guest did not restart with the recorded identity')
+            if self.clock() >= started + 1800:
+                raise Refused('local recovery exceeded its 30-minute budget')
+            self.record('recovered')
+            return 'recovered'
+        except Exception:
+            self.record('recovery-failed')
+            raise
+
+
+@contextmanager
+def operation_lock(work):
+    # Serialize short disk transitions on the box, including role-pointer
+    # publication. The watchdog never holds this lock while sleeping.
+    descriptor = os.open(BASE / 'transaction.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            raise Refused('unsafe operation lock')
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def budget(seconds):
+    """Bound the whole operation, including lock waits and native commands."""
+    def expired(signum, frame):
+        raise Refused('local transaction time budget expired')
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, max(0.001, seconds))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def require_dom0():
+    if os.geteuid() != 0 or 'control_d' not in Path('/proc/xen/capabilities').read_text():
+        raise Refused('run as root inside the approved dom0 workflow')
+    secure(BASE, True)
+    secure(BASE / 'operations', True)
+    secure(BASE / 'active', True)
+    # A tmpfs fallback must never receive recovery journals.
+    mounts = [line.split()[4] for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    if '/mnt/dom0_data' not in mounts:
+        raise Refused('persistent dom0 data volume is not mounted')
+
+
+def fence_autostart():
+    """Remove only shared guest boot links; never block router/ops recovery."""
+    for role in ('bak', 'dmz', 'iot'):
+        path = XEN / 'auto' / (role + '.cfg')
+        if path.is_symlink():
+            path.unlink()
+        elif path.exists():
+            # Retain unexpected file bytes outside the autostart directory.
+            path.rename(XEN / (role + '.update-quarantine-' + secrets.token_hex(8)))
+    syncdir(XEN / 'auto')
+
+
+def invoke(operation, action):
+    if not OP.fullmatch(operation):
+        raise Refused('invalid operation ID')
+    work = secure(BASE / 'operations' / operation, True)
+    with budget(1800 if action in {'recover', 'boot-recover'} else 180), operation_lock(work):
+        tx = Transaction(work)
+        if socket.gethostname().split('.')[0] != tx.request['box'] + '-dom0':
+            raise Refused('operation belongs to another box')
+        if action == 'arm':
+            tx.arm()
+        elif action != 'status':
+            if read(BASE / 'active' / (tx.request['role'] + '.json')) != {
+                    'operation_id': operation, 'request_sha256': digest(tx.request)}:
+                raise Refused('historical operation cannot change the active guest')
+            if not tx.journal:
+                raise Refused('transaction is not armed')
+            seconds = 180
+            if action in {'recover', 'boot-recover'}:
+                seconds = max(0, tx.journal.get('recovery_started_at', time.time()) + 1800 - time.time())
+            elif tx.journal['stage'] in PRE_ACCEPT:
+                seconds = min(seconds, max(0, tx.journal['deadline'] - time.time()))
+            with budget(seconds):
+                tx.step(action)
+        return tx.journal
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover',
+                                           'status', 'watch', 'boot-recover', 'fence-autostart'))
+    parser.add_argument('--operation-id')
+    args = parser.parse_args(argv)
+    os.umask(0o077)
+    if args.action == 'fence-autostart':
+        if os.geteuid() != 0 or 'control_d' not in Path('/proc/xen/capabilities').read_text():
+            raise Refused('autostart fencing requires dom0 root')
+        fence_autostart()
+        return 0
+    require_dom0()
+    if args.action == 'boot-recover':
+        if args.operation_id:
+            raise Refused('boot recovery accepts no selected operation')
+        # Boot fails closed if any journal cannot be validated. No guest
+        # autostart is allowed to race an ambiguous interrupted transaction.
+        # Never replay historical accepted records: only the role's current
+        # pointer can choose its boot assignment.
+        for pointer in sorted((BASE / 'active').iterdir()):
+            if pointer.name not in {'bak.json', 'dmz.json', 'iot.json'}:
+                raise Refused('unexpected active transaction pointer')
+            value = read(pointer)
+            if set(value) != {'operation_id', 'request_sha256'}:
+                raise Refused('active transaction pointer is invalid')
+            request = read(BASE / 'operations' / value['operation_id'] / 'request.json') if OP.fullmatch(value['operation_id']) else {}
+            if pointer.name != request.get('role', '') + '.json':
+                raise Refused('active transaction pointer names a different guest')
+            invoke(value['operation_id'], 'boot-recover')
+        return 0
+    if not args.operation_id:
+        raise Refused('operation ID is required')
+    if args.action == 'watch':
+        deadline = time.monotonic() + 1800
+        while True:
+            state = invoke(args.operation_id, 'status')
+            if not state or state['stage'] in TERMINAL:
+                return 0
+            if time.time() >= state['deadline'] or time.monotonic() >= deadline:
+                print(canonical(invoke(args.operation_id, 'recover')))
+                return 0
+            time.sleep(min(5, max(0.1, state['deadline'] - time.time())))
+    print(canonical(invoke(args.operation_id, args.action)))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (Refused, OSError, ValueError, KeyError, TypeError) as error:
+        print('vm-update-transaction: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,66 @@
+---
+- name: Test recovery with disposable shared VM disks
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the selected test target
+      ansible.builtin.assert:
+        that:
+          - recovery_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - recovery_operation_id is match('^[0-9a-f]{24}$')
+          - recovery_candidate_id is match('^[0-9a-f]{24}$')
+          - inventory_hostname == recovery_box ~ '-dom0'
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Check persistent dom0 storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create protected disposable test storage
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-recovery-tests/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', "{{ recovery_operation_id }}", "{{ recovery_operation_id }}/async"]
+
+    - name: Stage public recovery test code
+      ansible.builtin.copy:
+        src: "../roles/vm-update-recovery/files/{{ item }}"
+        dest: "/mnt/dom0_data/klokast-vm-recovery-tests/{{ recovery_operation_id }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [vm-update-transaction, vm-update-recovery-test]
+
+    - name: Run the bounded native test independently of SSH
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '900'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-recovery-tests/{{ recovery_operation_id }}/vm-update-recovery-test"
+          - --box
+          - "{{ recovery_box }}"
+          - --operation-id
+          - "{{ recovery_operation_id }}"
+          - --candidate-id
+          - "{{ recovery_candidate_id }}"
+      async: 960
+      poll: 5
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-vm-recovery-tests/{{ recovery_operation_id }}/async"
+      register: recovery_test
+
+    - name: Report the bounded test result
+      ansible.builtin.debug:
+        msg: "{{ recovery_test.stdout | from_json }}"

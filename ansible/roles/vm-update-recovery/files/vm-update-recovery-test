@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Test disk-switch recovery with new LVs and one networkless Xen guest.
+
+This test never installs the production helper or edits /etc/xen. It substitutes
+only the test domain name, test assignment directory, and watchdog/persistence
+interfaces. Disk checks, native Xen transitions, and durable journals use the
+production transaction implementation. It does not qualify application health.
+"""
+import argparse
+import hashlib
+from importlib.machinery import SourceFileLoader
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import time
+import uuid
+
+
+def load(path):
+    loader = SourceFileLoader('transaction', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            any(not re.fullmatch(r'[0-9a-f]{24}', v) for v in (args.operation_id, args.candidate_id)) or
+            'control_d' not in Path('/proc/xen/capabilities').read_text()):
+        raise RuntimeError('recovery test requires the selected dom0 and new operation ID')
+    os.umask(0o077)
+    work = Path('/mnt/dom0_data/klokast-vm-recovery-tests') / args.operation_id
+    t = load(work / 'vm-update-transaction')
+    t.secure(work, True)
+    if (work / 'state').exists():
+        raise RuntimeError('recovery test operations cannot be reused')
+    t.BASE = work / 'state'; t.XEN = work / 'xen'
+    (t.BASE / 'operations').mkdir(parents=True)
+    (t.BASE / 'active').mkdir()
+    (t.XEN / 'auto').mkdir(parents=True)
+    candidate = Path('/mnt/dom0_data/klokast-vm-templates/candidates') / args.candidate_id
+    t.secure(candidate, True)
+    manifest = t.read(candidate / 'candidate.json')
+    native = t.Native()
+    if manifest.get('validation') != 'base-boot-tested' or manifest.get('accepted') is not False:
+        raise RuntimeError('test requires a base-boot-tested candidate')
+    for name in ('root', 'kernel', 'initramfs'):
+        path = candidate / name
+        # The root is an opaque raw image. Never mount it on dom0.
+        t.secure(path, limit=8 * 1024**3)
+        result = hashlib.sha256()
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''): result.update(block)
+        if {'sha256': result.hexdigest(), 'bytes': path.stat().st_size} != manifest['artifacts'][name]:
+            raise RuntimeError('candidate artifact changed before the recovery test')
+    vgs = json.loads(t.command(['vgs', '--reportformat', 'json', '--units', 'b', '--nosuffix',
+                               '-o', 'vg_name,vg_free']))['report'][0]['vg']
+    if len(vgs) != 1 or int(float(vgs[0]['vg_free'])) < 10 * 1024**3:
+        raise RuntimeError('test requires one volume group with at least 10 GiB free')
+    vg = vgs[0]['vg_name'].strip()
+    if not re.fullmatch(r'[A-Za-z0-9_+.-]+', vg):
+        raise RuntimeError('invalid volume group name')
+    info = dict(line.split(':', 1) for line in t.command(['xl', 'info']).splitlines() if ':' in line)
+    if int(info.get('free_memory', '0').strip()) < 3072:
+        raise RuntimeError('test requires 3 GiB of unallocated Xen memory')
+    name = 'vm-recovery-test-' + args.operation_id
+    existing = native.inventory()
+    if any(r['config']['c_info']['name'] == name for r in existing):
+        raise RuntimeError('test domain name is already in use')
+    production = {r['config']['c_info']['name']: r['config']['c_info'].get('uuid') for r in existing}
+    allocated, results = {}, []
+    identities = {side: str(uuid.uuid4()) for side in ('old', 'new')}
+
+    class TestNative(t.Native):
+        def inventory(self):
+            rows = super().inventory()
+            for row in rows:
+                info = row['config']['c_info']
+                if info['name'] == name:
+                    if info['uuid'] not in identities.values():
+                        raise RuntimeError('test domain UUID changed')
+                    info['name'] = 'bak'
+                elif info['name'] == 'bak':
+                    info['name'] = 'production-bak'
+            return rows
+
+        def start(self, path):
+            if not path.is_relative_to(work):
+                raise RuntimeError('test cannot start a production configuration')
+            content = path.read_text()
+            config, disks = t.configuration(content, 'bak', identities['new'] if path.name == 'new.cfg' else identities['old'])
+            if any(p not in allocated for p in disks):
+                raise RuntimeError('test configuration references a disk it did not allocate')
+            config['name'] = name
+            # The test guest has no network, credentials, or autostart entry.
+            config['vif'] = []
+            config['memory'] = 2048; config['maxmem'] = 2048
+            output = work / 'disposable.cfg'
+            t.atomic(output, ('\n'.join(k + ' = ' + repr(v) for k, v in config.items()) + '\n').encode())
+            t.command(['xl', 'create', output])
+            time.sleep(5)
+
+        def stop(self, record, graceful):
+            matches = [r for r in native.inventory() if r['domid'] == record['domid']]
+            if (len(matches) != 1 or matches[0]['config']['c_info']['name'] != name or
+                    matches[0]['config']['c_info']['uuid'] != record['config']['c_info']['uuid']):
+                raise RuntimeError('test cannot stop a production domain')
+            return super().stop(record, graceful)
+
+        def watch(self, operation, directory):
+            # Native state-transition testing is independent of the 30-minute
+            # watchdog wait. Unit tests separately check a missing watchdog.
+            return {'test_only': True, 'operation': operation}
+
+        def watcher_alive(self, identity, operation):
+            return identity == {'test_only': True, 'operation': operation}
+
+        def persist(self):
+            t.syncdir(t.XEN)  # Never writes the production apkovl.
+
+    backend = TestNative()
+    def interrupted(signum, frame):
+        raise RuntimeError('disposable recovery test interrupted; cleaning its own resources')
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, interrupted)
+    try:
+        for side in ('old', 'new'):
+            for disk, size in (('os', '4096M'), ('data', '16M')):
+                lvname = 'vmupdtest_' + args.operation_id + '_' + side + '_' + disk
+                path = '/dev/' + vg + '/' + lvname
+                if Path(path).exists(): raise RuntimeError('test volume already exists')
+                t.command(['lvcreate', '-L', size, '-n', lvname, vg])
+                allocated[path] = native.lv(path)
+                t.store(work / 'resources.json', {'domain': name, 'uuids': identities, 'disks': allocated})
+                if disk == 'os':
+                    with (candidate / 'root').open('rb') as source, open(path, 'wb', buffering=0) as target:
+                        shutil.copyfileobj(source, target, 1024 * 1024); os.fsync(target.fileno())
+                else:
+                    with open(path, 'wb', buffering=0) as target:
+                        target.write((side + '-retained-data\n').encode()); os.fsync(target.fileno())
+        for scenario in ('stopped', 'booted', 'accepted'):
+            operation = uuid.uuid4().hex[:24]
+            directory = t.BASE / 'operations' / operation; directory.mkdir()
+            request = {'kind': 'klokast.vm-switch.v1', 'operation_id': operation, 'box': args.box,
+                       'role': 'bak', 'engine_commit': 'a' * 40, 'policy_sha256': 'b' * 64,
+                       'release_sha256': 'c' * 64, 'autostart': True,
+                       'old_uuid': identities['old'], 'new_uuid': identities['new']}
+            for side in ('old', 'new'):
+                paths = ['/dev/' + vg + '/vmupdtest_' + args.operation_id + '_' + side + '_' + disk for disk in ('os', 'data')]
+                config = {'name': 'bak', 'type': 'pvh', 'uuid': identities[side], 'memory': 2048,
+                          'kernel': str(candidate / 'kernel'), 'ramdisk': str(candidate / 'initramfs'),
+                          'extra': 'root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0',
+                          'disk': ['phy:' + p + ',xvd' + letter + ',w' for p, letter in zip(paths, 'ab')],
+                          'vif': [], 'on_poweroff': 'destroy', 'on_reboot': 'destroy', 'on_crash': 'destroy'}
+                content = ('\n'.join(k + ' = ' + repr(v) for k, v in config.items()) + '\n').encode()
+                t.atomic(directory / (side + '.cfg'), content)
+                request[side + '_config_sha256'] = hashlib.sha256(content).hexdigest()
+                request[side + '_disks'] = {p: {k: allocated[p][k] for k in ('uuid', 'bytes')} for p in paths}
+                request[side + '_artifacts'] = {str(candidate / n): manifest['artifacts'][n] for n in ('kernel', 'initramfs')}
+            t.store(directory / 'request.json', request)
+            t.atomic(t.XEN / 'bak.cfg', (directory / 'old.cfg').read_bytes())
+            backend.start(directory / 'old.cfg')
+            tx = t.Transaction(directory, backend)
+            tx.arm(); tx.step('stop')
+            if scenario != 'stopped': tx.step('start')
+            if scenario == 'accepted':
+                # Synthetic success exercises acceptance ordering only. It is
+                # never exported as release or application-test evidence.
+                t.store(directory / 'checks.json', {'request_sha256': t.digest(request), 'checks': {
+                    k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
+                                     'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
+                tx.step('tested'); tx.step('accept'); tx.step('complete')
+            # Re-open only the on-disk journal. No controller input is used.
+            recovered = t.Transaction(directory, backend)
+            recovered.recover()
+            guest = recovered.guest()
+            expected = 'new' if scenario == 'accepted' else 'old'
+            if guest['config']['c_info']['uuid'] != identities[expected]:
+                raise RuntimeError('recovery selected the wrong disk generation')
+            for path in allocated:
+                if path.endswith('_data'):
+                    side = 'old' if '_old_' in path else 'new'
+                    with open(path, 'rb') as source:
+                        if source.read(len(side) + 15) != (side + '-retained-data\n').encode():
+                            raise RuntimeError('retained data changed during recovery')
+            results.append({'stage': scenario, 'recovered_side': expected, 'data_unchanged': True})
+            backend.stop(guest, True)
+        t.store(work / 'result.json', {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': args.operation_id,
+                                     'success': True, 'tests': results, 'production_replacement': False,
+                                     'watchdog_tested': False, 'dom0_reboot_tested': False})
+    finally:
+        matches = [r for r in native.inventory() if r['config']['c_info']['name'] == name]
+        for record in matches:
+            if record['config']['c_info']['uuid'] not in identities.values():
+                raise RuntimeError('test cleanup refuses an unknown domain UUID')
+            native.stop(record, False)
+        for path, expected in allocated.items():
+            if native.lv(path) != expected:
+                raise RuntimeError('test cleanup refuses a changed disk identity')
+            if any(path == d.get('pdev_path') for r in native.inventory() for d in r['config'].get('disks', [])):
+                raise RuntimeError('test disk remains attached; cleanup stopped')
+            t.command(['lvremove', '-f', path])
+        current = {r['config']['c_info']['name']: r['config']['c_info'].get('uuid') for r in native.inventory()}
+        if current != production:
+            raise RuntimeError('domain inventory changed during the recovery test')
+        t.store(work / 'cleanup.json', {'disks_removed': True, 'guest_absent': True, 'production_uuids_unchanged': True})
+    print(t.canonical(t.read(work / 'result.json')))
+
+
+if __name__ == '__main__':
+    main()
