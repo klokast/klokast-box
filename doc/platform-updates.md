@@ -110,6 +110,19 @@ The catalog is reviewed public implementation in
 and names do not expand app authority or authorize deletion. Other apps and
 Music runtime or identity volumes remain unclassified by this initial mapping.
 
+On 2026-09-17, a native read-only scan at source `81e0f03` completed storage
+collection with stable inventories on all five running shared VMs. It found
+both Music data volumes. Unknown volumes, bind mounts, writable layers, and
+missing app or pod adapters remained explicit findings. Every assessment kept
+adoption blocked. Exit status 1 reported these critical findings; it was not
+a collection failure. Ansible syntax validation and 132 relevant local tests
+passed. No production workload changed and no update schedule was enabled.
+
+The controller retains the report at
+`/var/lib/klokast/updates/discovery/storage-assessment-validation-81e0f03.json`.
+This is discovery evidence only. It does not satisfy the production-adoption
+or replacement acceptance gates below.
+
 ### Evidence storage and freshness
 
 `scan --existing-map` uses a map no more than two hours old, but still collects
