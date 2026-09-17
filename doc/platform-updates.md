@@ -236,12 +236,26 @@ The final code at `2b9684f` passed the same native cases in operation
 `407a52ac0bbe921c4e828c0b`, including cleanup. The relevant unit suites passed
 74 tests. Native watchdog expiry and physical dom0 reboot remain untested at that commit.
 
+The full native watchdog test at `718ecb0` passed in operation
+`0b8065f399885cbfa958bfa6`. The unaccepted candidate recovered to its old disks
+after 1814.725 seconds, including the complete 1800-second replacement wait.
+Both data markers stayed unchanged. Cleanup removed the disposable guest and
+all four LVs and verified unchanged production domain UUIDs. This closes the
+native watchdog-expiry gate; physical dom0 reboot remains untested.
+
+The final recovery code at `e96a911` passed all seven native cases in operation
+`fa159d83e99659087e917d51`. This includes interrupted old-guest shutdown,
+recovery in a new process, and preservation of the synthetic write made after
+acceptance. Cleanup passed, including unchanged production UUIDs. The relevant
+unit suites passed 82 tests. Neither run replaced a production VM, changed an
+application, installed the production boot hook, or activated update policy.
+
 To repeat on an approved test target, run from the active controller's public
 candidate checkout. Use a new random 24-character lowercase hex operation ID
 and an existing base-boot-tested candidate ID:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
   -i /home/smith/src/klokast/klokast-box/ansible/execution-inventory/hosts \
   ansible/playbooks/74-platform-update-recovery-test.yml --limit BOX-dom0 \
   -e 'recovery_box=BOX recovery_operation_id=NEW_ID recovery_candidate_id=CANDIDATE_ID'

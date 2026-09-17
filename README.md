@@ -58,7 +58,7 @@ credentials.
 
 1. Create a Tailscale account.
 2. Onboard laptop and deployment server
-3. On the deployment server, install the root-owned machine-onboarding wrappers described in `tailscale/AGENTS.md`:
+3. On the deployment server, install the root-owned machine-onboarding wrappers described in [Tailscale instructions](klokast-ops/tailscale/AGENTS.md):
 - `ts-authkey-mint`
 - `ts-authkey-bootstrap`
 - `ts-authkey-dom0`
@@ -78,7 +78,7 @@ credentials.
 4. Install the corresponding scoped OAuth material outside git on the
    deployment server, in `/etc/klokast/tailscale-policy.env`. Transitional
    reusable auth-key files under `/etc/tailscale-auth/` are legacy only.
-5. If you want repo-driven policy pull/validate/apply, also create a separate Tailscale OAuth client and install the `ts-policy-*` wrappers as described in `tailscale/tailscale-policy-wrapper-setup-for-neo.md`
+5. If you want repo-driven policy pull/validate/apply, also create a separate Tailscale OAuth client and install the `ts-policy-*` wrappers as described in [policy wrapper setup](klokast-ops/runbooks/40-tailscale-wrapper-setup-policy.md)
 6. If you want Ansible to remove stale offline Tailscale machines that block VM hostnames, create a separate device-lifecycle OAuth client and install the `ts-devices-list` and `ts-device-delete-stale` wrappers as described in `klokast-ops/runbooks/41-tailscale-wrapper-devices.md`.
 
 # 6. Build the Debian Live bootstrap ISO
