@@ -296,6 +296,8 @@ class Transaction:
             if hashlib.sha256(content).hexdigest() != r[side + '_config_sha256']:
                 raise Refused('staged Xen configuration checksum differs')
             config, paths = configuration(content.decode(), r['role'], r[side + '_uuid'])
+            if side == 'new' and config.get('uuid') != r['new_uuid']:
+                raise Refused('candidate configuration requires its exact recorded UUID')
             disks = r[side + '_disks']
             if not isinstance(disks, dict) or set(disks) != set(paths):
                 raise Refused('disk identities differ from the Xen configuration')
@@ -552,13 +554,21 @@ def budget(seconds):
     """Bound the whole operation, including lock waits and native commands."""
     def expired(signum, frame):
         raise Refused('local transaction time budget expired')
+    started = time.monotonic()
+    outer_seconds, outer_interval = signal.getitimer(signal.ITIMER_REAL)
     previous = signal.signal(signal.SIGALRM, expired)
-    signal.setitimer(signal.ITIMER_REAL, max(0.001, seconds))
+    # A nested transition must not restart the outer command's budget after
+    # it has already spent time waiting for the box lock.
+    effective = min(seconds, outer_seconds) if outer_seconds else seconds
+    signal.setitimer(signal.ITIMER_REAL, max(0.001, effective))
     try:
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+        if outer_seconds:
+            remaining = max(0.001, outer_seconds - (time.monotonic() - started))
+            signal.setitimer(signal.ITIMER_REAL, remaining, outer_interval)
 
 
 def require_dom0():

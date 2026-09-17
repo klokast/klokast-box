@@ -179,9 +179,10 @@ See the [sealed Go builder](secure-builder.md), [OCI workflow](../ansible/bin/pl
 [Controller-managed VM updates](platform-updates.md) adds inspection of base
 packages, a closed shared-VM update policy contract, signed policy activation,
 local pause/resume controls, and isolated candidate template construction.
-Application compatibility and production configuration tests, retained-data adoption, the
-signed replacement executor, and local recovery path remain required before
-automatic replacement can be enabled. The
+A dom0 disk-switch and boot-recovery helper is also implemented. Application
+compatibility and production configuration tests, retained-data adoption, the
+signed replacement executor, and production recovery integration remain required
+before automatic replacement can be enabled. The
 [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
 owns state placement and release-assignment rules; the update runbook does not
 create another desired-state source.

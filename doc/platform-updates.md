@@ -169,7 +169,7 @@ must supply its inputs before production use.
 
 The helper accepts only `bak`, `dmz`, and `iot`. Its protected request records
 the policy and release hashes, distinct old and candidate Xen UUIDs, LV UUIDs
-and sizes, exact Xen definitions, and kernel/initramfs hashes. It checks live
+and sizes, exact Xen definitions, and kernel/initramfs hashes. The candidate definition must include its recorded UUID. It checks live
 disk attachments before each switch. Dom0 never mounts a guest filesystem.
 Old and candidate writable LVs must be separate ordinary volumes. Recovery
 selects the unchanged old volumes; it does not merge snapshots. This requires
@@ -186,7 +186,8 @@ Before old-guest shutdown, the helper starts a bounded local recovery process.
 The process identity includes its PID, start time, boot ID, and operation ID.
 It waits at most 30 minutes for acceptance, then allows up to 30 minutes for
 recovery. It does not require the controller, DNS, a backend VM, or a download.
-Native commands and lock waits have time limits. A permanent daemon is not added.
+Native commands and lock waits have time limits. Nested limits retain the
+outer deadline, including time already spent waiting for the operation lock. A permanent daemon is not added.
 
 Acceptance is written and synced before the new boot assignment is published.
 After acceptance, recovery can republish the new assignment but cannot select
@@ -202,7 +203,11 @@ changed boot artifacts and disk identities, missing recovery processes,
 expired budgets, foreign disk attachments, and stale role pointers.
 `74-platform-update-recovery-test.yml` runs an additional disposable Xen test
 using a previously boot-tested candidate. It allocates two new OS/data LV
-pairs and tests recovery from stopped, booted, and accepted stages. It does
+pairs and tests recovery from stopped, booted, and accepted stages. It repeats
+these stages through the boot-recovery entry point in a new process after
+stopping the disposable guest. The accepted case also checks a synthetic
+post-acceptance write. This tests restart from persistent records, not a
+physical reboot or OpenRC ordering. It does
 not install the production helper, change `/etc/xen`, or test real applications.
 The test runs the native detached watchdog, with its process identity checks,
 operation locks, command budgets, and journal dispatch. It substitutes only
@@ -211,7 +216,8 @@ Add `-e '{"recovery_watchdog_expiry":true}'` to test the full 30-minute
 replacement deadline. This fourth case leaves the candidate unaccepted and
 requires the watchdog to restore the old guest without a controller recovery
 command. It keeps both data markers unchanged. The test stops its workers
-before removing its disks, including after a failure. This mode has a
+before removing its disks, including after a failure. It publishes success
+only after cleanup passes. This mode has a
 70-minute limit to allow the full replacement and recovery budgets plus test
 setup. A physical dom0 reboot remains a separate acceptance gate.
 

@@ -8,7 +8,9 @@ from importlib.machinery import SourceFileLoader
 import json
 import os
 from pathlib import Path
+import signal
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -230,6 +232,17 @@ class Transactions(unittest.TestCase):
         with self.assertRaisesRegex(t.Refused, 'checksum'): self.tx()
         with self.assertRaises(t.Refused): t.configuration('import os\n', 'bak', self.request['old_uuid'])
 
+    def test_candidate_must_have_explicit_uuid_before_old_guest_stops(self):
+        path = self.work / 'new.cfg'
+        content = '\n'.join(line for line in path.read_text().splitlines() if not line.startswith('uuid =')) + '\n'
+        path.write_text(content)
+        self.request['new_config_sha256'] = hashlib.sha256(content.encode()).hexdigest()
+        t.store(self.work / 'request.json', self.request)
+        with self.assertRaisesRegex(t.Refused, 'exact recorded UUID'):
+            self.tx().arm()
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.backend.running, 'old')
+
     def test_changed_boot_artifact_and_lv_uuid_block_start(self):
         tx = self.tx(); tx.arm(); tx.step('stop')
         with patch.object(self.backend, 'artifact', return_value={'sha256': 'e' * 64, 'bytes': 4096}):
@@ -283,6 +296,25 @@ class Transactions(unittest.TestCase):
         with patch.object(t, 'require_dom0'), patch.object(t, 'invoke', return_value={}) as invoke:
             t.main(['boot-recover'])
         invoke.assert_called_once_with(self.work.name, 'boot-recover')
+
+
+class Budgets(unittest.TestCase):
+    def tearDown(self):
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def test_nested_budget_cannot_extend_outer_lock_wait_deadline(self):
+        with self.assertRaisesRegex(t.Refused, 'time budget expired'):
+            with t.budget(0.05):
+                with t.budget(10):
+                    time.sleep(0.2)
+
+    def test_nested_return_restores_remaining_outer_budget(self):
+        with self.assertRaisesRegex(t.Refused, 'time budget expired'):
+            with t.budget(0.1):
+                with t.budget(10):
+                    time.sleep(0.02)
+                self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+                time.sleep(0.2)
 
 
 if __name__ == '__main__':

@@ -56,7 +56,14 @@ def test_backend(t, work, resources):
             if not path.is_relative_to(work):
                 raise RuntimeError('test cannot start a production configuration')
             content = path.read_text()
-            config, disks = t.configuration(content, 'bak', identities['new'] if path.name == 'new.cfg' else identities['old'])
+            for identity in identities.values():
+                try:
+                    config, disks = t.configuration(content, 'bak', identity)
+                    break
+                except t.Refused:
+                    continue
+            else:
+                raise RuntimeError('test configuration does not have a recorded UUID')
             if any(p not in allocated for p in disks):
                 raise RuntimeError('test configuration references a disk it did not allocate')
             config['name'] = name
@@ -82,7 +89,7 @@ def test_backend(t, work, resources):
     return TestNative()
 
 
-def watchdog():
+def worker():
     # No caller-selected path or production installation. Only this protected
     # disposable test's recorded disks and UUIDs are available to the worker.
     work = Path(__file__).resolve().parent
@@ -203,10 +210,12 @@ def main():
                 else:
                     with open(path, 'wb', buffering=0) as target:
                         target.write((side + '-retained-data\n').encode()); os.fsync(target.fileno())
-        scenarios = ['stopped', 'booted', 'accepted']
+        scenarios = ['stopped', 'booted', 'accepted',
+                     'restart-stopped', 'restart-booted', 'restart-accepted']
         if args.watchdog_expiry:
             scenarios.append('watchdog-expiry')
         for scenario in scenarios:
+            stage = scenario.removeprefix('restart-')
             operation = uuid.uuid4().hex[:24]
             directory = t.BASE / 'operations' / operation; directory.mkdir()
             request = {'kind': 'klokast.vm-switch.v1', 'operation_id': operation, 'box': args.box,
@@ -230,14 +239,20 @@ def main():
             backend.start(directory / 'old.cfg')
             started = time.monotonic()
             t.invoke(operation, 'arm'); t.invoke(operation, 'stop')
-            if scenario != 'stopped': t.invoke(operation, 'start')
-            if scenario == 'accepted':
+            if stage != 'stopped': t.invoke(operation, 'start')
+            if stage == 'accepted':
                 # Synthetic success exercises acceptance ordering only. It is
                 # never exported as release or application-test evidence.
                 t.store(directory / 'checks.json', {'request_sha256': t.digest(request), 'checks': {
                     k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
                                      'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
                 t.invoke(operation, 'tested'); t.invoke(operation, 'accept'); t.invoke(operation, 'complete')
+            if scenario == 'restart-accepted':
+                # Stand in for writes admitted after production acceptance.
+                # These bytes must remain on the selected disk after recovery.
+                path = next(p for p in allocated if p.endswith('_new_data'))
+                with open(path, 'r+b', buffering=0) as target:
+                    target.seek(4096); target.write(b'accepted-production-write\n'); os.fsync(target.fileno())
             if scenario == 'watchdog-expiry':
                 state = t.read(directory / 'journal.json')
                 expires = state['deadline']
@@ -258,12 +273,24 @@ def main():
                     state = t.read(directory / 'journal.json')
                 if state['stage'] != 'recovered' or time.monotonic() - started < 1800:
                     raise RuntimeError('native watchdog failed or recovered before the deadline')
+            elif scenario.startswith('restart-'):
+                guest = t.Transaction(directory, backend).guest()
+                if guest:
+                    backend.stop(guest, False)
+                # This exercises the boot entry point in a new interpreter
+                # after loss of the guest and all parent transaction objects.
+                # It does not emulate the host's physical boot or OpenRC.
+                t.command(['/usr/bin/python3', t.HELPER, 'boot-recover'], timeout=1800)
+                if stage == 'accepted':
+                    # Accepted recovery publishes the chosen definition.
+                    # Normal Xen autostart is responsible for starting it.
+                    backend.start(t.XEN / 'bak.cfg')
             else:
                 t.invoke(operation, 'recover')
             # Re-open only the on-disk journal. No controller input is used.
             recovered = t.Transaction(directory, backend)
             guest = recovered.guest()
-            expected = 'new' if scenario == 'accepted' else 'old'
+            expected = 'new' if stage == 'accepted' else 'old'
             if guest['config']['c_info']['uuid'] != identities[expected]:
                 raise RuntimeError('recovery selected the wrong disk generation')
             for path in allocated:
@@ -272,12 +299,15 @@ def main():
                     with open(path, 'rb') as source:
                         if source.read(len(side) + 15) != (side + '-retained-data\n').encode():
                             raise RuntimeError('retained data changed during recovery')
+            if scenario == 'restart-accepted':
+                path = next(p for p in allocated if p.endswith('_new_data'))
+                with open(path, 'rb') as source:
+                    source.seek(4096)
+                    if source.read(26) != b'accepted-production-write\n':
+                        raise RuntimeError('accepted production write changed during boot recovery')
             results.append({'stage': scenario, 'recovered_side': expected, 'data_unchanged': True,
                             'elapsed_seconds': round(time.monotonic() - started, 3)})
             backend.stop(guest, True)
-        t.store(work / 'result.json', {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': args.operation_id,
-                                     'success': True, 'tests': results, 'production_replacement': False,
-                                     'watchdog_tested': args.watchdog_expiry, 'dom0_reboot_tested': False})
     finally:
         stop_watchdogs(t)
         matches = [r for r in native.inventory() if r['config']['c_info']['name'] == name]
@@ -295,11 +325,17 @@ def main():
         if current != production:
             raise RuntimeError('domain inventory changed during the recovery test')
         t.store(work / 'cleanup.json', {'disks_removed': True, 'guest_absent': True, 'production_uuids_unchanged': True})
-    print(t.canonical(t.read(work / 'result.json')))
+    # Publish success only after worker, guest, and LV cleanup all pass.
+    result = {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': args.operation_id,
+              'success': True, 'tests': results, 'production_replacement': False,
+              'watchdog_tested': args.watchdog_expiry, 'process_restart_tested': True,
+              'dom0_reboot_tested': False}
+    t.store(work / 'result.json', result)
+    print(t.canonical(result))
     os.close(lock)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == 'watch':
-        raise SystemExit(watchdog())
+    if len(sys.argv) > 1 and sys.argv[1] in {'watch', 'boot-recover'}:
+        raise SystemExit(worker())
     main()
