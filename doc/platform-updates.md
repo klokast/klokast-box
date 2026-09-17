@@ -204,8 +204,16 @@ expired budgets, foreign disk attachments, and stale role pointers.
 using a previously boot-tested candidate. It allocates two new OS/data LV
 pairs and tests recovery from stopped, booted, and accepted stages. It does
 not install the production helper, change `/etc/xen`, or test real applications.
-The test substitutes watchdog and apkovl persistence interfaces. Native
-watchdog expiry and physical dom0 reboot tests remain separate acceptance gates.
+The test runs the native detached watchdog, with its process identity checks,
+operation locks, command budgets, and journal dispatch. It substitutes only
+the test domain name, assignment directory, and apkovl persistence interface.
+Add `-e '{"recovery_watchdog_expiry":true}'` to test the full 30-minute
+replacement deadline. This fourth case leaves the candidate unaccepted and
+requires the watchdog to restore the old guest without a controller recovery
+command. It keeps both data markers unchanged. The test stops its workers
+before removing its disks, including after a failure. This mode has a
+70-minute limit to allow the full replacement and recovery budgets plus test
+setup. A physical dom0 reboot remains a separate acceptance gate.
 
 On 2026-09-17, operation `61ab8c3297a98b8828a5e86f` passed all three native
 Xen cases on k002-dom0 with candidate `0d66858d5082567778a3d3b3`. Test data
@@ -214,7 +222,7 @@ test LVs, and verified that production domain UUIDs stayed unchanged. No
 production VM was replaced and the production boot hook was not installed.
 The final code at `2b9684f` passed the same native cases in operation
 `407a52ac0bbe921c4e828c0b`, including cleanup. The relevant unit suites passed
-74 tests. Native watchdog expiry and physical dom0 reboot remain untested.
+74 tests. Native watchdog expiry and physical dom0 reboot remain untested at that commit.
 
 To repeat on an approved test target, run from the active controller's public
 candidate checkout. Use a new random 24-character lowercase hex operation ID

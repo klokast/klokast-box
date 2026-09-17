@@ -2,9 +2,10 @@
 """Test disk-switch recovery with new LVs and one networkless Xen guest.
 
 This test never installs the production helper or edits /etc/xen. It substitutes
-only the test domain name, test assignment directory, and watchdog/persistence
-interfaces. Disk checks, native Xen transitions, and durable journals use the
-production transaction implementation. It does not qualify application health.
+only the test domain name, test assignment directory, and persistence
+interface. The native watchdog runs as a separate detached process. Disk checks,
+native Xen transitions, and durable journals use the production transaction
+implementation. It does not qualify application health.
 """
 import argparse
 import fcntl
@@ -18,6 +19,7 @@ import re
 import shutil
 import signal
 import socket
+import sys
 import time
 import uuid
 
@@ -30,11 +32,101 @@ def load(path):
     return module
 
 
+def test_backend(t, work, resources):
+    """Keep test substitutions identical in the parent and detached watchdog."""
+    t.BASE = work / 'state'; t.XEN = work / 'xen'
+    t.HELPER = str(work / 'vm-update-recovery-test')
+    native = t.Native()
+    name, identities, allocated = resources['domain'], resources['uuids'], resources['disks']
+
+    class TestNative(t.Native):
+        def inventory(self):
+            rows = super().inventory()
+            for row in rows:
+                info = row['config']['c_info']
+                if info['name'] == name:
+                    if info['uuid'] not in identities.values():
+                        raise RuntimeError('test domain UUID changed')
+                    info['name'] = 'bak'
+                elif info['name'] == 'bak':
+                    info['name'] = 'production-bak'
+            return rows
+
+        def start(self, path):
+            if not path.is_relative_to(work):
+                raise RuntimeError('test cannot start a production configuration')
+            content = path.read_text()
+            config, disks = t.configuration(content, 'bak', identities['new'] if path.name == 'new.cfg' else identities['old'])
+            if any(p not in allocated for p in disks):
+                raise RuntimeError('test configuration references a disk it did not allocate')
+            config['name'] = name
+            # The test guest has no network, credentials, or autostart entry.
+            config['vif'] = []
+            config['memory'] = 2048; config['maxmem'] = 2048
+            output = work / 'disposable.cfg'
+            t.atomic(output, ('\n'.join(k + ' = ' + repr(v) for k, v in config.items()) + '\n').encode())
+            t.command(['xl', 'create', output])
+            time.sleep(5)
+
+        def stop(self, record, graceful):
+            matches = [r for r in native.inventory() if r['domid'] == record['domid']]
+            if (len(matches) != 1 or matches[0]['config']['c_info']['name'] != name or
+                    matches[0]['config']['c_info']['uuid'] != record['config']['c_info']['uuid']):
+                raise RuntimeError('test cannot stop a production domain')
+            return super().stop(record, graceful)
+
+        def persist(self):
+            t.syncdir(t.XEN)  # Never writes the production apkovl.
+
+    t.Native = TestNative
+    return TestNative()
+
+
+def watchdog():
+    # No caller-selected path or production installation. Only this protected
+    # disposable test's recorded disks and UUIDs are available to the worker.
+    work = Path(__file__).resolve().parent
+    if (work.parent != Path('/mnt/dom0_data/klokast-vm-recovery-tests') or
+            not re.fullmatch(r'[0-9a-f]{24}', work.name) or os.geteuid() != 0):
+        raise RuntimeError('watchdog test requires a protected disposable operation')
+    t = load(work / 'vm-update-transaction')
+    t.secure(work.parent, True); t.secure(work, True)
+    resources = t.read(work / 'resources.json')
+    if resources['domain'] != 'vm-recovery-test-' + work.name:
+        raise RuntimeError('watchdog test domain does not match its directory')
+    test_backend(t, work, resources)
+    return t.main(sys.argv[1:])
+
+
+def stop_watchdogs(t):
+    """Finish all test workers before disks are removed, including on failure."""
+    for directory in sorted((t.BASE / 'operations').iterdir()):
+        if not (directory / 'journal.json').exists():
+            continue
+        identity = t.read(directory / 'journal.json').get('watcher')
+        if not identity:
+            continue
+        backend = t.Native()
+        if backend.watcher_alive(identity, directory.name):
+            os.kill(identity['pid'], signal.SIGTERM)
+        deadline = time.monotonic() + 10
+        while backend.watcher_alive(identity, directory.name):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('test watchdog did not stop; disks retained')
+            time.sleep(0.1)
+        try:
+            os.waitpid(identity['pid'], os.WNOHANG)
+        except ChildProcessError:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--watchdog-expiry', action='store_true',
+                        help='also wait for the native 30-minute replacement deadline')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -89,54 +181,7 @@ def main():
     allocated, results = {}, []
     identities = {side: str(uuid.uuid4()) for side in ('old', 'new')}
 
-    class TestNative(t.Native):
-        def inventory(self):
-            rows = super().inventory()
-            for row in rows:
-                info = row['config']['c_info']
-                if info['name'] == name:
-                    if info['uuid'] not in identities.values():
-                        raise RuntimeError('test domain UUID changed')
-                    info['name'] = 'bak'
-                elif info['name'] == 'bak':
-                    info['name'] = 'production-bak'
-            return rows
-
-        def start(self, path):
-            if not path.is_relative_to(work):
-                raise RuntimeError('test cannot start a production configuration')
-            content = path.read_text()
-            config, disks = t.configuration(content, 'bak', identities['new'] if path.name == 'new.cfg' else identities['old'])
-            if any(p not in allocated for p in disks):
-                raise RuntimeError('test configuration references a disk it did not allocate')
-            config['name'] = name
-            # The test guest has no network, credentials, or autostart entry.
-            config['vif'] = []
-            config['memory'] = 2048; config['maxmem'] = 2048
-            output = work / 'disposable.cfg'
-            t.atomic(output, ('\n'.join(k + ' = ' + repr(v) for k, v in config.items()) + '\n').encode())
-            t.command(['xl', 'create', output])
-            time.sleep(5)
-
-        def stop(self, record, graceful):
-            matches = [r for r in native.inventory() if r['domid'] == record['domid']]
-            if (len(matches) != 1 or matches[0]['config']['c_info']['name'] != name or
-                    matches[0]['config']['c_info']['uuid'] != record['config']['c_info']['uuid']):
-                raise RuntimeError('test cannot stop a production domain')
-            return super().stop(record, graceful)
-
-        def watch(self, operation, directory):
-            # Native state-transition testing is independent of the 30-minute
-            # watchdog wait. Unit tests separately check a missing watchdog.
-            return {'test_only': True, 'operation': operation}
-
-        def watcher_alive(self, identity, operation):
-            return identity == {'test_only': True, 'operation': operation}
-
-        def persist(self):
-            t.syncdir(t.XEN)  # Never writes the production apkovl.
-
-    backend = TestNative()
+    backend = test_backend(t, work, {'domain': name, 'uuids': identities, 'disks': allocated})
     def interrupted(signum, frame):
         raise RuntimeError('disposable recovery test interrupted; cleaning its own resources')
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -158,7 +203,10 @@ def main():
                 else:
                     with open(path, 'wb', buffering=0) as target:
                         target.write((side + '-retained-data\n').encode()); os.fsync(target.fileno())
-        for scenario in ('stopped', 'booted', 'accepted'):
+        scenarios = ['stopped', 'booted', 'accepted']
+        if args.watchdog_expiry:
+            scenarios.append('watchdog-expiry')
+        for scenario in scenarios:
             operation = uuid.uuid4().hex[:24]
             directory = t.BASE / 'operations' / operation; directory.mkdir()
             request = {'kind': 'klokast.vm-switch.v1', 'operation_id': operation, 'box': args.box,
@@ -180,19 +228,40 @@ def main():
             t.store(directory / 'request.json', request)
             t.atomic(t.XEN / 'bak.cfg', (directory / 'old.cfg').read_bytes())
             backend.start(directory / 'old.cfg')
-            tx = t.Transaction(directory, backend)
-            tx.arm(); tx.step('stop')
-            if scenario != 'stopped': tx.step('start')
+            started = time.monotonic()
+            t.invoke(operation, 'arm'); t.invoke(operation, 'stop')
+            if scenario != 'stopped': t.invoke(operation, 'start')
             if scenario == 'accepted':
                 # Synthetic success exercises acceptance ordering only. It is
                 # never exported as release or application-test evidence.
                 t.store(directory / 'checks.json', {'request_sha256': t.digest(request), 'checks': {
                     k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
                                      'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
-                tx.step('tested'); tx.step('accept'); tx.step('complete')
+                t.invoke(operation, 'tested'); t.invoke(operation, 'accept'); t.invoke(operation, 'complete')
+            if scenario == 'watchdog-expiry':
+                state = t.read(directory / 'journal.json')
+                expires = state['deadline']
+                t.store(work / 'waiting.json', {'operation_id': operation, 'deadline': expires,
+                                               'watcher': state['watcher']})
+                # Do not shorten deadlines or ask for recovery. The detached
+                # worker must perform the disk switch on its own at expiry.
+                while state['stage'] not in t.TERMINAL:
+                    if time.time() >= expires + 1800 or time.monotonic() - started >= 3600:
+                        raise RuntimeError('native watchdog did not recover within its full budget')
+                    if not backend.watcher_alive(state['watcher'], operation):
+                        # A worker can finish between reading state and /proc.
+                        state = t.read(directory / 'journal.json')
+                        if state['stage'] != 'recovered':
+                            raise RuntimeError('native watchdog exited before recovery')
+                        break
+                    time.sleep(2)
+                    state = t.read(directory / 'journal.json')
+                if state['stage'] != 'recovered' or time.monotonic() - started < 1800:
+                    raise RuntimeError('native watchdog failed or recovered before the deadline')
+            else:
+                t.invoke(operation, 'recover')
             # Re-open only the on-disk journal. No controller input is used.
             recovered = t.Transaction(directory, backend)
-            recovered.recover()
             guest = recovered.guest()
             expected = 'new' if scenario == 'accepted' else 'old'
             if guest['config']['c_info']['uuid'] != identities[expected]:
@@ -203,12 +272,14 @@ def main():
                     with open(path, 'rb') as source:
                         if source.read(len(side) + 15) != (side + '-retained-data\n').encode():
                             raise RuntimeError('retained data changed during recovery')
-            results.append({'stage': scenario, 'recovered_side': expected, 'data_unchanged': True})
+            results.append({'stage': scenario, 'recovered_side': expected, 'data_unchanged': True,
+                            'elapsed_seconds': round(time.monotonic() - started, 3)})
             backend.stop(guest, True)
         t.store(work / 'result.json', {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': args.operation_id,
                                      'success': True, 'tests': results, 'production_replacement': False,
-                                     'watchdog_tested': False, 'dom0_reboot_tested': False})
+                                     'watchdog_tested': args.watchdog_expiry, 'dom0_reboot_tested': False})
     finally:
+        stop_watchdogs(t)
         matches = [r for r in native.inventory() if r['config']['c_info']['name'] == name]
         for record in matches:
             if record['config']['c_info']['uuid'] not in identities.values():
@@ -229,4 +300,6 @@ def main():
 
 
 if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'watch':
+        raise SystemExit(watchdog())
     main()
