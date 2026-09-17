@@ -142,6 +142,10 @@ without emitting their contents. It does not follow directory symlinks or cross
 other mounts. It records the standard Podman store as separately inventoried;
 this does not approve the store's contents. Directory, path, output, and time
 limits keep the inspection bounded. Missing or changed evidence stays unknown.
+An unowned directory is an unresolved storage root. Its contents are not
+enumerated by this metadata pass and must remain intact until an approved
+adapter accounts for them. Mount boundaries inside such a root remain visible.
+This prevents large application trees from hiding all other host evidence.
 
 The two metadata passes check topology and ownership stability, not a consistent
 data snapshot. APK path ownership is only a hint; it does not prove installed

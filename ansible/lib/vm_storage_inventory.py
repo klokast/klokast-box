@@ -223,7 +223,7 @@ def assess_host_data(fact, host):
                 not path(v['path']) or not isinstance(v.get('sha256', v.get('link_sha256')), str) or
                 not HASH.fullmatch(v.get('sha256', v.get('link_sha256'))) for v in maintenance) or
             any(not isinstance(v, dict) or set(v) != {'path', 'reason'} or not path(v['path']) or
-                v['reason'] not in ('mount', 'podman-store') for v in delegated) or
+                v['reason'] not in ('mount', 'podman-store', 'unclassified-directory') for v in delegated) or
             any(len({v['path'] for v in rows}) != len(rows) for rows in (unowned, maintenance, delegated))):
         add('host.paths-unknown', 'Host metadata contains an invalid, duplicate, or excessive path inventory.')
         return result

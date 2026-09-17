@@ -26,7 +26,7 @@ class HostInventory(unittest.TestCase):
         (self.root / 'etc/runlevels/default/sample').symlink_to('../../init.d/sample')
         (self.root / 'srv/data/user-file').write_text('PRIVATE APPLICATION CONTENT')
         (self.root / 'proc/must-not-read').write_text('PRIVATE PROC CONTENT')
-        (self.root / 'lib/apk/db/installed').write_text('P:base\nV:1\nF:etc\nR:passwd\nF:etc/init.d\nR:sample\n')
+        (self.root / 'lib/apk/db/installed').write_text('P:base\nV:1\nF:etc\nR:passwd\nF:etc/init.d\nR:sample\nF:srv\nF:srv/data\n')
         self.mounts = [{'path': '/', 'type': 'ext4', 'root': '/', 'device': '1:1'},
                        {'path': '/proc', 'type': 'proc', 'root': '/', 'device': '0:1'}]
         self.graph = '/home/neo/.local/share/containers/storage'
@@ -144,6 +144,20 @@ class HostInventory(unittest.TestCase):
         result = storage.assess_host_data({'host_inventory': value}, 'boxa-bak')
         self.assertFalse(result['adoption_ready'])
         self.assertIn('host.accounting-unverified', {v['code'] for v in result['findings']})
+
+    def test_unclassified_directory_is_an_unresolved_root_not_implicitly_disposable(self):
+        opaque = self.root / 'srv/unknown'
+        opaque.mkdir()
+        (opaque / 'private').write_text('keep all contents')
+        self.mounts.append({'path': '/srv/unknown/nested', 'type': 'ext4', 'root': '/', 'device': '2:1'})
+        value = self.collect()
+        self.assertTrue(value['complete'])
+        self.assertIn({'path': '/srv/unknown', 'reason': 'unclassified-directory'}, value['delegated_roots'])
+        self.assertIn({'path': '/srv/unknown/nested', 'reason': 'mount'}, value['delegated_roots'])
+        self.assertNotIn('/srv/unknown/private', {v['path'] for v in value['unowned_paths']})
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-bak')
+        self.assertFalse(result['adoption_ready'])
+        self.assertIn('host.unowned-paths', {v['code'] for v in result['findings']})
 
 
 if __name__ == '__main__':
