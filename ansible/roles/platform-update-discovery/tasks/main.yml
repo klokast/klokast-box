@@ -1,0 +1,55 @@
+---
+- name: Verify explicit active-controller role before installing discovery
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/klokast-controller-guard
+      - --status
+      - --json
+      - --require-active
+  register: platform_update_controller
+  changed_when: false
+
+- name: Refuse unconfigured controller discovery installation
+  ansible.builtin.assert:
+    that:
+      - (platform_update_controller.stdout | from_json).configured | bool
+      - (platform_update_controller.stdout | from_json).active | bool
+
+- name: Reserve the update state parent for root-owned execution records
+  ansible.builtin.file:
+    path: /var/lib/klokast/updates
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create non-authoritative controller discovery and cache directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: smith
+    group: smith
+    mode: "0700"
+  loop:
+    - /var/lib/klokast/updates/discovery
+    - /var/cache/klokast/updates
+
+- name: Schedule bounded daily VM discovery with the OS cron facility
+  ansible.builtin.cron:
+    name: klokast-vm-update-discovery
+    user: smith
+    minute: "10"
+    hour: "0"
+    job: >-
+      /usr/bin/timeout 1500 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update scan
+      > /var/lib/klokast/updates/discovery/cron-scan.log 2>&1
+
+- name: Schedule bounded hourly update evidence verification
+  ansible.builtin.cron:
+    name: klokast-vm-update-verification
+    user: smith
+    minute: "20"
+    hour: "*"
+    job: >-
+      /usr/bin/timeout 120 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update verify
+      > /var/lib/klokast/updates/discovery/cron-verify.log 2>&1

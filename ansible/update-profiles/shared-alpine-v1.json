@@ -1,0 +1,16 @@
+{
+  "kind": "klokast.vm-template-profile.v1",
+  "profile": "shared-alpine-v1",
+  "architecture": "x86_64",
+  "roles": ["bak", "dmz", "iot"],
+  "packages": [
+    "alpine-base", "ca-certificates", "doas", "e2fsprogs", "fuse-overlayfs",
+    "iproute2", "iptables", "jq", "linux-virt", "mkinitfs", "nftables",
+    "podman", "python3", "rsync", "shadow-subids", "slirp4netns",
+    "tailscale", "tailscale-openrc", "tzdata"
+  ],
+  "repositories": ["main", "community"],
+  "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",
+  "security_origin": "https://secdb.alpinelinux.org",
+  "release_metadata": "https://alpinelinux.org/releases.json"
+}

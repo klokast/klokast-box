@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Controller-local VM update discovery and reports. No VM mutation authority."""
+
+import argparse
+import datetime as dt
+import fcntl
+import functools
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "ansible/lib"))
+from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, digest,
+                              findings, fresh, health, parse_apk_database, timestamp,
+                              unique_object, VERIFY_AGE)
+from platform_update_metadata import collect_branch, compare_versions
+
+STATE = Path("/var/lib/klokast/updates/discovery")
+CACHE = Path("/var/cache/klokast/updates")
+PROFILE = REPO / "ansible/update-profiles/shared-alpine-v1.json"
+GUARD = Path("/usr/local/sbin/klokast-controller-guard")
+HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def load(path):
+    if not path.is_file() or path.is_symlink() or path.stat().st_size > 64 * 1024 * 1024:
+        raise UpdateError("evidence file is absent, unsafe, or too large: " + str(path))
+    return json.loads(path.read_text(), object_pairs_hook=unique_object)
+
+
+def optional(path):
+    return load(path) if path.exists() else None
+
+
+def write(path, value):
+    # State paths are fixed and live outside both Git repositories.
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".update-", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(canonical(value) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        temporary.replace(path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def command(argv, *, timeout=120, log=None):
+    try:
+        # Each bounded child has its own group. A timeout also stops its SSH
+        # and Ansible children instead of leaving an abandoned scan running.
+        with subprocess.Popen([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                              stdout=log or subprocess.PIPE, stderr=log or subprocess.PIPE,
+                              text=True, start_new_session=True) as process:
+            try:
+                stdout, _stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                raise UpdateError("bounded inspection command timed out")
+            if process.returncode:
+                raise UpdateError("inspection command failed; inspect the controller scan log")
+            return stdout or ""
+    except OSError as error:
+        raise UpdateError("required controller tool is unavailable") from error
+
+
+def require_controller():
+    status = json.loads(command([GUARD, "--status", "--json", "--require-active"]), object_pairs_hook=unique_object)
+    if status.get("active") is not True or status.get("configured") is not True or status.get("role") != "active":
+        raise UpdateError("VM update inspection requires the explicitly active controller")
+    local = socket.gethostname().split(".")[0]
+    if status.get("hostname") != local or not local.endswith("-ops") or local.startswith(("vultr-", "hetzner-")):
+        raise UpdateError("run this command on the active box controller as smith")
+    if os.geteuid() == 0 or __import__("pwd").getpwuid(os.geteuid()).pw_name != "smith":
+        raise UpdateError("run update discovery as smith; it has no root executor interface")
+    return status
+
+
+def targets_from_map(mapping):
+    """Inventory every configured or observed Xen VM; never start a stopped VM."""
+    targets = {}
+    for box, data in sorted(mapping["boxes"].items()):
+        if not HOST.fullmatch(box):
+            raise UpdateError("mapper contains an invalid box name")
+        for role in ("router", "bak", "dmz", "iot", "ops"):
+            machine = data.get("machines", {}).get(role)
+            if machine is not None or role != "ops":
+                targets[box + "-" + role] = {"box": box, "role": role}
+        for host, entry in data.get("app_vms", {}).items():
+            targets[host] = {"box": box, "role": "dedicated", "app": entry.get("app")}
+        xen = data.get("dom0", {}).get("xen", {})
+        for entry in xen.get("domains", []):
+            guest = entry.get("name", "")
+            if guest == "Domain-0":
+                continue
+            host = box + "-" + guest
+            targets.setdefault(host, {"box": box, "role": "unknown"})
+        for name in xen.get("config_files", []):
+            guest = Path(name).stem
+            targets.setdefault(box + "-" + guest, {"box": box, "role": "unknown"})
+        for host, target in targets.items():
+            if target["box"] != box:
+                continue
+            guest = host[len(box) + 1:]
+            target["runtime"] = "unknown"
+            if xen.get("available") is True:
+                target["runtime"] = "running" if any(v.get("name") == guest for v in xen.get("domains", [])) else "stopped"
+    if not targets or any(not HOST.fullmatch(host) for host in targets):
+        raise UpdateError("mapper VM inventory is empty or contains invalid names")
+    return targets
+
+
+def collect_facts(targets, directory, log):
+    hosts = {}
+    for host, target in targets.items():
+        if target["runtime"] != "running" or target["role"] == "unknown":
+            continue
+        hosts[host] = {"ansible_host": host, "ansible_user": "smith" if target["role"] == "ops" else "neo",
+                       "ansible_become_method": "doas", "ansible_become_flags": "-n",
+                       "ansible_python_interpreter": "/usr/bin/python3",
+                       "ansible_ssh_common_args": "-o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2",
+                       "ansible_timeout": 15}
+    if not hosts:
+        return
+    inventory = directory / "inventory.json"
+    write(inventory, {"all": {"hosts": hosts}})
+    arguments = directory / "arguments.json"
+    write(arguments, {"vm_update_fact_dir": str(directory)})
+    command(["ansible-playbook", "-vv", "-i", inventory,
+             REPO / "ansible/playbooks/74-platform-update-scan.yml", "-e", "@" + str(arguments)], timeout=600, log=log)
+
+
+def scan(refresh=True):
+    require_controller()
+    if not STATE.is_dir() or not CACHE.is_dir():
+        raise UpdateError("install the platform-update-discovery Ansible role before scanning")
+    with (STATE / "scan.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise UpdateError("another discovery operation holds the installation lock") from error
+        started = now()
+        report = {"kind": REPORT_KIND, "generated_at": timestamp(started), "hosts": [], "findings": [],
+                  "source_controller": socket.gethostname(), "profile_sha256": digest(load(PROFILE)),
+                  "implementation_commit": command(["git", "-C", REPO, "rev-parse", "HEAD"]).strip(),
+                  "complete": False}
+        # Invalidate the prior report before any remote or metadata work starts.
+        write(STATE / "current.json", {**report, "findings": [findings("discovery.incomplete", "Discovery has started but has not completed.", "critical")]})
+        with (STATE / "scan.log").open("w") as log:
+            try:
+                if refresh:
+                    command([REPO / "ansible/bin/platform-map", "refresh", "--remote-scope", "dom0"], timeout=600, log=log)
+                mapping = load(REPO / ".run/platform-map/current.json")
+                if not fresh(mapping.get("generated_at"), now(), VERIFY_AGE):
+                    raise UpdateError("the Platform map is stale; refresh it on the active controller")
+                targets = targets_from_map(mapping)
+                profile = load(PROFILE)
+                facts = {}
+                with tempfile.TemporaryDirectory(prefix="facts-", dir=STATE) as work:
+                    directory = Path(work)
+                    try:
+                        collect_facts(targets, directory, log)
+                    except UpdateError:
+                        report["findings"].append(findings("inventory.partial", "VM collection failed for one or more targets.", "critical"))
+                    for host, target in targets.items():
+                        fact = optional(directory / (host + ".json"))
+                        if fact:
+                            fact.update(target)
+                            # Controller time bounds the collection. Guest clock drift
+                            # stays visible without granting freshness to old files.
+                            fact["guest_observed_at"] = fact["observed_at"]
+                            fact["observed_at"] = timestamp(now())
+                            release = fact.get("os", {}).get("version_id", "").split(".")
+                            fact["branch"] = "v" + ".".join(release[:2]) if len(release) >= 2 else ""
+                            try:
+                                fact["packages"] = parse_apk_database(fact.pop("apk_database", ""))
+                            except UpdateError:
+                                fact["packages"] = {}
+                        facts[host] = fact
+                metadata = {}
+                branches = sorted({v["branch"] for v in facts.values() if v and v.get("os", {}).get("id") == "alpine" and re.fullmatch(r"v[0-9]+\.[0-9]+", v.get("branch", ""))})
+                for branch in branches:
+                    print("platform-update: verify official repository metadata for " + branch, file=sys.stderr)
+                    metadata[branch] = collect_branch(branch, CACHE, profile, now())
+                compare = functools.lru_cache(maxsize=16384)(compare_versions)
+                for host, target in sorted(targets.items()):
+                    result = assess_host(host, facts[host], metadata, profile["packages"], compare, now())
+                    result["target"] = target
+                    if target["runtime"] == "stopped":
+                        result["findings"].append(findings("replacement.stopped", "VM is stopped; replacement is deferred until an approved start.", scope=host))
+                    report["hosts"].append(result)
+                # Keep raw official evidence separate from the concise report.
+                write(STATE / "metadata.json", metadata)
+                report["metadata_sha256"] = digest(metadata)
+                report["complete"] = True
+            except (UpdateError, KeyError, ValueError, TypeError) as error:
+                report["findings"].append(findings("discovery.failed", str(error), "critical"))
+            report["generated_at"] = timestamp(now())
+            write(STATE / "current.json", report)
+        return report
+
+
+def display(report, as_json):
+    if as_json:
+        print(json.dumps(report, sort_keys=True, indent=2))
+        return
+    print("VM update report: " + report.get("generated_at", "missing"))
+    for item in report.get("hosts", []):
+        print(f"{item['host']}: {item['update_status']}; profile={item['profile']}; updates={len(item['updates'])}; security={len(item['security_fixes'])}; replacement=blocked")
+        for finding in item["findings"]:
+            print("  " + finding["code"] + ": " + finding["message"])
+    for finding in report.get("findings", []):
+        print(f"{finding['severity']}: {finding['code']}: {finding['message']}")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    scan_parser = sub.add_parser("scan", help="collect all VM facts and official Alpine metadata")
+    scan_parser.add_argument("--existing-map", action="store_true", help="use a fresh controller map; still collect new VM facts")
+    for name in ("status", "verify"):
+        sub.add_parser(name, help="report current evidence and overdue work" if name == "status" else "check discovery coverage; accepted-release verification is not installed")
+    for command_parser in (scan_parser, *[sub.choices[n] for n in ("status", "verify")]):
+        command_parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    os.umask(0o077)
+    try:
+        os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
+        os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command == "scan":
+            report = scan(not args.existing_map)
+        else:
+            require_controller()
+            report = optional(STATE / "current.json")
+            verification = optional(STATE / "verification.json")
+            if args.command == "verify":
+                # Do not claim a successful release check from a recent scan.
+                verification = {"kind": "klokast.vm-update-verification.v1", "generated_at": timestamp(now()),
+                                "verified": False, "findings": [findings("release.unverified", "Accepted release assignments and a replacement verifier are not installed.", "critical")]}
+                write(STATE / "verification.json", verification)
+            current_findings = health(report, verification, now())
+            report = {"kind": "klokast.vm-update-status.v1", "generated_at": timestamp(now()),
+                      "hosts": [], "findings": current_findings}
+        display(report, args.json)
+        return 1 if any(v["severity"] == "critical" for v in report["findings"] + [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
+    except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
+        print("platform-update: " + str(error), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

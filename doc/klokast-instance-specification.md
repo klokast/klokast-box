@@ -240,6 +240,60 @@ authorizes deletion of unknown or undeclared storage.
 The instance records desired state, not observed state. Do not add `running`,
 `stopped`, health, container, VM, or service-status fields.
 
+## Shared VM update intent
+
+The optional `vm-updates` object declares standing update intent. Omission
+disables automatic replacement. This is a closed input contract:
+
+```json
+"vm-updates": {
+  "enabled": true,
+  "targets": {"boxa": ["bak", "dmz", "iot"]},
+  "exclusions": [],
+  "branch-policy": "tested-stable",
+  "maintenance-window": {"start": "02:00", "end": "04:00", "last-start": "03:00"},
+  "canary-hours": 24,
+  "replacement-minutes": 30,
+  "recovery-minutes": 30
+}
+```
+
+Each target must name a declared box and one or more shared roles. Router,
+controller, dedicated app VM, Debian, and Ubuntu replacement are outside this
+contract. A durable exclusion has `box`, `role`, and a non-empty `reason`.
+It must refer to a declared target. Each target can have only one exclusion.
+The canary period can be 24 to 168 hours. Other timing values are fixed in
+this release. All times are UTC. One installation can replace only one VM at
+a time. Necessary recovery can continue after the maintenance window closes.
+
+The policy changes the desired-state projection hash. Target and exclusion
+ordering does not change that hash. It does not change the engine lock.
+Enabling this field alone does not authorize execution. The activation rules
+are in [Secret Authority](secret-authority.md#standing-vm-update-authority).
+See [VM updates](platform-updates.md) for implementation status and commands.
+
+Source recipes, package lists, tests, and maintenance adapters belong to the
+approved public engine. Logical data retention stays in `apps.<app>.data`.
+Physical LV and mount mappings, package manifests, exact active and previous
+release assignments, build receipts, inventory, and operation journals are
+generated controller records under `/var/lib/klokast`. Rebuildable downloads
+use `/var/cache/klokast`. Persistent artifact storage holds disks and matching
+kernel and initramfs files by checksum. Secret stores and retained data volumes
+remain separate. None of these outputs belongs in the private repository.
+
+An accepted operation also needs a narrow persistent copy on its box. That
+copy permits offline boot and recovery of that exact operation. It cannot
+select a new release. Large artifacts and journals use persistent LVM-backed
+storage outside `.apkovl`; only small boot configuration uses dom0 persistence.
+Generated machine configuration must identify its source, profile, and accepted
+release. A local edit is drift. Discovery cannot promote it to desired state.
+
+Automatic package selection under an activated policy must not write Git.
+`klokast.lock.json` remains an engine lock. Normal provisioning and
+reconciliation must consume the same accepted release assignment before they
+can manage an adopted guest. They must not restore obsolete repositories,
+packages, Xen boot paths, or kernels.
+
 ## Engine lock
 
 `klokast.lock.json` has this shape:

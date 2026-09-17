@@ -1,0 +1,23 @@
+---
+- name: Collect VM update evidence without changing packages or services
+  ansible.builtin.script:
+    cmd: collect-vm-update-facts
+    executable: python3
+  become: true
+  register: vm_update_collected
+  changed_when: false
+  failed_when: false
+  ignore_unreachable: true
+  no_log: true
+
+- name: Store fresh successful VM update evidence on the controller
+  ansible.builtin.copy:
+    content: "{{ vm_update_collected.stdout | from_json | to_nice_json }}\n"
+    dest: "{{ vm_update_fact_dir }}/{{ inventory_hostname }}.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when:
+    - vm_update_collected.rc | default(1) == 0
+    - vm_update_collected.stdout | default('') | length > 0
+  no_log: true

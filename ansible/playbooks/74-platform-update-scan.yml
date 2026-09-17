@@ -1,0 +1,6 @@
+---
+- name: Collect update inventory for all reachable managed VMs
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: vm-update-inventory

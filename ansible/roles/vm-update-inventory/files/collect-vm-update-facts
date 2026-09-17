@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Bounded VM inspection. Do not emit credentials, container env, or app data."""
+
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import pwd
+import re
+import subprocess
+
+
+def capture(argv):
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+        if len(result.stdout) > 8 * 1024 * 1024:
+            return {"rc": 125, "stdout": ""}
+        return {"rc": result.returncode, "stdout": result.stdout if result.returncode == 0 else ""}
+    except (OSError, subprocess.TimeoutExpired):
+        return {"rc": 124, "stdout": ""}
+
+
+def text(path, maximum=8 * 1024 * 1024):
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = stream.read(maximum + 1)
+        return value if len(value) <= maximum else ""
+    except (OSError, UnicodeError):
+        return ""
+
+
+def read_json_command(argv):
+    result = capture(argv)
+    try:
+        return json.loads(result["stdout"]) if result["rc"] == 0 else None
+    except ValueError:
+        return None
+
+
+def main():
+    release = {}
+    for line in text("/etc/os-release", 16384).splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in ("ID", "VERSION_ID"):
+            release[key.lower()] = value.strip('"')
+    status = read_json_command(["tailscale", "status", "--json"]) or {}
+    configs = {}
+    for name in ("/etc/apk/repositories", "/etc/apk/world", "/etc/fstab", "/etc/nftables.nft",
+                 "/etc/subuid", "/etc/subgid", "/etc/containers/storage.conf", "/etc/containers/registries.conf"):
+        value = text(name, 1024 * 1024)
+        configs[name] = hashlib.sha256(value.encode()).hexdigest() if value else None
+    database = "\n\n".join("\n".join(line for line in block.splitlines() if line[:2] in ("P:", "V:", "o:", "A:"))
+                            for block in text("/lib/apk/db/installed").split("\n\n"))
+    fact = {
+        "kind": "klokast.vm-update-fact.v1",
+        "observed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "hostname": platform.node(), "os": release, "architecture": platform.machine(),
+        "kernel": platform.release(), "apk_database": database,
+        "module_releases": sorted(p.name for p in Path("/lib/modules").glob("*") if p.is_dir()),
+        "other_packages": capture(["dpkg-query", "-W", "-f=${Package}\t${Version}\n"])["stdout"] if release.get("id") in ("debian", "ubuntu") else "",
+        "tailscale": {"running_version": status.get("Version"), "backend_state": status.get("BackendState"),
+                      "client_version": capture(["tailscale", "version"])["stdout"].splitlines()[:1]},
+        "configuration": {"status": "unknown", "sha256": configs},
+        "template_marker": text("/etc/klokast/vm-release.json", 65536),
+        "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
+        "storage": {"mounts": text("/proc/mounts", 1024 * 1024), "capacity": capture(["df", "-Pk"])["stdout"]},
+        "subuid": text("/etc/subuid", 65536), "subgid": text("/etc/subgid", 65536),
+        "containers": None, "volumes": None,
+    }
+    try:
+        account = pwd.getpwnam("neo")
+        fact["runtime_owner"] = {"uid": account.pw_uid, "gid": account.pw_gid}
+        def podman(arguments):
+            # Fixed commands only; no instance or guest strings become shell code.
+            return read_json_command(["su", "-s", "/bin/sh", "-c", "podman " + arguments, "neo"])
+        containers = podman("ps --all --format=json")
+        if isinstance(containers, list):
+            fact["containers"] = [{k: item.get(k) for k in ("Id", "Names", "ImageID", "Image", "State")} for item in containers]
+            # Full inspect results can contain secrets. Select storage and image fields on the guest.
+            ids = [item.get("Id", "") for item in containers]
+            inspected = podman("container inspect " + " ".join(ids)) if ids and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in ids) else ([] if not ids else None)
+            if isinstance(inspected, list):
+                fact["containers"] = [{"id": item.get("Id"), "name": item.get("Name"), "image_id": item.get("Image"),
+                                       "mounts": [{k: m.get(k) for k in ("Type", "Name", "Source", "Destination", "RW")} for m in item.get("Mounts", [])]}
+                                      for item in inspected]
+        volumes = podman("volume inspect --all")
+        if isinstance(volumes, list):
+            fact["volumes"] = [{k: item.get(k) for k in ("Name", "Mountpoint", "Driver")} for item in volumes]
+    except KeyError:
+        fact["runtime_owner"] = None
+    print(json.dumps(fact, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

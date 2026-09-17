@@ -63,14 +63,15 @@ type InputDigest struct {
 }
 
 type Projection struct {
-	Registry      *RegistryProjection `json:"registry,omitempty"`
-	SchemaVersion int                 `json:"schema_version"`
-	Engine        Engine              `json:"engine"`
-	Tailnet       Tailnet             `json:"tailnet"`
-	Sites         []Site              `json:"sites"`
-	Boxes         []Box               `json:"boxes"`
-	ControlPlane  ControlPlane        `json:"control_plane"`
-	Apps          []App               `json:"apps"`
+	VMUpdates     *contract.VMUpdatePolicy `json:"vm_updates,omitempty"`
+	Registry      *RegistryProjection      `json:"registry,omitempty"`
+	SchemaVersion int                      `json:"schema_version"`
+	Engine        Engine                   `json:"engine"`
+	Tailnet       Tailnet                  `json:"tailnet"`
+	Sites         []Site                   `json:"sites"`
+	Boxes         []Box                    `json:"boxes"`
+	ControlPlane  ControlPlane             `json:"control_plane"`
+	Apps          []App                    `json:"apps"`
 }
 
 type Tailnet struct {
@@ -354,6 +355,22 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			Airunners: []string{},
 		},
 		Apps: []App{},
+	}
+	if policy := snapshot.Instance.VMUpdates; policy != nil {
+		copy := *policy
+		copy.Targets = make(map[string][]string, len(policy.Targets))
+		for box, roles := range policy.Targets {
+			copy.Targets[box] = sortedCopy(roles)
+		}
+		copy.Exclusions = append([]contract.VMUpdateExclusion{}, policy.Exclusions...)
+		sort.Slice(copy.Exclusions, func(i, j int) bool {
+			a, b := copy.Exclusions[i], copy.Exclusions[j]
+			if a.Box != b.Box {
+				return a.Box < b.Box
+			}
+			return a.Role < b.Role
+		})
+		result.VMUpdates = &copy
 	}
 	groups := map[string][]string{"operators": {}, "family": {}}
 	for login, member := range snapshot.Instance.Tailscale.Members {

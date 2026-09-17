@@ -139,6 +139,7 @@ func Check(instancePath string, engine Engine) (Report, error) {
 		}
 		c.validateInstance(instance, providers, manifests)
 		c.validateRegistrySettings(instance)
+		c.validateVMUpdates(instance)
 	}
 	return c.report(), nil
 }

@@ -313,6 +313,34 @@ It never rewinds or force-pushes private `main`. Promotion receipts are below
 that is readable by `smith` and contains no private repository name, private
 path, or private JSON.
 
+## Standing VM update authority
+
+The [Instance contract](klokast-instance-specification.md#shared-vm-update-intent)
+defines the narrow update policy. Policy schema validation is implemented;
+signed activation and the privileged VM update executor are not yet installed
+by this implementation. Discovery output cannot authorize VM replacement.
+
+Before this path can be enabled, the existing trusted-workstation signing
+mechanism must activate one exact policy, approved engine, and controller
+toolchain. This must be a separate closed action. It must not broaden Plan v8,
+Plan v9, or general signed Apply rules. Each operation must verify current
+policy, controller authority, exact artifacts, targets, and fresh preflight
+evidence. Revocation or a changed engine or toolchain must block new operations.
+An already authorized operation must finish safely or recover.
+
+The discovery collector has inspection authority and writes non-authoritative
+evidence as `smith`. Package indexes and VM facts are untrusted input. Native
+APK verifies repository signatures; index parsing never extracts archive paths
+or runs package scripts. The future build VM must contain package-script
+compromise and have no production identities, secrets, or data. The future
+root executor has VM lifecycle and retained-data authority. It therefore needs
+fixed operations, root-protected records, exclusive execution, fencing, and
+independent local recovery before activation.
+
+A local pause may only restrict execution. Resume must revalidate the current
+activated policy. Neither a pause file nor a discovery report can increase
+authority. Machine observations must not replace approved desired state.
+
 ## Platform Apply
 
 Only the active `<box>-ops` controller can execute a Platform Apply action.

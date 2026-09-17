@@ -32,7 +32,7 @@ Run read-only Platform health checks against steady-state infrastructure.
 Options:
   --box BOX               Box short name, for example boxa
   --target TARGET         Check target. Supported: all, dom0, router, podman,
-                          ops, map, resources. Default: all
+                          ops, map, resources, updates. Default: all
   --inventory PATH        Base Ansible inventory. Default: ansible/execution-inventory/hosts
   --magicdns-suffix NAME  Tailscale MagicDNS suffix. Default: auto-discovered
   --target-disk-device DEV
@@ -122,8 +122,8 @@ PY
 
 validate_target() {
   case "$TARGET" in
-    all|dom0|router|podman|ops|map|resources) ;;
-    *) die "unsupported --target $TARGET; supported targets: all, dom0, router, podman, ops, map, resources" ;;
+    all|dom0|router|podman|ops|map|resources|updates) ;;
+    *) die "unsupported --target $TARGET; supported targets: all, dom0, router, podman, ops, map, resources, updates" ;;
   esac
 }
 
@@ -502,6 +502,10 @@ MAP_STATE_FILE="$MAP_DIR/current.json"
 RESOURCE_PLAN_FILE="$RUN_DIR/resources-plan.json"
 SHARED_GUEST_VARS_FILE="$RUN_DIR/shared-guest-vars.json"
 
+if [ "$TARGET" = "updates" ]; then
+  exec "$SCRIPT_DIR/platform-update" status
+fi
+
 preflight
 
 case "$TARGET" in
@@ -515,6 +519,7 @@ case "$TARGET" in
     run_required_step "resources" run_resources_check
     ;;
   all)
+    run_required_step "updates" "$SCRIPT_DIR/platform-update" status
     run_required_step "map" run_map_check
     run_required_step "dom0" run_direct_check dom0
     run_required_step "router" run_direct_check router

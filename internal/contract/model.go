@@ -29,6 +29,7 @@ type InstanceDocument struct {
 	Airunners    []string                       `json:"airunners"`
 	Apps         map[string]AppBindingDocument  `json:"apps"`
 	InactiveApps map[string]InactiveAppDocument `json:"inactive-apps,omitempty"`
+	VMUpdates    *VMUpdatePolicy                `json:"vm-updates,omitempty"`
 }
 
 type MemberDocument struct {
