@@ -203,6 +203,17 @@ attributes, symlink preservation, and sparse files. This does not test a catalog
 app, a recoverable backup, live staging, writer shutdown, or retained machine
 identities.
 
+On 2026-09-17, candidate operation `a0eb34b4a6aaac0d48dbdc1e` at engine
+`ae9cf11` passed all six native Xen test groups, including the retained-data
+copy and ten refusal or corruption checks. Build and test lifecycle records
+both report `cleaned`: both disposable domains, loop attachments, and temporary
+test disks were removed. The candidate remains unaccepted. No production data,
+VM, or application was changed. The relevant local suites passed 97 tests.
+The earlier operation `c93d43e35ad6a5670ca5ec36` stopped before copying because
+the UUID probe used unsupported util-linux options with BusyBox `blkid`.
+Its cleanup passed. The corrected probe uses native BusyBox output and rejects
+ambiguous records. Controller build receipts and logs retain both results.
+
 The future adoption executor must still derive mappings from approved catalog
 adapters and Instance intent, account for all observed storage, verify a
 recoverable backup, stage data before the outage, stop writers, and fence the
