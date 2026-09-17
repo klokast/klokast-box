@@ -93,8 +93,9 @@ Each scan uses a new empty APK cache, explicit HTTPS branch repositories,
 installed Alpine signing keys, native index signature verification, and native
 `apk version -t` comparisons. It records checksums for downloaded inputs and
 signing keys. It does not change the controller package database. It reads
-bounded APK v2 index records without extracting archive paths. Unknown package
-formats, ambiguous versions, missing packages, failed signatures, failed
+bounded APK v2 index records without extracting archive paths. Multiple package
+versions use native APK comparison. Unknown package
+formats, conflicting identities, missing packages, failed signatures, failed
 security downloads, and old evidence produce unknown or blocked results.
 
 `packages-current` applies only to the package comparison. It does not prove

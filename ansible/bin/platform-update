@@ -240,6 +240,8 @@ def display(report, as_json):
         print(f"{item['host']}: {item['update_status']}; profile={item['profile']}; updates={len(item['updates'])}; security={len(item['security_fixes'])}; replacement=blocked")
         for finding in item["findings"]:
             print("  " + finding["code"] + ": " + finding["message"])
+        if item.get("metadata_error"):
+            print("  metadata error: " + item["metadata_error"])
     for finding in report.get("findings", []):
         print(f"{finding['severity']}: {finding['code']}: {finding['message']}")
 

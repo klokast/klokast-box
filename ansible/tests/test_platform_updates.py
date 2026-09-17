@@ -92,13 +92,23 @@ class EvidenceTests(unittest.TestCase):
         for bad in ("", "ADB.bad", "P:a\n", "P:a\nP:b\nV:1", good + "\n" + good, "P:$(id)\nV:1"):
             with self.subTest(value=bad), self.assertRaises(u.UpdateError): u.parse_apk_database(bad)
 
+    def test_multiple_index_versions_use_native_order(self):
+        records="P:example\nV:9-r0\n\nP:example\nV:10-r0\n"
+        calls=[]
+        def compare(a,b):
+            calls.append((a,b)); return "<"
+        self.assertEqual(u.parse_apk_database(records, compare)["example"]["version"], "10-r0")
+        self.assertEqual(calls, [("9-r0", "10-r0")])
+
     def test_health_thresholds_are_exact_and_do_not_mask_failure(self):
-        report = {"kind":u.REPORT_KIND, "generated_at":u.timestamp(NOW - dt.timedelta(hours=30)), "findings":[], "hosts":[]}
+        report = {"kind":u.REPORT_KIND, "generated_at":u.timestamp(NOW - dt.timedelta(hours=30)), "findings":[], "hosts":[], "complete":True}
         verification = {"generated_at":u.timestamp(NOW - dt.timedelta(hours=2)), "findings":[]}
         self.assertEqual(u.health(report, verification, NOW), [])
         self.assertEqual(len(u.health(report, verification, NOW + dt.timedelta(seconds=1))), 2)
         verification["findings"] = [u.findings("replacement.failed", "failed", "critical")]
         self.assertIn("replacement.failed", [v["code"] for v in u.health(report, verification, NOW)])
+        report["complete"] = False
+        self.assertIn("discovery.incomplete", [v["code"] for v in u.health(report, verification, NOW)])
 
 
 class SafetyRulesTests(unittest.TestCase):

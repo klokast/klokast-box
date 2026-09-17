@@ -104,7 +104,7 @@ def collect_branch(branch, cache_root, profile, now):
                     if len(members) != 1 or not members[0].isfile() or members[0].size > MAX_DOWNLOAD:
                         raise UpdateError("verified index has no bounded APKINDEX record")
                     # No archive paths are extracted to the controller filesystem.
-                    output["indexes"][repository] = parse_apk_database(stream.extractfile(members[0]).read().decode())
+                    output["indexes"][repository] = parse_apk_database(stream.extractfile(members[0]).read().decode(), compare_versions)
                 output["inputs_sha256"][repository + ":index"] = hashlib.sha256(archive.read_bytes()).hexdigest()
             security, checksum = fetch_json(f"{profile['security_origin']}/{branch}/{repository}.json")
             if security.get("distroversion") != branch or security.get("reponame") != repository or not isinstance(security.get("packages"), list) or profile["architecture"] not in security.get("archs", []):

@@ -237,8 +237,10 @@ non-empty `data` object. When the declared data is also removed, remove the
 whole app entry. Omission means no app presence intent. Omission alone never
 authorizes deletion of unknown or undeclared storage.
 
-The instance records desired state, not observed state. Do not add `running`,
-`stopped`, health, container, VM, or service-status fields.
+The instance records desired state, not observed state. Do not add observed
+health, container, VM, or service-status fields. The explicit
+`boxes.<box>.substrate.shared-guests.<role>.runtime-state` input records desired
+`running` or `stopped` state for shared guests; it is not a live status field.
 
 ## Shared VM update intent
 

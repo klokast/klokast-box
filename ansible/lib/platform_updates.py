@@ -91,7 +91,7 @@ def repository_support(releases, branch, now):
     return result
 
 
-def parse_apk_database(content):
+def parse_apk_database(content, compare=None):
     """Read APK v2 installed/index records; never execute or extract them."""
     packages = {}
     for block in content.strip().split("\n\n"):
@@ -110,10 +110,14 @@ def parse_apk_database(content):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.-]*", name) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.~-]*", fields["V"]):
             raise UpdateError("package identity uses an unsupported format")
         item = {"version": fields["V"], "origin": fields.get("o", name), "architecture": fields.get("A", "")}
-        # Multiple versions in an index need native APK selection, not ordering
-        # by strings or the order of archive members.
         if name in packages:
-            raise UpdateError("package index contains multiple versions; native resolution is required")
+            if compare is None:
+                raise UpdateError("package index contains multiple versions; native resolution is required")
+            order = compare(packages[name]["version"], item["version"])
+            if order not in ("<", "=", ">") or (order == "=" and packages[name] != item):
+                raise UpdateError("package index contains conflicting package identities")
+            if order != "<":
+                continue
         packages[name] = item
     if not packages:
         raise UpdateError("package database is empty or uses an unsupported format")
@@ -132,7 +136,11 @@ def compare_packages(installed, indexes, secdb, compare):
     for repository in ("main", "community"):
         for name, package in indexes[repository].items():
             if name in available:
-                raise UpdateError("package exists in multiple repositories; native resolution is required")
+                order = compare(available[name]["version"], package["version"])
+                if order not in ("<", "=", ">"):
+                    raise UpdateError("native APK comparison failed")
+                if order != "<":
+                    continue
             available[name] = {**package, "repository": repository}
     updates, missing, security = [], [], []
     fixes = {}
@@ -192,7 +200,9 @@ def assess_host(host, fact, metadata, required_packages, compare, now):
         add("configuration.unknown", "Configuration hashes have no verified approved baseline.")
     evidence = metadata.get(branch, {})
     if not fresh(evidence.get("observed_at"), now, METADATA_AGE) or evidence.get("signature_verified") is not True or evidence.get("error"):
-        add("metadata.unknown", "Fresh official metadata and native APK signature verification are required.")
+        add("metadata.unknown", "Fresh official metadata and native APK signature verification are required.", "critical")
+        if evidence.get("error"):
+            result["metadata_error"] = evidence["error"]
         return result
     support = repository_support(evidence.get("releases", {}), branch, now)
     result["support"] = support
@@ -229,6 +239,8 @@ def health(report, verification, now):
     output = []
     if not report or report.get("kind") != REPORT_KIND or not fresh(report.get("generated_at"), now, DISCOVERY_AGE):
         output.append(findings("discovery.overdue", "Update discovery is missing or older than 30 hours.", "critical"))
+    if report and report.get("complete") is not True:
+        output.append(findings("discovery.incomplete", "The latest discovery did not complete.", "critical"))
     if not verification or not fresh(verification.get("generated_at"), now, VERIFY_AGE):
         output.append(findings("verification.overdue", "Release verification is missing or older than two hours.", "critical"))
     if report:

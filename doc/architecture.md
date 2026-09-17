@@ -199,7 +199,13 @@ The current shared Podman workflow builds a generic Alpine VIRT template on dom0
 
 `platform-guest` applies and verifies compiled runtime intent for existing shared guests. A stopped guest retains its disk, Xen definition, boot artifacts, and Tailnet registration. Its autostart link is removed. The compiler rejects a running app that requires a stopped shared zone.
 
-The old `platform-guest start` and `stop` commands write legacy registry intent. The verified registry guard blocks these writes after Instance v1 adoption. Instance v1 has no general shared-guest runtime field. Do not create a new legacy registry to bypass this limit. An instance change must use a supported human publication and execution path.
+The old `platform-guest start` and `stop` commands write legacy registry intent.
+The verified registry guard blocks these writes after Instance v1 adoption.
+The current schema records shared-guest intent in
+`boxes.<box>.substrate.shared-guests.<role>.runtime-state`. This is declared
+intent, not observed status or permission for an unsupported execution action.
+An instance change must use a supported human publication and execution path.
+Do not create a legacy registry to bypass that boundary.
 
 See [shared guest provisioning](../ansible/overview-playbooks/playbooks-4x-podman.md) and [platform-guest](../ansible/bin/platform-guest).
 
