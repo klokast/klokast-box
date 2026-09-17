@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -22,6 +23,7 @@ from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, 
                               findings, fresh, health, parse_apk_database, timestamp,
                               unique_object, VERIFY_AGE)
 from platform_update_metadata import collect_branch, compare_versions
+import vm_template_inputs
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -228,7 +230,69 @@ def scan(refresh=True):
                 report["findings"].append(findings("discovery.failed", str(error), "critical"))
             report["generated_at"] = timestamp(now())
             write(STATE / "current.json", report)
-        return report
+    return report
+
+
+def prepare(box, branch, inputs_only=False):
+    """Build candidate evidence; this command cannot select a production release."""
+    require_controller()
+    if not HOST.fullmatch(box) or len(box) > 31:
+        raise UpdateError("template construction requires a valid box identifier")
+    vm_template_inputs.branch_number(branch)
+    if not STATE.is_dir() or not CACHE.is_dir():
+        raise UpdateError("install discovery directories before preparing templates")
+    if command(["git", "-C", REPO, "status", "--porcelain", "--untracked-files=normal"]).strip():
+        raise UpdateError("template construction requires clean committed engine source")
+    commit = command(["git", "-C", REPO, "rev-parse", "HEAD"]).strip()
+    if commit != command(["git", "-C", REPO, "rev-parse", "@{upstream}"]).strip():
+        raise UpdateError("template source must match its public upstream commit")
+    # Use the installed source reader for private inventory. Candidate source
+    # does not replace or change the approved engine checkout.
+    command(["/usr/local/sbin/platform-inventory", "--list"])
+    with (STATE / "build.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise UpdateError("another template build holds the controller build lock") from error
+        operation = secrets.token_hex(12)
+        work = CACHE / ("build-" + operation)
+        work.mkdir(mode=0o700)
+        result = STATE / "builds" / operation
+        result.mkdir(parents=True, mode=0o700)
+        print("platform-update: freeze template inputs for " + branch + "; operation " + operation, file=sys.stderr)
+        profile = load(PROFILE)
+        inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit)
+        job = REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest"
+        capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job)
+        print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
+        boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job)
+        request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
+                   "operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],
+                   "capsule": capsule, "bootstrap": boot}
+        write(work / "request.json", request)
+        write(result / "inputs.json", inputs)
+        write(result / "request.json", request)
+        if inputs_only:
+            return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],
+                    "state": "inputs-prepared", "accepted": False, "result_directory": str(result)}
+        print("platform-update: build the candidate in a networkless Xen guest on " + box, file=sys.stderr)
+        arguments = work / "arguments.json"
+        write(arguments, {"template_box": box, "template_operation_id": operation,
+                          "template_input_dir": str(work), "template_result_dir": str(result)})
+        with (result / "build.log").open("w") as log:
+            command(["ansible-playbook", "-vv", "-i", APPROVED_REPO / "ansible/execution-inventory/hosts",
+                     REPO / "ansible/playbooks/74-platform-update-template.yml", "--limit", box + "-dom0",
+                     "-e", "@" + str(arguments)], timeout=2400, log=log)
+        candidate = load(result / "candidate.json")
+        lifecycle = load(result / "lifecycle.json")
+        if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
+                candidate.get("validation") != "construction-only" or candidate.get("operation_id") != operation or
+                candidate.get("inputs_sha256") != inputs["inputs_sha256"] or
+                candidate.get("packages") != {v["name"]: v["version"] for v in inputs["packages"]} or
+                lifecycle.get("stage") != "cleaned"):
+            raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
+        return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
+                "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"]}
 
 
 def display(report, as_json):
@@ -262,11 +326,18 @@ def main(argv=None):
         policy_parser.add_argument("--" + name)
     sub.add_parser("pause", help="restrict scheduled VM mutations without expanding authority")
     sub.add_parser("resume", help="revalidate the standing policy before removing the local pause")
+    prepare_parser = sub.add_parser("prepare", help="construct an isolated candidate; does not accept or deploy it")
+    prepare_parser.add_argument("--box", required=True)
+    prepare_parser.add_argument("--branch", required=True, help="explicit stable Alpine branch, for example v3.23")
+    prepare_parser.add_argument("--inputs-only", action="store_true", help="verify packages and assemble boot files without starting Xen")
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command == "prepare":
+            print(canonical(prepare(args.box, args.branch, args.inputs_only)))
+            return 0
         if args.command in {"policy", "pause", "resume"}:
             require_controller()
             helper = ["/usr/bin/doas", "/usr/local/sbin/ksa-apply"]

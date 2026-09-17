@@ -1,0 +1,8 @@
+---
+- name: Build a candidate template in a disposable networkless Xen VM
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  roles:
+    - role: vm-template-builder

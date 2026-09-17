@@ -3,8 +3,8 @@
 ## Delivery status
 
 This delivery implements discovery, the Instance policy contract, and signed
-policy activation with `pause` and `resume`. It does not implement unattended
-VM replacement. Template `prepare`, `adopt`, and `run` are not available.
+policy activation with `pause` and `resume`, and candidate template construction.
+It does not implement unattended VM replacement. `adopt` and `run` are not available.
 The existing guest installer remains in use. Do not activate automatic
 replacement or treat a report as an
 accepted template or release assignment.
@@ -13,7 +13,8 @@ The public `shared-alpine-v1` package profile includes the kernel, Tailscale,
 Podman, and required base tools. Discovery compares all installed packages,
 including dependencies, with signed indexes for the installed explicit branch.
 It records the next adjacent stable branch as a build requirement. It does not
-resolve or install a dependency closure or download application images.
+resolve or install a dependency closure or download application images. The
+separate `prepare` command freezes the full base-package closure for a build.
 
 The separate Python safety rules test artifact identity, kernel/module
 agreement, dependency independence, the maintenance cutoff, and pre-acceptance
@@ -107,6 +108,47 @@ revoked. `platform-update resume` revalidates current authority before it
 removes that restriction. These commands add no VM replacement schedule.
 The result explicitly reports `replacement_executor_available: false` until
 the production executor is implemented.
+
+## Candidate template construction
+
+Run `platform-update prepare --box BOX --branch v3.23` as `smith` on the active
+controller. The source must be clean, committed, and match its public upstream.
+Candidate source can use a separate checkout; private inventory still comes
+from the installed approved source reader. This operator command does not use
+standing policy to select or replace a production VM.
+
+`prepare --box BOX --branch v3.23 --inputs-only` verifies the package closure
+and assembles the disposable boot environment without starting Xen. Each run
+gets a new operation ID. A failed or incomplete run is never reused.
+
+The controller resolves all base packages from fresh signed indexes, records
+exact versions and SHA-256 checksums, and verifies native APK signatures. Native
+`apk extract` runs as unprivileged `smith` without package scripts to assemble
+a disposable kernel and initramfs. Installation scripts, filesystem creation,
+and initramfs generation then run in a new Xen guest with no network interface
+or production credentials. The guest receives read-only package input and four
+new writable output disks. It has 4096 MiB of RAM, two vCPUs, and a 30-minute
+build deadline. Construction occurs before a replacement window; it does not
+consume the separate 30-minute replacement and 30-minute recovery budgets.
+
+Dom0 reads bounded raw output bytes and verifies their checksums. It never
+mounts the generated filesystem. The root image, matching kernel, and initramfs
+remain under `/mnt/dom0_data/klokast-vm-templates/candidates/OPERATION`. Candidate
+and cleanup evidence remains on the controller under
+`/var/lib/klokast/updates/discovery/builds/OPERATION`. This is unprivileged build
+evidence, not an accepted release record. Package downloads and disposable
+bootstrap files remain in `/var/cache/klokast/updates/build-OPERATION`.
+
+The Ansible build job survives an SSH disconnect and stops the disposable VM
+at its deadline. Failure keeps root-owned staging for inspection. A dom0 reboot
+does not restart the builder: it has no autostart entry. Confirm that its exact
+recorded UUID is absent before removing interrupted staging. Automated reboot
+cleanup and full candidate boot and application compatibility tests remain
+required. Construction-only evidence cannot pass release validation.
+
+Application containers are not downloaded or updated. This path installs base
+packages, including Tailscale and Podman, into the new generic image. It does
+not enroll Tailscale or copy machine credentials into that image.
 
 ## Package evidence
 

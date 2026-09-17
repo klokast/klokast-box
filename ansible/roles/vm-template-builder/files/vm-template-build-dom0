@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Bounded, networkless candidate build. Never mounts a guest filesystem.
+
+This operator-invoked helper has no release activation or VM replacement
+interface. All writable resources are new files under one operation directory.
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import subprocess
+import time
+import uuid
+
+BASE = Path("/mnt/dom0_data/klokast-vm-templates")
+MIB = 1024 * 1024
+SLOTS = {"root": 8192 * MIB, "kernel": 32 * MIB, "initramfs": 128 * MIB, "result": MIB}
+MEMORY = 4096
+TIMEOUT = 1800
+
+
+def run(argv, check=True, timeout=60):
+    result = subprocess.run([str(v) for v in argv], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, timeout=timeout)
+    if check and result.returncode:
+        raise RuntimeError("dom0 builder command failed: " + str(argv[0]))
+    return result
+
+
+def checksum(path, count=None):
+    result = hashlib.sha256()
+    with path.open("rb") as source:
+        remaining = path.stat().st_size if count is None else count
+        while remaining:
+            chunk = source.read(min(remaining, MIB))
+            if not chunk:
+                raise RuntimeError("builder output is truncated")
+            result.update(chunk)
+            remaining -= len(chunk)
+    return result.hexdigest()
+
+
+def safe_file(path, maximum):
+    info = path.lstat()
+    if (path.is_symlink() or not path.is_file() or info.st_uid != 0 or info.st_nlink != 1 or
+            info.st_mode & 0o022 or not 0 < info.st_size <= maximum):
+        raise RuntimeError("builder file has unsafe ownership, type, mode, or size: " + path.name)
+
+
+def safe_directory(path):
+    info = path.lstat()
+    if path.is_symlink() or not path.is_dir() or info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError("builder directory is not private root-owned storage")
+
+
+def write(path, value):
+    temporary = path.with_suffix(".new")
+    with temporary.open("x") as stream:
+        json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def duplicate_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError("duplicate builder JSON field")
+        result[key] = value
+    return result
+
+
+def validate_request(work, box, operation):
+    safe_file(work / "request.json", MIB)
+    request = json.loads((work / "request.json").read_text(), object_pairs_hook=duplicate_fields)
+    if (set(request) != {"kind", "box", "operation_id", "inputs_sha256", "capsule", "bootstrap"} or
+            request["kind"] != "klokast.vm-template-build-request.v1" or
+            request["box"] != box or request["operation_id"] != operation or
+            not isinstance(request["inputs_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", request["inputs_sha256"]) or
+            not isinstance(request["bootstrap"], dict) or set(request["bootstrap"]) != {"kernel", "initramfs"}):
+        raise RuntimeError("builder request has an invalid contract")
+    for name, item, maximum in (("capsule.tar", request["capsule"], 2049 * MIB),
+                                ("bootstrap-kernel", request["bootstrap"]["kernel"], 32 * MIB),
+                                ("bootstrap-initramfs", request["bootstrap"]["initramfs"], 1024 * MIB)):
+        if (not isinstance(item, dict) or set(item) != {"sha256", "bytes"} or type(item["bytes"]) is not int or
+                not 0 < item["bytes"] <= maximum or not isinstance(item["sha256"], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])):
+            raise RuntimeError("builder request input identity is invalid")
+        path = work / name
+        safe_file(path, maximum)
+        if path.stat().st_size != item["bytes"] or checksum(path) != item["sha256"]:
+            raise RuntimeError("staged builder input differs from its request")
+    return request
+
+
+def domain(name):
+    # List all domains successfully before concluding a builder no longer exists.
+    output = run(["xl", "list", "-l"]).stdout
+    records = json.loads(output)
+    matches = [item for item in records if item.get("config", {}).get("c_info", {}).get("name") == name]
+    if len(matches) > 1:
+        raise RuntimeError("builder domain identity is ambiguous")
+    return matches[0] if matches else None
+
+
+def require_identity(record, identity):
+    if record.get("config", {}).get("c_info", {}).get("uuid") != identity:
+        raise RuntimeError("builder domain UUID changed; refusing to control it")
+
+
+def configuration(work, name, identity, request):
+    disks = [f"format=raw,vdev=xvda,access=ro,target={work}/capsule.tar"]
+    disks += [f"format=raw,vdev=xvd{letter},access=rw,target={work}/{slot}.slot"
+              for slot, letter in zip(SLOTS, "bcde")]
+    extra = ("console=hvc0 panic=1 klokast_operation=" + request["operation_id"] +
+             " klokast_inputs=" + request["inputs_sha256"] + " klokast_capsule=" + request["capsule"]["sha256"] +
+             " klokast_capsule_bytes=" + str(request["capsule"]["bytes"]))
+    return (f"name = {name!r}\nuuid = {identity!r}\ntype = 'pvh'\nmemory = {MEMORY}\nmaxmem = {MEMORY}\n"
+            f"vcpus = 2\nkernel = {str(work / 'bootstrap-kernel')!r}\n"
+            f"ramdisk = {str(work / 'bootstrap-initramfs')!r}\nextra = {extra!r}\n"
+            f"disk = {disks!r}\nvif = []\non_poweroff = 'destroy'\non_reboot = 'destroy'\non_crash = 'destroy'\n")
+
+
+def read_result(work, request):
+    with (work / "result.slot").open("rb") as stream:
+        data = stream.read(MIB)
+    result = json.loads(data.split(b"\0", 1)[0], object_pairs_hook=duplicate_fields)
+    if (result.get("kind") != "klokast.vm-template-build-result.v1" or result.get("success") is not True or
+            result.get("inputs_sha256") != request["inputs_sha256"] or
+            result.get("operation_id") != request["operation_id"] or
+            result.get("tests") != {"package_closure": True, "no_machine_identity": True}):
+        raise RuntimeError("isolated builder did not return a successful matching result")
+    for name in ("kernel", "initramfs"):
+        item = result["artifacts"][name]
+        if (set(item) != {"sha256", "bytes"} or type(item["bytes"]) is not int or
+                not 0 < item["bytes"] <= SLOTS[name] or checksum(work / (name + ".slot"), item["bytes"]) != item["sha256"]):
+            raise RuntimeError("guest boot output differs from its result")
+    if (not isinstance(result.get("kernel_release"), str) or
+            not re.fullmatch(r"[a-zA-Z0-9_.+-]+", result["kernel_release"]) or
+            result["kernel_release"] != result.get("modules_release")):
+        raise RuntimeError("guest kernel and modules do not match")
+    return result
+
+
+def execute(work, request):
+    name = "vm-build-" + request["operation_id"]
+    identity = str(uuid.uuid4())
+    if domain(name) is not None:
+        raise RuntimeError("refusing to reuse an existing builder domain")
+    info = dict(line.split(":", 1) for line in run(["xl", "info"]).stdout.splitlines() if ":" in line)
+    if int(info["free_memory"].strip()) < MEMORY + 1024:
+        raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
+    capacity = os.statvfs(work)
+    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + 1024 * MIB:
+        raise RuntimeError("builder requires nine GiB of free persistent storage")
+    for name_slot, size in SLOTS.items():
+        with (work / (name_slot + ".slot")).open("xb") as stream:
+            # Reserve physical capacity before boot; do not depend on sparse-file
+            # growth while package scripts run.
+            os.posix_fallocate(stream.fileno(), 0, size)
+    config = work / "builder.cfg"
+    config.write_text(configuration(work, name, identity, request))
+    write(work / "lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
+    try:
+        run(["xl", "create", config])
+        deadline = time.monotonic() + TIMEOUT
+        while True:
+            current = domain(name)
+            if current is None:
+                break
+            require_identity(current, identity)
+            if time.monotonic() >= deadline:
+                raise RuntimeError("isolated builder exceeded its 30-minute deadline")
+            time.sleep(2)
+        result = read_result(work, request)
+        result["artifacts"]["root"] = {"bytes": SLOTS["root"], "sha256": checksum(work / "root.slot")}
+        result.update(kind="klokast.vm-template-candidate.v1", box=request["box"], accepted=False,
+                      validation="construction-only")
+        # Publish only after the domain has disappeared and each output has
+        # been measured. No image is mounted or parsed by the host.
+        candidate = BASE / "candidates" / request["operation_id"]
+        candidate.mkdir(mode=0o700)
+        for artifact in ("root", "kernel", "initramfs"):
+            source = work / (artifact + ".slot")
+            with source.open("r+b") as stream:
+                stream.truncate(result["artifacts"][artifact]["bytes"])
+                os.fsync(stream.fileno())
+            source.chmod(0o400)
+            source.rename(candidate / artifact)
+        write(candidate / "candidate.json", result)
+        write(work / "candidate.json", result)
+        return result
+    finally:
+        current = domain(name)
+        if current is not None:
+            require_identity(current, identity)
+            run(["xl", "destroy", str(current["domid"])])
+            if domain(name) is not None:
+                raise RuntimeError("builder domain remains; retain its disks for inspection")
+        config.unlink(missing_ok=True)
+        for name_slot in SLOTS:
+            (work / (name_slot + ".slot")).unlink(missing_ok=True)
+        write(work / "lifecycle.json", {"domain": name, "uuid": identity, "stage": "cleaned"})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--box", required=True)
+    parser.add_argument("--operation-id", required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    if (os.geteuid() != 0 or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", args.box) or
+            socket.gethostname().split(".")[0] != args.box + "-dom0" or
+            not re.fullmatch(r"[0-9a-f]{24}", args.operation_id) or
+            "control_d" not in Path("/proc/xen/capabilities").read_text()):
+        raise RuntimeError("run the builder only on its requested box dom0")
+    for path in (Path("/mnt/dom0_data"), BASE, BASE / "staging", BASE / "candidates"):
+        safe_directory(path)
+    work = BASE / "staging" / args.operation_id
+    safe_directory(work)
+    # One build per box, in addition to the controller's installation-wide lock.
+    with (BASE / "build.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        request = validate_request(work, args.box, args.operation_id)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda *_: (_ for _ in ()).throw(RuntimeError("builder interrupted")))
+        result = execute(work, request)
+        print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print("vm-template-build-dom0: " + type(error).__name__ + ": " + str(error), flush=True)
+        raise SystemExit(1)

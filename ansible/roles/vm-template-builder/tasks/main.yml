@@ -1,0 +1,104 @@
+---
+- name: Verify the candidate builder target and operation
+  ansible.builtin.assert:
+    that:
+      - template_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      - template_operation_id is match('^[0-9a-f]{24}$')
+      - inventory_hostname == template_box ~ '-dom0'
+      - template_input_dir is match('^/var/cache/klokast/updates/build-[0-9a-f]{24}$')
+      - template_result_dir is match('^/var/lib/klokast/updates/discovery/builds/[0-9a-f]{24}$')
+
+- name: Check active controller authority before building
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+  delegate_to: localhost
+  become: false
+  register: template_controller
+  changed_when: false
+
+- name: Require configured active controller authority
+  ansible.builtin.assert:
+    that:
+      - (template_controller.stdout | from_json).configured | bool
+      - (template_controller.stdout | from_json).active | bool
+
+- name: Create persistent root-owned candidate storage
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-vm-templates/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', staging, candidates]
+
+- name: Inspect the unique build staging directory
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}"
+  register: template_staging
+
+- name: Refuse to reuse a build operation
+  ansible.builtin.assert:
+    that: [not template_staging.stat.exists]
+
+- name: Allocate build staging
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Stage exact public builder inputs
+  ansible.builtin.copy:
+    src: "{{ template_input_dir }}/{{ item.source }}"
+    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/{{ item.target }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - {source: request.json, target: request.json}
+    - {source: capsule.tar, target: capsule.tar}
+    - {source: boot/kernel, target: bootstrap-kernel}
+    - {source: boot/initramfs, target: bootstrap-initramfs}
+
+- name: Stage the fixed operation helper
+  ansible.builtin.copy:
+    src: vm-template-build-dom0
+    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/build-dom0.py"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Run the bounded builder independently of the SSH connection
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/build-dom0.py"
+      - --box
+      - "{{ template_box }}"
+      - --operation-id
+      - "{{ template_operation_id }}"
+  async: 2100
+  poll: 10
+  register: template_build
+  failed_when: false
+
+- name: Fetch candidate evidence after successful construction
+  ansible.builtin.fetch:
+    src: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/{{ item }}"
+    dest: "{{ template_result_dir }}/{{ item }}"
+    flat: true
+  loop: [candidate.json, lifecycle.json]
+  when: template_build.rc | default(1) == 0
+
+- name: Require successful build and bounded cleanup
+  ansible.builtin.assert:
+    that: [template_build.rc | default(1) == 0]
+    fail_msg: >-
+      Candidate construction failed. Inspect the controller build log and the
+      root-owned operation staging directory on dom0. No release was accepted.
+
+- name: Remove public input staging after successful candidate publication
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}"
+    state: absent

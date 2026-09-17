@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""One-shot, networkless template construction inside a disposable Xen VM.
+
+The four writable disks belong to this operation only. This program must never
+run on a controller or dom0. Outputs are raw bytes, not a filesystem for dom0
+to mount. The result is a build candidate, not an accepted deployment release.
+"""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import tarfile
+import time
+
+INPUT = Path("/inputs")
+ROOT = Path("/target")
+DISKS = {"root": Path("/dev/xvdb"), "kernel": Path("/dev/xvdc"),
+         "initramfs": Path("/dev/xvdd"), "result": Path("/dev/xvde")}
+
+
+def run(argv, timeout=900):
+    result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        # Detailed package output stays on the isolated guest console.
+        print(result.stdout[-8192:], result.stderr[-8192:], flush=True)
+        raise RuntimeError("guest command failed: " + str(argv[0]))
+    return result.stdout.strip()
+
+
+def sha256(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def put(relative, content, mode=0o644):
+    path = ROOT / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise RuntimeError("template configuration is an unexpected symlink")
+    path.write_text(content)
+    path.chmod(mode)
+
+
+def parameters():
+    hypervisor = Path("/sys/hypervisor/type")
+    identity = Path("/sys/hypervisor/uuid")
+    if os.geteuid() != 0 or not hypervisor.is_file() or hypervisor.read_text().strip() != "xen":
+        raise RuntimeError("template construction requires an isolated Xen guest")
+    if not identity.is_file() or identity.read_text().strip() == "00000000-0000-0000-0000-000000000000":
+        raise RuntimeError("template construction is forbidden on dom0")
+    if set(p.name for p in Path("/sys/class/net").iterdir()) != {"lo"}:
+        raise RuntimeError("template builder must have no network interface")
+    args = dict(item.split("=", 1) for item in Path("/proc/cmdline").read_text().split() if "=" in item)
+    for key in ("klokast_inputs", "klokast_capsule"):
+        if not re.fullmatch(r"[0-9a-f]{64}", args.get(key, "")):
+            raise RuntimeError("builder boot parameters lack an input identity")
+    if not re.fullmatch(r"[0-9a-f]{24}", args.get("klokast_operation", "")):
+        raise RuntimeError("builder operation identity is invalid")
+    return args
+
+
+def require_disks():
+    devices = [Path("/dev/xvda"), *DISKS.values()]
+    for _ in range(100):
+        if all(p.exists() for p in devices):
+            break
+        time.sleep(0.1)
+    for path in devices:
+        if path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode):
+            raise RuntimeError("builder requires its five fixed Xen block devices")
+    if len({p.stat().st_rdev for p in devices}) != len(devices):
+        raise RuntimeError("builder block devices overlap")
+
+
+def unpack(args):
+    INPUT.mkdir(mode=0o700)
+    # The input device is a controller-created tar, attached read-only. The
+    # operation pins the exact byte count so trailing block padding is ignored.
+    size = int(args.get("klokast_capsule_bytes", "0"))
+    if not 0 < size <= 2148532224:
+        raise RuntimeError("input capsule exceeds its size bound")
+    capsule = Path("/run/input.tar")
+    value = hashlib.sha256()
+    with Path("/dev/xvda").open("rb") as source, capsule.open("xb") as output:
+        remaining = size
+        while remaining:
+            chunk = source.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                raise RuntimeError("input capsule is truncated")
+            remaining -= len(chunk)
+            value.update(chunk)
+            output.write(chunk)
+    if value.hexdigest() != args["klokast_capsule"]:
+        raise RuntimeError("input capsule checksum differs")
+    with tarfile.open(capsule, "r:") as archive:
+        members = archive.getmembers()
+        if len(members) > 600 or any(not m.isfile() or m.name.startswith("/") or ".." in Path(m.name).parts for m in members):
+            raise RuntimeError("input capsule has unsafe members")
+        if len({m.name for m in members}) != len(members):
+            raise RuntimeError("input capsule has duplicate members")
+        archive.extractall(INPUT, filter="data")
+    capsule.unlink()
+    manifest = json.loads((INPUT / "inputs.json").read_text())
+    content = {k: v for k, v in manifest.items() if k != "inputs_sha256"}
+    calculated = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    if calculated != args["klokast_inputs"] or manifest["inputs_sha256"] != calculated:
+        raise RuntimeError("frozen input manifest differs from the boot assignment")
+    for item in manifest["packages"]:
+        path = INPUT / item["file"]
+        if not path.is_file() or path.stat().st_size != item["bytes"] or sha256(path) != item["sha256"]:
+            raise RuntimeError("frozen package checksum differs")
+    for name, expected in manifest["keys"].items():
+        if sha256(INPUT / "keys" / name) != expected:
+            raise RuntimeError("frozen package signing key differs")
+    return manifest
+
+
+def baseline(manifest):
+    put("etc/hostname", "klokast-template\n")
+    put("etc/hosts", "127.0.0.1 localhost\n::1 localhost\n")
+    put("etc/network/interfaces", "auto lo\niface lo inet loopback\n")
+    put("etc/resolv.conf", "# Set by approved guest personalization.\n")
+    put("etc/fstab", "/dev/xvda / ext4 defaults 0 1\n")
+    put("etc/apk/repositories", "\n".join(manifest["repositories"]) + "\n")
+    versions = {p["name"]: p["version"] for p in manifest["packages"]}
+    put("etc/apk/world", "\n".join(name + "=" + versions[name] for name in manifest["world"]) + "\n")
+    put("etc/conf.d/clock", 'clock="UTC"\ntimezone="UTC"\n')
+    put("etc/mkinitfs/mkinitfs.conf", 'features="base ext4 virtio xen"\n')
+    shadow = ROOT / "etc/shadow"
+    lines = []
+    for line in shadow.read_text().splitlines():
+        fields = line.split(":")
+        if fields[0] == "root":
+            fields[1] = "!"
+        lines.append(":".join(fields))
+    put("etc/shadow", "\n".join(lines) + "\n", 0o600)
+    for level, services in {"sysinit": ("devfs", "dmesg", "mdev"),
+                            "boot": ("hostname", "modules", "sysctl", "bootmisc", "cgroups", "localmount"),
+                            "shutdown": ("killprocs", "mount-ro")}.items():
+        for service in services:
+            if (ROOT / "etc/init.d" / service).is_file():
+                link = ROOT / "etc/runlevels" / level / service
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.unlink(missing_ok=True)
+                link.symlink_to("/etc/init.d/" + service)
+    # No enrollment, listening daemon, or application starts from a generic disk.
+    for directory in (ROOT / "etc/runlevels").glob("*"):
+        for name in ("networking", "sshd", "tailscale", "tailscaled", "crond"):
+            (directory / name).unlink(missing_ok=True)
+    for relative in ("etc/machine-id", "var/lib/dbus/machine-id"):
+        (ROOT / relative).unlink(missing_ok=True)
+    for path in (ROOT / "etc/ssh").glob("ssh_host_*"):
+        path.unlink()
+    if any((ROOT / "var/lib/tailscale").glob("*")):
+        raise RuntimeError("generic template unexpectedly contains Tailscale state")
+    put("etc/klokast-template.json", json.dumps({"kind": "klokast.vm-template-marker.v1",
+        "engine_commit": manifest["engine_commit"], "profile": manifest["profile"],
+        "inputs_sha256": manifest["inputs_sha256"]}, sort_keys=True) + "\n")
+
+
+def export_file(path, device, maximum):
+    size = path.stat().st_size
+    if path.is_symlink() or not path.is_file() or not 0 < size <= maximum:
+        raise RuntimeError("boot output exceeds its fixed block slot")
+    with path.open("rb") as source, device.open("wb", buffering=0) as target:
+        shutil.copyfileobj(source, target)
+        os.fsync(target.fileno())
+    return {"bytes": size, "sha256": sha256(path)}
+
+
+def build(manifest):
+    ROOT.mkdir(mode=0o700)
+    run(["mkfs.ext4", "-F", "-L", "klokast-root", DISKS["root"]], timeout=120)
+    run(["mount", DISKS["root"], ROOT])
+    try:
+        for name in ("proc", "sys", "dev"):
+            (ROOT / name).mkdir()
+            run(["mount", "--bind", "/" + name, ROOT / name])
+        keys = ROOT / "etc/apk/keys"
+        keys.mkdir(parents=True)
+        for path in (INPUT / "keys").iterdir():
+            shutil.copyfile(path, keys / path.name)
+        offline = INPUT / "repositories"
+        offline.write_text("")
+        packages = [INPUT / v["file"] for v in manifest["packages"]]
+        run(["apk", "--keys-dir", INPUT / "keys", "verify", *packages])
+        run(["apk", "--root", ROOT, "--no-network", "--keys-dir", keys,
+             "--repositories-file", offline, "add", "--initdb", *packages])
+        # Every declared version must be installed. Native APK reports the full
+        # closure, including dependencies, for controller-side comparison.
+        database = (ROOT / "lib/apk/db/installed").read_text()
+        installed = {}
+        for block in database.strip().split("\n\n"):
+            fields = dict(line.split(":", 1) for line in block.splitlines() if line.startswith(("P:", "V:")))
+            if "P" in fields:
+                installed[fields["P"]] = fields["V"]
+        if installed != {p["name"]: p["version"] for p in manifest["packages"]}:
+            raise RuntimeError("installed packages differ from the frozen closure")
+        baseline(manifest)
+        modules = sorted(p.name for p in (ROOT / "lib/modules").iterdir() if p.is_dir())
+        if len(modules) != 1 or not re.fullmatch(r"[a-zA-Z0-9_.+-]+", modules[0]):
+            raise RuntimeError("template has no unique kernel module release")
+        run(["chroot", ROOT, "mkinitfs", "-o", "/boot/initramfs-virt", modules[0]])
+        kernel = export_file(ROOT / "boot/vmlinuz-virt", DISKS["kernel"], 32 * 1024 * 1024)
+        initramfs = export_file(ROOT / "boot/initramfs-virt", DISKS["initramfs"], 128 * 1024 * 1024)
+        return {"packages": installed, "kernel_release": modules[0], "modules_release": modules[0],
+                "artifacts": {"kernel": kernel, "initramfs": initramfs},
+                "tests": {"package_closure": True, "no_machine_identity": True}}
+    finally:
+        failed = []
+        for path in (ROOT / "dev", ROOT / "sys", ROOT / "proc", ROOT):
+            if subprocess.run(["umount", str(path)], check=False).returncode:
+                failed.append(str(path))
+        if failed:
+            raise RuntimeError("template filesystem could not be cleanly unmounted")
+
+
+def main():
+    # Fail before opening any output, including the error-result slot, when this
+    # program is accidentally invoked outside its disposable guest.
+    args = parameters()
+    require_disks()
+    result = {"kind": "klokast.vm-template-build-result.v1", "success": False}
+    try:
+        manifest = unpack(args)
+        result.update(build(manifest), success=True)
+    except Exception as error:
+        result["error"] = type(error).__name__ + ": " + str(error)[:1000]
+        print(result["error"], flush=True)
+    result.update(operation_id=args.get("klokast_operation"), inputs_sha256=args.get("klokast_inputs"))
+    data = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(data) > 1024 * 1024:
+        raise RuntimeError("build result exceeds the fixed result slot")
+    with DISKS["result"].open("wb", buffering=0) as stream:
+        stream.write(data + b"\0")
+        os.fsync(stream.fileno())
+    return 0 if result["success"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
