@@ -321,7 +321,7 @@ def bootstrap(directory, output, guest_job):
         if raw.stat().st_size > 1024 * 1024 * 1024:
             raise UpdateError("bootstrap archive exceeds one GiB")
         with raw.open("rb") as source, (output / "initramfs").open("xb") as target:
-            with gzip.GzipFile(fileobj=target, mode="wb", mtime=0) as zipped:
+            with gzip.GzipFile(fileobj=target, mode="wb", compresslevel=3, mtime=0) as zipped:
                 shutil.copyfileobj(source, zipped)
         raw.unlink()
     return {name: {"sha256": sha256(output / name), "bytes": (output / name).stat().st_size}
