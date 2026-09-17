@@ -291,6 +291,10 @@ A retained-data copy request maps approved logical datasets to exact physical
 directories and filesystem identities. Its result records integrity and numeric
 ownership evidence. These are operation records, not Instance inputs, and a
 successful copy does not establish an accepted adoption or release assignment.
+Staged copying binds an operation and a completed stage receipt. Final
+synchronization can change only that operation's unchanged staging destination.
+These receipts and the retained filesystem's numeric identity record remain
+generated evidence; they do not declare datasets or authorize disk attachment.
 Discovery may compare observed volumes with public catalog mappings. A match
 does not establish the box's retention intent. The executor must resolve
 `apps.<app>.data` from the sealed Instance before approving physical mappings;

@@ -315,3 +315,195 @@ def copy(request, deadline):
     claim.unlink()
     run(['sync', '-f', str(TARGET)], deadline)
     return receipt
+
+
+def staged_request(request):
+    """Validate a separate contract; v1 never permits destination reuse."""
+    if (not isinstance(request, dict) or set(request) !=
+            {'kind', 'operation_id', 'source_uuid', 'destination_uuid', 'runtime', 'entries', 'source_layout'} or
+            request['kind'] != 'klokast.vm-retained-stage.v1' or
+            request['source_layout'] not in {'legacy-root', 'retained-data'}):
+        raise CopyError('invalid staged retained-data request contract')
+    legacy = {k: v for k, v in request.items() if k != 'source_layout'}
+    legacy['kind'] = 'klokast.vm-retained-copy.v1'
+    if request['source_layout'] == 'retained-data':
+        entries = request['entries']
+        if (not isinstance(entries, list) or any(not isinstance(v, dict) or
+                set(v) != {'key', 'source'} or v['key'] != v['source'] for v in entries)):
+            raise CopyError('retained-data sources must name their exact dataset keys')
+        # Reuse all identity, overlap, and dataset-key checks from v1.
+        legacy['entries'] = [{'key': v['key'], 'source': 'srv/retained/' + str(v['source'])} for v in entries]
+    validate(legacy)
+
+
+def read_record(path):
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+            info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size > 1024 * 1024):
+        raise CopyError('retained-data record has unsafe ownership, type, mode, or size')
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise CopyError('retained-data record contains duplicate fields')
+            value[key] = item
+        return value
+    try:
+        return json.loads(path.read_bytes(), object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as error:
+        raise CopyError('retained-data record is invalid') from error
+
+
+def create_record(path, value):
+    # Exclusive creation makes any interrupted stage or final sync non-reusable.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(canonical(value) + b'\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def staged_environment(request, deadline):
+    staged_request(request)
+    if remaining(deadline) > 1800:
+        raise CopyError('retained-data stage or final sync budget must not exceed 30 minutes')
+    environment()
+    check_mounts(request)
+    if request['source_layout'] == 'legacy-root':
+        runtime = runtime_identity(SOURCE)
+    else:
+        record = read_record(SOURCE / '.klokast-retained-identity.json')
+        if (not isinstance(record, dict) or set(record) != {'kind', 'runtime'} or
+                record['kind'] != 'klokast.vm-retained-identity.v1'):
+            raise CopyError('retained source has no supported identity record')
+        runtime = record['runtime']
+    if runtime != request['runtime']:
+        raise CopyError('runtime UID, GID, or subordinate identities changed')
+
+
+def empty_lost_found(path):
+    return path.name == 'lost+found' and stat.S_ISDIR(path.lstat().st_mode) and not any(path.iterdir())
+
+
+def measure_entries(request, deadline, root=None):
+    root = SOURCE if root is None else root
+    result = {}
+    for entry in request['entries']:
+        path = below(root, entry['source'] if root == SOURCE else entry['key'])
+        if not path.is_dir():
+            raise CopyError('retained-data mapping does not name an existing directory')
+        result[entry['key']] = tree(path, deadline)
+    return result
+
+
+def stage(request, deadline):
+    """Copy a read-only snapshot into a new, operation-owned staging LV.
+
+    Snapshot creation, its capacity checks, backup qualification, and source
+    write fencing remain the outer executor's responsibility.
+    """
+    staged_environment(request, deadline)
+    if any(not empty_lost_found(p) for p in TARGET.iterdir()):
+        raise CopyError('staging destination contains unknown or partial data')
+    measured = measure_entries(request, deadline)
+    capacity = os.statvfs(TARGET)
+    if (capacity.f_bavail * capacity.f_frsize < RESERVE + sum(v['required_bytes'] for v in measured.values()) or
+            capacity.f_favail < 32 + sum(v['entries'] for v in measured.values())):
+        raise CopyError('staging destination has insufficient bytes or inodes')
+    pending = TARGET / '.klokast-stage-pending'
+    create_record(pending, {'request_sha256': digest(request)})
+    for entry in request['entries']:
+        destination = TARGET / entry['key']
+        destination.mkdir(mode=0o700)
+        run(['rsync', '-aHAXS', '--numeric-ids', '--one-file-system', '--modify-window=-1',
+             '--', str(below(SOURCE, entry['source'])) + '/', str(destination) + '/'], deadline)
+    if measure_entries(request, deadline, TARGET) != measured or measure_entries(request, deadline) != measured:
+        raise CopyError('staged retained-data integrity verification failed')
+    staged_environment(request, deadline)
+    result = {'kind': 'klokast.vm-retained-stage-result.v1', 'request_sha256': digest(request),
+              'entries': measured, 'adoption_accepted': False}
+    result['receipt_sha256'] = digest(result)
+    create_record(TARGET / '.klokast-stage-result.json', result)
+    run(['sync', '-f', str(TARGET)], deadline)
+    pending.unlink()
+    run(['sync', '-f', str(TARGET)], deadline)
+    return result
+
+
+def allocation(root, deadline):
+    """Bound final-sync scratch space without trusting sparse logical sizes."""
+    pending, seen, allocated, largest = [root], set(), 0, 0
+    while pending:
+        remaining(deadline)
+        path = pending.pop()
+        info = path.lstat()
+        identity = (info.st_dev, info.st_ino)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if len(seen) + len(pending) > MAX_ENTRIES:
+            raise CopyError('retained-data allocation scan exceeds its entry limit')
+        allocated += info.st_blocks * 512
+        if stat.S_ISDIR(info.st_mode):
+            pending.extend(path.iterdir())
+        elif stat.S_ISREG(info.st_mode):
+            largest = max(largest, info.st_size)
+    return allocated, largest
+
+
+def finalize(request, stage_receipt_sha256, deadline):
+    """One final sync from a stopped source, never an arbitrary retry.
+
+    The caller must bind the stage receipt and prove writer shutdown and disk
+    attachment exclusivity. A failed final sync poisons this destination.
+    """
+    staged_environment(request, deadline)
+    if not isinstance(stage_receipt_sha256, str) or not re.fullmatch('[0-9a-f]{64}', stage_receipt_sha256):
+        raise CopyError('final sync requires the exact stage receipt checksum')
+    allowed = {v['key'] for v in request['entries']} | {'.klokast-stage-result.json'}
+    if any(p.name not in allowed and not empty_lost_found(p) for p in TARGET.iterdir()):
+        raise CopyError('final-sync destination contains unknown or partial data')
+    staged = read_record(TARGET / '.klokast-stage-result.json')
+    if (not isinstance(staged, dict) or set(staged) !=
+            {'kind', 'request_sha256', 'entries', 'adoption_accepted', 'receipt_sha256'} or
+            staged['kind'] != 'klokast.vm-retained-stage-result.v1' or
+            staged['adoption_accepted'] is not False or staged['request_sha256'] != digest(request) or
+            staged['receipt_sha256'] != stage_receipt_sha256 or
+            digest({k: v for k, v in staged.items() if k != 'receipt_sha256'}) != stage_receipt_sha256):
+        raise CopyError('stage receipt does not match this exact operation and mapping')
+    if measure_entries(request, deadline, TARGET) != staged['entries']:
+        raise CopyError('staged destination changed before final sync')
+    measured = measure_entries(request, deadline)
+    allocated = sum(allocation(TARGET / v['key'], deadline)[0] for v in request['entries'])
+    scratch = max(allocation(below(SOURCE, v['source']), deadline)[1] for v in request['entries'])
+    capacity = os.statvfs(TARGET)
+    growth = max(0, sum(v['required_bytes'] for v in measured.values()) - allocated)
+    inode_growth = max(0, sum(v['entries'] for v in measured.values()) - sum(v['entries'] for v in staged['entries'].values()))
+    if capacity.f_bavail * capacity.f_frsize < RESERVE + growth + scratch or capacity.f_favail < 32 + inode_growth:
+        raise CopyError('final-sync destination has insufficient bytes or inodes')
+    pending = TARGET / '.klokast-final-pending'
+    create_record(pending, {'request_sha256': digest(request), 'stage_receipt_sha256': stage_receipt_sha256})
+    for entry in request['entries']:
+        run(['rsync', '-aHAXS', '--checksum', '--delete-delay', '--numeric-ids', '--one-file-system',
+             '--modify-window=-1', '--', str(below(SOURCE, entry['source'])) + '/',
+             str(TARGET / entry['key']) + '/'], deadline)
+    if measure_entries(request, deadline, TARGET) != measured or measure_entries(request, deadline) != measured:
+        raise CopyError('final retained-data integrity verification failed')
+    staged_environment(request, deadline)
+    create_record(TARGET / '.klokast-retained-identity.json',
+                  {'kind': 'klokast.vm-retained-identity.v1', 'runtime': request['runtime']})
+    result = {'kind': 'klokast.vm-retained-final-result.v1', 'request_sha256': digest(request),
+              'stage_receipt_sha256': stage_receipt_sha256, 'entries': measured,
+              'copy_verified': True, 'adoption_accepted': False}
+    result['receipt_sha256'] = digest(result)
+    create_record(TARGET / '.klokast-final-result.json', result)
+    run(['sync', '-f', str(TARGET)], deadline)
+    pending.unlink()
+    run(['sync', '-f', str(TARGET)], deadline)
+    return result

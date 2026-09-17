@@ -188,7 +188,7 @@ before automatic replacement can be enabled. The
 owns state placement and release-assignment rules; the update runbook does not
 create another desired-state source.
 
-The retained-data copy primitive runs inside a disposable networkless Xen VM.
+The retained-data copy, staging, and final-sync primitives run inside a disposable networkless Xen VM.
 It reads a read-only source filesystem and writes a separate new filesystem.
 Dom0 handles block devices and opaque bytes only. Synthetic template tests
 exercise this primitive. Discovery reports catalog storage matches and unsafe

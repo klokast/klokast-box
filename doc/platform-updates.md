@@ -6,8 +6,9 @@ This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
 offline base-image boot tests, and an optional Static Site web component test.
 A dom0 disk-switch transaction and boot recovery helper are implemented but are not connected to a production executor.
-An offline retained-data copy primitive is implemented and included in the
-synthetic candidate tests. It is not a complete data-adoption workflow.
+Offline retained-data copy, staging, and final-sync primitives are implemented
+and included in the synthetic candidate tests. They are not a complete
+data-adoption workflow.
 Discovery also reports storage refusals and catalog matches for the Music
 library dataset. These matches are not approved retention or copy requests.
 The read-only `retention` report compares these observations with declared
@@ -381,6 +382,42 @@ enforce the outer operation deadline. It must reconstruct configuration and
 Podman metadata, retain required identity state, and verify mounts and numeric
 ownership before acceptance. The copy library does not provide these gates.
 
+### Staging and final synchronization
+
+The separate `klokast.vm-retained-stage.v1` library contract adds `stage` and
+`finalize` operations. It keeps the v1 copy operation's empty-destination rule.
+The staged request binds one operation, filesystem UUIDs, numeric identities,
+source layout, and exact dataset mappings. Final synchronization requires the
+checksum of the completed stage receipt and unchanged staged contents. Unknown
+files, changed mappings, altered receipts, and incomplete operations are refused
+before synchronization. An interrupted final sync cannot be retried on that
+destination.
+
+The `legacy-root` layout reads identity from the old root filesystem. The
+`retained-data` layout reads a narrow identity record from an already separated
+data filesystem and permits only dataset-key directory mappings. A successful
+final sync writes that identity record for the next generation. This record is
+copy evidence, not retention intent or execution authority.
+
+Final sync uses checksums, including when a file keeps the same size and
+timestamp. It applies deletions only inside the operation's recorded dataset
+directories. It verifies content and metadata, hardlinks, sparse files, numeric
+ownership, free bytes, and free inodes. Pending records are durable before
+copying starts. A completed receipt still reports `adoption_accepted: false`.
+
+Each invocation has a maximum 30-minute budget. The outer executor must impose
+the remaining transaction budget, account for all host data, create and monitor
+the staging snapshot, verify a recoverable backup, and stop writers before the
+final sync. It must prove disk exclusivity and enforce read-only source
+attachment in Xen. The library does not create snapshots or perform these
+production checks.
+
+The candidate's synthetic disk tests include staging, final changes with
+unchanged size and timestamp, deletion, identity and metadata preservation,
+and operation or receipt mismatch. Local tests also cover interrupted stages,
+interrupted final sync, tampered staging, and copying a subsequent retained-data
+generation without an old `/etc` tree.
+
 ## Dom0 transaction and recovery
 
 `74-platform-update-recovery.yml` installs the root-only
@@ -535,7 +572,51 @@ The following work is required before enabling replacement:
    Use one installation-wide operation lock and stable box/role ordering.
 6. Demonstrate one unattended replacement and a failed replacement with local
    recovery. Verify unchanged app versions and preserved data. Exercise
-   controller disconnection and dom0 reboot at each transaction stage.
+   controller disconnection and process restart from persistent journals at
+   each transaction stage.
+
+Physical dom0 reboot tests are deferred by the operator's current scope. They
+do not block VM-only activation after the other gates pass. Do not reboot dom0
+in this delivery, and do not describe process restart tests as physical reboot
+tests. Report physical reboot recovery as unverified until a later hardware
+test exercises the installed OpenRC ordering and persistent records.
+
+### Remaining delivery order
+
+1. Promote the delivered engine through the trusted-workstation workflow and
+   validate the installed retention reader. Produce complete workload and
+   storage coverage for selected VMs. Account for host services, timers, other
+   runtime accounts, and unknown storage. Resolve undeclared workloads through
+   approved intent; a catalog match cannot authorize adoption or removal.
+2. Add fixed maintenance adapters for all declared workloads on selected VMs,
+   including native services and retained data for absent apps. Qualify exact
+   deployed images, configuration, backups, and synthetic application and
+   network tests. Native application versions also stay unchanged; an
+   incompatible package set blocks the branch candidate.
+3. Complete separately signed adoption with measured capacity and time,
+   read-only staging snapshots, writer shutdown, final synchronization, identity
+   preservation, and recovery to the original disk generation. Staging and
+   final-sync primitives above do not authorize this operation.
+4. Add protected release and assignment records. Connect normal provisioning
+   and reconciliation to those assignments before production adoption. Prevent
+   legacy package resolution, old kernels, and old repository branches from
+   replacing accepted state. Include execution records in controller recovery.
+5. Connect the standing-policy executor to local recovery, persistent traffic
+   fencing, background-work control, independent dependencies, and fresh checks.
+   Persist acceptance before admitting production writes. Add bounded controller
+   liveness checks without extending the replacement deadline.
+6. Add automatic candidate selection, daily bounded preparation, the 02:00 UTC
+   replacement schedule, the 03:00 cutoff, installation-wide serialization,
+   hourly verification, and 24-hour canaries. Stop rollout after any failure.
+   Keep stopped VMs stopped. Cleanup must preserve all referenced resources.
+7. Promote the final engine and toolchain, obtain exact adoption signatures,
+   prove a controlled failed pilot replacement and recovery, then demonstrate
+   an unattended replacement and a healthy canary before wider rollout.
+
+All steps retain the existing state ownership and authority contracts. Scheduled
+commands do not write either Git repository. Production completion requires
+real replacement and recovery evidence; a successful builder or unit suite is
+not sufficient. Public implementation changes must be committed and pushed.
 
 Until those gates pass, a VM problem uses the existing approved provisioning
 and recovery procedures. Do not manually create an accepted-release record.
