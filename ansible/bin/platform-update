@@ -263,7 +263,7 @@ def prepare(box, branch, inputs_only=False):
         profile = load(PROFILE)
         inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit)
         job = REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest"
-        capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job)
+        capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job, job.with_name("vm-template-smoke-guest"))
         print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
         boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job)
         request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
@@ -289,7 +289,7 @@ def prepare(box, branch, inputs_only=False):
         candidate = load(result / "candidate.json")
         lifecycle = load(result / "lifecycle.json")
         if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
-                candidate.get("validation") != "construction-only" or candidate.get("operation_id") != operation or
+                candidate.get("validation") != "base-boot-tested" or candidate.get("operation_id") != operation or
                 candidate.get("inputs_sha256") != inputs["inputs_sha256"] or
                 candidate.get("packages") != {v["name"]: v["version"] for v in inputs["packages"]} or
                 lifecycle.get("stage") != "cleaned"):

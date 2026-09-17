@@ -125,6 +125,7 @@ def unpack(args):
 
 
 def baseline(manifest):
+    put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)
     put("etc/hostname", "klokast-template\n")
     put("etc/hosts", "127.0.0.1 localhost\n::1 localhost\n")
     put("etc/network/interfaces", "auto lo\niface lo inet loopback\n")

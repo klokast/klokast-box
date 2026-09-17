@@ -228,7 +228,7 @@ def verify_inputs(directory, manifest):
         raise UpdateError("frozen APK index identity is invalid")
 
 
-def capsule(directory, output, guest_job):
+def capsule(directory, output, guest_job, smoke_job):
     """Produce a flat, bounded input tar disk; dom0 never mounts this disk."""
     directory, output = Path(directory), Path(output)
     manifest = json.loads((directory / "inputs.json").read_text(), object_pairs_hook=unique_object)
@@ -240,6 +240,7 @@ def capsule(directory, output, guest_job):
                          *[p["file"] for p in manifest["packages"]]]:
             archive.add(directory / relative, arcname=relative, recursive=False)
         archive.add(guest_job, arcname="build.py", recursive=False)
+        archive.add(smoke_job, arcname="smoke.py", recursive=False)
     return {"sha256": sha256(output), "bytes": output.stat().st_size}
 
 

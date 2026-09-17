@@ -127,8 +127,13 @@ exact versions and SHA-256 checksums, and verifies native APK signatures. Native
 a disposable kernel and initramfs. Installation scripts, filesystem creation,
 and initramfs generation then run in a new Xen guest with no network interface
 or production credentials. The guest receives read-only package input and four
-new writable output disks. It has 4096 MiB of RAM, two vCPUs, and a 30-minute
-build deadline. Construction occurs before a replacement window; it does not
+new writable output disks. It has 4096 MiB of RAM, two vCPUs, and a 25-minute
+construction deadline. A second networkless guest has five minutes to boot a
+copy of the root image with its matching kernel and initramfs. It tests module
+availability, unenrolled Tailscale startup, a rootless Podman container made
+from installed BusyBox files, and kernel support for nftables. The original
+generic image receives no test account or runtime state. Construction occurs
+before a replacement window; it does not
 consume the separate 30-minute replacement and 30-minute recovery budgets.
 
 Dom0 reads bounded raw output bytes and verifies their checksums. It never
@@ -143,8 +148,8 @@ The Ansible build job survives an SSH disconnect and stops the disposable VM
 at its deadline. Failure keeps root-owned staging for inspection. A dom0 reboot
 does not restart the builder: it has no autostart entry. Confirm that its exact
 recorded UUID is absent before removing interrupted staging. Automated reboot
-cleanup and full candidate boot and application compatibility tests remain
-required. Construction-only evidence cannot pass release validation.
+cleanup, production configuration checks, and application compatibility tests
+remain required. Base-image boot evidence cannot pass release validation alone.
 
 Application containers are not downloaded or updated. This path installs base
 packages, including Tailscale and Podman, into the new generic image. It does

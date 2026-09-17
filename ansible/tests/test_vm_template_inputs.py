@@ -67,10 +67,10 @@ class InputsTests(unittest.TestCase):
             manifest = self.fixture(root)
             v.verify_inputs(root, manifest)
             capsule = root / "capsule.tar"
-            result = v.capsule(root, capsule, Path(__file__))
+            result = v.capsule(root, capsule, Path(__file__), Path(__file__))
             self.assertEqual(result["sha256"], v.sha256(capsule))
             with tarfile.open(capsule) as archive:
-                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py"])
+                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py"])
 
     def test_forged_or_changed_inputs_fail_before_native_commands(self):
         changes = [lambda m: m.update(engine_commit="main"), lambda m: m.update(world=[["example"]]),
@@ -133,6 +133,13 @@ class InputsTests(unittest.TestCase):
         with patch.object(guest, "parameters", side_effect=RuntimeError("dom0 forbidden")), patch.object(guest, "build") as build:
             with self.assertRaisesRegex(RuntimeError, "dom0 forbidden"): guest.main()
             build.assert_not_called()
+
+    def test_smoke_test_refuses_an_ordinary_process_before_mounting(self):
+        guest = module("vm_smoke_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-smoke-guest")
+        with patch.object(guest.os, "getpid", return_value=123), patch.object(guest, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "PID 1"):
+                guest.main()
+            run.assert_not_called()
 
 
 class HostBoundaryTests(unittest.TestCase):

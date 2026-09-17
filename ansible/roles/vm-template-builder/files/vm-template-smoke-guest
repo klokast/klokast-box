@@ -1,0 +1,139 @@
+#!/usr/bin/python3
+"""Offline base-image test, used as PID 1 only on a disposable image copy."""
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import time
+
+
+def run(argv, timeout=60):
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        print(result.stdout[-4096:], result.stderr[-4096:], flush=True)
+        raise RuntimeError("base image test failed: " + argv[0])
+    return result.stdout.strip()
+
+
+def environment():
+    if os.getpid() != 1 or os.geteuid() != 0:
+        raise RuntimeError("template test must be PID 1 in its disposable guest")
+    for name, filesystem in (("proc", "proc"), ("sys", "sysfs"), ("dev", "devtmpfs")):
+        if not os.path.ismount("/" + name):
+            run(["mount", "-t", filesystem, filesystem, "/" + name])
+    if (Path("/sys/hypervisor/type").read_text().strip() != "xen" or
+            Path("/sys/hypervisor/uuid").read_text().strip() == "00000000-0000-0000-0000-000000000000" or
+            {p.name for p in Path("/sys/class/net").iterdir()} != {"lo"}):
+        raise RuntimeError("template test requires an isolated networkless Xen guest")
+    args = dict(v.split("=", 1) for v in Path("/proc/cmdline").read_text().split() if "=" in v)
+    if (not re.fullmatch(r"[0-9a-f]{24}", args.get("klokast_test", "")) or
+            not re.fullmatch(r"[0-9a-f]{64}", args.get("klokast_inputs", ""))):
+        raise RuntimeError("template test requires its exact boot assignment")
+    for path in (Path("/dev/xvda"), Path("/dev/xvdb")):
+        if path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode):
+            raise RuntimeError("template test requires its two fixed Xen disks")
+    return args
+
+
+def tailscale_test():
+    run(["modprobe", "tun"])
+    process = subprocess.Popen(["tailscaled", "--state=mem:", "--socket=/run/template-tailscale.sock",
+                                "--tun=userspace-networking", "--port=0"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if Path("/run/template-tailscale.sock").exists():
+                break
+            if process.poll() is not None:
+                raise RuntimeError("Tailscale could not start offline")
+            time.sleep(0.1)
+        status = json.loads(run(["tailscale", "--socket=/run/template-tailscale.sock", "status", "--json"]))
+        if status.get("BackendState") != "NeedsLogin":
+            raise RuntimeError("generic Tailscale state is not unenrolled")
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def podman_test():
+    # The account and runtime state exist only on the disposable copy. No
+    # application image is fetched, built, or substituted by this test.
+    run(["adduser", "-D", "-u", "2000", "-h", "/home/template-test", "template-test"])
+    for name in ("subuid", "subgid"):
+        Path("/etc/" + name).write_text("template-test:200000:65536\n")
+    runtime = Path("/run/user/2000")
+    runtime.mkdir(parents=True, mode=0o700)
+    os.chown(runtime, 2000, 2000)
+    rootfs = Path("/home/template-test/rootfs")
+    rootfs.mkdir()
+    files = {"/bin/busybox"}
+    # Use the installed package's library closure for this throwaway rootfs.
+    for token in run(["ldd", "/bin/busybox"]).split():
+        if token.startswith(("/lib/", "/usr/lib/")):
+            files.add(token)
+    for source in sorted(files):
+        target = rootfs / source.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o755)
+    for parent, directories, files in os.walk(rootfs):
+        os.chown(parent, 2000, 2000)
+        for name in files:
+            os.chown(Path(parent) / name, 2000, 2000)
+    command = ("export XDG_RUNTIME_DIR=/run/user/2000; "
+               "exec podman --storage-driver=vfs --events-backend=file --cgroup-manager=cgroupfs "
+               "run --rm --cgroups=disabled --network=none --log-driver=none "
+               "--security-opt=no-new-privileges --cap-drop=all "
+               "--rootfs /home/template-test/rootfs /bin/busybox true")
+    run(["su", "-s", "/bin/sh", "template-test", "-c", command], timeout=120)
+
+
+def main():
+    args = environment()  # No result writes outside the dedicated test guest.
+    result = {"kind": "klokast.vm-template-test-result.v1", "operation_id": args["klokast_test"],
+              "inputs_sha256": args["klokast_inputs"], "success": False, "tests": {}}
+    try:
+        run(["mount", "-o", "remount,rw", "/"])
+        Path("/run").mkdir(exist_ok=True)
+        if not os.path.ismount("/run"):
+            run(["mount", "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "tmpfs", "/run"])
+        if not os.path.ismount("/sys/fs/cgroup"):
+            run(["mount", "-t", "cgroup2", "cgroup2", "/sys/fs/cgroup"])
+        marker = json.loads(Path("/etc/klokast-template.json").read_text())
+        kernel = os.uname().release
+        if marker["inputs_sha256"] != args["klokast_inputs"] or not (Path("/lib/modules") / kernel).is_dir():
+            raise RuntimeError("booted root, kernel, modules, and input assignment disagree")
+        result["kernel_release"] = kernel
+        result["tests"].update(boot=True, kernel_modules=True)
+        tailscale_test()
+        result["tests"]["tailscale_offline"] = True
+        podman_test()
+        result["tests"]["rootless_podman"] = True
+        run(["nft", "add", "table", "inet", "template_test"])
+        run(["nft", "delete", "table", "inet", "template_test"])
+        result["tests"]["nftables_kernel"] = True
+        result["success"] = True
+    except Exception as error:
+        result["error"] = type(error).__name__ + ": " + str(error)[:1000]
+        print(result["error"], flush=True)
+    data = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(data) >= 1024 * 1024:
+        raise RuntimeError("template test result exceeds its slot")
+    with Path("/dev/xvdb").open("wb", buffering=0) as stream:
+        stream.write(data + b"\0")
+        os.fsync(stream.fileno())
+    os.sync()
+    subprocess.run(["poweroff", "-f"])
+    while True:
+        time.sleep(1)  # Host completion signal also handles PVH halt behavior.
+
+
+if __name__ == "__main__":
+    main()

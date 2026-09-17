@@ -23,7 +23,7 @@ BASE = Path("/mnt/dom0_data/klokast-vm-templates")
 MIB = 1024 * 1024
 SLOTS = {"root": 8192 * MIB, "kernel": 32 * MIB, "initramfs": 128 * MIB, "result": MIB}
 MEMORY = 4096
-TIMEOUT = 1800
+TIMEOUT = 1500
 
 
 def run(argv, check=True, timeout=60):
@@ -165,17 +165,17 @@ def read_result(work, request):
     return result
 
 
-def completion_ready(work, request):
+def completion_ready(work, request, slot="result.slot", kind="klokast.vm-template-build-result.v1"):
     # PVH firmware can halt instead of powering off. The guest publishes this
     # bounded result only after unmounting its root output. Use it only as a
     # signal to stop our disposable domain. Verify all output after it stops.
-    with (work / "result.slot").open("rb") as stream:
+    with (work / slot).open("rb") as stream:
         data = stream.read(MIB).split(b"\0", 1)[0]
     try:
         value = json.loads(data, object_pairs_hook=duplicate_fields)
     except (ValueError, UnicodeError, RuntimeError):
         return False
-    return (isinstance(value, dict) and value.get("kind") == "klokast.vm-template-build-result.v1" and
+    return (isinstance(value, dict) and value.get("kind") == kind and
             type(value.get("success")) is bool and value.get("operation_id") == request["operation_id"] and
             value.get("inputs_sha256") == request["inputs_sha256"])
 
@@ -221,34 +221,10 @@ def detach_loop(path, device):
         raise RuntimeError("builder loop device remains; retain its backing file")
 
 
-def execute(work, request):
-    name = "vm-build-" + request["operation_id"]
-    identity = str(uuid.uuid4())
-    if domain(name) is not None:
-        raise RuntimeError("refusing to reuse an existing builder domain")
-    info = {key.strip(): value.strip() for key, value in
-            (line.split(":", 1) for line in run(["xl", "info"]).stdout.splitlines() if ":" in line)}
-    if int(info.get("free_memory", "0")) < MEMORY + 1024:
-        raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
-    capacity = os.statvfs(work)
-    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + 1024 * MIB:
-        raise RuntimeError("builder requires nine GiB of free persistent storage")
-    for name_slot, size in SLOTS.items():
-        with (work / (name_slot + ".slot")).open("xb") as stream:
-            # Reserve physical capacity before boot; do not depend on sparse-file
-            # growth while package scripts run.
-            os.posix_fallocate(stream.fileno(), 0, size)
-    config = work / "builder.cfg"
-    write(work / "lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
-    console = None
-    collector = None
-    console_fd = None
-    loops = {}
-    backing = {"input": work / "capsule.tar", **{slot: work / (slot + ".slot") for slot in SLOTS}}
+def boot_guest(work, name, identity, config, request, *, slot="result.slot",
+               kind="klokast.vm-template-build-result.v1", timeout=TIMEOUT):
+    console, collector, console_fd = None, None, None
     try:
-        for slot, path in backing.items():
-            loops[slot] = attach_loop(path, readonly=slot == "input")
-        config.write_text(configuration(work, name, identity, request, loops))
         run(["xl", "create", "-p", config])
         current = domain(name)
         if current is None:
@@ -259,30 +235,134 @@ def execute(work, request):
             console = subprocess.Popen(["xl", "console", str(current["domid"])], stdin=slave, stdout=slave, stderr=slave)
         finally:
             os.close(slave)
-        collector = threading.Thread(target=capture_console, args=(console_fd, work / "console.log"), daemon=True)
+        collector = threading.Thread(target=capture_console, args=(console_fd, work / (name + ".log")), daemon=True)
         collector.start()
         run(["xl", "unpause", str(current["domid"])])
-        deadline = time.monotonic() + TIMEOUT
+        deadline = time.monotonic() + timeout
         while True:
             current = domain(name)
             if current is None:
-                break
+                return
             require_identity(current, identity)
-            if completion_ready(work, request):
+            if completion_ready(work, request, slot, kind):
+                return  # The finally block stops this exact guest before reads.
+            if time.monotonic() >= deadline:
+                raise RuntimeError("isolated guest exceeded its build or test deadline")
+            time.sleep(2)
+    finally:
+        try:
+            current = domain(name)
+            if current is not None:
+                require_identity(current, identity)
                 run(["xl", "destroy", str(current["domid"])])
                 if domain(name) is not None:
-                    raise RuntimeError("completed builder domain could not be stopped")
-                break
-            if time.monotonic() >= deadline:
-                raise RuntimeError("isolated builder exceeded its 30-minute deadline")
-            time.sleep(2)
+                    raise RuntimeError("disposable guest remains; retain its disks")
+        finally:
+            if console is not None:
+                console.terminate()
+                try:
+                    console.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    console.kill()
+                    console.wait(timeout=10)
+                if collector is not None:
+                    collector.join(timeout=10)
+            if console_fd is not None:
+                os.close(console_fd)
+
+
+def smoke_test(work, request, build):
+    name = "vm-test-" + request["operation_id"]
+    identity = str(uuid.uuid4())
+    if domain(name) is not None:
+        raise RuntimeError("refusing to reuse an existing template test domain")
+    root = work / "test-root.slot"
+    result_path = work / "test-result.slot"
+    config = work / "test.cfg"
+    loops = {}
+    copied_hash = hashlib.sha256()
+    # Copy bytes only. Never interpret or mount the generated filesystem here.
+    with (work / "root.slot").open("rb") as source, root.open("xb") as target:
+        os.posix_fallocate(target.fileno(), 0, SLOTS["root"])
+        while chunk := source.read(MIB):
+            copied_hash.update(chunk)
+            target.write(chunk)
+        target.flush()
+        os.fsync(target.fileno())
+    with result_path.open("xb") as stream:
+        os.posix_fallocate(stream.fileno(), 0, MIB)
+    try:
+        for path in (root, result_path):
+            loops[path] = attach_loop(path)
+        for artifact in ("kernel", "initramfs"):
+            with (work / (artifact + ".slot")).open("r+b") as stream:
+                stream.truncate(build["artifacts"][artifact]["bytes"])
+        config.write_text(
+            f"name = {name!r}\nuuid = {identity!r}\ntype = 'pvh'\nmemory = {MEMORY}\nmaxmem = {MEMORY}\nvcpus = 2\n"
+            f"kernel = {str(work / 'kernel.slot')!r}\nramdisk = {str(work / 'initramfs.slot')!r}\n"
+            "extra = 'console=hvc0 panic=1 root=/dev/xvda rw init=/usr/local/libexec/klokast-template-test "
+            f"klokast_test={request['operation_id']} klokast_inputs={request['inputs_sha256']}'\n"
+            f"disk = {['phy:' + loops[root] + ',xvda,w', 'phy:' + loops[result_path] + ',xvdb,w']!r}\n"
+            "vif = []\non_poweroff = 'destroy'\non_reboot = 'destroy'\non_crash = 'destroy'\n")
+        write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
+        boot_guest(work, name, identity, config, request, slot=result_path.name,
+                   kind="klokast.vm-template-test-result.v1", timeout=300)
+        value = json.loads(result_path.read_bytes().split(b"\0", 1)[0], object_pairs_hook=duplicate_fields)
+        expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel")}
+        if (value.get("kind") != "klokast.vm-template-test-result.v1" or value.get("success") is not True or
+                value.get("operation_id") != request["operation_id"] or value.get("inputs_sha256") != request["inputs_sha256"] or
+                value.get("kernel_release") != build["kernel_release"] or value.get("tests") != expected_tests):
+            raise RuntimeError("candidate base boot tests failed; inspect the isolated test console")
+        value["tested_root_sha256"] = copied_hash.hexdigest()
+        return value
+    finally:
+        # boot_guest must first prove that its exact guest has gone. A failed
+        # cleanup leaves the files attached and visible for scoped recovery.
+        if domain(name) is not None:
+            raise RuntimeError("test domain remains; retain all test resources")
+        for path, device in loops.items():
+            detach_loop(path, device)
+        for path in (root, result_path, config):
+            path.unlink(missing_ok=True)
+        write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "cleaned"})
+
+
+def execute(work, request):
+    name = "vm-build-" + request["operation_id"]
+    identity = str(uuid.uuid4())
+    if domain(name) is not None:
+        raise RuntimeError("refusing to reuse an existing builder domain")
+    info = {key.strip(): value.strip() for key, value in
+            (line.split(":", 1) for line in run(["xl", "info"]).stdout.splitlines() if ":" in line)}
+    if int(info.get("free_memory", "0")) < MEMORY + 1024:
+        raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
+    capacity = os.statvfs(work)
+    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + SLOTS["root"] + MIB + 1024 * MIB:
+        raise RuntimeError("builder and boot test require eighteen GiB of free persistent storage")
+    for name_slot, size in SLOTS.items():
+        with (work / (name_slot + ".slot")).open("xb") as stream:
+            # Reserve physical capacity before boot; do not depend on sparse-file
+            # growth while package scripts run.
+            os.posix_fallocate(stream.fileno(), 0, size)
+    config = work / "builder.cfg"
+    write(work / "lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
+    loops = {}
+    backing = {"input": work / "capsule.tar", **{slot: work / (slot + ".slot") for slot in SLOTS}}
+    try:
+        for slot, path in backing.items():
+            loops[slot] = attach_loop(path, readonly=slot == "input")
+        config.write_text(configuration(work, name, identity, request, loops))
+        boot_guest(work, name, identity, config, request)
         result = read_result(work, request)
         for slot, device in list(loops.items()):
             detach_loop(backing[slot], device)
             del loops[slot]
+        result["boot_test"] = smoke_test(work, request, result)
         result["artifacts"]["root"] = {"bytes": SLOTS["root"], "sha256": checksum(work / "root.slot")}
+        if result["artifacts"]["root"]["sha256"] != result["boot_test"]["tested_root_sha256"]:
+            raise RuntimeError("published root image differs from the boot-tested bytes")
         result.update(kind="klokast.vm-template-candidate.v1", box=request["box"], accepted=False,
-                      validation="construction-only")
+                      validation="base-boot-tested")
         # Publish only after the domain has disappeared and each output has
         # been measured. No image is mounted or parsed by the host.
         candidate = BASE / "candidates" / request["operation_id"]
@@ -298,25 +378,8 @@ def execute(work, request):
         write(work / "candidate.json", result)
         return result
     finally:
-        try:
-            current = domain(name)
-            if current is not None:
-                require_identity(current, identity)
-                run(["xl", "destroy", str(current["domid"])])
-                if domain(name) is not None:
-                    raise RuntimeError("builder domain remains; retain its disks for inspection")
-        finally:
-            if console is not None:
-                console.terminate()
-                try:
-                    console.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    console.kill()
-                    console.wait(timeout=10)
-                if collector is not None:
-                    collector.join(timeout=10)
-            if console_fd is not None:
-                os.close(console_fd)
+        if domain(name) is not None or domain("vm-test-" + request["operation_id"]) is not None:
+            raise RuntimeError("disposable guest remains; retain all build resources")
         for slot, device in list(loops.items()):
             detach_loop(backing[slot], device)
             del loops[slot]
