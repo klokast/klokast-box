@@ -1,0 +1,172 @@
+"""Signed policy authority, root-owned evidence and safe pause controls."""
+import copy
+import datetime as dt
+import io
+import json
+import tempfile
+import unittest
+from contextlib import ExitStack, redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import test_instance_verification as verification_fixture
+
+
+class VMUpdateAuthorityTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture = verification_fixture.InstanceVerificationTest()
+        self.fixture.setUp()
+        self.m = self.fixture.m
+        # Test real files and flock as an unprivileged runner. Mock only the
+        # root identity checks; do not weaken the production executor.
+        self.directory_check = patch.object(self.m, 'ensure_protected_dir', side_effect=lambda p, mode, group: self.m.ensure_dir(p, mode))
+        self.directory_check.start()
+        self.addCleanup(self.directory_check.stop)
+        original_fstat = self.m.os.fstat
+        def root_fstat(descriptor):
+            value = list(original_fstat(descriptor))
+            value[4] = value[5] = 0
+            return self.m.os.stat_result(value)
+        self.lock_identity = patch.object(self.m.os, 'fstat', side_effect=root_fstat)
+        self.lock_identity.start()
+        self.addCleanup(self.lock_identity.stop)
+        self.collected = self.fixture.collected()
+        self.collected["declared_boxes"] = ["boxa", "boxb", "boxc"]
+        self.policy = {"enabled": True, "targets": {"boxa": ["bak", "dmz"], "boxc": ["iot"]}, "exclusions": [],
+                       "branch-policy": "tested-stable", "maintenance-window": {"start":"02:00", "end":"04:00", "last-start":"03:00"},
+                       "canary-hours": 24, "replacement-minutes": 30, "recovery-minutes": 30}
+
+    def intent(self):
+        return self.m.vm_update_intent(self.collected, self.policy, "vm-update-test-nonce", self.m.now_utc())
+
+    def test_closed_intent_and_policy_do_not_expand_apply(self):
+        m = self.m
+        intent = self.intent()
+        m.validate_vm_update_intent(intent)
+        with self.assertRaises(m.ApplyError): m.validate_verification_intent(intent)
+        for change in (
+            lambda v: v.update(command="xl destroy bak"),
+            lambda v: v.update(executor="shell"),
+            lambda v: v["policy"].update(enabled=False),
+            lambda v: v["policy"].update(**{"canary-hours":23}),
+            lambda v: v["policy"].update(**{"replacement-minutes":True}),
+            lambda v: v["policy"]["targets"].update(boxa=["ops"]),
+            lambda v: v["policy"]["targets"].update(boxa=["router"]),
+            lambda v: v["policy"]["targets"].update(unknown=["bak"]),
+            lambda v: v.update(policy_sha256="0"*64),
+            lambda v: v.update(declared_boxes=["boxa"]),
+            lambda v: v["policy"]["exclusions"].append({"box":"boxb", "role":"bak", "reason":"repair"}),
+        ):
+            bad=copy.deepcopy(intent); change(bad)
+            with self.subTest(change=change), self.assertRaises(m.ApplyError): m.validate_vm_update_intent(bad)
+
+    def test_expiry_is_checked_for_execution_and_not_extended(self):
+        m=self.m
+        intent=m.vm_update_intent(self.collected,self.policy,"vm-update-test-nonce",m.now_utc()-dt.timedelta(hours=2))
+        with self.assertRaises(m.ApplyError): m.validate_vm_update_intent(intent)
+        m.validate_vm_update_intent(intent,check_time=False)
+
+    def prepare_files(self,root,intent):
+        directory=root/'pre'/intent['nonce']; directory.mkdir(parents=True)
+        for name,value in [('intent',intent),('binding',self.collected['binding'])]:
+            (directory/(name+'.json')).write_text(self.m.canonical(value)+'\n')
+        signature=root/'signature.sig'; signature.write_text('test-signature')
+        return SimpleNamespace(approval_signature=signature, signer_id=self.m.SIGNER_ID)
+
+    def test_activation_consumes_nonce_publishes_only_receipt_and_refuses_replay(self):
+        m=self.m; intent=self.intent()
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); args=self.prepare_files(root,intent)
+            def collect(*args):
+                self.assertTrue((root/'nonces'/intent['nonce']).exists())
+                return self.collected,self.policy
+            with patch.object(m,'VM_UPDATE_ROOT',root/'executor'), patch.object(m,'PREFLIGHT_ROOT',root/'pre'), patch.object(m,'NONCE_ROOT',root/'nonces'), patch.object(m,'verify_signature'), patch.object(m,'vm_update_collect',side_effect=collect), patch.object(m,'append_audit'), patch.object(m,'publish_authority') as general, redirect_stdout(io.StringIO()):
+                m.vm_update_policy_execute(args,intent)
+                pointer=(root/'executor/active-policy').read_text().strip()
+                receipt=json.loads((root/'executor/activations'/(pointer+'.json')).read_text())
+                self.assertEqual(receipt['intent']['policy'],self.policy)
+                self.assertEqual(receipt['binding'],self.collected['binding'])
+                self.assertEqual((root/'executor/active-policy').stat().st_mode & 0o777,0o600)
+                general.assert_not_called()
+                with self.assertRaisesRegex(m.ApplyError,'already used'):m.vm_update_policy_execute(args,intent)
+
+    def test_changed_evidence_leaves_no_active_authority(self):
+        m=self.m; intent=self.intent()
+        changed=copy.deepcopy(self.collected); changed['engine_commit']='d'*40
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); args=self.prepare_files(root,intent)
+            with patch.object(m,'VM_UPDATE_ROOT',root/'executor'), patch.object(m,'PREFLIGHT_ROOT',root/'pre'), patch.object(m,'NONCE_ROOT',root/'nonces'), patch.object(m,'verify_signature'), patch.object(m,'vm_update_collect',return_value=(changed,self.policy)):
+                with self.assertRaisesRegex(m.ApplyError,'changed'):m.vm_update_policy_execute(args,intent)
+                self.assertFalse((root/'executor/active-policy').exists())
+                self.assertTrue((root/'nonces'/intent['nonce']).exists())
+
+    def test_pause_can_restrict_revoked_policy_but_resume_cannot(self):
+        m=self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            with patch.object(m,'VM_UPDATE_ROOT',root/'executor'), patch.object(m,'require_root_active'), patch.object(m,'require_self_match'), patch.object(m,'append_audit'), patch.object(m,'vm_update_policy_current',side_effect=m.ApplyError('revoked')), redirect_stdout(io.StringIO()):
+                m.vm_update_policy_control('pause')
+                with self.assertRaisesRegex(m.ApplyError,'revoked'):m.vm_update_policy_control('resume')
+                self.assertTrue(json.loads((root/'executor/pause.json').read_text())['paused'])
+
+    def test_current_policy_revalidates_engine_toolchain_signer_and_revocation(self):
+        m=self.m; intent=self.intent()
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root=Path(temporary); args=self.prepare_files(root,intent)
+            for name,value in [('VM_UPDATE_ROOT',root/'executor'),('PREFLIGHT_ROOT',root/'pre'),('NONCE_ROOT',root/'nonces'),('INSTANCE',root/'instance')]:
+                stack.enter_context(patch.object(m,name,value))
+            signature_check=stack.enter_context(patch.object(m,'verify_signature'))
+            stack.enter_context(patch.object(m,'vm_update_collect',return_value=(self.collected,self.policy)))
+            stack.enter_context(patch.object(m,'append_audit'))
+            with redirect_stdout(io.StringIO()):m.vm_update_policy_execute(args,intent)
+            controller={'source':'instance_specification_v1','engine_commit':intent['engine_commit'],
+                        'controllers':intent['controller_pair'],'authority_state_sha256':intent['evidence']['authority_state_sha256']}
+            stack.enter_context(patch.object(m,'controller_identity_status',return_value=controller))
+            stack.enter_context(patch.object(m,'resolve_build_directory',return_value=(root/'build',intent['engine_commit'])))
+            stack.enter_context(patch.object(m,'verify_build_directory',return_value=({'binary_sha256':intent['evidence']['binary_sha256']},root/'binary')))
+            stack.enter_context(patch.object(m,'verify_binary_version'))
+            toolchain=stack.enter_context(patch.object(m,'validate_toolchain'))
+            m.INSTANCE.mkdir()
+            private=m.INSTANCE/'klokast-instance.json'
+            def source():
+                return {'rendered':{'inputs':[{'path':'klokast-instance.json','sha256':m.sha256_bytes(private.read_bytes())}]}}
+            stack.enter_context(patch.object(m,'inventory_source_status',side_effect=source))
+            private.write_text(json.dumps({'vm-updates':self.policy}))
+            self.assertEqual(m.vm_update_policy_current()['intent'],intent)
+            changed=copy.deepcopy(self.policy); changed['enabled']=False
+            private.write_text(json.dumps({'vm-updates':changed}))
+            with self.assertRaisesRegex(m.ApplyError,'revoked'):m.vm_update_policy_current()
+            private.write_text(json.dumps({'vm-updates':self.policy}))
+            controller['engine_commit']='d'*40
+            with self.assertRaisesRegex(m.ApplyError,'engine changed'):m.vm_update_policy_current()
+            controller['engine_commit']=intent['engine_commit']
+            toolchain.side_effect=m.ApplyError('toolchain changed')
+            with self.assertRaisesRegex(m.ApplyError,'toolchain changed'):m.vm_update_policy_current()
+            toolchain.side_effect=None
+            signature_check.side_effect=m.ApplyError('signer revoked')
+            with self.assertRaisesRegex(m.ApplyError,'signer revoked'):m.vm_update_policy_current()
+
+    def test_policy_storage_does_not_overwrite_immutable_evidence(self):
+        m=self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'receipt.json'
+            m.vm_update_store(path,b'first')
+            with self.assertRaises(FileExistsError):m.vm_update_store(path,b'second')
+            self.assertEqual(path.read_bytes(),b'first')
+
+    def test_duplicate_operations_share_one_installation_lock(self):
+        m=self.m
+        with tempfile.TemporaryDirectory() as temporary, patch.object(m,'VM_UPDATE_ROOT',Path(temporary)/'executor'):
+            with m.vm_update_lock():
+                with self.assertRaisesRegex(m.ApplyError,'installation lock'):
+                    with m.vm_update_lock():pass
+
+    def test_unknown_cli_controls_accept_no_evidence(self):
+        m=self.m
+        with patch.object(m,'vm_update_policy_control') as control, redirect_stdout(io.StringIO()):
+            self.assertEqual(m.main(['vm-update-policy','status','--plan','fake']),1)
+            control.assert_not_called()
+
+
+if __name__ == '__main__':unittest.main()

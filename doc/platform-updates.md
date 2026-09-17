@@ -2,10 +2,11 @@
 
 ## Delivery status
 
-This delivery implements the first report stage and the Instance policy
-contract. It does not implement unattended VM replacement. `prepare`, `adopt`,
-`run`, `pause`, and `resume` are not available. The existing guest installer
-remains in use. Do not activate automatic replacement or treat a report as an
+This delivery implements discovery, the Instance policy contract, and signed
+policy activation with `pause` and `resume`. It does not implement unattended
+VM replacement. Template `prepare`, `adopt`, and `run` are not available.
+The existing guest installer remains in use. Do not activate automatic
+replacement or treat a report as an
 accepted template or release assignment.
 
 The public `shared-alpine-v1` package profile includes the kernel, Tailscale,
@@ -81,6 +82,32 @@ hours. `verify` currently records a critical `release.unverified` finding: the
 accepted-release verifier is not yet implemented. It never converts a recent
 scan into proof of a healthy replacement.
 
+## Signed policy setup
+
+After approved engine promotion and matching controller toolchain convergence,
+run `74-platform-update-authority.yml` from the active controller to create
+the root-owned policy state directory. The installed `ksa-apply` must match
+the approved source. Candidate code cannot activate a policy for an older
+engine.
+
+Use `platform-update policy prepare` with the same seven fresh evidence
+arguments as `ksa-apply preflight`: `--plan`, `--authority-state`,
+`--controller-toolchain-receipt`, `--source-recovery-receipt`,
+`--instance-source-receipt`, `--observation`, and `--build-dir`. This returns
+an exact intent for human review. The human signs it on the trusted Mac with
+`sign-secret-authority-intent --purpose platform-apply --intent FILE`.
+Then call `platform-update policy activate --approval-intent FILE
+--approval-signature FILE.sig --signer-id human-platform-apply` on the
+controller. The activation has a one-hour lifetime and a single-use nonce.
+Changed evidence requires fresh preparation and a new signature.
+
+`platform-update policy status` revalidates the accepted standing policy.
+`platform-update pause` sets a local restriction, including when policy is
+revoked. `platform-update resume` revalidates current authority before it
+removes that restriction. These commands add no VM replacement schedule.
+The result explicitly reports `replacement_executor_available: false` until
+the production executor is implemented.
+
 ## Package evidence
 
 Use the official [release metadata](https://alpinelinux.org/releases.json),
@@ -107,8 +134,8 @@ only; they cannot establish accepted release authority.
 
 The following work is required before enabling replacement:
 
-1. Add a signed standing-policy activation and a restricted executor bound to
-   the current engine and toolchain. Keep general Apply contracts unchanged.
+1. Complete the restricted replacement executor under the signed standing
+   policy. Keep general Apply contracts unchanged.
 2. Build complete dependency-frozen templates in a separate disposable Xen VM.
    Test the root disk with its matching kernel and initramfs. Preserve approved
    application images and configuration. Do not use the sealed Go builder or

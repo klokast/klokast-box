@@ -1,0 +1,29 @@
+---
+- name: Verify the installed controller authority before setting up policy records
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/ksa-apply
+      - inventory-source-status
+  register: vm_update_authority_source
+  changed_when: false
+  no_log: true
+
+- name: Require adopted Instance authority for standing update policy
+  ansible.builtin.assert:
+    that:
+      - (vm_update_authority_source.stdout | from_json).source == 'instance_specification_v1'
+
+- name: Create root-owned update execution state independently of discovery
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/lib/klokast/updates
+      mode: "0755"
+    - path: /var/lib/klokast/updates/executor
+      mode: "0700"
+    - path: /var/lib/klokast/updates/executor/activations
+      mode: "0700"

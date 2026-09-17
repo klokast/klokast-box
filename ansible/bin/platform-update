@@ -255,11 +255,47 @@ def main(argv=None):
         sub.add_parser(name, help="report current evidence and overdue work" if name == "status" else "check discovery coverage; accepted-release verification is not installed")
     for command_parser in (scan_parser, *[sub.choices[n] for n in ("status", "verify")]):
         command_parser.add_argument("--json", action="store_true")
+    policy_parser = sub.add_parser("policy", help="prepare, activate, or validate the signed standing policy")
+    policy_parser.add_argument("action", choices=("prepare", "activate", "status"))
+    evidence_names = ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir")
+    for name in (*evidence_names, "approval-intent", "approval-signature", "signer-id"):
+        policy_parser.add_argument("--" + name)
+    sub.add_parser("pause", help="restrict scheduled VM mutations without expanding authority")
+    sub.add_parser("resume", help="revalidate the standing policy before removing the local pause")
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command in {"policy", "pause", "resume"}:
+            require_controller()
+            helper = ["/usr/bin/doas", "/usr/local/sbin/ksa-apply"]
+            if args.command in {"pause", "resume"}:
+                helper += ["vm-update-policy", args.command]
+            elif args.action == "activate":
+                if any(getattr(args, name.replace("-", "_")) for name in evidence_names):
+                    raise UpdateError("activation accepts only the prepared signed intent")
+                helper += ["execute"]
+                for name in ("approval-intent", "approval-signature", "signer-id"):
+                    value = getattr(args, name.replace("-", "_"))
+                    if not value:
+                        raise UpdateError("activation requires the intent, signature, and signer ID")
+                    helper += ["--" + name, value]
+            else:
+                if any(getattr(args, name) for name in ("approval_intent", "approval_signature", "signer_id")):
+                    raise UpdateError("policy preparation and status do not accept signature inputs")
+                helper += ["vm-update-policy", args.action]
+                for name in evidence_names:
+                    value = getattr(args, name.replace("-", "_"))
+                    if args.action == "prepare":
+                        if not value:
+                            raise UpdateError("policy preparation requires complete fresh Plan v8 evidence")
+                        helper += ["--" + name, value]
+                    elif value:
+                        raise UpdateError("policy status accepts no caller-selected evidence")
+            # Keep root boundary errors visible, without routing them into an
+            # unprivileged scan log. The root executor supplies bounded output.
+            return subprocess.run(helper, stdin=subprocess.DEVNULL, timeout=900).returncode
         if args.command == "scan":
             report = scan(not args.existing_map)
         else:

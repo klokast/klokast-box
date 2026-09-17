@@ -316,17 +316,31 @@ path, or private JSON.
 ## Standing VM update authority
 
 The [Instance contract](klokast-instance-specification.md#shared-vm-update-intent)
-defines the narrow update policy. Policy schema validation is implemented;
-signed activation and the privileged VM update executor are not yet installed
-by this implementation. Discovery output cannot authorize VM replacement.
+defines the narrow update policy. Policy schema validation and signed policy
+activation are implemented. The VM replacement executor is not yet implemented.
+Discovery output cannot authorize VM replacement.
 
-Before this path can be enabled, the existing trusted-workstation signing
-mechanism must activate one exact policy, approved engine, and controller
-toolchain. This must be a separate closed action. It must not broaden Plan v8,
-Plan v9, or general signed Apply rules. Each operation must verify current
+The `ksa-apply vm-update-policy prepare` action uses fresh Plan v8 verification
+evidence and current Controller Toolchain v8. It prepares a separate closed
+`klokast.vm-update-policy-intent.v1`. The existing trusted-workstation
+`platform-apply` identity signs this exact intent. Execution verifies the
+signature and consumes its nonce before rechecking evidence. Root-owned
+activation receipts and the active pointer stay under
+`/var/lib/klokast/updates/executor`; the private checkout stays read-only.
+Activation does not broaden Plan v8, Plan v9, or general signed Apply rules.
+Each future replacement operation must verify current
 policy, controller authority, exact artifacts, targets, and fresh preflight
 evidence. Revocation or a changed engine or toolchain must block new operations.
 An already authorized operation must finish safely or recover.
+
+Policy status and resume verify the archived signature with the current allowed
+signer set, sealed engine, installed toolchain, active controller, Authority
+State, and sealed current Instance input. The activation Observation is not
+reused as execution evidence. Policy changes, engine promotion, signer
+revocation, or authority changes require new activation. Local pause is a
+root-owned restriction and can still be set when policy validation fails.
+One installation lock serializes activation, pause, resume, and future
+replacements. Acceptance of a standing policy is not a successful VM update.
 
 The discovery collector has inspection authority and writes non-authoritative
 evidence as `smith`. Package indexes and VM facts are untrusted input. Native

@@ -177,9 +177,9 @@ See the [sealed Go builder](secure-builder.md), [OCI workflow](../ansible/bin/pl
 ### Guest construction and runtime state
 
 [Controller-managed VM updates](platform-updates.md) adds inspection of base
-packages and a closed shared-VM update policy contract. Its current delivery
-is discovery only. The isolated template builder, retained-data adoption,
-signed replacement executor, and local recovery path remain required before
+packages, a closed shared-VM update policy contract, signed policy activation,
+and local pause/resume controls. The isolated template builder, retained-data
+adoption, signed replacement executor, and local recovery path remain required before
 automatic replacement can be enabled. The
 [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
 owns state placement and release-assignment rules; the update runbook does not

@@ -40,6 +40,9 @@ KIND_PLAN_V7 = "klokast.plan.v7"
 KIND_PLAN_V8 = "klokast.plan.v8"
 KIND_PLAN_V9 = "klokast.plan.v9"
 KIND_VERIFICATION_INTENT = "klokast.instance-verification-intent.v1"
+KIND_VM_UPDATE_INTENT = "klokast.vm-update-policy-intent.v1"
+VM_UPDATE_EXECUTOR = "vm_update_policy_v1"
+VM_UPDATE_ROOT = Path("/var/lib/klokast/updates/executor")
 VERIFICATION_EXECUTOR = "instance_verification_v1"
 KIND_RETIREMENT_EVIDENCE = "klokast.legacy-retirement-evidence.v1"
 KIND_RETIREMENT_INTENT = "klokast.legacy-input-retirement-intent.v1"
@@ -1705,7 +1708,7 @@ def verify_signature(args, intent):
 def consume_nonce(intent):
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         binding_sha256 = intent["authority_state_sha256"]
-    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT, KIND_VERIFICATION_INTENT, KIND_RETIREMENT_INTENT}:
+    elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT, KIND_VERIFICATION_INTENT, KIND_RETIREMENT_INTENT, KIND_VM_UPDATE_INTENT}:
         binding_sha256 = intent["plan_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
@@ -4613,7 +4616,7 @@ def verification_intent(collected, nonce, issued):
             "nonce": nonce, "issued_at": format_utc(issued), "expires_at": format_utc(issued + INTENT_LIFETIME)}
 
 
-def validate_verification_intent(intent):
+def validate_verification_intent(intent, *, check_time=True):
     fields = {"schema_version", "kind", "action", "executor", "rollback_type", "plan_sha256", "evidence", "controller_pair", "action_groups", "private_commit", "engine_commit", "nonce", "issued_at", "expires_at"}
     if set(intent) != fields or intent.get("schema_version") != 1 or intent.get("kind") != KIND_VERIFICATION_INTENT or intent.get("action") != "verify_instance_authority" or intent.get("executor") != VERIFICATION_EXECUTOR or intent.get("rollback_type") != "no_mutation":
         raise ApplyError("instance verification intent contains unknown fields or action")
@@ -4644,7 +4647,7 @@ def validate_verification_intent(intent):
     if any(not isinstance(intent[k], str) or not COMMIT_RE.fullmatch(intent[k]) for k in ("private_commit", "engine_commit")) or not isinstance(intent["nonce"], str) or not NONCE_RE.fullmatch(intent["nonce"]):
         raise ApplyError("instance verification commit or nonce is invalid")
     issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
-    if expires - issued != INTENT_LIFETIME or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if expires - issued != INTENT_LIFETIME or (check_time and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("instance verification intent is expired or has an invalid lifetime")
 
 
@@ -5025,6 +5028,247 @@ def verification_execute(args, intent):
         print(canonical({"schema_version": 1, "result": "verified", "receipt_path": str(path), "authority_state_sha256": receipt["authority_state_sha256"]}))
     except (ApplyError, OSError) as error:
         raise ApplyError("verification failed or receipt storage is incomplete; inspect evidence and obtain fresh approval; do not retry the used request: " + str(error)) from error
+
+
+def validate_vm_update_policy(policy, boxes):
+    fields = {"enabled", "targets", "exclusions", "branch-policy", "maintenance-window",
+              "canary-hours", "replacement-minutes", "recovery-minutes"}
+    if not isinstance(policy, dict) or set(policy) != fields or policy["enabled"] is not True:
+        raise ApplyError("VM update activation requires one enabled closed Instance policy")
+    if (policy["branch-policy"] != "tested-stable" or
+            policy["maintenance-window"] != {"start": "02:00", "end": "04:00", "last-start": "03:00"} or
+            type(policy["canary-hours"]) is not int or not 24 <= policy["canary-hours"] <= 168 or
+            type(policy["replacement-minutes"]) is not int or policy["replacement-minutes"] != 30 or
+            type(policy["recovery-minutes"]) is not int or policy["recovery-minutes"] != 30):
+        raise ApplyError("VM update policy timing or branch selection exceeds supported authority")
+    targets = policy["targets"]
+    if not isinstance(targets, dict) or not targets or any(box not in boxes for box in targets):
+        raise ApplyError("VM update targets must name declared boxes")
+    for roles in targets.values():
+        if (not isinstance(roles, list) or not roles or any(not isinstance(role, str) or role not in {"bak", "dmz", "iot"} for role in roles) or
+                roles != sorted(set(roles))):
+            raise ApplyError("VM update targets must contain sorted unique shared roles")
+    exclusions = policy["exclusions"]
+    if not isinstance(exclusions, list):
+        raise ApplyError("VM update exclusions must be a list")
+    seen = set()
+    for exclusion in exclusions:
+        if (not isinstance(exclusion, dict) or set(exclusion) != {"box", "role", "reason"} or
+                not isinstance(exclusion["box"], str) or not isinstance(exclusion["role"], str) or
+                not isinstance(exclusion["reason"], str) or not exclusion["reason"].strip() or len(exclusion["reason"]) > 500):
+            raise ApplyError("VM update exclusion has an invalid contract")
+        key = (exclusion["box"], exclusion["role"])
+        if key in seen or exclusion["role"] not in targets.get(exclusion["box"], []):
+            raise ApplyError("VM update exclusion is duplicated or outside the target set")
+        seen.add(key)
+    if exclusions != sorted(exclusions, key=lambda v: (v["box"], v["role"])):
+        raise ApplyError("VM update exclusions must use stable box and role ordering")
+
+
+def vm_update_intent(collected, policy, nonce, issued):
+    intent = verification_intent(collected, nonce, issued)
+    intent.update(kind=KIND_VM_UPDATE_INTENT, action="activate_vm_update_policy", executor=VM_UPDATE_EXECUTOR,
+                  rollback_type="disable_new_updates", policy=policy, policy_sha256=inventory_digest(policy),
+                  declared_boxes=collected["declared_boxes"])
+    return intent
+
+
+def validate_vm_update_intent(intent, *, check_time=True):
+    if (not isinstance(intent, dict) or intent.get("kind") != KIND_VM_UPDATE_INTENT or
+            intent.get("action") != "activate_vm_update_policy" or intent.get("executor") != VM_UPDATE_EXECUTOR or
+            intent.get("rollback_type") != "disable_new_updates" or not {"policy", "policy_sha256", "declared_boxes"} <= set(intent)):
+        raise ApplyError("VM update activation intent has an unsupported action")
+    verification = {k: v for k, v in intent.items() if k not in {"policy", "policy_sha256", "declared_boxes"}}
+    verification.update(kind=KIND_VERIFICATION_INTENT, action="verify_instance_authority",
+                        executor=VERIFICATION_EXECUTOR, rollback_type="no_mutation")
+    validate_verification_intent(verification, check_time=check_time)
+    boxes = intent["declared_boxes"]
+    if (not isinstance(boxes, list) or not boxes or any(not isinstance(v, str) or not BOX_RE.fullmatch(v) for v in boxes) or
+            boxes != sorted(set(boxes)) or any(v["box"] not in boxes for v in intent["controller_pair"].values())):
+        raise ApplyError("VM update activation declared box set is invalid")
+    validate_vm_update_policy(intent["policy"], boxes)
+    if intent["policy_sha256"] != inventory_digest(intent["policy"]):
+        raise ApplyError("VM update activation policy checksum differs")
+
+
+def vm_update_evidence_args(binding):
+    if set(binding) != VERIFICATION_BINDING_FIELDS:
+        raise ApplyError("VM update activation requires a Plan v8 evidence binding")
+    names = {"plan": "plan_path", "authority_state": "authority_path", "controller_toolchain_receipt": "toolchain_path",
+             "source_recovery_receipt": "recovery_path", "instance_source_receipt": "source_path",
+             "observation": "observation", "build_dir": "build_dir"}
+    return argparse.Namespace(**{key: binding[field] for key, field in names.items()})
+
+
+def vm_update_collect(args, nonce):
+    collected = verification_collect(args, nonce)
+    binding = validate_inputs_v3(args)
+    plan = binding["plan"]
+    if plan["kind"] != KIND_PLAN_V8 or collected["evidence"]["plan_sha256"] != plan["plan_sha256"]:
+        raise ApplyError("VM update policy activation requires an exact revalidated Plan v8")
+    policy = plan["projection"].get("vm_updates")
+    validate_vm_update_policy(policy, plan["inventory"]["boxes"])
+    if load_json(binding["toolchain_path"])["schema_version"] != 8:
+        raise ApplyError("VM update activation requires the current Controller Toolchain v8")
+    collected["declared_boxes"] = plan["inventory"]["boxes"]
+    return collected, policy
+
+
+@contextmanager
+def vm_update_lock():
+    # This lock serializes policy control and future production operations.
+    ensure_protected_dir(VM_UPDATE_ROOT, 0o700, 0)
+    descriptor = os.open(VM_UPDATE_ROOT / "operation.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+            raise ApplyError("VM update operation lock has unsafe metadata")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ApplyError("another VM update operation holds the installation lock") from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def vm_update_store(path, content, *, replace=False):
+    # Fixed root-controlled destinations only. No caller-selected executable,
+    # pointer path, instance path, or artifact selection enters this interface.
+    temporary = path.with_name("." + path.name + "-" + secrets.token_hex(8))
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        write_all(descriptor, content)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        if replace:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def vm_update_policy_prepare(args):
+    require_root_active()
+    require_self_match()
+    nonce = secrets.token_urlsafe(18)
+    collected, policy = vm_update_collect(args, nonce)
+    preflight_evidence_deadline(collected["binding"])
+    intent = vm_update_intent(collected, policy, nonce, now_utc())
+    validate_vm_update_intent(intent)
+    ensure_dir(PREFLIGHT_ROOT)
+    directory = PREFLIGHT_ROOT / nonce
+    directory.mkdir(mode=0o700)
+    for name, value in (("binding", collected["binding"]), ("intent", intent)):
+        vm_update_store(directory / (name + ".json"), (canonical(value) + "\n").encode())
+    append_audit("vm-update-policy.preflight", nonce=nonce, policy_sha256=intent["policy_sha256"])
+    print(canonical(intent))
+
+
+def vm_update_policy_execute(args, intent):
+    validate_vm_update_intent(intent)
+    verify_signature(args, intent)
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed VM update policy differs from protected preparation")
+    binding = load_json(directory / "binding.json", canonical_stored=True)
+    evidence_args = vm_update_evidence_args(binding)
+    with vm_update_lock():
+        consume_nonce(intent)
+        collected, policy = vm_update_collect(evidence_args, intent["nonce"] + "-execute")
+        if vm_update_intent(collected, policy, intent["nonce"], parse_utc(intent["issued_at"], "issued_at")) != intent:
+            raise ApplyError("VM update activation evidence, policy, engine, or controller changed")
+        validate_vm_update_intent(intent)
+        # Retain exact signature bytes for subsequent revocation checks.
+        signature = read_regular(args.approval_signature, 64 * 1024)
+        vm_update_store(directory / "vm-update-policy.sig", signature)
+        verify_signature(argparse.Namespace(signer_id=SIGNER_ID, approval_signature=directory / "vm-update-policy.sig"), intent)
+        receipt = {"kind": "klokast.vm-update-policy-activation.v1", "intent": intent, "binding": binding,
+                   "signature_sha256": sha256_bytes(signature), "activated_at": format_utc(now_utc())}
+        receipt["receipt_sha256"] = inventory_digest(receipt)
+        ensure_protected_dir(VM_UPDATE_ROOT / "activations", 0o700, 0)
+        path = VM_UPDATE_ROOT / "activations" / (receipt["receipt_sha256"] + ".json")
+        vm_update_store(path, (canonical(receipt) + "\n").encode())
+        # Receipt precedes publication. A storage failure never creates authority.
+        vm_update_store(VM_UPDATE_ROOT / "active-policy", (receipt["receipt_sha256"] + "\n").encode(), replace=True)
+        append_audit("vm-update-policy.activated", nonce=intent["nonce"], receipt_sha256=receipt["receipt_sha256"])
+        print(canonical({"result": "activated", "receipt_sha256": receipt["receipt_sha256"],
+                         "policy_sha256": intent["policy_sha256"], "replacement_executor_available": False}))
+
+
+def vm_update_policy_current():
+    controller = controller_identity_status()
+    ensure_protected_dir(VM_UPDATE_ROOT, 0o700, 0)
+    pointer = read_regular(VM_UPDATE_ROOT / "active-policy", 66)
+    digest = pointer.decode("ascii", errors="replace").strip()
+    if not DIGEST_RE.fullmatch(digest) or pointer != (digest + "\n").encode():
+        raise ApplyError("VM update policy pointer is invalid")
+    receipt = load_json(VM_UPDATE_ROOT / "activations" / (digest + ".json"), canonical_stored=True)
+    if set(receipt) != {"kind", "intent", "binding", "signature_sha256", "activated_at", "receipt_sha256"} or receipt["kind"] != "klokast.vm-update-policy-activation.v1":
+        raise ApplyError("VM update activation receipt has an unknown contract")
+    if receipt["receipt_sha256"] != digest or inventory_digest({k: v for k, v in receipt.items() if k != "receipt_sha256"}) != digest:
+        raise ApplyError("VM update activation receipt checksum differs")
+    intent = receipt["intent"]
+    validate_vm_update_intent(intent, check_time=False)
+    if (controller["source"] != "instance_specification_v1" or controller["engine_commit"] != intent["engine_commit"] or
+            controller["controllers"] != intent["controller_pair"] or controller["authority_state_sha256"] != intent["evidence"]["authority_state_sha256"]):
+        raise ApplyError("VM update policy controller, source authority, or engine changed; new activation is required")
+    directory = PREFLIGHT_ROOT / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent or load_json(directory / "binding.json", canonical_stored=True) != receipt["binding"]:
+        raise ApplyError("VM update activation archive differs")
+    vm_update_evidence_args(receipt["binding"])
+    signature = directory / "vm-update-policy.sig"
+    if sha256_bytes(read_regular(signature, 64 * 1024)) != receipt["signature_sha256"]:
+        raise ApplyError("VM update policy signature archive differs")
+    verify_signature(argparse.Namespace(signer_id=SIGNER_ID, approval_signature=signature), intent)
+    build, commit = resolve_build_directory(receipt["binding"]["build_dir"])
+    build_receipt, binary = verify_build_directory(build, commit)
+    verify_binary_version(binary, build_receipt)
+    if commit != intent["engine_commit"] or build_receipt["binary_sha256"] != intent["evidence"]["binary_sha256"]:
+        raise ApplyError("VM update sealed engine changed")
+    validate_toolchain(receipt["binding"]["toolchain_path"], {"engine": {"commit": commit}, "schema_version": 8,
+                       "controller_toolchain": {"receipt_sha256": intent["evidence"]["toolchain_receipt_sha256"]}}, binary)
+    # Inventory invokes the approved sealed checker against current clean inputs.
+    # It does not use the expired activation Observation as execution evidence.
+    source = inventory_source_status()
+    raw = read_regular(INSTANCE / "klokast-instance.json")
+    inputs = source.get("rendered", {}).get("inputs", [])
+    if not any(v.get("path") == "klokast-instance.json" and v.get("sha256") == sha256_bytes(raw) for v in inputs):
+        raise ApplyError("VM update current instance does not match sealed source evidence")
+    private = controller_input_object(raw, "VM update private policy")
+    policy = private.get("vm-updates")
+    if isinstance(policy, dict):
+        policy = dict(policy)
+        policy["targets"] = {box: sorted(roles) for box, roles in policy["targets"].items()}
+        policy["exclusions"] = sorted(policy["exclusions"], key=lambda v: (v["box"], v["role"]))
+    if policy != intent["policy"]:
+        raise ApplyError("VM update standing policy was changed, disabled, or revoked; new activation is required")
+    if controller_identity_status() != controller or read_regular(INSTANCE / "klokast-instance.json") != raw or read_regular(VM_UPDATE_ROOT / "active-policy", 66) != pointer:
+        raise ApplyError("VM update authority changed during validation")
+    return receipt
+
+
+def vm_update_policy_control(action):
+    require_root_active()
+    require_self_match()
+    with vm_update_lock():
+        if action == "pause":
+            # Restriction remains possible when the policy is absent or revoked.
+            vm_update_store(VM_UPDATE_ROOT / "pause.json", (canonical({"paused": True, "changed_at": format_utc(now_utc())}) + "\n").encode(), replace=True)
+        else:
+            receipt = vm_update_policy_current()
+            if action == "resume":
+                vm_update_store(VM_UPDATE_ROOT / "pause.json", (canonical({"paused": False, "changed_at": format_utc(now_utc()),
+                                "activation_sha256": receipt["receipt_sha256"]}) + "\n").encode(), replace=True)
+        pause_path = VM_UPDATE_ROOT / "pause.json"
+        paused = load_json(pause_path).get("paused") is not False if pause_path.exists() else False
+        append_audit("vm-update-policy." + action, paused=paused)
+        print(canonical({"kind": "klokast.vm-update-policy-status.v1", "paused": paused,
+                         "replacement_executor_available": False, "action": action}))
 
 
 RETIREMENT_BINDING_FIELDS = VERIFICATION_BINDING_FIELDS | {"retirement_evidence_path"}
@@ -5408,6 +5652,8 @@ def execute(args):
     intent = load_json(args.approval_intent, 64 * 1024, canonical_stored=True)
     if intent.get("kind") == KIND_CONVERSION_INTENT:
         authority_conversion_execute(args, intent)
+    elif intent.get("kind") == KIND_VM_UPDATE_INTENT:
+        vm_update_policy_execute(args, intent)
     elif intent.get("kind") == KIND_RETIREMENT_INTENT:
         retirement_execute(args, intent)
     elif intent.get("kind") == KIND_VERIFICATION_INTENT:
@@ -5436,6 +5682,10 @@ def parse_args(argv):
     commands.add_parser("controller-identity-status")
     commands.add_parser("registry-source-status")
     commands.add_parser("inventory-source-status")
+    update_policy_parser = commands.add_parser("vm-update-policy")
+    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume"))
+    for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
+        update_policy_parser.add_argument("--" + name)
     retirement_evidence_parser = commands.add_parser("retirement-evidence")
     retirement_evidence_parser.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
     retirement_evidence_parser.add_argument("--consumer-matrix", required=True)
@@ -5488,6 +5738,16 @@ def main(argv=None):
     try:
         if args.operation == "controller-identity-status":
             print(canonical(controller_identity_status()))
+        elif args.operation == "vm-update-policy":
+            names = ("plan", "authority_state", "controller_toolchain_receipt", "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir")
+            if args.action == "prepare":
+                if any(not getattr(args, name) for name in names):
+                    raise ApplyError("VM update policy preparation requires complete fresh Plan v8 evidence")
+                vm_update_policy_prepare(args)
+            else:
+                if any(getattr(args, name) for name in names):
+                    raise ApplyError("VM update policy control accepts no caller-selected inputs")
+                vm_update_policy_control(args.action)
         elif args.operation == "inventory-source-status":
             print(canonical(inventory_source_status()))
         elif args.operation == "registry-source-status":
