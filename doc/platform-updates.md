@@ -3,7 +3,8 @@
 ## Delivery status
 
 This delivery implements discovery, the Instance policy contract, and signed
-policy activation with `pause` and `resume`, and candidate template construction.
+policy activation with `pause` and `resume`, candidate template construction,
+and offline base-image boot tests.
 It does not implement unattended VM replacement. `adopt` and `run` are not available.
 The existing guest installer remains in use. Do not activate automatic
 replacement or treat a report as an
@@ -135,8 +136,8 @@ copy of the root image with its matching kernel and initramfs. It tests module
 availability, unenrolled Tailscale startup, a rootless Podman container made
 from installed BusyBox files, and kernel support for nftables. The original
 generic image receives no test account or runtime state. Construction occurs
-before a replacement window; it does not
-consume the separate 30-minute replacement and 30-minute recovery budgets.
+before a replacement window; it does not consume the separate 30-minute
+replacement and 30-minute recovery budgets.
 
 Dom0 reads bounded raw output bytes and verifies their checksums. It never
 mounts the generated filesystem. The root image, matching kernel, and initramfs
@@ -185,10 +186,10 @@ The following work is required before enabling replacement:
 
 1. Complete the restricted replacement executor under the signed standing
    policy. Keep general Apply contracts unchanged.
-2. Build complete dependency-frozen templates in a separate disposable Xen VM.
-   Test the root disk with its matching kernel and initramfs. Preserve approved
-   application images and configuration. Do not use the sealed Go builder or
-   run package scripts on dom0.
+2. Qualify the base-image build and boot evidence against each target's approved
+   application images and generated configuration. Construction and offline
+   base tests are implemented above. Application compatibility and production
+   network policy tests remain required before accepting a release.
 3. Implement controlled retained-data adoption and fixed catalog maintenance
    adapters. Require a verified backup, ownership and mapping checks, writer
    quiescence, and retention of the original disk. Block unknown data and

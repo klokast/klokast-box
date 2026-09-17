@@ -141,6 +141,23 @@ class InputsTests(unittest.TestCase):
                 guest.main()
             run.assert_not_called()
 
+    def test_generic_image_drops_package_added_boot_services_and_locks_root(self):
+        guest = module("vm_baseline_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            inputs = Path(temporary) / "inputs"
+            (root / "etc/runlevels/default").mkdir(parents=True)
+            (root / "etc/runlevels/default/unexpected-daemon").symlink_to("/etc/init.d/unexpected-daemon")
+            (root / "etc/shadow").write_text("root::0:0:99999:7:::\n")
+            inputs.mkdir()
+            (inputs / "smoke.py").write_text("# fixed test job\n")
+            manifest = {"repositories": [], "packages": [{"name": "example", "version": "1"}], "world": ["example"],
+                        "engine_commit": "a" * 40, "profile": "shared-alpine-v1", "inputs_sha256": "b" * 64}
+            with patch.object(guest, "ROOT", root), patch.object(guest, "INPUT", inputs):
+                guest.baseline(manifest)
+            self.assertEqual(list((root / "etc/runlevels/default").iterdir()), [])
+            self.assertTrue((root / "etc/shadow").read_text().startswith("root:!:"))
+
 
 class HostBoundaryTests(unittest.TestCase):
     def setUp(self):

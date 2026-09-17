@@ -144,6 +144,15 @@ def baseline(manifest):
             fields[1] = "!"
         lines.append(":".join(fields))
     put("etc/shadow", "\n".join(lines) + "\n", 0o600)
+    # Package scripts must not introduce an undeclared boot service when the
+    # dependency closure changes. Rebuild the runlevels from this fixed list.
+    for directory in (ROOT / "etc/runlevels").glob("*"):
+        if directory.is_symlink() or not directory.is_dir():
+            raise RuntimeError("template runlevel directory is unsafe")
+        for path in directory.iterdir():
+            if not path.is_symlink():
+                raise RuntimeError("template has an unexpected runlevel entry")
+            path.unlink()
     for level, services in {"sysinit": ("devfs", "dmesg", "mdev"),
                             "boot": ("hostname", "modules", "sysctl", "bootmisc", "cgroups", "localmount"),
                             "shutdown": ("killprocs", "mount-ro")}.items():
@@ -154,9 +163,6 @@ def baseline(manifest):
                 link.unlink(missing_ok=True)
                 link.symlink_to("/etc/init.d/" + service)
     # No enrollment, listening daemon, or application starts from a generic disk.
-    for directory in (ROOT / "etc/runlevels").glob("*"):
-        for name in ("networking", "sshd", "tailscale", "tailscaled", "crond"):
-            (directory / name).unlink(missing_ok=True)
     for relative in ("etc/machine-id", "var/lib/dbus/machine-id"):
         (ROOT / relative).unlink(missing_ok=True)
     for path in (ROOT / "etc/ssh").glob("ssh_host_*"):
