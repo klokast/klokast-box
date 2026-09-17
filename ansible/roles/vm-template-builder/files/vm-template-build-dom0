@@ -14,6 +14,7 @@ import re
 import signal
 import socket
 import subprocess
+import threading
 import time
 import uuid
 
@@ -154,6 +155,21 @@ def read_result(work, request):
     return result
 
 
+def capture_console(process, path):
+    # Keep bounded diagnostics even if an upstream package floods its console.
+    # Continue draining after the limit so logging cannot block guest progress.
+    with path.open("xb") as stream:
+        written = 0
+        while True:
+            chunk = process.stdout.read(4096)
+            if not chunk:
+                return
+            kept = chunk[:max(0, MIB - written)]
+            stream.write(kept)
+            stream.flush()
+            written += len(kept)
+
+
 def execute(work, request):
     name = "vm-build-" + request["operation_id"]
     identity = str(uuid.uuid4())
@@ -173,8 +189,19 @@ def execute(work, request):
     config = work / "builder.cfg"
     config.write_text(configuration(work, name, identity, request))
     write(work / "lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
+    console = None
+    collector = None
     try:
-        run(["xl", "create", config])
+        run(["xl", "create", "-p", config])
+        current = domain(name)
+        if current is None:
+            raise RuntimeError("paused builder domain was not created")
+        require_identity(current, identity)
+        console = subprocess.Popen(["xl", "console", str(current["domid"])], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        collector = threading.Thread(target=capture_console, args=(console, work / "console.log"), daemon=True)
+        collector.start()
+        run(["xl", "unpause", str(current["domid"])])
         deadline = time.monotonic() + TIMEOUT
         while True:
             current = domain(name)
@@ -203,12 +230,24 @@ def execute(work, request):
         write(work / "candidate.json", result)
         return result
     finally:
-        current = domain(name)
-        if current is not None:
-            require_identity(current, identity)
-            run(["xl", "destroy", str(current["domid"])])
-            if domain(name) is not None:
-                raise RuntimeError("builder domain remains; retain its disks for inspection")
+        try:
+            current = domain(name)
+            if current is not None:
+                require_identity(current, identity)
+                run(["xl", "destroy", str(current["domid"])])
+                if domain(name) is not None:
+                    raise RuntimeError("builder domain remains; retain its disks for inspection")
+        finally:
+            if console is not None:
+                console.terminate()
+                try:
+                    console.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    console.kill()
+                    console.wait(timeout=10)
+                if collector is not None:
+                    collector.join(timeout=10)
+                console.stdout.close()
         config.unlink(missing_ok=True)
         for name_slot in SLOTS:
             (work / (name_slot + ".slot")).unlink(missing_ok=True)

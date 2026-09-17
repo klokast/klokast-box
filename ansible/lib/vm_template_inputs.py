@@ -304,11 +304,12 @@ def bootstrap(directory, output, guest_job):
                 paths.append(str((Path(parent) / name).relative_to(root)))
         raw = output / "bootstrap.cpio"
         with raw.open("xb") as stream:
-            process = subprocess.run(["cpio", "--null", "-o", "-H", "newc"], cwd=root,
+            process = subprocess.run(["/usr/bin/cpio", "-0", "-o", "-H", "newc", "-R", "0:0"], cwd=root,
                                      input=b"".join(os.fsencode(name) + b"\0" for name in paths),
                                      stdout=stream, stderr=subprocess.PIPE, timeout=300)
         if process.returncode:
-            raise UpdateError("native cpio could not assemble the bootstrap archive")
+            (output / "cpio.log").write_bytes(process.stderr[:65536])
+            raise UpdateError("native cpio failed; inspect " + str(output / "cpio.log"))
         if raw.stat().st_size > 1024 * 1024 * 1024:
             raise UpdateError("bootstrap archive exceeds one GiB")
         with raw.open("rb") as source, (output / "initramfs").open("xb") as target:
