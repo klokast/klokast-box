@@ -72,7 +72,8 @@ def main():
     vg = vgs[0]['vg_name'].strip()
     if not re.fullmatch(r'[A-Za-z0-9_+.-]+', vg):
         raise RuntimeError('invalid volume group name')
-    info = dict(line.split(':', 1) for line in t.command(['xl', 'info']).splitlines() if ':' in line)
+    info = {key.strip(): value.strip() for key, value in
+            (line.split(':', 1) for line in t.command(['xl', 'info']).splitlines() if ':' in line)}
     if int(info.get('free_memory', '0').strip()) < 3072:
         raise RuntimeError('test requires 3 GiB of unallocated Xen memory')
     name = 'vm-recovery-test-' + args.operation_id

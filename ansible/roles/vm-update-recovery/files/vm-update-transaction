@@ -370,9 +370,11 @@ class Transaction:
     def assignment(self, side):
         # Persist the selected config before adding its normal autostart link.
         self.artifacts(side)
-        content = (self.work / (side + '.cfg')).read_text()
-        if 'uuid' not in self.configs[side]:
-            content += '\nuuid = ' + repr(self.request[side + '_uuid']) + '\n'
+        config = dict(self.configs[side], uuid=self.request[side + '_uuid'])
+        # Alpine xendomains extracts double-quoted names with sed. Render
+        # name explicitly so autostart recognizes an already recovered guest.
+        content = '\n'.join(key + ' = ' + (json.dumps(value) if key == 'name' else repr(value))
+                            for key, value in config.items()) + '\n'
         atomic(XEN / (self.request['role'] + '.cfg'), content.encode())
         link = XEN / 'auto' / (self.request['role'] + '.cfg')
         if link.is_symlink():

@@ -127,6 +127,7 @@ class Transactions(unittest.TestCase):
         self.assertEqual(self.backend.running, 'new')
         self.assertNotIn(('start', 'old'), self.backend.calls)
         self.assertIn('new-os', (self.xen / 'bak.cfg').read_text())
+        self.assertIn('name = "bak"', (self.xen / 'bak.cfg').read_text())
 
     def test_recovery_at_every_preaccept_stage(self):
         for stage in ('armed', 'stopping', 'stopped', 'starting', 'booted', 'tested'):
@@ -147,6 +148,7 @@ class Transactions(unittest.TestCase):
             with self.subTest(failure=failure):
                 (self.work / 'journal.json').unlink(missing_ok=True)
                 (self.base / 'active/bak.json').unlink(missing_ok=True)
+                (self.xen / 'bak.cfg').write_bytes((self.work / 'old.cfg').read_bytes())
                 self.backend.running = 'old'; self.backend.crash = None
                 tx = self.tx(); tx.arm()
                 if failure == 'start': tx.step('stop')
