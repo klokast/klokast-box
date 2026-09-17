@@ -253,6 +253,8 @@ class ControllerTests(unittest.TestCase):
             self.assertNotIn("boxa-iot", hosts)
             self.assertEqual(hosts["boxa-bak"]["ansible_host"], "boxa-bak.example.ts.net")
             self.assertEqual(hosts["boxa-ops"]["ansible_connection"], "local")
+            self.assertFalse(hosts['boxa-ops']['vm_update_shared_storage'])
+            self.assertTrue(hosts['boxa-bak']['vm_update_shared_storage'])
             self.assertEqual(command.call_args[0][0][0], "ansible-playbook")
 
     def test_failed_source_reader_invalidates_the_previous_scan(self):

@@ -80,7 +80,7 @@ def subids(content, uid, allocation_id):
 
 def assess(fact, catalogs, host):
     result = {'kind': 'klokast.vm-storage-assessment.v1', 'adoption_ready': False,
-              'catalog_sha256': digest(catalogs), 'volumes': [], 'bind_mounts': [],
+              'catalog_sha256': digest(catalogs), 'volumes': [], 'bind_mounts': [], 'containers': [],
               'runtime_identity': None, 'unverified_gates': list(UNVERIFIED), 'findings': []}
 
     def add(code, message, critical=True):
@@ -151,6 +151,8 @@ def assess(fact, catalogs, host):
             add('storage.container-invalid', 'Container inspection has an incomplete or duplicate identity.')
             continue
         seen.add(container['id'])
+        result['containers'].append({k: container.get(k) for k in
+                                     ('id', 'name', 'image_id', 'infra', 'pod', 'runtime_state', 'read_only_root')})
         image_id = container.get('image_id')
         if not isinstance(image_id, str) or not HASH.fullmatch(image_id):
             if (container.get('infra') is True and image_id == '' and
@@ -181,7 +183,59 @@ def assess(fact, catalogs, host):
             elif mount.get('Type') != 'tmpfs':
                 add('storage.mount-unsupported', 'A container mount uses an unsupported storage type.')
     result['volumes'].sort(key=lambda v: v['name'])
+    result['containers'].sort(key=lambda v: v['name'])
     result['bind_mounts'].sort(key=lambda v: (v['container'], v['destination']))
     # Report each refusal once even if several resources have the same issue.
     result['findings'] = list({entry['code']: entry for entry in result['findings']}.values())
+    return result
+
+
+def assess_host_data(fact, host):
+    """Host-wide metadata is evidence, never an allowlist of disposable files."""
+    result = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
+              'inventory': None, 'findings': []}
+    def add(code, message, severity='critical'):
+        result['findings'].append(findings(code, message, severity, host))
+    inventory = fact.get('host_inventory')
+    if (not isinstance(inventory, dict) or inventory.get('kind') != 'klokast.vm-host-inventory.v1' or
+            inventory.get('complete') is not True or inventory.get('stable') is not True or
+            not isinstance(inventory.get('accounts'), list) or not inventory['accounts'] or
+            any(not isinstance(inventory.get(k), list) for k in ('maintenance_files', 'unowned_paths', 'delegated_roots')) or
+            not isinstance(inventory.get('topology_sha256'), str) or not HASH.fullmatch(inventory['topology_sha256']) or
+            type(inventory.get('entries')) is not int or not 1 <= inventory['entries'] <= 100000):
+        add('host.inventory-unknown', 'Complete stable host metadata is unavailable; all host data must be accounted for before adoption.')
+        return result
+    accounts = inventory['accounts']
+    if (len(accounts) > 4096 or any(not isinstance(v, dict) or set(v) != {'name', 'uid', 'gid', 'home', 'shell'} or
+            not isinstance(v['name'], str) or not re.fullmatch('[a-zA-Z_][a-zA-Z0-9_.-]{0,63}', v['name']) or
+            any(type(v[k]) is not int or not 0 <= v[k] < 2**32 for k in ('uid', 'gid')) or
+            (v['home'] != '/' and not path(v['home'])) or not path(v['shell']) for v in accounts) or
+            len({v['name'] for v in accounts}) != len(accounts)):
+        add('host.accounts-unknown', 'Host account inventory is malformed or ambiguous.')
+        return result
+    unowned, maintenance, delegated = (inventory[k] for k in ('unowned_paths', 'maintenance_files', 'delegated_roots'))
+    if (len(unowned) > 8192 or len(maintenance) > 4096 or len(delegated) > 100000 or
+            any(not isinstance(v, dict) or not {'path', 'mode', 'uid', 'gid'} <= set(v) or
+                set(v) - {'path', 'mode', 'uid', 'gid', 'link_sha256'} or not path(v['path']) or
+                any(type(v[k]) is not int or v[k] < 0 for k in ('mode', 'uid', 'gid')) or
+                ('link_sha256' in v and (not isinstance(v['link_sha256'], str) or not HASH.fullmatch(v['link_sha256']))) for v in unowned) or
+            any(not isinstance(v, dict) or set(v) not in ({'path', 'sha256'}, {'path', 'link_sha256'}) or
+                not path(v['path']) or not isinstance(v.get('sha256', v.get('link_sha256')), str) or
+                not HASH.fullmatch(v.get('sha256', v.get('link_sha256'))) for v in maintenance) or
+            any(not isinstance(v, dict) or set(v) != {'path', 'reason'} or not path(v['path']) or
+                v['reason'] not in ('mount', 'podman-store') for v in delegated) or
+            any(len({v['path'] for v in rows}) != len(rows) for rows in (unowned, maintenance, delegated))):
+        add('host.paths-unknown', 'Host metadata contains an invalid, duplicate, or excessive path inventory.')
+        return result
+    result['inventory'] = {k: inventory[k] for k in ('accounts', 'maintenance_files', 'unowned_paths',
+                                                   'delegated_roots', 'entries', 'topology_sha256')}
+    add('host.accounting-unverified', 'Host files, accounts, services, timers, identities, and mounted filesystems require approved mappings; metadata is not adoption approval.')
+    add('host.package-integrity-unverified', 'Package path ownership does not verify installed package contents or generated configuration.', 'warning')
+    if unowned:
+        add('host.unowned-paths', 'Files outside package ownership require explicit retention, generated-configuration, or reconstructable-state classification.')
+    if maintenance:
+        add('host.maintenance-unqualified', 'Enabled services, cron jobs, and local scripts require fixed maintenance adapters or an approved OS baseline.', 'warning')
+    root_aliases = [v['name'] for v in accounts if v['uid'] == 0]
+    if root_aliases != ['root']:
+        add('host.root-identity-ambiguous', 'Host accounts do not identify exactly one root UID owner.')
     return result

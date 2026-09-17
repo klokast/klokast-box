@@ -145,6 +145,7 @@ def collect_facts(targets, directory, log, suffix):
         if target["runtime"] != "running":
             continue
         hosts[host] = {"ansible_host": host + "." + suffix, "ansible_user": "smith" if target["role"] == "ops" else "neo",
+                       "vm_update_shared_storage": target['role'] in ('bak', 'dmz', 'iot'),
                        "ansible_become_method": "doas", "ansible_become_flags": "-n",
                        "ansible_python_interpreter": "/usr/bin/python3",
                        "ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2",
@@ -225,6 +226,8 @@ def scan(refresh=True):
                     if result['profile'] == 'shared-alpine-v1':
                         result['storage_assessment'] = vm_storage_inventory.assess(facts[host], retention_catalogs, host)
                         result['findings'].extend(result['storage_assessment']['findings'])
+                        result['host_assessment'] = vm_storage_inventory.assess_host_data(facts[host], host)
+                        result['findings'].extend(result['host_assessment']['findings'])
                     result["target"] = target
                     if target["runtime"] == "stopped":
                         result["findings"] = [v for v in result["findings"] if v["code"] != "inventory.unknown"]

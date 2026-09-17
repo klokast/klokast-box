@@ -127,6 +127,29 @@ The controller retains the report at
 This is discovery evidence only. It does not satisfy the production-adoption
 or replacement acceptance gates below.
 
+### Shared-VM host metadata
+
+Shared Alpine targets also have a `host_assessment`. The controller selects this
+inspection explicitly for `bak`, `dmz`, and `iot`; it does not traverse the
+controller's private directories. The collector inventories account names and
+numeric identities, paths outside APK ownership, service and cron script
+checksums, runlevel link checksums, and filesystem boundaries. Container rows
+also retain their observed runtime state, so stopped containers remain visible.
+
+The host scan reads file metadata without reading application data. It excludes
+password and account-description fields. It hashes bounded maintenance scripts
+without emitting their contents. It does not follow directory symlinks or cross
+other mounts. It records the standard Podman store as separately inventoried;
+this does not approve the store's contents. Directory, path, output, and time
+limits keep the inspection bounded. Missing or changed evidence stays unknown.
+
+The two metadata passes check topology and ownership stability, not a consistent
+data snapshot. APK path ownership is only a hint; it does not prove installed
+file integrity. Files outside package ownership can include generated Platform
+configuration, credentials, runtime state, and user data. They need separate
+approved classifications before adoption. A matching package path, unchanged
+script checksum, or empty path list cannot grant adoption authority.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
@@ -417,6 +440,16 @@ unchanged size and timestamp, deletion, identity and metadata preservation,
 and operation or receipt mismatch. Local tests also cover interrupted stages,
 interrupted final sync, tampered staging, and copying a subsequent retained-data
 generation without an old `/etc` tree.
+
+On 2026-09-17, operation `d1b0a326a02f008c4b083b17` at source `e646a3f`
+completed `platform-update prepare` on k002 with all seven base test groups,
+including staged retained-data synchronization. Both disposable guest lifecycle
+records passed cleanup. The initial native attempt at `70102bd` passed the
+guest tests but exposed a controller test-list mismatch; `e646a3f` corrects that
+check and adds controller acceptance and refusal tests. Neither run adopted or
+replaced a production VM. Candidate receipts remain under the matching
+controller `discovery/builds/OPERATION` directory. Production snapshot staging,
+backup qualification, writer fencing, and signed execution remain required.
 
 ## Dom0 transaction and recovery
 

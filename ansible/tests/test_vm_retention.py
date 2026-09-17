@@ -162,6 +162,19 @@ class RetentionReportTests(unittest.TestCase):
         self.assertEqual(result['datasets'][0]['status'], 'unsupported')
         self.assertIn('retention.dataset-unsupported', self.codes(result))
 
+    def test_host_data_blockers_survive_complete_named_volume_matches(self):
+        observed = discovery()
+        self.assertIn('retention.host-unknown', self.codes(self.report(observed=observed)))
+        observed['hosts'][0]['host_assessment'] = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
+            'findings': [{'severity': 'critical', 'code': 'host.unowned-paths', 'message': 'Host files need classification.'}]}
+        result = self.report(observed=observed)
+        self.assertEqual(result['datasets'][0]['status'], 'observed')
+        self.assertIn('host.unowned-paths', self.codes(result))
+        self.assertFalse(result['adoption_ready'])
+        observed['hosts'][0]['host_assessment']['findings'].append(None)
+        with self.assertRaisesRegex(UpdateError, 'host-data assessment'):
+            self.report(observed=observed)
+
     def test_old_future_partial_or_different_engine_scan_cannot_match_data(self):
         for change in ({'generated_at': '2026-09-16T00:00:00Z'}, {'generated_at': '2026-09-18T00:00:00Z'},
                        {'complete': False}, {'implementation_commit': 'e' * 40}, {'hosts': None}, {'kind': 'unknown'}):

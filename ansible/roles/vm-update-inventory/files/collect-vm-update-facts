@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded VM inspection. Do not emit credentials, container env, or app data."""
 
+import argparse
 import datetime
 import hashlib
 import json
@@ -11,6 +12,175 @@ import pwd
 import re
 import stat
 import subprocess
+import time
+
+
+def safe_path(value):
+    return (isinstance(value, str) and value.startswith('/') and len(value) <= 4096 and
+            all(p not in ('', '.', '..') for p in value[1:].split('/')) and
+            all(32 <= ord(c) != 127 for c in value))
+
+
+def package_paths(database):
+    """Directory/file ownership hints only; this does not verify package bytes."""
+    paths, directory = set(), None
+    if not database or len(database) > 8 * 1024 * 1024:
+        raise ValueError('package ownership is unavailable')
+    packages = 0
+    for line in database.splitlines():
+        if line.startswith('P:'):
+            directory = None
+            packages += 1
+        elif line.startswith('F:'):
+            directory = '/' + line[2:]
+            if directory != '/' and not safe_path(directory):
+                raise ValueError('package directory is invalid')
+            paths.add(directory)
+        elif line.startswith('R:'):
+            name = line[2:]
+            if directory is None or '/' in name or not name:
+                raise ValueError('package filename is invalid')
+            path = directory.rstrip('/') + '/' + name
+            if not safe_path(path):
+                raise ValueError('package filename is unsafe')
+            paths.add(path)
+    if not packages or not paths:
+        raise ValueError('package ownership is incomplete')
+    return paths
+
+
+def host_accounts(content):
+    result, names = [], set()
+    if not content or len(content) > 65536:
+        raise ValueError('account inventory is unavailable')
+    for line in content.splitlines():
+        fields = line.split(':')
+        if (len(fields) != 7 or not re.fullmatch('[a-zA-Z_][a-zA-Z0-9_.-]{0,63}', fields[0]) or
+                fields[0] in names or any(not re.fullmatch('[0-9]{1,10}', v) for v in fields[2:4]) or
+                any(int(v) >= 2**32 for v in fields[2:4]) or (fields[5] != '/' and not safe_path(fields[5])) or
+                not safe_path(fields[6])):
+            raise ValueError('account inventory is invalid')
+        names.add(fields[0])
+        # Drop the password and GECOS fields on the guest.
+        result.append({'name': fields[0], 'uid': int(fields[2]), 'gid': int(fields[3]),
+                       'home': fields[5], 'shell': fields[6]})
+    return sorted(result, key=lambda v: v['name'])
+
+
+def host_tree(root, owned, mounts, graph_root, deadline):
+    """Inspect metadata without reading app files or traversing other mounts.
+
+    The Podman store has separate inventory. Package ownership is only a hint:
+    package integrity and approved generated configuration remain unverified.
+    """
+    mount_paths = {m['path'] for m in mounts if m['path'] != '/'}
+    rows, delegated, pending, count = [], [], [root], 0
+    topology = hashlib.sha256()
+    while pending:
+        if time.monotonic() >= deadline or count >= 100000 or len(rows) >= 8192:
+            raise ValueError('host metadata exceeds its time or entry limit')
+        current = pending.pop()
+        path = '/' + str(current.relative_to(root)) if current != root else '/'
+        if path != '/' and not safe_path(path):
+            raise ValueError('host metadata contains an unsafe path')
+        info = current.lstat()
+        row = {'path': path, 'mode': info.st_mode, 'uid': info.st_uid, 'gid': info.st_gid}
+        if stat.S_ISLNK(info.st_mode):
+            row['link_sha256'] = hashlib.sha256(os.fsencode(os.readlink(current))).hexdigest()
+        topology.update(json.dumps(row, sort_keys=True).encode() + b'\n')
+        count += 1
+        if path in mount_paths or path == graph_root:
+            delegated.append({'path': path, 'reason': 'podman-store' if path == graph_root else 'mount'})
+            continue
+        if path != '/' and path not in owned:
+            rows.append(row)
+        if stat.S_ISDIR(info.st_mode):
+            # Do not follow directory symlinks. Bound directory enumeration too.
+            with os.scandir(current) as children:
+                selected = []
+                for child in children:
+                    selected.append(Path(child.path))
+                    if len(selected) + len(pending) + count > 100000:
+                        raise ValueError('host directory exceeds its entry limit')
+            pending.extend(sorted(selected, reverse=True))
+    return {'unowned_paths': sorted(rows, key=lambda v: v['path']), 'delegated_roots': delegated,
+            'entries': count, 'topology_sha256': topology.hexdigest()}
+
+
+def maintenance_files(root, deadline, mounts=()):
+    """Return script identities, never cron lines, environment, or file contents."""
+    result, count = [], 0
+    for relative in ('etc/init.d', 'etc/runlevels', 'etc/crontabs', 'etc/periodic', 'etc/local.d'):
+        directory = root / relative
+        if any(m['path'] != '/' and ('/' + relative == m['path'] or
+                ('/' + relative).startswith(m['path'] + '/') or m['path'].startswith('/' + relative + '/')) for m in mounts):
+            raise ValueError('maintenance inventory crosses a separate mount')
+        if not directory.exists():
+            continue
+        if not stat.S_ISDIR(directory.lstat().st_mode):
+            raise ValueError('maintenance directory is unsafe')
+        pending = [directory]
+        while pending:
+            current = pending.pop()
+            with os.scandir(current) as children:
+                for child in children:
+                    count += 1
+                    if time.monotonic() >= deadline or count > 4096:
+                        raise ValueError('maintenance inventory exceeds its time or entry limit')
+                    path = Path(child.path)
+                    info = child.stat(follow_symlinks=False)
+                    name = '/' + str(path.relative_to(root))
+                    if not safe_path(name) or len(result) + len(pending) >= 4096:
+                        raise ValueError('maintenance inventory is unsafe or too large')
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(path)
+                    elif stat.S_ISREG(info.st_mode) and info.st_size <= 1024 * 1024:
+                        # Open without following a link substituted during inspection.
+                        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                        with os.fdopen(fd, 'rb') as stream:
+                            opened = os.fstat(stream.fileno())
+                            if (not stat.S_ISREG(opened.st_mode) or
+                                    (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)):
+                                raise ValueError('maintenance file changed during inspection')
+                            content = stream.read(1024 * 1024 + 1)
+                        if len(content) > 1024 * 1024:
+                            raise ValueError('maintenance file exceeds its size limit')
+                        result.append({'path': name, 'sha256': hashlib.sha256(content).hexdigest()})
+                    elif stat.S_ISLNK(info.st_mode):
+                        result.append({'path': name, 'link_sha256': hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()})
+                    else:
+                        raise ValueError('maintenance inventory contains an unsupported file')
+    return sorted(result, key=lambda v: v['path'])
+
+
+def collect_host(storage, root=Path('/')):
+    result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
+              'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
+              'package_integrity_verified': False, 'data_accounted': False}
+    try:
+        database = text(root / 'lib/apk/db/installed')
+        owned = package_paths(database)
+        mounts = mount_inventory()
+        if not mounts:
+            raise ValueError('mount inventory is unavailable')
+        runtime = storage.get('podman_storage') or {}
+        graph = runtime.get('graph_root') if runtime.get('graph_root_directory') is True else None
+        if graph != '/home/neo/.local/share/containers/storage':
+            graph = None
+        accounts = text(root / 'etc/passwd', 65536)
+        result['accounts'] = host_accounts(accounts)
+        deadline = time.monotonic() + 30
+        before = host_tree(root, owned, mounts, graph, deadline)
+        result.update(before)
+        result['maintenance_files'] = maintenance_files(root, deadline, mounts)
+        after = host_tree(root, owned, mounts, graph, deadline)
+        result['stable'] = (before == after and result['maintenance_files'] == maintenance_files(root, deadline, mounts) and
+                            accounts == text(root / 'etc/passwd', 65536) and
+                            database == text(root / 'lib/apk/db/installed') and mounts == mount_inventory())
+        result['complete'] = True
+    except (OSError, ValueError, UnicodeError):
+        result['error'] = 'Host metadata is unavailable, unsafe, or exceeds the bounded inventory limits.'
+    return result
 
 
 def capture(argv):
@@ -25,7 +195,10 @@ def capture(argv):
 
 def text(path, maximum=8 * 1024 * 1024):
     try:
-        with open(path, encoding="utf-8") as stream:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return ""
             value = stream.read(maximum + 1)
         return value if len(value) <= maximum else ""
     except (OSError, UnicodeError):
@@ -101,7 +274,12 @@ def podman_snapshot(podman):
         config = item.get('HostConfig')
         if not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts) or not isinstance(config, dict):
             return None
+        state = item.get('State') if isinstance(item.get('State'), dict) else {}
+        runtime_state = state.get('Status')
+        if runtime_state not in ('configured', 'created', 'running', 'stopped', 'paused', 'exited', 'removing', 'stopping'):
+            runtime_state = None
         containers.append({'id': item['Id'], 'name': item.get('Name'), 'image_id': item.get('Image'),
+                           'runtime_state': runtime_state,
                            'infra': item.get('IsInfra'), 'pod': item.get('Pod'),
                            'read_only_root': config.get('ReadonlyRootfs'),
                            'mounts': [{k: m.get(k) for k in ('Type', 'Name', 'Source', 'Destination', 'RW')} for m in mounts]})
@@ -135,6 +313,9 @@ def collect_storage(podman):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host-storage', action='store_true', help='inspect bounded shared-VM host metadata')
+    args = parser.parse_args()
     release = {}
     for line in text("/etc/os-release", 16384).splitlines():
         key, sep, value = line.partition("=")
@@ -173,6 +354,8 @@ def main():
         fact.update(collect_storage(podman))
     except KeyError:
         fact["runtime_owner"] = None
+    if args.host_storage and release.get('id') == 'alpine':
+        fact['host_inventory'] = collect_host(fact)
     print(json.dumps(fact, sort_keys=True))
 
 

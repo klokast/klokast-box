@@ -104,6 +104,15 @@ def report(source, discovery, catalogs, implementation_commit, now):
                    or any(not isinstance(v.get(k), str) for k in ('code', 'message')) for v in assessment['findings']):
                 raise UpdateError('storage assessment contains an invalid finding')
             result['findings'].extend(assessment['findings'])
+            host_assessment = host.get('host_assessment')
+            if (not isinstance(host_assessment, dict) or host_assessment.get('kind') != 'klokast.vm-host-assessment.v1' or
+                    host_assessment.get('adoption_ready') is not False or not isinstance(host_assessment.get('findings'), list)):
+                add('retention.host-unknown', 'The scan has no supported host-data assessment; named volumes do not account for all VM data.', scope)
+            else:
+                if any(not isinstance(v, dict) or v.get('severity') not in ('warning', 'critical') or
+                       any(not isinstance(v.get(k), str) for k in ('code', 'message')) for v in host_assessment['findings']):
+                    raise UpdateError('host-data assessment contains an invalid finding')
+                result['findings'].extend(host_assessment['findings'])
             declared = {(d['app'], d['dataset']) for d in projection['datasets'] if d['box'] == box}
             seen = set()
             for volume in assessment['volumes']:
