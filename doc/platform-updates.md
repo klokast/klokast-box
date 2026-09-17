@@ -212,6 +212,9 @@ Xen cases on k002-dom0 with candidate `0d66858d5082567778a3d3b3`. Test data
 markers stayed unchanged. Cleanup removed the disposable guest and all four
 test LVs, and verified that production domain UUIDs stayed unchanged. No
 production VM was replaced and the production boot hook was not installed.
+The final code at `2b9684f` passed the same native cases in operation
+`407a52ac0bbe921c4e828c0b`, including cleanup. The relevant unit suites passed
+74 tests. Native watchdog expiry and physical dom0 reboot remain untested.
 
 To repeat on an approved test target, run from the active controller's public
 candidate checkout. Use a new random 24-character lowercase hex operation ID
