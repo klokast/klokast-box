@@ -362,6 +362,17 @@ matches and path checks do not authorize copying, deletion, or adoption.
 Its unprivileged report cannot replace fresh executor checks or sealed
 Instance retention intent.
 
+The root-only `ksa-apply vm-retention-status` reader obtains current adopted
+inventory-source evidence from the sealed checker. It compares both private
+file hashes with that evidence before projecting logical retention. It then
+rechecks the sealed source, active authority, and exact file bytes. It accepts
+no caller-selected path, binary, catalog, or observation. An inactive
+controller, changed source, dirty checkout, or unavailable sealed engine
+blocks the read. Its result is intent evidence only; it grants no copy,
+deletion, adoption, or replacement authority. The unprivileged retention report
+compares this result with discovery. A future executor must repeat the checks
+with fresh evidence at execution time.
+
 The optional application component test has no production authority. The
 controller can stage only its fixed public catalog image. A separate read-only
 capsule enters the networkless test VM, where the fixed adapter loads and runs

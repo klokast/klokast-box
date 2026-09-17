@@ -296,6 +296,14 @@ does not establish the box's retention intent. The executor must resolve
 `apps.<app>.data` from the sealed Instance before approving physical mappings;
 the compatibility registry projection is not a retention authority.
 
+The read-only `klokast.vm-retention-source.v1` projection exposes sorted
+logical declarations with app ID, dataset ID, box, retention, and app desired
+state. An absent app can still have retained data. The projection binds both
+Instance file hashes, the private commit, engine commit, and Authority State.
+It contains no physical mappings and always sets `adoption_authorized: false`.
+Omitted declarations never authorize disposal of observed data. This derived
+output does not add an authoritative file to the private repository.
+
 An accepted operation also needs a narrow persistent copy on its box. That
 copy permits offline boot and recovery of that exact operation. It cannot
 select a new release. Large artifacts and journals use persistent LVM-backed

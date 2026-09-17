@@ -13,6 +13,23 @@
     that:
       - (vm_update_authority_source.stdout | from_json).source == 'instance_specification_v1'
 
+- name: Verify the read-only retention source with the installed sealed checker
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/ksa-apply
+      - vm-retention-status
+  register: vm_update_retention_source
+  changed_when: false
+  no_log: true
+
+- name: Require declared retention evidence without adoption authority
+  ansible.builtin.assert:
+    that:
+      - (vm_update_retention_source.stdout | from_json).kind == 'klokast.vm-retention-source.v1'
+      - (vm_update_retention_source.stdout | from_json).source == 'instance_specification_v1'
+      - (vm_update_retention_source.stdout | from_json).adoption_authorized == false
+  no_log: true
+
 - name: Create root-owned update execution state independently of discovery
   ansible.builtin.file:
     path: "{{ item.path }}"

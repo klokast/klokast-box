@@ -26,6 +26,7 @@ from platform_update_metadata import collect_branch, compare_versions
 import vm_template_inputs
 import vm_app_compatibility
 import vm_storage_inventory
+import vm_retention
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -352,6 +353,29 @@ def display(report, as_json):
         print(f"{finding['severity']}: {finding['code']}: {finding['message']}")
 
 
+def retention_report():
+    require_controller()
+    if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('retention reporting requires a clean public engine checkout')
+    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    helper = ['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'vm-retention-status']
+
+    def read_source():
+        try:
+            return json.loads(command(helper, timeout=900), object_pairs_hook=unique_object)
+        except UpdateError as error:
+            raise UpdateError('retention source verification failed; inspect ksa-apply vm-retention-status on the active controller; the installed reader must match the approved engine') from error
+
+    source = read_source()
+    report = vm_retention.report(source, optional(STATE / 'current.json'),
+                                 [load(path) for path in RETENTION_CATALOGS], commit, now())
+    if (read_source() != source
+            or command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit
+            or command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+        raise UpdateError('retention authority or public source changed during reporting')
+    return report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -361,6 +385,8 @@ def main(argv=None):
         sub.add_parser(name, help="report current evidence and overdue work" if name == "status" else "check discovery coverage; accepted-release verification is not installed")
     for command_parser in (scan_parser, *[sub.choices[n] for n in ("status", "verify")]):
         command_parser.add_argument("--json", action="store_true")
+    retention_parser = sub.add_parser('retention', help='compare checked Instance retention with recent storage discovery; no adoption')
+    retention_parser.add_argument('--json', action='store_true')
     policy_parser = sub.add_parser("policy", help="prepare, activate, or validate the signed standing policy")
     policy_parser.add_argument("action", choices=("prepare", "activate", "status"))
     evidence_names = ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir")
@@ -379,6 +405,17 @@ def main(argv=None):
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command == 'retention':
+            report = retention_report()
+            if args.json:
+                print(canonical(report))
+            else:
+                print('Retention evidence; adoption is not authorized.')
+                for item in report['datasets']:
+                    print(f"{item['box']}/{item['app']}/{item['dataset']}: {item['status']} (app {item['desired_state']})")
+                for finding in report['findings']:
+                    print(f"{finding['severity']}: {finding['code']}: {finding['message']}")
+            return 1 if any(v['severity'] == 'critical' for v in report['findings']) else 0
         if args.command == "prepare":
             print(canonical(prepare(args.box, args.branch, args.inputs_only, args.test_app)))
             return 0

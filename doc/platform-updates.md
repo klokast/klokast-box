@@ -10,6 +10,8 @@ An offline retained-data copy primitive is implemented and included in the
 synthetic candidate tests. It is not a complete data-adoption workflow.
 Discovery also reports storage refusals and catalog matches for the Music
 library dataset. These matches are not approved retention or copy requests.
+The read-only `retention` report compares these observations with declared
+datasets from the root reader's checked Instance projection.
 It does not implement unattended VM replacement. `adopt` and `run` are not available.
 The existing guest installer remains in use. Do not activate automatic
 replacement or treat a report as an
@@ -103,7 +105,8 @@ backup, freeze writers, or approve application configuration. The future
 adoption executor must obtain sealed retention intent and fresh complete
 evidence before producing a copy request. In particular, it must not infer
 retention from the current compatibility registry projection, which omits
-the Instance's retained datasets.
+the Instance's retained datasets. The read-only projection below supplies
+these declarations without approving a copy request.
 
 The catalog is reviewed public implementation in
 [`apps/music/vm-retention.json`](../apps/music/vm-retention.json). Its paths
@@ -122,6 +125,47 @@ The controller retains the report at
 `/var/lib/klokast/updates/discovery/storage-assessment-validation-81e0f03.json`.
 This is discovery evidence only. It does not satisfy the production-adoption
 or replacement acceptance gates below.
+
+### Declared retention report
+
+After approved engine promotion and controller wrapper convergence, run on
+the active controller as `smith`:
+
+```sh
+ansible/bin/platform-update scan
+ansible/bin/platform-update retention --json
+```
+
+The scan can return 1 for known blockers. The retention command still reads its
+completed report. It calls `ksa-apply vm-retention-status` to obtain logical
+datasets from the exact Instance bytes validated by the existing sealed
+checker. The reader includes retained data for apps whose desired state is
+`absent`. It does not infer retention from app placement or observed volumes.
+The [authority rules](secret-authority.md#standing-vm-update-authority) define
+the reader's checks.
+
+The report requires a clean public checkout, the approved engine, and a complete
+scan from that engine no more than two hours old. Storage assessments must use
+the same catalog checksum. Missing or old evidence stays unknown. It reports
+declared datasets without catalog support, missing volumes, unsupported paths,
+and catalog volumes without a retention declaration on that box. Existing
+storage refusals remain visible. Stopped VMs stay stopped. `observed` means
+that discovery listed all required volumes with supported paths; it does not
+prove data integrity, backup recovery, or application consistency.
+
+The command checks the source again before it emits a report. It writes only
+to standard output. If saved, the result belongs in controller operational
+storage. It contains private box and dataset bindings. It does not change
+the scan, private checkout, update policy, or VM state. It always reports
+`adoption_ready: false` and returns 1 while adoption gates remain incomplete.
+Reader or command failure returns 2 without a report. An older installed reader
+must be upgraded through approved engine and wrapper convergence; there is no
+direct private-file fallback for candidate code.
+
+The authority setup playbook verifies this read-only interface. Local tests
+cover input hashes, source changes, absent apps, wrong-box declarations,
+missing datasets, stopped VMs, stale evidence, and unchanged discovery files.
+This interface has not yet passed live validation under a promoted engine.
 
 ### Evidence storage and freshness
 

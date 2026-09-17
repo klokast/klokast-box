@@ -5200,6 +5200,42 @@ def vm_update_policy_execute(args, intent):
                          "policy_sha256": intent["policy_sha256"], "replacement_executor_available": False}))
 
 
+def vm_retention_status():
+    """Project only declared retention from bytes checked by the sealed engine.
+
+    This root reader has no mutation or copy authority. Caller paths, observed
+    storage, and the compatibility registry cannot supply retention intent.
+    """
+    source = inventory_source_status()
+    if source.get("source") != "instance_specification_v1":
+        raise ApplyError("retention inspection requires adopted Instance authority")
+    rendered = source["rendered"]
+    raw = read_regular(INSTANCE / "klokast-instance.json")
+    lock = read_regular(INSTANCE / "klokast.lock.json")
+    expected = {"klokast-instance.json": sha256_bytes(raw), "klokast.lock.json": sha256_bytes(lock)}
+    inputs = rendered.get("inputs", [])
+    if (len(inputs) != 2 or any(not isinstance(v, dict) or set(v) != {"path", "sha256"} for v in inputs)
+            or {v["path"]: v["sha256"] for v in inputs} != expected):
+        raise ApplyError("retention inputs do not match the sealed Instance evidence")
+    private = controller_input_object(raw, "retention intent")
+    datasets = []
+    for app, binding in sorted(private["apps"].items()):
+        for dataset, data in sorted(binding.get("data", {}).items()):
+            datasets.append({"app": app, "dataset": dataset, "box": data["box"],
+                             "retention": data["retention"], "desired_state": binding["desired-state"]})
+    projection = {"boxes": sorted(private["boxes"]), "datasets": datasets}
+    # Recheck the sealed source, clean checkout, active authority, and both
+    # exact files after rendering. Do not cache or write private source here.
+    if (inventory_source_status() != source or read_regular(INSTANCE / "klokast-instance.json") != raw
+            or read_regular(INSTANCE / "klokast.lock.json") != lock):
+        raise ApplyError("retention inputs or source changed during resolution")
+    return {"schema_version": 1, "kind": "klokast.vm-retention-source.v1",
+            "source": "instance_specification_v1", "authority_state_sha256": source["authority_state_sha256"],
+            "engine_commit": source["engine_commit"], "private_commit": rendered["repository"]["head_commit"],
+            "inputs": inputs, "projection": projection, "projection_sha256": inventory_digest(projection),
+            "adoption_authorized": False}
+
+
 def vm_update_policy_current():
     controller = controller_identity_status()
     ensure_protected_dir(VM_UPDATE_ROOT, 0o700, 0)
@@ -5682,6 +5718,7 @@ def parse_args(argv):
     commands.add_parser("controller-identity-status")
     commands.add_parser("registry-source-status")
     commands.add_parser("inventory-source-status")
+    commands.add_parser("vm-retention-status")
     update_policy_parser = commands.add_parser("vm-update-policy")
     update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume"))
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
@@ -5750,6 +5787,8 @@ def main(argv=None):
                 vm_update_policy_control(args.action)
         elif args.operation == "inventory-source-status":
             print(canonical(inventory_source_status()))
+        elif args.operation == "vm-retention-status":
+            print(canonical(vm_retention_status()))
         elif args.operation == "registry-source-status":
             print(canonical(registry_source_status()))
         elif args.operation == "retirement-evidence":
