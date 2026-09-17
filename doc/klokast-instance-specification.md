@@ -283,6 +283,11 @@ use `/var/cache/klokast`. Persistent artifact storage holds disks and matching
 kernel and initramfs files by checksum. Secret stores and retained data volumes
 remain separate. None of these outputs belongs in the private repository.
 
+A retained-data copy request maps approved logical datasets to exact physical
+directories and filesystem identities. Its result records integrity and numeric
+ownership evidence. These are operation records, not Instance inputs, and a
+successful copy does not establish an accepted adoption or release assignment.
+
 An accepted operation also needs a narrow persistent copy on its box. That
 copy permits offline boot and recovery of that exact operation. It cannot
 select a new release. Large artifacts and journals use persistent LVM-backed

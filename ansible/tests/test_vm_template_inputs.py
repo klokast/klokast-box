@@ -67,10 +67,10 @@ class InputsTests(unittest.TestCase):
             manifest = self.fixture(root)
             v.verify_inputs(root, manifest)
             capsule = root / "capsule.tar"
-            result = v.capsule(root, capsule, Path(__file__), Path(__file__))
+            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__))
             self.assertEqual(result["sha256"], v.sha256(capsule))
             with tarfile.open(capsule) as archive:
-                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py"])
+                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py"])
 
     def test_forged_or_changed_inputs_fail_before_native_commands(self):
         changes = [lambda m: m.update(engine_commit="main"), lambda m: m.update(world=[["example"]]),
@@ -151,6 +151,8 @@ class InputsTests(unittest.TestCase):
             (root / "etc/shadow").write_text("root::0:0:99999:7:::\n")
             inputs.mkdir()
             (inputs / "smoke.py").write_text("# fixed test job\n")
+            (inputs / "retained_data.py").write_text("# copy primitive\n")
+            (inputs / "retained_data_test.py").write_text("# synthetic test\n")
             manifest = {"repositories": [], "packages": [{"name": "example", "version": "1"}], "world": ["example"],
                         "engine_commit": "a" * 40, "profile": "shared-alpine-v1", "inputs_sha256": "b" * 64}
             with patch.object(guest, "ROOT", root), patch.object(guest, "INPUT", inputs):

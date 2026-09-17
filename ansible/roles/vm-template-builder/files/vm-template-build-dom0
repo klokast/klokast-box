@@ -288,6 +288,7 @@ def smoke_test(work, request, build):
         raise RuntimeError("refusing to reuse an existing template test domain")
     root = work / "test-root.slot"
     result_path = work / "test-result.slot"
+    data_paths = [work / 'test-source.slot', work / 'test-retained.slot']
     config = work / "test.cfg"
     loops = {}
     copied_hash = hashlib.sha256()
@@ -301,8 +302,11 @@ def smoke_test(work, request, build):
         os.fsync(target.fileno())
     with result_path.open("xb") as stream:
         os.posix_fallocate(stream.fileno(), 0, MIB)
+    for path in data_paths:
+        with path.open('xb') as stream:
+            os.posix_fallocate(stream.fileno(), 0, 256 * MIB)
     try:
-        for path in (root, result_path):
+        for path in (root, result_path, *data_paths):
             loops[path] = attach_loop(path)
         for artifact in ("kernel", "initramfs"):
             with (work / (artifact + ".slot")).open("r+b") as stream:
@@ -312,13 +316,13 @@ def smoke_test(work, request, build):
             f"kernel = {str(work / 'kernel.slot')!r}\nramdisk = {str(work / 'initramfs.slot')!r}\n"
             "extra = 'console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw init=/usr/local/libexec/klokast-template-test "
             f"klokast_test={request['operation_id']} klokast_inputs={request['inputs_sha256']}'\n"
-            f"disk = {['phy:' + loops[root] + ',xvda,w', 'phy:' + loops[result_path] + ',xvdb,w']!r}\n"
+            f"disk = {['phy:' + loops[p] + ',xvd' + letter + ',w' for p, letter in zip((root, result_path, *data_paths), 'abcd')]!r}\n"
             "vif = []\non_poweroff = 'destroy'\non_reboot = 'destroy'\non_crash = 'destroy'\n")
         write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
         boot_guest(work, name, identity, config, request, slot=result_path.name,
                    kind="klokast.vm-template-test-result.v1", timeout=300)
         value = read_slot(result_path)
-        expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel")}
+        expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy")}
         if (value.get("kind") != "klokast.vm-template-test-result.v1" or value.get("success") is not True or
                 value.get("operation_id") != request["operation_id"] or value.get("inputs_sha256") != request["inputs_sha256"] or
                 value.get("kernel_release") != build["kernel_release"] or value.get("tests") != expected_tests):
@@ -332,7 +336,7 @@ def smoke_test(work, request, build):
             raise RuntimeError("test domain remains; retain all test resources")
         for path, device in loops.items():
             detach_loop(path, device)
-        for path in (root, result_path, config):
+        for path in (root, result_path, config, *data_paths):
             path.unlink(missing_ok=True)
         write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "cleaned"})
 
@@ -347,7 +351,7 @@ def execute(work, request):
     if int(info.get("free_memory", "0")) < MEMORY + 1024:
         raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
     capacity = os.statvfs(work)
-    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + SLOTS["root"] + MIB + 1024 * MIB:
+    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + SLOTS["root"] + MIB + 1536 * MIB:
         raise RuntimeError("builder and boot test require ten GiB of free persistent storage")
     for name_slot, size in SLOTS.items():
         with (work / (name_slot + ".slot")).open("xb") as stream:

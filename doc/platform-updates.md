@@ -6,6 +6,8 @@ This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
 and offline base-image boot tests. A dom0 disk-switch transaction and boot
 recovery helper are implemented but are not connected to a production executor.
+An offline retained-data copy primitive is implemented and included in the
+synthetic candidate tests. It is not a complete data-adoption workflow.
 It does not implement unattended VM replacement. `adopt` and `run` are not available.
 The existing guest installer remains in use. Do not activate automatic
 replacement or treat a report as an
@@ -135,7 +137,8 @@ application image store. This does not set the capacity of a production VM's
 OS or retained-data volume. A second networkless guest has five minutes to boot a
 copy of the root image with its matching kernel and initramfs. It tests module
 availability, unenrolled Tailscale startup, a rootless Podman container made
-from installed BusyBox files, and kernel support for nftables. The original
+from installed BusyBox files, kernel support for nftables, and retained-data
+copying between two new 256 MiB test disks. The original
 generic image receives no test account or runtime state. Construction occurs
 before a replacement window; it does not consume the separate 30-minute
 replacement and 30-minute recovery budgets.
@@ -158,6 +161,55 @@ remain required. Base-image boot evidence cannot pass release validation alone.
 Application containers are not downloaded or updated. This path installs base
 packages, including Tailscale and Podman, into the new generic image. It does
 not enroll Tailscale or copy machine credentials into that image.
+
+## Offline retained-data copy primitive
+
+`ansible/roles/vm-retained-data/files/retained_data.py` is a Platform-owned
+library for a disposable networkless Xen guest. The candidate build installs
+and tests it through the existing Ansible builder role. It has no standalone
+production command, disk-attachment authority, or release-selection authority.
+Compromise is confined to the disposable guest and its attached disks. Dom0
+does not mount or inspect either filesystem.
+
+The closed copy request binds an operation ID, two filesystem UUIDs, exact
+numeric runtime UID/GID and subordinate ranges, and explicit directory mappings.
+The caller mounts `/dev/xvdc` read-only at `/source` and a new `/dev/xvdd`
+filesystem at `/retained`. Both must be distinct ext4 filesystems with no alias
+or nested mounts. Each destination directory uses its mapping key. The source
+must have the requested runtime identities. The helper refuses broad top-level
+paths, path traversal, source-path symlinks, overlapping mappings, devices,
+sockets, FIFOs, and hardlinks that extend outside one mapping.
+
+Before copying, the helper measures each complete source tree and checks free
+bytes and inodes, including a 128 MiB reserve. The capacity check conservatively
+uses logical file sizes, including sparse files. A destination can contain only
+an empty `lost+found`. A failed or interrupted operation leaves a pending marker
+and its partial data. It cannot reuse that destination or delete unknown data.
+
+Native [rsync](https://download.samba.org/pub/rsync/rsync.1) preserves numeric
+owners, modes, timestamps, hardlinks, symlinks, sparse files, ACLs, and extended
+attributes. The helper independently compares SHA-256 file contents, metadata,
+hardlink groups, and extended attributes on source and destination after the
+copy. It flushes data before it writes the result. The bounded result contains
+mapping summaries and hashes, not file contents or filenames within datasets.
+It always records `adoption_accepted: false`. A copy result is not backup,
+application-consistency, or production-adoption evidence.
+
+The template test creates only synthetic data. It tests sub-ID mismatch, wrong
+filesystem identity, a writable source, unsafe entries, insufficient capacity,
+unknown destination data, repeat execution, and changed copied bytes. The copy
+test also checks numeric owners, hardlinks, nanosecond timestamps, extended
+attributes, symlink preservation, and sparse files. This does not test a catalog
+app, a recoverable backup, live staging, writer shutdown, or retained machine
+identities.
+
+The future adoption executor must still derive mappings from approved catalog
+adapters and Instance intent, account for all observed storage, verify a
+recoverable backup, stage data before the outage, stop writers, and fence the
+source VM. It must attach the source disk read-only at the Xen boundary and
+enforce the outer operation deadline. It must reconstruct configuration and
+Podman metadata, retain required identity state, and verify mounts and numeric
+ownership before acceptance. The copy library does not provide these gates.
 
 ## Dom0 transaction and recovery
 
@@ -299,10 +351,11 @@ The following work is required before enabling replacement:
    application images and generated configuration. Construction and offline
    base tests are implemented above. Application compatibility and production
    network policy tests remain required before accepting a release.
-3. Implement controlled retained-data adoption and fixed catalog maintenance
+3. Complete controlled retained-data adoption and fixed catalog maintenance
    adapters. Require a verified backup, ownership and mapping checks, writer
    quiescence, and retention of the original disk. Block unknown data and
-   unrecorded container changes.
+   unrecorded container changes. The offline copy primitive above supplies only
+   directory copying and integrity checks.
 4. Connect the dom0 transaction above to approved input staging, network
    fencing, data copying, and the signed executor. Verify recovery independence
    and capacity for separate old and candidate disks before stopping the guest.

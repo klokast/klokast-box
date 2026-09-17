@@ -32,9 +32,9 @@ def environment():
     if (not re.fullmatch(r"[0-9a-f]{24}", args.get("klokast_test", "")) or
             not re.fullmatch(r"[0-9a-f]{64}", args.get("klokast_inputs", ""))):
         raise RuntimeError("template test requires its exact boot assignment")
-    for path in (Path("/dev/xvda"), Path("/dev/xvdb")):
+    for path in (Path("/dev/xvda"), Path("/dev/xvdb"), Path("/dev/xvdc"), Path("/dev/xvdd")):
         if path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode):
-            raise RuntimeError("template test requires its two fixed Xen disks")
+            raise RuntimeError("template test requires its four fixed Xen disks")
     return args
 
 
@@ -119,6 +119,9 @@ def main():
         run(["nft", "add", "table", "inet", "template_test"])
         run(["nft", "delete", "table", "inet", "template_test"])
         result["tests"]["nftables_kernel"] = True
+        import retained_data_test
+        result['retained_data_test'] = retained_data_test.test(run, args['klokast_test'])
+        result['tests']['retained_data_copy'] = True
         result["success"] = True
     except Exception as error:
         result["error"] = type(error).__name__ + ": " + str(error)[:1000]

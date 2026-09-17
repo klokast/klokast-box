@@ -77,7 +77,7 @@
     group: root
     mode: '0700'
 
-- name: Run the bounded builder independently of the SSH connection
+- name: Build and test base software and synthetic retained data independently of SSH
   ansible.builtin.command:
     argv:
       - /usr/bin/python3

@@ -351,6 +351,13 @@ root executor has VM lifecycle and retained-data authority. It therefore needs
 fixed operations, root-protected records, exclusive execution, fencing, and
 independent local recovery before activation.
 
+The offline retained-data copy library has only guest-local filesystem
+authority. A copy request and its receipt cannot authorize disk attachment,
+writer shutdown, or adoption. The future signed executor must derive and verify
+its mappings, backup evidence, fencing, and disk identities before it exposes
+data to the disposable networkless guest. Treat filesystem contents as
+untrusted input. Keep that parser and copy boundary out of dom0.
+
 A local pause may only restrict execution. Resume must revalidate the current
 activated policy. Neither a pause file nor a discovery report can increase
 authority. Machine observations must not replace approved desired state.
