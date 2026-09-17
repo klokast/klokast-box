@@ -4,8 +4,8 @@
 
 This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
-offline base-image boot tests, and an optional Static Site web component test. A dom0 disk-switch transaction and boot
-recovery helper are implemented but are not connected to a production executor.
+offline base-image boot tests, and an optional Static Site web component test.
+A dom0 disk-switch transaction and boot recovery helper are implemented but are not connected to a production executor.
 An offline retained-data copy primitive is implemented and included in the
 synthetic candidate tests. It is not a complete data-adoption workflow.
 It does not implement unattended VM replacement. `adopt` and `run` are not available.
@@ -134,8 +134,8 @@ or production credentials. The guest receives read-only package input and four
 new writable output disks. It has 4096 MiB of RAM, two vCPUs, and a 25-minute
 construction deadline. The generic root image is 4 GiB and contains no
 application image store. This does not set the capacity of a production VM's
-OS or retained-data volume. A second networkless guest has five minutes (ten with the optional app test) to boot a
-copy of the root image with its matching kernel and initramfs. It tests module
+OS or retained-data volume. A second networkless guest has five minutes (ten
+with the optional app test) to boot a copy of the root image with its matching kernel and initramfs. It tests module
 availability, unenrolled Tailscale startup, a rootless Podman container made
 from installed BusyBox files, kernel support for nftables, and retained-data
 copying between two new 256 MiB test disks. The original
@@ -155,8 +155,8 @@ The Ansible build job survives an SSH disconnect and stops the disposable VM
 at its deadline. Failure keeps root-owned staging for inspection. A dom0 reboot
 does not restart the builder: it has no autostart entry. Confirm that its exact
 recorded UUID is absent before removing interrupted staging. Automated reboot
-cleanup, production configuration checks, and application compatibility tests
-remain required. Base-image boot evidence cannot pass release validation alone.
+cleanup, production configuration checks, and full application compatibility
+tests remain required. Base-image boot evidence cannot pass release validation alone.
 
 The default path does not download application images. The optional component
 test below stages one unchanged catalog image. This path installs base
@@ -203,6 +203,23 @@ component evidence only: production port forwarding, firewall rules, runtime
 UIDs, publisher and tunnel behavior, and deployed-image/configuration agreement
 remain required. Other catalog applications do not yet have adapters. This
 option does not authorize adoption, release acceptance, or replacement.
+
+On 2026-09-17, operation `eaafa2b0d7c96378108713e2` at source `b9dc4d0`
+passed all six base test groups and all eight Static Site component checks on
+k002-dom0. It used the unchanged catalog manifest
+`sha256:1a5b9e155d6921968e9bfe5107774a57e3bedf00436675c7d95298c906a057e2`.
+The candidate booted kernel `6.18.52-0-virt` with Podman `5.7.0-r6` and
+Tailscale `1.90.9-r6`. Both lifecycle records report `cleaned`; the disposable
+guests, loop attachments, and temporary test disks were removed. The six base
+test groups include retained-data copying and its ten refusal or corruption
+checks. The controller syntax check and 108 relevant local tests passed.
+
+Candidate and cleanup receipts remain in the controller's matching
+`discovery/builds/OPERATION` directory. The generic candidate remains in the
+box's matching `candidates/OPERATION` directory. No production VM, application,
+or data was changed. Automatic replacement remains disabled. The complete
+Static Site deployment, other catalog apps, production adoption, and signed
+replacement still require implementation and acceptance tests.
 
 ## Offline retained-data copy primitive
 
