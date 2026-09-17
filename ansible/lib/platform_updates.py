@@ -168,7 +168,7 @@ def assess_host(host, fact, metadata, required_packages, compare, now):
     def add(code, message, severity="warning"):
         result["findings"].append(findings(code, message, severity, host))
     if not fact or not fresh(fact.get("observed_at"), now, VERIFY_AGE):
-        add("inventory.unknown", "Fresh VM facts are not available.")
+        add("inventory.unknown", "Fresh VM facts are not available.", "critical")
         return result
     role = fact.get("role")
     if role not in ROLES or fact.get("os", {}).get("id") != "alpine" or fact.get("architecture") != "x86_64":
@@ -324,4 +324,6 @@ def recovery_action(journal):
         return "preserve-production-data"
     if STAGES.index(stage) < STAGES.index("stopped"):
         return "verify-old-release"
+    if stage == "stopped":
+        return "restart-recorded-old-release"
     return "restore-recorded-checkpoint-and-old-release"

@@ -131,16 +131,20 @@ def targets_from_map(mapping):
     return targets
 
 
-def collect_facts(targets, directory, log):
+def collect_facts(targets, directory, log, suffix):
+    if not isinstance(suffix, str) or not re.fullmatch(r"[a-z0-9.-]+\.ts\.net", suffix):
+        raise UpdateError("the verified Platform map has no valid Tailnet DNS suffix")
     hosts = {}
     for host, target in targets.items():
         if target["runtime"] != "running":
             continue
-        hosts[host] = {"ansible_host": host, "ansible_user": "smith" if target["role"] == "ops" else "neo",
+        hosts[host] = {"ansible_host": host + "." + suffix, "ansible_user": "smith" if target["role"] == "ops" else "neo",
                        "ansible_become_method": "doas", "ansible_become_flags": "-n",
                        "ansible_python_interpreter": "/usr/bin/python3",
-                       "ansible_ssh_common_args": "-o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2",
+                       "ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2",
                        "ansible_timeout": 15}
+        if host == socket.gethostname().split(".")[0]:
+            hosts[host]["ansible_connection"] = "local"
     if not hosts:
         return
     inventory = directory / "inventory.json"
@@ -185,7 +189,7 @@ def scan(refresh=True):
                 with tempfile.TemporaryDirectory(prefix="facts-", dir=STATE) as work:
                     directory = Path(work)
                     try:
-                        collect_facts(targets, directory, log)
+                        collect_facts(targets, directory, log, mapping.get("tailnet", {}).get("magicdns_suffix"))
                     except UpdateError:
                         report["findings"].append(findings("inventory.partial", "VM collection failed for one or more targets.", "critical"))
                     for host, target in targets.items():
@@ -213,6 +217,7 @@ def scan(refresh=True):
                     result = assess_host(host, facts[host], metadata, profile["packages"], compare, now())
                     result["target"] = target
                     if target["runtime"] == "stopped":
+                        result["findings"] = [v for v in result["findings"] if v["code"] != "inventory.unknown"]
                         result["findings"].append(findings("replacement.stopped", "VM is stopped; replacement is deferred until an approved start.", scope=host))
                     report["hosts"].append(result)
                 # Keep raw official evidence separate from the concise report.

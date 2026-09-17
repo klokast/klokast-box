@@ -127,7 +127,9 @@ class SafetyRulesTests(unittest.TestCase):
             action = u.recovery_action({"stage":stage})
             if u.STAGES.index(stage) >= u.STAGES.index("accepted"):
                 self.assertEqual(action, "preserve-production-data")
-            elif u.STAGES.index(stage) >= u.STAGES.index("stopped"):
+            elif stage == "stopped":
+                self.assertEqual(action, "restart-recorded-old-release")
+            elif u.STAGES.index(stage) >= u.STAGES.index("checkpointed"):
                 self.assertEqual(action, "restore-recorded-checkpoint-and-old-release")
         with self.assertRaises(u.UpdateError): u.recovery_action({"stage":"unknown"})
 
@@ -155,6 +157,34 @@ class SafetyRulesTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_collection_uses_tailnet_names_local_controller_and_preserves_stopped(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(cli, "command") as command, patch.object(cli.socket, "gethostname", return_value="boxa-ops"):
+            root=Path(temporary)
+            targets={"boxa-bak":{"role":"bak", "runtime":"running"}, "boxa-ops":{"role":"ops", "runtime":"running"}, "boxa-iot":{"role":"iot", "runtime":"stopped"}}
+            cli.collect_facts(targets, root, None, "example.ts.net")
+            hosts=json.loads((root / "inventory.json").read_text())["all"]["hosts"]
+            self.assertNotIn("boxa-iot", hosts)
+            self.assertEqual(hosts["boxa-bak"]["ansible_host"], "boxa-bak.example.ts.net")
+            self.assertEqual(hosts["boxa-ops"]["ansible_connection"], "local")
+            self.assertEqual(command.call_args[0][0][0], "ansible-playbook")
+
+    def test_failed_source_reader_invalidates_the_previous_scan(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = {"kind":u.REPORT_KIND, "generated_at":u.timestamp(NOW), "hosts":[{"host":"old"}]}
+            (root / "current.json").write_text(json.dumps(old))
+            def command(argv, **kwargs):
+                if str(argv[0]) == "git": return "a"*40
+                raise u.UpdateError("source check failed")
+            with patch.object(cli, "STATE", root), patch.object(cli, "CACHE", root), patch.object(cli, "require_controller"), patch.object(cli, "command", side_effect=command):
+                report = cli.scan()
+            self.assertFalse(report["complete"])
+            self.assertEqual(report["hosts"], [])
+            self.assertEqual(report["findings"][0]["code"], "discovery.failed")
+            self.assertEqual(json.loads((root / "current.json").read_text()), report)
+
     def test_target_inventory_includes_stopped_and_unclassified_guests(self):
         cli = load_cli()
         mapping = {"boxes":{"boxa":{"machines":{"ops":{}}, "dom0":{"xen":{"available":True, "domains":[{"name":"Domain-0"}, {"name":"bak"}, {"name":"torrent"}], "config_files":["/etc/xen/iot.cfg"]}}, "app_vms":{"boxa-usr-test":{"app":"test"}}}}}
