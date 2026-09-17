@@ -219,6 +219,26 @@ class HostBoundaryTests(unittest.TestCase):
                 (root / "result.slot").write_bytes(data)
                 self.assertEqual(self.host.completion_ready(root, request), ready)
 
+    def test_failed_boot_test_never_publishes_a_candidate_and_cleans_build_slots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = {"operation_id": "a" * 24, "inputs_sha256": "b" * 64,
+                       "capsule": {"sha256": "c" * 64, "bytes": 10240}, "box": "boxa"}
+            slots = {name: 4096 for name in self.host.SLOTS}
+            with patch.object(self.host, "BASE", root / "artifacts"), patch.object(self.host, "SLOTS", slots), \
+                    patch.object(self.host, "domain", return_value=None), \
+                    patch.object(self.host, "run", return_value=SimpleNamespace(stdout="free_memory : 8192\n")), \
+                    patch.object(self.host.os, "statvfs", return_value=SimpleNamespace(f_bavail=2**40, f_frsize=4096)), \
+                    patch.object(self.host, "attach_loop", return_value="/dev/loop1"), \
+                    patch.object(self.host, "detach_loop"), patch.object(self.host, "boot_guest"), \
+                    patch.object(self.host, "read_result", return_value={}), \
+                    patch.object(self.host, "smoke_test", side_effect=RuntimeError("boot test failed")):
+                with self.assertRaisesRegex(RuntimeError, "boot test failed"):
+                    self.host.execute(root, request)
+            self.assertFalse((root / "artifacts").exists())
+            self.assertFalse(list(root.glob("*.slot")))
+            self.assertEqual(json.loads((root / "lifecycle.json").read_text())["stage"], "cleaned")
+
 
 if __name__ == "__main__":
     unittest.main()

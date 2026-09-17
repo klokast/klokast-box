@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Controller-local VM update discovery and reports. No VM mutation authority."""
+"""Controller-local VM discovery, signed policy controls, and candidate builds."""
 
 import argparse
 import datetime as dt
@@ -95,7 +95,7 @@ def require_controller():
     if status.get("hostname") != local or not local.endswith("-ops") or local.startswith(("vultr-", "hetzner-")):
         raise UpdateError("run this command on the active box controller as smith")
     if os.geteuid() == 0 or __import__("pwd").getpwuid(os.geteuid()).pw_name != "smith":
-        raise UpdateError("run update discovery as smith; it has no root executor interface")
+        raise UpdateError("run platform-update as smith on the active controller")
     return status
 
 
@@ -304,7 +304,8 @@ def prepare(box, branch, inputs_only=False):
                 test_lifecycle.get("stage") != "cleaned" or test_lifecycle.get("domain") != "vm-test-" + operation):
             raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
         return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
-                "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"]}
+                "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
+                "validation": candidate["validation"], "base_tests": boot_test["tests"]}
 
 
 def display(report, as_json):

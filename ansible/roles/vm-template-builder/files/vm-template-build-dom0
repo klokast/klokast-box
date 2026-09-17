@@ -147,10 +147,17 @@ def configuration(work, name, identity, request, loops):
             f"disk = {disks!r}\nvif = []\non_poweroff = 'destroy'\non_reboot = 'destroy'\non_crash = 'destroy'\n")
 
 
-def read_result(work, request):
-    with (work / "result.slot").open("rb") as stream:
+def read_slot(path):
+    with path.open("rb") as stream:
         data = stream.read(MIB)
-    result = json.loads(data.split(b"\0", 1)[0], object_pairs_hook=duplicate_fields)
+    try:
+        return json.loads(data.split(b"\0", 1)[0], object_pairs_hook=duplicate_fields)
+    except (ValueError, UnicodeError) as error:
+        raise RuntimeError("guest stopped without a complete result; inspect its isolated console log") from error
+
+
+def read_result(work, request):
+    result = read_slot(work / "result.slot")
     if (result.get("kind") != "klokast.vm-template-build-result.v1" or result.get("success") is not True or
             result.get("inputs_sha256") != request["inputs_sha256"] or
             result.get("operation_id") != request["operation_id"] or
@@ -303,14 +310,14 @@ def smoke_test(work, request, build):
         config.write_text(
             f"name = {name!r}\nuuid = {identity!r}\ntype = 'pvh'\nmemory = {MEMORY}\nmaxmem = {MEMORY}\nvcpus = 2\n"
             f"kernel = {str(work / 'kernel.slot')!r}\nramdisk = {str(work / 'initramfs.slot')!r}\n"
-            "extra = 'console=hvc0 panic=1 root=/dev/xvda rw init=/usr/local/libexec/klokast-template-test "
+            "extra = 'console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw init=/usr/local/libexec/klokast-template-test "
             f"klokast_test={request['operation_id']} klokast_inputs={request['inputs_sha256']}'\n"
             f"disk = {['phy:' + loops[root] + ',xvda,w', 'phy:' + loops[result_path] + ',xvdb,w']!r}\n"
             "vif = []\non_poweroff = 'destroy'\non_reboot = 'destroy'\non_crash = 'destroy'\n")
         write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
         boot_guest(work, name, identity, config, request, slot=result_path.name,
                    kind="klokast.vm-template-test-result.v1", timeout=300)
-        value = json.loads(result_path.read_bytes().split(b"\0", 1)[0], object_pairs_hook=duplicate_fields)
+        value = read_slot(result_path)
         expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel")}
         if (value.get("kind") != "klokast.vm-template-test-result.v1" or value.get("success") is not True or
                 value.get("operation_id") != request["operation_id"] or value.get("inputs_sha256") != request["inputs_sha256"] or
