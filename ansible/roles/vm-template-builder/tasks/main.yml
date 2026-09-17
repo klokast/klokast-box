@@ -69,6 +69,14 @@
     group: root
     mode: '0600'
 
+- name: Allocate a fixed root-owned asynchronous job directory
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/async"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
 - name: Run the bounded builder independently of the SSH connection
   ansible.builtin.command:
     argv:
@@ -80,6 +88,8 @@
       - "{{ template_operation_id }}"
   async: 2100
   poll: 10
+  vars:
+    ansible_async_dir: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/async"
   register: template_build
   failed_when: false
 

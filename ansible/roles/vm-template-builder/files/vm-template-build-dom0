@@ -203,8 +203,9 @@ def execute(work, request):
     identity = str(uuid.uuid4())
     if domain(name) is not None:
         raise RuntimeError("refusing to reuse an existing builder domain")
-    info = dict(line.split(":", 1) for line in run(["xl", "info"]).stdout.splitlines() if ":" in line)
-    if int(info["free_memory"].strip()) < MEMORY + 1024:
+    info = {key.strip(): value.strip() for key, value in
+            (line.split(":", 1) for line in run(["xl", "info"]).stdout.splitlines() if ":" in line)}
+    if int(info.get("free_memory", "0")) < MEMORY + 1024:
         raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
     capacity = os.statvfs(work)
     if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + 1024 * MIB:

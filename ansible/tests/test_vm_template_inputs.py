@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -168,6 +169,14 @@ class HostBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.object(self.host, "domain", return_value={"domid": 5}):
             root = Path(temporary)
             with self.assertRaisesRegex(RuntimeError, "reuse"):
+                self.host.execute(root, {"operation_id": "a" * 24})
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_xen_memory_guard_handles_padded_native_info(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(self.host, "domain", return_value=None), \
+                patch.object(self.host, "run", return_value=SimpleNamespace(stdout="free_memory            : 100\n")):
+            root = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "free Xen memory"):
                 self.host.execute(root, {"operation_id": "a" * 24})
             self.assertEqual(list(root.iterdir()), [])
 
