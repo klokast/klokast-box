@@ -161,7 +161,9 @@ def collect_host(storage, root=Path('/')):
         database = text(root / 'lib/apk/db/installed')
         owned = package_paths(database)
         mounts = mount_inventory()
-        if not mounts:
+        if (not mounts or len(mounts) > 4096 or any(not isinstance(m.get('path'), str) or
+                '\\' in m['path'] or (m['path'] != '/' and not safe_path(m['path'])) for m in mounts) or
+                len({m['path'] for m in mounts}) != len(mounts)):
             raise ValueError('mount inventory is unavailable')
         runtime = storage.get('podman_storage') or {}
         graph = runtime.get('graph_root') if runtime.get('graph_root_directory') is True else None

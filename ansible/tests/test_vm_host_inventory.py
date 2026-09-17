@@ -113,6 +113,11 @@ class HostInventory(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'time or entry limit'):
             self.m.maintenance_files(self.root, time.monotonic() - 1)
 
+    def test_escaped_and_duplicate_mount_paths_cannot_expand_traversal(self):
+        for extra in ({'path': '/srv/escaped\\040space'}, dict(self.mounts[0])):
+            with patch.object(self.m, 'mount_inventory', return_value=self.mounts + [extra]):
+                self.assertFalse(self.m.collect_host({}, self.root)['complete'])
+
     def test_package_path_parser_refuses_unsafe_and_incomplete_ownership(self):
         for value in ('', 'P:base\n', 'P:base\nR:file', 'P:base\nF:../etc\nR:file',
                       'P:base\nF:etc\nR:../secret', 'P:base\nF:etc\nR:.'):
