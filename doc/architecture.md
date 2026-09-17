@@ -178,8 +178,9 @@ See the [sealed Go builder](secure-builder.md), [OCI workflow](../ansible/bin/pl
 
 [Controller-managed VM updates](platform-updates.md) adds inspection of base
 packages, a closed shared-VM update policy contract, signed policy activation,
-local pause/resume controls, and isolated candidate template construction.
-A dom0 disk-switch and boot-recovery helper is also implemented. Application
+local pause/resume controls, isolated candidate template construction, and an
+optional Static Site web component test on synthetic data.
+A dom0 disk-switch and boot-recovery helper is also implemented. Full application
 compatibility and production configuration tests, retained-data adoption, the
 signed replacement executor, and production recovery integration remain required
 before automatic replacement can be enabled. The

@@ -122,6 +122,19 @@ def main():
         import retained_data_test
         result['retained_data_test'] = retained_data_test.test(run, args['klokast_test'])
         result['tests']['retained_data_copy'] = True
+        if 'klokast_app_capsule' in args or 'klokast_app_bytes' in args:
+            from vm_app_compatibility import unpack
+            import static_site_test
+            device = Path('/dev/xvde')
+            if device.is_symlink() or not stat.S_ISBLK(device.stat().st_mode):
+                raise RuntimeError('application test input disk is missing')
+            if Path('/sys/class/block/xvde/ro').read_text().strip() != '1':
+                raise RuntimeError('application test input must be read-only at the Xen boundary')
+            directory = Path('/home/template-test/app-test')
+            selection = unpack(device, directory,
+                               {'sha256': args.get('klokast_app_capsule'), 'bytes': int(args.get('klokast_app_bytes', '0'))},
+                               Path(static_site_test.__file__))
+            result['application_test'] = static_site_test.test(run, directory, selection)
         result["success"] = True
     except Exception as error:
         result["error"] = type(error).__name__ + ": " + str(error)[:1000]

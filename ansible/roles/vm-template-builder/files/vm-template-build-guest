@@ -126,7 +126,7 @@ def unpack(args):
 
 def baseline(manifest):
     put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)
-    for name in ('retained_data.py', 'retained_data_test.py'):
+    for name in ('retained_data.py', 'retained_data_test.py', 'vm_app_compatibility.py', 'static_site_test.py'):
         put("usr/local/libexec/" + name, (INPUT / name).read_text(), 0o600)
     put("etc/hostname", "klokast-template\n")
     put("etc/hosts", "127.0.0.1 localhost\n::1 localhost\n")

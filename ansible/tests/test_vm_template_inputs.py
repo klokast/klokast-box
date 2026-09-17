@@ -67,10 +67,10 @@ class InputsTests(unittest.TestCase):
             manifest = self.fixture(root)
             v.verify_inputs(root, manifest)
             capsule = root / "capsule.tar"
-            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__))
+            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__))
             self.assertEqual(result["sha256"], v.sha256(capsule))
             with tarfile.open(capsule) as archive:
-                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py"])
+                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py"])
 
     def test_forged_or_changed_inputs_fail_before_native_commands(self):
         changes = [lambda m: m.update(engine_commit="main"), lambda m: m.update(world=[["example"]]),
@@ -153,6 +153,8 @@ class InputsTests(unittest.TestCase):
             (inputs / "smoke.py").write_text("# fixed test job\n")
             (inputs / "retained_data.py").write_text("# copy primitive\n")
             (inputs / "retained_data_test.py").write_text("# synthetic test\n")
+            (inputs / "vm_app_compatibility.py").write_text("# component validator\n")
+            (inputs / "static_site_test.py").write_text("# component adapter\n")
             manifest = {"repositories": [], "packages": [{"name": "example", "version": "1"}], "world": ["example"],
                         "engine_commit": "a" * 40, "profile": "shared-alpine-v1", "inputs_sha256": "b" * 64}
             with patch.object(guest, "ROOT", root), patch.object(guest, "INPUT", inputs):
@@ -175,6 +177,56 @@ class HostBoundaryTests(unittest.TestCase):
         self.assertNotIn("qdisk", config)
         self.assertNotIn("/dev/vg", config)
         self.assertNotIn("/etc/xen/auto", config)
+
+    def test_component_disk_is_readonly_and_missing_or_changed_evidence_blocks_success(self):
+        import vm_app_compatibility as app
+        selection = {'kind': 'klokast.vm-app-test-input.v1', 'app': 'static-site-web',
+                     'image_ref': 'ghcr.io/static-web-server/static-web-server@sha256:' + 'a' * 64,
+                     'manifest_sha256': 'a' * 64, 'image_id': 'b' * 64,
+                     'archive': {'sha256': 'c' * 64, 'bytes': 100},
+                     'config_sha256': 'd' * 64, 'adapter_sha256': 'e' * 64}
+        for mode in ('valid', 'missing', 'changed'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary)
+                for name in ('root.slot', 'kernel.slot', 'initramfs.slot', 'app-test.tar'):
+                    (work / name).write_bytes(b'opaque bytes')
+                request = {'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64,
+                           'app_test': {'selection': selection, 'capsule': {'sha256': 'f' * 64, 'bytes': 100}}}
+                build = {'kernel_release': 'test-kernel',
+                         'artifacts': {name: {'bytes': 12} for name in ('kernel', 'initramfs')}}
+                def boot(work, name, identity, config, request, **kwargs):
+                    text = config.read_text()
+                    self.assertIn('vif = []', text)
+                    self.assertIn('phy:/dev/loop4,xvde,r', text)
+                    self.assertIn('klokast_app_capsule=' + 'f' * 64, text)
+                    self.assertEqual(kwargs['timeout'], 600)
+                    result = {'kind': 'klokast.vm-template-test-result.v1', 'success': True,
+                              'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
+                              'kernel_release': 'test-kernel',
+                              'tests': {k: True for k in ('boot', 'kernel_modules', 'tailscale_offline',
+                                        'rootless_podman', 'nftables_kernel', 'retained_data_copy')}}
+                    if mode != 'missing':
+                        result['application_test'] = {'kind': 'klokast.vm-app-test-result.v1',
+                            'selection': copy.deepcopy(selection), 'tests': dict.fromkeys(app.TESTS, True),
+                            'production_qualified': mode == 'changed'}
+                    (work / 'test-result.slot').write_text(json.dumps(result))
+                with patch.object(self.host, 'SLOTS', {'root': 12}), \
+                        patch.object(self.host.os, 'posix_fallocate'), \
+                        patch.object(self.host, 'domain', return_value=None), \
+                        patch.object(self.host, 'attach_loop', side_effect=['/dev/loop' + str(i) for i in range(5)]) as attach, \
+                        patch.object(self.host, 'detach_loop') as detach, \
+                        patch.object(self.host, 'boot_guest', side_effect=boot):
+                    if mode == 'valid':
+                        result = self.host.smoke_test(work, request, build)
+                        self.assertFalse(result['application_test']['production_qualified'])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'component test evidence'):
+                            self.host.smoke_test(work, request, build)
+                    self.assertEqual(attach.call_args.kwargs, {'readonly': True})
+                    self.assertEqual(detach.call_count, 5)
+                self.assertEqual((work / 'root.slot').read_bytes(), b'opaque bytes')
+                self.assertFalse((work / 'test-root.slot').exists())
+                self.assertEqual(json.loads((work / 'test-lifecycle.json').read_text())['stage'], 'cleaned')
 
     def test_wrong_uuid_prevents_cleanup_of_another_guest(self):
         with self.assertRaisesRegex(RuntimeError, "UUID changed"):

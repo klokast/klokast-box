@@ -131,3 +131,11 @@ curl -I https://www.klokast.ai/
 Slashless page URLs should redirect to the trailing-slash directory URL, and
 the trailing-slash URL should return `200` after the uploaded file is
 available. The root path returns `200` only when `www/index.html` exists.
+
+## VM template compatibility
+
+The Platform can test this app's unchanged pinned web image on synthetic data
+inside a disposable networkless VM. See the
+[VM update component test](../../doc/platform-updates.md#isolated-application-component-test).
+This test does not run the publisher or Cloudflare Tunnel and does not qualify
+a production VM for replacement.

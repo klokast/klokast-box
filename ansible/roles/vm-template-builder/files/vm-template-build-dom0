@@ -19,6 +19,8 @@ import threading
 import time
 import uuid
 
+from vm_app_compatibility import validate_request as validate_app_request, verify_result as verify_app_result
+
 BASE = Path("/mnt/dom0_data/klokast-vm-templates")
 MIB = 1024 * 1024
 # The generic base contains packages only, with no application image store.
@@ -89,7 +91,7 @@ def duplicate_fields(pairs):
 def validate_request(work, box, operation):
     safe_file(work / "request.json", MIB)
     request = json.loads((work / "request.json").read_text(), object_pairs_hook=duplicate_fields)
-    if (set(request) != {"kind", "box", "operation_id", "inputs_sha256", "capsule", "bootstrap"} or
+    if ((set(request) - {"app_test"}) != {"kind", "box", "operation_id", "inputs_sha256", "capsule", "bootstrap"} or
             request["kind"] != "klokast.vm-template-build-request.v1" or
             request["box"] != box or request["operation_id"] != operation or
             not isinstance(request["inputs_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", request["inputs_sha256"]) or
@@ -106,6 +108,13 @@ def validate_request(work, box, operation):
         safe_file(path, maximum)
         if path.stat().st_size != item["bytes"] or checksum(path) != item["sha256"]:
             raise RuntimeError("staged builder input differs from its request")
+    if 'app_test' in request:
+        validate_app_request(request['app_test'])
+        item = request['app_test']['capsule']
+        path = work / 'app-test.tar'
+        safe_file(path, 257 * MIB)
+        if path.stat().st_size != item['bytes'] or checksum(path) != item['sha256']:
+            raise RuntimeError('staged application capsule differs from its request')
     return request
 
 
@@ -291,6 +300,7 @@ def smoke_test(work, request, build):
     data_paths = [work / 'test-source.slot', work / 'test-retained.slot']
     config = work / "test.cfg"
     loops = {}
+    app_path = work / 'app-test.tar' if 'app_test' in request else None
     copied_hash = hashlib.sha256()
     # Copy bytes only. Never interpret or mount the generated filesystem here.
     with (work / "root.slot").open("rb") as source, root.open("xb") as target:
@@ -308,6 +318,15 @@ def smoke_test(work, request, build):
     try:
         for path in (root, result_path, *data_paths):
             loops[path] = attach_loop(path)
+        if app_path:
+            loops[app_path] = attach_loop(app_path, readonly=True)
+        extra = ''
+        disks = ['phy:' + loops[p] + ',xvd' + letter + ',w'
+                 for p, letter in zip((root, result_path, *data_paths), 'abcd')]
+        if app_path:
+            app = request['app_test']['capsule']
+            extra = f" klokast_app_capsule={app['sha256']} klokast_app_bytes={app['bytes']}"
+            disks.append('phy:' + loops[app_path] + ',xvde,r')
         for artifact in ("kernel", "initramfs"):
             with (work / (artifact + ".slot")).open("r+b") as stream:
                 stream.truncate(build["artifacts"][artifact]["bytes"])
@@ -315,18 +334,22 @@ def smoke_test(work, request, build):
             f"name = {name!r}\nuuid = {identity!r}\ntype = 'pvh'\nmemory = {MEMORY}\nmaxmem = {MEMORY}\nvcpus = 2\n"
             f"kernel = {str(work / 'kernel.slot')!r}\nramdisk = {str(work / 'initramfs.slot')!r}\n"
             "extra = 'console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw init=/usr/local/libexec/klokast-template-test "
-            f"klokast_test={request['operation_id']} klokast_inputs={request['inputs_sha256']}'\n"
-            f"disk = {['phy:' + loops[p] + ',xvd' + letter + ',w' for p, letter in zip((root, result_path, *data_paths), 'abcd')]!r}\n"
+            f"klokast_test={request['operation_id']} klokast_inputs={request['inputs_sha256']}{extra}'\n"
+            f"disk = {disks!r}\n"
             "vif = []\non_poweroff = 'destroy'\non_reboot = 'destroy'\non_crash = 'destroy'\n")
         write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "allocated"})
         boot_guest(work, name, identity, config, request, slot=result_path.name,
-                   kind="klokast.vm-template-test-result.v1", timeout=300)
+                   kind="klokast.vm-template-test-result.v1", timeout=600 if app_path else 300)
         value = read_slot(result_path)
         expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy")}
         if (value.get("kind") != "klokast.vm-template-test-result.v1" or value.get("success") is not True or
                 value.get("operation_id") != request["operation_id"] or value.get("inputs_sha256") != request["inputs_sha256"] or
                 value.get("kernel_release") != build["kernel_release"] or value.get("tests") != expected_tests):
             raise RuntimeError("candidate base boot tests failed; inspect the isolated test console")
+        if app_path:
+            verify_app_result(value.get('application_test'), request['app_test']['selection'])
+        elif 'application_test' in value:
+            raise RuntimeError('unexpected application test evidence')
         value["tested_root_sha256"] = copied_hash.hexdigest()
         return value
     finally:

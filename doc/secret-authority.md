@@ -345,8 +345,8 @@ replacements. Acceptance of a standing policy is not a successful VM update.
 The discovery collector has inspection authority and writes non-authoritative
 evidence as `smith`. Package indexes and VM facts are untrusted input. Native
 APK verifies repository signatures; index parsing never extracts archive paths
-or runs package scripts. The future build VM must contain package-script
-compromise and have no production identities, secrets, or data. The future
+or runs package scripts. The isolated build VM contains package-script
+execution and has no production identities, secrets, or data. The future
 root executor has VM lifecycle and retained-data authority. It therefore needs
 fixed operations, root-protected records, exclusive execution, fencing, and
 independent local recovery before activation.
@@ -357,6 +357,15 @@ writer shutdown, or adoption. The future signed executor must derive and verify
 its mappings, backup evidence, fencing, and disk identities before it exposes
 data to the disposable networkless guest. Treat filesystem contents as
 untrusted input. Keep that parser and copy boundary out of dom0.
+
+The optional application component test has no production authority. The
+controller can stage only its fixed public catalog image. A separate read-only
+capsule enters the networkless test VM, where the fixed adapter loads and runs
+the image as a synthetic unprivileged user. App code can compromise at most
+that disposable VM and its synthetic disks. Dom0 handles opaque bytes and
+bounded evidence only. A successful component receipt cannot establish that a
+production deployment has the same image, configuration, or retained data.
+The signed executor must independently prove these facts before replacement.
 
 A local pause may only restrict execution. Resume must revalidate the current
 activated policy. Neither a pause file nor a discovery report can increase

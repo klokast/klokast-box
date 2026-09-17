@@ -4,7 +4,7 @@
 
 This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
-and offline base-image boot tests. A dom0 disk-switch transaction and boot
+offline base-image boot tests, and an optional Static Site web component test. A dom0 disk-switch transaction and boot
 recovery helper are implemented but are not connected to a production executor.
 An offline retained-data copy primitive is implemented and included in the
 synthetic candidate tests. It is not a complete data-adoption workflow.
@@ -134,7 +134,7 @@ or production credentials. The guest receives read-only package input and four
 new writable output disks. It has 4096 MiB of RAM, two vCPUs, and a 25-minute
 construction deadline. The generic root image is 4 GiB and contains no
 application image store. This does not set the capacity of a production VM's
-OS or retained-data volume. A second networkless guest has five minutes to boot a
+OS or retained-data volume. A second networkless guest has five minutes (ten with the optional app test) to boot a
 copy of the root image with its matching kernel and initramfs. It tests module
 availability, unenrolled Tailscale startup, a rootless Podman container made
 from installed BusyBox files, kernel support for nftables, and retained-data
@@ -158,9 +158,51 @@ recorded UUID is absent before removing interrupted staging. Automated reboot
 cleanup, production configuration checks, and application compatibility tests
 remain required. Base-image boot evidence cannot pass release validation alone.
 
-Application containers are not downloaded or updated. This path installs base
+The default path does not download application images. The optional component
+test below stages one unchanged catalog image. This path installs base
 packages, including Tailscale and Podman, into the new generic image. It does
 not enroll Tailscale or copy machine credentials into that image.
+
+## Isolated application component test
+
+From the active controller's clean public candidate checkout, run:
+
+```sh
+ansible/bin/platform-update prepare --box BOX --branch v3.23 --test-app static-site-web
+```
+
+This optional test uses the existing Static Site amd64 image lock and public
+server configuration. It does not select a new app version. The controller uses
+native [Skopeo digest preservation](https://github.com/podman-container-tools/skopeo/blob/main/docs/skopeo-copy.1.md)
+to copy that exact public image to an OCI archive. It verifies the archive's
+manifest against the catalog digest. Registry access is anonymous. The test
+requires the controller's existing Skopeo tool; it does not use its Podman
+runtime or application image store.
+
+The request records the image manifest and configuration identity, archive
+checksum and size, server configuration checksum, and adapter checksum.
+The Ansible builder transfers the capsule as opaque bytes. Dom0 attaches it
+read-only to the disposable test VM after construction. The build VM and
+published generic root disk never receive the application image. The test VM
+verifies the capsule and installed adapter before loading the archive through
+[Podman](https://docs.podman.io/en/latest/markdown/podman-load.1.html).
+
+The fixed app adapter runs the pinned web container as the synthetic rootless
+account. It checks the loaded manifest and image identity, read-only root and
+mounts, exact HTTP content, directory redirects, missing pages, and stop/start
+behavior. The server reads synthetic pages and the unchanged public server
+configuration. The test verifies that both stay unchanged. The container can
+use only loopback inside the networkless Xen VM. No publisher, tunnel,
+credential, private checkout, production data, or production disk is attached.
+
+Application evidence is part of the candidate's boot-test result and binds the
+exact test selection. A missing check, changed image, changed configuration,
+changed adapter, or failed cleanup prevents successful candidate publication.
+Successful evidence explicitly records `production_qualified: false`. It is
+component evidence only: production port forwarding, firewall rules, runtime
+UIDs, publisher and tunnel behavior, and deployed-image/configuration agreement
+remain required. Other catalog applications do not yet have adapters. This
+option does not authorize adoption, release acceptance, or replacement.
 
 ## Offline retained-data copy primitive
 

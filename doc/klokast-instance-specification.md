@@ -283,6 +283,10 @@ use `/var/cache/klokast`. Persistent artifact storage holds disks and matching
 kernel and initramfs files by checksum. Secret stores and retained data volumes
 remain separate. None of these outputs belongs in the private repository.
 
+Application component test selections bind public catalog image and
+configuration identities to exact test inputs. Their receipts are generated
+build evidence, not app-version intent or accepted release assignments.
+
 A retained-data copy request maps approved logical datasets to exact physical
 directories and filesystem identities. Its result records integrity and numeric
 ownership evidence. These are operation records, not Instance inputs, and a

@@ -69,6 +69,23 @@
     group: root
     mode: '0600'
 
+- name: Stage the fixed component evidence validator
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../lib/vm_app_compatibility.py"
+    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/vm_app_compatibility.py"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Stage the unchanged catalog application image as opaque input
+  ansible.builtin.copy:
+    src: "{{ template_input_dir }}/app-test.tar"
+    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/app-test.tar"
+    owner: root
+    group: root
+    mode: '0600'
+  when: template_app_test | default(false) | bool
+
 - name: Allocate a fixed root-owned asynchronous job directory
   ansible.builtin.file:
     path: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/async"
@@ -86,7 +103,7 @@
       - "{{ template_box }}"
       - --operation-id
       - "{{ template_operation_id }}"
-  async: 2100
+  async: 2400
   poll: 10
   vars:
     ansible_async_dir: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/async"

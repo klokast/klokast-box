@@ -24,6 +24,7 @@ from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, 
                               unique_object, VERIFY_AGE)
 from platform_update_metadata import collect_branch, compare_versions
 import vm_template_inputs
+import vm_app_compatibility
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -233,7 +234,7 @@ def scan(refresh=True):
     return report
 
 
-def prepare(box, branch, inputs_only=False):
+def prepare(box, branch, inputs_only=False, test_app=None):
     """Build candidate evidence; this command cannot select a production release."""
     require_controller()
     if not HOST.fullmatch(box) or len(box) > 31:
@@ -261,16 +262,24 @@ def prepare(box, branch, inputs_only=False):
         result.mkdir(parents=True, mode=0o700)
         print("platform-update: freeze template inputs for " + branch + "; operation " + operation, file=sys.stderr)
         profile = load(PROFILE)
+        app_test = None
+        if test_app:
+            print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
+            app_test = vm_app_compatibility.prepare(REPO, work / 'app-test')
         inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit)
         job = REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest"
         retained = REPO / "ansible/roles/vm-retained-data/files"
         capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job, job.with_name("vm-template-smoke-guest"),
-                                            retained / "retained_data.py", retained / "retained_data_test.py")
+                                            retained / "retained_data.py", retained / "retained_data_test.py",
+                                            REPO / 'ansible/lib/vm_app_compatibility.py',
+                                            REPO / 'apps/static-site/ansible/roles/static-site-runtime/files/vm_compatibility.py')
         print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
         boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job)
         request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
                    "operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],
                    "capsule": capsule, "bootstrap": boot}
+        if app_test:
+            request['app_test'] = app_test
         write(work / "request.json", request)
         write(result / "inputs.json", inputs)
         write(result / "request.json", request)
@@ -280,12 +289,13 @@ def prepare(box, branch, inputs_only=False):
         print("platform-update: build the candidate in a networkless Xen guest on " + box, file=sys.stderr)
         arguments = work / "arguments.json"
         write(arguments, {"template_box": box, "template_operation_id": operation,
-                          "template_input_dir": str(work), "template_result_dir": str(result)})
+                          "template_input_dir": str(work), "template_result_dir": str(result),
+                          "template_app_test": bool(app_test)})
         with (result / "build.log").open("w") as log:
             try:
                 command(["ansible-playbook", "-vv", "-i", APPROVED_REPO / "ansible/execution-inventory/hosts",
                          REPO / "ansible/playbooks/74-platform-update-template.yml", "--limit", box + "-dom0",
-                         "-e", "@" + str(arguments)], timeout=2400, log=log)
+                         "-e", "@" + str(arguments)], timeout=2700, log=log)
             except UpdateError as error:
                 raise UpdateError("candidate construction failed; inspect " + str(result / "build.log")) from error
         candidate = load(result / "candidate.json")
@@ -305,9 +315,14 @@ def prepare(box, branch, inputs_only=False):
                 lifecycle.get("stage") != "cleaned" or lifecycle.get("domain") != "vm-build-" + operation or
                 test_lifecycle.get("stage") != "cleaned" or test_lifecycle.get("domain") != "vm-test-" + operation):
             raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
+        if app_test:
+            vm_app_compatibility.verify_result(boot_test.get('application_test'), app_test['selection'])
+        elif 'application_test' in boot_test:
+            raise UpdateError('unexpected application evidence without an approved test selection')
         return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
-                "validation": candidate["validation"], "base_tests": boot_test["tests"]}
+                "validation": candidate["validation"], "base_tests": boot_test["tests"],
+                "application_test": boot_test.get("application_test")}
 
 
 def display(report, as_json):
@@ -345,13 +360,15 @@ def main(argv=None):
     prepare_parser.add_argument("--box", required=True)
     prepare_parser.add_argument("--branch", required=True, help="explicit stable Alpine branch, for example v3.23")
     prepare_parser.add_argument("--inputs-only", action="store_true", help="verify packages and assemble boot files without starting Xen")
+    prepare_parser.add_argument('--test-app', choices=('static-site-web',),
+                                help='test an unchanged catalog image on synthetic data in the networkless test VM')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
         if args.command == "prepare":
-            print(canonical(prepare(args.box, args.branch, args.inputs_only)))
+            print(canonical(prepare(args.box, args.branch, args.inputs_only, args.test_app)))
             return 0
         if args.command in {"policy", "pause", "resume"}:
             require_controller()
@@ -398,7 +415,7 @@ def main(argv=None):
                       "hosts": [], "findings": current_findings}
         display(report, args.json)
         return 1 if any(v["severity"] == "critical" for v in report["findings"] + [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
-    except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
+    except (UpdateError, RuntimeError, OSError, ValueError, TypeError, KeyError) as error:
         print("platform-update: " + str(error), file=sys.stderr)
         return 2
 
