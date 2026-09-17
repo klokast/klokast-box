@@ -159,6 +159,15 @@ class HostBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "xl failed"):
                 self.host.domain("vm-build-example")
 
+    def test_unknown_xen_format_cannot_be_mistaken_for_shutdown(self):
+        for records in ([], [{"domid": 7, "name": "vm-build-example"}], {"domains": []}):
+            with self.subTest(records=records), patch.object(self.host, "run", return_value=SimpleNamespace(stdout=json.dumps(records))):
+                with self.assertRaises(RuntimeError): self.host.domain("vm-build-example")
+
+    def test_dom0_is_never_a_cleanup_target_even_with_a_matching_uuid(self):
+        with self.assertRaisesRegex(RuntimeError, "UUID changed"):
+            self.host.require_identity({"domid": 0, "config": {"c_info": {"uuid": "expected"}}}, "expected")
+
     def test_reassigned_loop_is_never_detached(self):
         with patch.object(self.host, "loop_devices", return_value=["/dev/loop2"]), patch.object(self.host, "run") as run:
             with self.assertRaisesRegex(RuntimeError, "loop identity changed"):
@@ -186,6 +195,17 @@ class HostBoundaryTests(unittest.TestCase):
             (root / "result.slot").write_text(json.dumps({"success": True, "kind": "klokast.vm-template-build-result.v1"}))
             with self.assertRaisesRegex(RuntimeError, "matching result"):
                 self.host.read_result(root, {"operation_id": "a" * 24, "inputs_sha256": "b" * 64})
+
+    def test_completion_signal_requires_whole_result_and_exact_operation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = {"operation_id": "a" * 24, "inputs_sha256": "b" * 64}
+            result = {"kind": "klokast.vm-template-build-result.v1", "success": True, **request}
+            for data, ready in ((b"\0" * 1024, False), (b'{"kind":', False),
+                                (json.dumps({**result, "operation_id": "c" * 24}).encode(), False),
+                                (json.dumps(result).encode() + b"\0", True)):
+                (root / "result.slot").write_bytes(data)
+                self.assertEqual(self.host.completion_ready(root, request), ready)
 
 
 if __name__ == "__main__":

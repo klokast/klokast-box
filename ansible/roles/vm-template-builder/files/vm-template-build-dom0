@@ -111,6 +111,13 @@ def domain(name):
     # List all domains successfully before concluding a builder no longer exists.
     output = run(["xl", "list", "-l"]).stdout
     records = json.loads(output)
+    if not isinstance(records, list) or not records:
+        raise RuntimeError("Xen returned no complete domain inventory")
+    for record in records:
+        info = record.get("config", {}).get("c_info", {})
+        if (type(record.get("domid")) is not int or not isinstance(info.get("name"), str) or
+                not isinstance(info.get("uuid"), str)):
+            raise RuntimeError("Xen returned an unsupported domain inventory format")
     matches = [item for item in records if item.get("config", {}).get("c_info", {}).get("name") == name]
     if len(matches) > 1:
         raise RuntimeError("builder domain identity is ambiguous")
@@ -118,7 +125,8 @@ def domain(name):
 
 
 def require_identity(record, identity):
-    if record.get("config", {}).get("c_info", {}).get("uuid") != identity:
+    if (record.get("config", {}).get("c_info", {}).get("uuid") != identity or
+            type(record.get("domid")) is not int or record["domid"] <= 0):
         raise RuntimeError("builder domain UUID changed; refusing to control it")
 
 
@@ -157,6 +165,21 @@ def read_result(work, request):
     return result
 
 
+def completion_ready(work, request):
+    # PVH firmware can halt instead of powering off. The guest publishes this
+    # bounded result only after unmounting its root output. Use it only as a
+    # signal to stop our disposable domain. Verify all output after it stops.
+    with (work / "result.slot").open("rb") as stream:
+        data = stream.read(MIB).split(b"\0", 1)[0]
+    try:
+        value = json.loads(data, object_pairs_hook=duplicate_fields)
+    except (ValueError, UnicodeError, RuntimeError):
+        return False
+    return (isinstance(value, dict) and value.get("kind") == "klokast.vm-template-build-result.v1" and
+            type(value.get("success")) is bool and value.get("operation_id") == request["operation_id"] and
+            value.get("inputs_sha256") == request["inputs_sha256"])
+
+
 def capture_console(descriptor, path):
     # Keep bounded diagnostics even if an upstream package floods its console.
     # Continue draining after the limit so logging cannot block guest progress.
@@ -183,7 +206,7 @@ def loop_devices(path):
 def attach_loop(path, readonly=False):
     if loop_devices(path):
         raise RuntimeError("builder file already has a loop attachment")
-    run(["losetup", *( ["-r"] if readonly else []), "-f", path])
+    run(["losetup", *(["-r"] if readonly else []), "-f", path])
     devices = loop_devices(path)
     if len(devices) != 1 or not re.fullmatch(r"/dev/loop[0-9]+", devices[0]):
         raise RuntimeError("builder loop attachment is ambiguous")
@@ -245,6 +268,11 @@ def execute(work, request):
             if current is None:
                 break
             require_identity(current, identity)
+            if completion_ready(work, request):
+                run(["xl", "destroy", str(current["domid"])])
+                if domain(name) is not None:
+                    raise RuntimeError("completed builder domain could not be stopped")
+                break
             if time.monotonic() >= deadline:
                 raise RuntimeError("isolated builder exceeded its 30-minute deadline")
             time.sleep(2)
