@@ -102,7 +102,10 @@ def command(argv, timeout=60):
     except (OSError, subprocess.TimeoutExpired) as error:
         raise Refused('transaction command unavailable or timed out: ' + str(argv[0])) from error
     if result.returncode or len(result.stdout) > 8 * 1024 * 1024:
-        raise Refused('transaction command failed: ' + str(argv[0]))
+        # These fixed native commands receive only local paths and domain
+        # identities, never credentials. Keep bounded actionable diagnostics.
+        raise Refused('transaction command failed: ' + str(argv[0]) +
+                      ' (exit ' + str(result.returncode) + '): ' + result.stderr[-2048:].strip())
     return result.stdout
 
 

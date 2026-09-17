@@ -147,7 +147,9 @@ def main():
                 lvname = 'vmupdtest_' + args.operation_id + '_' + side + '_' + disk
                 path = '/dev/' + vg + '/' + lvname
                 if Path(path).exists(): raise RuntimeError('test volume already exists')
-                t.command(['lvcreate', '-L', size, '-n', lvname, vg])
+                # Reused free extents can contain an old test's filesystem
+                # signature. Only this newly allocated unique LV is wiped.
+                t.command(['lvcreate', '--yes', '--wipesignatures', 'y', '-L', size, '-n', lvname, vg])
                 allocated[path] = native.lv(path)
                 t.store(work / 'resources.json', {'domain': name, 'uuids': identities, 'disks': allocated})
                 if disk == 'os':
