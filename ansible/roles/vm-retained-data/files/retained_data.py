@@ -5,6 +5,7 @@ writer shutdown, disk ownership, and source completeness. This module cannot
 authorize adoption, select a release, attach disks, or start services.
 """
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,8 @@ RESERVE = 128 * 1024 * 1024
 # Public physical convention, not permission to copy a production identity.
 IDENTITY_FILES = {'platform-tailscale-state': 'var/lib/tailscale/tailscaled.state'}
 MAX_IDENTITY_BYTES = 8 * 1024 * 1024
+BACKUP_MOUNT = Path('/backup-restore')
+BACKUP_PENDING = Path('/run/klokast-backup-restore-pending')
 
 
 class CopyError(RuntimeError):
@@ -44,7 +47,7 @@ def remaining(deadline):
     return value
 
 
-def run(argv, deadline):
+def run(argv, deadline, accepted=(0,)):
     # Child output can contain private filenames. Discard it rather than send
     # it to the console. Neither a filename nor a secret becomes shell code.
     timeout = remaining(deadline)
@@ -60,7 +63,7 @@ def run(argv, deadline):
                 pass
             child.wait()
             raise
-        if child.returncode:
+        if child.returncode not in accepted:
             raise CopyError(f'retained-data command {argv[0]} failed (exit {child.returncode}); partial destination is not reusable')
 
 
@@ -156,6 +159,149 @@ def filesystem_uuid(device):
     if fields.get('TYPE') != 'ext4' or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', fields.get('UUID', '')):
         raise CopyError('filesystem identity probe has no valid ext4 UUID')
     return fields['UUID']
+
+
+def validate_backup(request):
+    fields = {'kind', 'operation_id', 'engine_commit', 'backup_receipt_sha256',
+              'disk_bytes', 'disk_sha256', 'root_partition', 'root_uuid', 'runtime'}
+    if (not isinstance(request, dict) or set(request) != fields or
+            request['kind'] != 'klokast.vm-backup-restore.v1' or
+            type(request['disk_bytes']) is not int or not 16 * 1024**2 <= request['disk_bytes'] <= 128 * 1024**3 or
+            request['disk_bytes'] % 512 or type(request['root_partition']) is not int or request['root_partition'] not in (0, 3)):
+        raise CopyError('backup restore request has an unsupported disk contract')
+    for key, pattern in (('operation_id', '[0-9a-f]{24}'), ('engine_commit', '[0-9a-f]{40}'),
+                         ('backup_receipt_sha256', '[0-9a-f]{64}'), ('disk_sha256', '[0-9a-f]{64}'),
+                         ('root_uuid', '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')):
+        if not isinstance(request[key], str) or not re.fullmatch(pattern, request[key]):
+            raise CopyError('backup restore request has invalid provenance')
+    # Reuse the closed numeric ownership contract; these dummy distinct UUIDs
+    # are validation inputs only, never selected filesystem identities.
+    validate({'kind': 'klokast.vm-retained-copy.v1', 'operation_id': request['operation_id'],
+              'source_uuid': '11111111-1111-4111-8111-111111111111',
+              'destination_uuid': '22222222-2222-4222-8222-222222222222',
+              'runtime': request['runtime'], 'entries': [{'key': 'state', 'source': 'var/lib/state'}]})
+
+
+def backup_devices(request):
+    devices = []
+    for name, readonly in (('xvdc', '1'), ('xvdd', '0')):
+        path = Path('/dev/' + name)
+        info = path.lstat()
+        if (not stat.S_ISBLK(info.st_mode) or
+                int((BLOCK_SYS / name / 'size').read_text()) * 512 != request['disk_bytes'] or
+                (BLOCK_SYS / name / 'ro').read_text().strip() != readonly):
+            raise CopyError('backup restore requires an exact read-only backup and disposable writable restore disk')
+        devices.append(info.st_rdev)
+        aliases = {(p / 'dev').read_text().strip() for p in BLOCK_SYS.glob(name + '*') if (p / 'dev').is_file()}
+        if any(v['device'] in aliases or v['source'].startswith(str(path)) for v in mount_records()):
+            raise CopyError('backup or restore disk has a mounted filesystem or alias')
+    if len(set(devices)) != 2:
+        raise CopyError('backup and restore disks overlap')
+
+
+def backup_root(name, partition):
+    device = BLOCK_SYS / (name + ('3' if partition else ''))
+    if partition and (device.joinpath('partition').read_text().strip() != '3' or
+                      device.resolve().parent != (BLOCK_SYS / name).resolve()):
+        raise CopyError('backup root partition does not belong to its assigned disk')
+    if device.joinpath('ro').read_text().strip() != ('1' if name == 'xvdc' else '0'):
+        raise CopyError('backup root partition has unexpected block access')
+    return '/dev/' + name + ('3' if partition else '')
+
+
+def disk_digest(path, size, deadline):
+    value = hashlib.sha256()
+    remaining_bytes = size
+    with open(path, 'rb', buffering=0) as stream:
+        while remaining_bytes:
+            remaining(deadline)
+            chunk = stream.read(min(1024 * 1024, remaining_bytes))
+            if not chunk:
+                raise CopyError('backup disk is truncated')
+            value.update(chunk); remaining_bytes -= len(chunk)
+    return value.hexdigest()
+
+
+def restore_backup(request, deadline):
+    """Test an independently stored full-disk backup in a maintenance Xen VM.
+
+    The controller must prove origin/snapshot freshness, independent allocation,
+    capacity, application consistency, and authority before attaching disks.
+    This primitive overwrites only the assigned disposable /dev/xvdd. It never
+    mounts or boots the original backup and never accepts a production release.
+    """
+    validate_backup(request)
+    if remaining(deadline) > 1800:
+        raise CopyError('backup restore verification must be bounded to 30 minutes')
+    environment(); backup_devices(request)
+    marker = read_record(Path('/etc/klokast-template.json'), private=False)
+    if marker.get('engine_commit') != request['engine_commit'] or marker.get('profile') != 'shared-alpine-v1':
+        raise CopyError('backup maintenance image differs from the recorded engine and profile')
+    if BACKUP_PENDING.exists() or BACKUP_PENDING.is_symlink():
+        raise CopyError('backup restore staging was already used; allocate a new maintenance guest')
+    if disk_digest('/dev/xvdc', request['disk_bytes'], deadline) != request['disk_sha256']:
+        raise CopyError('backup bytes differ from the protected backup receipt')
+    if filesystem_uuid(backup_root('xvdc', request['root_partition'])) != request['root_uuid']:
+        raise CopyError('backup root filesystem identity differs')
+    if BACKUP_MOUNT.is_symlink() or (BACKUP_MOUNT.exists() and any(BACKUP_MOUNT.iterdir())):
+        raise CopyError('backup restore mountpoint is unsafe or not empty')
+    BACKUP_MOUNT.mkdir(mode=0o700, exist_ok=True)
+    create_record(BACKUP_PENDING, {'request_sha256': digest(request)})
+    with open('/dev/xvdc', 'rb', buffering=0) as source, open('/dev/xvdd', 'wb', buffering=0) as target:
+        count = request['disk_bytes']
+        while count:
+            remaining(deadline)
+            chunk = source.read(min(1024 * 1024, count))
+            if not chunk or target.write(chunk) != len(chunk):
+                raise CopyError('backup restore copy has a short device read or write')
+            count -= len(chunk)
+        os.fsync(target.fileno())
+    if disk_digest('/dev/xvdd', request['disk_bytes'], deadline) != request['disk_sha256']:
+        raise CopyError('restored disk differs from the complete backup')
+    with open('/dev/xvdd', 'rb', buffering=0) as target:
+        fcntl.ioctl(target.fileno(), 0x125f)  # Linux BLKRRPART on the disposable clone.
+    for _ in range(100):
+        remaining(deadline)
+        if Path('/dev/xvdd' + ('3' if request['root_partition'] else '')).exists():
+            break
+        time.sleep(0.1)
+    device = backup_root('xvdd', request['root_partition'])
+    if filesystem_uuid(device) != request['root_uuid']:
+        raise CopyError('restored root filesystem identity differs')
+    # e2fsck journal_only replays committed transactions without broader repair.
+    # A second, forced read-only check must pass; no repair can hide data loss.
+    run(['e2fsck', '-p', '-E', 'journal_only', device], deadline, accepted=(0, 1))
+    run(['e2fsck', '-f', '-n', device], deadline)
+    run(['mount', '-t', 'ext4', '-o', 'ro,noload,nodev,nosuid,noexec', device, str(BACKUP_MOUNT)], deadline)
+    try:
+        mounts = mount_records()
+        selected = [v for v in mounts if v['path'] == str(BACKUP_MOUNT)]
+        if (len(selected) != 1 or selected[0]['source'] != device or selected[0]['root'] != '/' or
+                selected[0]['type'] != 'ext4' or not {'ro', 'nodev', 'nosuid', 'noexec'} <= set(selected[0]['options']) or
+                any(v['path'].startswith(str(BACKUP_MOUNT) + '/') for v in mounts)):
+            raise CopyError('restored filesystem mount differs from the isolated read-only contract')
+        if runtime_identity(BACKUP_MOUNT) != request['runtime']:
+            raise CopyError('restored numeric runtime identity differs')
+        identity = below(BACKUP_MOUNT, 'var/lib/tailscale/tailscaled.state')
+        info = identity.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or
+                info.st_nlink != 1 or not 0 < info.st_size <= MAX_IDENTITY_BYTES):
+            raise CopyError('restored management identity is missing or has unsafe metadata')
+        measured = tree(identity, deadline)
+    finally:
+        run(['umount', str(BACKUP_MOUNT)], deadline)
+    backup_devices(request)
+    if disk_digest('/dev/xvdc', request['disk_bytes'], deadline) != request['disk_sha256']:
+        raise CopyError('original backup changed during restore verification')
+    result = {'kind': 'klokast.vm-backup-restore-result.v1', 'request_sha256': digest(request),
+              'backup_receipt_sha256': request['backup_receipt_sha256'],
+              'disk_sha256': request['disk_sha256'], 'disk_bytes': request['disk_bytes'],
+              'root_uuid': request['root_uuid'], 'runtime': request['runtime'],
+              'identity': measured, 'complete_disk_restored': True, 'root_filesystem_checked': True,
+              'backup_unchanged': True, 'source_freshness_verified': False,
+              'application_consistency_verified': False, 'adoption_accepted': False}
+    result['receipt_sha256'] = digest(result)
+    return result
 
 
 def source_device(request):
@@ -388,10 +534,10 @@ def staged_kind(request, phase):
     return 'klokast.vm-retained-' + phase + '-result.' + version
 
 
-def read_record(path):
+def read_record(path, private=True):
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
-            info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size > 1024 * 1024):
+            info.st_uid != os.geteuid() or info.st_mode & (0o077 if private else 0o022) or info.st_size > 1024 * 1024):
         raise CopyError('retained-data record has unsafe ownership, type, mode, or size')
 
     def unique(pairs):

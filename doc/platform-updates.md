@@ -172,6 +172,15 @@ configuration, credentials, runtime state, and user data. They need separate
 approved classifications before adoption. A matching package path, unchanged
 script checksum, or empty path list cannot grant adoption authority.
 
+The native scan at `f7f236b` on 2026-09-18 completed stable deep metadata for
+the three selected guests: 1,322 entries on k001-dmz, 1,272 on k002-dmz, and
+1,234 on k002-iot. Both backend trees exceeded the bounded scan limits and
+remain unresolved; those VMs are excluded from mutation. k001-iot stayed
+stopped. The controller report is `discovery/deep-validation-f7f236b.json`.
+It also found inactive Immich ingress state on k001-dmz. Preserve that state
+until its retention treatment is approved; it is not part of the completed
+Static Site and Nextcloud retirement.
+
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
 started services, scheduled starts, and markers with missing scripts. The
@@ -666,6 +675,35 @@ check and adds controller acceptance and refusal tests. Neither run adopted or
 replaced a production VM. Candidate receipts remain under the matching
 controller `discovery/builds/OPERATION` directory. Production snapshot staging,
 backup qualification, writer fencing, and signed execution remain required.
+
+## Isolated backup restore verification
+
+`retained_data.restore_backup` verifies a complete disk backup in a networkless
+maintenance Xen guest. It requires an exact read-only backup on `/dev/xvdc`
+and a separate disposable restore disk on `/dev/xvdd`, with the recorded size.
+The request binds the engine, protected backup receipt, disk checksum, root
+filesystem UUID, and numeric runtime identity. It supports a raw ext4 root
+or the recorded legacy root on partition 3.
+
+The helper checks the backup bytes before writing, copies the complete disk,
+and reads the copy back. Only the disposable copy can receive journal replay.
+It uses the native [`e2fsck` journal-only operation](https://manpages.debian.org/bookworm/e2fsprogs/e2fsck.8.en.html),
+then requires a forced read-only filesystem check. It performs no broader
+filesystem repair. The restored root is mounted read-only, with execution and
+devices disabled, to check runtime mappings and private Tailscale state. The
+original backup must retain its exact checksum through the entire test.
+
+An interrupted or completed attempt cannot reuse its guest staging. The
+receipt contains checksums and metadata, not secret contents. The controller
+must separately prove snapshot freshness, independent allocation, adequate
+capacity, application consistency, and authority. This helper does not allocate
+production storage, make a production backup, or authorize adoption. Dom0 must
+transfer opaque blocks and must not mount the backed-up filesystem.
+
+Candidate tests require this as the eleventh base check. The synthetic legacy
+partition fixture tests full restore, ownership and identity preservation,
+read-only backup enforcement, changed-backup refusal before writes, and refusal
+to reuse the restore staging. No production data enters the template builder.
 
 ## Isolated clone personalization
 

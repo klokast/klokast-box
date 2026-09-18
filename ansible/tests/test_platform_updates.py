@@ -174,7 +174,8 @@ class ControllerTests(unittest.TestCase):
         for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
                      'missing-partition', 'failed-partition', 'missing-openrc', 'failed-openrc',
                      'changed-openrc-input', 'missing-openrc-cleanup', 'missing-personalization', 'failed-personalization',
-                     'missing-profile', 'failed-profile', 'changed-profile-receipt', 'missing-profile-cleanup'):
+                     'missing-profile', 'failed-profile', 'changed-profile-receipt', 'missing-profile-cleanup',
+                     'missing-backup', 'failed-backup'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 def command(argv, **kwargs):
@@ -182,7 +183,7 @@ class ControllerTests(unittest.TestCase):
                         return '' if 'status' in argv else 'a' * 40
                     if argv[0] == 'ansible-playbook':
                         tests = dict.fromkeys(('boot', 'kernel_modules', 'tailscale_offline', 'rootless_podman',
-                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition', 'personalization'), True)
+                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition', 'personalization', 'backup_restore'), True)
                         if mode == 'missing-stage':
                             del tests['retained_data_stage']
                         if mode == 'failed-stage':
@@ -199,6 +200,10 @@ class ControllerTests(unittest.TestCase):
                             del tests['personalization']
                         if mode == 'failed-personalization':
                             tests['personalization'] = False
+                        if mode == 'missing-backup':
+                            del tests['backup_restore']
+                        if mode == 'failed-backup':
+                            tests['backup_restore'] = False
                         candidate = {'kind': 'klokast.vm-template-candidate.v1', 'accepted': False,
                                      'success': True, 'box': 'boxa', 'validation': 'base-boot-tested',
                                      'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],

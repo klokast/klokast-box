@@ -1,6 +1,7 @@
 """Synthetic retained-data acceptance cases, only in the template test VM."""
 import copy
 import fcntl
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,62 @@ import time
 import uuid
 
 import retained_data as data
+
+
+def backup_test(run, operation):
+    """Restore the preceding partitioned fixture; no production disks or state."""
+    size = 256 * 1024 * 1024
+    if any(int(Path('/sys/class/block/' + name + '/size').read_text()) * 512 != size for name in ('xvdc', 'xvdd')):
+        raise RuntimeError('backup fixture requires its two disposable 256 MiB disks')
+    deadline = time.monotonic() + 120
+    marker = json.loads(Path('/etc/klokast-template.json').read_text())
+    runtime = {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[200000, 65536]]}
+    request = {'kind': 'klokast.vm-backup-restore.v1', 'operation_id': operation,
+               'engine_commit': marker['engine_commit'], 'backup_receipt_sha256': data.digest({'synthetic_backup': operation}),
+               'disk_bytes': size, 'disk_sha256': data.disk_digest('/dev/xvdc', size, deadline),
+               'root_partition': 3, 'root_uuid': data.filesystem_uuid('/dev/xvdc3'), 'runtime': runtime}
+    try:
+        try:
+            data.restore_backup(request, deadline)
+        except data.CopyError as error:
+            if 'read-only backup' not in str(error): raise
+        else:
+            raise RuntimeError('backup verification accepted a writable backup')
+        for device in ('/dev/xvdc', '/dev/xvdc3'):
+            with open(device, 'rb', buffering=0) as stream:
+                fcntl.ioctl(stream.fileno(), 0x125d, struct.pack('i', 1))
+        run(['mount', '-o', 'ro,noload,nodev,nosuid,noexec', '/dev/xvdc3', str(data.SOURCE)])
+        try:
+            expected = data.tree(data.SOURCE / 'var/lib/tailscale/tailscaled.state', deadline)
+        finally:
+            run(['umount', str(data.SOURCE)])
+        before = data.disk_digest('/dev/xvdd', size, deadline)
+        bad = dict(request, disk_sha256='0' * 64)
+        try:
+            data.restore_backup(bad, deadline)
+        except data.CopyError as error:
+            if 'protected backup receipt' not in str(error): raise
+        else:
+            raise RuntimeError('backup verification accepted changed backup bytes')
+        if data.disk_digest('/dev/xvdd', size, deadline) != before or data.BACKUP_PENDING.exists():
+            raise RuntimeError('invalid backup changed the restore target')
+        result = data.restore_backup(request, deadline)
+        if (result['identity'] != expected or result['adoption_accepted'] is not False or
+                result['source_freshness_verified'] is not False or result['application_consistency_verified'] is not False or
+                not all(result[k] for k in ('complete_disk_restored', 'root_filesystem_checked', 'backup_unchanged'))):
+            raise RuntimeError('full backup restore did not preserve synthetic state or its authority boundary')
+        try:
+            data.restore_backup(request, deadline)
+        except data.CopyError as error:
+            if 'already used' not in str(error): raise
+        else:
+            raise RuntimeError('backup verification reused its restore staging')
+        return {'restore_verified': True, 'readonly_backup_required': True, 'changed_backup_refused': True,
+                'receipt_sha256': result['receipt_sha256'], 'production_data_used': False}
+    finally:
+        for device in ('/dev/xvdc', '/dev/xvdc3'):
+            with open(device, 'rb', buffering=0) as stream:
+                fcntl.ioctl(stream.fileno(), 0x125d, struct.pack('i', 0))
 
 
 def partition_test(run, operation):
