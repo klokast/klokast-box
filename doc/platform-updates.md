@@ -507,6 +507,38 @@ and operation or receipt mismatch. Local tests also cover interrupted stages,
 interrupted final sync, tampered staging, and copying a subsequent retained-data
 generation without an old `/etc` tree.
 
+### Exact machine identity files
+
+The separate `klokast.vm-retained-stage.v2` contract adds typed entries to the
+staging and final-sync helper. Each entry has `key`, `source`, and `type`.
+`directory` uses the existing dataset rules. The initial `identity-file`
+adapter supports only key `platform-tailscale-state` and legacy source
+`var/lib/tailscale/tailscaled.state`. For a retained-data source, `source` must
+equal that key. It cannot select a whole Tailscale directory, another credential
+file, or an arbitrary host path. The original v1 directory contract stays valid
+and refuses typed file entries.
+
+The identity must be a nonempty regular file, at most 8 MiB, owned by root with
+mode `0600` and one link. The helper refuses source path symlinks and preserves
+numeric ownership, file bytes, timestamps, and extended attributes. Final sync
+uses a checksum even when size and timestamp are unchanged. It applies no
+directory deletion flags to the file. The helper neither parses nor logs
+identity contents. Versioned receipts bind the exact typed request and record
+only integrity evidence; they never grant adoption authority.
+
+The copy runs only in the networkless migration VM. The source must be attached
+read-only. The outer signed executor must prove that the old identity is no
+longer active before it boots a replacement. Personalization must attach this
+retained file at the standard Tailscale state path before starting Tailscale.
+These production attachment, fencing, and personalization steps remain
+unfinished. The copy helper must not be used to enroll a second live machine.
+
+Candidate preparation requires an eighth base test, `retained_identity`. It
+uses opaque synthetic state on disposable disks, checks exact-file final sync
+and the next retained generation, and refuses whole-directory mappings and
+unsafe permissions. No production identity enters a generic template or test
+VM. Missing or failed identity-test evidence prevents candidate publication.
+
 On 2026-09-17, operation `d1b0a326a02f008c4b083b17` at source `e646a3f`
 completed `platform-update prepare` on k002 with all seven base test groups,
 including staged retained-data synchronization. Both disposable guest lifecycle

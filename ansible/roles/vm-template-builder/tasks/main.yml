@@ -94,7 +94,7 @@
     group: root
     mode: '0700'
 
-- name: Build and test base software and staged retained-data synchronization independently of SSH
+- name: Build and test base software, retained data, and exact synthetic identity migration independently of SSH
   ansible.builtin.command:
     argv:
       - /usr/bin/python3

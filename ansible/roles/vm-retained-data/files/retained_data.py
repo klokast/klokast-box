@@ -19,6 +19,9 @@ SOURCE = Path('/source')
 TARGET = Path('/retained')
 MAX_ENTRIES = 100000
 RESERVE = 128 * 1024 * 1024
+# Public physical convention, not permission to copy a production identity.
+IDENTITY_FILES = {'platform-tailscale-state': 'var/lib/tailscale/tailscaled.state'}
+MAX_IDENTITY_BYTES = 8 * 1024 * 1024
 
 
 class CopyError(RuntimeError):
@@ -321,19 +324,40 @@ def staged_request(request):
     """Validate a separate contract; v1 never permits destination reuse."""
     if (not isinstance(request, dict) or set(request) !=
             {'kind', 'operation_id', 'source_uuid', 'destination_uuid', 'runtime', 'entries', 'source_layout'} or
-            request['kind'] != 'klokast.vm-retained-stage.v1' or
+            request['kind'] not in ('klokast.vm-retained-stage.v1', 'klokast.vm-retained-stage.v2') or
             request['source_layout'] not in {'legacy-root', 'retained-data'}):
         raise CopyError('invalid staged retained-data request contract')
     legacy = {k: v for k, v in request.items() if k != 'source_layout'}
     legacy['kind'] = 'klokast.vm-retained-copy.v1'
-    if request['source_layout'] == 'retained-data':
+    if request['kind'] == 'klokast.vm-retained-stage.v2':
         entries = request['entries']
+        if not isinstance(entries, list):
+            raise CopyError('typed retained-data mappings are missing')
+        for entry in entries:
+            if (not isinstance(entry, dict) or set(entry) != {'key', 'source', 'type'} or
+                    not isinstance(entry['key'], str) or not isinstance(entry['source'], str) or
+                    entry['type'] not in ('directory', 'identity-file')):
+                raise CopyError('invalid typed retained-data mapping')
+            if entry['type'] == 'identity-file':
+                expected = IDENTITY_FILES.get(entry['key'])
+                if expected is None or entry['source'] != (expected if request['source_layout'] == 'legacy-root' else entry['key']):
+                    raise CopyError('identity mapping must name the exact supported machine state file')
+            elif entry['key'] in IDENTITY_FILES:
+                raise CopyError('machine identity keys cannot name directory mappings')
+        legacy['entries'] = [{k: v for k, v in entry.items() if k != 'type'} for entry in entries]
+    if request['source_layout'] == 'retained-data':
+        entries = legacy['entries']
         if (not isinstance(entries, list) or any(not isinstance(v, dict) or
                 set(v) != {'key', 'source'} or v['key'] != v['source'] for v in entries)):
             raise CopyError('retained-data sources must name their exact dataset keys')
         # Reuse all identity, overlap, and dataset-key checks from v1.
         legacy['entries'] = [{'key': v['key'], 'source': 'srv/retained/' + str(v['source'])} for v in entries]
     validate(legacy)
+
+
+def staged_kind(request, phase):
+    version = 'v2' if request['kind'] == 'klokast.vm-retained-stage.v2' else 'v1'
+    return 'klokast.vm-retained-' + phase + '-result.' + version
 
 
 def read_record(path):
@@ -396,10 +420,35 @@ def measure_entries(request, deadline, root=None):
     result = {}
     for entry in request['entries']:
         path = below(root, entry['source'] if root == SOURCE else entry['key'])
-        if not path.is_dir():
+        if entry.get('type') == 'identity-file':
+            info = path.lstat()
+            # environment() requires root in the networkless copy guest.
+            # Keep opaque state private and reject links, aliases, and empty
+            # files instead of silently enrolling a different machine later.
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                    info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or
+                    not 0 < info.st_size <= MAX_IDENTITY_BYTES):
+                raise CopyError('machine identity file has unsafe type, ownership, permissions, links, or size')
+        elif not path.is_dir():
             raise CopyError('retained-data mapping does not name an existing directory')
         result[entry['key']] = tree(path, deadline)
     return result
+
+
+def sync_entry(entry, deadline, *, final=False):
+    source, destination = below(SOURCE, entry['source']), TARGET / entry['key']
+    identity = entry.get('type') == 'identity-file'
+    if not final and not identity:
+        destination.mkdir(mode=0o700)
+    argv = ['rsync', '-aHAXS', '--numeric-ids', '--one-file-system', '--modify-window=-1']
+    if final:
+        argv.append('--checksum')
+        if not identity:
+            argv.append('--delete-delay')
+    # No trailing slash for an exact file. Never copy its parent directory or
+    # apply directory deletion semantics to an identity-file mapping.
+    suffix = '' if identity else '/'
+    run(argv + ['--', str(source) + suffix, str(destination) + suffix], deadline)
 
 
 def stage(request, deadline):
@@ -419,14 +468,11 @@ def stage(request, deadline):
     pending = TARGET / '.klokast-stage-pending'
     create_record(pending, {'request_sha256': digest(request)})
     for entry in request['entries']:
-        destination = TARGET / entry['key']
-        destination.mkdir(mode=0o700)
-        run(['rsync', '-aHAXS', '--numeric-ids', '--one-file-system', '--modify-window=-1',
-             '--', str(below(SOURCE, entry['source'])) + '/', str(destination) + '/'], deadline)
+        sync_entry(entry, deadline)
     if measure_entries(request, deadline, TARGET) != measured or measure_entries(request, deadline) != measured:
         raise CopyError('staged retained-data integrity verification failed')
     staged_environment(request, deadline)
-    result = {'kind': 'klokast.vm-retained-stage-result.v1', 'request_sha256': digest(request),
+    result = {'kind': staged_kind(request, 'stage'), 'request_sha256': digest(request),
               'entries': measured, 'adoption_accepted': False}
     result['receipt_sha256'] = digest(result)
     create_record(TARGET / '.klokast-stage-result.json', result)
@@ -472,7 +518,7 @@ def finalize(request, stage_receipt_sha256, deadline):
     staged = read_record(TARGET / '.klokast-stage-result.json')
     if (not isinstance(staged, dict) or set(staged) !=
             {'kind', 'request_sha256', 'entries', 'adoption_accepted', 'receipt_sha256'} or
-            staged['kind'] != 'klokast.vm-retained-stage-result.v1' or
+            staged['kind'] != staged_kind(request, 'stage') or
             staged['adoption_accepted'] is not False or staged['request_sha256'] != digest(request) or
             staged['receipt_sha256'] != stage_receipt_sha256 or
             digest({k: v for k, v in staged.items() if k != 'receipt_sha256'}) != stage_receipt_sha256):
@@ -490,15 +536,13 @@ def finalize(request, stage_receipt_sha256, deadline):
     pending = TARGET / '.klokast-final-pending'
     create_record(pending, {'request_sha256': digest(request), 'stage_receipt_sha256': stage_receipt_sha256})
     for entry in request['entries']:
-        run(['rsync', '-aHAXS', '--checksum', '--delete-delay', '--numeric-ids', '--one-file-system',
-             '--modify-window=-1', '--', str(below(SOURCE, entry['source'])) + '/',
-             str(TARGET / entry['key']) + '/'], deadline)
+        sync_entry(entry, deadline, final=True)
     if measure_entries(request, deadline, TARGET) != measured or measure_entries(request, deadline) != measured:
         raise CopyError('final retained-data integrity verification failed')
     staged_environment(request, deadline)
     create_record(TARGET / '.klokast-retained-identity.json',
                   {'kind': 'klokast.vm-retained-identity.v1', 'runtime': request['runtime']})
-    result = {'kind': 'klokast.vm-retained-final-result.v1', 'request_sha256': digest(request),
+    result = {'kind': staged_kind(request, 'final'), 'request_sha256': digest(request),
               'stage_receipt_sha256': stage_receipt_sha256, 'entries': measured,
               'copy_verified': True, 'adoption_accepted': False}
     result['receipt_sha256'] = digest(result)

@@ -2,10 +2,99 @@
 import copy
 import os
 from pathlib import Path
+import shutil
 import time
 import uuid
 
 import retained_data as data
+
+
+def identity_test(run, operation):
+    """Opaque dummy identity only; this VM never receives production secrets."""
+    source, target = data.SOURCE, data.TARGET
+    identities = [str(uuid.uuid4()), str(uuid.uuid4())]
+    for device, identity, mount in zip(('/dev/xvdc', '/dev/xvdd'), identities, (source, target)):
+        run(['mkfs.ext4', '-F', '-U', identity, device])
+        run(['mount', '-o', 'nodev,nosuid,noexec', device, str(mount)])
+    deadline = time.monotonic() + 120
+    cases = []
+    try:
+        (source / 'etc').mkdir()
+        (source / 'etc/passwd').write_text('neo:x:2000:2000:Runtime:/home/neo:/bin/sh\n')
+        for key in ('subuid', 'subgid'):
+            (source / 'etc' / key).write_text('neo:200000:65536\n')
+        state = source / 'var/lib/tailscale/tailscaled.state'
+        state.parent.mkdir(parents=True)
+        state.write_bytes(b'synthetic-identity-before')
+        state.chmod(0o600)
+        os.chown(state, 0, 2345)
+        os.setxattr(state, 'user.synthetic', b'identity metadata')
+        (state.parent / 'unrelated').write_text('do not copy this file')
+        request = {'kind': 'klokast.vm-retained-stage.v2', 'operation_id': operation,
+                   'source_uuid': identities[0], 'destination_uuid': identities[1],
+                   'runtime': {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[200000, 65536]]},
+                   'entries': [{'key': 'platform-tailscale-state', 'source': 'var/lib/tailscale/tailscaled.state',
+                                'type': 'identity-file'}], 'source_layout': 'legacy-root'}
+        run(['mount', '-o', 'remount,ro', str(source)])
+        bad = copy.deepcopy(request)
+        bad['entries'][0]['source'] = 'var/lib/tailscale'
+        try:
+            data.stage(bad, deadline)
+        except data.CopyError:
+            cases.append('whole identity directory refused')
+        else:
+            raise RuntimeError('identity stage accepted a whole directory')
+        staged = data.stage(request, deadline)
+        run(['mount', '-o', 'remount,rw', str(source)])
+        previous = state.stat()
+        state.write_bytes(b'synthetic-identity-after!')
+        os.utime(state, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        state.chmod(0o644)
+        run(['mount', '-o', 'remount,ro', str(source)])
+        try:
+            data.finalize(request, staged['receipt_sha256'], deadline)
+        except data.CopyError as error:
+            if 'machine identity file' not in str(error):
+                raise
+            cases.append('unsafe identity permissions refused')
+        else:
+            raise RuntimeError('identity final sync accepted unsafe permissions')
+        run(['mount', '-o', 'remount,rw', str(source)])
+        state.chmod(0o600)
+        run(['mount', '-o', 'remount,ro', str(source)])
+        final = data.finalize(request, staged['receipt_sha256'], deadline)
+        copied = target / 'platform-tailscale-state'
+        if (final['adoption_accepted'] is not False or not final['copy_verified'] or
+                data.tree(copied, deadline) != data.tree(state, deadline) or
+                copied.read_bytes() != b'synthetic-identity-after!' or
+                copied.stat().st_uid != 0 or copied.stat().st_gid != 2345 or
+                copied.stat().st_mode & 0o7777 != 0o600 or (target / 'unrelated').exists()):
+            raise RuntimeError('exact identity copy failed content or metadata checks')
+        # Recreate a retained source generation on the first synthetic disk.
+        # Delete only known fixture paths; no production disk is attached.
+        run(['mount', '-o', 'remount,rw', str(source)])
+        shutil.copy2(copied, source / copied.name)
+        os.chown(source / copied.name, 0, 2345)
+        shutil.copy2(target / '.klokast-retained-identity.json', source / '.klokast-retained-identity.json')
+        shutil.rmtree(source / 'etc')
+        shutil.rmtree(source / 'var')
+        run(['mount', '-o', 'remount,ro', str(source)])
+        run(['umount', str(target)])
+        next_uuid = str(uuid.uuid4())
+        run(['mkfs.ext4', '-F', '-U', next_uuid, '/dev/xvdd'])
+        run(['mount', '-o', 'nodev,nosuid,noexec', '/dev/xvdd', str(target)])
+        next_request = {**request, 'operation_id': ('0' if operation[0] != '0' else '1') + operation[1:],
+                        'source_layout': 'retained-data', 'destination_uuid': next_uuid,
+                        'entries': [{'key': copied.name, 'source': copied.name, 'type': 'identity-file'}]}
+        staged = data.stage(next_request, deadline)
+        final = data.finalize(next_request, staged['receipt_sha256'], deadline)
+        if not final['copy_verified'] or data.tree(copied, deadline) != data.tree(source / copied.name, deadline):
+            raise RuntimeError('retained identity generation verification failed')
+        return {'identity_copy_verified': True, 'retained_generation_verified': True,
+                'negative_cases': cases, 'production_data_used': False}
+    finally:
+        run(['umount', str(target)])
+        run(['umount', str(source)])
 
 
 def test(run, operation):

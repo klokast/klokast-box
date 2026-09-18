@@ -171,7 +171,7 @@ class ControllerTests(unittest.TestCase):
         cli = load_cli()
         operation = 'a' * 24
         inputs = {'inputs_sha256': 'b' * 64, 'packages': [{'name': 'linux-virt', 'version': '1'}]}
-        for mode in ('valid', 'missing-stage', 'failed-stage'):
+        for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 def command(argv, **kwargs):
@@ -179,11 +179,15 @@ class ControllerTests(unittest.TestCase):
                         return '' if 'status' in argv else 'a' * 40
                     if argv[0] == 'ansible-playbook':
                         tests = dict.fromkeys(('boot', 'kernel_modules', 'tailscale_offline', 'rootless_podman',
-                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage'), True)
+                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity'), True)
                         if mode == 'missing-stage':
                             del tests['retained_data_stage']
                         if mode == 'failed-stage':
                             tests['retained_data_stage'] = False
+                        if mode == 'missing-identity':
+                            del tests['retained_identity']
+                        if mode == 'failed-identity':
+                            tests['retained_identity'] = False
                         candidate = {'kind': 'klokast.vm-template-candidate.v1', 'accepted': False,
                                      'success': True, 'box': 'boxa', 'validation': 'base-boot-tested',
                                      'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
@@ -209,6 +213,7 @@ class ControllerTests(unittest.TestCase):
                         self.assertEqual(result['state'], 'candidate-built')
                         self.assertFalse(result['accepted'])
                         self.assertTrue(result['base_tests']['retained_data_stage'])
+                        self.assertTrue(result['base_tests']['retained_identity'])
                     else:
                         with self.assertRaisesRegex(u.UpdateError, 'candidate or cleanup evidence'):
                             cli.prepare('boxa', 'v3.23')

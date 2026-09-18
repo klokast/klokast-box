@@ -124,6 +124,8 @@ def main():
         result['tests']['retained_data_copy'] = True
         result['retained_data_stage_test'] = retained_data_test.stage_test(run, args['klokast_test'])
         result['tests']['retained_data_stage'] = True
+        result['retained_identity_test'] = retained_data_test.identity_test(run, args['klokast_test'])
+        result['tests']['retained_identity'] = True
         if 'klokast_app_capsule' in args or 'klokast_app_bytes' in args:
             from vm_app_compatibility import unpack
             import static_site_test
