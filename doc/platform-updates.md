@@ -402,6 +402,27 @@ test below stages one unchanged catalog image. This path installs base
 packages, including Tailscale and Podman, into the new generic image. It does
 not enroll Tailscale or copy machine credentials into that image.
 
+### Setup artifact cleanup
+
+Before standing policy activation, `74-platform-update-template-cleanup.yml`
+can reclaim completed disposable build inputs and older unaccepted candidates.
+Run it on the active controller with the approved inventory, one dom0 limit,
+and `cleanup_box=BOX`. Its default action prints a plan. Inspect that plan,
+then use `cleanup_action=apply` and `cleanup_plan_sha256=SHA256` from the plan.
+The helper recalculates the plan under the builder lock before removal.
+
+Cleanup checks exact artifact hashes, build receipts, and completed guest
+cleanup. It keeps the two newest successful candidates, referenced candidates,
+and unknown files. It saves removed candidate manifests and the removal plan
+under persistent `klokast-vm-templates/cleanup/`. Build evidence remains in
+place. A partial cleanup needs inspection; do not erase its audit directory
+to force a retry.
+
+This setup helper refuses an active standing policy, production transaction
+records, running disposable guests, or incomplete recovery-test cleanup.
+It is not the production retention collector. That collector must also use
+protected controller release references and current/previous assignments.
+
 ## Isolated application component test
 
 From the active controller's clean public candidate checkout, run:

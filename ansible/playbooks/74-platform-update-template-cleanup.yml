@@ -1,0 +1,53 @@
+---
+- name: Remove checked disposable template artifacts before production activation
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the explicit cleanup target and action
+      ansible.builtin.assert:
+        that:
+          - cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - inventory_hostname == cleanup_box ~ '-dom0'
+          - cleanup_action | default('plan') in ['plan', 'apply']
+          - cleanup_action | default('plan') != 'apply' or cleanup_plan_sha256 | default('') is match('^[0-9a-f]{64}$')
+
+    - name: Check active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: cleanup_controller
+
+    - name: Inspect the standing policy pointer
+      ansible.builtin.stat:
+        path: /var/lib/klokast/updates/executor/active-policy
+      delegate_to: localhost
+      register: cleanup_policy
+
+    - name: Require setup scope without active standing policy
+      ansible.builtin.assert:
+        that:
+          - (cleanup_controller.stdout | from_json).configured | bool
+          - (cleanup_controller.stdout | from_json).active | bool
+          - not cleanup_policy.stat.exists
+
+    - name: Stage the public setup cleanup helper
+      ansible.builtin.copy:
+        src: ../roles/vm-template-cleanup/files/vm-template-cleanup
+        dest: /mnt/dom0_data/klokast-vm-templates/cleanup-helper.py
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Compute or apply the exact checked cleanup plan
+      ansible.builtin.command:
+        argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box] + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
+      register: cleanup_result
+      changed_when: cleanup_action | default('plan') == 'apply'
+
+    - name: Report cleanup evidence
+      ansible.builtin.debug:
+        msg: "{{ cleanup_result.stdout | from_json }}"

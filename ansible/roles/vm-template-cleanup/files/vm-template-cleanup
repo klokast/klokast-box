@@ -1,0 +1,277 @@
+#!/usr/bin/python3
+"""Remove verified disposable build artifacts before production activation.
+
+This setup-only helper refuses any production transaction records. It keeps
+the two newest successful candidates, every explicitly pinned candidate, and
+all observed Xen/configuration/loop references. It retains build receipts and
+records each removal before deleting bytes. Unknown files remain untouched.
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import subprocess
+
+BASE = Path('/mnt/dom0_data/klokast-vm-templates')
+UPDATES = Path('/mnt/dom0_data/klokast-vm-updates')
+OP = re.compile('[0-9a-f]{24}')
+HASH = re.compile('[0-9a-f]{64}')
+
+
+class Refused(RuntimeError):
+    pass
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+
+
+def digest(value):
+    return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def safe(path, directory=False, maximum=2 * 1024**3):
+    info = path.lstat()
+    valid = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (not valid or info.st_uid != os.geteuid() or info.st_mode & 0o022 or
+            (not directory and (info.st_nlink != 1 or info.st_size > maximum))):
+        raise Refused('unsafe artifact path: ' + path.name)
+    return info
+
+
+def read(path):
+    safe(path, maximum=2 * 1024 * 1024)
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise Refused('duplicate artifact record field')
+            value[key] = item
+        return value
+    return json.loads(path.read_bytes(), object_pairs_hook=unique)
+
+
+def store(path, value):
+    safe(path.parent, True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(canonical(value) + b'\n'); stream.flush(); os.fsync(stream.fileno())
+    syncdir(path.parent)
+
+
+def syncdir(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def command(argv):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    if result.returncode or len(result.stdout) > 8 * 1024 * 1024:
+        raise Refused('artifact reference inspection failed')
+    return result.stdout.decode()
+
+
+def references():
+    # Publication and recovery need a wider controller reference graph after
+    # activation. Refuse that scope until the production executor supplies it.
+    for name in ('active', 'operations'):
+        path = UPDATES / name
+        if path.exists() or path.is_symlink():
+            safe(path, True)
+            if any(path.iterdir()):
+                raise Refused('setup cleanup cannot run with production VM transaction records')
+    trials = Path('/mnt/dom0_data/klokast-vm-recovery-tests')
+    if trials.exists():
+        safe(trials, True)
+        for trial in trials.iterdir():
+            safe(trial, True)
+            if (trial / 'state').exists():
+                cleanup = read(trial / 'cleanup.json')
+                if any(cleanup.get(key) is not True for key in
+                       ('disks_removed', 'guest_absent', 'production_uuids_unchanged')):
+                    raise Refused('a recovery test has incomplete cleanup evidence')
+    live = command(['/usr/sbin/xl', 'list', '-l'])
+    guests = json.loads(live)
+    if not isinstance(guests, list) or not any(v.get('domid') == 0 for v in guests):
+        raise Refused('Xen reference inventory is incomplete')
+    if any(v.get('config', {}).get('c_info', {}).get('name', '').startswith(
+            ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-recovery-test-')) for v in guests):
+        raise Refused('a disposable operation is still running')
+    texts = [live]
+    for path in Path('/etc/xen').glob('*.cfg'):
+        safe(path, maximum=1024 * 1024)
+        texts.append(path.read_text())
+    for path in Path('/sys/block').glob('loop*/loop/backing_file'):
+        texts.append('/' + path.read_text().strip().lstrip('/'))
+    pattern = re.escape(str(BASE)) + r'/(?:candidates|staging)/([0-9a-f]{24})(?:/|\b)'
+    return {match for text in texts for match in re.findall(pattern, text)}
+
+
+def checked_file(path, expected):
+    if (not isinstance(expected, dict) or set(expected) != {'sha256', 'bytes'} or
+            not isinstance(expected['sha256'], str) or not HASH.fullmatch(expected['sha256']) or
+            type(expected['bytes']) is not int or not 0 < expected['bytes'] <= 8 * 1024**3):
+        raise Refused('artifact checksum or size is invalid')
+    info = safe(path, maximum=8 * 1024**3)
+    if info.st_size != expected['bytes']:
+        raise Refused('artifact size differs from its recorded build')
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    after = path.lstat()
+    if (value.hexdigest() != expected['sha256'] or
+            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) !=
+            (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise Refused('artifact changed since its recorded build')
+    return dict(expected, path=str(path.relative_to(BASE)), allocated_bytes=info.st_blocks * 512)
+
+
+def plan(box, pinned, referenced):
+    if len(set(pinned)) != len(pinned) or any(not OP.fullmatch(v) for v in pinned):
+        raise Refused('pinned candidate IDs are invalid or duplicated')
+    candidates, unknown = [], []
+    for directory in sorted((BASE / 'candidates').iterdir()):
+        operation = directory.name
+        try:
+            if not OP.fullmatch(operation):
+                raise Refused('unknown candidate directory name')
+            safe(directory, True)
+            if {v.name for v in directory.iterdir()} != {'candidate.json', 'root', 'kernel', 'initramfs'}:
+                raise Refused('candidate contains missing or unknown files')
+            record = read(directory / 'candidate.json')
+            work = BASE / 'staging' / operation; safe(work, True)
+            request = read(work / 'request.json')
+            lifecycle, test = read(work / 'lifecycle.json'), read(work / 'test-lifecycle.json')
+            if (record.get('kind') != 'klokast.vm-template-candidate.v1' or record.get('accepted') is not False or
+                    record.get('success') is not True or record.get('validation') != 'base-boot-tested' or
+                    record.get('box') != box or record.get('operation_id') != operation or
+                    request.get('kind') != 'klokast.vm-template-build-request.v1' or request.get('box') != box or
+                    request.get('operation_id') != operation or record.get('inputs_sha256') != request.get('inputs_sha256') or
+                    record != read(work / 'candidate.json') or
+                    lifecycle.get('stage') != 'cleaned' or lifecycle.get('domain') != 'vm-build-' + operation or
+                    test.get('stage') != 'cleaned' or test.get('domain') != 'vm-test-' + operation or
+                    set(record.get('artifacts', {})) != {'root', 'kernel', 'initramfs'}):
+                raise Refused('candidate has incomplete build or cleanup evidence')
+            for key, prefix in (('openrc_domain', 'vm-openrc-'), ('personalize_domain', 'vm-personalize-'), ('profile_domain', 'vm-profile-')):
+                if key in test and test[key] != prefix + operation:
+                    raise Refused('candidate cleanup names another operation')
+            candidates.append({'operation_id': operation, 'record': record, 'request': request,
+                               'mtime_ns': safe(directory / 'candidate.json').st_mtime_ns})
+        except (Refused, OSError, ValueError, KeyError, TypeError) as error:
+            unknown.append({'operation_id': operation, 'reason': str(error)[:240]})
+    known = {v['operation_id'] for v in candidates}
+    if not set(pinned) <= known:
+        raise Refused('an explicitly pinned candidate has no complete checked evidence')
+    kept = set(pinned) | set(referenced) | {v['operation_id'] for v in
+        sorted(candidates, key=lambda v: (v['mtime_ns'], v['operation_id']), reverse=True)[:2]}
+    removals = []
+    for candidate in candidates:
+        operation, record, request = candidate['operation_id'], candidate['record'], candidate['request']
+        if operation in referenced:
+            continue
+        files = []
+        try:
+            if operation not in kept:
+                files.extend(checked_file(BASE / 'candidates' / operation / name, record['artifacts'][name])
+                             for name in ('root', 'kernel', 'initramfs'))
+            # Build inputs are rebuildable. Keep both candidate generations and
+            # all evidence, including the exact request and input checksums.
+            inputs = {'capsule.tar': request['capsule'], 'bootstrap-kernel': request['bootstrap']['kernel'],
+                      'bootstrap-initramfs': request['bootstrap']['initramfs']}
+            if 'app_test' in request:
+                inputs['app-test.tar'] = request['app_test']['capsule']
+            for name, expected in inputs.items():
+                path = BASE / 'staging' / operation / name
+                if path.exists() or path.is_symlink():
+                    files.append(checked_file(path, expected))
+            if files:
+                removals.append({'operation_id': operation, 'candidate_sha256': digest(record),
+                                 'retire_candidate': operation not in kept, 'files': files})
+        except (Refused, OSError, ValueError, KeyError, TypeError) as error:
+            unknown.append({'operation_id': operation, 'reason': str(error)[:240]})
+    result = {'kind': 'klokast.vm-template-cleanup-plan.v1', 'box': box,
+              'kept_candidates': sorted(kept & known), 'references': sorted(referenced),
+              'unknown_unchanged': unknown, 'removals': removals,
+              'allocated_bytes': sum(v['allocated_bytes'] for op in removals for v in op['files'])}
+    result['plan_sha256'] = digest(result)
+    return result
+
+
+def apply(proposal, expected):
+    if proposal['plan_sha256'] != expected:
+        raise Refused('cleanup plan changed; inspect the new plan before retrying')
+    directory = BASE / 'cleanup' / expected
+    directory.mkdir(mode=0o700)
+    store(directory / 'plan.json', proposal)
+    for item in proposal['removals']:
+        operation = item['operation_id']
+        candidate = BASE / 'candidates' / operation
+        record = read(candidate / 'candidate.json')
+        if digest(record) != item['candidate_sha256']:
+            raise Refused('candidate metadata changed before removal')
+        # Retain source evidence before the first unlink. An interrupted
+        # cleanup cannot silently lose its exact manifest or selected file set.
+        store(directory / (operation + '-candidate.json'), record)
+        for entry in item['files']:
+            path = BASE / entry['path']
+            if checked_file(path, {k: entry[k] for k in ('sha256', 'bytes')}) != entry:
+                raise Refused('artifact metadata changed before removal')
+            path.unlink(); syncdir(path.parent)
+        if item['retire_candidate']:
+            if {p.name for p in candidate.iterdir()} != {'candidate.json'}:
+                raise Refused('candidate acquired unknown files; metadata retained in place')
+            (candidate / 'candidate.json').unlink(); candidate.rmdir(); syncdir(candidate.parent)
+        store(directory / (operation + '-complete.json'), {'removed': True, 'operation_id': operation})
+    store(directory / 'complete.json', {'complete': True, 'plan_sha256': expected})
+    return {'complete': True, 'plan_sha256': expected, 'allocated_bytes_removed': proposal['allocated_bytes']}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('plan', 'apply'))
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--keep', action='append', default=[])
+    parser.add_argument('--plan-sha256')
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            'control_d' not in Path('/proc/xen/capabilities').read_text()):
+        raise Refused('run setup cleanup as root on the selected dom0')
+    if (args.action == 'apply') != bool(args.plan_sha256) or (args.plan_sha256 and not HASH.fullmatch(args.plan_sha256)):
+        raise Refused('apply requires the exact inspected plan checksum')
+    os.umask(0o077)
+    command(['/bin/mountpoint', '-q', '/mnt/dom0_data'])
+    for path in (BASE, BASE / 'candidates', BASE / 'staging'):
+        safe(path, True)
+        if path.stat().st_dev != Path('/mnt/dom0_data').stat().st_dev:
+            raise Refused('cleanup paths must stay on persistent dom0 storage')
+    descriptor = os.open(BASE / 'build.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        safe(BASE / 'build.lock')
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        referenced = references()
+        proposal = plan(args.box, args.keep, referenced)
+        if args.action == 'plan':
+            print(canonical(proposal).decode())
+        else:
+            (BASE / 'cleanup').mkdir(mode=0o700, exist_ok=True); safe(BASE / 'cleanup', True)
+            print(canonical(apply(proposal, args.plan_sha256)).decode())
+    finally:
+        os.close(descriptor)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (Refused, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
+        print('vm-template-cleanup: ' + str(error), file=__import__('sys').stderr)
+        raise SystemExit(1)
