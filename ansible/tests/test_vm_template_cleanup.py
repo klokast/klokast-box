@@ -85,5 +85,16 @@ class Cleanup(unittest.TestCase):
         with patch.object(c, 'UPDATES', updates):
             with self.assertRaisesRegex(c.Refused, 'production'): c.references()
 
+    def test_empty_preflight_trial_requires_no_operations_or_disks(self):
+        trials = self.base / 'trials'; trial = trials / self.ids[0]
+        for name in ('active', 'operations'): (trial / 'state' / name).mkdir(parents=True)
+        with patch.object(c, 'TRIALS', trials), patch.object(c, 'command', return_value='{"report":[{"lv":[]}]}') as command:
+            c.trial_cleanup()
+            command.return_value = json.dumps({'report': [{'lv': [{'lv_name': 'vmupdtest_' + self.ids[0] + '_old_os'}]}]})
+            with self.assertRaisesRegex(c.Refused, 'still has disks'): c.trial_cleanup()
+            command.return_value = '{"report":[{"lv":[]}]}'
+            (trial / 'state/operations' / self.ids[1]).mkdir()
+            with self.assertRaisesRegex(c.Refused, 'unfinished'): c.trial_cleanup()
+
 
 if __name__ == '__main__': unittest.main()

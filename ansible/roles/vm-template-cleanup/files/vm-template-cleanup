@@ -19,6 +19,7 @@ import subprocess
 
 BASE = Path('/mnt/dom0_data/klokast-vm-templates')
 UPDATES = Path('/mnt/dom0_data/klokast-vm-updates')
+TRIALS = Path('/mnt/dom0_data/klokast-vm-recovery-tests')
 OP = re.compile('[0-9a-f]{24}')
 HASH = re.compile('[0-9a-f]{64}')
 
@@ -79,6 +80,35 @@ def command(argv):
     return result.stdout.decode()
 
 
+def trial_cleanup():
+    if not TRIALS.exists():
+        return
+    safe(TRIALS, True)
+    for trial in TRIALS.iterdir():
+        safe(trial, True)
+        if not (trial / 'state').exists():
+            continue
+        cleanup = trial / 'cleanup.json'
+        if not cleanup.exists():
+            # The test creates empty state before resource preflight. A failed
+            # preflight has no transaction to recover, but prove this locally.
+            if not OP.fullmatch(trial.name) or (trial / 'resources.json').exists():
+                raise Refused('a recovery test has incomplete cleanup evidence')
+            for name in ('operations', 'active'):
+                path = trial / 'state' / name; safe(path, True)
+                if any(path.iterdir()):
+                    raise Refused('a recovery test has unfinished operation records')
+            volumes = json.loads(command(['/sbin/lvs', '--reportformat', 'json', '-o', 'lv_name']))
+            if any(v['lv_name'].strip().startswith('vmupdtest_' + trial.name + '_')
+                   for report in volumes['report'] for v in report['lv']):
+                raise Refused('an incomplete recovery test still has disks')
+            continue
+        record = read(cleanup)
+        if any(record.get(key) is not True for key in
+               ('disks_removed', 'guest_absent', 'production_uuids_unchanged')):
+            raise Refused('a recovery test has incomplete cleanup evidence')
+
+
 def references():
     # Publication and recovery need a wider controller reference graph after
     # activation. Refuse that scope until the production executor supplies it.
@@ -88,16 +118,7 @@ def references():
             safe(path, True)
             if any(path.iterdir()):
                 raise Refused('setup cleanup cannot run with production VM transaction records')
-    trials = Path('/mnt/dom0_data/klokast-vm-recovery-tests')
-    if trials.exists():
-        safe(trials, True)
-        for trial in trials.iterdir():
-            safe(trial, True)
-            if (trial / 'state').exists():
-                cleanup = read(trial / 'cleanup.json')
-                if any(cleanup.get(key) is not True for key in
-                       ('disks_removed', 'guest_absent', 'production_uuids_unchanged')):
-                    raise Refused('a recovery test has incomplete cleanup evidence')
+    trial_cleanup()
     live = command(['/usr/sbin/xl', 'list', '-l'])
     guests = json.loads(live)
     if not isinstance(guests, list) or not any(v.get('domid') == 0 for v in guests):
