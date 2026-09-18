@@ -12,3 +12,13 @@ arrays.
 
 Developer Mac wrappers run on macOS Bash 3.2 unless proven otherwise; avoid
 newer Bash builtins such as `mapfile`/`readarray`.
+
+Keep remote-script here-documents outside `$(...)` in Mac wrappers. Capture
+the command's output in a file under an owner-only temporary directory, check
+its exit status, then read the result. Test the enclosing Mac shell block as well as the remote
+payload. The promotion transport tests can use a specific Bash executable:
+
+```sh
+KLOKAST_TEST_BASH=/path/to/bash-3.2 \
+  python3 -m unittest discover -s ansible/tests -p 'test_engine_promotion.py'
+```

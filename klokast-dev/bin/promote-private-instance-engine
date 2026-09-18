@@ -206,9 +206,11 @@ esac
 # Select public source only. The installed authority still validates canonical
 # main, the sealed build, private inputs, and the human signature. Do not advance
 # the approved deployment checkout to make a candidate pass preflight.
-CONTROLLER_CLI="$(tailscale ssh "$SSH_TARGET" sh -s -- "$PUBLIC_HEAD" \
+# Keep the here-document outside command substitution for macOS Bash 3.2.
+CONTROLLER_SOURCE_RESULT="$WORK/controller-source.txt"
+if ! tailscale ssh "$SSH_TARGET" sh -s -- "$PUBLIC_HEAD" \
   /home/smith/src/klokast/klokast-box-update-candidate \
-  /home/smith/src/klokast/klokast-box <<'SELECT_SOURCE'
+  /home/smith/src/klokast/klokast-box >"$CONTROLLER_SOURCE_RESULT" <<'SELECT_SOURCE'
 set -eu
 expected_commit=$1
 shift
@@ -234,7 +236,10 @@ done
 printf '%s\n' 'No clean controller public checkout matches the reviewed main commit. Prepare klokast-box-update-candidate; keep the approved deployment checkout unchanged.' >&2
 exit 1
 SELECT_SOURCE
-)" || ksa_die "controller candidate source is not ready for engine promotion"
+then
+  ksa_die "controller candidate source is not ready for engine promotion"
+fi
+CONTROLLER_CLI="$(cat "$CONTROLLER_SOURCE_RESULT")"
 case "$CONTROLLER_CLI" in
   /home/smith/src/klokast/klokast-box-update-candidate/ansible/bin/platform-instance|/home/smith/src/klokast/klokast-box/ansible/bin/platform-instance) ;;
   *) ksa_die "controller returned an unexpected promotion command path" ;;

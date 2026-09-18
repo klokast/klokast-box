@@ -459,6 +459,48 @@ class PromotionSourceSelectionTest(unittest.TestCase):
             input=self.payload, text=True, capture_output=True, check=False,
         )
 
+    def run_transport(self, *, fail=False):
+        source = PROMOTION_HELPER.read_text()
+        block = "# Select public source only." + source.split("# Select public source only.", 1)[1].split(
+            'require_clean_branch "$PRIVATE_WORKTREE" "private"', 1
+        )[0]
+        script = '''
+set -euo pipefail
+ksa_die() { printf '%s\\n' "$*" >&2; exit 1; }
+tailscale() {
+  printf '%s\\n' "$@" > "$WORK/arguments"
+  cat > "$WORK/received"
+  printf '%s\\n' /home/smith/src/klokast/klokast-box-update-candidate/ansible/bin/platform-instance
+  return "$TRANSPORT_EXIT"
+}
+''' + block + '\nprintf "%s\\n" "$CONTROLLER_CLI"\n'
+        environment = {
+            **os.environ, "WORK": str(self.root), "PUBLIC_HEAD": self.new,
+            "SSH_TARGET": "smith@test-ops", "TRANSPORT_EXIT": "1" if fail else "0",
+        }
+        return subprocess.run(
+            [os.environ.get("KLOKAST_TEST_BASH", "bash"), "-c", script],
+            env=environment, text=True, capture_output=True, check=False,
+        )
+
+    def test_parent_shell_sends_literal_complete_payload(self):
+        result = self.run_transport()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "received").read_text(), self.payload + "\n")
+        self.assertEqual((self.root / "arguments").read_text().splitlines(), [
+            "ssh", "smith@test-ops", "sh", "-s", "--", self.new,
+            "/home/smith/src/klokast/klokast-box-update-candidate",
+            "/home/smith/src/klokast/klokast-box",
+        ])
+        self.assertEqual(result.stdout.strip(),
+                         "/home/smith/src/klokast/klokast-box-update-candidate/ansible/bin/platform-instance")
+
+    def test_parent_shell_refuses_partial_output_on_transport_failure(self):
+        result = self.run_transport(fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("controller candidate source is not ready", result.stderr)
+
     def test_candidate_selected_without_changing_approved_checkout(self):
         result = self.select()
         self.assertEqual(result.returncode, 0, result.stderr)
