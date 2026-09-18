@@ -1,12 +1,76 @@
 """Synthetic retained-data acceptance cases, only in the template test VM."""
 import copy
+import fcntl
 import os
 from pathlib import Path
 import shutil
+import struct
 import time
 import uuid
 
 import retained_data as data
+
+
+def partition_test(run, operation):
+    """Synthetic MBR fixture on the dedicated disposable source disk only."""
+    source, target = data.SOURCE, data.TARGET
+    disk = Path('/dev/xvdc')
+    sectors = int(Path('/sys/class/block/xvdc/size').read_text())
+    if sectors != 256 * 1024 * 1024 // 512:
+        raise RuntimeError('partition fixture requires the exact disposable 256 MiB disk')
+    table = bytearray(512)
+    table[478:494] = struct.pack('<B3sB3sII', 0, b'\0' * 3, 0x83, b'\0' * 3, 2048, sectors - 2048)
+    table[510:512] = b'\x55\xaa'
+    with disk.open('r+b', buffering=0) as stream:
+        stream.write(b'\0' * (4 * 1024 * 1024))
+        stream.seek(0); stream.write(table); os.fsync(stream.fileno())
+        fcntl.ioctl(stream.fileno(), 0x125f)  # Linux BLKRRPART, fixture only.
+    for _ in range(100):
+        if Path('/dev/xvdc3').exists(): break
+        time.sleep(0.1)
+    identities = [str(uuid.uuid4()), str(uuid.uuid4())]
+    mounted = []
+
+    def readonly(value):
+        for device in ('/dev/xvdc', '/dev/xvdc3'):
+            with open(device, 'rb', buffering=0) as stream:
+                fcntl.ioctl(stream.fileno(), 0x125d, struct.pack('i', value))  # BLKROSET.
+
+    try:
+        for device, identity, mount in zip(('/dev/xvdc3', '/dev/xvdd'), identities, (source, target)):
+            run(['mkfs.ext4', '-F', '-U', identity, device])
+            run(['mount', '-o', 'nodev,nosuid,noexec', device, str(mount)])
+            mounted.append(mount)
+        (source / 'etc').mkdir()
+        (source / 'etc/passwd').write_text('neo:x:2000:2000:Runtime:/home/neo:/bin/sh\n')
+        for key in ('subuid', 'subgid'):
+            (source / 'etc' / key).write_text('neo:200000:65536\n')
+        state = source / 'var/lib/tailscale/tailscaled.state'
+        state.parent.mkdir(parents=True)
+        state.write_bytes(b'partitioned-synthetic-identity'); state.chmod(0o600)
+        request = {'kind': 'klokast.vm-retained-stage.v3', 'operation_id': operation,
+                   'source_uuid': identities[0], 'destination_uuid': identities[1],
+                   'runtime': {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[200000, 65536]]},
+                   'entries': [{'key': 'platform-tailscale-state', 'source': 'var/lib/tailscale/tailscaled.state',
+                                'type': 'identity-file'}], 'source_layout': 'legacy-root', 'source_partition': 3}
+        run(['mount', '-o', 'remount,ro', str(source)])
+        try:
+            data.stage(request, time.monotonic() + 120)
+        except data.CopyError as error:
+            if 'read-only at the block layer' not in str(error): raise
+        else:
+            raise RuntimeError('partition stage accepted a writable source disk')
+        readonly(1)
+        deadline = time.monotonic() + 120
+        staged = data.stage(request, deadline)
+        final = data.finalize(request, staged['receipt_sha256'], deadline)
+        if not final['copy_verified'] or (target / 'platform-tailscale-state').read_bytes() != state.read_bytes():
+            raise RuntimeError('partitioned source did not preserve the synthetic identity')
+        return {'legacy_partition_verified': True, 'block_readonly_required': True, 'production_data_used': False}
+    finally:
+        for mount in reversed(mounted):
+            run(['umount', str(mount)])
+        readonly(0)
 
 
 def identity_test(run, operation):

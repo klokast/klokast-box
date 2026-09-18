@@ -341,7 +341,7 @@ def smoke_test(work, request, build):
         boot_guest(work, name, identity, config, request, slot=result_path.name,
                    kind="klokast.vm-template-test-result.v1", timeout=600 if app_path else 300)
         value = read_slot(result_path)
-        expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity")}
+        expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition")}
         if (value.get("kind") != "klokast.vm-template-test-result.v1" or value.get("success") is not True or
                 value.get("operation_id") != request["operation_id"] or value.get("inputs_sha256") != request["inputs_sha256"] or
                 value.get("kernel_release") != build["kernel_release"] or value.get("tests") != expected_tests):

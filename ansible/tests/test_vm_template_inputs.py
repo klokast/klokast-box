@@ -204,7 +204,7 @@ class HostBoundaryTests(unittest.TestCase):
                               'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
                               'kernel_release': 'test-kernel',
                               'tests': {k: True for k in ('boot', 'kernel_modules', 'tailscale_offline',
-                                        'rootless_podman', 'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity')}}
+                                        'rootless_podman', 'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition')}}
                     if mode != 'missing':
                         result['application_test'] = {'kind': 'klokast.vm-app-test-result.v1',
                             'selection': copy.deepcopy(selection), 'tests': dict.fromkeys(app.TESTS, True),

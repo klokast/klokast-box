@@ -171,7 +171,8 @@ class ControllerTests(unittest.TestCase):
         cli = load_cli()
         operation = 'a' * 24
         inputs = {'inputs_sha256': 'b' * 64, 'packages': [{'name': 'linux-virt', 'version': '1'}]}
-        for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity'):
+        for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
+                     'missing-partition', 'failed-partition'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 def command(argv, **kwargs):
@@ -179,7 +180,7 @@ class ControllerTests(unittest.TestCase):
                         return '' if 'status' in argv else 'a' * 40
                     if argv[0] == 'ansible-playbook':
                         tests = dict.fromkeys(('boot', 'kernel_modules', 'tailscale_offline', 'rootless_podman',
-                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity'), True)
+                                               'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition'), True)
                         if mode == 'missing-stage':
                             del tests['retained_data_stage']
                         if mode == 'failed-stage':
@@ -188,6 +189,10 @@ class ControllerTests(unittest.TestCase):
                             del tests['retained_identity']
                         if mode == 'failed-identity':
                             tests['retained_identity'] = False
+                        if mode == 'missing-partition':
+                            del tests['retained_partition']
+                        if mode == 'failed-partition':
+                            tests['retained_partition'] = False
                         candidate = {'kind': 'klokast.vm-template-candidate.v1', 'accepted': False,
                                      'success': True, 'box': 'boxa', 'validation': 'base-boot-tested',
                                      'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],

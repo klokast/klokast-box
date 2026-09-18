@@ -17,6 +17,7 @@ import time
 
 SOURCE = Path('/source')
 TARGET = Path('/retained')
+BLOCK_SYS = Path('/sys/class/block')
 MAX_ENTRIES = 100000
 RESERVE = 128 * 1024 * 1024
 # Public physical convention, not permission to copy a production identity.
@@ -157,10 +158,30 @@ def filesystem_uuid(device):
     return fields['UUID']
 
 
+def source_device(request):
+    if request.get('kind') != 'klokast.vm-retained-stage.v3':
+        return '/dev/xvdc'
+    # Only the recorded legacy root partition or the ordinary retained LV is
+    # permitted. Never discover a filesystem and silently adopt its layout.
+    partition = request['source_partition']
+    disk = BLOCK_SYS / 'xvdc'
+    device = disk if partition == 0 else BLOCK_SYS / 'xvdc3'
+    if disk.joinpath('ro').read_text().strip() != '1' or device.joinpath('ro').read_text().strip() != '1':
+        raise CopyError('source disk must be read-only at the block layer')
+    if partition == 3 and (device.joinpath('partition').read_text().strip() != '3' or
+                           device.resolve().parent != disk.resolve()):
+        raise CopyError('legacy root partition does not belong to the assigned source disk')
+    return '/dev/xvdc' + ('3' if partition else '')
+
+
 def check_mounts(request):
     records = mount_records()
+    source = source_device(request)
+    if request.get('kind') == 'klokast.vm-retained-stage.v3' and any(
+            r['source'].startswith('/dev/xvdc') and r['path'] != str(SOURCE) for r in records):
+        raise CopyError('source disk has other mounted partitions or aliases')
     selected = []
-    for root, device, access, key in ((SOURCE, '/dev/xvdc', 'ro', 'source_uuid'),
+    for root, device, access, key in ((SOURCE, source, 'ro', 'source_uuid'),
                                       (TARGET, '/dev/xvdd', 'rw', 'destination_uuid')):
         if root.is_symlink() or not root.is_dir():
             raise CopyError('retained-data mountpoint is unsafe or missing')
@@ -322,14 +343,21 @@ def copy(request, deadline):
 
 def staged_request(request):
     """Validate a separate contract; v1 never permits destination reuse."""
+    fields = {'kind', 'operation_id', 'source_uuid', 'destination_uuid', 'runtime', 'entries', 'source_layout'}
+    v3 = isinstance(request, dict) and request.get('kind') == 'klokast.vm-retained-stage.v3'
+    if v3:
+        fields.add('source_partition')
     if (not isinstance(request, dict) or set(request) !=
-            {'kind', 'operation_id', 'source_uuid', 'destination_uuid', 'runtime', 'entries', 'source_layout'} or
-            request['kind'] not in ('klokast.vm-retained-stage.v1', 'klokast.vm-retained-stage.v2') or
+            fields or request['kind'] not in ('klokast.vm-retained-stage.v1', 'klokast.vm-retained-stage.v2',
+                                               'klokast.vm-retained-stage.v3') or
             request['source_layout'] not in {'legacy-root', 'retained-data'}):
         raise CopyError('invalid staged retained-data request contract')
-    legacy = {k: v for k, v in request.items() if k != 'source_layout'}
+    if v3 and (type(request['source_partition']) is not int or request['source_partition'] not in (0, 3) or
+               (request['source_partition'] == 3 and request['source_layout'] != 'legacy-root')):
+        raise CopyError('source partition must be the recorded legacy root or an unpartitioned retained LV')
+    legacy = {k: v for k, v in request.items() if k not in ('source_layout', 'source_partition')}
     legacy['kind'] = 'klokast.vm-retained-copy.v1'
-    if request['kind'] == 'klokast.vm-retained-stage.v2':
+    if request['kind'] in ('klokast.vm-retained-stage.v2', 'klokast.vm-retained-stage.v3'):
         entries = request['entries']
         if not isinstance(entries, list):
             raise CopyError('typed retained-data mappings are missing')
@@ -356,7 +384,7 @@ def staged_request(request):
 
 
 def staged_kind(request, phase):
-    version = 'v2' if request['kind'] == 'klokast.vm-retained-stage.v2' else 'v1'
+    version = request['kind'].rsplit('.', 1)[-1]
     return 'klokast.vm-retained-' + phase + '-result.' + version
 
 

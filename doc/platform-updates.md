@@ -507,6 +507,27 @@ and operation or receipt mismatch. Local tests also cover interrupted stages,
 interrupted final sync, tampered staging, and copying a subsequent retained-data
 generation without an old `/etc` tree.
 
+### Legacy partitioned source disks
+
+The `klokast.vm-retained-stage.v3` contract retains the typed v2 mappings and
+adds an explicit `source_partition`: `3` selects the existing legacy root
+partition on `/dev/xvdc3`; `0` selects a whole-disk ext4 filesystem. A retained
+data generation must use `0`. Other partitions, implicit selection, and old
+contract versions with the new field are refused.
+
+The copy VM checks the partition's parent disk, block-layer read-only state,
+filesystem UUID, mount access, and other mounts from the source disk. The
+executor must also verify the Xen read-only attachment and the assigned LV
+before boot. These checks do not authorize migration or infer retention intent.
+Stage and final-sync receipts bind the selected partition to the request.
+Dom0 still does not mount the source filesystem.
+
+Candidate preparation requires a ninth base test, `retained_partition`. It
+constructs a synthetic partitioned source on a disposable test disk, refuses
+a writable source disk, and verifies identity copying from partition 3. No
+production disk or identity is attached to this test. Native validation of
+this new case must pass before it can support adoption evidence.
+
 ### Exact machine identity files
 
 The separate `klokast.vm-retained-stage.v2` contract adds typed entries to the
