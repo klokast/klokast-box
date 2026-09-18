@@ -438,7 +438,8 @@ def execute(work, request):
         write(work / "candidate.json", result)
         return result
     finally:
-        if domain(name) is not None or domain("vm-test-" + request["operation_id"]) is not None:
+        if (domain(name) is not None or domain("vm-test-" + request["operation_id"]) is not None or
+                domain('vm-openrc-' + request['operation_id']) is not None):
             raise RuntimeError("disposable guest remains; retain all build resources")
         for slot, device in list(loops.items()):
             detach_loop(backing[slot], device)

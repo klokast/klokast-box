@@ -322,6 +322,30 @@ class HostBoundaryTests(unittest.TestCase):
             self.assertFalse(list(root.glob("*.slot")))
             self.assertEqual(json.loads((root / "lifecycle.json").read_text())["stage"], "cleaned")
 
+    def test_lingering_openrc_guest_preserves_all_outer_build_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = {'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64,
+                       'capsule': {'sha256': 'c' * 64, 'bytes': 10240}, 'box': 'boxa'}
+            running = []
+            def failed(*args):
+                running.append(True)
+                raise RuntimeError('test guest could not be stopped')
+            with patch.object(self.host, 'BASE', root / 'artifacts'), \
+                    patch.object(self.host, 'SLOTS', {name: 4096 for name in self.host.SLOTS}), \
+                    patch.object(self.host, 'domain', side_effect=lambda name: {} if running and name.startswith('vm-openrc-') else None), \
+                    patch.object(self.host, 'run', return_value=SimpleNamespace(stdout='free_memory : 8192\n')), \
+                    patch.object(self.host.os, 'statvfs', return_value=SimpleNamespace(f_bavail=2**40, f_frsize=4096)), \
+                    patch.object(self.host, 'attach_loop', return_value='/dev/loop1'), \
+                    patch.object(self.host, 'detach_loop'), patch.object(self.host, 'boot_guest'), \
+                    patch.object(self.host, 'read_result', return_value={}), \
+                    patch.object(self.host, 'smoke_test', side_effect=failed):
+                with self.assertRaisesRegex(RuntimeError, 'retain all build resources'):
+                    self.host.execute(root, request)
+            self.assertTrue((root / 'kernel.slot').exists())
+            self.assertTrue((root / 'root.slot').exists())
+            self.assertEqual(json.loads((root / 'lifecycle.json').read_text())['stage'], 'allocated')
+
 
 if __name__ == "__main__":
     unittest.main()
