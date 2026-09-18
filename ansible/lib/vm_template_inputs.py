@@ -228,7 +228,8 @@ def verify_inputs(directory, manifest):
         raise UpdateError("frozen APK index identity is invalid")
 
 
-def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test_job, app_library, app_adapter):
+def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test_job, app_library, app_adapter,
+            personalize_job, personalize_test_job):
     """Produce a flat, bounded input tar disk; dom0 never mounts this disk."""
     directory, output = Path(directory), Path(output)
     manifest = json.loads((directory / "inputs.json").read_text(), object_pairs_hook=unique_object)
@@ -245,6 +246,8 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         archive.add(retained_test_job, arcname="retained_data_test.py", recursive=False)
         archive.add(app_library, arcname="vm_app_compatibility.py", recursive=False)
         archive.add(app_adapter, arcname="static_site_test.py", recursive=False)
+        archive.add(personalize_job, arcname="vm_personalize.py", recursive=False)
+        archive.add(personalize_test_job, arcname="vm_personalize_test.py", recursive=False)
     return {"sha256": sha256(output), "bytes": output.stat().st_size}
 
 

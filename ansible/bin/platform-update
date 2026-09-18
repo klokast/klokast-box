@@ -282,7 +282,9 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job, job.with_name("vm-template-smoke-guest"),
                                             retained / "retained_data.py", retained / "retained_data_test.py",
                                             REPO / 'ansible/lib/vm_app_compatibility.py',
-                                            REPO / 'apps/static-site/ansible/roles/static-site-runtime/files/vm_compatibility.py')
+                                            REPO / 'apps/static-site/ansible/roles/static-site-runtime/files/vm_compatibility.py',
+                                            REPO / 'ansible/roles/vm-personalize/files/vm_personalize.py',
+                                            REPO / 'ansible/roles/vm-personalize/files/vm_personalize_test.py')
         print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
         boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job)
         request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
@@ -311,7 +313,7 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         candidate = load(result / "candidate.json")
         lifecycle = load(result / "lifecycle.json")
         test_lifecycle = load(result / "test-lifecycle.json")
-        base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition")}
+        base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization")}
         boot_test = candidate.get("boot_test", {})
         normal = boot_test.get('openrc_test', {})
         normal_tests = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',

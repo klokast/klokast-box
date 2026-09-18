@@ -11,6 +11,10 @@ A dom0 disk-switch transaction and boot recovery helper are implemented but are 
 Offline retained-data copy, staging, and final-sync primitives are implemented
 and included in the synthetic candidate tests. They are not a complete
 data-adoption workflow.
+Protected box assignment reporting and locked runtime reconciliation preserve
+accepted disks and boot files. Legacy provisioning refuses assigned VMs.
+An isolated clone-personalization primitive is included in candidate testing;
+production input preparation and target qualification remain unfinished.
 Discovery also reports storage refusals and catalog matches for the Music
 library dataset. These matches are not approved retention or copy requests.
 The read-only `retention` report compares these observations with declared
@@ -631,6 +635,39 @@ check and adds controller acceptance and refusal tests. Neither run adopted or
 replaced a production VM. Candidate receipts remain under the matching
 controller `discovery/builds/OPERATION` directory. Production snapshot staging,
 backup qualification, writer fencing, and signed execution remain required.
+
+## Isolated clone personalization
+
+`vm-personalize/files/vm_personalize.py` applies a closed machine configuration
+to a cloned OS filesystem inside a networkless Xen guest. The OS and retained
+filesystems must have their recorded ext4 UUIDs on distinct fixed devices.
+Retained state is read-only at both the block and mount layers. Dom0 does not
+mount either filesystem.
+
+The caller must supply approved rendered files and exact template, package,
+release, and retained ownership records. The helper checks template provenance
+and the complete installed package set. It creates only the declared `neo`
+account and home, preserves numeric UID/GID and subordinate ranges, refuses
+identity collisions, and leaves the root account locked. It does not restore
+an old home or `/etc`, run package commands, or download container images.
+
+The retained Tailscale state remains on its data filesystem. The generated
+OpenRC configuration selects that ordinary file with `--state`; it does not
+bind-mount a file that Tailscale must replace atomically. Machine configuration
+includes the retained mount, network and firewall files, and fixed boot
+services. The receipt records source and file checksums without configuration
+contents. A failed attempt leaves a persistent marker and the clone cannot
+be reused.
+
+Personalization input can contain a machine-specific encrypted admin password.
+Keep that input in restricted machine staging, outside Git and generic template
+artifacts. The synthetic test uses a locked account and dummy identity bytes.
+The Ansible candidate builder now requires this tenth test group in addition
+to the separate OpenRC boot checks. The personalization fixture verifies file
+construction and numeric ownership on disposable ext4 disks; it does not boot
+a personalized production image or qualify a real Tailscale identity.
+Approved input generation, boot and network tests of the personalized clone,
+and signed adoption orchestration are still required before production use.
 
 ## Dom0 transaction and recovery
 

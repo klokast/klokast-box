@@ -84,10 +84,10 @@ class InputsTests(unittest.TestCase):
             manifest = self.fixture(root)
             v.verify_inputs(root, manifest)
             capsule = root / "capsule.tar"
-            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__))
+            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__))
             self.assertEqual(result["sha256"], v.sha256(capsule))
             with tarfile.open(capsule) as archive:
-                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py"])
+                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py", "vm_personalize.py", "vm_personalize_test.py"])
 
     def test_forged_or_changed_inputs_fail_before_native_commands(self):
         changes = [lambda m: m.update(engine_commit="main"), lambda m: m.update(world=[["example"]]),
@@ -170,6 +170,8 @@ class InputsTests(unittest.TestCase):
             (inputs / "smoke.py").write_text("# fixed test job\n")
             (inputs / "retained_data.py").write_text("# copy primitive\n")
             (inputs / "retained_data_test.py").write_text("# synthetic test\n")
+            (inputs / "vm_personalize.py").write_text("# personalization primitive\n")
+            (inputs / "vm_personalize_test.py").write_text("# synthetic personalization test\n")
             (inputs / "vm_app_compatibility.py").write_text("# component validator\n")
             (inputs / "static_site_test.py").write_text("# component adapter\n")
             manifest = {"repositories": [], "packages": [{"name": "example", "version": "1"}], "world": ["example"],
@@ -233,7 +235,7 @@ class HostBoundaryTests(unittest.TestCase):
                               'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
                               'kernel_release': 'test-kernel',
                               'tests': {k: True for k in ('boot', 'kernel_modules', 'tailscale_offline',
-                                        'rootless_podman', 'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition')}}
+                                        'rootless_podman', 'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition', 'personalization')}}
                     if mode != 'missing':
                         result['application_test'] = {'kind': 'klokast.vm-app-test-result.v1',
                             'selection': copy.deepcopy(selection), 'tests': dict.fromkeys(app.TESTS, True),
