@@ -226,6 +226,35 @@ def checked_native_services(value, maintenance):
     return value
 
 
+def checked_processes(value, services):
+    if (not isinstance(value, dict) or set(value) != {'kind', 'health_verified', 'boot_id', 'processes'} or
+            value['kind'] != 'klokast.vm-process-inventory.v1' or value['health_verified'] is not False or
+            not isinstance(value['boot_id'], str) or
+            not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value['boot_id']) or
+            not isinstance(value['processes'], list) or not 1 <= len(value['processes']) <= 4096):
+        raise UpdateError('process inventory is unavailable')
+    known = {v['name'] for v in services['services']}
+    pids = []
+    for item in value['processes']:
+        if (not isinstance(item, dict) or set(item) != {'pid', 'parent_pid', 'start_ticks', 'uids', 'gids',
+                'executable', 'executable_deleted', 'kernel_thread', 'service'} or
+                any(type(item[k]) is not int or not 0 <= item[k] < 2**63 for k in ('pid', 'parent_pid', 'start_ticks')) or
+                item['pid'] == 0 or item['pid'] == item['parent_pid'] or
+                any(not isinstance(item[k], list) or len(item[k]) != 4 or
+                    any(type(v) is not int or not 0 <= v < 2**32 for v in item[k]) for k in ('uids', 'gids')) or
+                (item['executable'] is not None and not path(item['executable'])) or
+                any(type(item[k]) is not bool for k in ('executable_deleted', 'kernel_thread')) or
+                (item['kernel_thread'] and item['executable'] is not None) or
+                (item['service'] is not None and (not isinstance(item['service'], str) or item['service'] not in known or
+                                                not (item['executable'] or '').endswith('/supervise-daemon')))):
+            raise UpdateError('process identity or ownership is invalid')
+        pids.append(item['pid'])
+    if (pids != sorted(set(pids)) or 1 not in pids or
+            any(v['parent_pid'] not in {0, *pids} for v in value['processes'])):
+        raise UpdateError('process coverage is incomplete or duplicated')
+    return value
+
+
 def assess_host_data(fact, host):
     """Host-wide metadata is evidence, never an allowlist of disposable files."""
     result = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
@@ -277,6 +306,17 @@ def assess_host_data(fact, host):
             add('host.service-transition', 'OpenRC records a native service transition or scheduled start; adoption must wait for stable verified services.')
     except UpdateError:
         add('host.services-unknown', 'Complete stable native service evidence is unavailable or conflicts with script and runlevel inventory.')
+    try:
+        processes = checked_processes(inventory.get('processes'), result['inventory'].get('native_services', {'services': []}))
+        result['inventory']['processes'] = processes
+        markers = {v['name']: v['markers'] for v in result['inventory'].get('native_services', {}).get('services', [])}
+        if any(v['service'] and 'started' not in markers.get(v['service'], []) for v in processes['processes']):
+            add('host.unmarked-supervisor', 'A native service supervisor is running without an OpenRC started marker; verify and quiesce the exact service.')
+        if any(v['executable_deleted'] or (v['executable'] is None and not v['kernel_thread']) for v in processes['processes']):
+            add('host.process-executable-unknown', 'A user process has a deleted or unavailable executable; its deployed code and maintenance behavior are unknown.')
+        add('host.processes-unqualified', 'Live process identities and accounts require approved service coverage; process metadata is not maintenance approval.', 'warning')
+    except UpdateError:
+        add('host.processes-unknown', 'Complete stable process evidence is unavailable or conflicts with native service inventory.')
     add('host.accounting-unverified', 'Host files, accounts, services, timers, identities, and mounted filesystems require approved mappings; metadata is not adoption approval.')
     add('host.package-integrity-unverified', 'Package path ownership does not verify installed package contents or generated configuration.', 'warning')
     if unowned:

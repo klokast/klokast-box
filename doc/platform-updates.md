@@ -161,18 +161,28 @@ The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
 started services, scheduled starts, and markers with missing scripts. The
 collector reads marker metadata in `/run/openrc` twice. It does not follow
-marker links, emit their targets, run service scripts, or inspect daemon
-arguments. Missing, malformed, excessive, or changing evidence blocks the
+marker links, emit their targets, or run service scripts.
+Missing, malformed, excessive, or changing evidence blocks the
 assessment. Reports from older collectors have unknown native service coverage.
 
 `started` is an OpenRC marker, not proof that the daemon is alive or healthy.
 `unmarked` does not prove that a service is stopped. Failed markers, scheduled
 starts, transitions, and missing scripts have explicit findings. Native
-service health, processes outside OpenRC, configuration, and maintenance
-adapters still need separate checks. An empty container inventory cannot clear
+service health, configuration, and maintenance adapters still need separate
+checks. An empty container inventory cannot clear
 these requirements. Discovery avoids `rc-status`: its
 [dependency-cache loader](https://github.com/OpenRC/openrc/blob/0.63/src/shared/misc.c)
 can rebuild the cache and execute dependency scripts.
+
+The same bounded inventory now reads live process identities twice. It records
+the boot ID, PID, parent PID, start time, numeric user and group identities,
+executable path, and kernel-thread flag. For `supervise-daemon`, it correlates
+only a known service name with the native service inventory. Arguments,
+environment values, and process titles are not emitted. Other command lines
+are not read. Deleted executables, missing user executables, and supervisors
+without a started marker have explicit findings. Missing or changing process
+coverage remains unknown. This detects unmarked services but does not approve
+their code, configuration, health, or shutdown procedure.
 
 On 2026-09-18, candidate source `9f1d977` completed native validation on all
 five running shared VMs. Both inventory passes agreed. Native application
@@ -780,6 +790,15 @@ the app files on the selected DMZ guests. Backend data and VM Tailscale state
 are outside this operation. The playbook verifies the VM management identity
 after removal. Its evidence does not establish complete host accounting,
 adoption, accepted releases, or replacement readiness.
+
+Controlled retirement completed on both selected DMZ guests on 2026-09-18,
+operation `9876db5374f6e5149f823741`. One backup preserved 1,336,137 data bytes
+in 14 entries; the other recorded that Static Site data was absent. Both
+passed guest restore and controller checksum verification before removal.
+Both guests retained their original running management Tailscale identity.
+The backend VMs were not selected. The cleanup also handled an exact private
+ingress supervisor whose OpenRC started marker was absent; files remained
+protected until its native shutdown and process-absence check passed.
 
 Run from a clean, pushed public controller checkout with the approved execution
 inventory. Supply `vm_update_cleanup_boxes` and a new 24-character lowercase

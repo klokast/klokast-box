@@ -249,6 +249,77 @@ def native_services(root, maintenance, deadline):
             'markers_sha256': topology.hexdigest()}
 
 
+def process_inventory(root, services, deadline):
+    """Account for live processes, including daemons with no OpenRC marker.
+
+    Arguments and environment never leave the guest. Only a known service name
+    is read from a supervise-daemon command line; all other arguments are dropped.
+    """
+    proc = root / 'proc'
+    known = {v['name'] for v in services['services']}
+    boot_id = (proc / 'sys/kernel/random/boot_id').read_text().strip()
+    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot_id):
+        raise HostInventoryError('process inventory has no valid boot identity')
+    rows = []
+    children = sorted((p for p in proc.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))
+    if not children or len(children) > 4096:
+        raise HostInventoryError('process inventory is empty or exceeds its entry limit')
+
+    def bounded(path, limit):
+        with path.open('rb') as stream:
+            data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise HostInventoryError('process metadata exceeds its size limit')
+        return data
+
+    for directory in children:
+        if time.monotonic() >= deadline:
+            raise HostInventoryError('process inventory exceeds its time limit')
+        before = bounded(directory / 'stat', 8192)
+        # comm may contain spaces and parentheses. It is not emitted.
+        prefix, separator, suffix = before.rpartition(b') ')
+        fields = suffix.split()
+        if not separator or len(fields) < 20 or not prefix.startswith(directory.name.encode() + b' ('):
+            raise HostInventoryError('process identity fields are invalid')
+        status = {}
+        for line in bounded(directory / 'status', 16384).decode().splitlines():
+            key, separator, value = line.partition(':')
+            if key in ('Uid', 'Gid') and separator:
+                if key in status:
+                    raise HostInventoryError('process ownership is ambiguous')
+                status[key] = [int(v) for v in value.split()]
+        if set(status) != {'Uid', 'Gid'} or any(len(v) != 4 or any(n < 0 or n >= 2**32 for n in v) for v in status.values()):
+            raise HostInventoryError('process ownership is incomplete')
+        executable, deleted = None, False
+        try:
+            executable = os.readlink(directory / 'exe')
+            deleted = executable.endswith(' (deleted)')
+            if deleted: executable = executable[:-10]
+            if not safe_path(executable):
+                raise HostInventoryError('process executable path is unsupported')
+        except FileNotFoundError:
+            # Kernel threads and zombies have no executable. Keep the record;
+            # an absent executable does not prove that it is a kernel thread.
+            pass
+        service = None
+        if executable and Path(executable).name == 'supervise-daemon':
+            argv = bounded(directory / 'cmdline', 65536).split(b'\0')
+            if len(argv) > 1:
+                candidate = argv[1].decode(errors='replace')
+                if candidate in known: service = candidate
+        after = bounded(directory / 'stat', 8192).rpartition(b') ')[2].split()
+        if len(after) < 20 or after[1] != fields[1] or after[19] != fields[19]:
+            raise HostInventoryError('process identity changed during collection')
+        rows.append({'pid': int(directory.name), 'parent_pid': int(fields[1]), 'start_ticks': int(fields[19]),
+                     'uids': status['Uid'], 'gids': status['Gid'], 'executable': executable,
+                     'executable_deleted': deleted, 'kernel_thread': bool(int(fields[6]) & 0x00200000),
+                     'service': service})
+    if [int(p.name) for p in sorted((p for p in proc.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))] != [v['pid'] for v in rows]:
+        raise HostInventoryError('process inventory changed during collection')
+    return {'kind': 'klokast.vm-process-inventory.v1', 'health_verified': False,
+            'boot_id': boot_id, 'processes': rows}
+
+
 def collect_host(storage, root=Path('/')):
     result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
               'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
@@ -272,11 +343,14 @@ def collect_host(storage, root=Path('/')):
         result.update(before)
         result['maintenance_files'] = maintenance_files(root, deadline, mounts)
         result['native_services'] = native_services(root, result['maintenance_files'], deadline)
+        result['processes'] = process_inventory(root, result['native_services'], deadline)
         after = host_tree(root, owned, mounts, graph, deadline)
         after_maintenance = maintenance_files(root, deadline, mounts)
         after_services = native_services(root, after_maintenance, deadline)
+        after_processes = process_inventory(root, after_services, deadline)
         result['stable'] = (before == after and result['maintenance_files'] == after_maintenance and
                             result['native_services'] == after_services and
+                            result['processes'] == after_processes and
                             accounts == text(root / 'etc/passwd', 65536) and
                             database == text(root / 'lib/apk/db/installed') and mounts == mount_inventory())
         result['complete'] = True

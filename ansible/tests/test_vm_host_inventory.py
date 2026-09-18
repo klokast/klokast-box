@@ -30,6 +30,20 @@ class HostInventory(unittest.TestCase):
         self.mounts = [{'path': '/', 'type': 'ext4', 'root': '/', 'device': '1:1'},
                        {'path': '/proc', 'type': 'proc', 'root': '/', 'device': '0:1'}]
         self.graph = '/home/neo/.local/share/containers/storage'
+        (self.root / 'proc/sys/kernel/random').mkdir(parents=True)
+        (self.root / 'proc/sys/kernel/random/boot_id').write_text('11111111-1111-1111-1111-111111111111\n')
+        self.process(1, '/bin/busybox', parent=0)
+
+    def process(self, pid, executable, parent=1, service=None):
+        proc = self.root / 'proc' / str(pid); proc.mkdir()
+        fields = ['S', str(parent)] + ['0'] * 18
+        fields[19] = '12345'
+        (proc / 'stat').write_text(str(pid) + ' (PRIVATE ) process) ' + ' '.join(fields))
+        (proc / 'status').write_text('Name:\tPRIVATE\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n')
+        (proc / 'exe').symlink_to(executable)
+        (proc / 'cmdline').write_bytes(b'/sbin/supervise-daemon\0' + (service or 'PRIVATE').encode() + b'\0SECRET\0')
+        (proc / 'environ').write_bytes(b'SECRET=never-read')
+        return proc
 
     def collect(self):
         with patch.object(self.m, 'mount_inventory', return_value=self.mounts):
@@ -62,6 +76,62 @@ class HostInventory(unittest.TestCase):
         rows = {v['path']: v for v in value['unowned_paths']}
         self.assertIn('link_sha256', rows['/srv/data/alias'])
         self.assertNotIn('/srv/data/alias/must-not-read', rows)
+
+    def test_unmarked_supervisor_is_visible_without_arguments_or_environment(self):
+        self.process(21, '/sbin/supervise-daemon', service='sample')
+        self.process(22, '/usr/sbin/tailscaled', parent=21)
+        value = self.collect()
+        self.assertTrue(value['complete']); self.assertTrue(value['stable'])
+        self.assertNotIn('PRIVATE', json.dumps(value)); self.assertNotIn('SECRET', json.dumps(value))
+        rows = value['processes']['processes']
+        self.assertEqual(rows[1]['service'], 'sample')
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')
+        self.assertIn('host.unmarked-supervisor', {v['code'] for v in result['findings']})
+        (self.root / 'run/openrc/started/sample').symlink_to('/etc/init.d/sample')
+        result = storage.assess_host_data({'host_inventory': self.collect()}, 'boxa-dmz')
+        self.assertNotIn('host.unmarked-supervisor', {v['code'] for v in result['findings']})
+        self.assertFalse(result['adoption_ready'])
+
+    def test_changed_pid_identity_makes_the_whole_host_snapshot_unstable(self):
+        original = self.m.process_inventory
+        calls = []
+        def changed(*args):
+            result = original(*args)
+            if not calls:
+                p = self.root / 'proc/1/stat'
+                p.write_text(p.read_text().replace('12345', '12346'))
+            calls.append(True)
+            return result
+        with patch.object(self.m, 'process_inventory', side_effect=changed):
+            value = self.collect()
+        self.assertTrue(value['complete']); self.assertFalse(value['stable'])
+
+    def test_deleted_and_missing_user_executables_are_unknown(self):
+        p = self.process(21, '/usr/sbin/tailscaled (deleted)')
+        for deleted in (True, False):
+            if not deleted: (p / 'exe').unlink()
+            value = self.collect()
+            result = storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')
+            self.assertIn('host.process-executable-unknown', {v['code'] for v in result['findings']})
+
+    def test_process_limits_and_incomplete_or_forged_coverage_fail_closed(self):
+        services = self.service_snapshot()
+        with self.assertRaisesRegex(ValueError, 'time limit'):
+            self.m.process_inventory(self.root, services, time.monotonic() - 1)
+        original = self.collect()
+        for change in (lambda v: v.update(processes=[]), lambda v: v.update(boot_id='invalid'),
+                       lambda v: v.update(health_verified=True),
+                       lambda v: v['processes'].append(copy.deepcopy(v['processes'][0])),
+                       lambda v: v['processes'][0].update(parent_pid=42),
+                       lambda v: v['processes'][0].update(uids=[0]),
+                       lambda v: v['processes'][0].update(service='sample'),
+                       lambda v: v['processes'][0].update(kernel_thread=True),
+                       lambda v: v['processes'][0].update(arguments=['SECRET'])):
+            value = copy.deepcopy(original); change(value['processes'])
+            result = storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')
+            self.assertIn('host.processes-unknown', {v['code'] for v in result['findings']})
+        (self.root / 'proc/1/status').write_text('Uid:\t0\n')
+        self.assertFalse(self.collect()['complete'])
 
     def test_missing_ownership_or_accounts_is_unknown_not_empty_success(self):
         for filename in ('lib/apk/db/installed', 'etc/passwd'):
