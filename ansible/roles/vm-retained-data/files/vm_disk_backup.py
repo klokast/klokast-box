@@ -280,7 +280,7 @@ def make_backup(work, request, native=None):
         native.unmounted([current]); native.unattached([current])
         if key == 'snapshot':
             if (len(current['attr']) != 10 or current['attr'][:2] != 'sr' or
-                    current['origin_uuid'] != source['uuid'] or current['segtype'] != 'snapshot'):
+                    current['origin_uuid'] != source['uuid'] or current['segtype'] != 'linear' or current['attr'][6] != 's'):
                 raise BackupError('snapshot no longer belongs to the recorded source')
             if health and (current['attr'][4] != 'a' or not current['data_percent'] or
                            number(current['data_percent']) >= 80):

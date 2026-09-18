@@ -17,10 +17,65 @@ import vm_disk_backup as b
 BASE = Path('/mnt/dom0_data/klokast-vm-backup-tests')
 
 
+def read(path):
+    b.secure(path)
+    return json.loads(path.read_text(), object_pairs_hook=b.unique)
+
+
+def cleanup(work, native):
+    """Remove only recorded synthetic allocations after an interrupted test."""
+    operation = work.name
+    resources = read(work / 'resources.json')
+    source_matches = [v for p, v in resources.items() if p.endswith('/vmbackuptest_' + operation) and v.get('path') == p]
+    if len(source_matches) != 1:
+        raise b.BackupError('test cleanup has no unique recorded synthetic origin')
+    source = source_matches[0]
+    match = b.LV.fullmatch(source['path'])
+    if not match: raise b.BackupError('test cleanup source path is invalid')
+    vg = match[1]
+    expected = {source['path']: source}
+    journal_path = work / 'backup/journal.json'
+    if journal_path.exists():
+        journal = read(journal_path)
+        if journal['source']['uuid'] != source['uuid'] or journal['source']['path'] != source['path']:
+            raise b.BackupError('test cleanup source and backup journal disagree')
+        for key, value in journal['resources'].items():
+            if key not in ('disk', 'snapshot') or value['path'] != '/dev/' + vg + '/vmbackup_' + operation + '_' + key:
+                raise b.BackupError('test cleanup journal names an unrelated allocation')
+            expected[value['path']] = value
+    allowed_paths = {source['path'], *('/dev/' + vg + '/vmbackup_' + operation + '_' + key for key in ('disk', 'snapshot'))}
+    if set(resources) - allowed_paths:
+        raise b.BackupError('test cleanup includes an unrelated resource')
+    before = {r['lv_path']: r['lv_uuid'] for r in native.volumes()}
+    removed = []
+    for path in sorted(expected, key=lambda p: (not p.endswith('_snapshot'), p == source['path'])):
+        if path not in before:
+            continue
+        recorded, current = expected[path], native.volume(path)
+        b.same_identity(current, recorded)
+        tag = ('klokast.vm-backup-test.' + operation if path == source['path'] else
+               'klokast.vm-backup.' + operation + '.' + path.rsplit('_', 1)[1])
+        if current['tags'] != [tag]: raise b.BackupError('test cleanup allocation tags changed')
+        if path.endswith('_snapshot'):
+            if (len(current['attr']) != 10 or current['attr'][:2] != 'sr' or current['attr'][6] != 's' or
+                    current['origin_uuid'] != source['uuid'] or current['segtype'] != 'linear'):
+                raise b.BackupError('test cleanup snapshot origin changed')
+        else:
+            b.ordinary(current, readonly=current['attr'][1] == 'r', origin=path == source['path'])
+        native.unmounted([current]); native.unattached([current])
+        native.remove(path); removed.append(path)
+    after = {r['lv_path']: r['lv_uuid'] for r in native.volumes()}
+    if any(path in after for path in allowed_paths) or after != {p: u for p, u in before.items() if p not in removed}:
+        raise b.BackupError('test cleanup found unrecorded or changed storage; retain it for inspection')
+    b.store(work / 'cleanup.json', {'success': True, 'removed': removed, 'production_lvs_unchanged': True})
+    return {'kind': 'klokast.vm-disk-backup-test-cleanup.v1', 'operation_id': operation, 'success': True, 'removed': removed}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--cleanup', action='store_true')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch(r'[0-9a-f]{24}', args.operation_id) or
@@ -30,7 +85,7 @@ def main():
     os.umask(0o077)
     work = BASE / args.operation_id
     for path in (BASE, work): b.secure(path, True)
-    if (work / 'resources.json').exists() or (work / 'backup').exists():
+    if not args.cleanup and ((work / 'resources.json').exists() or (work / 'backup').exists()):
         raise b.BackupError('backup test operation cannot be reused')
     # Reuse the build/recovery capacity lock. No production update schedule is
     # enabled by this test or by staging its public helper.
@@ -39,6 +94,9 @@ def main():
     b.secure(lockpath)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     native = b.Native()
+    if args.cleanup:
+        print(json.dumps(cleanup(work, native), sort_keys=True))
+        return
     volumes_before = {r['lv_path']: r['lv_uuid'] for r in native.volumes()}
     domains_before = json.loads(native.command(['xl', 'list', '-l']))
     identities_before = {r['config']['c_info']['name']: r['config']['c_info'].get('uuid') for r in domains_before}

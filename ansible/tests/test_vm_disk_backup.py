@@ -53,7 +53,7 @@ class LVM:
                             'bytes': size, 'device': n, 'tags': [tag] if tag else [],
                             'attr': 'sri-a-s---' if origin else '-wi-a-----',
                             'origin_uuid': self.items[origin]['uuid'] if origin else '',
-                            'segtype': 'snapshot' if origin else 'linear', 'data_percent': '0.01' if origin else ''}
+                            'segtype': 'linear', 'data_percent': '0.01' if origin else ''}
         target = self.root / Path(path).name
         self.files[path] = target
         if origin:

@@ -11,6 +11,7 @@
           - backup_test_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
           - backup_test_operation_id is match('^[0-9a-f]{24}$')
           - inventory_hostname == backup_test_box ~ '-dom0'
+          - backup_test_action | default('test') in ['test', 'cleanup']
 
     - name: Require the active controller
       ansible.builtin.command:
@@ -50,15 +51,10 @@
 
     - name: Test snapshot copy and source-write preservation independently of SSH
       ansible.builtin.command:
-        argv:
-          - /usr/bin/timeout
-          - '360'
-          - /usr/bin/python3
-          - "/mnt/dom0_data/klokast-vm-backup-tests/{{ backup_test_operation_id }}/vm-disk-backup-test"
-          - --box
-          - "{{ backup_test_box }}"
-          - --operation-id
-          - "{{ backup_test_operation_id }}"
+        argv: "{{ ['/usr/bin/timeout', '360', '/usr/bin/python3',
+          '/mnt/dom0_data/klokast-vm-backup-tests/' ~ backup_test_operation_id ~ '/vm-disk-backup-test',
+          '--box', backup_test_box, '--operation-id', backup_test_operation_id]
+          + (['--cleanup'] if backup_test_action | default('test') == 'cleanup' else []) }}"
       async: 420
       poll: 5
       vars:
