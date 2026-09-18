@@ -28,7 +28,7 @@ class CleanupTests(unittest.TestCase):
     def inspect(self):
         # Fixture ancestors need not be root-owned. Check production ownership
         # separately; retain the real filesystem entry and mount checks here.
-        with patch.object(cleanup, 'require_protected', side_effect=lambda p: p.lstat()):
+        with patch.object(cleanup, 'require_protected', side_effect=lambda p, owners: p.lstat()):
             return cleanup.inspect(self.root)
 
     def test_only_fixed_roots_and_no_symlink_traversal(self):
@@ -40,6 +40,32 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual([v['path'] for v in rows], list(cleanup.ROOTS))
         self.assertEqual(rows[0]['entries'], 2)
         self.assertEqual((outside / 'photo').read_text(), 'preserve')
+        cleanup.remove_state(str(self.root / cleanup.ROOTS[0].lstrip('/')))
+        self.assertFalse((self.root / cleanup.ROOTS[0].lstrip('/')).exists())
+        self.assertEqual((outside / 'photo').read_text(), 'preserve')
+
+    def test_remove_rejects_replaced_root_or_parent_symlink(self):
+        outside = self.root / 'backend-library'
+        outside.mkdir()
+        (outside / 'photo').write_text('preserve')
+        path = self.root / cleanup.ROOTS[0].lstrip('/')
+        path.rmdir()
+        path.symlink_to(outside)
+        with self.assertRaises(OSError):
+            cleanup.remove_state(str(path))
+        path.unlink()
+        path.parent.rmdir()
+        path.parent.symlink_to(outside)
+        with self.assertRaises(OSError):
+            cleanup.remove_state(str(path))
+        self.assertEqual((outside / 'photo').read_text(), 'preserve')
+
+    def test_declared_runtime_owner_allowed_only_when_explicit(self):
+        info = os.stat_result((stat.S_IFDIR | 0o750, 0, 0, 1, 1000, 10, 0, 0, 0, 0))
+        with patch.object(Path, 'lstat', return_value=info):
+            cleanup.require_protected(Path('/fixed'), (0, 1000))
+            with self.assertRaises(ValueError):
+                cleanup.require_protected(Path('/fixed'))
 
     def test_nested_and_root_mounts_are_refused(self):
         for path in (cleanup.ROOTS[0], cleanup.ROOTS[1] + '/nested'):

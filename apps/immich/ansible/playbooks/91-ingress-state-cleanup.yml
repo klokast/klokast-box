@@ -71,7 +71,7 @@
           {{ '--apply' if immich_ingress_cleanup_apply | bool else '' }}
         executable: /usr/bin/python3
       register: immich_cleanup_result
-      changed_when: (immich_cleanup_result.stdout | from_json).changed
+      changed_when: immich_cleanup_result.rc == 0 and (immich_cleanup_result.stdout | from_json).changed
 
     - name: Read the VM management identity after cleanup
       ansible.builtin.command:

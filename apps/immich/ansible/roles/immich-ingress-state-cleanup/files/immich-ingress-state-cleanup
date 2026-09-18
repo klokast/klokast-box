@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import signal
@@ -18,9 +19,9 @@ ROOTS = ('/var/lib/klokast/immich-private-ingress',
 SERVICES = ('immich-private-ingress', 'immich-private-ingress-proxy')
 
 
-def require_protected(path):
+def require_protected(path, owners=(0,)):
     info = path.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in owners or info.st_mode & 0o022:
         raise ValueError('Ingress state has an unsafe parent or root directory')
     return info
 
@@ -71,7 +72,7 @@ def require_unused(proc=Path('/proc')):
             continue
 
 
-def inspect(root=Path('/')):
+def inspect(root=Path('/'), runtime_uid=0):
     with (root / 'proc/self/mountinfo').open('r') as stream:
         content = stream.read(1048577)
     if len(content) > 1048576:
@@ -86,13 +87,13 @@ def inspect(root=Path('/')):
     for name in ROOTS:
         path = root / name.lstrip('/')
         for parent in reversed(path.parents):
-            require_protected(parent)
+            require_protected(parent, (0, runtime_uid) if parent == path.parent else (0,))
         if any(m == name or m.startswith(name + '/') for m in mounts):
             raise ValueError('Ingress state contains a mount; no state was removed')
         if not os.path.lexists(path):
             result.append({'path': name, 'present': False, 'entries': 0})
             continue
-        info = require_protected(path)
+        info = require_protected(path, (0, runtime_uid))
         count = 1
         for current, dirs, files in os.walk(path, followlinks=False):
             count += len(dirs) + len(files)
@@ -105,6 +106,17 @@ def inspect(root=Path('/')):
                     raise ValueError('Ingress state contains an unsupported filesystem entry')
         result.append({'path': name, 'present': True, 'entries': count})
     return result
+
+
+def remove_state(name):
+    # Legacy Klokast directories can belong to neo. Anchor the operation below
+    # the real parent and let descriptor-based rmtree refuse a swapped symlink.
+    path = Path(name)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        shutil.rmtree(path.name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def main():
@@ -123,25 +135,28 @@ def main():
             raise ValueError('Cleanup requires root, the exact DMZ hostname, and an operation ID')
         if not shutil.rmtree.avoids_symlink_attacks:
             raise ValueError('This Python runtime cannot safely remove a directory tree')
+        runtime_uid = pwd.getpwnam('neo').pw_uid
+        if runtime_uid == 0:
+            raise ValueError('The guest runtime account must not have root identity')
         require_inactive()
         require_unused()
-        before = inspect()
+        before = inspect(runtime_uid=runtime_uid)
         if args.apply:
             require_inactive()
             require_unused()
-            if inspect() != before:
+            if inspect(runtime_uid=runtime_uid) != before:
                 raise ValueError('Ingress state changed during inspection')
             for row in before:
                 if row['present']:
-                    shutil.rmtree(row['path'])
-            if any(v['present'] for v in inspect()):
+                    remove_state(row['path'])
+            if any(v['present'] for v in inspect(runtime_uid=runtime_uid)):
                 raise ValueError('Ingress state is still present after removal')
         print(json.dumps({'kind': 'klokast.immich-ingress-state-cleanup.v1',
                           'operation_id': args.operation, 'host': args.host,
                           'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                           'applied': args.apply, 'changed': args.apply and any(v['present'] for v in before),
                           'paths': before, 'backend_hosts_selected': False}))
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, KeyError) as exc:
         # Do not expose credential filenames, arguments, or application contents.
         message = str(exc) if isinstance(exc, ValueError) else 'Filesystem inspection or removal failed'
         parser.exit(1, message + '\n')
