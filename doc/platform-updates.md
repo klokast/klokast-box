@@ -210,6 +210,16 @@ mutation. The app's separate ingress-state cleanup checks the two fixed paths
 and management continuity; see [Immich removal](../apps/immich/README.md#destroy).
 This approval does not qualify other unknown host data for adoption.
 
+Cleanup operation `680ebc1c7a0445d197589cf8` completed from the active controller
+at source `321dab7` on 2026-09-18. The preview found 18 filesystem entries in
+the credential/state directory and three in the log directory, including the
+two directory roots. The cleanup verified absent ingress services and processes,
+refused mounted paths, removed both trees, and verified their absence and the
+unchanged running VM management identity. Neither backend VM was selected.
+The candidate checkout keeps the private receipt at
+`.run/immich-ingress-cleanup/680ebc1c7a0445d197589cf8/k001-dmz-applied.json`.
+Eight local boundary tests and native preview/apply checks passed.
+
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
 started services, scheduled starts, and markers with missing scripts. The
@@ -1026,6 +1036,15 @@ exercise the detached watchdog's native 90-second expiry. The test supplies no
 heartbeat and makes no controller recovery request. It uses synthetic disks
 and does not install a production helper. Controller heartbeat delivery and
 production fencing remain executor integration work.
+
+Add `-e '{"recovery_generation_chain":true}'` to test successive accepted
+releases. This allocates a third disposable OS/data pair and requires 14 GiB
+of free VG space. The test keeps its protected assignment through a first
+acceptance, a failed next replacement, recovery, and a successful retry. It
+checks release identity, refusal of the obsolete original generation, and
+preservation of writes on both accepted data disks through process restart.
+These are synthetic transaction checks. They do not qualify application health,
+data copying, a production release, or a physical dom0 reboot.
 
 Native validation on 2026-09-18 passed all eight disposable recovery cases,
 including controller loss. The detached watcher restored the old generation

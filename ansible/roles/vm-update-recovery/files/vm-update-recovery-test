@@ -133,6 +133,91 @@ def stop_watchdogs(t):
             pass
 
 
+def accept_synthetic(t, directory, request):
+    # This exercises transaction ordering only. These assertions are never
+    # exported as release, network, data-copy, or application-test evidence.
+    t.store(directory / 'checks.json', {'request_sha256': t.digest(request), 'checks': {
+        k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
+                         'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
+    for action in ('tested', 'accept', 'complete'):
+        t.invoke(request['operation_id'], action)
+
+
+def generation_chain(t, backend, create_request, identities, allocated):
+    """Keep the native accepted pointer through success, failure, and retry."""
+    first_write = b'generation-one-production-write\n'
+    second_write = b'generation-two-production-write\n'
+    def data_path(side):
+        return next(p for p in allocated if p.endswith('_' + side + '_data'))
+    def write(side, content):
+        with open(data_path(side), 'r+b', buffering=0) as stream:
+            stream.seek(8192); stream.write(content); os.fsync(stream.fileno())
+    def unchanged(side, content):
+        with open(data_path(side), 'rb') as stream:
+            stream.seek(8192)
+            if stream.read(len(content)) != content:
+                raise RuntimeError('successive release recovery changed an accepted write')
+    def selected(side, release, selection):
+        assignment = t.assignment_status('bak', backend)
+        if (assignment['vm_uuid'] != identities[side] or assignment['release_sha256'] != release or
+                assignment['selection'] != selection or assignment['runtime'] != 'running' or
+                assignment['configuration_drift'] or assignment['autostart_drift']):
+            raise RuntimeError('successive release selected a stale or conflicting assignment')
+    started = time.monotonic()
+    first, first_request = create_request('old', 'new', '1' * 64)
+    t.atomic(t.XEN / 'bak.cfg', (first / 'old.cfg').read_bytes())
+    backend.start(first / 'old.cfg')
+    for action in ('arm', 'stop', 'start'):
+        t.invoke(first.name, action)
+    accept_synthetic(t, first, first_request)
+    selected('new', '1' * 64, 'accepted')
+    write('new', first_write)
+
+    failed, failed_request = create_request('new', 'third', '2' * 64, continuing=True)
+    for action in ('arm', 'stop', 'start'):
+        t.invoke(failed.name, action)
+    previous = t.read(failed / 'journal.json')['previous_assignment']
+    if previous['operation_id'] != first.name or previous['release_sha256'] != '1' * 64:
+        raise RuntimeError('next operation lost the accepted release identity')
+    write('third', b'unaccepted-candidate-write\n')
+    backend.stop(t.Transaction(failed, backend).guest(), False)
+    t.command(['/usr/bin/python3', t.HELPER, 'boot-recover'], timeout=1800)
+    if t.read(failed / 'journal.json')['stage'] != 'recovered':
+        raise RuntimeError('successive release failure did not recover')
+    selected('new', '1' * 64, 'recorded-previous')
+    unchanged('new', first_write)
+
+    retry, retry_request = create_request('new', 'third', '2' * 64, continuing=True)
+    for action in ('arm', 'stop', 'start'):
+        t.invoke(retry.name, action)
+    previous = t.read(retry / 'journal.json')['previous_assignment']
+    if previous['operation_id'] != failed.name or previous['release_sha256'] != '1' * 64:
+        raise RuntimeError('retry did not use the recovered accepted generation')
+    accept_synthetic(t, retry, retry_request)
+    write('third', second_write)
+    backend.stop(t.Transaction(retry, backend).guest(), False)
+    t.command(['/usr/bin/python3', t.HELPER, 'boot-recover'], timeout=1800)
+    backend.start(t.XEN / 'bak.cfg')
+    selected('third', '2' * 64, 'accepted')
+    unchanged('new', first_write)
+    unchanged('third', second_write)
+
+    stale, _ = create_request('old', 'new', '3' * 64)
+    try:
+        t.invoke(stale.name, 'arm')
+    except t.Refused:
+        if (stale / 'journal.json').exists():
+            raise RuntimeError('stale generation was armed before its refusal')
+    else:
+        raise RuntimeError('a stale original generation was allowed to replace the accepted one')
+    selected('third', '2' * 64, 'accepted')
+    unchanged('third', second_write)
+    return {'stage': 'generation-chain', 'accepted_releases': 2, 'failed_attempt_recovered': True,
+            'retry_used_recovered_assignment': True, 'stale_generation_refused': True,
+            'accepted_writes_preserved': True, 'assignment_verified': True,
+            'elapsed_seconds': round(time.monotonic() - started, 3)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
@@ -142,6 +227,8 @@ def main():
                         help='also wait for the native 30-minute replacement deadline')
     parser.add_argument('--controller-loss', action='store_true',
                         help='also recover after the fixed 90-second controller heartbeat expiry')
+    parser.add_argument('--generation-chain', action='store_true',
+                        help='also test accepted release continuity, failed replacement, and retry')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -180,8 +267,9 @@ def main():
             raise RuntimeError('candidate artifact changed before the recovery test')
     vgs = json.loads(t.command(['vgs', '--reportformat', 'json', '--units', 'b', '--nosuffix',
                                '-o', 'vg_name,vg_free']))['report'][0]['vg']
-    if len(vgs) != 1 or int(float(vgs[0]['vg_free'])) < 10 * 1024**3:
-        raise RuntimeError('test requires one volume group with at least 10 GiB free')
+    minimum_gib = 14 if args.generation_chain else 10
+    if len(vgs) != 1 or int(float(vgs[0]['vg_free'])) < minimum_gib * 1024**3:
+        raise RuntimeError(f'test requires one volume group with at least {minimum_gib} GiB free')
     vg = vgs[0]['vg_name'].strip()
     if not re.fullmatch(r'[A-Za-z0-9_+.-]+', vg):
         raise RuntimeError('invalid volume group name')
@@ -195,15 +283,41 @@ def main():
         raise RuntimeError('test domain name is already in use')
     production = {r['config']['c_info']['name']: r['config']['c_info'].get('uuid') for r in existing}
     allocated, results = {}, []
-    identities = {side: str(uuid.uuid4()) for side in ('old', 'new')}
+    sides = ('old', 'new', 'third') if args.generation_chain else ('old', 'new')
+    identities = {side: str(uuid.uuid4()) for side in sides}
 
     backend = test_backend(t, work, {'domain': name, 'uuids': identities, 'disks': allocated})
+    def create_request(old_side, new_side, release, *, continuing=False, controller_loss=False):
+        operation = uuid.uuid4().hex[:24]
+        directory = t.BASE / 'operations' / operation; directory.mkdir()
+        request = {'kind': 'klokast.vm-switch.v1', 'operation_id': operation, 'box': args.box,
+                   'role': 'bak', 'engine_commit': 'a' * 40, 'policy_sha256': 'b' * 64,
+                   'release_sha256': release, 'autostart': True,
+                   'old_uuid': identities[old_side], 'new_uuid': identities[new_side]}
+        if controller_loss:
+            request.update(kind='klokast.vm-switch.v2', controller_timeout_seconds=90)
+        for side, selected_side in (('old', old_side), ('new', new_side)):
+            paths = ['/dev/' + vg + '/vmupdtest_' + args.operation_id + '_' + selected_side + '_' + disk for disk in ('os', 'data')]
+            config = {'name': 'bak', 'type': 'pvh', 'uuid': identities[selected_side], 'memory': 2048,
+                      'kernel': str(candidate / 'kernel'), 'ramdisk': str(candidate / 'initramfs'),
+                      'extra': 'root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0',
+                      'disk': ['phy:' + p + ',xvd' + letter + ',w' for p, letter in zip(paths, 'ab')],
+                      'vif': [], 'on_poweroff': 'destroy', 'on_reboot': 'destroy', 'on_crash': 'destroy'}
+            content = ((t.XEN / 'bak.cfg').read_bytes() if continuing and side == 'old' else
+                       ('\n'.join(k + ' = ' + repr(v) for k, v in config.items()) + '\n').encode())
+            t.atomic(directory / (side + '.cfg'), content)
+            request[side + '_config_sha256'] = hashlib.sha256(content).hexdigest()
+            request[side + '_disks'] = {p: {k: allocated[p][k] for k in ('uuid', 'bytes')} for p in paths}
+            request[side + '_artifacts'] = {str(candidate / n): manifest['artifacts'][n] for n in ('kernel', 'initramfs')}
+        t.store(directory / 'request.json', request)
+        return directory, request
+
     def interrupted(signum, frame):
         raise RuntimeError('disposable recovery test interrupted; cleaning its own resources')
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, interrupted)
     try:
-        for side in ('old', 'new'):
+        for side in sides:
             for disk, size in (('os', '4096M'), ('data', '16M')):
                 lvname = 'vmupdtest_' + args.operation_id + '_' + side + '_' + disk
                 path = '/dev/' + vg + '/' + lvname
@@ -227,27 +341,8 @@ def main():
             scenarios.append('controller-loss')
         for scenario in scenarios:
             stage = scenario.removeprefix('restart-')
-            operation = uuid.uuid4().hex[:24]
-            directory = t.BASE / 'operations' / operation; directory.mkdir()
-            request = {'kind': 'klokast.vm-switch.v1', 'operation_id': operation, 'box': args.box,
-                       'role': 'bak', 'engine_commit': 'a' * 40, 'policy_sha256': 'b' * 64,
-                       'release_sha256': 'c' * 64, 'autostart': True,
-                       'old_uuid': identities['old'], 'new_uuid': identities['new']}
-            if scenario == 'controller-loss':
-                request.update(kind='klokast.vm-switch.v2', controller_timeout_seconds=90)
-            for side in ('old', 'new'):
-                paths = ['/dev/' + vg + '/vmupdtest_' + args.operation_id + '_' + side + '_' + disk for disk in ('os', 'data')]
-                config = {'name': 'bak', 'type': 'pvh', 'uuid': identities[side], 'memory': 2048,
-                          'kernel': str(candidate / 'kernel'), 'ramdisk': str(candidate / 'initramfs'),
-                          'extra': 'root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0',
-                          'disk': ['phy:' + p + ',xvd' + letter + ',w' for p, letter in zip(paths, 'ab')],
-                          'vif': [], 'on_poweroff': 'destroy', 'on_reboot': 'destroy', 'on_crash': 'destroy'}
-                content = ('\n'.join(k + ' = ' + repr(v) for k, v in config.items()) + '\n').encode()
-                t.atomic(directory / (side + '.cfg'), content)
-                request[side + '_config_sha256'] = hashlib.sha256(content).hexdigest()
-                request[side + '_disks'] = {p: {k: allocated[p][k] for k in ('uuid', 'bytes')} for p in paths}
-                request[side + '_artifacts'] = {str(candidate / n): manifest['artifacts'][n] for n in ('kernel', 'initramfs')}
-            t.store(directory / 'request.json', request)
+            directory, request = create_request('old', 'new', 'c' * 64, controller_loss=scenario == 'controller-loss')
+            operation = directory.name
             t.atomic(t.XEN / 'bak.cfg', (directory / 'old.cfg').read_bytes())
             backend.start(directory / 'old.cfg')
             started = time.monotonic()
@@ -264,12 +359,7 @@ def main():
                 t.invoke(operation, 'stop')
             if stage not in {'stopping', 'stopped'}: t.invoke(operation, 'start')
             if stage == 'accepted':
-                # Synthetic success exercises acceptance ordering only. It is
-                # never exported as release or application-test evidence.
-                t.store(directory / 'checks.json', {'request_sha256': t.digest(request), 'checks': {
-                    k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
-                                     'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
-                t.invoke(operation, 'tested'); t.invoke(operation, 'accept'); t.invoke(operation, 'complete')
+                accept_synthetic(t, directory, request)
             if scenario == 'restart-accepted':
                 # Stand in for writes admitted after production acceptance.
                 # These bytes must remain on the selected disk after recovery.
@@ -325,7 +415,7 @@ def main():
                 raise RuntimeError('protected assignment differs from recovered Xen state')
             for path in allocated:
                 if path.endswith('_data'):
-                    side = 'old' if '_old_' in path else 'new'
+                    side = next(v for v in sides if path.endswith('_' + v + '_data'))
                     with open(path, 'rb') as source:
                         if source.read(len(side) + 15) != (side + '-retained-data\n').encode():
                             raise RuntimeError('retained data changed during recovery')
@@ -362,6 +452,8 @@ def main():
                 raise RuntimeError('cannot reset a disposable case with pending recovery')
             (t.BASE / 'active/bak.json').unlink()
             t.syncdir(t.BASE / 'active')
+        if args.generation_chain:
+            results.append(generation_chain(t, backend, create_request, identities, allocated))
     finally:
         stop_watchdogs(t)
         matches = [r for r in native.inventory() if r['config']['c_info']['name'] == name]
@@ -384,6 +476,7 @@ def main():
               'success': True, 'tests': results, 'production_replacement': False,
               'watchdog_tested': args.watchdog_expiry, 'process_restart_tested': True,
               'controller_loss_tested': args.controller_loss,
+              'generation_chain_tested': args.generation_chain,
               'runtime_reconciliation_tested': True,
               'dom0_reboot_tested': False, 'candidate_id': args.candidate_id,
               'candidate_sha256': t.digest(manifest),

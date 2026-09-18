@@ -4,6 +4,11 @@
   gather_facts: false
   become: true
   become_method: doas
+  vars:
+    recovery_test_timeout: >-
+      {{ 4800 if recovery_watchdog_expiry | default(false) else
+         (3000 if (recovery_controller_loss | default(false)) or
+                  (recovery_generation_chain | default(false)) else 900) }}
   tasks:
     - name: Validate the selected test target
       ansible.builtin.assert:
@@ -14,6 +19,7 @@
           - inventory_hostname == recovery_box ~ '-dom0'
           - (recovery_watchdog_expiry | default(false)) is boolean
           - (recovery_controller_loss | default(false)) is boolean
+          - (recovery_generation_chain | default(false)) is boolean
 
     - name: Verify active controller authority
       ansible.builtin.command:
@@ -46,12 +52,13 @@
 
     - name: Run the bounded native test independently of SSH
       ansible.builtin.command:
-        argv: "{{ ['/usr/bin/timeout', (recovery_watchdog_expiry | default(false) | ternary('4200', (recovery_controller_loss | default(false) | ternary('2400', '900')))),
+        argv: "{{ ['/usr/bin/timeout', recovery_test_timeout | string,
           '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-recovery-tests/' ~ recovery_operation_id ~ '/vm-update-recovery-test',
           '--box', recovery_box, '--operation-id', recovery_operation_id, '--candidate-id', recovery_candidate_id]
           + (recovery_watchdog_expiry | default(false) | ternary(['--watchdog-expiry'], []))
-          + (recovery_controller_loss | default(false) | ternary(['--controller-loss'], [])) }}"
-      async: "{{ recovery_watchdog_expiry | default(false) | ternary(4260, (recovery_controller_loss | default(false) | ternary(2460, 960))) }}"
+          + (recovery_controller_loss | default(false) | ternary(['--controller-loss'], []))
+          + (recovery_generation_chain | default(false) | ternary(['--generation-chain'], [])) }}"
+      async: '{{ (recovery_test_timeout | int) + 60 }}'
       poll: 5
       vars:
         ansible_async_dir: "/mnt/dom0_data/klokast-vm-recovery-tests/{{ recovery_operation_id }}/async"
