@@ -12,6 +12,61 @@ import uuid
 import retained_data as data
 
 
+def retained_backup_fixture(run, operation):
+    """Construct one disposable data generation, including later writes."""
+    data.environment()
+    size, device, root = 256 * 1024**2, '/dev/xvdc', data.SOURCE
+    if (int(Path('/sys/class/block/xvdc/size').read_text()) * 512 != size or
+            Path('/sys/class/block/xvdc/ro').read_text().strip() != '0' or
+            any(r['source'].startswith(device) for r in data.mount_records())):
+        raise RuntimeError('retained backup fixture needs its unmounted disposable 256 MiB disk')
+    deadline = time.monotonic() + 120
+    marker = data.read_record(Path('/etc/klokast-template.json'), private=False)
+    identity = str(uuid.uuid4())
+    run(['mkfs.ext4', '-F', '-U', identity, device])
+    root.mkdir(mode=0o700, exist_ok=True)
+    run(['mount', '-o', 'nodev,nosuid,noexec', device, str(root)])
+    runtime = {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[300000, 65536]]}
+    try:
+        state = root / 'platform-tailscale-state'
+        state.write_bytes(b'{}\n'); state.chmod(0o600)
+        import vm_personalize_test
+        vm_personalize_test.ssh_fixture(root, deadline)
+        dataset = root / 'app-data'; dataset.mkdir()
+        os.chown(dataset, 2000, 2000)
+        sample = dataset / 'synthetic.txt'; sample.write_bytes(b'before acceptance')
+        os.chown(sample, 200123, 300123)
+        entries = [{'key': k, 'source': k, 'type': 'identity-file'} for k in data.IDENTITY_FILES]
+        entries.append({'key': 'app-data', 'source': 'app-data', 'type': 'directory'})
+        initial = data.measure_entries({'entries': entries}, deadline, root)
+        staged = {'kind': 'klokast.vm-retained-stage-result.v3', 'request_sha256': data.digest({'fixture': operation}),
+                  'entries': initial, 'adoption_accepted': False}
+        staged['receipt_sha256'] = data.digest(staged)
+        final = {'kind': 'klokast.vm-retained-final-result.v3', 'request_sha256': staged['request_sha256'],
+                 'stage_receipt_sha256': staged['receipt_sha256'], 'entries': initial,
+                 'copy_verified': True, 'adoption_accepted': False}
+        final['receipt_sha256'] = data.digest(final)
+        for name, value in (('.klokast-stage-result.json', staged), ('.klokast-final-result.json', final),
+                            ('.klokast-retained-identity.json', {'kind': 'klokast.vm-retained-identity.v1', 'runtime': runtime})):
+            data.create_record(root / name, value)
+        sample.write_bytes(b'synthetic production writes after acceptance must survive restore')
+        state.write_bytes(b'{"synthetic":true}\n')
+        measured = data.measure_entries({'entries': entries}, deadline, root)
+        if measured['app-data'] == initial['app-data'] or measured['platform-tailscale-state'] == initial['platform-tailscale-state']:
+            raise RuntimeError('retained fixture did not include writes after its generation receipt')
+        run(['sync', '-f', str(root)])
+    finally:
+        run(['umount', str(root)])
+    request = {'kind': 'klokast.vm-backup-restore.v2', 'operation_id': operation,
+               'engine_commit': marker['engine_commit'], 'backup_receipt_sha256': data.digest({'fixture_backup': operation}),
+               'disk_bytes': size, 'disk_sha256': data.disk_digest(device, size, deadline),
+               'root_partition': 0, 'root_uuid': identity, 'runtime': runtime, 'source_layout': 'retained-data',
+               'retained_receipt_sha256': final['receipt_sha256'], 'entries': entries}
+    data.validate_backup(request)
+    return {'fixture_verified': True, 'production_data_used': False, 'request': request,
+            'expected_identity': measured['platform-tailscale-state'], 'expected_entries': measured}
+
+
 def backup_test(run, operation):
     """Restore the preceding partitioned fixture; no production disks or state."""
     size = 256 * 1024 * 1024

@@ -27,7 +27,7 @@ def host_module(work):
     return module
 
 
-def fixture(work, operation, candidate, source, native, host):
+def fixture(work, operation, candidate, source, native, host, layout):
     """Construct synthetic identity/data inside Xen, never by a dom0 mount."""
     host.safe_directory(candidate)
     manifest = read(candidate / 'candidate.json')
@@ -75,6 +75,8 @@ def fixture(work, operation, candidate, source, native, host):
         extra = ('root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0 '
                  'init=/usr/local/libexec/klokast-template-test klokast_test=' + operation +
                  ' klokast_inputs=' + manifest['inputs_sha256'])
+        if layout == 'retained-data':
+            extra += ' klokast_retained_backup_fixture=1'
         config.write_text(f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 4096\nmaxmem = 4096\nvcpus = 2\n'
                           f'kernel = {str(candidate / "kernel")!r}\nramdisk = {str(candidate / "initramfs")!r}\n'
                           f'extra = {extra!r}\ndisk = {disks!r}\nvif = []\n'
@@ -86,7 +88,8 @@ def fixture(work, operation, candidate, source, native, host):
         value = result.get('backup_restore_test', {})
         if (result.get('success') is not True or result.get('operation_id') != operation or
                 result.get('inputs_sha256') != manifest['inputs_sha256'] or
-                value.get('production_data_used') is not False or value.get('restore_verified') is not True):
+                value.get('production_data_used') is not False or
+                value.get('fixture_verified' if layout == 'retained-data' else 'restore_verified') is not True):
             raise b.BackupError('pipeline fixture did not construct its synthetic filesystem and identity')
         return value
     finally:
@@ -160,6 +163,7 @@ def main():
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--cleanup', action='store_true')
     parser.add_argument('--candidate-id')
+    parser.add_argument('--layout', choices=('legacy-root', 'retained-data'), default='legacy-root')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch(r'[0-9a-f]{24}', args.operation_id) or
@@ -168,6 +172,8 @@ def main():
         raise b.BackupError('backup test requires root on the selected dom0')
     if args.candidate_id is not None and not re.fullmatch('[0-9a-f]{24}', args.candidate_id):
         raise b.BackupError('pipeline test requires an exact candidate ID')
+    if args.layout == 'retained-data' and args.candidate_id is None:
+        raise b.BackupError('retained layout requires a tested maintenance candidate')
     os.umask(0o077)
     work = BASE / args.operation_id
     for path in (BASE, work): b.secure(path, True)
@@ -215,7 +221,7 @@ def main():
         if args.candidate_id:
             candidate = Path('/mnt/dom0_data/klokast-vm-templates/candidates') / args.candidate_id
             host = host_module(work)
-            synthetic = fixture(work, args.operation_id, candidate, source, native, host)
+            synthetic = fixture(work, args.operation_id, candidate, source, native, host, args.layout)
             old_hash = synthetic['request']['disk_sha256']
         else:
             old_block = b'synthetic-backup-before-snapshot\n'.ljust(b.MIB, b'0')
@@ -257,6 +263,11 @@ def main():
                     verified['adoption_accepted'] is not False or verified['restore_verified'] is not True):
                 raise b.BackupError('pipeline restore failed synthetic identity or authority checks')
             tests.update(isolated_restore=True, numeric_identity=True, private_identity=True, restore_cleanup=True)
+            if args.layout == 'retained-data':
+                if (verified.get('entries') != synthetic['expected_entries'] or
+                        verified.get('retained_receipt_sha256') != synthetic['request']['retained_receipt_sha256']):
+                    raise b.BackupError('pipeline restore lost retained generation or later data writes')
+                tests.update(retained_generation=True, later_data_and_identity_writes=True)
         else:
             with native.open(source, True) as stream:
                 if stream.read(31) != b'synthetic-new-production-write\n':

@@ -52,17 +52,22 @@ def validate_copy(request, receipt):
 
 
 def verify_result(request, value, inputs_sha256):
+    data.validate_backup(request)
     fields = {'kind', 'operation_id', 'inputs_sha256', 'request_sha256', 'success', 'restore'}
     if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-backup-restore-guest.v1' or
             value['operation_id'] != request['operation_id'] or value['inputs_sha256'] != inputs_sha256 or
             value['request_sha256'] != data.digest(request) or value['success'] is not True):
         raise backup.BackupError('maintenance guest returned incomplete or mismatched restore evidence')
     receipt = value['restore']
-    if (not isinstance(receipt, dict) or set(receipt) != {
+    fields = {
             'kind', 'request_sha256', 'backup_receipt_sha256', 'disk_sha256', 'disk_bytes', 'root_uuid', 'runtime',
             'identity', 'complete_disk_restored', 'root_filesystem_checked', 'backup_unchanged',
-            'source_freshness_verified', 'application_consistency_verified', 'adoption_accepted', 'receipt_sha256'} or
-            receipt['kind'] != 'klokast.vm-backup-restore-result.v1' or
+            'source_freshness_verified', 'application_consistency_verified', 'adoption_accepted', 'receipt_sha256'}
+    retained = request['kind'] == 'klokast.vm-backup-restore.v2'
+    if retained:
+        fields |= {'source_layout', 'retained_receipt_sha256', 'entries'}
+    if (not isinstance(receipt, dict) or set(receipt) != fields or
+            receipt['kind'] != request['kind'].replace('-restore.', '-restore-result.') or
             receipt['request_sha256'] != data.digest(request) or
             any(receipt[k] != request[k] for k in ('backup_receipt_sha256', 'disk_sha256', 'disk_bytes', 'root_uuid', 'runtime')) or
             any(receipt[k] is not True for k in ('complete_disk_restored', 'root_filesystem_checked', 'backup_unchanged')) or
@@ -76,6 +81,21 @@ def verify_result(request, value, inputs_sha256):
             type(identity['required_bytes']) is not int or not 4096 <= identity['required_bytes'] <= 8 * backup.MIB or
             identity['required_bytes'] % 4096):
         raise backup.BackupError('restore receipt has invalid private identity measurements')
+    if retained:
+        entries = receipt['entries']
+        if (receipt['source_layout'] != request['source_layout'] or
+                receipt['retained_receipt_sha256'] != request['retained_receipt_sha256'] or
+                not isinstance(entries, dict) or set(entries) != {v['key'] for v in request['entries']} or
+                entries.get('platform-tailscale-state') != identity):
+            raise backup.BackupError('restore receipt has a different retained generation or dataset set')
+        for key, item in entries.items():
+            if (not isinstance(item, dict) or set(item) != {'sha256', 'entries', 'required_bytes'} or
+                    not isinstance(item['sha256'], str) or not backup.SHA.fullmatch(item['sha256']) or
+                    type(item['entries']) is not int or not 1 <= item['entries'] <= data.MAX_ENTRIES or
+                    type(item['required_bytes']) is not int or item['required_bytes'] < 0 or item['required_bytes'] % 4096 or
+                    (key in data.IDENTITY_FILES and (item['entries'] != 1 or
+                     not 4096 <= item['required_bytes'] <= data.MAX_IDENTITY_BYTES))):
+                raise backup.BackupError('restore receipt has invalid retained dataset measurements')
     return receipt
 
 
@@ -231,6 +251,9 @@ def verify(work, request, copy_receipt, candidate, host, native=None):
               'root_uuid': request['root_uuid'], 'runtime': request['runtime'],
               'cleanup_verified': True, 'source_freshness_verified': False,
               'application_consistency_verified': False, 'adoption_accepted': False}
+    if request['kind'] == 'klokast.vm-backup-restore.v2':
+        result.update(kind='klokast.vm-verified-backup.v2', source_layout='retained-data',
+                      retained_receipt_sha256=request['retained_receipt_sha256'], entries=receipt['entries'])
     result['receipt_sha256'] = backup.digest(result)
     backup.store(work / 'result.json', result)
     return result

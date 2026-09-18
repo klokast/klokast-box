@@ -177,8 +177,11 @@ def filesystem_uuid(device):
 def validate_backup(request):
     fields = {'kind', 'operation_id', 'engine_commit', 'backup_receipt_sha256',
               'disk_bytes', 'disk_sha256', 'root_partition', 'root_uuid', 'runtime'}
+    retained = isinstance(request, dict) and request.get('kind') == 'klokast.vm-backup-restore.v2'
+    if retained:
+        fields |= {'source_layout', 'retained_receipt_sha256', 'entries'}
     if (not isinstance(request, dict) or set(request) != fields or
-            request['kind'] != 'klokast.vm-backup-restore.v1' or
+            request['kind'] not in ('klokast.vm-backup-restore.v1', 'klokast.vm-backup-restore.v2') or
             type(request['disk_bytes']) is not int or not 16 * 1024**2 <= request['disk_bytes'] <= 128 * 1024**3 or
             request['disk_bytes'] % 512 or type(request['root_partition']) is not int or request['root_partition'] not in (0, 3)):
         raise CopyError('backup restore request has an unsupported disk contract')
@@ -193,6 +196,56 @@ def validate_backup(request):
               'source_uuid': '11111111-1111-4111-8111-111111111111',
               'destination_uuid': '22222222-2222-4222-8222-222222222222',
               'runtime': request['runtime'], 'entries': [{'key': 'state', 'source': 'var/lib/state'}]})
+    if retained:
+        if (request['source_layout'] != 'retained-data' or request['root_partition'] != 0 or
+                not isinstance(request['retained_receipt_sha256'], str) or
+                not re.fullmatch('[0-9a-f]{64}', request['retained_receipt_sha256'])):
+            raise CopyError('retained backup requires an unpartitioned recorded data generation')
+        staged_request({'kind': 'klokast.vm-retained-stage.v3', 'operation_id': request['operation_id'],
+                        'source_uuid': '11111111-1111-4111-8111-111111111111',
+                        'destination_uuid': '22222222-2222-4222-8222-222222222222',
+                        'runtime': request['runtime'], 'entries': request['entries'],
+                        'source_layout': 'retained-data', 'source_partition': 0})
+        if not set(IDENTITY_FILES) <= {v['key'] for v in request['entries']}:
+            raise CopyError('retained backup must include the complete management identity')
+
+
+def retained_backup_contents(request, root, deadline):
+    """Check the data generation, then measure its current production contents.
+
+    Final-sync hashes identify the generation, not current application data:
+    accepted guests can write data and update Tailscale state after final sync.
+    The whole-disk backup hash binds these new contents independently.
+    """
+    runtime = read_record(below(root, '.klokast-retained-identity.json'))
+    if runtime != {'kind': 'klokast.vm-retained-identity.v1', 'runtime': request['runtime']}:
+        raise CopyError('restored retained runtime identity differs')
+    final = read_record(below(root, '.klokast-final-result.json'))
+    fields = {'kind', 'request_sha256', 'stage_receipt_sha256', 'entries', 'copy_verified',
+              'adoption_accepted', 'receipt_sha256'}
+    if (not isinstance(final, dict) or set(final) != fields or
+            final['kind'] not in ('klokast.vm-retained-final-result.v2', 'klokast.vm-retained-final-result.v3') or
+            final['copy_verified'] is not True or final['adoption_accepted'] is not False or
+            any(not isinstance(final[k], str) or not re.fullmatch('[0-9a-f]{64}', final[k])
+                for k in ('request_sha256', 'stage_receipt_sha256')) or
+            final['receipt_sha256'] != request['retained_receipt_sha256'] or
+            digest({k: v for k, v in final.items() if k != 'receipt_sha256'}) != request['retained_receipt_sha256'] or
+            not isinstance(final['entries'], dict) or set(final['entries']) != {v['key'] for v in request['entries']}):
+        raise CopyError('restored retained generation differs from its recorded final sync')
+    staged = read_record(below(root, '.klokast-stage-result.json'))
+    if (not isinstance(staged, dict) or set(staged) !=
+            {'kind', 'request_sha256', 'entries', 'adoption_accepted', 'receipt_sha256'} or
+            staged['kind'] != final['kind'].replace('-final-', '-stage-') or
+            not isinstance(staged['entries'], dict) or set(staged['entries']) != set(final['entries']) or
+            staged['adoption_accepted'] is not False or staged['request_sha256'] != final['request_sha256'] or
+            staged['receipt_sha256'] != final['stage_receipt_sha256'] or
+            digest({k: v for k, v in staged.items() if k != 'receipt_sha256'}) != final['stage_receipt_sha256']):
+        raise CopyError('restored retained stage record differs from the final generation')
+    allowed = set(final['entries']) | {'.klokast-stage-result.json', '.klokast-final-result.json',
+                                      '.klokast-retained-identity.json'}
+    if any(p.name not in allowed and not empty_lost_found(p) for p in root.iterdir()):
+        raise CopyError('restored retained disk contains unknown data or an interrupted copy')
+    return measure_entries(request, deadline, root)
 
 
 def backup_devices(request):
@@ -299,14 +352,18 @@ def restore_backup(request, deadline):
                 selected[0]['type'] != 'ext4' or not {'ro', 'nodev', 'nosuid', 'noexec'} <= set(selected[0]['options']) or
                 any(v['path'].startswith(str(BACKUP_MOUNT) + '/') for v in mounts)):
             raise CopyError('restored filesystem mount differs from the isolated read-only contract')
-        if runtime_identity(BACKUP_MOUNT) != request['runtime']:
-            raise CopyError('restored numeric runtime identity differs')
-        identity = below(BACKUP_MOUNT, 'var/lib/tailscale/tailscaled.state')
-        info = identity.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or
-                info.st_nlink != 1 or not 0 < info.st_size <= MAX_IDENTITY_BYTES):
-            raise CopyError('restored management identity is missing or has unsafe metadata')
-        measured = tree(identity, deadline)
+        if request['kind'] == 'klokast.vm-backup-restore.v2':
+            entries = retained_backup_contents(request, BACKUP_MOUNT, deadline)
+            measured = entries['platform-tailscale-state']
+        else:
+            if runtime_identity(BACKUP_MOUNT) != request['runtime']:
+                raise CopyError('restored numeric runtime identity differs')
+            identity = below(BACKUP_MOUNT, 'var/lib/tailscale/tailscaled.state')
+            info = identity.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or
+                    info.st_nlink != 1 or not 0 < info.st_size <= MAX_IDENTITY_BYTES):
+                raise CopyError('restored management identity is missing or has unsafe metadata')
+            measured = tree(identity, deadline)
     finally:
         run(['umount', str(BACKUP_MOUNT)], deadline)
     backup_devices(request)
@@ -319,6 +376,9 @@ def restore_backup(request, deadline):
               'identity': measured, 'complete_disk_restored': True, 'root_filesystem_checked': True,
               'backup_unchanged': True, 'source_freshness_verified': False,
               'application_consistency_verified': False, 'adoption_accepted': False}
+    if request['kind'] == 'klokast.vm-backup-restore.v2':
+        result.update(kind='klokast.vm-backup-restore-result.v2', source_layout='retained-data',
+                      retained_receipt_sha256=request['retained_receipt_sha256'], entries=entries)
     result['receipt_sha256'] = digest(result)
     return result
 

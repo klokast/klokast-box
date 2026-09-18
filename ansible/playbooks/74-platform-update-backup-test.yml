@@ -13,6 +13,8 @@
           - inventory_hostname == backup_test_box ~ '-dom0'
           - backup_test_action | default('test') in ['test', 'cleanup']
           - backup_test_candidate_id is not defined or backup_test_candidate_id is match('^[0-9a-f]{24}$')
+          - backup_test_layout | default('legacy-root') in ['legacy-root', 'retained-data']
+          - backup_test_layout | default('legacy-root') != 'retained-data' or backup_test_candidate_id is defined
 
     - name: Require the active controller
       ansible.builtin.command:
@@ -68,7 +70,8 @@
       ansible.builtin.command:
         argv: "{{ ['/usr/bin/timeout', ('1260' if backup_test_candidate_id is defined else '360'), '/usr/bin/python3',
           '/mnt/dom0_data/klokast-vm-backup-tests/' ~ backup_test_operation_id ~ '/vm-disk-backup-test',
-          '--box', backup_test_box, '--operation-id', backup_test_operation_id]
+          '--box', backup_test_box, '--operation-id', backup_test_operation_id,
+          '--layout', backup_test_layout | default('legacy-root')]
           + (['--cleanup'] if backup_test_action | default('test') == 'cleanup' else [])
           + (['--candidate-id', backup_test_candidate_id] if backup_test_candidate_id is defined else []) }}"
       async: "{{ 1320 if backup_test_candidate_id is defined else 420 }}"

@@ -236,6 +236,11 @@ def main():
         result["kernel_release"] = kernel
         result["tests"].update(boot=True, kernel_modules=True)
         device_test(initialize=True)
+        if args.get('klokast_retained_backup_fixture') == '1':
+            import retained_data_test
+            result['backup_restore_test'] = retained_data_test.retained_backup_fixture(run, args['klokast_test'])
+            result['success'] = True
+            finish(result)
         tailscale_test()
         result["tests"]["tailscale_offline"] = True
         podman_test()

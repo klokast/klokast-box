@@ -682,16 +682,27 @@ backup qualification, writer fencing, and signed execution remain required.
 
 ## Isolated backup restore verification
 
-`retained_data.restore_backup` verifies a complete legacy root-disk backup in a networkless
+`retained_data.restore_backup` verifies a complete disk backup in a networkless
 maintenance Xen guest. It requires an exact read-only backup on `/dev/xvdc`
 and a separate disposable restore disk on `/dev/xvdd`, with the recorded size.
 The request binds the engine, protected backup receipt, disk checksum, root
 filesystem UUID, and numeric runtime identity. It supports a raw ext4 root
 or the recorded legacy root on partition 3.
-This contract checks the legacy `/var/lib/tailscale/tailscaled.state` path and
-runtime mappings in `/etc`. A later backup of an adopted retained-data LV
-needs its own layout and generation checks; it must not be passed as a legacy
-root disk or treated as verified by this test.
+The v1 contract checks the legacy `/var/lib/tailscale/tailscaled.state` path and
+runtime mappings in `/etc`. Do not pass an adopted retained-data LV as a legacy
+root disk.
+
+The separate v2 request requires the unpartitioned `retained-data` layout,
+the exact final-sync receipt for that generation, and the complete typed dataset
+list. It checks the retained numeric identity and the linked stage/final records,
+then measures the restored datasets and all four management identity files.
+Unknown top-level data, pending copy markers, missing datasets, and unsafe
+identity metadata block verification. The final-sync hashes identify the
+generation; they are not required to match current application or Tailscale
+contents. The full-disk checksum and new measurements cover writes made after
+acceptance. The signed caller must still prove source freshness, application
+consistency, and the association between the accepted OS and data generations.
+These facts are not inferred from a successful restore.
 
 The module also supplies a dedicated PID 1 maintenance entry. It reads a
 checksum-bound request from a separate read-only disk and writes a bounded
@@ -784,6 +795,14 @@ synthetic partitioned filesystem inside Xen, creates its independent backup,
 and checks that backup in a separate maintenance VM. It compares the restored
 numeric mappings and private identity measurement with the original synthetic
 fixture. No production data or credentials enter either test guest.
+Set `backup_test_layout=retained-data` with that candidate ID to test the v2
+layout instead. Its fixture has a synthetic final-sync generation, all four
+management identity files, and application data with subordinate numeric
+ownership. It changes data and Tailscale state after making the generation
+receipt. The separate restore must preserve these later bytes and the complete
+dataset measurements. The fixture has no application processes or credentials.
+This new layout test still requires native execution; the existing successful
+pipeline evidence below covers only the legacy root layout.
 
 Native test `8fceca0f96524484fc6041dd` at `0bc1c57` passed all four copy and
 source-write checks on 2026-09-18. Its cleanup removed both remaining test LVs
@@ -877,6 +896,12 @@ root bytes before personalization. All disposable guests and disks were
 cleaned up. The controller retained the receipts under its matching
 `discovery/builds/` directory. The candidate remains unaccepted and used no
 production identity, data, or application image.
+
+Native build `e1a08139aa49a7b67cdcefd6` at source `c0ab1c3` passed all eleven
+base checks, the separate maintenance restore boot, five generic OpenRC checks,
+and eight personalized checks with SSH key preservation enabled. Its input
+checksum is `416aa941a67db831561febea8c93afabf481c18cd2c05b52bdd0eb28aaf746b3`.
+All disposable guests were cleaned. The result is an unaccepted candidate.
 
 Before this run, the setup cleanup play reclaimed 3,735,310,336 allocated bytes
 from nine older unaccepted candidates. It kept the two newest successful
