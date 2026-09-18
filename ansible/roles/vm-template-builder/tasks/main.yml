@@ -94,7 +94,7 @@
     group: root
     mode: '0700'
 
-- name: Build and test base software, retained data, and exact synthetic identity migration independently of SSH
+- name: Build and test base software, OpenRC boot, and retained data independently of SSH
   ansible.builtin.command:
     argv:
       - /usr/bin/python3
@@ -120,6 +120,7 @@
     - test-lifecycle.json
     - "vm-build-{{ template_operation_id }}.log"
     - "vm-test-{{ template_operation_id }}.log"
+    - "vm-openrc-{{ template_operation_id }}.log"
   register: template_evidence
 
 - name: Fetch available bounded evidence including failed guest diagnostics

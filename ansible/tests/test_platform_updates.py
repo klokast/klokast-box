@@ -172,7 +172,8 @@ class ControllerTests(unittest.TestCase):
         operation = 'a' * 24
         inputs = {'inputs_sha256': 'b' * 64, 'packages': [{'name': 'linux-virt', 'version': '1'}]}
         for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
-                     'missing-partition', 'failed-partition'):
+                     'missing-partition', 'failed-partition', 'missing-openrc', 'failed-openrc',
+                     'changed-openrc-input', 'missing-openrc-cleanup'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 def command(argv, **kwargs):
@@ -202,10 +203,19 @@ class ControllerTests(unittest.TestCase):
                                          'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
                                          'kernel_release': 'test-kernel', 'tested_root_sha256': 'c' * 64,
                                          'tests': tests}}
+                        normal = {'kind': 'klokast.vm-template-openrc-test.v1', 'success': mode != 'failed-openrc',
+                                  'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
+                                  'kernel_release': 'test-kernel', 'tests': dict.fromkeys(('openrc_boot', 'cgroup_v2',
+                                      'kernel_modules', 'tailscale_offline', 'default_rootless_podman'), True)}
+                        if mode == 'changed-openrc-input': normal['inputs_sha256'] = '0' * 64
+                        if mode != 'missing-openrc': candidate['boot_test']['openrc_test'] = normal
                         directory = root / 'builds' / operation
                         (directory / 'candidate.json').write_text(json.dumps(candidate))
                         for filename, domain in (('lifecycle.json', 'vm-build-'), ('test-lifecycle.json', 'vm-test-')):
-                            (directory / filename).write_text(json.dumps({'stage': 'cleaned', 'domain': domain + operation}))
+                            record = {'stage': 'cleaned', 'domain': domain + operation}
+                            if filename == 'test-lifecycle.json' and mode != 'missing-openrc-cleanup':
+                                record['openrc_domain'] = 'vm-openrc-' + operation
+                            (directory / filename).write_text(json.dumps(record))
                     return '{}'
                 with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
                         patch.object(cli, 'require_controller'), patch.object(cli, 'command', side_effect=command), \
@@ -219,6 +229,7 @@ class ControllerTests(unittest.TestCase):
                         self.assertFalse(result['accepted'])
                         self.assertTrue(result['base_tests']['retained_data_stage'])
                         self.assertTrue(result['base_tests']['retained_identity'])
+                        self.assertTrue(result['openrc_tests']['default_rootless_podman'])
                     else:
                         with self.assertRaisesRegex(u.UpdateError, 'candidate or cleanup evidence'):
                             cli.prepare('boxa', 'v3.23')

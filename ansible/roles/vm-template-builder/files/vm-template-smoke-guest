@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 
 
@@ -18,11 +19,13 @@ def run(argv, timeout=60):
     return result.stdout.strip()
 
 
-def environment():
-    if os.getpid() != 1 or os.geteuid() != 0:
+def environment(openrc=False):
+    if (not openrc and os.getpid() != 1) or os.geteuid() != 0:
         raise RuntimeError("template test must be PID 1 in its disposable guest")
     for name, filesystem in (("proc", "proc"), ("sys", "sysfs"), ("dev", "devtmpfs")):
         if not os.path.ismount("/" + name):
+            if openrc:
+                raise RuntimeError('OpenRC did not mount the required system filesystem: ' + name)
             run(["mount", "-t", filesystem, filesystem, "/" + name])
     if (Path("/sys/hypervisor/type").read_text().strip() != "xen" or
             Path("/sys/hypervisor/uuid").read_text().strip() == "00000000-0000-0000-0000-000000000000" or
@@ -32,6 +35,9 @@ def environment():
     if (not re.fullmatch(r"[0-9a-f]{24}", args.get("klokast_test", "")) or
             not re.fullmatch(r"[0-9a-f]{64}", args.get("klokast_inputs", ""))):
         raise RuntimeError("template test requires its exact boot assignment")
+    if openrc and (os.getpid() == 1 or args.get('klokast_openrc') != '1' or
+                   Path('/proc/1/comm').read_text().strip() != 'init'):
+        raise RuntimeError('normal boot test requires the real init process and its test assignment')
     for path in (Path("/dev/xvda"), Path("/dev/xvdb"), Path("/dev/xvdc"), Path("/dev/xvdd")):
         if path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode):
             raise RuntimeError("template test requires its four fixed Xen disks")
@@ -62,16 +68,19 @@ def tailscale_test():
             process.wait(timeout=10)
 
 
-def podman_test():
+def podman_test(defaults=False):
     # The account and runtime state exist only on the disposable copy. No
     # application image is fetched, built, or substituted by this test.
-    run(["adduser", "-D", "-u", "2000", "-h", "/home/template-test", "template-test"])
+    user, uid = ('openrc-test', 2001) if defaults else ('template-test', 2000)
+    home = '/home/' + user
+    run(["adduser", "-D", "-u", str(uid), "-h", home, user])
     for name in ("subuid", "subgid"):
-        Path("/etc/" + name).write_text("template-test:200000:65536\n")
-    runtime = Path("/run/user/2000")
+        with Path('/etc/' + name).open('a') as stream:
+            stream.write(user + ':' + str(300000 if defaults else 200000) + ':65536\n')
+    runtime = Path('/run/user/' + str(uid))
     runtime.mkdir(parents=True, mode=0o700)
-    os.chown(runtime, 2000, 2000)
-    rootfs = Path("/home/template-test/rootfs")
+    os.chown(runtime, uid, uid)
+    rootfs = Path(home) / 'rootfs'
     rootfs.mkdir()
     files = {"/bin/busybox"}
     # Use the installed package's library closure for this throwaway rootfs.
@@ -84,15 +93,70 @@ def podman_test():
         shutil.copyfile(source, target)
         target.chmod(0o755)
     for parent, directories, files in os.walk(rootfs):
-        os.chown(parent, 2000, 2000)
+        os.chown(parent, uid, uid)
         for name in files:
-            os.chown(Path(parent) / name, 2000, 2000)
-    command = ("export XDG_RUNTIME_DIR=/run/user/2000; "
-               "exec podman --storage-driver=vfs --events-backend=file --cgroup-manager=cgroupfs "
-               "run --rm --cgroups=disabled --network=none --log-driver=none "
+            os.chown(Path(parent) / name, uid, uid)
+    environment = 'export XDG_RUNTIME_DIR=' + str(runtime) + '; '
+    if defaults:
+        info = json.loads(run(['su', '-s', '/bin/sh', user, '-c', environment + 'exec podman info --format=json']))
+        if (info.get('host', {}).get('security', {}).get('rootless') is not True or
+                info['host'].get('cgroupVersion') != 'v2' or info.get('store', {}).get('graphDriverName') != 'overlay'):
+            raise RuntimeError('default rootless Podman did not select cgroup v2 and overlay storage')
+    options = '' if defaults else '--storage-driver=vfs --cgroup-manager=cgroupfs '
+    cgroups = '' if defaults else '--cgroups=disabled '
+    command = (environment + 'exec podman ' + options + '--events-backend=file '
+               'run --rm ' + cgroups + '--network=none --log-driver=none '
                "--security-opt=no-new-privileges --cap-drop=all "
-               "--rootfs /home/template-test/rootfs /bin/busybox true")
-    run(["su", "-s", "/bin/sh", "template-test", "-c", command], timeout=120)
+               '--rootfs ' + str(rootfs) + ' /bin/busybox true')
+    run(["su", "-s", "/bin/sh", user, "-c", command], timeout=120)
+
+
+def install_openrc_test():
+    # Only the disposable copy is changed. The generic artifact stays sealed.
+    service = Path('/etc/init.d/klokast-template-openrc-test')
+    service.write_text('#!/sbin/openrc-run\n'
+                       'depend() { need cgroups localmount bootmisc; }\n'
+                       'start() { /usr/local/libexec/klokast-template-test --openrc >/dev/console 2>&1; }\n')
+    service.chmod(0o700)
+    link = Path('/etc/runlevels/default/klokast-template-openrc-test')
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(service)
+
+
+def finish(result):
+    data = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    if len(data) >= 1024 * 1024:
+        raise RuntimeError('template test result exceeds its slot')
+    with Path('/dev/xvdb').open('wb', buffering=0) as stream:
+        stream.write(data + b'\0'); os.fsync(stream.fileno())
+    os.sync()
+    subprocess.run(['poweroff', '-f'])
+    while True:
+        time.sleep(1)
+
+
+def openrc_test():
+    args = environment(openrc=True)
+    result = {'kind': 'klokast.vm-template-openrc-test.v1', 'operation_id': args['klokast_test'],
+              'inputs_sha256': args['klokast_inputs'], 'success': False, 'tests': {}}
+    try:
+        marker = json.loads(Path('/etc/klokast-template.json').read_text())
+        kernel = os.uname().release
+        if marker['inputs_sha256'] != args['klokast_inputs'] or not (Path('/lib/modules') / kernel).is_dir():
+            raise RuntimeError('normal boot root, kernel, modules, and assignment disagree')
+        result['kernel_release'] = kernel
+        for service in ('cgroups', 'localmount', 'bootmisc'):
+            run(['/sbin/rc-service', service, 'status'])
+        if ' - cgroup2 ' not in Path('/proc/self/mountinfo').read_text():
+            raise RuntimeError('OpenRC did not mount cgroup v2')
+        result['tests'].update(openrc_boot=True, cgroup_v2=True, kernel_modules=True)
+        tailscale_test(); result['tests']['tailscale_offline'] = True
+        podman_test(defaults=True); result['tests']['default_rootless_podman'] = True
+        result['success'] = True
+    except Exception as error:
+        result['error'] = type(error).__name__ + ': ' + str(error)[:1000]
+        print(result['error'], flush=True)
+    finish(result)
 
 
 def main():
@@ -141,21 +205,13 @@ def main():
                                {'sha256': args.get('klokast_app_capsule'), 'bytes': int(args.get('klokast_app_bytes', '0'))},
                                Path(static_site_test.__file__))
             result['application_test'] = static_site_test.test(run, directory, selection)
+        install_openrc_test()
         result["success"] = True
     except Exception as error:
         result["error"] = type(error).__name__ + ": " + str(error)[:1000]
         print(result["error"], flush=True)
-    data = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    if len(data) >= 1024 * 1024:
-        raise RuntimeError("template test result exceeds its slot")
-    with Path("/dev/xvdb").open("wb", buffering=0) as stream:
-        stream.write(data + b"\0")
-        os.fsync(stream.fileno())
-    os.sync()
-    subprocess.run(["poweroff", "-f"])
-    while True:
-        time.sleep(1)  # Host completion signal also handles PVH halt behavior.
+    finish(result)
 
 
 if __name__ == "__main__":
-    main()
+    openrc_test() if sys.argv[1:] == ['--openrc'] else main()

@@ -313,6 +313,9 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         test_lifecycle = load(result / "test-lifecycle.json")
         base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition")}
         boot_test = candidate.get("boot_test", {})
+        normal = boot_test.get('openrc_test', {})
+        normal_tests = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',
+                                      'tailscale_offline', 'default_rootless_podman'), True)
         if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
                 candidate.get("success") is not True or candidate.get("box") != box or
                 candidate.get("validation") != "base-boot-tested" or candidate.get("operation_id") != operation or
@@ -322,7 +325,11 @@ def prepare(box, branch, inputs_only=False, test_app=None):
                 boot_test.get("operation_id") != operation or boot_test.get("inputs_sha256") != inputs["inputs_sha256"] or
                 boot_test.get("tests") != base_tests or boot_test.get("kernel_release") != candidate.get("kernel_release") or
                 boot_test.get("tested_root_sha256") != candidate.get("artifacts", {}).get("root", {}).get("sha256") or
+                normal.get('kind') != 'klokast.vm-template-openrc-test.v1' or normal.get('success') is not True or
+                normal.get('operation_id') != operation or normal.get('inputs_sha256') != inputs['inputs_sha256'] or
+                normal.get('kernel_release') != candidate.get('kernel_release') or normal.get('tests') != normal_tests or
                 lifecycle.get("stage") != "cleaned" or lifecycle.get("domain") != "vm-build-" + operation or
+                test_lifecycle.get('openrc_domain') != 'vm-openrc-' + operation or
                 test_lifecycle.get("stage") != "cleaned" or test_lifecycle.get("domain") != "vm-test-" + operation):
             raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
         if app_test:
@@ -332,6 +339,7 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
                 "validation": candidate["validation"], "base_tests": boot_test["tests"],
+                'openrc_tests': normal['tests'],
                 "application_test": boot_test.get("application_test")}
 
 

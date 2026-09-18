@@ -333,6 +333,16 @@ generic image receives no test account or runtime state. Construction occurs
 before a replacement window; it does not consume the separate 30-minute
 replacement and 30-minute recovery budgets.
 
+A second cold boot starts `/sbin/init` and the normal OpenRC runlevels on the
+same disposable copy. Its fixed test service requires the cgroup and local
+mount services. It verifies cgroup v2, matching kernel modules, unenrolled
+Tailscale, and rootless Podman with default overlay storage and cgroup options.
+It does not use the first smoke test's `vfs` or `--cgroups=disabled` overrides.
+The test has a separate five-minute limit and console log. Candidate publication
+requires both boots, their exact input identity, and complete guest cleanup.
+These generic tests still do not qualify target-specific network rules or
+application behavior. Native validation of the second boot is pending.
+
 Dom0 reads bounded raw output bytes and verifies their checksums. It never
 mounts the generated filesystem. The root image, matching kernel, and initramfs
 remain under `/mnt/dom0_data/klokast-vm-templates/candidates/OPERATION`. Candidate
@@ -525,8 +535,11 @@ Dom0 still does not mount the source filesystem.
 Candidate preparation requires a ninth base test, `retained_partition`. It
 constructs a synthetic partitioned source on a disposable test disk, refuses
 a writable source disk, and verifies identity copying from partition 3. No
-production disk or identity is attached to this test. Native validation of
-this new case must pass before it can support adoption evidence.
+production disk or identity is attached to this test. Native validation on
+2026-09-18 passed all nine base groups in operation `a27a7ec5e6d1fee375b49899`,
+using source `b587575`. The partition case verified the copy and the
+block-read-only refusal. Both guest cleanup records passed. The result remains
+an unaccepted candidate, not an adoption receipt.
 
 ### Exact machine identity files
 

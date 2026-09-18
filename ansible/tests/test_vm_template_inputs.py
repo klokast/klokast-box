@@ -185,7 +185,7 @@ class HostBoundaryTests(unittest.TestCase):
                      'manifest_sha256': 'a' * 64, 'image_id': 'b' * 64,
                      'archive': {'sha256': 'c' * 64, 'bytes': 100},
                      'config_sha256': 'd' * 64, 'adapter_sha256': 'e' * 64}
-        for mode in ('valid', 'missing', 'changed'):
+        for mode in ('valid', 'missing', 'changed', 'normal-failed', 'normal-input-changed'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
                 for name in ('root.slot', 'kernel.slot', 'initramfs.slot', 'app-test.tar'):
@@ -199,6 +199,18 @@ class HostBoundaryTests(unittest.TestCase):
                     self.assertIn('vif = []', text)
                     self.assertIn('phy:/dev/loop4,xvde,r', text)
                     self.assertIn('klokast_app_capsule=' + 'f' * 64, text)
+                    if name.startswith('vm-openrc-'):
+                        self.assertIn('init=/sbin/init klokast_openrc=1', text)
+                        self.assertNotIn('init=/usr/local/libexec/klokast-template-test', text)
+                        self.assertEqual(kwargs['timeout'], 300)
+                        self.assertEqual((work / 'test-result.slot').read_bytes().strip(b'\0'), b'')
+                        normal = {'kind': 'klokast.vm-template-openrc-test.v1', 'success': mode != 'normal-failed',
+                                  'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
+                                  'kernel_release': 'test-kernel', 'tests': dict.fromkeys(('openrc_boot', 'cgroup_v2',
+                                      'kernel_modules', 'tailscale_offline', 'default_rootless_podman'), True)}
+                        if mode == 'normal-input-changed': normal['inputs_sha256'] = '0' * 64
+                        (work / 'test-result.slot').write_text(json.dumps(normal))
+                        return
                     self.assertEqual(kwargs['timeout'], 600)
                     result = {'kind': 'klokast.vm-template-test-result.v1', 'success': True,
                               'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
@@ -220,7 +232,7 @@ class HostBoundaryTests(unittest.TestCase):
                         result = self.host.smoke_test(work, request, build)
                         self.assertFalse(result['application_test']['production_qualified'])
                     else:
-                        with self.assertRaisesRegex(RuntimeError, 'component test evidence'):
+                        with self.assertRaisesRegex(RuntimeError, 'OpenRC boot tests' if mode.startswith('normal-') else 'component test evidence'):
                             self.host.smoke_test(work, request, build)
                     self.assertEqual(attach.call_args.kwargs, {'readonly': True})
                     self.assertEqual(detach.call_count, 5)

@@ -293,7 +293,9 @@ def boot_guest(work, name, identity, config, request, *, slot="result.slot",
 def smoke_test(work, request, build):
     name = "vm-test-" + request["operation_id"]
     identity = str(uuid.uuid4())
-    if domain(name) is not None:
+    openrc_name = 'vm-openrc-' + request['operation_id']
+    openrc_identity = str(uuid.uuid4())
+    if domain(name) is not None or domain(openrc_name) is not None:
         raise RuntimeError("refusing to reuse an existing template test domain")
     root = work / "test-root.slot"
     result_path = work / "test-result.slot"
@@ -350,18 +352,39 @@ def smoke_test(work, request, build):
             verify_app_result(value.get('application_test'), request['app_test']['selection'])
         elif 'application_test' in value:
             raise RuntimeError('unexpected application test evidence')
+        # A second cold boot uses the real init and OpenRC runlevels. The test
+        # service was installed by the first guest, never by a dom0 mount.
+        with result_path.open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        config.write_text(config.read_text().replace(f'name = {name!r}', f'name = {openrc_name!r}')
+                          .replace(identity, openrc_identity)
+                          .replace('init=/usr/local/libexec/klokast-template-test', 'init=/sbin/init klokast_openrc=1'))
+        write(work / 'test-lifecycle.json', {'domain': name, 'uuid': identity,
+              'openrc_domain': openrc_name, 'openrc_uuid': openrc_identity, 'stage': 'openrc-allocated'})
+        boot_guest(work, openrc_name, openrc_identity, config, request, slot=result_path.name,
+                   kind='klokast.vm-template-openrc-test.v1', timeout=300)
+        normal = read_slot(result_path)
+        expected_normal = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',
+                                         'tailscale_offline', 'default_rootless_podman'), True)
+        if (normal.get('kind') != 'klokast.vm-template-openrc-test.v1' or normal.get('success') is not True or
+                normal.get('operation_id') != request['operation_id'] or
+                normal.get('inputs_sha256') != request['inputs_sha256'] or
+                normal.get('kernel_release') != build['kernel_release'] or normal.get('tests') != expected_normal):
+            raise RuntimeError('candidate OpenRC boot tests failed; inspect the isolated OpenRC console')
+        value['openrc_test'] = normal
         value["tested_root_sha256"] = copied_hash.hexdigest()
         return value
     finally:
         # boot_guest must first prove that its exact guest has gone. A failed
         # cleanup leaves the files attached and visible for scoped recovery.
-        if domain(name) is not None:
+        if domain(name) is not None or domain(openrc_name) is not None:
             raise RuntimeError("test domain remains; retain all test resources")
         for path, device in loops.items():
             detach_loop(path, device)
         for path in (root, result_path, config, *data_paths):
             path.unlink(missing_ok=True)
-        write(work / "test-lifecycle.json", {"domain": name, "uuid": identity, "stage": "cleaned"})
+        write(work / "test-lifecycle.json", {"domain": name, "uuid": identity,
+              'openrc_domain': openrc_name, 'openrc_uuid': openrc_identity, "stage": "cleaned"})
 
 
 def execute(work, request):

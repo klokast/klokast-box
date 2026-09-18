@@ -91,6 +91,7 @@ class RetainedData(unittest.TestCase):
 
     def test_bytes_modes_xattrs_and_link_changes_are_detected(self):
         path = self.library / 'file'
+        path.chmod(0o644)  # Keep the mode-change case independent of the runner's umask.
         for mutation in (lambda: path.write_text('changed bytes'), lambda: path.chmod(0o600),
                          lambda: os.setxattr(path, 'user.test', b'changed')):
             before = d.tree(self.library, self.deadline)
