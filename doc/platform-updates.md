@@ -15,6 +15,8 @@ Protected box assignment reporting and locked runtime reconciliation preserve
 accepted disks and boot files. Legacy provisioning refuses assigned VMs.
 An isolated clone-personalization primitive is included in candidate testing;
 production input preparation and target qualification remain unfinished.
+Independent legacy root-disk backup and isolated restore verification are
+implemented and have passed a complete native synthetic test.
 Discovery also reports storage refusals and catalog matches for the Music
 library dataset. These matches are not approved retention or copy requests.
 The read-only `retention` report compares these observations with declared
@@ -678,12 +680,16 @@ backup qualification, writer fencing, and signed execution remain required.
 
 ## Isolated backup restore verification
 
-`retained_data.restore_backup` verifies a complete disk backup in a networkless
+`retained_data.restore_backup` verifies a complete legacy root-disk backup in a networkless
 maintenance Xen guest. It requires an exact read-only backup on `/dev/xvdc`
 and a separate disposable restore disk on `/dev/xvdd`, with the recorded size.
 The request binds the engine, protected backup receipt, disk checksum, root
 filesystem UUID, and numeric runtime identity. It supports a raw ext4 root
 or the recorded legacy root on partition 3.
+This contract checks the legacy `/var/lib/tailscale/tailscaled.state` path and
+runtime mappings in `/etc`. A later backup of an adopted retained-data LV
+needs its own layout and generation checks; it must not be passed as a legacy
+root disk or treated as verified by this test.
 
 The module also supplies a dedicated PID 1 maintenance entry. It reads a
 checksum-bound request from a separate read-only disk and writes a bounded
@@ -720,6 +726,18 @@ Build `7984e04ea7afd0514e15843e` at `722f599` repeated those checks with exact
 kernel block-device identity validation. Both builds cleaned their disposable
 guests and kept `accepted: false`. Their controller records remain in
 `discovery/builds/OPERATION`.
+
+Build `389042f01cb9a724767d3ec9` at `c560e59` also passed the dedicated
+maintenance boot, all eleven base checks, five generic OpenRC checks, and
+eight personalized boot checks. All disposable guests were cleaned. The first
+maintenance boot at `6dca4ba` exposed the initramfs read-only root; `040937a`
+adds a checked remount of the disposable OS disk and private volatile runtime
+storage. A retry stopped at the 14 GiB capacity guard before guest creation.
+Checked cleanup then removed 1,272,483,840 allocated bytes from three obsolete
+unaccepted candidates under plan
+`c31781ee0af2aeba9be15bd74d7fd180cbad05d7b41903b1b4b48ded3c407871`.
+It retained the two newest candidates, all receipts, and unknown artifacts.
+No failed check was waived and no production release was accepted.
 
 ### Independent disk copy
 
@@ -773,6 +791,17 @@ report their backing segments as `linear`. The corrected check uses snapshot
 attributes, target type, and the exact origin UUID. Checked cleanup removed
 that test's three recorded LVs. Both tests retain protected records under
 `/mnt/dom0_data/klokast-vm-backup-tests/OPERATION`.
+
+Complete pipeline test `bdd76cf953d0f83fdccace26` at `c560e59` passed on
+2026-09-18, using candidate `389042f01cb9a724767d3ec9`. All seven checks passed:
+independent copy, snapshot contents, read-only backup, isolated restore,
+numeric identity, private identity measurement, and restore cleanup.
+Final cleanup removed its synthetic source and backup LVs and verified that
+production LV and Xen identities did not change. The copy receipt checksum is
+`717349890aefc8e3ea3f108327dbc88ac2e4939454d292e348f1e2c7b8fd25c3`;
+the verified-backup receipt checksum is
+`bdf73698aa066063fea325777bbfa1924f76ab592aea14e570e3c33e8684d55f`.
+These are synthetic legacy-disk results, not production backup qualification.
 
 ## Isolated clone personalization
 
@@ -1115,8 +1144,11 @@ test exercises the installed OpenRC ordering and persistent records.
    deferred VM roles outside adoption and replacement; inventory can still
    report their unresolved data. Carry durable exclusions in the reviewed
    Instance policy before activation.
-2. Qualify the target configuration, network tests, and same-box independent
-   backup with a verified restore. The selected guests can use an explicit
+2. Qualify the target configuration and network tests. Use the delivered
+   independent-copy and isolated-restore pipeline to qualify each selected
+   legacy guest's backup, including freshness and application consistency.
+   Add the retained-data layout and generation checks needed for recurring
+   backups after adoption. The selected guests can use an explicit
    no-application profile only while checked app intent, containers, volumes,
    native services, and host-data evidence all prove that scope. Empty container
    lists alone cannot pass it. Other workloads require fixed maintenance
