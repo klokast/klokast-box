@@ -42,10 +42,11 @@ class Xen:
 
     def device(self, path):
         return {'/dev/vg0/old-os': 1, '/dev/vg0/old-data': 2,
-                '/dev/vg0/new-os': 3, '/dev/vg0/new-data': 4}[path]
+                '/dev/vg0/new-os': 3, '/dev/vg0/new-data': 4,
+                '/dev/vg0/next-os': 5, '/dev/vg0/next-data': 6}[path]
 
     def lv(self, path):
-        side = 'old' if 'old-' in path else 'new'
+        side = 'old' if path in self.request['old_disks'] else 'new'
         return {**self.request[side + '_disks'][path], 'device': self.device(path)}
 
     def check_unmounted(self, disks):
@@ -294,6 +295,52 @@ class Transactions(unittest.TestCase):
         t.store(path, original)
         self.reconcile('running')
         self.assertEqual(self.backend.running, 'old')
+
+    def next_generation(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
+        work = self.base / 'operations' / ('b' * 24); work.mkdir()
+        request = dict(self.request, operation_id=work.name, release_sha256='f' * 64,
+                       old_uuid=self.request['new_uuid'], new_uuid='33333333-3333-4333-8333-333333333333')
+        old = (self.xen / 'bak.cfg').read_bytes()
+        new = old.decode().replace(self.request['new_uuid'], request['new_uuid']).replace('new-', 'next-').encode()
+        for side, content in (('old', old), ('new', new)):
+            (work / (side + '.cfg')).write_bytes(content)
+            request[side + '_config_sha256'] = hashlib.sha256(content).hexdigest()
+            request[side + '_disks'] = {(k.replace('new-', 'next-') if side == 'new' else k): v
+                                      for k, v in self.request['new_disks'].items()}
+            request[side + '_artifacts'] = {(k.replace('new-', 'next-') if side == 'new' else k): v
+                                          for k, v in self.request['new_artifacts'].items()}
+        t.store(work / 'request.json', request)
+        backend = Xen(request)
+        return work, request, backend
+
+    def test_next_generation_recovery_retains_previous_release_identity(self):
+        work, request, backend = self.next_generation()
+        tx = t.Transaction(work, backend, lambda: self.now)
+        tx.arm(); tx.step('stop'); tx.step('start'); tx.recover()
+        previous = tx.journal['previous_assignment']
+        self.assertEqual(previous['operation_id'], self.work.name)
+        self.assertEqual(previous['release_sha256'], self.request['release_sha256'])
+        result = t.assignment_report(tx)
+        self.assertEqual(result['selection'], 'recorded-previous')
+        self.assertEqual(result['release_sha256'], self.request['release_sha256'])
+        self.assertEqual(result['vm_uuid'], request['old_uuid'])
+        provenance = json.loads((self.xen / 'bak.cfg').read_text().splitlines()[0].split(': ', 1)[1])
+        self.assertEqual(provenance['release_sha256'], self.request['release_sha256'])
+
+    def test_next_generation_refuses_drift_as_previous_accepted_configuration(self):
+        work, request, backend = self.next_generation()
+        content = (work / 'old.cfg').read_bytes().replace(b'new-kernel', b'obsolete-kernel')
+        (work / 'old.cfg').write_bytes(content)
+        (self.xen / 'bak.cfg').write_bytes(content)
+        request['old_config_sha256'] = hashlib.sha256(content).hexdigest()
+        request['old_artifacts'] = {k.replace('new-kernel', 'obsolete-kernel'): v
+                                    for k, v in request['old_artifacts'].items()}
+        t.store(work / 'request.json', request)
+        with self.assertRaisesRegex(t.Refused, 'protected previous assignment'):
+            t.Transaction(work, backend, lambda: self.now).arm()
+        self.assertEqual(backend.calls, [])
+        self.assertEqual(t.read(self.base / 'active/bak.json')['operation_id'], self.work.name)
 
     def test_assignment_pointer_conflicts_and_other_box_fail_closed(self):
         tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept')

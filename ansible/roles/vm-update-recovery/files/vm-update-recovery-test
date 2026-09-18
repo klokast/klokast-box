@@ -355,6 +355,13 @@ def main():
                             'assignment_verified': True,
                             'elapsed_seconds': round(time.monotonic() - started, 3)})
             backend.stop(guest, True)
+            # Cases are independent first-adoption fixtures, not successive
+            # releases. Do not claim the initial old disks follow an accepted
+            # candidate from the preceding case. Its terminal evidence remains.
+            if t.read(directory / 'journal.json')['stage'] not in {'complete', 'recovered'}:
+                raise RuntimeError('cannot reset a disposable case with pending recovery')
+            (t.BASE / 'active/bak.json').unlink()
+            t.syncdir(t.BASE / 'active')
     finally:
         stop_watchdogs(t)
         matches = [r for r in native.inventory() if r['config']['c_info']['name'] == name]

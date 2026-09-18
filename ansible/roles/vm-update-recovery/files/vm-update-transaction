@@ -338,6 +338,18 @@ class Transaction:
             raise Refused('legacy transaction cannot acquire controller liveness fields')
         if self.journal and 'old_shutdown_pending' in self.journal and type(self.journal['old_shutdown_pending']) is not bool:
             raise Refused('transaction shutdown state is invalid')
+        previous = self.journal.get('previous_assignment') if self.journal else None
+        if previous is not None:
+            if (not isinstance(previous, dict) or
+                    set(previous) != {'operation_id', 'request_sha256', 'release_sha256', 'profile'} or
+                    not isinstance(previous['operation_id'], str) or not OP.fullmatch(previous['operation_id']) or
+                    previous['operation_id'] == work.name or
+                    not isinstance(previous['request_sha256'], str) or not HEX.fullmatch(previous['request_sha256']) or
+                    ((previous['release_sha256'] is None) != (previous['profile'] is None)) or
+                    (previous['release_sha256'] is not None and
+                     (not isinstance(previous['release_sha256'], str) or not HEX.fullmatch(previous['release_sha256']) or
+                      previous['profile'] != 'shared-alpine-v1'))):
+                raise Refused('previous accepted assignment identity is invalid')
 
     def artifacts(self, side):
         for path, expected in self.request[side + '_artifacts'].items():
@@ -406,18 +418,25 @@ class Transaction:
 
     def assignment_content(self, side):
         config = dict(self.configs[side], uuid=self.request[side + '_uuid'])
+        release = self.release_identity(side)
         provenance = {'kind': 'klokast.vm-boot-provenance.v1',
                       'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request),
                       'engine_commit': self.request['engine_commit'],
-                      'profile': 'shared-alpine-v1' if side == 'new' else None,
+                      'profile': release['profile'],
                       'selection': 'accepted' if side == 'new' else 'recorded-previous',
-                      'release_sha256': self.request['release_sha256'] if side == 'new' else None,
+                      'release_sha256': release['release_sha256'],
                       'source_config_sha256': self.request[side + '_config_sha256']}
         # Alpine xendomains extracts double-quoted names with sed. Render
         # name explicitly so autostart recognizes an already recovered guest.
         return ('# klokast-provenance: ' + canonical(provenance) + '\n' +
                 '\n'.join(key + ' = ' + (json.dumps(value) if key == 'name' else repr(value))
                           for key, value in config.items()) + '\n').encode()
+
+    def release_identity(self, side):
+        if side == 'new':
+            return {'release_sha256': self.request['release_sha256'], 'profile': 'shared-alpine-v1'}
+        previous = (self.journal or {}).get('previous_assignment') or {}
+        return {key: previous.get(key) for key in ('release_sha256', 'profile')}
 
     def assignment(self, side):
         # Persist the selected config before adding its normal autostart link.
@@ -454,6 +473,7 @@ class Transaction:
         if self.journal is not None:
             raise Refused('operation has already been armed; do not replay it')
         pointer = BASE / 'active' / (self.request['role'] + '.json')
+        previous_assignment = None
         for existing in sorted((BASE / 'active').iterdir()):
             if existing.name not in {'bak.json', 'dmz.json', 'iot.json'}:
                 raise Refused('unexpected active transaction pointer')
@@ -466,6 +486,15 @@ class Transaction:
                 raise Refused('active transaction pointer does not match its request')
             if not older.journal or older.journal['stage'] not in {'complete', 'recovered'}:
                 raise Refused('another guest transaction is not complete')
+            if older.request['role'] == self.request['role']:
+                side = 'new' if older.journal['stage'] == 'complete' else 'old'
+                if (self.request['old_uuid'] != older.request[side + '_uuid'] or
+                        self.request['old_disks'] != older.request[side + '_disks'] or
+                        self.request['old_artifacts'] != older.request[side + '_artifacts'] or
+                        self.request['old_config_sha256'] != hashlib.sha256(older.assignment_content(side)).hexdigest() or
+                        self.request['autostart'] != (older.runtime_intent()['runtime_state'] == 'running')):
+                    raise Refused('old generation differs from the protected previous assignment')
+                previous_assignment = dict(previous, **older.release_identity(side))
         active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
         if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
             raise Refused('live Xen definition changed before arm')
@@ -476,7 +505,8 @@ class Transaction:
         # The recovery record is durable before autostart or guest state changes.
         observed = self.clock()
         liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] == 'klokast.vm-switch.v2' else {}
-        self.record('armed', deadline=observed + 1800, recovery_seconds=1800, **liveness)
+        self.record('armed', deadline=observed + 1800, recovery_seconds=1800,
+                    previous_assignment=previous_assignment, **liveness)
         store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
         watcher = self.native.watch(self.request['operation_id'], self.work)
         self.record('armed', watcher=watcher)
@@ -711,12 +741,13 @@ def assignment_report(tx):
     stage = tx.journal['stage']
     role = tx.request['role']
     side = 'new' if stage in {'accepted', 'complete'} else ('old' if stage == 'recovered' else None)
+    release = tx.release_identity(side) if side else {'release_sha256': None, 'profile': None}
     result = {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': True,
               'operation_id': tx.work.name, 'request_sha256': digest(tx.request),
               'stage': stage, 'selection': 'accepted' if side == 'new' else ('recorded-previous' if side else 'pending'),
-              'release_sha256': tx.request['release_sha256'] if side == 'new' else None,
+              'release_sha256': release['release_sha256'],
               'engine_commit': tx.request['engine_commit'],
-              'profile': 'shared-alpine-v1' if side == 'new' else None}
+              'profile': release['profile']}
     if side:
         tx.artifacts(side)
         guest = tx.guest((side,))

@@ -667,6 +667,13 @@ release hash or template profile. Generated Xen definitions carry the operation,
 source configuration checksum, and accepted release provenance.
 This read-only report is not a mutation lease.
 
+When a role already has a completed assignment, the next operation must name
+that exact old UUID, disk set, boot artifacts, generated configuration, and
+runtime intent. Local drift cannot become its recovery definition. The journal
+retains the prior operation and release identity, so failed later replacements
+report the restored accepted release. Only a first legacy adoption has unknown
+old release identity.
+
 The shared-VM runtime playbook uses `reconcile-assignment` for an assigned VM.
 It supplies the inspected request checksum, compiled intent checksum, and
 desired running or stopped state. The helper revalidates the pointer under
