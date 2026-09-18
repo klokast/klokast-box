@@ -120,6 +120,99 @@ def host_tree(root, owned, mounts, graph_root, deadline):
             'entries': count, 'topology_sha256': topology.hexdigest()}
 
 
+def unowned_tree(root, delegated, mounts, graph_root, deadline, limit=8192):
+    """Expand unresolved directory metadata without opening any file contents.
+
+    Directory descriptors and no-follow opens prevent symlink substitution.
+    Other filesystems and the separately inventoried Podman store stay excluded.
+    A large tree fails independently of the shallow host inventory.
+    """
+    roots = sorted(v['path'] for v in delegated if v['reason'] == 'unclassified-directory')
+    if any(not safe_path(path) for path in roots):
+        raise HostInventoryError('unowned directory root is invalid')
+    rows, excluded, output_bytes = [], [], 0
+    boundaries = {v['path']: 'mount' for v in mounts if v['path'] != '/'}
+    if graph_root and graph_root not in boundaries:
+        boundaries[graph_root] = 'podman-store'
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    device = os.fstat(root_fd).st_dev
+
+    def visit(parent, name, path, depth):
+        nonlocal output_bytes
+        if time.monotonic() >= deadline or len(rows) + len(excluded) >= limit or depth > 64:
+            raise HostInventoryError('unowned directory metadata exceeds its time or entry limit')
+        if not safe_path(path):
+            raise HostInventoryError('unowned directory metadata contains an unsafe path')
+        if path in boundaries:
+            excluded.append({'path': path, 'reason': boundaries[path]})
+            return
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if info.st_dev != device:
+            raise HostInventoryError('unowned directory metadata encountered an unrecorded filesystem')
+        row = {'path': path, 'mode': info.st_mode, 'uid': info.st_uid, 'gid': info.st_gid,
+               'bytes': info.st_size, 'inode': info.st_ino, 'links': info.st_nlink, 'mtime_ns': info.st_mtime_ns}
+        if stat.S_ISLNK(info.st_mode):
+            row['link_sha256'] = hashlib.sha256(os.fsencode(os.readlink(name, dir_fd=parent))).hexdigest()
+        output_bytes += len(json.dumps(row)) + 2
+        if output_bytes > 4 * 1024 * 1024:
+            raise HostInventoryError('unowned directory metadata exceeds its output limit')
+        rows.append(row)
+        if stat.S_ISDIR(info.st_mode):
+            descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                opened = os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                    raise HostInventoryError('unowned directory identity changed during collection')
+                names = []
+                with os.scandir(descriptor) as children:
+                    for child in children:
+                        names.append(child.name)
+                        if len(names) + len(rows) + len(excluded) > limit:
+                            raise HostInventoryError('unowned directory metadata exceeds its entry limit')
+                for child in sorted(names):
+                    visit(descriptor, child, path + '/' + child, depth + 1)
+                if os.fstat(descriptor).st_mtime_ns != info.st_mtime_ns:
+                    raise HostInventoryError('unowned directory changed during collection')
+            finally:
+                os.close(descriptor)
+        after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_nlink) != (
+                after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_gid, after.st_size, after.st_mtime_ns, after.st_nlink):
+            raise HostInventoryError('unowned file metadata changed during collection')
+
+    try:
+        for path in roots:
+            parts = path[1:].split('/')
+            with ExitStack() as stack:
+                parent = root_fd
+                for part in parts[:-1]:
+                    descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                    stack.callback(os.close, descriptor)
+                    if os.fstat(descriptor).st_dev != device:
+                        raise HostInventoryError('unowned directory ancestor crossed a filesystem')
+                    parent = descriptor
+                visit(parent, parts[-1], path, len(parts))
+    finally:
+        os.close(root_fd)
+    return {'roots': roots, 'entries': sorted(rows, key=lambda v: v['path']),
+            'excluded': sorted(excluded, key=lambda v: v['path'])}
+
+
+def collect_unowned(root, delegated, mounts, graph_root, deadline):
+    result = {'kind': 'klokast.vm-unowned-tree.v1', 'complete': False, 'stable': False,
+              'data_accounted': False}
+    try:
+        first = unowned_tree(root, delegated, mounts, graph_root, min(deadline, time.monotonic() + 8))
+        second = unowned_tree(root, delegated, mounts, graph_root, min(deadline, time.monotonic() + 8))
+        result.update(first, complete=True, stable=first == second)
+        result['metadata_sha256'] = hashlib.sha256(json.dumps(first, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    except HostInventoryError as error:
+        result['error'] = str(error)
+    except (OSError, ValueError, UnicodeError):
+        result['error'] = 'Unowned directory metadata is unavailable, changed, or unsafe.'
+    return result
+
+
 def maintenance_files(root, deadline, mounts=()):
     """Return script identities, never cron lines, environment, or file contents."""
     result, count = [], 0
@@ -354,6 +447,10 @@ def collect_host(storage, root=Path('/')):
                             accounts == text(root / 'etc/passwd', 65536) and
                             database == text(root / 'lib/apk/db/installed') and mounts == mount_inventory())
         result['complete'] = True
+        if result['stable']:
+            result['unowned_tree'] = collect_unowned(root, before['delegated_roots'], mounts, graph, deadline)
+            if mounts != mount_inventory():
+                result['unowned_tree']['stable'] = False
     except HostInventoryError as error:
         result['error'] = str(error)
     except (OSError, ValueError, UnicodeError):

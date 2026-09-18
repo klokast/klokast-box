@@ -77,6 +77,67 @@ class HostInventory(unittest.TestCase):
         self.assertIn('link_sha256', rows['/srv/data/alias'])
         self.assertNotIn('/srv/data/alias/must-not-read', rows)
 
+    def test_deep_metadata_accounts_for_directories_without_file_contents(self):
+        (self.root / 'home/neo/saved-data').write_text('PRIVATE APPLICATION CONTENT')
+        (self.root / 'home/neo/alias').symlink_to(self.root / 'proc')
+        (self.root / self.graph[1:] / 'private-container-file').write_text('SECRET')
+        value = self.collect()
+        tree = value['unowned_tree']
+        self.assertTrue(tree['complete']); self.assertTrue(tree['stable'])
+        self.assertFalse(tree['data_accounted'])
+        paths = {v['path'] for v in tree['entries']}
+        self.assertIn('/home/neo/saved-data', paths)
+        self.assertIn('/home/neo/alias', paths)
+        self.assertNotIn('/home/neo/alias/must-not-read', paths)
+        self.assertNotIn(self.graph + '/private-container-file', paths)
+        self.assertIn({'path': self.graph, 'reason': 'podman-store'}, tree['excluded'])
+        self.assertNotIn('PRIVATE', json.dumps(tree)); self.assertNotIn('SECRET', json.dumps(tree))
+        checked = storage.checked_unowned_tree(tree, value['delegated_roots'])
+        self.assertEqual(checked, tree)
+
+    def test_deep_metadata_failure_does_not_hide_shallow_inventory(self):
+        with patch.object(self.m, 'unowned_tree', side_effect=self.m.HostInventoryError('bounded tree failed')):
+            value = self.collect()
+        self.assertTrue(value['complete']); self.assertTrue(value['stable'])
+        self.assertFalse(value['unowned_tree']['complete'])
+        codes = {v['code'] for v in storage.assess_host_data({'host_inventory': value}, 'boxa-iot')['findings']}
+        self.assertIn('host.unowned-tree-unknown', codes)
+
+    def test_deep_metadata_boundaries_and_changes_are_not_empty_success(self):
+        delegated = [{'path': '/home/neo', 'reason': 'unclassified-directory'}]
+        mounts = self.mounts + [{'path': '/home/neo/attached', 'type': 'ext4', 'root': '/', 'device': '2:1'}]
+        (self.root / 'home/neo/attached').mkdir()
+        (self.root / 'home/neo/attached/private-file').touch()
+        value = self.m.unowned_tree(self.root, delegated, mounts, self.graph, time.monotonic() + 10)
+        self.assertIn({'path': '/home/neo/attached', 'reason': 'mount'}, value['excluded'])
+        self.assertNotIn('/home/neo/attached/private-file', [v['path'] for v in value['entries']])
+        for deadline, limit in ((time.monotonic() - 1, 8192), (time.monotonic() + 10, 1)):
+            with self.assertRaises(self.m.HostInventoryError):
+                self.m.unowned_tree(self.root, delegated, mounts, self.graph, deadline, limit=limit)
+        original = self.m.unowned_tree; calls = []
+        def change(*args):
+            result = original(*args)
+            if not calls: (self.root / 'home/neo/changed').touch()
+            calls.append(True)
+            return result
+        with patch.object(self.m, 'unowned_tree', side_effect=change):
+            value = self.m.collect_unowned(self.root, delegated, mounts, self.graph, time.monotonic() + 10)
+        self.assertTrue(value['complete']); self.assertFalse(value['stable'])
+
+    def test_deep_inventory_rejects_forged_scope_and_missing_parent(self):
+        original = self.collect()
+        for change in (lambda v: v.update(data_accounted=True),
+                       lambda v: v.update(roots=[]), lambda v: v.update(metadata_sha256='f' * 64),
+                       lambda v: v['entries'].pop(0), lambda v: v['excluded'].clear(),
+                       lambda v: v['entries'][0].update(path='/outside/other'),
+                       lambda v: v['entries'][0].update(contents='SECRET')):
+            tree = copy.deepcopy(original['unowned_tree']); change(tree)
+            # Recomputing a public hash cannot grant scope or repair coverage.
+            if tree['metadata_sha256'] != 'f' * 64:
+                tree['metadata_sha256'] = storage.digest({k: tree[k] for k in ('roots', 'entries', 'excluded')})
+            with self.assertRaises(storage.UpdateError):
+                storage.checked_unowned_tree(tree, original['delegated_roots'])
+
     def test_unmarked_supervisor_is_visible_without_arguments_or_environment(self):
         self.process(21, '/sbin/supervise-daemon', service='sample')
         self.process(22, '/usr/sbin/tailscaled', parent=21)

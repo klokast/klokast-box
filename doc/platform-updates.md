@@ -151,10 +151,19 @@ without emitting their contents. It does not follow directory symlinks or cross
 other mounts. It records the standard Podman store as separately inventoried;
 this does not approve the store's contents. Directory, path, output, and time
 limits keep the inspection bounded. Missing or changed evidence stays unknown.
-An unowned directory is an unresolved storage root. Its contents are not
-enumerated by this metadata pass and must remain intact until an approved
-adapter accounts for them. Mount boundaries inside such a root remain visible.
-This prevents large application trees from hiding all other host evidence.
+An unowned directory is an unresolved storage root. A separate bounded pass
+now enumerates metadata below these roots: file type, size, numeric ownership,
+timestamp, inode, and link count. It hashes symlink targets without following
+them and opens directories through descriptors that refuse symlink replacement.
+It excludes recorded mounts and the standard Podman store. Two passes must
+agree. The limit is 8,192 entries and 4 MiB of metadata; each pass has at most
+eight seconds within the host inspection deadline.
+
+An incomplete, excessive, or changed tree produces `host.unowned-tree-unknown`.
+It does not hide the shallow host inventory or become an empty successful tree.
+Complete metadata still produces `host.unowned-tree-unclassified`: every file
+needs an approved retention or reconstruction rule. This inspection does not
+read file contents, establish a consistent data snapshot, or authorize removal.
 
 The two metadata passes check topology and ownership stability, not a consistent
 data snapshot. APK path ownership is only a hint; it does not prove installed
@@ -706,6 +715,20 @@ persistent filesystem space; the bounded Ansible job allows 55 minutes.
 These synthetic checks do not qualify a real machine identity or production
 network paths. Approved per-machine input generation, target network tests,
 and signed adoption orchestration are still required before production use.
+
+On 2026-09-18, operation `63ca0552de85c364b0739f97` at source `d048a94`
+passed ten base checks, five generic OpenRC checks, and eight personalized
+boot checks on Alpine v3.24. The preparation guest also verified the copied
+root bytes before personalization. All disposable guests and disks were
+cleaned up. The controller retained the receipts under its matching
+`discovery/builds/` directory. The candidate remains unaccepted and used no
+production identity, data, or application image.
+
+Before this run, the setup cleanup play reclaimed 3,735,310,336 allocated bytes
+from nine older unaccepted candidates. It kept the two newest successful
+candidates and left one candidate with incomplete evidence untouched. The
+dom0 cleanup record is
+`klokast-vm-templates/cleanup/1797f8a4de6ad2de39eedf530a4bf457fea7fc0c54b14fd654a09b4eb06d38fc/`.
 
 ## Dom0 transaction and recovery
 

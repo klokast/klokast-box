@@ -5,6 +5,7 @@ This module has no disk, filesystem, subprocess, or private-source access.
 No result is a copy request, a deletion list, or an accepted adoption record.
 """
 import re
+import stat
 
 from platform_updates import UpdateError, digest, findings
 
@@ -255,6 +256,57 @@ def checked_processes(value, services):
     return value
 
 
+def checked_unowned_tree(value, delegated):
+    fields = {'kind', 'complete', 'stable', 'data_accounted', 'roots', 'entries', 'excluded', 'metadata_sha256'}
+    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-unowned-tree.v1' or
+            value['complete'] is not True or value['stable'] is not True or value['data_accounted'] is not False):
+        raise UpdateError('unowned directory metadata is unavailable or unstable')
+    roots = sorted(v['path'] for v in delegated if v['reason'] == 'unclassified-directory')
+    if value['roots'] != roots or not isinstance(value['entries'], list) or len(value['entries']) > 8192:
+        raise UpdateError('unowned directory root coverage differs')
+    by_path = {}
+    for row in value['entries']:
+        required = {'path', 'mode', 'uid', 'gid', 'bytes', 'inode', 'links', 'mtime_ns'}
+        if (not isinstance(row, dict) or set(row) not in (required, required | {'link_sha256'}) or
+                not path(row['path']) or row['path'] in by_path or
+                any(type(row[k]) is not int for k in required - {'path'}) or
+                not 0 <= row['mode'] <= 0o177777 or
+                any(not 0 <= row[k] < 2**32 for k in ('uid', 'gid')) or
+                not 0 <= row['bytes'] < 2**64 or not 0 < row['inode'] < 2**64 or
+                not 0 < row['links'] < 2**32 or not -2**63 <= row['mtime_ns'] < 2**63 or
+                stat.S_ISLNK(row['mode']) != ('link_sha256' in row) or
+                ('link_sha256' in row and (not isinstance(row['link_sha256'], str) or not HASH.fullmatch(row['link_sha256'])))):
+            raise UpdateError('unowned directory metadata has an invalid entry')
+        by_path[row['path']] = row
+    if list(by_path) != sorted(by_path) or any(r not in by_path or not stat.S_ISDIR(by_path[r]['mode']) for r in roots):
+        raise UpdateError('unowned directory coverage omits a root or is unordered')
+    boundaries = {v['path']: v['reason'] for v in delegated if v['reason'] in ('mount', 'podman-store')}
+    if not isinstance(value['excluded'], list) or len(value['excluded']) > 8192:
+        raise UpdateError('unowned directory exclusions are invalid')
+    excluded = []
+    for row in value['excluded']:
+        if (not isinstance(row, dict) or set(row) != {'path', 'reason'} or not path(row['path']) or
+                boundaries.get(row['path']) != row['reason'] or row['path'] in by_path):
+            raise UpdateError('unowned directory exclusion has no recorded boundary')
+        excluded.append(row['path'])
+    if excluded != sorted(set(excluded)) or len(by_path) + len(excluded) > 8192:
+        raise UpdateError('unowned directory coverage is duplicated or excessive')
+    root_set = set(roots)
+    for name in [*by_path, *excluded]:
+        if name in root_set:
+            continue
+        parent = name.rpartition('/')[0]
+        if parent not in by_path or not stat.S_ISDIR(by_path[parent]['mode']):
+            raise UpdateError('unowned directory entry has no inventoried parent')
+    for boundary in boundaries:
+        parent = boundary.rpartition('/')[0]
+        if parent in by_path and boundary not in excluded:
+            raise UpdateError('unowned directory inventory omitted a filesystem boundary')
+    if value['metadata_sha256'] != digest({k: value[k] for k in ('roots', 'entries', 'excluded')}):
+        raise UpdateError('unowned directory metadata checksum differs')
+    return value
+
+
 def assess_host_data(fact, host):
     """Host-wide metadata is evidence, never an allowlist of disposable files."""
     result = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
@@ -294,6 +346,11 @@ def assess_host_data(fact, host):
         return result
     result['inventory'] = {k: inventory[k] for k in ('accounts', 'maintenance_files', 'unowned_paths',
                                                    'delegated_roots', 'entries', 'topology_sha256')}
+    try:
+        result['inventory']['unowned_tree'] = checked_unowned_tree(inventory.get('unowned_tree'), delegated)
+        add('host.unowned-tree-unclassified', 'Unowned directory metadata is available; each file still needs an approved retention or reconstruction rule.', 'warning')
+    except UpdateError:
+        add('host.unowned-tree-unknown', 'Complete stable metadata for unresolved host directories is unavailable; preserve these directories pending inspection.')
     try:
         services = checked_native_services(inventory.get('native_services'), maintenance)
         result['inventory']['native_services'] = services
