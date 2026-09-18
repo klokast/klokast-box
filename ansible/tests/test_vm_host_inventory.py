@@ -18,7 +18,7 @@ class HostInventory(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         for name in ('etc/crontabs', 'etc/init.d', 'etc/runlevels/default', 'srv/data', 'lib/apk/db', 'proc',
-                     'home/neo/.local/share/containers/storage'):
+                     'home/neo/.local/share/containers/storage', 'run/openrc/started'):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         (self.root / 'etc/passwd').write_text('root:SECRET:0:0:PRIVATE:/root:/bin/sh\nneo:x:1000:1000:PRIVATE:/home/neo:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin\n')
         (self.root / 'etc/crontabs/root').write_text('SECRET=do-not-report\n')
@@ -158,6 +158,116 @@ class HostInventory(unittest.TestCase):
         result = storage.assess_host_data({'host_inventory': value}, 'boxa-bak')
         self.assertFalse(result['adoption_ready'])
         self.assertIn('host.unowned-paths', {v['code'] for v in result['findings']})
+
+
+    def service_snapshot(self):
+        return self.m.native_services(self.root, self.m.maintenance_files(self.root, time.monotonic() + 10),
+                                      time.monotonic() + 10)
+
+    def test_native_services_report_disabled_and_manual_services_without_running_scripts(self):
+        marker = self.root / 'run/openrc/started/manual'
+        marker.symlink_to('/etc/init.d/manual')
+        (self.root / 'etc/init.d/manual').write_text('#!/bin/sh\nexit 99\n')
+        (self.root / 'etc/init.d/disabled').write_text('#!/bin/sh\nexit 99\n')
+        with patch.object(self.m.subprocess, 'run', side_effect=AssertionError('no service execution')):
+            value = self.collect()
+        self.assertTrue(value['complete'])
+        rows = {v['name']: v for v in value['native_services']['services']}
+        self.assertEqual(rows['sample']['runlevels'], ['default'])
+        self.assertEqual(rows['sample']['markers'], [])
+        self.assertEqual(rows['disabled']['runlevels'], [])
+        self.assertEqual(rows['disabled']['markers'], [])
+        self.assertEqual(rows['manual']['markers'], ['started'])
+        self.assertEqual(rows['manual']['runlevels'], [])
+        self.assertFalse(value['native_services']['health_verified'])
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-iot')
+        self.assertIn('native_services', result['inventory'])
+        self.assertFalse(result['adoption_ready'])
+
+    def test_missing_openrc_is_unknown_not_stopped(self):
+        (self.root / 'run/openrc/started').rmdir()
+        self.assertFalse(self.collect()['complete'])
+        value = self.collect()
+        value.update(complete=True, stable=True)
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-iot')
+        self.assertIn('host.services-unknown', {v['code'] for v in result['findings']})
+
+    def test_old_metadata_report_is_not_complete_service_evidence(self):
+        value = self.collect()
+        del value['native_services']
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-iot')
+        self.assertIn('host.services-unknown', {v['code'] for v in result['findings']})
+
+    def test_orphan_failed_and_scheduled_services_stay_visible(self):
+        for state in ('failed', 'scheduled/dependency'):
+            directory = self.root / 'run/openrc' / state
+            directory.mkdir(parents=True)
+            (directory / 'orphan').symlink_to('/etc/init.d/orphan')
+        value = self.collect()
+        self.assertTrue(value['complete'])
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-iot')
+        self.assertTrue({'host.service-script-missing', 'host.service-failed', 'host.service-transition'} <=
+                        {v['code'] for v in result['findings']})
+
+    def test_marker_directory_alias_or_special_entry_fails_closed(self):
+        import os
+        directory = self.root / 'run/openrc/failed'
+        directory.symlink_to(self.root / 'srv/data')
+        self.assertFalse(self.collect()['complete'])
+        directory.unlink(); directory.mkdir()
+        os.mkfifo(directory / 'secret')
+        self.assertFalse(self.collect()['complete'])
+
+    def test_marker_links_are_never_followed_or_emitted(self):
+        (self.root / 'run/openrc/started/sample').symlink_to('/srv/SECRET-do-not-read')
+        result = self.service_snapshot()
+        self.assertNotIn('SECRET', json.dumps(result))
+        self.assertEqual(result['services'][0]['markers'], ['started'])
+
+    def test_marker_change_between_passes_is_unstable(self):
+        original = self.m.native_services
+        calls = []
+        def changing(*args):
+            value = original(*args)
+            if not calls:
+                (self.root / 'run/openrc/started/sample').symlink_to('/etc/init.d/sample')
+            calls.append(True)
+            return value
+        with patch.object(self.m, 'native_services', side_effect=changing):
+            value = self.collect()
+        self.assertTrue(value['complete'])
+        self.assertFalse(value['stable'])
+        self.assertIsNone(storage.assess_host_data({'host_inventory': value}, 'boxa-iot')['inventory'])
+
+    def test_marker_link_change_is_unstable_even_if_service_name_is_unchanged(self):
+        marker = self.root / 'run/openrc/started/sample'
+        marker.symlink_to('/etc/init.d/sample')
+        before = self.service_snapshot()
+        marker.unlink(); marker.symlink_to('/etc/init.d/other')
+        self.assertNotEqual(before['markers_sha256'], self.service_snapshot()['markers_sha256'])
+
+    def test_service_limits_and_unsafe_names_refuse_inventory(self):
+        with self.assertRaisesRegex(ValueError, 'time or entry limit'):
+            (self.root / 'run/openrc/started/sample').symlink_to('/etc/init.d/sample')
+            self.m.native_services(self.root, [], time.monotonic() - 1)
+        (self.root / 'run/openrc/started/bad\nname').symlink_to('/etc/init.d/sample')
+        self.assertFalse(self.collect()['complete'])
+
+    def test_forged_native_service_coverage_cannot_hide_a_workload(self):
+        original = self.collect()
+        for change in (lambda v: v.update(health_verified=True),
+                       lambda v: v.update(services=[]),
+                       lambda v: v['services'].append(copy.deepcopy(v['services'][0])),
+                       lambda v: v['services'][0].update(script=None),
+                       lambda v: v['services'][0].update(runlevels=[]),
+                       lambda v: v['services'][0].update(markers=['healthy']),
+                       lambda v: v['services'][0].update(markers=[True]),
+                       lambda v: v.update(markers_sha256=None)):
+            value = copy.deepcopy(original); change(value['native_services'])
+            result = storage.assess_host_data({'host_inventory': value}, 'boxa-iot')
+            self.assertIn('host.services-unknown', {v['code'] for v in result['findings']})
+            self.assertNotIn('native_services', result['inventory'])
+            self.assertFalse(result['adoption_ready'])
 
 
 if __name__ == '__main__':

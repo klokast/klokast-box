@@ -190,6 +190,42 @@ def assess(fact, catalogs, host):
     return result
 
 
+def checked_native_services(value, maintenance):
+    """Validate guest observations and cross-check complete script coverage."""
+    if (not isinstance(value, dict) or set(value) != {'kind', 'health_verified', 'services', 'markers_sha256'} or
+            value['kind'] != 'klokast.vm-native-services.v1' or value['health_verified'] is not False or
+            not isinstance(value['markers_sha256'], str) or not HASH.fullmatch(value['markers_sha256']) or
+            not isinstance(value['services'], list) or not 1 <= len(value['services']) <= 1024):
+        raise UpdateError('native service inventory is unavailable')
+    names, scripts, levels = [], {}, {}
+    for item in maintenance:
+        parts = item['path'].split('/')
+        if len(parts) == 4 and parts[1:3] == ['etc', 'init.d'] and not parts[3].endswith('.sh'):
+            scripts[parts[3]] = {k: v for k, v in item.items() if k != 'path'}
+        elif parts[1:3] == ['etc', 'runlevels']:
+            if len(parts) != 5 or 'link_sha256' not in item:
+                raise UpdateError('native service runlevel is unsupported')
+            levels.setdefault(parts[4], []).append(parts[3])
+    for item in value['services']:
+        if (not isinstance(item, dict) or set(item) != {'name', 'script', 'runlevels', 'markers'} or
+                not isinstance(item['name'], str) or not re.fullmatch('[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', item['name'])):
+            raise UpdateError('native service identity is invalid')
+        name = item['name']
+        for key in ('runlevels', 'markers'):
+            entries = item[key]
+            if (not isinstance(entries, list) or len(entries) > 4096 or
+                    any(not isinstance(v, str) or not re.fullmatch('[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', v) for v in entries) or
+                    entries != sorted(set(entries))):
+                raise UpdateError('native service state is invalid')
+        if (set(item['markers']) - {'started', 'starting', 'stopping', 'inactive', 'wasinactive', 'hotplugged', 'failed', 'scheduled'} or
+                item['script'] != scripts.get(name) or item['runlevels'] != sorted(levels.get(name, []))):
+            raise UpdateError('native service evidence conflicts with maintenance inventory')
+        names.append(name)
+    if names != sorted(set(names)) or (set(scripts) | set(levels)) - set(names):
+        raise UpdateError('native service coverage is incomplete or duplicated')
+    return value
+
+
 def assess_host_data(fact, host):
     """Host-wide metadata is evidence, never an allowlist of disposable files."""
     result = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
@@ -229,6 +265,18 @@ def assess_host_data(fact, host):
         return result
     result['inventory'] = {k: inventory[k] for k in ('accounts', 'maintenance_files', 'unowned_paths',
                                                    'delegated_roots', 'entries', 'topology_sha256')}
+    try:
+        services = checked_native_services(inventory.get('native_services'), maintenance)
+        result['inventory']['native_services'] = services
+        add('host.services-unqualified', 'Native service markers do not verify daemon health, approved configuration, or safe maintenance.', 'warning')
+        if any(v['script'] is None for v in services['services']):
+            add('host.service-script-missing', 'An enabled or marked native service has no inventoried init script.')
+        if any('failed' in v['markers'] for v in services['services']):
+            add('host.service-failed', 'OpenRC records a failed native service; service verification is required.')
+        if any(set(v['markers']) & {'starting', 'stopping', 'scheduled'} for v in services['services']):
+            add('host.service-transition', 'OpenRC records a native service transition or scheduled start; adoption must wait for stable verified services.')
+    except UpdateError:
+        add('host.services-unknown', 'Complete stable native service evidence is unavailable or conflicts with script and runlevel inventory.')
     add('host.accounting-unverified', 'Host files, accounts, services, timers, identities, and mounted filesystems require approved mappings; metadata is not adoption approval.')
     add('host.package-integrity-unverified', 'Package path ownership does not verify installed package contents or generated configuration.', 'warning')
     if unowned:

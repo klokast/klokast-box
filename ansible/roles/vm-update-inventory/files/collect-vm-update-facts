@@ -2,6 +2,7 @@
 """Bounded VM inspection. Do not emit credentials, container env, or app data."""
 
 import argparse
+from contextlib import ExitStack
 import datetime
 import hashlib
 import json
@@ -165,6 +166,89 @@ def maintenance_files(root, deadline, mounts=()):
     return sorted(result, key=lambda v: v['path'])
 
 
+def native_services(root, maintenance, deadline):
+    """Read OpenRC markers without executing services or rebuilding dependencies.
+
+    Markers are observations, not daemon-health checks. In particular, no
+    marker does not prove stopped, and a started marker does not prove healthy.
+    Anchor directory traversal on descriptors and never follow marker links.
+    """
+    services, topology, count = {}, hashlib.sha256(), 0
+    states = ('started', 'starting', 'stopping', 'inactive', 'wasinactive', 'hotplugged', 'failed')
+
+    def row(name):
+        if not re.fullmatch('[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', name):
+            raise HostInventoryError('native service name is unsupported')
+        if name not in services:
+            if len(services) >= 1024:
+                raise HostInventoryError('native service inventory exceeds its limit')
+            services[name] = {'name': name, 'script': None, 'runlevels': [], 'markers': []}
+        return services[name]
+
+    for item in maintenance:
+        parts = item['path'].split('/')
+        if len(parts) == 4 and parts[1:3] == ['etc', 'init.d'] and not parts[3].endswith('.sh'):
+            row(parts[3])['script'] = {k: v for k, v in item.items() if k != 'path'}
+        elif parts[1:3] == ['etc', 'runlevels']:
+            if (len(parts) != 5 or 'link_sha256' not in item or
+                    not re.fullmatch('[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', parts[3])):
+                raise HostInventoryError('native service runlevel is unsupported')
+            row(parts[4])['runlevels'].append(parts[3])
+
+    with ExitStack() as stack:
+        def directory(parent, name, optional=False):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            except FileNotFoundError:
+                if optional:
+                    return None
+                raise
+            stack.callback(os.close, fd)
+            return fd
+
+        def entries(fd):
+            nonlocal count
+            with os.scandir(fd) as children:
+                for entry in children:
+                    count += 1
+                    if count > 4096 or time.monotonic() >= deadline:
+                        raise HostInventoryError('native service inventory exceeds its time or entry limit')
+                    yield entry
+
+        def marker(fd, entry, state, prefix):
+            # OpenRC writes links to init scripts. A non-link is not an empty
+            # service state. Hash the link text without resolving its target.
+            if not stat.S_ISLNK(entry.stat(follow_symlinks=False).st_mode):
+                raise HostInventoryError('native service marker is unsupported')
+            link = os.readlink(entry.name, dir_fd=fd)
+            topology.update(json.dumps([prefix, entry.name, link]).encode() + b'\n')
+            row(entry.name)['markers'].append(state)
+
+        rootfd = directory(None, root)
+        runfd = directory(rootfd, 'run')
+        statefd = directory(runfd, 'openrc')
+        for state in states:
+            fd = directory(statefd, state, optional=state != 'started')
+            if fd is not None:
+                for entry in sorted(entries(fd), key=lambda e: e.name):
+                    marker(fd, entry, state, state)
+        scheduled = directory(statefd, 'scheduled', optional=True)
+        if scheduled is not None:
+            for parent in sorted(entries(scheduled), key=lambda e: e.name):
+                row(parent.name)  # Validate and retain scheduling dependencies.
+                fd = directory(scheduled, parent.name)
+                for entry in sorted(entries(fd), key=lambda e: e.name):
+                    marker(fd, entry, 'scheduled', 'scheduled/' + parent.name)
+    if not services:
+        raise HostInventoryError('native service inventory is empty')
+    for item in services.values():
+        item['runlevels'] = sorted(set(item['runlevels']))
+        item['markers'] = sorted(set(item['markers']))
+    return {'kind': 'klokast.vm-native-services.v1', 'health_verified': False,
+            'services': sorted(services.values(), key=lambda v: v['name']),
+            'markers_sha256': topology.hexdigest()}
+
+
 def collect_host(storage, root=Path('/')):
     result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
               'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
@@ -187,8 +271,12 @@ def collect_host(storage, root=Path('/')):
         before = host_tree(root, owned, mounts, graph, deadline)
         result.update(before)
         result['maintenance_files'] = maintenance_files(root, deadline, mounts)
+        result['native_services'] = native_services(root, result['maintenance_files'], deadline)
         after = host_tree(root, owned, mounts, graph, deadline)
-        result['stable'] = (before == after and result['maintenance_files'] == maintenance_files(root, deadline, mounts) and
+        after_maintenance = maintenance_files(root, deadline, mounts)
+        after_services = native_services(root, after_maintenance, deadline)
+        result['stable'] = (before == after and result['maintenance_files'] == after_maintenance and
+                            result['native_services'] == after_services and
                             accounts == text(root / 'etc/passwd', 65536) and
                             database == text(root / 'lib/apk/db/installed') and mounts == mount_inventory())
         result['complete'] = True

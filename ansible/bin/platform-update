@@ -348,6 +348,12 @@ def display(report, as_json):
                 match = volume['catalog_match']
                 label = match['app'] + '/' + match['dataset'] if match else 'unclassified'
                 print(f"  volume {volume['name']}: catalog={label}; path={'supported' if volume['path_supported'] else 'blocked'}; retention=unapproved")
+        host_inventory = item.get('host_assessment', {}).get('inventory') or {}
+        for service in host_inventory.get('native_services', {}).get('services', []):
+            if service['runlevels'] or service['markers']:
+                levels = ','.join(service['runlevels']) or 'none'
+                markers = ','.join(service['markers']) or 'unmarked'
+                print(f"  service {service['name']}: runlevels={levels}; OpenRC markers={markers}; health=unverified")
         for finding in item["findings"]:
             print("  " + finding["code"] + ": " + finding["message"])
         if item.get("metadata_error"):

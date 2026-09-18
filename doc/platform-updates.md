@@ -157,6 +157,23 @@ configuration, credentials, runtime state, and user data. They need separate
 approved classifications before adoption. A matching package path, unchanged
 script checksum, or empty path list cannot grant adoption authority.
 
+The host inventory also correlates native init-script checksums, enabled
+runlevels, and OpenRC state markers. It includes disabled scripts, manually
+started services, scheduled starts, and markers with missing scripts. The
+collector reads marker metadata in `/run/openrc` twice. It does not follow
+marker links, emit their targets, run service scripts, or inspect daemon
+arguments. Missing, malformed, excessive, or changing evidence blocks the
+assessment. Reports from older collectors have unknown native service coverage.
+
+`started` is an OpenRC marker, not proof that the daemon is alive or healthy.
+`unmarked` does not prove that a service is stopped. Failed markers, scheduled
+starts, transitions, and missing scripts have explicit findings. Native
+service health, processes outside OpenRC, configuration, and maintenance
+adapters still need separate checks. An empty container inventory cannot clear
+these requirements. Discovery avoids `rc-status`: its
+[dependency-cache loader](https://github.com/OpenRC/openrc/blob/0.63/src/shared/misc.c)
+can rebuild the cache and execute dependency scripts.
+
 On 2026-09-17, a native scan at `3a8c9f4` completed stable host metadata
 collection on all five running shared VMs. The scan kept every target blocked
 on unclassified paths, unqualified maintenance files, and incomplete adoption
@@ -656,11 +673,14 @@ test exercises the installed OpenRC ordering and persistent records.
 
 ### Remaining delivery order
 
-1. Promote the delivered engine through the trusted-workstation workflow and
-   validate the installed retention reader. Produce complete workload and
+1. Produce complete workload and
    storage coverage for selected VMs. Account for host services, timers, other
    runtime accounts, and unknown storage. Resolve undeclared workloads through
    approved intent; a catalog match cannot authorize adoption or removal.
+   The delivered retention reader has passed approved-engine validation. Keep
+   deferred VM roles outside adoption and replacement; inventory can still
+   report their unresolved data. Carry durable exclusions in the reviewed
+   Instance policy before activation.
 2. Add fixed maintenance adapters for all declared workloads on selected VMs,
    including native services and retained data for absent apps. Qualify exact
    deployed images, configuration, backups, and synthetic application and
