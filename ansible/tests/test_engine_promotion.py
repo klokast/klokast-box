@@ -417,5 +417,84 @@ class EnginePromotionTest(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text()), complete)
 
 
+class PromotionSourceSelectionTest(unittest.TestCase):
+    """Exercise the remote POSIX payload against real, separate Git checkouts."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.approved = self.root / "approved"
+        self.candidate = self.root / "candidate"
+        self.approved.mkdir()
+        self.git(self.approved, "init", "-q", "--initial-branch=main")
+        self.git(self.approved, "config", "user.name", "Test")
+        self.git(self.approved, "config", "user.email", "test@example.invalid")
+        (self.approved / "source").write_text("approved\n")
+        self.git(self.approved, "add", "source")
+        self.git(self.approved, "commit", "-qm", "approved")
+        self.old = self.git(self.approved, "rev-parse", "HEAD")
+        self.git(self.root, "clone", "-q", str(self.approved), str(self.candidate))
+        self.git(self.candidate, "config", "user.name", "Test")
+        self.git(self.candidate, "config", "user.email", "test@example.invalid")
+        (self.candidate / "source").write_text("candidate\n")
+        self.git(self.candidate, "commit", "-qam", "candidate")
+        self.new = self.git(self.candidate, "rev-parse", "HEAD")
+        for checkout in (self.approved, self.candidate):
+            if checkout == self.approved:
+                self.git(checkout, "remote", "add", "origin", "https://github.com/klokast/klokast-box")
+            else:
+                self.git(checkout, "remote", "set-url", "origin", "https://github.com/klokast/klokast-box")
+            self.git(checkout, "update-ref", "refs/remotes/origin/main", self.git(checkout, "rev-parse", "HEAD"))
+            self.git(checkout, "branch", "--set-upstream-to=origin/main", "main")
+        self.payload = PROMOTION_HELPER.read_text().split("<<'SELECT_SOURCE'\n", 1)[1].split("\nSELECT_SOURCE\n", 1)[0]
+
+    @staticmethod
+    def git(root, *args):
+        return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+
+    def select(self, commit=None, candidate=None):
+        return subprocess.run(
+            ["sh", "-s", "--", commit or self.new, str(candidate or self.candidate), str(self.approved)],
+            input=self.payload, text=True, capture_output=True, check=False,
+        )
+
+    def test_candidate_selected_without_changing_approved_checkout(self):
+        result = self.select()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(self.candidate / "ansible/bin/platform-instance"))
+        self.assertEqual(self.git(self.approved, "rev-parse", "HEAD"), self.old)
+        self.assertEqual((self.approved / "source").read_text(), "approved\n")
+        self.assertEqual(self.git(self.approved, "status", "--porcelain"), "")
+
+    def test_existing_current_fixed_checkout_remains_supported(self):
+        result = self.select(commit=self.old, candidate=self.root / "absent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(self.approved / "ansible/bin/platform-instance"))
+
+    def test_dirty_candidate_is_refused(self):
+        (self.candidate / "source").write_text("unreviewed\n")
+        result = self.select()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("keep the approved deployment checkout unchanged", result.stderr)
+
+    def test_stale_tracking_ref_is_refused(self):
+        self.git(self.candidate, "update-ref", "refs/remotes/origin/main", self.old)
+        self.assertNotEqual(self.select().returncode, 0)
+
+    def test_noncanonical_origin_is_refused(self):
+        self.git(self.candidate, "remote", "set-url", "origin", "https://example.invalid/repo")
+        self.assertNotEqual(self.select().returncode, 0)
+
+    def test_alias_and_wrong_branch_are_refused(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.candidate)
+        self.assertNotEqual(self.select(candidate=alias).returncode, 0)
+        self.git(self.candidate, "switch", "-qc", "candidate")
+        self.assertNotEqual(self.select().returncode, 0)
+
+
+
 if __name__ == "__main__":
     unittest.main()

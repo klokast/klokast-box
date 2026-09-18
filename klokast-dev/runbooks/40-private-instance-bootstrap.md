@@ -664,6 +664,11 @@ intent, answer `y`, and approve Touch ID. The helper commits and pushes from
 the MacBook, synchronizes the controller read-only checkout, and creates
 immutable promotion and activation receipts.
 
+The controller's private checkout is synchronized during activation. Public
+candidate selection and subsequent deployment-source convergence follow
+[Controlled Engine Promotion](../../doc/secret-authority.md#controlled-engine-promotion).
+An old approved deployment checkout does not need to be advanced for preflight.
+
 If a published promotion cannot activate, inspect the safe controller error.
 Then use the checked forward rollback. Do not reset or force-push `main`:
 

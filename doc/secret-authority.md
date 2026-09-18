@@ -300,6 +300,16 @@ and uses the existing
 the private commit. The controller stays read-only and activates only the
 approved candidate tree.
 
+The helper selects a clean controller public checkout at the reviewed public
+`main` commit. It checks `~/src/klokast/klokast-box-update-candidate` first,
+then the fixed deployment checkout. Build and prepare candidate source in the
+separate checkout while the fixed checkout remains at the active engine.
+Preflight and signature verification still use the installed root authority.
+Source selection does not fetch, change either checkout, or grant approval.
+After activation, converge the fixed deployment checkout and installed wrappers
+to the exact activated engine before normal Platform operations resume. Do not
+pull the candidate into the fixed checkout to make preflight pass.
+
 Use this command for a forward rollback:
 
 ```sh

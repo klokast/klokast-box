@@ -15,6 +15,7 @@ SIGNER_ID=human-private-instance
 CHECK_ONLY=false
 ROLLBACK=false
 CONTROLLER=""
+CONTROLLER_CLI=""
 NEW_ENGINE_COMMIT=""
 BUILD_OPERATION=""
 
@@ -132,7 +133,7 @@ activate_published_commit() {
   activation_promotion_receipt=$3
   activation_result="$WORK/activation-result.json"
   if ! tailscale ssh "$SSH_TARGET" \
-    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    "$CONTROLLER_CLI" \
     promotion-activate --engine-commit "$activation_engine" \
     --private-commit "$activation_commit" \
     --promotion-receipt "$activation_promotion_receipt" \
@@ -174,6 +175,7 @@ PY
   mv -f "$evidence_dir/.active.json.$$" "$evidence_dir/active.json"
   chmod 0600 "$evidence_dir/active.json"
   printf 'Canonical engine promotion completed and activated.\n'
+  printf 'The controller deployment checkout and installed wrappers must now converge to the activated engine before normal Platform operations.\n'
   printf '  Engine: %s\n' "$activation_engine"
   printf '  Private commit: %s\n' "$activation_commit"
 }
@@ -199,6 +201,43 @@ PUBLIC_REMOTE="$(git ls-remote "$ENGINE_REPOSITORY" refs/heads/main | awk 'NF ==
 case "$(git -C "$REPO_ROOT" config --get remote.origin.url)" in
   git@github.com:klokast/klokast-box.git|https://github.com/klokast/klokast-box|https://github.com/klokast/klokast-box.git) ;;
   *) ksa_die "public origin is not canonical klokast/klokast-box" ;;
+esac
+
+# Select public source only. The installed authority still validates canonical
+# main, the sealed build, private inputs, and the human signature. Do not advance
+# the approved deployment checkout to make a candidate pass preflight.
+CONTROLLER_CLI="$(tailscale ssh "$SSH_TARGET" sh -s -- "$PUBLIC_HEAD" \
+  /home/smith/src/klokast/klokast-box-update-candidate \
+  /home/smith/src/klokast/klokast-box <<'SELECT_SOURCE'
+set -eu
+expected_commit=$1
+shift
+case "$expected_commit" in ''|*[!0-9a-f]*) exit 2 ;; esac
+[ "${#expected_commit}" -eq 40 ] || exit 2
+for promotion_source do
+  [ -d "$promotion_source/.git" ] || continue
+  [ ! -L "$promotion_source" ] && [ ! -L "$promotion_source/.git" ] || continue
+  [ "$(cd "$promotion_source" && pwd -P)" = "$promotion_source" ] || continue
+  [ "$(git -C "$promotion_source" rev-parse HEAD)" = "$expected_commit" ] || continue
+  [ "$(git -C "$promotion_source" branch --show-current)" = main ] || continue
+  [ -z "$(git -C "$promotion_source" status --porcelain --untracked-files=all)" ] || continue
+  [ "$(git -C "$promotion_source" remote)" = origin ] || continue
+  case "$(git -C "$promotion_source" remote get-url origin)" in
+    git@github.com:klokast/klokast-box.git|https://github.com/klokast/klokast-box|https://github.com/klokast/klokast-box.git) ;;
+    *) continue ;;
+  esac
+  [ "$(git -C "$promotion_source" rev-parse '@{upstream}')" = "$expected_commit" ] || continue
+  [ "$(git -C "$promotion_source" rev-parse refs/remotes/origin/main)" = "$expected_commit" ] || continue
+  printf '%s/ansible/bin/platform-instance\n' "$promotion_source"
+  exit 0
+done
+printf '%s\n' 'No clean controller public checkout matches the reviewed main commit. Prepare klokast-box-update-candidate; keep the approved deployment checkout unchanged.' >&2
+exit 1
+SELECT_SOURCE
+)" || ksa_die "controller candidate source is not ready for engine promotion"
+case "$CONTROLLER_CLI" in
+  /home/smith/src/klokast/klokast-box-update-candidate/ansible/bin/platform-instance|/home/smith/src/klokast/klokast-box/ansible/bin/platform-instance) ;;
+  *) ksa_die "controller returned an unexpected promotion command path" ;;
 esac
 
 require_clean_branch "$PRIVATE_WORKTREE" "private"
@@ -243,7 +282,7 @@ if [ "$PRIVATE_HEAD" != "$PRIVATE_REMOTE_HEAD" ]; then
     ksa_die "private local commit is not the exact resumable engine promotion"
   RESUME_STATUS="$WORK/resume-status.json"
   tailscale ssh "$SSH_TARGET" \
-    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    "$CONTROLLER_CLI" \
     engine-status --candidate-engine "$OLD_ENGINE_COMMIT" \
     --candidate-tree "$PRIVATE_TREE" >"$RESUME_STATUS" || \
     ksa_die "controller has no approved promotion receipt for the local commit"
@@ -289,7 +328,7 @@ fi
 if [ "$ROLLBACK" = false ]; then
   CURRENT_ENGINE_STATUS="$WORK/current-engine-status.json"
   tailscale ssh "$SSH_TARGET" \
-    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance engine-status \
+    "$CONTROLLER_CLI" engine-status \
     >"$CURRENT_ENGINE_STATUS" || ksa_die "controller engine status failed"
   if python3 - "$CURRENT_ENGINE_STATUS" "$OLD_ENGINE_COMMIT" "$BUILD_OPERATION" <<'PY'
 import json
@@ -326,7 +365,7 @@ fi
 if [ "$ROLLBACK" = true ]; then
   STATUS_FILE="$WORK/engine-status.json"
   tailscale ssh "$SSH_TARGET" \
-    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance engine-status \
+    "$CONTROLLER_CLI" engine-status \
     >"$STATUS_FILE" || ksa_die "controller engine status failed"
   ROLLBACK_TARGET="$WORK/rollback-target"
   if ! python3 - "$STATUS_FILE" "$OLD_ENGINE_COMMIT" "$PRIVATE_HEAD" "$PRIVATE_TREE" >"$ROLLBACK_TARGET" <<'PY'
@@ -659,12 +698,12 @@ fi
 INTENT="$WORK/intent.json"
 if [ "$ROLLBACK" = true ]; then
   tailscale ssh "$SSH_TARGET" \
-    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    "$CONTROLLER_CLI" \
     promotion-preflight --rollback <"$ENVELOPE" >"$INTENT" || \
     ksa_die "controller rollback preflight rejected the exact candidate"
 else
   tailscale ssh "$SSH_TARGET" \
-    /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+    "$CONTROLLER_CLI" \
     promotion-preflight --new-engine-commit "$NEW_ENGINE_COMMIT" \
     --build-operation "$BUILD_OPERATION" <"$ENVELOPE" >"$INTENT" || \
     ksa_die "controller promotion preflight rejected the exact candidate"
@@ -749,7 +788,7 @@ tailscale ssh "$SSH_TARGET" "umask 077; cat > '$REMOTE_SIGNATURE'" <"$INTENT.sig
 
 APPROVAL_RESULT="$WORK/approval-result.json"
 tailscale ssh "$SSH_TARGET" \
-  /home/smith/src/klokast/klokast-box/ansible/bin/platform-instance \
+  "$CONTROLLER_CLI" \
   promotion-approve --approval-intent "$REMOTE_INTENT" \
   --approval-signature "$REMOTE_SIGNATURE" --signer-id "$SIGNER_ID" \
   >"$APPROVAL_RESULT" || ksa_die "controller did not accept the signed engine promotion"
