@@ -1,6 +1,8 @@
 """Full-disk backup verification boundaries; fixtures are local regular files."""
 import builtins
 import copy
+import hashlib
+import io
 import os
 from pathlib import Path
 import stat
@@ -123,6 +125,40 @@ class BackupRestore(unittest.TestCase):
             (sys / 'xvdd/dev').write_text('0:2')
             (sys / 'xvdc/ro').write_text('0')
             with self.assertRaisesRegex(d.CopyError, 'read-only'): d.backup_devices(self.request)
+
+    def test_maintenance_boot_binds_fixed_slots_and_exact_request(self):
+        sys = self.base / 'boot-sys'; sys.mkdir()
+        for index, name in enumerate(('xvda', 'xvdb', 'xvdc', 'xvdd', 'xvde'), 1):
+            node = sys / name; node.mkdir()
+            (node / 'dev').write_text('0:' + str(index))
+            (node / 'ro').write_text('1' if name in ('xvdc', 'xvde') else '0')
+            (node / 'size').write_text('2048' if name in ('xvdb', 'xvde') else '32768')
+        raw = d.canonical(self.request)
+        args = {'klokast_backup_restore': self.request['operation_id'], 'klokast_inputs': 'f' * 64,
+                'klokast_request_sha256': hashlib.sha256(raw).hexdigest()}
+        real_lstat = Path.lstat
+        def metadata(path):
+            if str(path) in ('/dev/xvda', '/dev/xvdb', '/dev/xvdc', '/dev/xvdd', '/dev/xvde'):
+                return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_rdev=ord(path.name[-1]) - ord('a') + 1)
+            return real_lstat(path)
+        with patch.object(d, 'BLOCK_SYS', sys), patch.object(Path, 'lstat', metadata), \
+                patch.object(builtins, 'open', side_effect=lambda *a, **k: io.BytesIO(raw + b'\0')), \
+                patch.object(d, 'read_record', return_value={'inputs_sha256': 'f' * 64}):
+            self.assertEqual(d.backup_boot_request(args), self.request)
+            for key, value in (('klokast_request_sha256', '0' * 64), ('klokast_inputs', '0' * 64),
+                               ('klokast_backup_restore', '0' * 24)):
+                with self.subTest(key=key), self.assertRaises(d.CopyError):
+                    d.backup_boot_request(dict(args, **{key: value}))
+            (sys / 'xvde/ro').write_text('0')
+            with self.assertRaisesRegex(d.CopyError, 'assignments'): d.backup_boot_request(args)
+            (sys / 'xvde/ro').write_text('1')
+            (sys / 'xvdb/size').write_text('32768')
+            with self.assertRaisesRegex(d.CopyError, '1 MiB'): d.backup_boot_request(args)
+            (sys / 'xvdb/size').write_text('2048')
+            (sys / 'xvdc/dev').write_text('0:2')
+            with self.assertRaisesRegex(d.CopyError, 'assignments'): d.backup_boot_request(args)
+        with patch.object(d.os, 'getpid', return_value=123):
+            with self.assertRaisesRegex(d.CopyError, 'PID 1'): d.backup_boot()
 
 
 if __name__ == '__main__': unittest.main()

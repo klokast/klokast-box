@@ -61,7 +61,8 @@ def backup_test(run, operation):
         else:
             raise RuntimeError('backup verification reused its restore staging')
         return {'restore_verified': True, 'readonly_backup_required': True, 'changed_backup_refused': True,
-                'receipt_sha256': result['receipt_sha256'], 'production_data_used': False}
+                'receipt_sha256': result['receipt_sha256'], 'production_data_used': False,
+                'request': request, 'expected_identity': expected}
     finally:
         for device in ('/dev/xvdc', '/dev/xvdc3'):
             with open(device, 'rb', buffering=0) as stream:

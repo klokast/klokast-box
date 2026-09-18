@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """Offline retained-data copy primitive for a disposable, networkless Xen VM.
 
 The caller supplies approved physical mappings and proves backup, fencing,
@@ -38,6 +39,15 @@ def canonical(value):
 
 def digest(value):
     return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def unique_fields(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise CopyError('retained-data record contains duplicate fields')
+        value[key] = item
+    return value
 
 
 def remaining(deadline):
@@ -310,6 +320,84 @@ def restore_backup(request, deadline):
     return result
 
 
+def backup_boot_request(args):
+    """Read a closed request disk only after checking all five Xen slots."""
+    for key, pattern in (('klokast_backup_restore', r'[0-9a-f]{24}'),
+                         ('klokast_request_sha256', r'[0-9a-f]{64}'),
+                         ('klokast_inputs', r'[0-9a-f]{64}')):
+        if not re.fullmatch(pattern, args.get(key, '')):
+            raise CopyError('backup maintenance boot has no exact operation and input assignment')
+    identities = set()
+    for name in ('xvda', 'xvdb', 'xvdc', 'xvdd', 'xvde'):
+        info = Path('/dev/' + name).lstat()
+        node = BLOCK_SYS / name
+        if (not stat.S_ISBLK(info.st_mode) or info.st_rdev in identities or
+                node.joinpath('dev').read_text().strip() != f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}' or
+                node.joinpath('ro').read_text().strip() != ('1' if name in ('xvdc', 'xvde') else '0')):
+            raise CopyError('backup maintenance disk assignments are missing, aliased, or have wrong access modes')
+        identities.add(info.st_rdev)
+        if name in ('xvdb', 'xvde') and node.joinpath('size').read_text().strip() != '2048':
+            raise CopyError('backup maintenance request and result slots must each be 1 MiB')
+    with open('/dev/xvde', 'rb', buffering=0) as stream:
+        raw = stream.read(65537)
+    prefix, separator, unused = raw.partition(b'\0')
+    if not separator or not 1 <= len(prefix) <= 65536 or hashlib.sha256(prefix).hexdigest() != args['klokast_request_sha256']:
+        raise CopyError('backup maintenance request disk is truncated or changed')
+    try:
+        request = json.loads(prefix, object_pairs_hook=unique_fields)
+    except (ValueError, UnicodeError) as error:
+        raise CopyError('backup maintenance request disk contains invalid JSON') from error
+    validate_backup(request)
+    if request['operation_id'] != args['klokast_backup_restore']:
+        raise CopyError('backup maintenance operation differs from its request')
+    marker = read_record(Path('/etc/klokast-template.json'), private=False)
+    if marker.get('inputs_sha256') != args['klokast_inputs']:
+        raise CopyError('backup maintenance root differs from its assigned package inputs')
+    return request
+
+
+def backup_boot():
+    """Dedicated PID 1: never starts guest identities, services, or networking."""
+    if os.getpid() != 1 or os.geteuid() != 0:
+        raise CopyError('backup maintenance entry requires PID 1 in its disposable Xen guest')
+    deadline = time.monotonic() + 1800
+    result_safe = False
+    result = None
+    try:
+        for name, filesystem in (('proc', 'proc'), ('sys', 'sysfs'), ('dev', 'devtmpfs')):
+            if not os.path.ismount('/' + name):
+                run(['mount', '-t', filesystem, filesystem, '/' + name], deadline)
+        environment()
+        args = {}
+        for token in Path('/proc/cmdline').read_text().split():
+            key, separator, value = token.partition('=')
+            if separator and key.startswith('klokast_'):
+                if key in args: raise CopyError('duplicate backup maintenance boot assignment')
+                args[key] = value
+        request = backup_boot_request(args)
+        result_safe = True
+        result = {'kind': 'klokast.vm-backup-restore-guest.v1', 'operation_id': request['operation_id'],
+                  'inputs_sha256': args['klokast_inputs'], 'request_sha256': digest(request), 'success': False}
+        result['restore'] = restore_backup(request, deadline)
+        result['success'] = True
+    except Exception as error:
+        # Native child diagnostics and file contents never enter the console.
+        print('backup restore refused: ' + type(error).__name__, flush=True)
+        if result_safe:
+            result['error'] = type(error).__name__ + ': ' + str(error)[:512]
+    finally:
+        if result_safe:
+            data = canonical(result) + b'\n\0'
+            if len(data) > 65536: raise CopyError('backup result exceeds its fixed slot')
+            with open('/dev/xvdb', 'wb', buffering=0) as stream:
+                if stream.write(data) != len(data): raise CopyError('backup result write was short')
+                os.fsync(stream.fileno())
+        os.sync()
+        subprocess.run(['poweroff', '-f'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10)
+        while True: time.sleep(1)
+
+
 def source_device(request):
     if request.get('kind') != 'klokast.vm-retained-stage.v3':
         return '/dev/xvdc'
@@ -546,15 +634,8 @@ def read_record(path, private=True):
             info.st_uid != os.geteuid() or info.st_mode & (0o077 if private else 0o022) or info.st_size > 1024 * 1024):
         raise CopyError('retained-data record has unsafe ownership, type, mode, or size')
 
-    def unique(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise CopyError('retained-data record contains duplicate fields')
-            value[key] = item
-        return value
     try:
-        return json.loads(path.read_bytes(), object_pairs_hook=unique)
+        return json.loads(path.read_bytes(), object_pairs_hook=unique_fields)
     except (ValueError, UnicodeError) as error:
         raise CopyError('retained-data record is invalid') from error
 
@@ -731,3 +812,7 @@ def finalize(request, stage_receipt_sha256, deadline):
     pending.unlink()
     run(['sync', '-f', str(TARGET)], deadline)
     return result
+
+
+if __name__ == '__main__':
+    backup_boot()

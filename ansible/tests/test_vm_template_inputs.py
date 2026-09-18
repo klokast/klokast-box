@@ -207,7 +207,8 @@ class HostBoundaryTests(unittest.TestCase):
                      'archive': {'sha256': 'c' * 64, 'bytes': 100},
                      'config_sha256': 'd' * 64, 'adapter_sha256': 'e' * 64}
         for mode in ('valid', 'missing', 'changed', 'normal-failed', 'normal-input-changed',
-                     'profile-failed', 'profile-receipt-changed', 'stage-source-changed'):
+                     'profile-failed', 'profile-receipt-changed', 'stage-source-changed',
+                     'restore-failed', 'restore-changed-receipt'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
                 for name in ('root.slot', 'kernel.slot', 'initramfs.slot', 'app-test.tar'):
@@ -216,25 +217,49 @@ class HostBoundaryTests(unittest.TestCase):
                            'app_test': {'selection': selection, 'capsule': {'sha256': 'f' * 64, 'bytes': 100}}}
                 build = {'kernel_release': 'test-kernel',
                          'artifacts': {name: {'bytes': 12} for name in ('kernel', 'initramfs')}}
+                restore_request = {'kind': 'klokast.vm-backup-restore.v1', 'operation_id': request['operation_id'],
+                    'engine_commit': 'a' * 40, 'backup_receipt_sha256': 'c' * 64,
+                    'disk_bytes': 256 * 1024**2, 'disk_sha256': hashlib.sha256(b'').hexdigest(),
+                    'root_partition': 3, 'root_uuid': '11111111-1111-4111-8111-111111111111',
+                    'runtime': {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[200000, 65536]]}}
+                expected_identity = {'sha256': '9' * 64, 'entries': 1, 'required_bytes': 4096}
                 def boot(work, name, identity, config, request, **kwargs):
                     text = config.read_text()
                     self.assertIn('vif = []', text)
+                    if name.startswith('vm-restore-'):
+                        self.assertIn('phy:/dev/loop2,xvdc,r', text)
+                        self.assertIn('phy:/dev/loop6,xvde,r', text)
+                        self.assertIn('init=/usr/local/libexec/retained_data.py', text)
+                        self.assertNotIn('klokast_app_capsule=', text)
+                        self.assertEqual(kwargs['timeout'], 300)
+                        restored = {'kind': 'klokast.vm-backup-restore-result.v1', 'request_sha256': digest(restore_request),
+                            **{k: restore_request[k] for k in ('backup_receipt_sha256', 'disk_sha256', 'disk_bytes', 'root_uuid', 'runtime')},
+                            'identity': expected_identity, 'complete_disk_restored': True, 'root_filesystem_checked': True,
+                            'backup_unchanged': True, 'source_freshness_verified': False,
+                            'application_consistency_verified': False, 'adoption_accepted': False}
+                        restored['receipt_sha256'] = digest(restored)
+                        if mode == 'restore-changed-receipt': restored['receipt_sha256'] = '0' * 64
+                        output = {'kind': 'klokast.vm-backup-restore-guest.v1', 'success': mode != 'restore-failed',
+                                  'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
+                                  'request_sha256': digest(restore_request), 'restore': restored}
+                        (work / 'test-result.slot').write_text(json.dumps(output))
+                        return
                     self.assertIn('phy:/dev/loop4,xvde,r', text)
                     self.assertIn('klokast_app_capsule=' + 'f' * 64, text)
                     if name.startswith(('vm-personalize-', 'vm-profile-')):
-                        self.assertIn('phy:/dev/loop6,xvdf,r', text)
+                        self.assertIn('phy:/dev/loop8,xvdf,r', text)
                         self.assertEqual(kwargs['timeout'], 300)
                         prepared = {'kind': 'klokast.vm-template-personalize-stage.v1', 'success': True,
                                     'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
                                     'production_data_used': False, 'request_sha256': '1' * 64, 'receipt_sha256': '2' * 64,
                                     'source_root_sha256': hashlib.sha256(b'opaque bytes').hexdigest()}
                         if name.startswith('vm-personalize-'):
-                            self.assertIn('phy:/dev/loop5,xvdd,w', text)
+                            self.assertIn('phy:/dev/loop7,xvdd,w', text)
                             self.assertIn('klokast_personalize_stage=1', text)
                             if mode == 'stage-source-changed': prepared['source_root_sha256'] = '0' * 64
                             (work / 'test-result.slot').write_text(json.dumps(prepared))
                         else:
-                            self.assertIn('phy:/dev/loop5,xvda,w', text)
+                            self.assertIn('phy:/dev/loop7,xvda,w', text)
                             self.assertIn('klokast_personalized=1', text)
                             profile = {**prepared, 'kind': 'klokast.vm-template-personalized-test.v1',
                                        'kernel_release': 'test-kernel', 'success': mode != 'profile-failed',
@@ -265,11 +290,13 @@ class HostBoundaryTests(unittest.TestCase):
                         result['application_test'] = {'kind': 'klokast.vm-app-test-result.v1',
                             'selection': copy.deepcopy(selection), 'tests': dict.fromkeys(app.TESTS, True),
                             'production_qualified': mode == 'changed'}
+                    result['backup_restore_test'] = {'request': restore_request, 'expected_identity': expected_identity,
+                                                     'production_data_used': False}
                     (work / 'test-result.slot').write_text(json.dumps(result))
                 with patch.object(self.host, 'SLOTS', {'root': 12}), \
                         patch.object(self.host.os, 'posix_fallocate'), \
                         patch.object(self.host, 'domain', return_value=None), \
-                        patch.object(self.host, 'attach_loop', side_effect=['/dev/loop' + str(i) for i in range(7)]) as attach, \
+                        patch.object(self.host, 'attach_loop', side_effect=['/dev/loop' + str(i) for i in range(9)]) as attach, \
                         patch.object(self.host, 'detach_loop') as detach, \
                         patch.object(self.host, 'boot_guest', side_effect=boot):
                     if mode == 'valid':
@@ -277,11 +304,13 @@ class HostBoundaryTests(unittest.TestCase):
                         self.assertFalse(result['application_test']['production_qualified'])
                     else:
                         message = ('personalized' if mode.startswith(('stage-', 'profile-')) else
-                                   ('OpenRC boot tests' if mode.startswith('normal-') else 'component test evidence'))
+                                   ('OpenRC boot tests' if mode.startswith('normal-') else
+                                    ('dedicated backup restore' if mode.startswith('restore-') else 'component test evidence')))
                         with self.assertRaisesRegex(RuntimeError, message):
                             self.host.smoke_test(work, request, build)
                     self.assertEqual(attach.call_args.kwargs, {'readonly': True})
-                    self.assertEqual(detach.call_count, 7 if mode == 'valid' or mode.startswith(('stage-', 'profile-')) else 5)
+                    self.assertEqual(detach.call_count, 9 if mode == 'valid' or mode.startswith(('stage-', 'profile-')) else
+                                     (7 if mode.startswith(('normal-', 'restore-')) else 5))
                 self.assertEqual((work / 'root.slot').read_bytes(), b'opaque bytes')
                 self.assertFalse((work / 'test-root.slot').exists())
                 self.assertEqual(json.loads((work / 'test-lifecycle.json').read_text())['stage'], 'cleaned')

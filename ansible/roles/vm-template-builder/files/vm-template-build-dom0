@@ -299,11 +299,15 @@ def smoke_test(work, request, build):
     personalize_identity = str(uuid.uuid4())
     profile_name = 'vm-profile-' + request['operation_id']
     profile_identity = str(uuid.uuid4())
-    test_names = (name, openrc_name, personalize_name, profile_name)
+    restore_name = 'vm-restore-' + request['operation_id']
+    restore_identity = str(uuid.uuid4())
+    test_names = (name, openrc_name, personalize_name, profile_name, restore_name)
     if any(domain(n) is not None for n in test_names):
         raise RuntimeError("refusing to reuse an existing template test domain")
     root = work / "test-root.slot"
     personalized_root = work / 'personalized-root.slot'
+    maintenance_root = work / 'maintenance-root.slot'
+    maintenance_request = work / 'maintenance-request.slot'
     result_path = work / "test-result.slot"
     data_paths = [work / 'test-source.slot', work / 'test-retained.slot']
     config = work / "test.cfg"
@@ -358,6 +362,63 @@ def smoke_test(work, request, build):
             verify_app_result(value.get('application_test'), request['app_test']['selection'])
         elif 'application_test' in value:
             raise RuntimeError('unexpected application test evidence')
+        # A new boot exercises the production maintenance entry with only its
+        # assigned backup, disposable restore, request, and result block slots.
+        # The old test root has an intentional poison marker; use a fresh clone.
+        fixture = value.get('backup_restore_test', {})
+        restore_request = fixture.get('request')
+        if (not isinstance(restore_request, dict) or fixture.get('production_data_used') is not False or
+                restore_request.get('operation_id') != request['operation_id']):
+            raise RuntimeError('backup fixture returned no bound maintenance request')
+        payload = json.dumps(restore_request, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+        payload_sha = hashlib.sha256(payload).hexdigest()
+        if len(payload) > 65536 or checksum(data_paths[0]) != restore_request.get('disk_sha256'):
+            raise RuntimeError('backup fixture disk or bounded request changed')
+        with (work / 'root.slot').open('rb') as source, maintenance_root.open('xb') as target:
+            os.posix_fallocate(target.fileno(), 0, SLOTS['root'])
+            while chunk := source.read(MIB):
+                if target.write(chunk) != len(chunk): raise RuntimeError('maintenance root copy was short')
+            target.flush(); os.fsync(target.fileno())
+        if checksum(maintenance_root) != copied_hash.hexdigest():
+            raise RuntimeError('maintenance root differs from the generic candidate')
+        with maintenance_request.open('xb') as stream:
+            stream.write(payload + b'\0'); stream.truncate(MIB); stream.flush(); os.fsync(stream.fileno())
+        loops[maintenance_root] = attach_loop(maintenance_root)
+        loops[maintenance_request] = attach_loop(maintenance_request, readonly=True)
+        with result_path.open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        restore_disks = [f'phy:{loops[p]},xvd{letter},{mode}' for p, letter, mode in
+                         ((maintenance_root, 'a', 'w'), (result_path, 'b', 'w'), (data_paths[0], 'c', 'r'),
+                          (data_paths[1], 'd', 'w'), (maintenance_request, 'e', 'r'))]
+        restore_extra = ('root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0 '
+                         'init=/usr/local/libexec/retained_data.py klokast_backup_restore=' + request['operation_id'] +
+                         ' klokast_inputs=' + request['inputs_sha256'] + ' klokast_request_sha256=' + payload_sha)
+        original_config = config.read_text()
+        config.write_text(f'name = {restore_name!r}\nuuid = {restore_identity!r}\ntype = "pvh"\n'
+                          f'memory = {MEMORY}\nmaxmem = {MEMORY}\nvcpus = 2\n'
+                          f'kernel = {str(work / "kernel.slot")!r}\nramdisk = {str(work / "initramfs.slot")!r}\n'
+                          f'extra = {restore_extra!r}\ndisk = {restore_disks!r}\nvif = []\n'
+                          'on_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
+        boot_guest(work, restore_name, restore_identity, config, request, slot=result_path.name,
+                   kind='klokast.vm-backup-restore-guest.v1', timeout=300)
+        restored = read_slot(result_path)
+        receipt = restored.get('restore', {})
+        receipt_body = {k: v for k, v in receipt.items() if k != 'receipt_sha256'}
+        if (restored.get('kind') != 'klokast.vm-backup-restore-guest.v1' or restored.get('success') is not True or
+                restored.get('operation_id') != request['operation_id'] or restored.get('inputs_sha256') != request['inputs_sha256'] or
+                restored.get('request_sha256') != payload_sha or receipt.get('request_sha256') != payload_sha or
+                receipt.get('backup_receipt_sha256') != restore_request['backup_receipt_sha256'] or
+                receipt.get('identity') != fixture.get('expected_identity') or
+                any(receipt.get(k) != restore_request[k] for k in ('disk_sha256', 'disk_bytes', 'root_uuid', 'runtime')) or
+                any(receipt.get(k) is not True for k in ('complete_disk_restored', 'root_filesystem_checked', 'backup_unchanged')) or
+                any(receipt.get(k) is not False for k in ('source_freshness_verified', 'application_consistency_verified', 'adoption_accepted')) or
+                receipt.get('receipt_sha256') != hashlib.sha256(json.dumps(receipt_body, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest() or
+                checksum(data_paths[0]) != restore_request['disk_sha256']):
+            raise RuntimeError('dedicated backup restore boot did not return matching complete evidence')
+        value['maintenance_restore'] = restored
+        for path in (maintenance_root, maintenance_request):
+            detach_loop(path, loops[path]); del loops[path]; path.unlink()
+        config.write_text(original_config)
         # A second cold boot uses the real init and OpenRC runlevels. The test
         # service was installed by the first guest, never by a dom0 mount.
         with result_path.open('r+b') as stream:
@@ -446,12 +507,13 @@ def smoke_test(work, request, build):
             raise RuntimeError("test domain remains; retain all test resources")
         for path, device in loops.items():
             detach_loop(path, device)
-        for path in (root, result_path, config, *data_paths, personalized_root):
+        for path in (root, result_path, config, *data_paths, personalized_root, maintenance_root, maintenance_request):
             path.unlink(missing_ok=True)
         write(work / "test-lifecycle.json", {"domain": name, "uuid": identity,
               'openrc_domain': openrc_name, 'openrc_uuid': openrc_identity,
               'personalize_domain': personalize_name, 'personalize_uuid': personalize_identity,
-              'profile_domain': profile_name, 'profile_uuid': profile_identity, "stage": "cleaned"})
+              'profile_domain': profile_name, 'profile_uuid': profile_identity,
+              'restore_domain': restore_name, 'restore_uuid': restore_identity, "stage": "cleaned"})
 
 
 def execute(work, request):
@@ -506,7 +568,7 @@ def execute(work, request):
         return result
     finally:
         if any(domain(prefix + request['operation_id']) is not None
-               for prefix in ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-')):
+               for prefix in ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-restore-')):
             raise RuntimeError("disposable guest remains; retain all build resources")
         for slot, device in list(loops.items()):
             detach_loop(backing[slot], device)

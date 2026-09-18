@@ -123,6 +123,7 @@
     - "vm-openrc-{{ template_operation_id }}.log"
     - "vm-personalize-{{ template_operation_id }}.log"
     - "vm-profile-{{ template_operation_id }}.log"
+    - "vm-restore-{{ template_operation_id }}.log"
   register: template_evidence
 
 - name: Fetch available bounded evidence including failed guest diagnostics

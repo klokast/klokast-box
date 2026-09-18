@@ -685,6 +685,15 @@ The request binds the engine, protected backup receipt, disk checksum, root
 filesystem UUID, and numeric runtime identity. It supports a raw ext4 root
 or the recorded legacy root on partition 3.
 
+The module also supplies a dedicated PID 1 maintenance entry. It reads a
+checksum-bound request from a separate read-only disk and writes a bounded
+receipt to a separate result disk. It checks all five disk identities and
+access modes before use. The boot starts no OpenRC services, Tailscale daemon,
+or application. Candidate construction tests this entry in another disposable
+Xen boot with a fresh generic root, a synthetic backup, and a writable restore
+disk. The template and backup remain unchanged. Production authority and
+backup-to-restore orchestration still belong to the future signed caller.
+
 The helper checks the backup bytes before writing, copies the complete disk,
 and reads the copy back. Only the disposable copy can receive journal replay.
 It uses the native [`e2fsck` journal-only operation](https://manpages.debian.org/bookworm/e2fsprogs/e2fsck.8.en.html),
@@ -741,6 +750,15 @@ the backup preserves the earlier bytes while the origin preserves the later
 write. It removes only its recorded test LVs and verifies that production LV
 and Xen identities did not change. This play does not back up production data,
 install an executor, or activate a replacement policy.
+
+Native test `8fceca0f96524484fc6041dd` at `0bc1c57` passed all four copy and
+source-write checks on 2026-09-18. Its cleanup removed both remaining test LVs
+and verified unchanged production LV and Xen identities. The first test
+`b22dba9b880cc53a9947d979` stopped before copying because classic snapshots
+report their backing segments as `linear`. The corrected check uses snapshot
+attributes, target type, and the exact origin UUID. Checked cleanup removed
+that test's three recorded LVs. Both tests retain protected records under
+`/mnt/dom0_data/klokast-vm-backup-tests/OPERATION`.
 
 ## Isolated clone personalization
 

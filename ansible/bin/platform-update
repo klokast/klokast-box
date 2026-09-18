@@ -320,6 +320,8 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         normal = boot_test.get('openrc_test', {})
         personalized = boot_test.get('personalized_test', {})
         personalization = boot_test.get('personalization_stage', {})
+        maintenance = boot_test.get('maintenance_restore', {})
+        restored = maintenance.get('restore', {})
         normal_tests = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',
                                       'tailscale_offline', 'default_rootless_podman'), True)
         personalized_tests = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
@@ -344,12 +346,21 @@ def prepare(box, branch, inputs_only=False, test_app=None):
                 personalization.get('operation_id') != operation or personalization.get('inputs_sha256') != inputs['inputs_sha256'] or
                 personalization.get('source_root_sha256') != candidate.get('artifacts', {}).get('root', {}).get('sha256') or
                 personalization.get('production_data_used') is not False or
+                maintenance.get('kind') != 'klokast.vm-backup-restore-guest.v1' or maintenance.get('success') is not True or
+                maintenance.get('operation_id') != operation or maintenance.get('inputs_sha256') != inputs['inputs_sha256'] or
+                not isinstance(maintenance.get('request_sha256'), str) or not re.fullmatch('[0-9a-f]{64}', maintenance['request_sha256']) or
+                restored.get('kind') != 'klokast.vm-backup-restore-result.v1' or
+                restored.get('request_sha256') != maintenance['request_sha256'] or
+                any(restored.get(k) is not True for k in ('complete_disk_restored', 'root_filesystem_checked', 'backup_unchanged')) or
+                any(restored.get(k) is not False for k in ('source_freshness_verified', 'application_consistency_verified', 'adoption_accepted')) or
+                restored.get('receipt_sha256') != digest({k: v for k, v in restored.items() if k != 'receipt_sha256'}) or
                 any(not isinstance(personalized.get(k), str) or not re.fullmatch('[0-9a-f]{64}', personalized[k]) or
                     personalized[k] != personalization.get(k) for k in ('request_sha256', 'receipt_sha256')) or
                 lifecycle.get("stage") != "cleaned" or lifecycle.get("domain") != "vm-build-" + operation or
                 test_lifecycle.get('openrc_domain') != 'vm-openrc-' + operation or
                 test_lifecycle.get('personalize_domain') != 'vm-personalize-' + operation or
                 test_lifecycle.get('profile_domain') != 'vm-profile-' + operation or
+                test_lifecycle.get('restore_domain') != 'vm-restore-' + operation or
                 test_lifecycle.get("stage") != "cleaned" or test_lifecycle.get("domain") != "vm-test-" + operation):
             raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
         if app_test:
@@ -360,6 +371,7 @@ def prepare(box, branch, inputs_only=False, test_app=None):
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
                 "validation": candidate["validation"], "base_tests": boot_test["tests"],
                 'openrc_tests': normal['tests'], 'personalized_tests': personalized['tests'],
+                'maintenance_restore_verified': True,
                 "application_test": boot_test.get("application_test")}
 
 

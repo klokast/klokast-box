@@ -175,7 +175,8 @@ class ControllerTests(unittest.TestCase):
                      'missing-partition', 'failed-partition', 'missing-openrc', 'failed-openrc',
                      'changed-openrc-input', 'missing-openrc-cleanup', 'missing-personalization', 'failed-personalization',
                      'missing-profile', 'failed-profile', 'changed-profile-receipt', 'missing-profile-cleanup',
-                     'missing-backup', 'failed-backup'):
+                     'missing-backup', 'failed-backup', 'missing-maintenance', 'failed-maintenance',
+                     'changed-maintenance-receipt', 'missing-maintenance-cleanup'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 def command(argv, **kwargs):
@@ -230,6 +231,16 @@ class ControllerTests(unittest.TestCase):
                         if mode == 'changed-profile-receipt': profile['receipt_sha256'] = '0' * 64
                         candidate['boot_test']['personalization_stage'] = prepared
                         if mode != 'missing-profile': candidate['boot_test']['personalized_test'] = profile
+                        restored = {'kind': 'klokast.vm-backup-restore-result.v1', 'request_sha256': '3' * 64,
+                                    'complete_disk_restored': True, 'root_filesystem_checked': True, 'backup_unchanged': True,
+                                    'source_freshness_verified': False, 'application_consistency_verified': False, 'adoption_accepted': False}
+                        restored['receipt_sha256'] = u.digest(restored)
+                        if mode == 'changed-maintenance-receipt': restored['receipt_sha256'] = '0' * 64
+                        if mode != 'missing-maintenance':
+                            candidate['boot_test']['maintenance_restore'] = {
+                                'kind': 'klokast.vm-backup-restore-guest.v1', 'operation_id': operation,
+                                'inputs_sha256': inputs['inputs_sha256'], 'request_sha256': '3' * 64,
+                                'success': mode != 'failed-maintenance', 'restore': restored}
                         directory = root / 'builds' / operation
                         (directory / 'candidate.json').write_text(json.dumps(candidate))
                         for filename, domain in (('lifecycle.json', 'vm-build-'), ('test-lifecycle.json', 'vm-test-')):
@@ -239,6 +250,8 @@ class ControllerTests(unittest.TestCase):
                             if filename == 'test-lifecycle.json' and mode != 'missing-profile-cleanup':
                                 record['personalize_domain'] = 'vm-personalize-' + operation
                                 record['profile_domain'] = 'vm-profile-' + operation
+                            if filename == 'test-lifecycle.json' and mode != 'missing-maintenance-cleanup':
+                                record['restore_domain'] = 'vm-restore-' + operation
                             (directory / filename).write_text(json.dumps(record))
                     return '{}'
                 with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \

@@ -124,7 +124,7 @@ def references():
     if not isinstance(guests, list) or not any(v.get('domid') == 0 for v in guests):
         raise Refused('Xen reference inventory is incomplete')
     if any(v.get('config', {}).get('c_info', {}).get('name', '').startswith(
-            ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-recovery-test-')) for v in guests):
+            ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-restore-', 'vm-recovery-test-')) for v in guests):
         raise Refused('a disposable operation is still running')
     texts = [live]
     for path in Path('/etc/xen').glob('*.cfg'):
@@ -188,7 +188,8 @@ def plan(box, pinned, referenced):
                     test.get('stage') != 'cleaned' or test.get('domain') != 'vm-test-' + operation or
                     set(record.get('artifacts', {})) != {'root', 'kernel', 'initramfs'}):
                 raise Refused('candidate has incomplete build or cleanup evidence')
-            for key, prefix in (('openrc_domain', 'vm-openrc-'), ('personalize_domain', 'vm-personalize-'), ('profile_domain', 'vm-profile-')):
+            for key, prefix in (('openrc_domain', 'vm-openrc-'), ('personalize_domain', 'vm-personalize-'),
+                                ('profile_domain', 'vm-profile-'), ('restore_domain', 'vm-restore-')):
                 if key in test and test[key] != prefix + operation:
                     raise Refused('candidate cleanup names another operation')
             candidates.append({'operation_id': operation, 'record': record, 'request': request,
