@@ -193,6 +193,64 @@ class Transactions(unittest.TestCase):
         self.assertIn('new-os', (self.xen / 'bak.cfg').read_text())
         self.assertIn('name = "bak"', (self.xen / 'bak.cfg').read_text())
 
+    def assignment_status(self):
+        with patch.object(t.socket, 'gethostname', return_value='boxa-dom0'), \
+                patch.object(t, 'operation_lock', return_value=nullcontext()):
+            return t.assignment_status('bak', self.backend)
+
+    def test_current_assignment_distinguishes_unmanaged_pending_and_accepted(self):
+        self.assertFalse(self.assignment_status()['managed'])
+        tx = self.boot()
+        pending = self.assignment_status()
+        self.assertEqual(pending['selection'], 'pending')
+        self.assertIsNone(pending['release_sha256'])
+        self.assertNotIn('boot_configuration', pending)
+        self.checks(); tx.step('tested'); tx.step('accept')
+        before = list(self.backend.calls)
+        value = self.assignment_status()
+        self.assertEqual(value['selection'], 'accepted')
+        self.assertEqual(value['release_sha256'], self.request['release_sha256'])
+        self.assertFalse(value['configuration_drift']); self.assertFalse(value['autostart_drift'])
+        self.assertEqual(value['runtime'], 'running')
+        self.assertEqual(self.backend.calls, before)
+        line = (self.xen / 'bak.cfg').read_text().splitlines()[0]
+        provenance = json.loads(line.removeprefix('# klokast-provenance: '))
+        self.assertEqual(provenance['request_sha256'], t.digest(self.request))
+        self.assertEqual(provenance['release_sha256'], value['release_sha256'])
+        self.assertEqual(provenance['profile'], 'shared-alpine-v1')
+
+    def test_assignment_reports_local_edits_without_promoting_or_repairing_them(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept')
+        path = self.xen / 'bak.cfg'
+        changed = path.read_text().replace('new-kernel', 'obsolete-kernel')
+        path.write_text(changed)
+        (self.xen / 'auto/bak.cfg').unlink()
+        value = self.assignment_status()
+        self.assertTrue(value['configuration_drift']); self.assertTrue(value['autostart_drift'])
+        self.assertEqual(value['boot_configuration']['kernel'], '/mnt/dom0_data/new-kernel')
+        self.assertEqual(path.read_text(), changed)
+        with patch.object(self.backend, 'artifact', return_value={'sha256': '0' * 64, 'bytes': 4096}):
+            with self.assertRaisesRegex(t.Refused, 'boot artifact'): self.assignment_status()
+
+    def test_recovered_assignment_does_not_claim_the_candidate_release(self):
+        tx = self.boot(); tx.recover()
+        value = self.assignment_status()
+        self.assertEqual(value['selection'], 'recorded-previous')
+        self.assertIsNone(value['release_sha256']); self.assertIsNone(value['profile'])
+        self.assertEqual(value['boot_configuration']['kernel'], '/mnt/dom0_data/old-kernel')
+        self.assertFalse(value['configuration_drift'])
+
+    def test_assignment_pointer_conflicts_and_other_box_fail_closed(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept')
+        pointer = self.base / 'active/bak.json'
+        original = t.read(pointer)
+        t.store(pointer, {**original, 'request_sha256': '0' * 64})
+        with self.assertRaisesRegex(t.Refused, 'differs'): self.assignment_status()
+        t.store(pointer, original)
+        with patch.object(t.socket, 'gethostname', return_value='other-dom0'), \
+                patch.object(t, 'operation_lock', return_value=nullcontext()):
+            with self.assertRaisesRegex(t.Refused, 'differs'): t.assignment_status('bak', self.backend)
+
     def test_recovery_at_every_preaccept_stage(self):
         for stage in ('armed', 'stopping', 'stopped', 'starting', 'booted', 'tested'):
             with self.subTest(stage=stage):

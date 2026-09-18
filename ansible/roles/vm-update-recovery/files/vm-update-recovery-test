@@ -317,6 +317,12 @@ def main():
             expected = 'new' if stage == 'accepted' else 'old'
             if guest['config']['c_info']['uuid'] != identities[expected]:
                 raise RuntimeError('recovery selected the wrong disk generation')
+            assignment = t.assignment_status('bak', backend)
+            if (assignment['selection'] != ('accepted' if expected == 'new' else 'recorded-previous') or
+                    assignment['vm_uuid'] != identities[expected] or
+                    assignment['configuration_drift'] or assignment['autostart_drift'] or
+                    assignment['runtime'] != 'running'):
+                raise RuntimeError('protected assignment differs from recovered Xen state')
             for path in allocated:
                 if path.endswith('_data'):
                     side = 'old' if '_old_' in path else 'new'
@@ -330,6 +336,7 @@ def main():
                     if source.read(26) != b'accepted-production-write\n':
                         raise RuntimeError('accepted production write changed during boot recovery')
             results.append({'stage': scenario, 'recovered_side': expected, 'data_unchanged': True,
+                            'assignment_verified': True,
                             'elapsed_seconds': round(time.monotonic() - started, 3)})
             backend.stop(guest, True)
     finally:

@@ -657,6 +657,17 @@ definition and autostart link are derived configuration. Only the current role
 pointer can select its boot assignment; historical records cannot override it.
 An interrupted operation must retain both disk generations and its boot files.
 
+The root-only `vm-update-transaction assignment-status --role ROLE` command
+reads that current pointer under the box transaction lock. It verifies the
+request, journal, box identity, selected artifacts, LV identities, and live Xen
+attachments. Its JSON report identifies the selected generation and reports
+configuration and autostart drift without changing either. A pending operation
+has no accepted selection. A recovered legacy generation has no inferred
+release hash or template profile. Generated Xen definitions carry the operation,
+source configuration checksum, and accepted release provenance.
+This read-only report is not a mutation lease. Provisioning integration must
+keep the transaction lock through its changes; that integration is still pending.
+
 Before old-guest shutdown, the helper starts a bounded local recovery process.
 The process identity includes its PID, start time, boot ID, and operation ID.
 It waits at most 30 minutes for acceptance, then allows up to 30 minutes for
