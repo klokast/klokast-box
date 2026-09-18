@@ -55,11 +55,21 @@
     group: root
     mode: '0600'
 
+- name: Create one root-owned asynchronous job directory
+  ansible.builtin.file:
+    path: /var/tmp/klokast-static-site-backup/async
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
 - name: Create a bounded Static Site archive and verify restoration on the guest
   ansible.builtin.command:
     argv: [/usr/bin/python3, /var/tmp/klokast-static-site-backup/helper.py, --operation, '{{ static_site_backup_operation }}']
   async: 660
   poll: 5
+  vars:
+    ansible_async_dir: /var/tmp/klokast-static-site-backup/async
   register: static_site_backup_result
 
 - name: Create the private controller backup directory

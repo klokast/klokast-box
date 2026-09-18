@@ -140,6 +140,7 @@ class BackupOrchestrationTests(unittest.TestCase):
         self.assertEqual(len(asynchronous), 1)
         self.assertIn('ansible.builtin.command', asynchronous[0])
         self.assertEqual(asynchronous[0]['async'], 660)
+        self.assertEqual(asynchronous[0]['vars']['ansible_async_dir'], '/var/tmp/klokast-static-site-backup/async')
         self.assertTrue(any('ansible.builtin.copy' in v for v in tasks[:tasks.index(asynchronous[0])]))
 
     def test_cleanup_play_never_selects_backend_and_requires_backup_evidence(self):
