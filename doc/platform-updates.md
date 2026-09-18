@@ -174,6 +174,16 @@ these requirements. Discovery avoids `rc-status`: its
 [dependency-cache loader](https://github.com/OpenRC/openrc/blob/0.63/src/shared/misc.c)
 can rebuild the cache and execute dependency scripts.
 
+On 2026-09-18, candidate source `9f1d977` completed native validation on all
+five running shared VMs. Both inventory passes agreed. Native application
+service markers remained visible on a VM with no containers; the assessment
+kept adoption blocked. The stopped shared VM stayed stopped. All 184 relevant
+local tests and the controller Ansible syntax check passed. Exit status 1
+reported unresolved findings, not collection failure. The candidate did not
+change the approved engine, installed wrappers, guest packages, or services.
+The controller retains the report at
+`/var/lib/klokast/updates/discovery/native-services-validation-9f1d977.json`.
+
 On 2026-09-17, a native scan at `3a8c9f4` completed stable host metadata
 collection on all five running shared VMs. The scan kept every target blocked
 on unclassified paths, unqualified maintenance files, and incomplete adoption
