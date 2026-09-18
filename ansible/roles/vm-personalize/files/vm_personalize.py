@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import time
 
 import retained_data as data
@@ -41,7 +42,7 @@ def validate(request):
               'inputs_sha256', 'root_uuid', 'retained_uuid', 'runtime', 'files',
               'packages', 'admin_password_hash', 'retained_receipt_sha256'}
     if (not isinstance(request, dict) or set(request) != fields or
-            request['kind'] != 'klokast.vm-personalize.v1'):
+            request['kind'] != 'klokast.vm-personalize.v2'):
         raise PersonalizeError('unsupported or incomplete personalization request')
     patterns = {'operation_id': r'[0-9a-f]{24}', 'box': r'[a-z0-9][a-z0-9-]{0,30}',
                 'engine_commit': r'[0-9a-f]{40}', 'release_sha256': r'[0-9a-f]{64}',
@@ -123,8 +124,23 @@ def put(relative, content, mode):
         regular(ROOT, relative)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
     with os.fdopen(descriptor, 'wb') as stream:
-        stream.write(content.encode()); stream.flush(); os.fsync(stream.fileno())
+        stream.write(content if isinstance(content, bytes) else content.encode())
+        stream.flush(); os.fsync(stream.fileno())
         os.fchmod(stream.fileno(), mode)
+
+
+def ssh_public_digest(path, kind, deadline):
+    # Native OpenSSH parses private keys. Only a public-key digest leaves this
+    # helper; key contents and native diagnostics never enter a receipt/log.
+    result = subprocess.run(['ssh-keygen', '-y', '-P', '', '-f', str(path)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=min(10, data.remaining(deadline)))
+    fields = result.stdout.split()
+    algorithms = {'rsa': {b'ssh-rsa'}, 'ed25519': {b'ssh-ed25519'},
+                  'ecdsa': {b'ecdsa-sha2-nistp256', b'ecdsa-sha2-nistp384', b'ecdsa-sha2-nistp521'}}
+    if result.returncode or not 2 <= len(fields) or len(result.stdout) > 16384 or fields[0] not in algorithms[kind]:
+        raise PersonalizeError('retained SSH host key is invalid, encrypted, or has the wrong algorithm')
+    return hashlib.sha256(b' '.join(fields[:2])).hexdigest()
 
 
 def package_set():
@@ -214,20 +230,33 @@ def personalize(request, deadline):
             any((RETAINED / name).exists() or (RETAINED / name).is_symlink()
                 for name in ('.klokast-stage-pending', '.klokast-final-pending', '.klokast-copy-pending'))):
         raise PersonalizeError('retained identity differs from its completed final-sync receipt')
-    accounts = account_files(request)
-    home = data.below(ROOT, 'home/neo')
-    if home.exists() or home.is_symlink() or any(data.below(ROOT, 'var/lib/tailscale').iterdir()):
-        raise PersonalizeError('generic template contains a machine home or Tailscale state')
     claim = ROOT / '.klokast-personalize-pending'
     receipt_path = ROOT / 'etc/klokast-personalization.json'
     if claim.exists() or claim.is_symlink() or receipt_path.exists() or receipt_path.is_symlink():
         raise PersonalizeError('clone is already personalized or has an interrupted attempt')
+    ssh_files, ssh_public = {}, {}
+    for key, relative in data.SSH_IDENTITIES.items():
+        path = regular(RETAINED, key, 65536)
+        if (not path.stat().st_size or stat.S_IMODE(path.stat().st_mode) != 0o600 or
+                final['entries'].get(key) != data.tree(path, deadline)):
+            raise PersonalizeError('retained SSH host key differs from its private final-sync receipt')
+        ssh_public[key] = ssh_public_digest(path, key.removeprefix('platform-ssh-'), deadline)
+        # A generic template must never supply a machine's host key.
+        destination = data.below(ROOT, relative)
+        if destination.exists() or destination.is_symlink():
+            raise PersonalizeError('generic template contains an SSH host key')
+        ssh_files[relative] = (path.read_bytes(), 0o600)
+    accounts = account_files(request)
+    home = data.below(ROOT, 'home/neo')
+    if home.exists() or home.is_symlink() or any(data.below(ROOT, 'var/lib/tailscale').iterdir()):
+        raise PersonalizeError('generic template contains a machine home or Tailscale state')
     # The failed clone remains poisoned. Never resume partially written accounts
     # or reuse a disk after an interrupted personalization.
     data.create_record(claim, {'operation_id': request['operation_id'], 'request_sha256': data.digest(request)})
     data.run(['sync', '-f', str(ROOT)], deadline)
     files = {k: (v, FILES[k]) for k, v in request['files'].items()}
     files.update(accounts)
+    files.update(ssh_files)
     files.update({
         'etc/fstab': ('/dev/xvda / ext4 defaults 0 1\nUUID=' + request['retained_uuid'] + ' /srv/retained ext4 defaults 0 2\n', 0o644),
         'etc/conf.d/tailscale': ('no_logs_no_support=yes\ncommand_args="--state=/srv/retained/' + IDENTITY + '"\nrc_need="localmount nftables"\n', 0o644),
@@ -252,7 +281,7 @@ def personalize(request, deadline):
     if package_set() != request['packages'] or data.runtime_identity(ROOT) != request['runtime']:
         raise PersonalizeError('personalization changed packages or numeric identity')
     mounted(request)
-    receipt = {'kind': 'klokast.vm-personalization-result.v1', 'operation_id': request['operation_id'],
+    receipt = {'kind': 'klokast.vm-personalization-result.v2', 'operation_id': request['operation_id'],
                'request_sha256': data.digest(request), 'release_sha256': request['release_sha256'],
                'inputs_sha256': request['inputs_sha256'], 'engine_commit': request['engine_commit'],
                'profile': 'shared-alpine-v1', 'hostname': request['box'] + '-' + request['role'],
@@ -260,6 +289,7 @@ def personalize(request, deadline):
                'retained_receipt_sha256': request['retained_receipt_sha256'],
                'runtime': request['runtime'], 'files': {k: {'sha256': hashlib.sha256(regular(ROOT, k).read_bytes()).hexdigest(),
                                                           'mode': mode} for k, (_content, mode) in files.items()},
+               'ssh_public_sha256': ssh_public,
                'packages_unchanged': True, 'adoption_accepted': False}
     data.create_record(receipt_path, receipt)
     data.run(['sync', '-f', str(ROOT)], deadline)

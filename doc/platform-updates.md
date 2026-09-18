@@ -625,10 +625,12 @@ an unaccepted candidate, not an adoption receipt.
 
 The separate `klokast.vm-retained-stage.v2` contract adds typed entries to the
 staging and final-sync helper. Each entry has `key`, `source`, and `type`.
-`directory` uses the existing dataset rules. The initial `identity-file`
-adapter supports only key `platform-tailscale-state` and legacy source
-`var/lib/tailscale/tailscaled.state`. For a retained-data source, `source` must
-equal that key. It cannot select a whole Tailscale directory, another credential
+`directory` uses the existing dataset rules. The `identity-file` adapter supports
+key `platform-tailscale-state` at legacy source
+`var/lib/tailscale/tailscaled.state`, and keys `platform-ssh-rsa`,
+`platform-ssh-ecdsa`, and `platform-ssh-ed25519` at their exact
+`etc/ssh/ssh_host_TYPE_key` paths. For a retained-data source, `source` must
+equal its key. It cannot select a whole Tailscale directory, another credential
 file, or an arbitrary host path. The original v1 directory contract stays valid
 and refuses typed file entries.
 
@@ -823,7 +825,21 @@ OpenRC configuration selects that ordinary file with `--state`; it does not
 bind-mount a file that Tailscale must replace atomically. Machine configuration
 requires the exact completed final-sync receipt and verifies the opaque
 identity's content and numeric metadata against it before any OS write.
-Pending copies and changed identity bytes block personalization. Configuration
+Pending copies and changed identity bytes block personalization. The v2
+personalization contract also requires all three retained SSH host keys. Native
+`ssh-keygen` validates their format and algorithm before any OS write. The helper
+copies them to the exact `/etc/ssh/ssh_host_TYPE_key` files with mode `0600` and
+records their public-key digests. It rejects keys already in a generic image
+and rejects the old v1 request, which did not require SSH identity preservation.
+Tailscale [uses system SSH host keys when running as root](https://github.com/tailscale/tailscale/blob/main/ssh/tailssh/hostkeys.go);
+the node state file alone does not preserve this identity. Hosts that use
+Tailscale's fallback key directory require separate qualification and are not
+supported by this initial key-copy layout. On 2026-09-18, read-only inspection
+through the controller found all three system keys on k001-dmz, k002-dmz, and
+k002-iot, each root-owned, single-linked, and mode `0600`. No key contents were
+returned to the runner.
+
+Configuration
 includes the retained mount, network and firewall files, and fixed boot
 services. The receipt records source and file checksums without configuration
 contents. A failed attempt leaves a persistent marker and the clone cannot
@@ -831,7 +847,9 @@ be reused.
 
 Personalization input can contain a machine-specific encrypted admin password.
 Keep that input in restricted machine staging, outside Git and generic template
-artifacts. The synthetic test uses a locked account and dummy identity bytes.
+artifacts. The synthetic test uses a locked account, dummy Tailscale state, and
+new disposable SSH keys. No private key fixture is committed. The public base
+profile includes `openssh-keygen` for native key validation.
 The Ansible candidate builder requires this tenth base test group in addition
 to the separate OpenRC boot checks. The small filesystem fixture verifies file
 construction and numeric ownership on disposable ext4 disks.

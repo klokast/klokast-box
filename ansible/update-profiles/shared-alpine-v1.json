@@ -6,7 +6,7 @@
   "packages": [
     "alpine-base", "ca-certificates", "doas", "e2fsprogs", "fuse-overlayfs",
     "iproute2", "iptables", "jq", "linux-virt", "mkinitfs", "nftables",
-    "podman", "python3", "rsync", "shadow-subids", "slirp4netns",
+    "openssh-keygen", "podman", "python3", "rsync", "shadow-subids", "slirp4netns",
     "tailscale", "tailscale-openrc", "tzdata"
   ],
   "repositories": ["main", "community"],

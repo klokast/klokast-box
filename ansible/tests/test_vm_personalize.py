@@ -43,6 +43,10 @@ class Personalization(unittest.TestCase):
         self.assertEqual(p.data.runtime_identity(self.root), self.request['runtime'])
         self.assertEqual((self.root / 'lib/apk/db/installed').read_bytes(), db)
         self.assertEqual((self.retained / p.IDENTITY).read_bytes(), identity)
+        for key, relative in p.data.SSH_IDENTITIES.items():
+            self.assertEqual((self.root / relative).read_bytes(), (self.retained / key).read_bytes())
+            self.assertIn(key, receipt['ssh_public_sha256'])
+            self.assertNotIn('PRIVATE KEY', json.dumps(receipt))
         self.assertFalse(any((self.root / 'var/lib/tailscale').iterdir()))
         self.assertIn('--state=/srv/retained/platform-tailscale-state', (self.root / 'etc/conf.d/tailscale').read_text())
         self.assertIn(self.request['retained_uuid'], (self.root / 'etc/fstab').read_text())
@@ -102,6 +106,36 @@ class Personalization(unittest.TestCase):
             with self.assertRaises(InterruptedError): self.run_personalize()
         with self.assertRaisesRegex(p.PersonalizeError, 'interrupted'): self.run_personalize()
         self.assertFalse((self.root / 'etc/klokast-personalization.json').exists())
+
+    def test_changed_or_unrecorded_ssh_key_refused_before_writes(self):
+        key = self.retained / 'platform-ssh-rsa'
+        key.write_bytes((self.retained / 'platform-ssh-ed25519').read_bytes())
+        with self.assertRaisesRegex(p.PersonalizeError, 'SSH host key'):
+            self.run_personalize()
+        self.assertFalse((self.root / '.klokast-personalize-pending').exists())
+        final_path = self.retained / '.klokast-final-result.json'
+        final = p.data.read_record(final_path)
+        final['entries']['platform-ssh-rsa'] = p.data.tree(key, time.monotonic() + 60)
+        final['receipt_sha256'] = p.data.digest({k: v for k, v in final.items() if k != 'receipt_sha256'})
+        final_path.write_text(json.dumps(final))
+        self.request['retained_receipt_sha256'] = final['receipt_sha256']
+        with self.assertRaisesRegex(p.PersonalizeError, 'wrong algorithm'):
+            self.run_personalize()
+        self.assertFalse((self.root / '.klokast-personalize-pending').exists())
+
+    def test_old_contract_cannot_omit_ssh_identity(self):
+        self.request['kind'] = 'klokast.vm-personalize.v1'
+        with self.assertRaisesRegex(p.PersonalizeError, 'request'):
+            self.run_personalize()
+        self.assertFalse((self.root / '.klokast-personalize-pending').exists())
+
+    def test_template_host_key_is_refused(self):
+        destination = self.root / 'etc/ssh/ssh_host_rsa_key'
+        destination.parent.mkdir()
+        destination.write_text('unapproved key')
+        with self.assertRaisesRegex(p.PersonalizeError, 'generic template contains'):
+            self.run_personalize()
+        self.assertFalse((self.root / '.klokast-personalize-pending').exists())
 
 
 if __name__ == '__main__':

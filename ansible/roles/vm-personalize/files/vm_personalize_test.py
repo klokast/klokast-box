@@ -12,6 +12,15 @@ import time
 import vm_personalize as p
 
 
+def ssh_fixture(retained, deadline):
+    """Generate disposable keys; no private key fixture is committed to Git."""
+    for key in p.data.SSH_IDENTITIES:
+        p.data.run(['ssh-keygen', '-q', '-t', key.removeprefix('platform-ssh-'),
+                    '-N', '', '-f', str(retained / key)], deadline)
+        (retained / (key + '.pub')).unlink()
+    return {key: p.data.tree(retained / key, deadline) for key in p.data.SSH_IDENTITIES}
+
+
 def prepare_boot(run, operation, inputs_sha256, source_sha256):
     """Prepare a separate synthetic machine from the sealed read-only disk.
 
@@ -66,9 +75,10 @@ def prepare_boot(run, operation, inputs_sha256, source_sha256):
         final = {'kind': 'klokast.vm-retained-final-result.v3', 'request_sha256': 'e' * 64,
                  'stage_receipt_sha256': 'f' * 64, 'entries': {p.IDENTITY: p.data.tree(identity, deadline)},
                  'copy_verified': True, 'adoption_accepted': False}
+        final['entries'].update(ssh_fixture(p.RETAINED, deadline))
         final['receipt_sha256'] = p.data.digest(final)
         p.data.create_record(p.RETAINED / '.klokast-final-result.json', final)
-        request = {'kind': 'klokast.vm-personalize.v1', 'operation_id': operation, 'box': 'boxa', 'role': 'iot',
+        request = {'kind': 'klokast.vm-personalize.v2', 'operation_id': operation, 'box': 'boxa', 'role': 'iot',
                    'engine_commit': marker['engine_commit'], 'inputs_sha256': inputs_sha256,
                    'release_sha256': p.data.digest({'synthetic_release': operation, 'inputs_sha256': inputs_sha256}),
                    'root_uuid': p.data.filesystem_uuid('/dev/xvdd'), 'retained_uuid': retained_uuid,
@@ -111,6 +121,12 @@ def verify_boot(run, operation, inputs_sha256):
         if (hashlib.sha256(path.read_bytes()).hexdigest() != record['sha256'] or
                 stat.S_IMODE(path.stat().st_mode) != record['mode']):
             raise RuntimeError('personalized configuration changed during normal boot')
+    for key, relative in p.data.SSH_IDENTITIES.items():
+        kind = key.removeprefix('platform-ssh-')
+        expected = receipt['ssh_public_sha256'][key]
+        if (p.ssh_public_digest(Path('/') / relative, kind, time.monotonic() + 30) != expected or
+                p.ssh_public_digest(Path('/srv/retained') / key, kind, time.monotonic() + 30) != expected):
+            raise RuntimeError('personalized SSH host identity differs from retained state')
     if p.package_set() != request['packages'] or p.data.runtime_identity(Path('/')) != request['runtime']:
         raise RuntimeError('personalized packages or numeric ownership differ')
     mounts = [r for r in p.data.mount_records() if r['path'] == '/srv/retained']
@@ -152,7 +168,7 @@ def verify_boot(run, operation, inputs_sha256):
 
 def fixture(root, retained):
     runtime = {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[300000, 65536]]}
-    request = {'kind': 'klokast.vm-personalize.v1', 'operation_id': 'a' * 24, 'box': 'boxa', 'role': 'iot',
+    request = {'kind': 'klokast.vm-personalize.v2', 'operation_id': 'a' * 24, 'box': 'boxa', 'role': 'iot',
                'engine_commit': 'b' * 40, 'release_sha256': 'c' * 64, 'inputs_sha256': 'd' * 64,
                'root_uuid': '11111111-1111-4111-8111-111111111111',
                'retained_uuid': '22222222-2222-4222-8222-222222222222',
@@ -181,6 +197,7 @@ def fixture(root, retained):
              'stage_receipt_sha256': 'f' * 64,
              'entries': {p.IDENTITY: p.data.tree(retained / p.IDENTITY, time.monotonic() + 60)},
              'copy_verified': True, 'adoption_accepted': False}
+    final['entries'].update(ssh_fixture(retained, time.monotonic() + 60))
     final['receipt_sha256'] = p.data.digest(final)
     p.data.create_record(retained / '.klokast-final-result.json', final)
     request['retained_receipt_sha256'] = final['receipt_sha256']

@@ -73,6 +73,20 @@ class RetainedIdentity(unittest.TestCase):
                 d.stage(request, self.deadline)
         self.assertEqual(list(self.target.iterdir()), [])
 
+    def test_system_ssh_keys_use_exact_paths_and_survive_final_sync(self):
+        for key, relative in d.SSH_IDENTITIES.items():
+            path = self.source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'opaque-synthetic-' + key.encode()); path.chmod(0o600)
+            self.request['entries'].append({'key': key, 'source': relative, 'type': 'identity-file'})
+        bad = copy.deepcopy(self.request)
+        bad['entries'][-1]['source'] = 'etc/ssh/sshd_config'
+        with self.assertRaises(d.CopyError):
+            d.stage(bad, self.deadline)
+        self.stage(); self.finalize()
+        for key, relative in d.SSH_IDENTITIES.items():
+            self.assertEqual((self.target / key).read_bytes(), (self.source / relative).read_bytes())
+
     def test_v1_does_not_silently_accept_typed_file_mappings(self):
         request = copy.deepcopy(self.request)
         request['kind'] = 'klokast.vm-retained-stage.v1'

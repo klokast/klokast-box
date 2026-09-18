@@ -24,6 +24,9 @@ MAX_ENTRIES = 100000
 RESERVE = 128 * 1024 * 1024
 # Public physical convention, not permission to copy a production identity.
 IDENTITY_FILES = {'platform-tailscale-state': 'var/lib/tailscale/tailscaled.state'}
+SSH_IDENTITIES = {'platform-ssh-' + kind: 'etc/ssh/ssh_host_' + kind + '_key'
+                  for kind in ('rsa', 'ecdsa', 'ed25519')}
+IDENTITY_FILES.update(SSH_IDENTITIES)
 MAX_IDENTITY_BYTES = 8 * 1024 * 1024
 BACKUP_MOUNT = Path('/backup-restore')
 BACKUP_PENDING = Path('/run/klokast-backup-restore-pending')
