@@ -54,6 +54,9 @@ the approved controller engine, use
 `-e '{"platform_update_discovery_scheduled":true}'` to enable two OS cron entries.
 The default leaves the schedules disabled. Discovery runs daily at 00:10 UTC.
 Evidence verification runs hourly at minute 20. Commands have time limits.
+Enabling these schedules also starts and enables the controller's OS `crond`
+service. Disabling them removes only these two jobs; it does not stop the
+shared OS cron service.
 There is no replacement schedule or new daemon.
 Only the explicitly active controller can run discovery. The existing
 `platform-check-remote` dispatcher can request the `updates` health target.
@@ -201,7 +204,31 @@ direct private-file fallback for candidate code.
 The authority setup playbook verifies this read-only interface. Local tests
 cover input hashes, source changes, absent apps, wrong-box declarations,
 missing datasets, stopped VMs, stale evidence, and unchanged discovery files.
-This interface has not yet passed live validation under a promoted engine.
+On 2026-09-18, engine `5b2f4a8` passed live validation after signed promotion
+and installed-wrapper convergence. Discovery completed for 12 VM entries.
+The retention report matched both Music library volumes to declared retention
+for an absent app. It kept unclassified application and host data, writable
+container layers, and the remaining adoption gates blocked. Exit status 1
+reported these findings; it did not indicate a reader failure.
+
+The controller retains the reports under
+`/var/lib/klokast/updates/discovery/scan-validation-5b2f4a8.json` and
+`retention-validation-5b2f4a8.json`. Daily discovery and hourly evidence checks
+are enabled. No production adoption, replacement, or standing-policy activation
+occurred. Stopped guests and application containers stayed stopped.
+
+After a signed engine promotion, old installed wrappers can prevent the normal
+execution inventory from loading. For this narrow wrapper-install step, use:
+
+```sh
+ansible/bin/converge-ops-controller --box BOX \
+  --inventory ansible/inventory/hosts.yml \
+  -- --tags ops-controller-secret-authority-wrappers
+```
+
+This uses the checked-in bootstrap inventory and limits execution to the selected controller. Verify
+the installed readers afterward. It does not permit normal Platform operations
+to use bootstrap inventory as an alternative desired-state source.
 
 ### Evidence storage and freshness
 

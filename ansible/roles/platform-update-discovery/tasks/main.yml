@@ -55,3 +55,10 @@
     job: >-
       /usr/bin/timeout 120 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update verify
       > /var/lib/klokast/updates/discovery/cron-verify.log 2>&1
+
+- name: Enable the controller OS cron service for scheduled evidence collection
+  ansible.builtin.service:
+    name: crond
+    enabled: true
+    state: started
+  when: platform_update_discovery_scheduled | default(false) | bool
