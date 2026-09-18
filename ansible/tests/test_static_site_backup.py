@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import yaml
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -130,6 +131,23 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             b.restore(archive, Path(self.tmp.name)/'restore', {'../escape': {'type': 'file'}})
         self.assertFalse((Path(self.tmp.name)/'escape').exists())
+
+
+class BackupOrchestrationTests(unittest.TestCase):
+    def test_bounded_backup_uses_an_async_supported_command_after_staging(self):
+        tasks = yaml.safe_load((SCRIPT.parents[1] / 'tasks/main.yml').read_text())
+        asynchronous = [v for v in tasks if v.get('async')]
+        self.assertEqual(len(asynchronous), 1)
+        self.assertIn('ansible.builtin.command', asynchronous[0])
+        self.assertEqual(asynchronous[0]['async'], 660)
+        self.assertTrue(any('ansible.builtin.copy' in v for v in tasks[:tasks.index(asynchronous[0])]))
+
+    def test_cleanup_play_never_selects_backend_and_requires_backup_evidence(self):
+        plays = yaml.safe_load((REPO / 'ansible/playbooks/74-platform-update-dmz-cleanup.yml').read_text())
+        self.assertEqual([v['hosts'] for v in plays], ['dmz', 'dmz'])
+        self.assertTrue(all(v['any_errors_fatal'] for v in plays))
+        self.assertIn('static_site_backup_verified.rc == 0', plays[1]['tasks'][0]['ansible.builtin.assert']['that'])
+        self.assertTrue(plays[1]['tasks'][1]['vars']['nextcloud_remove_dmz_only'])
 
 
 if __name__ == '__main__':

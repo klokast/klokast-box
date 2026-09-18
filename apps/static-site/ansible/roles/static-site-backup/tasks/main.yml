@@ -23,10 +23,41 @@
   loop_control:
     label: '{{ item.item }}'
 
+- name: Inspect the protected guest backup staging directory
+  ansible.builtin.stat:
+    path: /var/tmp/klokast-static-site-backup
+    follow: false
+  register: static_site_backup_staging
+
+- name: Refuse unsafe existing staging before installing the helper
+  ansible.builtin.assert:
+    that:
+      - >-
+        not static_site_backup_staging.stat.exists or
+        (static_site_backup_staging.stat.isdir | default(false) and
+         not static_site_backup_staging.stat.islnk | default(false) and
+         static_site_backup_staging.stat.uid == 0 and
+         static_site_backup_staging.stat.mode == '0700')
+
+- name: Create protected guest backup staging
+  ansible.builtin.file:
+    path: /var/tmp/klokast-static-site-backup
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Stage the fixed guest backup helper
+  ansible.builtin.copy:
+    src: static-site-backup
+    dest: /var/tmp/klokast-static-site-backup/helper.py
+    owner: root
+    group: root
+    mode: '0600'
+
 - name: Create a bounded Static Site archive and verify restoration on the guest
-  ansible.builtin.script:
-    cmd: 'static-site-backup --operation {{ static_site_backup_operation }}'
-    executable: /usr/bin/python3
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /var/tmp/klokast-static-site-backup/helper.py, --operation, '{{ static_site_backup_operation }}']
   async: 660
   poll: 5
   register: static_site_backup_result
@@ -85,7 +116,6 @@
   register: static_site_backup_verified
 
 - name: Recheck the original data against its verified backup before removal
-  ansible.builtin.script:
-    cmd: 'static-site-backup --operation {{ static_site_backup_operation }} --verify-source'
-    executable: /usr/bin/python3
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /var/tmp/klokast-static-site-backup/helper.py, --operation, '{{ static_site_backup_operation }}', --verify-source]
   changed_when: false
