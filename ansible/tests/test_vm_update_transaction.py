@@ -126,6 +126,64 @@ class Transactions(unittest.TestCase):
     def boot(self):
         tx = self.tx(); tx.arm(); tx.step('stop'); tx.step('start'); return tx
 
+    def liveness_request(self):
+        self.request.update(kind='klokast.vm-switch.v2', controller_timeout_seconds=90)
+        (self.work / 'request.json').write_text(json.dumps(self.request))
+
+    def test_controller_heartbeat_never_extends_the_replacement_deadline(self):
+        self.liveness_request()
+        tx = self.tx(); tx.arm()
+        deadline = tx.journal['deadline']
+        self.now += 30
+        tx.step('heartbeat')
+        self.assertEqual(tx.journal['deadline'], deadline)
+        self.assertEqual(tx.journal['controller_seen_at'], self.now)
+        self.now += 89
+        self.assertFalse(t.controller_lost(tx.journal, self.now))
+        self.now += 1
+        self.assertTrue(t.controller_lost(tx.journal, self.now))
+        for action in ('heartbeat', 'stop', 'start', 'accept'):
+            with self.assertRaisesRegex(t.Refused, 'liveness expired'):
+                tx.step(action)
+        self.assertEqual(self.tx().recover(), 'recovered')
+
+    def test_controller_loss_before_acceptance_recovers_but_after_acceptance_preserves_writes(self):
+        self.liveness_request()
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept')
+        self.now += 2000
+        self.assertFalse(t.controller_lost(self.tx().journal, self.now))
+        self.assertEqual(self.tx().recover(), 'preserve-production-data')
+        self.assertEqual(self.backend.running, 'new')
+        with self.assertRaisesRegex(t.Refused, 'live pre-acceptance'):
+            self.tx().step('heartbeat')
+
+    def test_controller_loss_watchdog_dispatches_recovery_without_waiting_for_hard_deadline(self):
+        self.liveness_request()
+        tx = self.boot(); self.now += 90
+        with patch.object(t, 'require_dom0'), patch.object(t.time, 'time', return_value=self.now), \
+                patch.object(t, 'invoke', side_effect=[tx.journal, {'stage':'recovered'}]) as invoke:
+            self.assertEqual(t.main(['watch', '--operation-id', self.work.name]), 0)
+        self.assertEqual(invoke.call_args_list[-1].args, (self.work.name, 'recover'))
+
+    def test_liveness_refuses_clock_reversal_invalid_timeout_and_tampered_journal(self):
+        self.liveness_request()
+        tx = self.tx(); tx.arm(); self.now -= 1
+        self.assertTrue(t.controller_lost(tx.journal, self.now))
+        with self.assertRaisesRegex(t.Refused, 'liveness expired'):
+            tx.step('heartbeat')
+        tx.record('armed', controller_seen_at=float('nan'))
+        with self.assertRaisesRegex(t.Refused, 'liveness evidence'):
+            self.tx()
+        self.request['controller_timeout_seconds'] = 1800
+        (self.work / 'request.json').write_text(json.dumps(self.request))
+        with self.assertRaisesRegex(t.Refused, '90-second'):
+            self.tx()
+
+    def test_legacy_request_does_not_gain_a_heartbeat_interface(self):
+        tx = self.tx(); tx.arm()
+        with self.assertRaisesRegex(t.Refused, 'live pre-acceptance'):
+            tx.step('heartbeat')
+
     def test_full_switch_acceptance_and_no_data_rollback(self):
         tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
         self.assertEqual(self.tx().journal['stage'], 'complete')

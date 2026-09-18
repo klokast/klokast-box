@@ -140,6 +140,8 @@ def main():
     parser.add_argument('--candidate-id', required=True)
     parser.add_argument('--watchdog-expiry', action='store_true',
                         help='also wait for the native 30-minute replacement deadline')
+    parser.add_argument('--controller-loss', action='store_true',
+                        help='also recover after the fixed 90-second controller heartbeat expiry')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -221,6 +223,8 @@ def main():
                      'restart-stopping', 'restart-stopped', 'restart-booted', 'restart-accepted']
         if args.watchdog_expiry:
             scenarios.append('watchdog-expiry')
+        if args.controller_loss:
+            scenarios.append('controller-loss')
         for scenario in scenarios:
             stage = scenario.removeprefix('restart-')
             operation = uuid.uuid4().hex[:24]
@@ -229,6 +233,8 @@ def main():
                        'role': 'bak', 'engine_commit': 'a' * 40, 'policy_sha256': 'b' * 64,
                        'release_sha256': 'c' * 64, 'autostart': True,
                        'old_uuid': identities['old'], 'new_uuid': identities['new']}
+            if scenario == 'controller-loss':
+                request.update(kind='klokast.vm-switch.v2', controller_timeout_seconds=90)
             for side in ('old', 'new'):
                 paths = ['/dev/' + vg + '/vmupdtest_' + args.operation_id + '_' + side + '_' + disk for disk in ('os', 'data')]
                 config = {'name': 'bak', 'type': 'pvh', 'uuid': identities[side], 'memory': 2048,
@@ -270,15 +276,16 @@ def main():
                 path = next(p for p in allocated if p.endswith('_new_data'))
                 with open(path, 'r+b', buffering=0) as target:
                     target.seek(4096); target.write(b'accepted-production-write\n'); os.fsync(target.fileno())
-            if scenario == 'watchdog-expiry':
+            if scenario in {'watchdog-expiry', 'controller-loss'}:
                 state = t.read(directory / 'journal.json')
-                expires = state['deadline']
+                minimum_wait = 90 if scenario == 'controller-loss' else 1800
+                expires = state['controller_seen_at'] + 90 if scenario == 'controller-loss' else state['deadline']
                 t.store(work / 'waiting.json', {'operation_id': operation, 'deadline': expires,
                                                'watcher': state['watcher']})
                 # Do not shorten deadlines or ask for recovery. The detached
                 # worker must perform the disk switch on its own at expiry.
                 while state['stage'] not in t.TERMINAL:
-                    if time.time() >= expires + 1800 or time.monotonic() - started >= 3600:
+                    if time.time() >= expires + 1800 or time.monotonic() - started >= minimum_wait + 1800:
                         raise RuntimeError('native watchdog did not recover within its full budget')
                     if not backend.watcher_alive(state['watcher'], operation):
                         # A worker can finish between reading state and /proc.
@@ -288,7 +295,7 @@ def main():
                         break
                     time.sleep(2)
                     state = t.read(directory / 'journal.json')
-                if state['stage'] != 'recovered' or time.monotonic() - started < 1800:
+                if state['stage'] != 'recovered' or time.monotonic() - started < minimum_wait:
                     raise RuntimeError('native watchdog failed or recovered before the deadline')
             elif scenario.startswith('restart-'):
                 guest = t.Transaction(directory, backend).guest()
@@ -346,6 +353,7 @@ def main():
     result = {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': args.operation_id,
               'success': True, 'tests': results, 'production_replacement': False,
               'watchdog_tested': args.watchdog_expiry, 'process_restart_tested': True,
+              'controller_loss_tested': args.controller_loss,
               'dom0_reboot_tested': False, 'candidate_id': args.candidate_id,
               'candidate_sha256': t.digest(manifest),
               'transaction_sha256': hashlib.sha256((work / 'vm-update-transaction').read_bytes()).hexdigest(),

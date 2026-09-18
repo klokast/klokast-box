@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -276,7 +277,11 @@ class Transaction:
         fields = {'kind', 'operation_id', 'box', 'role', 'engine_commit', 'policy_sha256',
                   'old_uuid', 'new_uuid', 'old_config_sha256', 'new_config_sha256',
                   'old_disks', 'new_disks', 'old_artifacts', 'new_artifacts', 'autostart', 'release_sha256'}
-        if (not isinstance(r, dict) or set(r) != fields or r['kind'] != 'klokast.vm-switch.v1' or
+        if isinstance(r, dict) and r.get('kind') == 'klokast.vm-switch.v2':
+            fields.add('controller_timeout_seconds')
+            if type(r.get('controller_timeout_seconds')) is not int or r['controller_timeout_seconds'] != 90:
+                raise Refused('controller liveness requires the fixed 90-second timeout')
+        if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in {'klokast.vm-switch.v1', 'klokast.vm-switch.v2'} or
                 r['operation_id'] != work.name or not OP.fullmatch(work.name) or
                 not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
                 r['role'] not in {'bak', 'dmz', 'iot'} or type(r['autostart']) is not bool or
@@ -321,8 +326,16 @@ class Transaction:
         if self.journal and (self.journal.get('request_sha256') != digest(r) or
                              self.journal.get('stage') not in PRE_ACCEPT | TERMINAL or
                              type(self.journal.get('deadline')) not in {int, float} or
+                             not math.isfinite(self.journal['deadline']) or
                              self.journal.get('recovery_seconds') != 1800):
             raise Refused('transaction journal differs from its immutable request')
+        if self.journal and r['kind'] == 'klokast.vm-switch.v2':
+            if (self.journal.get('controller_timeout_seconds') != 90 or
+                    type(self.journal.get('controller_seen_at')) not in {int, float} or
+                    not math.isfinite(self.journal['controller_seen_at'])):
+                raise Refused('transaction has invalid controller liveness evidence')
+        elif self.journal and any(k in self.journal for k in ('controller_seen_at', 'controller_timeout_seconds')):
+            raise Refused('legacy transaction cannot acquire controller liveness fields')
         if self.journal and 'old_shutdown_pending' in self.journal and type(self.journal['old_shutdown_pending']) is not bool:
             raise Refused('transaction shutdown state is invalid')
 
@@ -436,7 +449,9 @@ class Transaction:
             raise Refused('arm requires the exact running old guest')
         self.artifacts('old'); self.artifacts('new')
         # The recovery record is durable before autostart or guest state changes.
-        self.record('armed', deadline=self.clock() + 1800, recovery_seconds=1800)
+        observed = self.clock()
+        liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] == 'klokast.vm-switch.v2' else {}
+        self.record('armed', deadline=observed + 1800, recovery_seconds=1800, **liveness)
         store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
         watcher = self.native.watch(self.request['operation_id'], self.work)
         self.record('armed', watcher=watcher)
@@ -448,7 +463,14 @@ class Transaction:
             return self.recover()
         if self.journal['stage'] in PRE_ACCEPT and self.clock() >= self.journal['deadline']:
             raise Refused('replacement exceeded 30 minutes; local recovery is required')
-        if action == 'stop' and self.journal['stage'] == 'armed':
+        if controller_lost(self.journal, self.clock()):
+            raise Refused('controller liveness expired; local recovery is required')
+        if action == 'heartbeat':
+            if (self.request['kind'] != 'klokast.vm-switch.v2' or
+                    self.journal['stage'] not in PRE_ACCEPT - {'recovering'}):
+                raise Refused('heartbeat requires a live pre-acceptance v2 transaction')
+            self.record(self.journal['stage'], controller_seen_at=self.clock())
+        elif action == 'stop' and self.journal['stage'] == 'armed':
             if not self.native.watcher_alive(self.journal.get('watcher'), self.request['operation_id']):
                 raise Refused('bounded local recovery is not running; old guest remains in place')
             self.record('stopping', old_shutdown_pending=True)
@@ -630,6 +652,13 @@ def fence_autostart():
     syncdir(XEN / 'auto')
 
 
+def controller_lost(state, now):
+    """Dom0 timestamps only. Backward clock movement fails closed."""
+    if state['stage'] not in PRE_ACCEPT or 'controller_timeout_seconds' not in state:
+        return False
+    return not 0 <= now - state['controller_seen_at'] < state['controller_timeout_seconds']
+
+
 def invoke(operation, action):
     if not OP.fullmatch(operation):
         raise Refused('invalid operation ID')
@@ -658,7 +687,7 @@ def invoke(operation, action):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover',
+    parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover', 'heartbeat',
                                            'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage'))
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -700,7 +729,7 @@ def main(argv=None):
             state = invoke(args.operation_id, 'status')
             if not state or state['stage'] in TERMINAL:
                 return 0
-            if time.time() >= state['deadline'] or time.monotonic() >= deadline:
+            if time.time() >= state['deadline'] or time.monotonic() >= deadline or controller_lost(state, time.time()):
                 print(canonical(invoke(args.operation_id, 'recover')))
                 return 0
             time.sleep(min(5, max(0.1, state['deadline'] - time.time())))

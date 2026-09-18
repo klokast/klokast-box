@@ -599,6 +599,21 @@ A permanent daemon is not added. Recovery completes a pending graceful old-VM
 shutdown before restarting that VM. It never force-stops old writers or treats
 a guest with an outstanding shutdown request as recovered.
 
+The versioned `klokast.vm-switch.v2` request also requires a fixed 90-second
+controller-liveness limit. Its root-only `heartbeat` operation records dom0
+time. The controller executor must send heartbeats every 15 seconds during
+pre-acceptance work. A missing heartbeat or backward clock movement starts
+local recovery. A late heartbeat cannot revive an expired transaction, and
+heartbeats never extend the 30-minute replacement deadline. Historical v1
+requests retain their original deadline behavior. Acceptance ends heartbeat
+rollback authority: controller loss after acceptance cannot restore old data.
+
+Add `-e '{"recovery_controller_loss":true}'` to the disposable recovery test to
+exercise the detached watchdog's native 90-second expiry. The test supplies no
+heartbeat and makes no controller recovery request. It uses synthetic disks
+and does not install a production helper. Controller heartbeat delivery and
+production fencing remain executor integration work.
+
 Acceptance is written and synced before the new boot assignment is published.
 After acceptance, recovery can republish the new assignment but cannot select
 old data. The boot check runs before normal Xen autostart. If a record is
