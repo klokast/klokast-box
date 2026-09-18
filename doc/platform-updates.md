@@ -4,7 +4,9 @@
 
 This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
-offline base-image boot tests, and an optional Static Site web component test.
+offline base-image tests, a second cold boot through OpenRC, and an optional
+Static Site web component test. Host discovery includes live process identities
+and detects native supervisors with missing OpenRC started markers.
 A dom0 disk-switch transaction and boot recovery helper are implemented but are not connected to a production executor.
 Offline retained-data copy, staging, and final-sync primitives are implemented
 and included in the synthetic candidate tests. They are not a complete
@@ -184,6 +186,15 @@ without a started marker have explicit findings. Missing or changing process
 coverage remains unknown. This detects unmarked services but does not approve
 their code, configuration, health, or shutdown procedure.
 
+On 2026-09-18, source `67c698f` completed a fresh scan of all 12 managed VM
+entries after controlled DMZ retirement. All five running shared VMs had
+complete, stable process inventories. No unmarked service supervisor remained
+on the three selected guests; each had zero containers and named volumes.
+The stopped shared VM stayed stopped. The report remains blocked on host
+classification, package integrity, qualified backups, and the production
+adoption and release-assignment workflow. Its controller evidence is
+`/var/lib/klokast/updates/discovery/process-validation-67c698f.json`.
+
 On 2026-09-18, candidate source `9f1d977` completed native validation on all
 five running shared VMs. Both inventory passes agreed. Native application
 service markers remained visible on a VM with no containers; the assessment
@@ -351,7 +362,17 @@ It does not use the first smoke test's `vfs` or `--cgroups=disabled` overrides.
 The test has a separate five-minute limit and console log. Candidate publication
 requires both boots, their exact input identity, and complete guest cleanup.
 These generic tests still do not qualify target-specific network rules or
-application behavior. Native validation of the second boot is pending.
+application behavior. Native validation on 2026-09-18 passed all nine base
+groups and all five OpenRC checks in operation `30356d6442104b0254df1ad6`,
+using source `5f39303`. Both lifecycle records confirmed cleanup. The candidate
+was not accepted for production.
+
+The first v3.24 trial was refused because the custom-init smoke boot did not
+run Alpine's device setup. Rootless Podman could not open `/dev/null`.
+The smoke boot now runs the installed `mdev` coldplug rules and verifies the
+standard device identities and permissions. The normal OpenRC boot verifies
+those devices without repairing them. Both tests must pass for this branch;
+the failure does not permit an exception to rootless Podman qualification.
 
 Dom0 reads bounded raw output bytes and verifies their checksums. It never
 mounts the generated filesystem. The root image, matching kernel, and initramfs

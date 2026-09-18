@@ -6,6 +6,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
@@ -38,6 +39,22 @@ def tar_member(name, content):
 
 
 class InputsTests(unittest.TestCase):
+    def test_smoke_coldplug_uses_alpine_rules_and_normal_boot_only_verifies_devices(self):
+        import stat
+        smoke = module('smoke_devices', REPO / 'ansible/roles/vm-template-builder/files/vm-template-smoke-guest')
+        devices = [SimpleNamespace(st_mode=stat.S_IFCHR | 0o666, st_rdev=os.makedev(1, minor), st_uid=0)
+                   for minor in (3, 5)]
+        with patch.object(smoke, 'run') as run, patch.object(smoke.Path, 'lstat', side_effect=devices):
+            smoke.device_test(initialize=True)
+            run.assert_called_once_with(['/sbin/mdev', '-s'])
+        with patch.object(smoke, 'run') as run, patch.object(smoke.Path, 'lstat', side_effect=devices):
+            smoke.device_test()
+            run.assert_not_called()
+        for info in (SimpleNamespace(st_mode=stat.S_IFCHR | 0o600, st_rdev=os.makedev(1, 3), st_uid=0),
+                     SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_rdev=0, st_uid=0)):
+            with patch.object(smoke.Path, 'lstat', return_value=info), self.assertRaisesRegex(RuntimeError, 'device setup'):
+                smoke.device_test()
+
     def fixture(self, root):
         (root / "packages").mkdir()
         (root / "keys").mkdir()

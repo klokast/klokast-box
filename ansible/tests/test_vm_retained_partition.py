@@ -1,5 +1,6 @@
 """Versioned legacy partition selection and block-layer refusal checks."""
 import copy
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -70,6 +71,7 @@ class PartitionContract(unittest.TestCase):
                 with self.assertRaisesRegex(d.CopyError, 'other mounted'): d.check_mounts(self.request)
 
 
+@unittest.skipUnless(shutil.which('rsync'), 'native rsync is required')
 class PartitionReceipt(unittest.TestCase):
     stage = stages.RetainedStage.stage
     finalize = stages.RetainedStage.finalize

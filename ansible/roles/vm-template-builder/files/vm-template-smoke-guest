@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Offline base-image test, used as PID 1 only on a disposable image copy."""
+"""Offline base-image tests in custom-init and normal OpenRC disposable boots."""
 import json
 import os
 from pathlib import Path
@@ -66,6 +66,18 @@ def tailscale_test():
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+
+
+def device_test(initialize=False):
+    if initialize:
+        # Custom PID 1 skips OpenRC's mdev coldplug. Use the installed Alpine
+        # rules, including its /dev/null fix, before running an unprivileged test.
+        run(['/sbin/mdev', '-s'])
+    for name, minor in (('null', 3), ('zero', 5)):
+        info = Path('/dev/' + name).lstat()
+        if (not stat.S_ISCHR(info.st_mode) or info.st_rdev != os.makedev(1, minor) or
+                stat.S_IMODE(info.st_mode) != 0o666 or info.st_uid != 0):
+            raise RuntimeError('Alpine device setup did not provide a usable /dev/' + name)
 
 
 def podman_test(defaults=False):
@@ -150,6 +162,7 @@ def openrc_test():
         if ' - cgroup2 ' not in Path('/proc/self/mountinfo').read_text():
             raise RuntimeError('OpenRC did not mount cgroup v2')
         result['tests'].update(openrc_boot=True, cgroup_v2=True, kernel_modules=True)
+        device_test()
         tailscale_test(); result['tests']['tailscale_offline'] = True
         podman_test(defaults=True); result['tests']['default_rootless_podman'] = True
         result['success'] = True
@@ -176,6 +189,7 @@ def main():
             raise RuntimeError("booted root, kernel, modules, and input assignment disagree")
         result["kernel_release"] = kernel
         result["tests"].update(boot=True, kernel_modules=True)
+        device_test(initialize=True)
         tailscale_test()
         result["tests"]["tailscale_offline"] = True
         podman_test()
