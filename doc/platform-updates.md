@@ -863,31 +863,39 @@ test exercises the installed OpenRC ordering and persistent records.
 
 ### Remaining delivery order
 
-1. Produce complete workload and
-   storage coverage for selected VMs. Account for host services, timers, other
-   runtime accounts, and unknown storage. Resolve undeclared workloads through
+1. Qualify the delivered workload and storage inventory for selected VMs.
+   Classify host files, services, timers, runtime accounts, and delegated storage
+   against approved definitions. Correlate live process identities with those
+   definitions. Native package audit is supporting evidence, not approval to
+   discard generated or unowned files. Resolve undeclared workloads through
    approved intent; a catalog match cannot authorize adoption or removal.
    The delivered retention reader has passed approved-engine validation. Keep
    deferred VM roles outside adoption and replacement; inventory can still
    report their unresolved data. Carry durable exclusions in the reviewed
    Instance policy before activation.
-2. Add fixed maintenance adapters for all declared workloads on selected VMs,
-   including native services and retained data for absent apps. Qualify exact
-   deployed images, configuration, backups, and synthetic application and
-   network tests. Native application versions also stay unchanged; an
-   incompatible package set blocks the branch candidate.
-3. Complete separately signed adoption with measured capacity and time,
-   read-only staging snapshots, writer shutdown, final synchronization, identity
-   preservation, and recovery to the original disk generation. Staging and
-   final-sync primitives above do not authorize this operation.
-4. Add protected release and assignment records. Connect normal provisioning
+2. Qualify the target configuration, network tests, and same-box independent
+   backup with a verified restore. The selected guests can use an explicit
+   no-application profile only while checked app intent, containers, volumes,
+   native services, and host-data evidence all prove that scope. Empty container
+   lists alone cannot pass it. Other workloads require fixed maintenance
+   adapters, unchanged image and native application versions, and synthetic
+   compatibility tests. The delivered generic OpenRC test is not this target
+   qualification.
+3. Add protected release and assignment records. Connect normal provisioning
    and reconciliation to those assignments before production adoption. Prevent
    legacy package resolution, old kernels, and old repository branches from
    replacing accepted state. Include execution records in controller recovery.
+4. Complete separately signed adoption with measured capacity and time,
+   read-only staging snapshots, writer shutdown, final synchronization, identity
+   preservation, and recovery to the original disk generation. Use the explicit
+   partitioned-source contract for legacy guests. The delivered copy primitives
+   do not authorize this operation or qualify its backup.
 5. Connect the standing-policy executor to local recovery, persistent traffic
    fencing, background-work control, independent dependencies, and fresh checks.
-   Persist acceptance before admitting production writes. Add bounded controller
-   liveness checks without extending the replacement deadline.
+   Persist acceptance before admitting production writes. Send controller
+   heartbeats to the delivered v2 local transaction without extending its
+   replacement deadline. The native controller-loss test does not prove this
+   production connection or traffic fencing.
 6. Add automatic candidate selection, daily bounded preparation, the 02:00 UTC
    replacement schedule, the 03:00 cutoff, installation-wide serialization,
    hourly verification, and 24-hour canaries. Stop rollout after any failure.
