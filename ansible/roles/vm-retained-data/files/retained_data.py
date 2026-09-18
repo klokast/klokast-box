@@ -378,11 +378,14 @@ def backup_boot():
         result_safe = True
         result = {'kind': 'klokast.vm-backup-restore-guest.v1', 'operation_id': request['operation_id'],
                   'inputs_sha256': args['klokast_inputs'], 'request_sha256': digest(request), 'success': False}
+        backup_boot_filesystems(deadline)
         result['restore'] = restore_backup(request, deadline)
         result['success'] = True
     except Exception as error:
         # Native child diagnostics and file contents never enter the console.
-        print('backup restore refused: ' + type(error).__name__, flush=True)
+        diagnostic = (str(error) if isinstance(error, CopyError) else
+                      ('OSError errno=' + str(error.errno) if isinstance(error, OSError) else type(error).__name__))
+        print('backup restore refused: ' + diagnostic[:512], flush=True)
         if result_safe:
             result['error'] = type(error).__name__ + ': ' + str(error)[:512]
     finally:
@@ -396,6 +399,24 @@ def backup_boot():
         subprocess.run(['poweroff', '-f'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10)
         while True: time.sleep(1)
+
+
+def backup_boot_filesystems(deadline):
+    # Alpine initramfs initially mounts the root read-only, even for this
+    # custom PID 1. Remount only the assigned disposable OS root, never a data
+    # disk. Keep the interrupted-operation marker in private volatile storage.
+    roots = [v for v in mount_records() if v['path'] == '/']
+    if (len(roots) != 1 or roots[0]['root'] != '/' or roots[0]['type'] != 'ext4' or
+            roots[0]['device'] != (BLOCK_SYS / 'xvda/dev').read_text().strip()):
+        raise CopyError('backup maintenance root is not the assigned disposable OS disk')
+    run(['mount', '-o', 'remount,rw', '/'], deadline)
+    Path('/run').mkdir(exist_ok=True)
+    if os.path.ismount('/run'):
+        mounts = [v for v in mount_records() if v['path'] == '/run']
+        if len(mounts) != 1 or mounts[0]['type'] != 'tmpfs':
+            raise CopyError('backup maintenance runtime directory is not volatile storage')
+    else:
+        run(['mount', '-t', 'tmpfs', '-o', 'mode=0700,nosuid,nodev', 'tmpfs', '/run'], deadline)
 
 
 def source_device(request):

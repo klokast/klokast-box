@@ -118,6 +118,7 @@
     - candidate.json
     - lifecycle.json
     - test-lifecycle.json
+    - restore-result.json
     - "vm-build-{{ template_operation_id }}.log"
     - "vm-test-{{ template_operation_id }}.log"
     - "vm-openrc-{{ template_operation_id }}.log"

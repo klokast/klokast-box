@@ -402,6 +402,7 @@ def smoke_test(work, request, build):
         boot_guest(work, restore_name, restore_identity, config, request, slot=result_path.name,
                    kind='klokast.vm-backup-restore-guest.v1', timeout=300)
         restored = read_slot(result_path)
+        write(work / 'restore-result.json', restored)
         receipt = restored.get('restore', {})
         receipt_body = {k: v for k, v in receipt.items() if k != 'receipt_sha256'}
         if (restored.get('kind') != 'klokast.vm-backup-restore-guest.v1' or restored.get('success') is not True or

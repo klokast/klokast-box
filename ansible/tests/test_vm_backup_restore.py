@@ -160,5 +160,18 @@ class BackupRestore(unittest.TestCase):
         with patch.object(d.os, 'getpid', return_value=123):
             with self.assertRaisesRegex(d.CopyError, 'PID 1'): d.backup_boot()
 
+    def test_maintenance_can_write_only_its_checked_disposable_root(self):
+        sys = self.base / 'mount-sys'; (sys / 'xvda').mkdir(parents=True)
+        (sys / 'xvda/dev').write_text('0:1')
+        roots = [{'path': '/', 'root': '/', 'type': 'ext4', 'device': '0:1', 'options': ['ro']}]
+        with patch.object(d, 'BLOCK_SYS', sys), patch.object(d, 'mount_records', return_value=roots), \
+                patch.object(d, 'run') as run, patch.object(Path, 'mkdir'), patch.object(d.os.path, 'ismount', return_value=False):
+            d.backup_boot_filesystems(time.monotonic() + 10)
+            self.assertEqual(run.call_args_list[0].args[0], ['mount', '-o', 'remount,rw', '/'])
+            self.assertEqual(run.call_args_list[1].args[0][-1], '/run')
+            run.reset_mock(); roots[0]['device'] = '0:3'
+            with self.assertRaisesRegex(d.CopyError, 'disposable OS'): d.backup_boot_filesystems(time.monotonic() + 10)
+            run.assert_not_called()
+
 
 if __name__ == '__main__': unittest.main()
