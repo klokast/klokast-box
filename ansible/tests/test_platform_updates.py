@@ -173,7 +173,8 @@ class ControllerTests(unittest.TestCase):
         inputs = {'inputs_sha256': 'b' * 64, 'packages': [{'name': 'linux-virt', 'version': '1'}]}
         for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
                      'missing-partition', 'failed-partition', 'missing-openrc', 'failed-openrc',
-                     'changed-openrc-input', 'missing-openrc-cleanup', 'missing-personalization', 'failed-personalization'):
+                     'changed-openrc-input', 'missing-openrc-cleanup', 'missing-personalization', 'failed-personalization',
+                     'missing-profile', 'failed-profile', 'changed-profile-receipt', 'missing-profile-cleanup'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 def command(argv, **kwargs):
@@ -213,12 +214,26 @@ class ControllerTests(unittest.TestCase):
                                       'kernel_modules', 'tailscale_offline', 'default_rootless_podman'), True)}
                         if mode == 'changed-openrc-input': normal['inputs_sha256'] = '0' * 64
                         if mode != 'missing-openrc': candidate['boot_test']['openrc_test'] = normal
+                        prepared = {'kind': 'klokast.vm-template-personalize-stage.v1', 'success': True,
+                                    'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
+                                    'production_data_used': False, 'source_root_sha256': 'c' * 64,
+                                    'request_sha256': '1' * 64, 'receipt_sha256': '2' * 64}
+                        profile = {**prepared, 'kind': 'klokast.vm-template-personalized-test.v1',
+                                   'kernel_release': 'test-kernel', 'success': mode != 'failed-profile',
+                                   'tests': dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
+                                       'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)}
+                        if mode == 'changed-profile-receipt': profile['receipt_sha256'] = '0' * 64
+                        candidate['boot_test']['personalization_stage'] = prepared
+                        if mode != 'missing-profile': candidate['boot_test']['personalized_test'] = profile
                         directory = root / 'builds' / operation
                         (directory / 'candidate.json').write_text(json.dumps(candidate))
                         for filename, domain in (('lifecycle.json', 'vm-build-'), ('test-lifecycle.json', 'vm-test-')):
                             record = {'stage': 'cleaned', 'domain': domain + operation}
                             if filename == 'test-lifecycle.json' and mode != 'missing-openrc-cleanup':
                                 record['openrc_domain'] = 'vm-openrc-' + operation
+                            if filename == 'test-lifecycle.json' and mode != 'missing-profile-cleanup':
+                                record['personalize_domain'] = 'vm-personalize-' + operation
+                                record['profile_domain'] = 'vm-profile-' + operation
                             (directory / filename).write_text(json.dumps(record))
                     return '{}'
                 with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
@@ -226,6 +241,7 @@ class ControllerTests(unittest.TestCase):
                         patch.object(cli.secrets, 'token_hex', return_value=operation), \
                         patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
                         patch.object(cli.vm_template_inputs, 'capsule', return_value={}), \
+                        patch.object(cli.vm_template_inputs, 'personalization_fixture'), \
                         patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}):
                     if mode == 'valid':
                         result = cli.prepare('boxa', 'v3.23')

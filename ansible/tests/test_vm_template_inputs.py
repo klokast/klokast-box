@@ -2,6 +2,7 @@
 """Input-integrity and isolation checks for disposable VM template builds."""
 import copy
 import gzip
+import hashlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import io
@@ -84,10 +85,10 @@ class InputsTests(unittest.TestCase):
             manifest = self.fixture(root)
             v.verify_inputs(root, manifest)
             capsule = root / "capsule.tar"
-            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__))
+            result = v.capsule(root, capsule, Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__))
             self.assertEqual(result["sha256"], v.sha256(capsule))
             with tarfile.open(capsule) as archive:
-                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py", "vm_personalize.py", "vm_personalize_test.py"])
+                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py", "vm_personalize.py", "vm_personalize_test.py", "personalization-config.json"])
 
     def test_forged_or_changed_inputs_fail_before_native_commands(self):
         changes = [lambda m: m.update(engine_commit="main"), lambda m: m.update(world=[["example"]]),
@@ -172,6 +173,7 @@ class InputsTests(unittest.TestCase):
             (inputs / "retained_data_test.py").write_text("# synthetic test\n")
             (inputs / "vm_personalize.py").write_text("# personalization primitive\n")
             (inputs / "vm_personalize_test.py").write_text("# synthetic personalization test\n")
+            (inputs / "personalization-config.json").write_text("{}\n")
             (inputs / "vm_app_compatibility.py").write_text("# component validator\n")
             (inputs / "static_site_test.py").write_text("# component adapter\n")
             manifest = {"repositories": [], "packages": [{"name": "example", "version": "1"}], "world": ["example"],
@@ -204,7 +206,8 @@ class HostBoundaryTests(unittest.TestCase):
                      'manifest_sha256': 'a' * 64, 'image_id': 'b' * 64,
                      'archive': {'sha256': 'c' * 64, 'bytes': 100},
                      'config_sha256': 'd' * 64, 'adapter_sha256': 'e' * 64}
-        for mode in ('valid', 'missing', 'changed', 'normal-failed', 'normal-input-changed'):
+        for mode in ('valid', 'missing', 'changed', 'normal-failed', 'normal-input-changed',
+                     'profile-failed', 'profile-receipt-changed', 'stage-source-changed'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
                 for name in ('root.slot', 'kernel.slot', 'initramfs.slot', 'app-test.tar'):
@@ -218,6 +221,28 @@ class HostBoundaryTests(unittest.TestCase):
                     self.assertIn('vif = []', text)
                     self.assertIn('phy:/dev/loop4,xvde,r', text)
                     self.assertIn('klokast_app_capsule=' + 'f' * 64, text)
+                    if name.startswith(('vm-personalize-', 'vm-profile-')):
+                        self.assertIn('phy:/dev/loop6,xvdf,r', text)
+                        self.assertEqual(kwargs['timeout'], 300)
+                        prepared = {'kind': 'klokast.vm-template-personalize-stage.v1', 'success': True,
+                                    'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'],
+                                    'production_data_used': False, 'request_sha256': '1' * 64, 'receipt_sha256': '2' * 64,
+                                    'source_root_sha256': hashlib.sha256(b'opaque bytes').hexdigest()}
+                        if name.startswith('vm-personalize-'):
+                            self.assertIn('phy:/dev/loop5,xvdd,w', text)
+                            self.assertIn('klokast_personalize_stage=1', text)
+                            if mode == 'stage-source-changed': prepared['source_root_sha256'] = '0' * 64
+                            (work / 'test-result.slot').write_text(json.dumps(prepared))
+                        else:
+                            self.assertIn('phy:/dev/loop5,xvda,w', text)
+                            self.assertIn('klokast_personalized=1', text)
+                            profile = {**prepared, 'kind': 'klokast.vm-template-personalized-test.v1',
+                                       'kernel_release': 'test-kernel', 'success': mode != 'profile-failed',
+                                       'tests': dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
+                                           'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)}
+                            if mode == 'profile-receipt-changed': profile['receipt_sha256'] = '0' * 64
+                            (work / 'test-result.slot').write_text(json.dumps(profile))
+                        return
                     if name.startswith('vm-openrc-'):
                         self.assertIn('init=/sbin/init klokast_openrc=1', text)
                         self.assertNotIn('init=/usr/local/libexec/klokast-template-test', text)
@@ -244,17 +269,19 @@ class HostBoundaryTests(unittest.TestCase):
                 with patch.object(self.host, 'SLOTS', {'root': 12}), \
                         patch.object(self.host.os, 'posix_fallocate'), \
                         patch.object(self.host, 'domain', return_value=None), \
-                        patch.object(self.host, 'attach_loop', side_effect=['/dev/loop' + str(i) for i in range(5)]) as attach, \
+                        patch.object(self.host, 'attach_loop', side_effect=['/dev/loop' + str(i) for i in range(7)]) as attach, \
                         patch.object(self.host, 'detach_loop') as detach, \
                         patch.object(self.host, 'boot_guest', side_effect=boot):
                     if mode == 'valid':
                         result = self.host.smoke_test(work, request, build)
                         self.assertFalse(result['application_test']['production_qualified'])
                     else:
-                        with self.assertRaisesRegex(RuntimeError, 'OpenRC boot tests' if mode.startswith('normal-') else 'component test evidence'):
+                        message = ('personalized' if mode.startswith(('stage-', 'profile-')) else
+                                   ('OpenRC boot tests' if mode.startswith('normal-') else 'component test evidence'))
+                        with self.assertRaisesRegex(RuntimeError, message):
                             self.host.smoke_test(work, request, build)
                     self.assertEqual(attach.call_args.kwargs, {'readonly': True})
-                    self.assertEqual(detach.call_count, 5)
+                    self.assertEqual(detach.call_count, 7 if mode == 'valid' or mode.startswith(('stage-', 'profile-')) else 5)
                 self.assertEqual((work / 'root.slot').read_bytes(), b'opaque bytes')
                 self.assertFalse((work / 'test-root.slot').exists())
                 self.assertEqual(json.loads((work / 'test-lifecycle.json').read_text())['stage'], 'cleaned')
@@ -341,29 +368,30 @@ class HostBoundaryTests(unittest.TestCase):
             self.assertFalse(list(root.glob("*.slot")))
             self.assertEqual(json.loads((root / "lifecycle.json").read_text())["stage"], "cleaned")
 
-    def test_lingering_openrc_guest_preserves_all_outer_build_artifacts(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            request = {'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64,
-                       'capsule': {'sha256': 'c' * 64, 'bytes': 10240}, 'box': 'boxa'}
-            running = []
-            def failed(*args):
-                running.append(True)
-                raise RuntimeError('test guest could not be stopped')
-            with patch.object(self.host, 'BASE', root / 'artifacts'), \
-                    patch.object(self.host, 'SLOTS', {name: 4096 for name in self.host.SLOTS}), \
-                    patch.object(self.host, 'domain', side_effect=lambda name: {} if running and name.startswith('vm-openrc-') else None), \
-                    patch.object(self.host, 'run', return_value=SimpleNamespace(stdout='free_memory : 8192\n')), \
-                    patch.object(self.host.os, 'statvfs', return_value=SimpleNamespace(f_bavail=2**40, f_frsize=4096)), \
-                    patch.object(self.host, 'attach_loop', return_value='/dev/loop1'), \
-                    patch.object(self.host, 'detach_loop'), patch.object(self.host, 'boot_guest'), \
-                    patch.object(self.host, 'read_result', return_value={}), \
-                    patch.object(self.host, 'smoke_test', side_effect=failed):
-                with self.assertRaisesRegex(RuntimeError, 'retain all build resources'):
-                    self.host.execute(root, request)
-            self.assertTrue((root / 'kernel.slot').exists())
-            self.assertTrue((root / 'root.slot').exists())
-            self.assertEqual(json.loads((root / 'lifecycle.json').read_text())['stage'], 'allocated')
+    def test_lingering_test_guest_preserves_all_outer_build_artifacts(self):
+        for prefix in ('vm-openrc-', 'vm-personalize-', 'vm-profile-'):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                request = {'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64,
+                           'capsule': {'sha256': 'c' * 64, 'bytes': 10240}, 'box': 'boxa'}
+                running = []
+                def failed(*args):
+                    running.append(True)
+                    raise RuntimeError('test guest could not be stopped')
+                with patch.object(self.host, 'BASE', root / 'artifacts'), \
+                        patch.object(self.host, 'SLOTS', {name: 4096 for name in self.host.SLOTS}), \
+                        patch.object(self.host, 'domain', side_effect=lambda name: {} if running and name.startswith(prefix) else None), \
+                        patch.object(self.host, 'run', return_value=SimpleNamespace(stdout='free_memory : 8192\n')), \
+                        patch.object(self.host.os, 'statvfs', return_value=SimpleNamespace(f_bavail=2**40, f_frsize=4096)), \
+                        patch.object(self.host, 'attach_loop', return_value='/dev/loop1'), \
+                        patch.object(self.host, 'detach_loop'), patch.object(self.host, 'boot_guest'), \
+                        patch.object(self.host, 'read_result', return_value={}), \
+                        patch.object(self.host, 'smoke_test', side_effect=failed):
+                    with self.assertRaisesRegex(RuntimeError, 'retain all build resources'):
+                        self.host.execute(root, request)
+                self.assertTrue((root / 'kernel.slot').exists())
+                self.assertTrue((root / 'root.slot').exists())
+                self.assertEqual(json.loads((root / 'lifecycle.json').read_text())['stage'], 'allocated')
 
 
 if __name__ == "__main__":

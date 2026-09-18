@@ -279,12 +279,14 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit)
         job = REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest"
         retained = REPO / "ansible/roles/vm-retained-data/files"
+        vm_template_inputs.personalization_fixture(REPO, work / 'personalization-config.json')
         capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job, job.with_name("vm-template-smoke-guest"),
                                             retained / "retained_data.py", retained / "retained_data_test.py",
                                             REPO / 'ansible/lib/vm_app_compatibility.py',
                                             REPO / 'apps/static-site/ansible/roles/static-site-runtime/files/vm_compatibility.py',
                                             REPO / 'ansible/roles/vm-personalize/files/vm_personalize.py',
-                                            REPO / 'ansible/roles/vm-personalize/files/vm_personalize_test.py')
+                                            REPO / 'ansible/roles/vm-personalize/files/vm_personalize_test.py',
+                                            work / 'personalization-config.json')
         print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
         boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job)
         request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
@@ -307,7 +309,7 @@ def prepare(box, branch, inputs_only=False, test_app=None):
             try:
                 command(["ansible-playbook", "-vv", "-i", APPROVED_REPO / "ansible/execution-inventory/hosts",
                          REPO / "ansible/playbooks/74-platform-update-template.yml", "--limit", box + "-dom0",
-                         "-e", "@" + str(arguments)], timeout=2700, log=log)
+                         "-e", "@" + str(arguments)], timeout=3600, log=log)
             except UpdateError as error:
                 raise UpdateError("candidate construction failed; inspect " + str(result / "build.log")) from error
         candidate = load(result / "candidate.json")
@@ -316,8 +318,12 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization")}
         boot_test = candidate.get("boot_test", {})
         normal = boot_test.get('openrc_test', {})
+        personalized = boot_test.get('personalized_test', {})
+        personalization = boot_test.get('personalization_stage', {})
         normal_tests = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',
                                       'tailscale_offline', 'default_rootless_podman'), True)
+        personalized_tests = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
+            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
         if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
                 candidate.get("success") is not True or candidate.get("box") != box or
                 candidate.get("validation") != "base-boot-tested" or candidate.get("operation_id") != operation or
@@ -330,8 +336,20 @@ def prepare(box, branch, inputs_only=False, test_app=None):
                 normal.get('kind') != 'klokast.vm-template-openrc-test.v1' or normal.get('success') is not True or
                 normal.get('operation_id') != operation or normal.get('inputs_sha256') != inputs['inputs_sha256'] or
                 normal.get('kernel_release') != candidate.get('kernel_release') or normal.get('tests') != normal_tests or
+                personalized.get('kind') != 'klokast.vm-template-personalized-test.v1' or personalized.get('success') is not True or
+                personalized.get('operation_id') != operation or personalized.get('inputs_sha256') != inputs['inputs_sha256'] or
+                personalized.get('kernel_release') != candidate.get('kernel_release') or personalized.get('tests') != personalized_tests or
+                personalized.get('production_data_used') is not False or
+                personalization.get('kind') != 'klokast.vm-template-personalize-stage.v1' or personalization.get('success') is not True or
+                personalization.get('operation_id') != operation or personalization.get('inputs_sha256') != inputs['inputs_sha256'] or
+                personalization.get('source_root_sha256') != candidate.get('artifacts', {}).get('root', {}).get('sha256') or
+                personalization.get('production_data_used') is not False or
+                any(not isinstance(personalized.get(k), str) or not re.fullmatch('[0-9a-f]{64}', personalized[k]) or
+                    personalized[k] != personalization.get(k) for k in ('request_sha256', 'receipt_sha256')) or
                 lifecycle.get("stage") != "cleaned" or lifecycle.get("domain") != "vm-build-" + operation or
                 test_lifecycle.get('openrc_domain') != 'vm-openrc-' + operation or
+                test_lifecycle.get('personalize_domain') != 'vm-personalize-' + operation or
+                test_lifecycle.get('profile_domain') != 'vm-profile-' + operation or
                 test_lifecycle.get("stage") != "cleaned" or test_lifecycle.get("domain") != "vm-test-" + operation):
             raise UpdateError("candidate or cleanup evidence differs from the frozen build request")
         if app_test:
@@ -341,7 +359,7 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
                 "validation": candidate["validation"], "base_tests": boot_test["tests"],
-                'openrc_tests': normal['tests'],
+                'openrc_tests': normal['tests'], 'personalized_tests': personalized['tests'],
                 "application_test": boot_test.get("application_test")}
 
 

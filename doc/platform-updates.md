@@ -363,8 +363,9 @@ same disposable copy. Its fixed test service requires the cgroup and local
 mount services. It verifies cgroup v2, matching kernel modules, unenrolled
 Tailscale, and rootless Podman with default overlay storage and cgroup options.
 It does not use the first smoke test's `vfs` or `--cgroups=disabled` overrides.
-The test has a separate five-minute limit and console log. Candidate publication
-requires both boots, their exact input identity, and complete guest cleanup.
+The test has a separate five-minute limit and console log. The pipeline also
+prepares and boots a separate personalized clone as described below. Candidate
+publication requires all test phases, exact input identities, and complete guest cleanup.
 These generic tests still do not qualify target-specific network rules or
 application behavior. Native validation on 2026-09-18 passed all nine base
 groups and all five OpenRC checks in operation `30356d6442104b0254df1ad6`,
@@ -665,11 +666,24 @@ be reused.
 Personalization input can contain a machine-specific encrypted admin password.
 Keep that input in restricted machine staging, outside Git and generic template
 artifacts. The synthetic test uses a locked account and dummy identity bytes.
-The Ansible candidate builder now requires this tenth test group in addition
-to the separate OpenRC boot checks. The personalization fixture verifies file
-construction and numeric ownership on disposable ext4 disks; it does not boot
-a personalized production image or qualify a real Tailscale identity.
-Approved input generation, boot and network tests of the personalized clone,
+The Ansible candidate builder requires this tenth base test group in addition
+to the separate OpenRC boot checks. The small filesystem fixture verifies file
+construction and numeric ownership on disposable ext4 disks.
+
+The builder then starts a separate networkless preparation guest. It attaches
+the sealed root image read-only, copies it to a new disk, and personalizes that
+copy with synthetic identity data. The controller renders the test firewall,
+registry, and boot helper from the public Ansible recipes. A final cold boot
+starts real OpenRC on the personalized copy and checks its files, retained
+mount, Tailscale state path, firewall policies, frozen packages, and rootless
+Podman under the preserved `neo` account. Tailscale must remain unenrolled.
+Each new phase has a five-minute bound. Preparation and boot receipts must
+match before the candidate can be published. Cleanup checks all test domains
+before removing disks or boot artifacts. These tests need 14 GiB of free
+persistent filesystem space; the bounded Ansible job allows 55 minutes.
+
+These synthetic checks do not qualify a real machine identity or production
+network paths. Approved per-machine input generation, target network tests,
 and signed adoption orchestration are still required before production use.
 
 ## Dom0 transaction and recovery
@@ -726,8 +740,8 @@ general Apply authority, not standing permission to select a release.
 
 Legacy shared-VM installers, clones, kernel extraction, and guest package
 roles now refuse a protected assignment before changing it. Runtime checks
-report incomplete assignments and configuration drift. Full immutable guest
-personalization, release qualification, controller recovery of update records,
+report incomplete assignments and configuration drift. Production
+personalization input generation, release qualification, controller recovery of update records,
 and installation-wide serialization with legacy provisioning remain required
 before adoption. The legacy guard is a preflight, not a lock for its later work.
 
@@ -960,8 +974,8 @@ test exercises the installed OpenRC ordering and persistent records.
    qualification.
 3. Complete protected release records and normal provisioning integration.
    The delivered box assignment reader, locked runtime reconciliation, and
-   legacy mutation guards preserve recorded boot assignments. Add immutable
-   guest personalization and serialize all legacy provisioning with adoption
+   legacy mutation guards preserve recorded boot assignments. Connect approved
+   machine inputs to the tested personalizer and serialize legacy provisioning with adoption
    and replacement. Include execution records in controller recovery.
 4. Complete separately signed adoption with measured capacity and time,
    read-only staging snapshots, writer shutdown, final synchronization, identity

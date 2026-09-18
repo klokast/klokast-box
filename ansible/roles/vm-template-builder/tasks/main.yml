@@ -94,7 +94,7 @@
     group: root
     mode: '0700'
 
-- name: Build and test base software, OpenRC boot, and retained data independently of SSH
+- name: Build and test base software, retained data, and personalized OpenRC boot independently of SSH
   ansible.builtin.command:
     argv:
       - /usr/bin/python3
@@ -103,7 +103,7 @@
       - "{{ template_box }}"
       - --operation-id
       - "{{ template_operation_id }}"
-  async: 2400
+  async: 3300
   poll: 10
   vars:
     ansible_async_dir: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/async"
@@ -121,6 +121,8 @@
     - "vm-build-{{ template_operation_id }}.log"
     - "vm-test-{{ template_operation_id }}.log"
     - "vm-openrc-{{ template_operation_id }}.log"
+    - "vm-personalize-{{ template_operation_id }}.log"
+    - "vm-profile-{{ template_operation_id }}.log"
   register: template_evidence
 
 - name: Fetch available bounded evidence including failed guest diagnostics

@@ -2,6 +2,7 @@
 """Offline base-image tests in custom-init and normal OpenRC disposable boots."""
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shutil
@@ -27,11 +28,17 @@ def environment(openrc=False):
             if openrc:
                 raise RuntimeError('OpenRC did not mount the required system filesystem: ' + name)
             run(["mount", "-t", filesystem, filesystem, "/" + name])
+    args = dict(v.split("=", 1) for v in Path("/proc/cmdline").read_text().split() if "=" in v)
+    interfaces = {p.name for p in Path('/sys/class/net').iterdir()}
+    # The personalized boot can create its local TUN device. Xen still grants
+    # no VIF; the only permitted extra interface must be that virtual device.
+    if (openrc and args.get('klokast_personalized') == '1' and
+            Path('/sys/class/net/tailscale0/tun_flags').is_file()):
+        interfaces.discard('tailscale0')
     if (Path("/sys/hypervisor/type").read_text().strip() != "xen" or
             Path("/sys/hypervisor/uuid").read_text().strip() == "00000000-0000-0000-0000-000000000000" or
-            {p.name for p in Path("/sys/class/net").iterdir()} != {"lo"}):
+            interfaces != {"lo"}):
         raise RuntimeError("template test requires an isolated networkless Xen guest")
-    args = dict(v.split("=", 1) for v in Path("/proc/cmdline").read_text().split() if "=" in v)
     if (not re.fullmatch(r"[0-9a-f]{24}", args.get("klokast_test", "")) or
             not re.fullmatch(r"[0-9a-f]{64}", args.get("klokast_inputs", ""))):
         raise RuntimeError("template test requires its exact boot assignment")
@@ -80,18 +87,23 @@ def device_test(initialize=False):
             raise RuntimeError('Alpine device setup did not provide a usable /dev/' + name)
 
 
-def podman_test(defaults=False):
+def podman_test(defaults=False, personalized=False):
     # The account and runtime state exist only on the disposable copy. No
     # application image is fetched, built, or substituted by this test.
-    user, uid = ('openrc-test', 2001) if defaults else ('template-test', 2000)
+    user, uid = ('neo', 2000) if personalized else (('openrc-test', 2001) if defaults else ('template-test', 2000))
     home = '/home/' + user
-    run(["adduser", "-D", "-u", str(uid), "-h", home, user])
-    for name in ("subuid", "subgid"):
-        with Path('/etc/' + name).open('a') as stream:
-            stream.write(user + ':' + str(300000 if defaults else 200000) + ':65536\n')
+    if not personalized:
+        run(["adduser", "-D", "-u", str(uid), "-h", home, user])
+        for name in ("subuid", "subgid"):
+            with Path('/etc/' + name).open('a') as stream:
+                stream.write(user + ':' + str(300000 if defaults else 200000) + ':65536\n')
+    account = pwd.getpwnam(user)
+    if account.pw_uid != uid:
+        raise RuntimeError('Podman test runtime has an unexpected numeric identity')
+    gid = account.pw_gid
     runtime = Path('/run/user/' + str(uid))
     runtime.mkdir(parents=True, mode=0o700)
-    os.chown(runtime, uid, uid)
+    os.chown(runtime, uid, gid)
     rootfs = Path(home) / 'rootfs'
     rootfs.mkdir()
     files = {"/bin/busybox"}
@@ -105,9 +117,9 @@ def podman_test(defaults=False):
         shutil.copyfile(source, target)
         target.chmod(0o755)
     for parent, directories, files in os.walk(rootfs):
-        os.chown(parent, uid, uid)
+        os.chown(parent, uid, gid)
         for name in files:
-            os.chown(Path(parent) / name, uid, uid)
+            os.chown(Path(parent) / name, uid, gid)
     environment = 'export XDG_RUNTIME_DIR=' + str(runtime) + '; '
     if defaults:
         info = json.loads(run(['su', '-s', '/bin/sh', user, '-c', environment + 'exec podman info --format=json']))
@@ -172,6 +184,30 @@ def openrc_test():
     finish(result)
 
 
+def personalized_test():
+    args = environment(openrc=True)
+    if args.get('klokast_personalized') != '1':
+        raise RuntimeError('personalized boot requires its explicit test assignment')
+    result = {'kind': 'klokast.vm-template-personalized-test.v1', 'operation_id': args['klokast_test'],
+              'inputs_sha256': args['klokast_inputs'], 'success': False, 'tests': {}}
+    try:
+        import vm_personalize_test
+        result.update(vm_personalize_test.verify_boot(run, args['klokast_test'], args['klokast_inputs']))
+        kernel = os.uname().release
+        if not (Path('/lib/modules') / kernel).is_dir():
+            raise RuntimeError('personalized kernel and modules differ')
+        result['kernel_release'] = kernel
+        device_test()
+        podman_test(defaults=True, personalized=True)
+        result['tests'] = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
+            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
+        result['success'] = True
+    except Exception as error:
+        result['error'] = type(error).__name__ + ': ' + str(error)[:1000]
+        print(result['error'], flush=True)
+    finish(result)
+
+
 def main():
     args = environment()  # No result writes outside the dedicated test guest.
     result = {"kind": "klokast.vm-template-test-result.v1", "operation_id": args["klokast_test"],
@@ -183,6 +219,16 @@ def main():
             run(["mount", "-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "tmpfs", "/run"])
         if not os.path.ismount("/sys/fs/cgroup"):
             run(["mount", "-t", "cgroup2", "cgroup2", "/sys/fs/cgroup"])
+        if args.get('klokast_personalize_stage') == '1':
+            result['kind'] = 'klokast.vm-template-personalize-stage.v1'
+            if not re.fullmatch('[0-9a-f]{64}', args.get('klokast_root_sha256', '')):
+                raise RuntimeError('personalization stage requires the sealed root checksum')
+            device_test(initialize=True)
+            import vm_personalize_test
+            result.update(vm_personalize_test.prepare_boot(run, args['klokast_test'], args['klokast_inputs'],
+                                                           args['klokast_root_sha256']))
+            result['success'] = True
+            finish(result)
         marker = json.loads(Path("/etc/klokast-template.json").read_text())
         kernel = os.uname().release
         if marker["inputs_sha256"] != args["klokast_inputs"] or not (Path("/lib/modules") / kernel).is_dir():
@@ -231,4 +277,7 @@ def main():
 
 
 if __name__ == "__main__":
-    openrc_test() if sys.argv[1:] == ['--openrc'] else main()
+    if sys.argv[1:] == ['--personalized']:
+        personalized_test()
+    else:
+        openrc_test() if sys.argv[1:] == ['--openrc'] else main()

@@ -232,10 +232,11 @@ def personalize(request, deadline):
         'etc/fstab': ('/dev/xvda / ext4 defaults 0 1\nUUID=' + request['retained_uuid'] + ' /srv/retained ext4 defaults 0 2\n', 0o644),
         'etc/conf.d/tailscale': ('no_logs_no_support=yes\ncommand_args="--state=/srv/retained/' + IDENTITY + '"\nrc_need="localmount nftables"\n', 0o644),
         'etc/doas.d/doas.conf': ('permit nopass :wheel\n', 0o600),
+        'etc/klokast/app-resources/vm-input.d/000-empty.nft': ('# Empty placeholder so nft include globs always match.\n', 0o644),
     })
     for relative, (content, mode) in files.items():
         data.remaining(deadline); put(relative, content, mode)
-    for relative, mode in (('home/neo', 0o700), ('srv/retained', 0o700), ('etc/klokast/app-resources/vm-input.d', 0o755)):
+    for relative, mode in (('home/neo', 0o700), ('srv/retained', 0o700)):
         path = data.below(ROOT, relative)
         path.mkdir(mode=mode, parents=True, exist_ok=False)
     os.chown(home, request['runtime']['uid'], request['runtime']['gid'])

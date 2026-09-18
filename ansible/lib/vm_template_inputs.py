@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import subprocess
 import tarfile
 import gzip
@@ -228,8 +229,39 @@ def verify_inputs(directory, manifest):
         raise UpdateError("frozen APK index identity is invalid")
 
 
+def personalization_fixture(repo, output):
+    """Render synthetic configuration from public Ansible recipes on the controller.
+
+    Jinja is supplied by the existing Ansible toolchain. No private inputs,
+    application images, or enrollment credentials enter this fixture.
+    """
+    from jinja2 import Environment, StrictUndefined
+    environment = Environment(undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True)
+    environment.filters.update(to_json=json.dumps, quote=shlex.quote)
+    variables = {'podman_host_runner_user': 'neo', 'podman_host_registries': [],
+                 'podman_vm_firewall_input_tcp_rules': [], 'podman_vm_firewall_input_udp_rules': [],
+                 'podman_vm_firewall_forward_egress_interfaces': []}
+    files = {
+        'etc/hostname': 'boxa-iot\n',
+        'etc/hosts': '127.0.0.1 localhost\n::1 localhost\n',
+        'etc/network/interfaces': 'auto lo\niface lo inet loopback\n',
+        'etc/resolv.conf': '# Synthetic networkless test.\nnameserver 192.0.2.53\n',
+        'etc/klokast/overlay-ipv6-input.nft': '# Native IPv6 input is disabled.\n',
+        'etc/klokast/app-resources/vm-input.nft': '# No applications in this synthetic test.\n',
+        'etc/containers/containers.conf.d/10-klokast-network.conf': '[network]\nfirewall_driver = "nftables"\n',
+    }
+    for target, source in {
+        'etc/nftables.nft': 'podman-vm-firewall/templates/nftables.nft.j2',
+        'etc/containers/registries.conf': 'podman-host/templates/registries.conf.j2',
+        'etc/init.d/klokast-podman-runroot-cleanup': 'podman-host/templates/klokast-podman-runroot-cleanup.init.j2',
+    }.items():
+        files[target] = environment.from_string((Path(repo) / 'ansible/roles' / source).read_text()).render(variables)
+    with Path(output).open('x') as stream:
+        stream.write(canonical(files) + '\n')
+
+
 def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test_job, app_library, app_adapter,
-            personalize_job, personalize_test_job):
+            personalize_job, personalize_test_job, personalize_config):
     """Produce a flat, bounded input tar disk; dom0 never mounts this disk."""
     directory, output = Path(directory), Path(output)
     manifest = json.loads((directory / "inputs.json").read_text(), object_pairs_hook=unique_object)
@@ -248,6 +280,7 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         archive.add(app_adapter, arcname="static_site_test.py", recursive=False)
         archive.add(personalize_job, arcname="vm_personalize.py", recursive=False)
         archive.add(personalize_test_job, arcname="vm_personalize_test.py", recursive=False)
+        archive.add(personalize_config, arcname="personalization-config.json", recursive=False)
     return {"sha256": sha256(output), "bytes": output.stat().st_size}
 
 

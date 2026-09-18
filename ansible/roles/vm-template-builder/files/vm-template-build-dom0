@@ -295,9 +295,15 @@ def smoke_test(work, request, build):
     identity = str(uuid.uuid4())
     openrc_name = 'vm-openrc-' + request['operation_id']
     openrc_identity = str(uuid.uuid4())
-    if domain(name) is not None or domain(openrc_name) is not None:
+    personalize_name = 'vm-personalize-' + request['operation_id']
+    personalize_identity = str(uuid.uuid4())
+    profile_name = 'vm-profile-' + request['operation_id']
+    profile_identity = str(uuid.uuid4())
+    test_names = (name, openrc_name, personalize_name, profile_name)
+    if any(domain(n) is not None for n in test_names):
         raise RuntimeError("refusing to reuse an existing template test domain")
     root = work / "test-root.slot"
+    personalized_root = work / 'personalized-root.slot'
     result_path = work / "test-result.slot"
     data_paths = [work / 'test-source.slot', work / 'test-retained.slot']
     config = work / "test.cfg"
@@ -372,19 +378,80 @@ def smoke_test(work, request, build):
                 normal.get('kernel_release') != build['kernel_release'] or normal.get('tests') != expected_normal):
             raise RuntimeError('candidate OpenRC boot tests failed; inspect the isolated OpenRC console')
         value['openrc_test'] = normal
+        # Dom0 allocates opaque disks. Only the networkless Xen guest mounts
+        # the cloned OS; its sealed source is attached read-only.
+        with personalized_root.open('xb') as stream:
+            os.posix_fallocate(stream.fileno(), 0, SLOTS['root'])
+        loops[personalized_root] = attach_loop(personalized_root)
+        sealed_root = work / 'root.slot'
+        loops[sealed_root] = attach_loop(sealed_root, readonly=True)
+        stage_disks = ['phy:' + loops[p] + ',xvd' + letter + ',w'
+                       for p, letter in zip((root, result_path, data_paths[0], personalized_root), 'abcd')]
+        if app_path:
+            stage_disks.append('phy:' + loops[app_path] + ',xvde,r')
+        stage_disks.append('phy:' + loops[sealed_root] + ',xvdf,r')
+        with result_path.open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        config.write_text(config.read_text().replace(f'name = {openrc_name!r}', f'name = {personalize_name!r}')
+                          .replace(openrc_identity, personalize_identity)
+                          .replace(f'disk = {disks!r}', f'disk = {stage_disks!r}')
+                          .replace('init=/sbin/init klokast_openrc=1',
+                                   'init=/usr/local/libexec/klokast-template-test klokast_personalize_stage=1 '
+                                   'klokast_root_sha256=' + copied_hash.hexdigest()))
+        lifecycle = {'domain': name, 'uuid': identity, 'openrc_domain': openrc_name, 'openrc_uuid': openrc_identity,
+                     'personalize_domain': personalize_name, 'personalize_uuid': personalize_identity,
+                     'profile_domain': profile_name, 'profile_uuid': profile_identity}
+        write(work / 'test-lifecycle.json', dict(lifecycle, stage='personalize-allocated'))
+        boot_guest(work, personalize_name, personalize_identity, config, request, slot=result_path.name,
+                   kind='klokast.vm-template-personalize-stage.v1', timeout=300)
+        prepared = read_slot(result_path)
+        if (prepared.get('kind') != 'klokast.vm-template-personalize-stage.v1' or prepared.get('success') is not True or
+                prepared.get('operation_id') != request['operation_id'] or prepared.get('inputs_sha256') != request['inputs_sha256'] or
+                prepared.get('production_data_used') is not False or prepared.get('source_root_sha256') != copied_hash.hexdigest() or
+                any(not isinstance(prepared.get(k), str) or not re.fullmatch('[0-9a-f]{64}', prepared[k])
+                    for k in ('request_sha256', 'receipt_sha256'))):
+            raise RuntimeError('personalized test preparation failed; inspect its isolated console')
+        with result_path.open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        profile_disks = ['phy:' + loops[p] + ',xvd' + letter + ',w'
+                         for p, letter in zip((personalized_root, result_path, data_paths[0], root), 'abcd')]
+        if app_path:
+            profile_disks.append('phy:' + loops[app_path] + ',xvde,r')
+        profile_disks.append('phy:' + loops[sealed_root] + ',xvdf,r')
+        config.write_text(config.read_text().replace(f'name = {personalize_name!r}', f'name = {profile_name!r}')
+                          .replace(personalize_identity, profile_identity)
+                          .replace(f'disk = {stage_disks!r}', f'disk = {profile_disks!r}')
+                          .replace('init=/usr/local/libexec/klokast-template-test klokast_personalize_stage=1',
+                                   'init=/sbin/init klokast_openrc=1 klokast_personalized=1'))
+        write(work / 'test-lifecycle.json', dict(lifecycle, stage='profile-allocated'))
+        boot_guest(work, profile_name, profile_identity, config, request, slot=result_path.name,
+                   kind='klokast.vm-template-personalized-test.v1', timeout=300)
+        profile = read_slot(result_path)
+        profile_tests = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
+            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
+        if (profile.get('kind') != 'klokast.vm-template-personalized-test.v1' or profile.get('success') is not True or
+                profile.get('operation_id') != request['operation_id'] or profile.get('inputs_sha256') != request['inputs_sha256'] or
+                profile.get('kernel_release') != build['kernel_release'] or profile.get('tests') != profile_tests or
+                profile.get('production_data_used') is not False or
+                any(profile.get(k) != prepared[k] for k in ('request_sha256', 'receipt_sha256'))):
+            raise RuntimeError('personalized OpenRC boot tests failed; inspect the isolated profile console')
+        value['personalized_test'] = profile
+        value['personalization_stage'] = prepared
         value["tested_root_sha256"] = copied_hash.hexdigest()
         return value
     finally:
         # boot_guest must first prove that its exact guest has gone. A failed
         # cleanup leaves the files attached and visible for scoped recovery.
-        if domain(name) is not None or domain(openrc_name) is not None:
+        if any(domain(n) is not None for n in test_names):
             raise RuntimeError("test domain remains; retain all test resources")
         for path, device in loops.items():
             detach_loop(path, device)
-        for path in (root, result_path, config, *data_paths):
+        for path in (root, result_path, config, *data_paths, personalized_root):
             path.unlink(missing_ok=True)
         write(work / "test-lifecycle.json", {"domain": name, "uuid": identity,
-              'openrc_domain': openrc_name, 'openrc_uuid': openrc_identity, "stage": "cleaned"})
+              'openrc_domain': openrc_name, 'openrc_uuid': openrc_identity,
+              'personalize_domain': personalize_name, 'personalize_uuid': personalize_identity,
+              'profile_domain': profile_name, 'profile_uuid': profile_identity, "stage": "cleaned"})
 
 
 def execute(work, request):
@@ -397,8 +464,8 @@ def execute(work, request):
     if int(info.get("free_memory", "0")) < MEMORY + 1024:
         raise RuntimeError("builder requires 4096 MiB plus 1024 MiB free Xen memory")
     capacity = os.statvfs(work)
-    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + SLOTS["root"] + MIB + 1536 * MIB:
-        raise RuntimeError("builder and boot test require ten GiB of free persistent storage")
+    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + 2 * SLOTS["root"] + MIB + 1536 * MIB:
+        raise RuntimeError("builder and boot tests require fourteen GiB of free persistent storage")
     for name_slot, size in SLOTS.items():
         with (work / (name_slot + ".slot")).open("xb") as stream:
             # Reserve physical capacity before boot; do not depend on sparse-file
@@ -438,8 +505,8 @@ def execute(work, request):
         write(work / "candidate.json", result)
         return result
     finally:
-        if (domain(name) is not None or domain("vm-test-" + request["operation_id"]) is not None or
-                domain('vm-openrc-' + request['operation_id']) is not None):
+        if any(domain(prefix + request['operation_id']) is not None
+               for prefix in ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-')):
             raise RuntimeError("disposable guest remains; retain all build resources")
         for slot, device in list(loops.items()):
             detach_loop(backing[slot], device)
