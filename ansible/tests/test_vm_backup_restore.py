@@ -104,7 +104,7 @@ class BackupRestore(unittest.TestCase):
 
     def test_devices_refuse_writable_backup_aliases_and_mounted_partitions(self):
         sys = self.base / 'sys'; sys.mkdir()
-        for name, readonly, dev in (('xvdc', '1', '8:1'), ('xvdd', '0', '8:2')):
+        for name, readonly, dev in (('xvdc', '1', '0:1'), ('xvdd', '0', '0:2')):
             directory = sys / name; directory.mkdir()
             for field, value in (('size', str(self.request['disk_bytes'] // 512)), ('ro', readonly), ('dev', dev)):
                 (directory / field).write_text(value)
@@ -115,9 +115,12 @@ class BackupRestore(unittest.TestCase):
             return real_lstat(path)
         with patch.object(d, 'BLOCK_SYS', sys), patch.object(Path, 'lstat', metadata), patch.object(d, 'mount_records', return_value=[]) as mounts:
             d.backup_devices(self.request)
-            mounts.return_value = [{'device': '8:1', 'source': 'UUID=alias'}]
+            mounts.return_value = [{'device': '0:1', 'source': 'UUID=alias'}]
             with self.assertRaisesRegex(d.CopyError, 'mounted'): d.backup_devices(self.request)
             mounts.return_value = []
+            (sys / 'xvdd/dev').write_text('0:3')
+            with self.assertRaisesRegex(d.CopyError, 'exact'): d.backup_devices(self.request)
+            (sys / 'xvdd/dev').write_text('0:2')
             (sys / 'xvdc/ro').write_text('0')
             with self.assertRaisesRegex(d.CopyError, 'read-only'): d.backup_devices(self.request)
 

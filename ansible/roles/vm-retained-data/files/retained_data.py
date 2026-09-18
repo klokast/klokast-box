@@ -188,6 +188,7 @@ def backup_devices(request):
         path = Path('/dev/' + name)
         info = path.lstat()
         if (not stat.S_ISBLK(info.st_mode) or
+                (BLOCK_SYS / name / 'dev').read_text().strip() != f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}' or
                 int((BLOCK_SYS / name / 'size').read_text()) * 512 != request['disk_bytes'] or
                 (BLOCK_SYS / name / 'ro').read_text().strip() != readonly):
             raise CopyError('backup restore requires an exact read-only backup and disposable writable restore disk')
@@ -206,7 +207,12 @@ def backup_root(name, partition):
         raise CopyError('backup root partition does not belong to its assigned disk')
     if device.joinpath('ro').read_text().strip() != ('1' if name == 'xvdc' else '0'):
         raise CopyError('backup root partition has unexpected block access')
-    return '/dev/' + name + ('3' if partition else '')
+    path = '/dev/' + name + ('3' if partition else '')
+    info = Path(path).lstat()
+    if (not stat.S_ISBLK(info.st_mode) or
+            device.joinpath('dev').read_text().strip() != f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}'):
+        raise CopyError('backup root device node differs from its recorded kernel device')
+    return path
 
 
 def disk_digest(path, size, deadline):
@@ -235,7 +241,7 @@ def restore_backup(request, deadline):
         raise CopyError('backup restore verification must be bounded to 30 minutes')
     environment(); backup_devices(request)
     marker = read_record(Path('/etc/klokast-template.json'), private=False)
-    if marker.get('engine_commit') != request['engine_commit'] or marker.get('profile') != 'shared-alpine-v1':
+    if not isinstance(marker, dict) or marker.get('engine_commit') != request['engine_commit'] or marker.get('profile') != 'shared-alpine-v1':
         raise CopyError('backup maintenance image differs from the recorded engine and profile')
     if BACKUP_PENDING.exists() or BACKUP_PENDING.is_symlink():
         raise CopyError('backup restore staging was already used; allocate a new maintenance guest')
