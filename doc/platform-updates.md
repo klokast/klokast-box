@@ -654,6 +654,9 @@ an old home or `/etc`, run package commands, or download container images.
 The retained Tailscale state remains on its data filesystem. The generated
 OpenRC configuration selects that ordinary file with `--state`; it does not
 bind-mount a file that Tailscale must replace atomically. Machine configuration
+requires the exact completed final-sync receipt and verifies the opaque
+identity's content and numeric metadata against it before any OS write.
+Pending copies and changed identity bytes block personalization. Configuration
 includes the retained mount, network and firewall files, and fixed boot
 services. The receipt records source and file checksums without configuration
 contents. A failed attempt leaves a persistent marker and the clone cannot

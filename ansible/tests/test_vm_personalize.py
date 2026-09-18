@@ -73,6 +73,19 @@ class Personalization(unittest.TestCase):
         with self.assertRaisesRegex(p.PersonalizeError, 'overlaps'): self.run_personalize()
         self.assertFalse((self.root / '.klokast-personalize-pending').exists())
 
+    def test_changed_identity_and_incomplete_copy_are_refused(self):
+        identity = self.retained / p.IDENTITY
+        identity.write_bytes(b'changed-identity')
+        with self.assertRaisesRegex(p.PersonalizeError, 'final-sync receipt'): self.run_personalize()
+        self.assertFalse((self.root / '.klokast-personalize-pending').exists())
+        original = p.data.read_record(self.retained / '.klokast-final-result.json')
+        original['entries'][p.IDENTITY] = p.data.tree(identity, time.monotonic() + 60)
+        original['receipt_sha256'] = p.data.digest({k: v for k, v in original.items() if k != 'receipt_sha256'})
+        (self.retained / '.klokast-final-result.json').write_text(json.dumps(original))
+        self.request['retained_receipt_sha256'] = original['receipt_sha256']
+        (self.retained / '.klokast-final-pending').touch()
+        with self.assertRaisesRegex(p.PersonalizeError, 'final-sync receipt'): self.run_personalize()
+
     def test_identity_permissions_and_symlinks_are_refused(self):
         identity = self.retained / p.IDENTITY
         identity.chmod(0o644)

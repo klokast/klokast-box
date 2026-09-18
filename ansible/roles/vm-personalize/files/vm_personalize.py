@@ -39,13 +39,14 @@ class PersonalizeError(RuntimeError):
 def validate(request):
     fields = {'kind', 'operation_id', 'box', 'role', 'engine_commit', 'release_sha256',
               'inputs_sha256', 'root_uuid', 'retained_uuid', 'runtime', 'files',
-              'packages', 'admin_password_hash'}
+              'packages', 'admin_password_hash', 'retained_receipt_sha256'}
     if (not isinstance(request, dict) or set(request) != fields or
             request['kind'] != 'klokast.vm-personalize.v1'):
         raise PersonalizeError('unsupported or incomplete personalization request')
     patterns = {'operation_id': r'[0-9a-f]{24}', 'box': r'[a-z0-9][a-z0-9-]{0,30}',
                 'engine_commit': r'[0-9a-f]{40}', 'release_sha256': r'[0-9a-f]{64}',
                 'inputs_sha256': r'[0-9a-f]{64}',
+                'retained_receipt_sha256': r'[0-9a-f]{64}',
                 'root_uuid': r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',
                 'retained_uuid': r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'}
     if (any(not isinstance(request[k], str) or not re.fullmatch(p, request[k]) for k, p in patterns.items()) or
@@ -202,6 +203,17 @@ def personalize(request, deadline):
     identity = regular(RETAINED, IDENTITY, data.MAX_IDENTITY_BYTES)
     if identity.stat().st_size == 0 or stat.S_IMODE(identity.stat().st_mode) != 0o600:
         raise PersonalizeError('retained Tailscale identity is absent or not private')
+    final = data.read_record(regular(RETAINED, '.klokast-final-result.json'))
+    if (not isinstance(final, dict) or set(final) != {'kind', 'request_sha256', 'stage_receipt_sha256',
+            'entries', 'copy_verified', 'adoption_accepted', 'receipt_sha256'} or
+            final['kind'] not in {'klokast.vm-retained-final-result.v2', 'klokast.vm-retained-final-result.v3'} or
+            final['copy_verified'] is not True or final['adoption_accepted'] is not False or
+            final['receipt_sha256'] != request['retained_receipt_sha256'] or
+            data.digest({k: v for k, v in final.items() if k != 'receipt_sha256'}) != request['retained_receipt_sha256'] or
+            not isinstance(final['entries'], dict) or final['entries'].get(IDENTITY) != data.tree(identity, deadline) or
+            any((RETAINED / name).exists() or (RETAINED / name).is_symlink()
+                for name in ('.klokast-stage-pending', '.klokast-final-pending', '.klokast-copy-pending'))):
+        raise PersonalizeError('retained identity differs from its completed final-sync receipt')
     accounts = account_files(request)
     home = data.below(ROOT, 'home/neo')
     if home.exists() or home.is_symlink() or any(data.below(ROOT, 'var/lib/tailscale').iterdir()):
@@ -244,6 +256,7 @@ def personalize(request, deadline):
                'inputs_sha256': request['inputs_sha256'], 'engine_commit': request['engine_commit'],
                'profile': 'shared-alpine-v1', 'hostname': request['box'] + '-' + request['role'],
                'root_uuid': request['root_uuid'], 'retained_uuid': request['retained_uuid'],
+               'retained_receipt_sha256': request['retained_receipt_sha256'],
                'runtime': request['runtime'], 'files': {k: {'sha256': hashlib.sha256(regular(ROOT, k).read_bytes()).hexdigest(),
                                                           'mode': mode} for k, (_content, mode) in files.items()},
                'packages_unchanged': True, 'adoption_accepted': False}

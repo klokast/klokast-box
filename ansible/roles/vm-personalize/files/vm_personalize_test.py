@@ -37,6 +37,13 @@ def fixture(root, retained):
                          {'kind': 'klokast.vm-retained-identity.v1', 'runtime': runtime})
     (retained / p.IDENTITY).write_bytes(b'opaque-synthetic-state')
     (retained / p.IDENTITY).chmod(0o600)
+    final = {'kind': 'klokast.vm-retained-final-result.v3', 'request_sha256': 'e' * 64,
+             'stage_receipt_sha256': 'f' * 64,
+             'entries': {p.IDENTITY: p.data.tree(retained / p.IDENTITY, time.monotonic() + 60)},
+             'copy_verified': True, 'adoption_accepted': False}
+    final['receipt_sha256'] = p.data.digest(final)
+    p.data.create_record(retained / '.klokast-final-result.json', final)
+    request['retained_receipt_sha256'] = final['receipt_sha256']
     return request
 
 
