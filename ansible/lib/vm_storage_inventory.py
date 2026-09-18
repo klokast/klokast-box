@@ -307,6 +307,25 @@ def checked_unowned_tree(value, delegated):
     return value
 
 
+def checked_package_audit(value, database_sha256):
+    fields = {'kind', 'complete', 'stable', 'database_sha256', 'protected_paths',
+              'check_permissions', 'differences', 'adoption_authorized'}
+    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-package-audit.v1' or
+            value['complete'] is not True or value['stable'] is not True or
+            not isinstance(database_sha256, str) or not HASH.fullmatch(database_sha256) or
+            value['database_sha256'] != database_sha256 or value['protected_paths'] != 'none' or
+            value['check_permissions'] is not True or value['adoption_authorized'] is not False):
+        raise UpdateError('native package audit is incomplete, unstable, or has different database coverage')
+    rows = value['differences']
+    if (not isinstance(rows, list) or len(rows) > 8192 or
+            any(not isinstance(v, dict) or set(v) != {'code', 'path'} or
+                not isinstance(v['code'], str) or v['code'] not in ('A', 'D', 'd', 'M', 'm', 'x', 'U', 'X') or
+                not path(v['path']) for v in rows) or
+            [v['path'] for v in rows] != sorted({v['path'] for v in rows})):
+        raise UpdateError('native package audit contains invalid, duplicate, or error rows')
+    return value
+
+
 def assess_host_data(fact, host):
     """Host-wide metadata is evidence, never an allowlist of disposable files."""
     result = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
@@ -376,6 +395,15 @@ def assess_host_data(fact, host):
         add('host.processes-unknown', 'Complete stable process evidence is unavailable or conflicts with native service inventory.')
     add('host.accounting-unverified', 'Host files, accounts, services, timers, identities, and mounted filesystems require approved mappings; metadata is not adoption approval.')
     add('host.package-integrity-unverified', 'Package path ownership does not verify installed package contents or generated configuration.', 'warning')
+    try:
+        audit = checked_package_audit(inventory.get('package_audit'), inventory.get('package_database_sha256'))
+        result['inventory']['package_audit'] = audit
+        if audit['differences']:
+            add('host.package-differences', 'Native APK audit found changes relative to its local database; classify each path against approved configuration before adoption.')
+        else:
+            add('host.package-local-match', 'Native APK audit matches the local database; signed source and generated-configuration checks are still required.', 'warning')
+    except UpdateError:
+        add('host.package-audit-unknown', 'Complete stable native APK audit, including configuration and permissions, is unavailable.')
     if unowned:
         add('host.unowned-paths', 'Files outside package ownership require explicit retention, generated-configuration, or reconstructable-state classification.')
     if maintenance:

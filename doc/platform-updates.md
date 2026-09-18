@@ -147,7 +147,7 @@ numeric identities, paths outside APK ownership, service and cron script
 checksums, runlevel link checksums, and filesystem boundaries. Container rows
 also retain their observed runtime state, so stopped containers remain visible.
 
-The host scan reads file metadata without reading application data. It excludes
+The metadata pass reads file metadata without reading application data. It excludes
 password and account-description fields. It hashes bounded maintenance scripts
 without emitting their contents. It does not follow directory symlinks or cross
 other mounts. It records the standard Podman store as separately inventoried;
@@ -173,6 +173,20 @@ file integrity. Files outside package ownership can include generated Platform
 configuration, credentials, runtime state, and user data. They need separate
 approved classifications before adoption. A matching package path, unchanged
 script checksum, or empty path list cannot grant adoption authority.
+
+A separate native [APK audit](https://github.com/alpinelinux/apk-tools/blob/master/doc/apk-audit.8.scd)
+now compares package-owned files, including configuration and permissions,
+against the local APK database. It uses `--system --check-permissions` with an
+empty protected-path list; normal `--system` alone skips protected configuration.
+Each of two commands has a 20-second limit. Their path/reason records must agree,
+and the full installed database must match the host inventory before and after
+both commands. File contents and native diagnostics are not emitted. Parsing
+is bounded to 8,192 differences and 1 MiB of output. Native error rows, timeouts,
+changed evidence, and unsupported output produce `host.package-audit-unknown`.
+Differences produce `host.package-differences`; they require comparison with
+approved recipes and generated configuration. Empty output is only a match with
+the local database. It does not prove that the database or local configuration
+matches approved signed inputs, and it does not clear the adoption gate.
 
 The native scan at `f7f236b` on 2026-09-18 completed stable deep metadata for
 the three selected guests: 1,322 entries on k001-dmz, 1,272 on k002-dmz, and

@@ -413,12 +413,57 @@ def process_inventory(root, services, deadline):
             'boot_id': boot_id, 'processes': rows}
 
 
+def package_audit_rows(content):
+    """Parse native audit paths only, never details or file contents."""
+    if not isinstance(content, str) or len(content.encode()) > 1024 * 1024:
+        raise HostInventoryError('package audit output exceeds its limit')
+    rows, seen = [], set()
+    for line in content.splitlines():
+        if len(line) < 3 or line[1] != ' ' or line[0] not in 'ADdeMmxUX':
+            raise HostInventoryError('package audit output has an unsupported format')
+        path = '/' + line[2:].removeprefix('/').removesuffix('/')
+        if not safe_path(path) or path in seen or len(rows) >= 8192:
+            raise HostInventoryError('package audit paths are unsafe, duplicated, or excessive')
+        seen.add(path)
+        rows.append({'code': line[0], 'path': path})
+    return sorted(rows, key=lambda v: v['path'])
+
+
+def collect_package_audit(database_sha256, root=Path('/')):
+    """Native read-only comparison with the local DB, not signed source proof."""
+    result = {'kind': 'klokast.vm-package-audit.v1', 'complete': False, 'stable': False,
+              'database_sha256': database_sha256, 'protected_paths': 'none',
+              'check_permissions': True, 'differences': [], 'adoption_authorized': False}
+    if root != Path('/'):
+        return result  # Never inspect the runner when unit tests use a fixture root.
+    try:
+        command = ['/sbin/apk', 'audit', '--system', '--check-permissions', '--protected-paths', '/dev/null']
+        def database_matches():
+            value = text('/lib/apk/db/installed')
+            return bool(value) and hashlib.sha256(value.encode()).hexdigest() == database_sha256
+        if not database_matches():
+            return result
+        before = capture(command)
+        after = capture(command)
+        if before['rc'] != 0 or after['rc'] != 0 or not database_matches():
+            return result
+        rows, repeated = package_audit_rows(before['stdout']), package_audit_rows(after['stdout'])
+        result['differences'] = rows
+        result['stable'] = rows == repeated
+        # Native audit can emit an error row while returning exit status zero.
+        result['complete'] = not any(v['code'] == 'e' for v in rows + repeated)
+    except (HostInventoryError, OSError, ValueError):
+        pass
+    return result
+
+
 def collect_host(storage, root=Path('/')):
     result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
               'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
               'package_integrity_verified': False, 'data_accounted': False}
     try:
         database = text(root / 'lib/apk/db/installed')
+        result['package_database_sha256'] = hashlib.sha256(database.encode()).hexdigest()
         owned = package_paths(database)
         mounts = mount_inventory()
         if (not mounts or len(mounts) > 4096 or any(not isinstance(m.get('path'), str) or
@@ -451,6 +496,7 @@ def collect_host(storage, root=Path('/')):
             result['unowned_tree'] = collect_unowned(root, before['delegated_roots'], mounts, graph, deadline)
             if mounts != mount_inventory():
                 result['unowned_tree']['stable'] = False
+        result['package_audit'] = collect_package_audit(result['package_database_sha256'], root)
     except HostInventoryError as error:
         result['error'] = str(error)
     except (OSError, ValueError, UnicodeError):
