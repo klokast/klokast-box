@@ -1,0 +1,30 @@
+---
+- name: Inspect public candidate receipts on the controller
+  ansible.builtin.stat:
+    path: "/var/lib/klokast/updates/discovery/builds/{{ cleanup_candidate.path | basename }}/{{ item }}"
+    get_checksum: false
+  delegate_to: localhost
+  become: false
+  loop: [request.json, candidate.json, lifecycle.json, test-lifecycle.json]
+  register: cleanup_receipts
+
+- name: Create protected receipt staging
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-vm-templates/cleanup-evidence/{{ cleanup_candidate.path | basename }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Stage only bounded public build receipts
+  ansible.builtin.copy:
+    src: "{{ item.stat.path }}"
+    dest: "/mnt/dom0_data/klokast-vm-templates/cleanup-evidence/{{ cleanup_candidate.path | basename }}/{{ item.item }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop: "{{ cleanup_receipts.results }}"
+  when:
+    - item.stat.isreg | default(false)
+    - not (item.stat.islnk | default(false))
+    - item.stat.size | default(2097153) <= 2097152

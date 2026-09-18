@@ -70,6 +70,15 @@ class Cleanup(unittest.TestCase):
         self.assertNotIn(self.ids[0], [v['operation_id'] for v in plan['removals']])
         with self.assertRaises(c.Refused): c.plan('a', [self.ids[0]], set())
 
+    def test_controller_receipts_match_after_successful_staging_removal(self):
+        evidence = self.base / 'cleanup-evidence'; evidence.mkdir()
+        stage = self.base / 'staging' / self.ids[0]
+        for name in ('capsule.tar', 'bootstrap-kernel', 'bootstrap-initramfs'): (stage / name).unlink()
+        stage.rename(evidence / self.ids[0])
+        plan = c.plan('a', [], set())
+        self.assertFalse(plan['unknown_unchanged'])
+        self.assertTrue(next(v for v in plan['removals'] if v['operation_id'] == self.ids[0])['retire_candidate'])
+
     def test_changed_plan_or_artifact_refuses_deletion(self):
         plan = c.plan('a', [], set())
         with self.assertRaises(c.Refused): c.apply(plan, 'f' * 64)

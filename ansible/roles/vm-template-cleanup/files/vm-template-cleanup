@@ -169,7 +169,13 @@ def plan(box, pinned, referenced):
             if {v.name for v in directory.iterdir()} != {'candidate.json', 'root', 'kernel', 'initramfs'}:
                 raise Refused('candidate contains missing or unknown files')
             record = read(directory / 'candidate.json')
-            work = BASE / 'staging' / operation; safe(work, True)
+            work = BASE / 'staging' / operation
+            if not work.exists():
+                # Successful builds remove input staging after fetching these
+                # public receipts to the controller. The setup play stages
+                # that evidence again; the candidate manifest must match it.
+                work = BASE / 'cleanup-evidence' / operation
+            safe(work, True)
             request = read(work / 'request.json')
             lifecycle, test = read(work / 'lifecycle.json'), read(work / 'test-lifecycle.json')
             if (record.get('kind') != 'klokast.vm-template-candidate.v1' or record.get('accepted') is not False or

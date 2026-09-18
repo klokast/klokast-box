@@ -42,6 +42,21 @@
         group: root
         mode: '0600'
 
+    - name: Find candidate directories for public build evidence
+      ansible.builtin.find:
+        paths: /mnt/dom0_data/klokast-vm-templates/candidates
+        file_type: directory
+        recurse: false
+        use_regex: true
+        patterns: ['^[0-9a-f]{24}$']
+      register: cleanup_candidates
+
+    - name: Stage controller build receipts for existing candidates
+      ansible.builtin.include_tasks: ../roles/vm-template-cleanup/tasks/evidence.yml
+      loop: "{{ cleanup_candidates.files }}"
+      loop_control:
+        loop_var: cleanup_candidate
+
     - name: Compute or apply the exact checked cleanup plan
       ansible.builtin.command:
         argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box] + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
