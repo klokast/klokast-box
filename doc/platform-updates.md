@@ -697,6 +697,42 @@ only; they cannot establish accepted release authority.
 
 ## Replacement and recovery acceptance gates
 
+### Controlled DMZ app retirement before adoption
+
+`74-platform-update-dmz-cleanup.yml` is a separately invoked setup playbook.
+It is not a standing-policy action. It requires an exact list of DMZ targets,
+the active controller, and checked Instance intent with both Static Site and
+Nextcloud disabled. It must never select a backend VM.
+
+The playbook stops Static Site writers and archives its fixed content,
+configuration, logs, and helper paths. A guest-local restore test compares
+file bytes, numeric ownership, permissions, timestamps, hardlinks, symlinks,
+and extended attributes. It refuses external links, special files, mount
+boundaries, changed sources, excessive data, and reuse of an operation.
+The native Python tar data filter is required; there is no unfiltered fallback.
+
+The active controller receives the archive, manifest, and receipt under
+`/home/smith/src/klokast/klokast-box/.run/vm-update-backups/static-site/OPERATION/HOST/`.
+These are private backups, including any app credentials. Keep the directory
+owner-only and its files mode `0600`. Do not commit or automatically prune it.
+All selected targets must pass backup and transfer verification before the
+removal play starts. A target with no Static Site files records their absence.
+
+Removal stops Nextcloud ingress, including its native proxy, and removes only
+the app files on the selected DMZ guests. Backend data and VM Tailscale state
+are outside this operation. The playbook verifies the VM management identity
+after removal. Its evidence does not establish complete host accounting,
+adoption, accepted releases, or replacement readiness.
+
+Run from a clean, pushed public controller checkout with the approved execution
+inventory. Supply `vm_update_cleanup_boxes` and a new 24-character lowercase
+hexadecimal `vm_update_cleanup_operation` through an owner-only JSON extra-vars
+file. The `--limit` host set must match those boxes' DMZ VMs exactly. First run
+the Ansible syntax check, then run with `-vv`. Keep the full log private on the
+controller. No production execution is implied by installing this playbook.
+
+### Production replacement gates
+
 The following work is required before enabling replacement:
 
 1. Complete the restricted replacement executor under the signed standing

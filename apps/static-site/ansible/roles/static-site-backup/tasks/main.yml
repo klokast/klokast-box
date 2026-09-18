@@ -1,0 +1,91 @@
+---
+- name: Require the selected DMZ and a unique backup operation
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - inventory_hostname == node_name ~ '-dmz'
+      - static_site_backup_operation is match('^[0-9a-f]{24}$')
+      - static_site_backup_destination is match('^/home/smith/src/klokast/klokast-box/\.run/vm-update-backups/static-site/[0-9a-f]{24}/[a-z0-9-]+-dmz$')
+
+- name: Inspect Static Site service files before quiescence
+  ansible.builtin.stat:
+    path: '/etc/init.d/{{ item }}'
+  loop: [static-site-publisher, static-site-cloudflared, static-site-web]
+  register: static_site_backup_services
+
+- name: Stop and disable existing Static Site writers and ingress
+  ansible.builtin.service:
+    name: '{{ item.item }}'
+    state: stopped
+    enabled: false
+  when: item.stat.exists
+  loop: '{{ static_site_backup_services.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Create a bounded Static Site archive and verify restoration on the guest
+  ansible.builtin.script:
+    cmd: 'static-site-backup --operation {{ static_site_backup_operation }}'
+    executable: /usr/bin/python3
+  async: 660
+  poll: 5
+  register: static_site_backup_result
+
+- name: Create the private controller backup directory
+  ansible.builtin.file:
+    path: '{{ static_site_backup_destination }}'
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+
+- name: Fetch the archive, manifest, and restore receipt to the active controller
+  ansible.builtin.fetch:
+    src: '/var/tmp/klokast-static-site-backup/{{ static_site_backup_operation }}/{{ item }}'
+    dest: '{{ static_site_backup_destination }}/{{ item }}'
+    flat: true
+    validate_checksum: true
+  loop: [static-site.tar, manifest.json, receipt.json]
+  no_log: true
+
+- name: Restrict permissions on controller backup files
+  ansible.builtin.file:
+    path: '{{ static_site_backup_destination }}/{{ item }}'
+    mode: '0600'
+  loop: [static-site.tar, manifest.json, receipt.json]
+  delegate_to: localhost
+  become: false
+
+- name: Verify the fetched bytes and bind the backup to this guest
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import hashlib,json,os,sys
+        from pathlib import Path
+        root=Path(sys.argv[1]); receipt=json.loads((root/'receipt.json').read_bytes())
+        assert receipt['kind']=='klokast.static-site-backup.v1'
+        assert receipt['operation_id']==sys.argv[2] and receipt['host']==sys.argv[3]
+        assert receipt['restore_verified'] is True and receipt['source_unchanged'] is True
+        for name,key in [('static-site.tar','archive_sha256'),('manifest.json','manifest_sha256')]:
+          p=root/name; h=hashlib.sha256()
+          with p.open('rb') as f:
+            for block in iter(lambda:f.read(1048576),b''): h.update(block)
+            os.fsync(f.fileno())
+          assert h.hexdigest()==receipt[key], 'transferred backup checksum differs'
+        assert (root/'static-site.tar').stat().st_size==receipt['archive_bytes']
+        print(json.dumps({'host':sys.argv[3],'restore_verified':True,'archive_sha256':receipt['archive_sha256'],'entries':receipt['entries'],'data_bytes':receipt['data_bytes']}))
+      - '{{ static_site_backup_destination }}'
+      - '{{ static_site_backup_operation }}'
+      - '{{ inventory_hostname }}'
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: static_site_backup_verified
+
+- name: Recheck the original data against its verified backup before removal
+  ansible.builtin.script:
+    cmd: 'static-site-backup --operation {{ static_site_backup_operation }} --verify-source'
+    executable: /usr/bin/python3
+  changed_when: false

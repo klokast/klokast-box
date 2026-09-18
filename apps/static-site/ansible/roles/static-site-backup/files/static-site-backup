@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Bounded, guest-local Static Site archive and restore verification.
+
+The controller fetches opaque archive bytes and the receipt. No data or
+credentials are printed. This command neither removes data nor grants removal.
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import stat
+import tarfile
+import time
+
+ROOTS = ('srv/static-site', 'etc/klokast/static-site', 'var/log/klokast/static-site',
+         'etc/init.d/static-site-web', 'etc/init.d/static-site-publisher',
+         'etc/init.d/static-site-cloudflared', 'usr/local/sbin/static-site-web-deploy',
+         'usr/local/sbin/static-site-publisher', 'usr/local/sbin/static-site-cloudflared-check')
+BASE = Path('/var/tmp/klokast-static-site-backup')
+LIMIT = 256 * 1024 * 1024
+MAX_ENTRIES = 10000
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+
+
+def checksum(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for data in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(data)
+    return value.hexdigest()
+
+
+def check_parents(path):
+    for parent in path.parents:
+        if parent.is_symlink():
+            raise ValueError('backup source has a symlink parent')
+
+
+def mounts():
+    return [re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), line.split()[4])
+            for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+
+
+def inventory(root, deadline, mount_paths=()):
+    result, pending, links, size = {}, [], {}, 0
+    for name in ROOTS:
+        path = root / name
+        check_parents(path)
+        if path.exists() or path.is_symlink():
+            pending.append(path)
+    while pending:
+        if time.monotonic() >= deadline or len(result) >= MAX_ENTRIES:
+            raise ValueError('backup inventory exceeds its time or entry limit')
+        path = pending.pop()
+        name = path.relative_to(root).as_posix()
+        if any(ord(c) < 32 for c in name):
+            raise ValueError('backup source has an unsafe filename')
+        if str(path) in mount_paths:
+            raise ValueError('backup source contains a mount boundary')
+        check_parents(path)
+        info = path.lstat()
+        row = {'mode': stat.S_IMODE(info.st_mode), 'uid': info.st_uid, 'gid': info.st_gid,
+               'mtime_ns': info.st_mtime_ns,
+               'xattrs': {k: base64.b64encode(os.getxattr(path, k, follow_symlinks=False)).decode()
+                         for k in sorted(os.listxattr(path, follow_symlinks=False))}}
+        if stat.S_ISDIR(info.st_mode):
+            row['type'] = 'directory'
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    if len(pending) + len(result) >= MAX_ENTRIES:
+                        raise ValueError('backup directory exceeds its entry limit')
+                    pending.append(Path(entry.path))
+        elif stat.S_ISREG(info.st_mode):
+            size += info.st_size
+            if size > LIMIT:
+                raise ValueError('backup source exceeds 256 MiB')
+            row.update(type='file', bytes=info.st_size, sha256=checksum(path))
+            links.setdefault((info.st_dev, info.st_ino), []).append(name)
+            row['links'] = info.st_nlink
+        elif stat.S_ISLNK(info.st_mode):
+            target = os.readlink(path)
+            resolved = (path.parent / target).resolve()
+            if os.path.isabs(target) or not any(resolved.is_relative_to(root / p) for p in ROOTS):
+                raise ValueError('backup symlink leaves the fixed source roots')
+            row.update(type='symlink', target=target)
+        else:
+            raise ValueError('backup source contains an unsupported special file')
+        result[name] = row
+    for names in links.values():
+        for name in names:
+            if result[name].pop('links') != len(names):
+                raise ValueError('backup file has a hardlink outside the selected roots')
+            result[name]['hardlinks'] = sorted(names)
+    return dict(sorted(result.items()))
+
+
+def restore(archive, destination, entries):
+    """Restore only a validated bounded archive, using Python's data filter."""
+    if not hasattr(tarfile, 'data_filter'):
+        raise ValueError('restore verification requires the native tar data filter')
+    with tarfile.open(archive, 'r:') as source:
+        members = source.getmembers()
+        if len(members) != len(entries) or {m.name for m in members} != set(entries):
+            raise ValueError('archive entries differ from the measured source')
+        for member in members:
+            row = entries[member.name]
+            if not member.name or member.name.startswith('/') or '..' in Path(member.name).parts:
+                raise ValueError('archive has an unsafe member')
+            if row['type'] == 'directory' and not member.isdir():
+                raise ValueError('archive directory type differs')
+            if row['type'] == 'file':
+                if member.islnk():
+                    if member.linkname not in row['hardlinks']:
+                        raise ValueError('archive hardlink target differs')
+                elif not member.isfile() or member.size != row['bytes']:
+                    raise ValueError('archive file type or size differs')
+            if row['type'] == 'symlink' and (not member.issym() or member.linkname != row['target']):
+                raise ValueError('archive symlink target differs')
+        source.extractall(destination, filter='data')
+    for name, row in sorted(entries.items(), key=lambda item: len(Path(item[0]).parts), reverse=True):
+        path = destination / name
+        check_parents(path)
+        os.chown(path, row['uid'], row['gid'], follow_symlinks=False)
+        if row['type'] != 'symlink':
+            os.chmod(path, row['mode'])
+        for key, value in row['xattrs'].items():
+            os.setxattr(path, key, base64.b64decode(value, validate=True), follow_symlinks=False)
+        os.utime(path, ns=(row['mtime_ns'], row['mtime_ns']), follow_symlinks=False)
+
+
+def backup(operation, root=Path('/'), base=BASE):
+    if not re.fullmatch('[0-9a-f]{24}', operation):
+        raise ValueError('backup operation requires 24 lowercase hexadecimal characters')
+    check_parents(base)
+    base.mkdir(mode=0o700, exist_ok=True)
+    info = base.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError('backup staging directory has unsafe ownership or permissions')
+    work = base / operation
+    work.mkdir(mode=0o700)  # Never reuse an interrupted backup.
+    deadline = time.monotonic() + 600
+    entries = inventory(root, deadline, mounts() if root == Path('/') else ())
+    size = sum(v.get('bytes', 0) for v in entries.values())
+    if shutil.disk_usage(work).free < 3 * size + 128 * 1024 * 1024:
+        raise ValueError('backup staging lacks space for the archive and restore test')
+    archive = work / 'static-site.tar'
+    with tarfile.open(archive, 'x:', format=tarfile.PAX_FORMAT) as target:
+        for name in entries:
+            member = target.gettarinfo(root / name, arcname=name)
+            if member.isfile():
+                if entries[name]['type'] != 'file' or member.size != entries[name]['bytes']:
+                    raise ValueError('backup source changed before archive creation')
+                descriptor = os.open(root / name, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, 'rb') as stream:
+                    target.addfile(member, stream)
+            else:
+                target.addfile(member)
+    archive.chmod(0o600)
+    if archive.stat().st_size > 2 * LIMIT:
+        raise ValueError('backup archive exceeds its transfer limit')
+    if inventory(root, deadline, mounts() if root == Path('/') else ()) != entries:
+        raise ValueError('backup source changed during archive creation')
+    recovered = work / 'restore'
+    recovered.mkdir(mode=0o700)
+    restore(archive, recovered, entries)
+    if inventory(recovered, deadline) != entries:
+        raise ValueError('restored content or metadata differs from the source')
+    manifest = work / 'manifest.json'
+    manifest.write_bytes(canonical({'roots': ROOTS, 'entries': entries}) + b'\n')
+    manifest.chmod(0o600)
+    receipt = {'kind': 'klokast.static-site-backup.v1', 'operation_id': operation,
+               'host': socket.gethostname().split('.')[0],
+               'archive_sha256': checksum(archive), 'archive_bytes': archive.stat().st_size,
+               'manifest_sha256': checksum(manifest), 'entries': len(entries), 'data_bytes': size,
+               'restore_verified': True, 'source_unchanged': True,
+               'roots_present': [p for p in ROOTS if p in entries]}
+    for path in (archive, manifest):
+        with path.open('rb') as stream:
+            os.fsync(stream.fileno())
+    receipt_path = work / 'receipt.json'
+    receipt_path.write_bytes(canonical(receipt) + b'\n')
+    receipt_path.chmod(0o600)
+    with receipt_path.open('rb') as stream:
+        os.fsync(stream.fileno())
+    descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    shutil.rmtree(recovered)
+    return receipt
+
+
+def verify_source(operation, root=Path('/'), base=BASE):
+    if not re.fullmatch('[0-9a-f]{24}', operation):
+        raise ValueError('invalid backup operation')
+    work = base / operation
+    for path in (work, work / 'receipt.json', work / 'manifest.json', work / 'static-site.tar'):
+        check_parents(path)
+        info = path.lstat()
+        if path.is_symlink() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError('backup evidence has unsafe ownership or permissions')
+    receipt = json.loads((work / 'receipt.json').read_bytes())
+    manifest = json.loads((work / 'manifest.json').read_bytes())
+    if (receipt['operation_id'] != operation or not receipt['restore_verified'] or
+            receipt['host'] != socket.gethostname().split('.')[0] or
+            checksum(work / 'static-site.tar') != receipt['archive_sha256'] or
+            checksum(work / 'manifest.json') != receipt['manifest_sha256'] or
+            manifest['roots'] != list(ROOTS) or
+            inventory(root, time.monotonic() + 600, mounts() if root == Path('/') else ()) != manifest['entries']):
+        raise ValueError('backup evidence or source changed before removal')
+    return receipt
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--operation', required=True)
+    parser.add_argument('--verify-source', action='store_true')
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error('run the backup helper as root on the selected DMZ guest')
+    if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}-dmz', socket.gethostname().split('.')[0]):
+        parser.error('backup execution is restricted to a DMZ guest')
+    os.umask(0o077)
+    try:
+        action = verify_source if args.verify_source else backup
+        print(json.dumps(action(args.operation), sort_keys=True))
+    except (OSError, ValueError, KeyError, tarfile.TarError):
+        raise SystemExit('Static Site backup or restore verification failed; preserve the source and inspect protected staging')
+
+
+if __name__ == '__main__':
+    main()

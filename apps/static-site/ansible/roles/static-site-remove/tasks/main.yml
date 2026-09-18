@@ -1,15 +1,55 @@
 ---
+- name: Require the controller copy of the restore-verified backup for update setup
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - static_site_backup_verified is defined
+      - static_site_backup_verified.rc == 0
+      - (static_site_backup_verified.stdout | from_json).restore_verified
+      - (static_site_backup_verified.stdout | from_json).host == inventory_hostname
+  when: static_site_remove_verified_backup | default(false) | bool
+
+- name: Inspect Static Site service files before stopping
+  ansible.builtin.stat:
+    path: '/etc/init.d/{{ item }}'
+  loop:
+    - '{{ static_site_cloudflared_service_name }}'
+    - '{{ static_site_publisher_service_name }}'
+    - '{{ static_site_web_service_name }}'
+  register: static_site_remove_services
+
 - name: Stop static-site OpenRC services
   ansible.builtin.service:
-    name: "{{ item }}"
+    name: "{{ item.item }}"
     enabled: false
     state: stopped
   become: true
-  failed_when: false
-  loop:
-    - "{{ static_site_cloudflared_service_name }}"
-    - "{{ static_site_publisher_service_name }}"
-    - "{{ static_site_web_service_name }}"
+  when: item.stat.exists
+  loop: '{{ static_site_remove_services.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Verify native Static Site writers stopped and paths have no mounted data
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import os,re
+        from pathlib import Path
+        roots=('/srv/static-site','/etc/klokast/static-site','/var/log/klokast/static-site')
+        mounts=[re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),v.split()[4])
+                for v in Path('/proc/self/mountinfo').read_text().splitlines()]
+        for root in roots:
+          assert not any(p.is_symlink() for p in Path(root).parents), 'app path has a symlink parent'
+          assert not any(m==root or m.startswith(root+'/') for m in mounts), 'app data has a mount boundary'
+        needles=tuple(x.encode() for x in roots)+(b'/usr/local/sbin/static-site-',)
+        for p in Path('/proc').iterdir():
+          if not p.name.isdigit() or int(p.name)==os.getpid(): continue
+          try: argv=(p/'cmdline').read_bytes().split(b'\0')
+          except FileNotFoundError: continue
+          assert not any(n in a for a in argv for n in needles), 'a Static Site process remains; files are preserved'
+  changed_when: false
 
 - name: Remove static-site web container
   ansible.builtin.command:
@@ -54,3 +94,14 @@
     - "{{ static_site_incoming_root }}"
     - "{{ static_site_git_repo_cache_root }}"
   when: static_site_wipe_data | bool
+
+- name: Remove the empty backed-up Static Site parent without recursive deletion
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        from pathlib import Path
+        try: Path('/srv/static-site').rmdir()
+        except FileNotFoundError: pass
+  when: static_site_remove_verified_backup | default(false) | bool

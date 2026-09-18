@@ -1,16 +1,60 @@
 ---
-- name: Stop managed Nextcloud services
-  ansible.builtin.service:
-    name: "{{ item }}"
-    state: stopped
-    enabled: false
-  become: true
-  failed_when: false
+- name: Restrict DMZ-only removal to the selected DMZ guest
+  ansible.builtin.assert:
+    that:
+      - node_domain_role == 'dmz'
+      - inventory_hostname == node_name ~ '-dmz'
+      - not (nextcloud_wipe_data | default(false) | bool)
+  when: nextcloud_remove_dmz_only | default(false) | bool
+
+- name: Check Nextcloud service files before stopping them
+  ansible.builtin.stat:
+    path: '/etc/init.d/{{ item }}'
   loop:
     - nextcloud-private-ingress
+    - nextcloud-private-ingress-proxy
     - nextcloud-cloudflared
     - nextcloud
     - nextcloud-firewall
+  register: nextcloud_remove_services
+
+- name: Stop managed Nextcloud services
+  ansible.builtin.service:
+    name: "{{ item.item }}"
+    state: stopped
+    enabled: false
+  become: true
+  when: item.stat.exists
+  loop: '{{ nextcloud_remove_services.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+
+- name: Verify no native Nextcloud ingress writer remains before file removal
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import os,re
+        from pathlib import Path
+        roots=('/etc/klokast/nextcloud','/etc/klokast/nextcloud-cloudflared',
+               '/etc/klokast/nextcloud-private-ingress','/var/lib/klokast/nextcloud-private-ingress',
+               '/var/log/klokast/nextcloud-private-ingress','/var/log/klokast/nextcloud-cloudflared',
+               '/run/nextcloud-private-ingress')
+        mounts=[re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),v.split()[4])
+                for v in Path('/proc/self/mountinfo').read_text().splitlines()]
+        for root in roots:
+          path=Path(root)
+          assert not any(p.is_symlink() for p in path.parents), 'app path has a symlink parent'
+          assert not any(m==root or m.startswith(root+'/') for m in mounts), 'app data has a mount boundary'
+        needles=tuple(x.encode() for x in roots)+ (b'/usr/local/sbin/nextcloud-',)
+        for p in Path('/proc').iterdir():
+          if not p.name.isdigit() or int(p.name)==os.getpid(): continue
+          try: argv=(p/'cmdline').read_bytes().split(b'\0')
+          except FileNotFoundError: continue
+          assert not any(n in a for a in argv for n in needles), 'a Nextcloud ingress process remains; files are preserved'
+  when: node_domain_role == 'dmz'
+  changed_when: false
 
 - name: Remove managed Nextcloud containers and pod on backend
   ansible.builtin.command:
@@ -51,6 +95,7 @@
     - /etc/init.d/nextcloud-firewall
     - /etc/init.d/nextcloud-cloudflared
     - /etc/init.d/nextcloud-private-ingress
+    - /etc/init.d/nextcloud-private-ingress-proxy
     - /usr/local/sbin/nextcloud-backend-deploy
     - /usr/local/sbin/nextcloud-cloudflared-deploy
     - /usr/local/sbin/nextcloud-private-ingress-converge
@@ -83,4 +128,14 @@
     path: /var/lib/klokast/nextcloud-private-ingress
     state: absent
   become: true
+  when: node_domain_role == 'dmz'
+
+- name: Remove stopped DMZ ingress runtime and logs
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: absent
+  loop:
+    - /run/nextcloud-private-ingress
+    - /var/log/klokast/nextcloud-private-ingress
+    - /var/log/klokast/nextcloud-cloudflared
   when: node_domain_role == 'dmz'

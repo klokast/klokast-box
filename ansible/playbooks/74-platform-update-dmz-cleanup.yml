@@ -1,0 +1,106 @@
+---
+# One-time, explicitly selected app retirement. This is not an update-policy action.
+- name: Back up Static Site on every selected DMZ before any app data removal
+  hosts: dmz
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    static_site_backup_operation: '{{ vm_update_cleanup_operation }}'
+    static_site_backup_destination: '/home/smith/src/klokast/klokast-box/.run/vm-update-backups/static-site/{{ vm_update_cleanup_operation }}/{{ inventory_hostname }}'
+  pre_tasks:
+    - name: Require an exact nonempty DMZ host selection
+      ansible.builtin.assert:
+        that:
+          - vm_update_cleanup_boxes is sequence
+          - vm_update_cleanup_boxes is not string
+          - vm_update_cleanup_boxes | length > 0
+          - vm_update_cleanup_boxes | unique | length == vm_update_cleanup_boxes | length
+          - vm_update_cleanup_boxes | select('match', '^[a-z0-9][a-z0-9-]{0,30}$') | list | length == vm_update_cleanup_boxes | length
+          - ansible_play_hosts_all | sort == vm_update_cleanup_boxes | map('regex_replace', '$', '-dmz') | list | sort
+          - node_domain_role == 'dmz'
+          - inventory_hostname == node_name ~ '-dmz'
+          - vm_update_cleanup_operation is match('^[0-9a-f]{24}$')
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      register: vm_cleanup_controller
+
+    - name: Require the explicit active controller
+      ansible.builtin.assert:
+        that:
+          - (vm_cleanup_controller.stdout | from_json).configured
+          - (vm_cleanup_controller.stdout | from_json).active
+          - (vm_cleanup_controller.stdout | from_json).role == 'active'
+
+    - name: Read the approved Instance app state without reading private files directly
+      ansible.builtin.command:
+        argv: [/home/smith/src/klokast/klokast-box/ansible/bin/platform-registry, read, --json]
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      no_log: true
+      register: vm_cleanup_source
+
+    - name: Require both apps to be absent from approved desired state
+      ansible.builtin.assert:
+        that:
+          - (vm_cleanup_source.stdout | from_json).source == 'instance_specification_v1'
+          - not (vm_cleanup_source.stdout | from_json).registry.apps['static-site'].enabled
+          - not (vm_cleanup_source.stdout | from_json).registry.apps.nextcloud.enabled
+        fail_msg: 'DMZ cleanup requires absent Static Site and Nextcloud intent in the checked Instance.'
+
+  tasks:
+    - name: Back up and restore-verify Static Site files
+      ansible.builtin.include_role:
+        name: '{{ playbook_dir }}/../../apps/static-site/ansible/roles/static-site-backup'
+
+- name: Remove only the approved DMZ app leftovers after all backups pass
+  hosts: dmz
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require the verified backup from this playbook execution
+      ansible.builtin.assert:
+        that:
+          - node_domain_role == 'dmz'
+          - static_site_backup_verified is defined
+          - static_site_backup_verified.rc == 0
+          - (static_site_backup_verified.stdout | from_json).host == inventory_hostname
+          - (static_site_backup_verified.stdout | from_json).restore_verified
+
+    - name: Remove Nextcloud DMZ services and files without selecting backend hosts
+      ansible.builtin.include_role:
+        name: '{{ playbook_dir }}/../../apps/nextcloud/ansible/roles/nextcloud-remove'
+      vars:
+        nextcloud_remove_dmz_only: true
+        nextcloud_wipe_data: false
+
+    - name: Remove Static Site services and the backed-up files
+      ansible.builtin.include_role:
+        name: '{{ playbook_dir }}/../../apps/static-site/ansible/roles/static-site-remove'
+      vars:
+        static_site_wipe_data: true
+        static_site_remove_verified_backup: true
+
+    - name: Verify guest management remains enrolled after app removal
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      changed_when: false
+      no_log: true
+      register: vm_cleanup_tailscale
+
+    - name: Require the original VM management name and running Tailscale state
+      ansible.builtin.assert:
+        that:
+          - (vm_cleanup_tailscale.stdout | from_json).BackendState == 'Running'
+          - (vm_cleanup_tailscale.stdout | from_json).Self.HostName == inventory_hostname
