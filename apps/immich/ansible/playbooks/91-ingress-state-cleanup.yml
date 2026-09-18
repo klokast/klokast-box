@@ -1,0 +1,108 @@
+---
+# One-time operator-authorized retirement; not an automatic VM update action.
+- name: Remove inactive legacy Immich ingress state from one selected DMZ
+  hosts: dmz
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    immich_ingress_cleanup_apply: false
+  pre_tasks:
+    - name: Require one exact DMZ selection and an explicit operation
+      ansible.builtin.assert:
+        that:
+          - immich_ingress_cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - ansible_play_hosts_all == [immich_ingress_cleanup_box ~ '-dmz']
+          - node_domain_role == 'dmz'
+          - inventory_hostname == node_name ~ '-dmz'
+          - immich_ingress_cleanup_operation is match('^[0-9a-f]{24}$')
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: immich_cleanup_controller
+
+    - name: Require the active controller
+      ansible.builtin.assert:
+        that:
+          - (immich_cleanup_controller.stdout | from_json).configured
+          - (immich_cleanup_controller.stdout | from_json).active
+          - (immich_cleanup_controller.stdout | from_json).role == 'active'
+
+    - name: Read checked Instance intent through the approved registry reader
+      ansible.builtin.command:
+        argv: [/home/smith/src/klokast/klokast-box/ansible/bin/platform-registry, read, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      no_log: true
+      register: immich_cleanup_source
+
+    - name: Require Immich to be disabled in the checked Instance
+      ansible.builtin.assert:
+        that:
+          - (immich_cleanup_source.stdout | from_json).source == 'instance_specification_v1'
+          - not (immich_cleanup_source.stdout | from_json).registry.apps.immich.enabled
+        fail_msg: 'Ingress cleanup requires disabled Immich intent in the checked Instance.'
+
+  tasks:
+    - name: Read the VM management identity before cleanup
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      changed_when: false
+      no_log: true
+      register: immich_cleanup_management_before
+
+    - name: Require the enrolled DMZ management identity
+      ansible.builtin.assert:
+        that:
+          - (immich_cleanup_management_before.stdout | from_json).BackendState == 'Running'
+          - (immich_cleanup_management_before.stdout | from_json).Self.HostName == inventory_hostname
+
+    - name: Inspect or remove only the fixed inactive ingress state paths
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../roles/immich-ingress-state-cleanup/files/immich-ingress-state-cleanup
+          --host {{ inventory_hostname }} --operation {{ immich_ingress_cleanup_operation }}
+          {{ '--apply' if immich_ingress_cleanup_apply | bool else '' }}
+        executable: /usr/bin/python3
+      register: immich_cleanup_result
+      changed_when: (immich_cleanup_result.stdout | from_json).changed
+
+    - name: Read the VM management identity after cleanup
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      changed_when: false
+      no_log: true
+      register: immich_cleanup_management_after
+
+    - name: Verify the original management identity remains running
+      ansible.builtin.assert:
+        that:
+          - (immich_cleanup_management_after.stdout | from_json).BackendState == 'Running'
+          - (immich_cleanup_management_after.stdout | from_json).Self.HostName == inventory_hostname
+          - (immich_cleanup_management_after.stdout | from_json).Self.ID == (immich_cleanup_management_before.stdout | from_json).Self.ID
+          - (immich_cleanup_management_after.stdout | from_json).Self.PublicKey == (immich_cleanup_management_before.stdout | from_json).Self.PublicKey
+
+    - name: Create a private controller receipt directory
+      ansible.builtin.file:
+        path: '{{ playbook_dir }}/../../../../.run/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}'
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: Record cleanup and verified management continuity without secrets
+      ansible.builtin.copy:
+        content: >-
+          {{ ((immich_cleanup_result.stdout | from_json) |
+              combine({'management_identity_unchanged': true})) | to_nice_json }}
+        dest: >-
+          {{ playbook_dir }}/../../../../.run/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}/{{ inventory_hostname }}-{{ 'applied' if immich_ingress_cleanup_apply | bool else 'preview' }}.json
+        mode: '0600'
+      delegate_to: localhost
+      become: false

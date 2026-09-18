@@ -203,9 +203,12 @@ the three selected guests: 1,322 entries on k001-dmz, 1,272 on k002-dmz, and
 1,234 on k002-iot. Both backend trees exceeded the bounded scan limits and
 remain unresolved; those VMs are excluded from mutation. k001-iot stayed
 stopped. The controller report is `discovery/deep-validation-f7f236b.json`.
-It also found inactive Immich ingress state on k001-dmz. Preserve that state
-until its retention treatment is approved; it is not part of the completed
-Static Site and Nextcloud retirement.
+It also found inactive Immich ingress state on k001-dmz. The operator approved
+deletion of its credentials and logs on 2026-09-18: this was a development
+deployment. Both backend VMs and their Immich data remain excluded from
+mutation. The app's separate ingress-state cleanup checks the two fixed paths
+and management continuity; see [Immich removal](../apps/immich/README.md#destroy).
+This approval does not qualify other unknown host data for adoption.
 
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
