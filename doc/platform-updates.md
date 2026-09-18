@@ -5,7 +5,7 @@
 This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
 offline base-image tests, a second cold boot through OpenRC, and an optional
-Static Site web component test. Host discovery includes live process identities
+Static Site web component test. Host discovery includes native APK audit, live process identities,
 and detects native supervisors with missing OpenRC started markers.
 A dom0 disk-switch transaction and boot recovery helper are implemented but are not connected to a production executor.
 Offline retained-data copy, staging, and final-sync primitives are implemented
@@ -13,10 +13,12 @@ and included in the synthetic candidate tests. They are not a complete
 data-adoption workflow.
 Protected box assignment reporting and locked runtime reconciliation preserve
 accepted disks and boot files. Legacy provisioning refuses assigned VMs.
-An isolated clone-personalization primitive is included in candidate testing;
+An isolated clone-personalization primitive preserves Tailscale and SSH host
+identity in candidate testing;
 production input preparation and target qualification remain unfinished.
-Independent legacy root-disk backup and isolated restore verification are
-implemented and have passed a complete native synthetic test.
+Independent disk backup and isolated restore verification are implemented for
+legacy root and retained-data layouts. Both complete native synthetic tests
+passed, including retained generation checks and preservation of later writes.
 Discovery also reports storage refusals and catalog matches for the Music
 library dataset. These matches are not approved retention or copy requests.
 The read-only `retention` report compares these observations with declared
@@ -187,6 +189,14 @@ Differences produce `host.package-differences`; they require comparison with
 approved recipes and generated configuration. Empty output is only a match with
 the local database. It does not prove that the database or local configuration
 matches approved signed inputs, and it does not clear the adoption gate.
+
+Native scan `aba75c0` completed all 12 inventory entries on 2026-09-18. All
+five running shared VMs returned complete, stable package audits. Each selected
+VM had 12 changed `/etc` files and five directory-metadata differences. Both
+backend VMs remained outside mutation scope, and k001-iot stayed stopped.
+The report still blocks adoption. Its controller record is
+`discovery/package-audit-validation-aba75c0.json`, checksum
+`97c155a4886e4229815e4019d0fc07e50a7e205556701f7ad868d8b851b9ed40`.
 
 The native scan at `f7f236b` on 2026-09-18 completed stable deep metadata for
 the three selected guests: 1,322 entries on k001-dmz, 1,272 on k002-dmz, and
@@ -815,8 +825,15 @@ management identity files, and application data with subordinate numeric
 ownership. It changes data and Tailscale state after making the generation
 receipt. The separate restore must preserve these later bytes and the complete
 dataset measurements. The fixture has no application processes or credentials.
-This new layout test still requires native execution; the existing successful
-pipeline evidence below covers only the legacy root layout.
+Native retained-layout test `b04aa0fc405c7daaaf887d75` at `98ce392` passed all
+nine checks using candidate `776a5f969bbc7730479a9587`. It verified the recorded
+generation and later data and identity writes, in addition to the seven legacy
+pipeline checks below. Both guests and all test LVs were cleaned; production LV
+and Xen identities did not change. The copy receipt checksum is
+`2390802390d2066d88995a4a283dc051196ab0242c75ac3862ba053d6b2aee2b`; the
+verified-backup receipt checksum is
+`76eb2d695bd9ebc9e582343628658a9f049617c473274ea3f3ee3a57db79ab53`.
+This proves the synthetic data-layout path, not production backup qualification.
 
 Native test `8fceca0f96524484fc6041dd` at `0bc1c57` passed all four copy and
 source-write checks on 2026-09-18. Its cleanup removed both remaining test LVs
@@ -1204,8 +1221,8 @@ test exercises the installed OpenRC ordering and persistent records.
 2. Qualify the target configuration and network tests. Use the delivered
    independent-copy and isolated-restore pipeline to qualify each selected
    legacy guest's backup, including freshness and application consistency.
-   Add the retained-data layout and generation checks needed for recurring
-   backups after adoption. The selected guests can use an explicit
+   Use the separately tested retained-data contract for recurring backups after
+   adoption, and bind it to the accepted OS/data assignment. The selected guests can use an explicit
    no-application profile only while checked app intent, containers, volumes,
    native services, and host-data evidence all prove that scope. Empty container
    lists alone cannot pass it. Other workloads require fixed maintenance
