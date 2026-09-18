@@ -8,6 +8,7 @@
   become_method: doas
   vars:
     immich_ingress_cleanup_apply: false
+    immich_ingress_cleanup_receipt_dir: '{{ playbook_dir }}/../../../../.run/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}'
   pre_tasks:
     - name: Require one exact DMZ selection and an explicit operation
       ansible.builtin.assert:
@@ -17,6 +18,19 @@
           - node_domain_role == 'dmz'
           - inventory_hostname == node_name ~ '-dmz'
           - immich_ingress_cleanup_operation is match('^[0-9a-f]{24}$')
+
+    - name: Inspect the prior completion receipt without following links
+      ansible.builtin.stat:
+        path: '{{ immich_ingress_cleanup_receipt_dir }}/{{ inventory_hostname }}-applied.json'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: immich_cleanup_prior_receipt
+
+    - name: Preserve completed audit evidence and refuse operation reuse
+      ansible.builtin.assert:
+        that: [not immich_cleanup_prior_receipt.stat.exists]
+        fail_msg: 'This ingress cleanup operation is complete; its receipt must not be overwritten.'
 
     - name: Verify active controller authority
       ansible.builtin.command:
@@ -90,7 +104,7 @@
 
     - name: Create a private controller receipt directory
       ansible.builtin.file:
-        path: '{{ playbook_dir }}/../../../../.run/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}'
+        path: '{{ immich_ingress_cleanup_receipt_dir }}'
         state: directory
         mode: '0700'
       delegate_to: localhost
@@ -102,7 +116,7 @@
           {{ ((immich_cleanup_result.stdout | from_json) |
               combine({'management_identity_unchanged': true})) | to_nice_json }}
         dest: >-
-          {{ playbook_dir }}/../../../../.run/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}/{{ inventory_hostname }}-{{ 'applied' if immich_ingress_cleanup_apply | bool else 'preview' }}.json
+          {{ immich_ingress_cleanup_receipt_dir }}/{{ inventory_hostname }}-{{ 'applied' if immich_ingress_cleanup_apply | bool else 'preview' }}.json
         mode: '0600'
       delegate_to: localhost
       become: false

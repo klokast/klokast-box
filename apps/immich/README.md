@@ -139,11 +139,10 @@ Delete persistent data only with the explicit wipe flag:
 apps/immich/bin/immichctl remove --box boxa --wipe-data
 ```
 
-## Destroy
-
 For inactive legacy DMZ ingress credentials and logs only, use
-`ansible/playbooks/91-ingress-state-cleanup.yml` in this app directory from the
-active controller. Select exactly one DMZ with `--limit <box>-dmz`, set
+`apps/immich/ansible/playbooks/91-ingress-state-cleanup.yml` from the repository
+root on the active controller, with `ANSIBLE_CONFIG=ansible/ansible.cfg` and the
+approved execution inventory. Select exactly one DMZ with `--limit <box>-dmz`, set
 `immich_ingress_cleanup_box` and a 24-hex-digit
 `immich_ingress_cleanup_operation`, and inspect the default preview. Set
 `immich_ingress_cleanup_apply=true` for an explicitly authorized deletion.
@@ -153,6 +152,9 @@ only `/var/lib/klokast/immich-private-ingress` and
 `/var/log/klokast/immich-private-ingress`. It verifies the VM management identity
 and writes a controller-private receipt under `.run/immich-ingress-cleanup/`.
 Backend hosts, Podman volumes, and Tailnet registrations are outside this action.
+Completed operations cannot be reused or overwrite their audit receipt.
+
+## Destroy
 
 When Immich data is disposable and the next deployment should start clean, use
 the controller-side destroy workflow. It removes both active and passive

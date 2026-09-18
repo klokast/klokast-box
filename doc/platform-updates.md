@@ -207,7 +207,7 @@ It also found inactive Immich ingress state on k001-dmz. The operator approved
 deletion of its credentials and logs on 2026-09-18: this was a development
 deployment. Both backend VMs and their Immich data remain excluded from
 mutation. The app's separate ingress-state cleanup checks the two fixed paths
-and management continuity; see [Immich removal](../apps/immich/README.md#destroy).
+and management continuity; see [Immich removal](../apps/immich/README.md#remove).
 This approval does not qualify other unknown host data for adoption.
 
 Cleanup operation `680ebc1c7a0445d197589cf8` completed from the active controller
@@ -219,6 +219,13 @@ unchanged running VM management identity. Neither backend VM was selected.
 The candidate checkout keeps the private receipt at
 `.run/immich-ingress-cleanup/680ebc1c7a0445d197589cf8/k001-dmz-applied.json`.
 Eight local boundary tests and native preview/apply checks passed.
+
+The next full scan completed all 12 inventory entries with stable deep metadata
+for the three selected running guests. It found no Immich paths on k001-dmz.
+k001-iot remained stopped. The controller report is
+`discovery/post-ingress-cleanup-321dab7.json`, checksum
+`b28d961227febdaf0b6e30aba482094d6612595b8fcdea2c2cfdc4c3d2ba9179`.
+Host classification and the other adoption gates remain blocked.
 
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
@@ -1122,7 +1129,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
   -e 'recovery_box=BOX recovery_operation_id=NEW_ID recovery_candidate_id=CANDIDATE_ID'
 ```
 
-The test requires 10 GiB of free LVM capacity and 3 GiB of free Xen memory.
+The default test requires 10 GiB of free LVM capacity; the generation chain
+requires 14 GiB. Both require 3 GiB of free Xen memory.
 Evidence stays under `/mnt/dom0_data/klokast-vm-recovery-tests/OPERATION`.
 If interrupted, use its `resources.json` to check exact domain and LV identities
 before cleanup. Do not reuse the operation or remove disks still attached to a
