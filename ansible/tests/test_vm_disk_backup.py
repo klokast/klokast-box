@@ -166,5 +166,11 @@ class DiskBackup(unittest.TestCase):
         with self.assertRaisesRegex(b.BackupError, 'already exist'): self.execute()
         self.assertEqual(self.native.calls, [])
 
+    def test_unknown_staging_is_never_overwritten(self):
+        (self.work / 'request.json').write_text('preserve existing evidence')
+        with self.assertRaisesRegex(b.BackupError, 'unrecorded files'): self.execute()
+        self.assertEqual((self.work / 'request.json').read_text(), 'preserve existing evidence')
+        self.assertEqual(self.native.calls, [])
+
 
 if __name__ == '__main__': unittest.main()

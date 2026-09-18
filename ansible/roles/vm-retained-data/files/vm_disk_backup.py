@@ -238,6 +238,8 @@ def make_backup(work, request, native=None):
     secure(work, True)
     if (work / 'journal.json').exists() or (work / 'result.json').exists():
         raise BackupError('backup operation was already used; inspect its existing records')
+    if any(work.iterdir()):
+        raise BackupError('backup staging contains unrecorded files; allocate a new empty directory')
     native = native or Native()
     if not 0 <= time.time() - request['requested_at'] <= 300:
         raise BackupError('backup request is stale or from the future')

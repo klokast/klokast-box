@@ -4,17 +4,100 @@ import argparse
 import fcntl
 import hashlib
 import json
+from importlib.machinery import SourceFileLoader
+import importlib.util
 import os
 from pathlib import Path
 import re
 import signal
 import socket
 import time
+import uuid
 
 import vm_disk_backup as b
 
 
 BASE = Path('/mnt/dom0_data/klokast-vm-backup-tests')
+
+
+def host_module(work):
+    loader = SourceFileLoader('vm_backup_test_host', str(work / 'vm-template-build-dom0'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec); loader.exec_module(module)
+    return module
+
+
+def fixture(work, operation, candidate, source, native, host):
+    """Construct synthetic identity/data inside Xen, never by a dom0 mount."""
+    host.safe_directory(candidate)
+    manifest = read(candidate / 'candidate.json')
+    if (manifest.get('operation_id') != candidate.name or manifest.get('accepted') is not False or
+            manifest.get('boot_test', {}).get('maintenance_restore', {}).get('success') is not True):
+        raise b.BackupError('pipeline fixture needs a candidate with a tested maintenance boot')
+    for name in ('root', 'kernel', 'initramfs'):
+        path = candidate / name
+        host.safe_file(path, 4 * 1024**3)
+        if {'bytes': path.stat().st_size, 'sha256': host.checksum(path)} != manifest['artifacts'][name]:
+            raise b.BackupError('pipeline fixture candidate changed')
+    if os.statvfs(work).f_bavail * os.statvfs(work).f_frsize < 5 * 1024**3:
+        raise b.BackupError('pipeline fixture needs 5 GiB free persistent space')
+    info = {key.strip(): value.strip() for key, value in
+            (line.split(':', 1) for line in host.run(['xl', 'info']).stdout.splitlines() if ':' in line)}
+    if int(info.get('free_memory', '0').strip()) < 5120:
+        raise b.BackupError('pipeline fixture needs 5 GiB free Xen memory')
+    name, identity = 'vm-backup-fixture-' + operation, str(uuid.uuid4())
+    if host.domain(name) is not None: raise b.BackupError('pipeline fixture domain already exists')
+    scratch_path = source['path'] + '_scratch'
+    if any(v['lv_path'] == scratch_path for v in native.volumes()):
+        raise b.BackupError('pipeline scratch allocation already exists')
+    root, result_slot, config = (work / n for n in ('fixture-root.slot', 'fixture-result.slot', 'fixture.cfg'))
+    if any(path.exists() or path.is_symlink() for path in (root, result_slot, config, work / 'fixture-resources.json')):
+        raise b.BackupError('pipeline fixture staging already contains unrecorded files')
+    scratch, loops = None, {}
+    try:
+        native.create(scratch_path, 256 * b.MIB, 'klokast.vm-backup-fixture.' + operation)
+        scratch = native.volume(scratch_path)
+        b.ordinary(scratch); native.unmounted([scratch]); native.unattached([scratch])
+        if scratch['device'] == source['device'] or scratch['uuid'] == source['uuid']:
+            raise b.BackupError('pipeline scratch aliases the synthetic source')
+        b.store(work / 'fixture-resources.json', {'domain': name, 'uuid': identity, 'scratch': scratch})
+        with (candidate / 'root').open('rb') as src, root.open('xb') as dst:
+            os.posix_fallocate(dst.fileno(), 0, manifest['artifacts']['root']['bytes'])
+            while chunk := src.read(b.MIB):
+                if dst.write(chunk) != len(chunk): raise b.BackupError('fixture OS copy was short')
+            dst.flush(); os.fsync(dst.fileno())
+        if host.checksum(root) != manifest['artifacts']['root']['sha256']:
+            raise b.BackupError('fixture OS copy changed')
+        with result_slot.open('xb') as stream: stream.truncate(b.MIB)
+        for path in (root, result_slot): loops[path] = host.attach_loop(path)
+        disks = [f'phy:{loops[root]},xvda,w', f'phy:{loops[result_slot]},xvdb,w',
+                 f'phy:{source["path"]},xvdc,w', f'phy:{scratch_path},xvdd,w']
+        extra = ('root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0 '
+                 'init=/usr/local/libexec/klokast-template-test klokast_test=' + operation +
+                 ' klokast_inputs=' + manifest['inputs_sha256'])
+        config.write_text(f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 4096\nmaxmem = 4096\nvcpus = 2\n'
+                          f'kernel = {str(candidate / "kernel")!r}\nramdisk = {str(candidate / "initramfs")!r}\n'
+                          f'extra = {extra!r}\ndisk = {disks!r}\nvif = []\n'
+                          'on_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
+        host.boot_guest(work, name, identity, config, {'operation_id': operation, 'inputs_sha256': manifest['inputs_sha256']},
+                        slot=result_slot.name, kind='klokast.vm-template-test-result.v1', timeout=300)
+        result = host.read_slot(result_slot)
+        b.store(work / 'fixture-result.json', result)
+        value = result.get('backup_restore_test', {})
+        if (result.get('success') is not True or result.get('operation_id') != operation or
+                result.get('inputs_sha256') != manifest['inputs_sha256'] or
+                value.get('production_data_used') is not False or value.get('restore_verified') is not True):
+            raise b.BackupError('pipeline fixture did not construct its synthetic filesystem and identity')
+        return value
+    finally:
+        if host.domain(name) is not None:
+            raise b.BackupError('fixture guest remains; retain its resources')
+        for path, device in loops.items(): host.detach_loop(path, device)
+        if scratch is not None:
+            current = native.volume(scratch_path); b.same_identity(current, scratch)
+            if current['tags'] != ['klokast.vm-backup-fixture.' + operation]: raise b.BackupError('fixture cleanup tags changed')
+            native.unmounted([current]); native.unattached([current]); native.remove(scratch_path)
+        for path in (root, result_slot, config): path.unlink(missing_ok=True)
 
 
 def read(path):
@@ -76,12 +159,15 @@ def main():
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--cleanup', action='store_true')
+    parser.add_argument('--candidate-id')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch(r'[0-9a-f]{24}', args.operation_id) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
             'control_d' not in Path('/proc/xen/capabilities').read_text()):
         raise b.BackupError('backup test requires root on the selected dom0')
+    if args.candidate_id is not None and not re.fullmatch('[0-9a-f]{24}', args.candidate_id):
+        raise b.BackupError('pipeline test requires an exact candidate ID')
     os.umask(0o077)
     work = BASE / args.operation_id
     for path in (BASE, work): b.secure(path, True)
@@ -117,21 +203,27 @@ def main():
     def interrupted(*unused):
         raise b.BackupError('native backup test interrupted; inspect retained resources')
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM): signal.signal(signum, interrupted)
-    signal.alarm(300)
+    signal.alarm(900 if args.candidate_id else 300)
     try:
-        native.create(sourcepath, 64 * b.MIB, tag)
+        native.create(sourcepath, (256 if args.candidate_id else 64) * b.MIB, tag)
         source = native.volume(sourcepath)
         if source['tags'] != [tag]: raise b.BackupError('synthetic source tag mismatch')
         b.ordinary(source); native.unmounted([source]); native.unattached([source])
         resources[sourcepath] = source
         b.store(work / 'resources.json', resources)
         source['device_bytes'] = source['bytes']
-        old_block = b'synthetic-backup-before-snapshot\n'.ljust(b.MIB, b'0')
-        old_hash = hashlib.sha256(old_block * 64).hexdigest()
-        with native.open(source, True) as stream:
-            for unused in range(64):
-                if stream.write(old_block) != b.MIB: raise b.BackupError('synthetic source write was short')
-            os.fsync(stream.fileno())
+        if args.candidate_id:
+            candidate = Path('/mnt/dom0_data/klokast-vm-templates/candidates') / args.candidate_id
+            host = host_module(work)
+            synthetic = fixture(work, args.operation_id, candidate, source, native, host)
+            old_hash = synthetic['request']['disk_sha256']
+        else:
+            old_block = b'synthetic-backup-before-snapshot\n'.ljust(b.MIB, b'0')
+            old_hash = hashlib.sha256(old_block * 64).hexdigest()
+            with native.open(source, True) as stream:
+                for unused in range(64):
+                    if stream.write(old_block) != b.MIB: raise b.BackupError('synthetic source write was short')
+                os.fsync(stream.fileno())
         class ChangingOrigin(b.Native):
             def open(self, volume, writable=False):
                 if volume['path'].endswith('_snapshot') and not writable:
@@ -143,10 +235,11 @@ def main():
                         stream.write(b'synthetic-new-production-write\n'); os.fsync(stream.fileno())
                 return super().open(volume, writable)
         request = {'kind': 'klokast.vm-disk-backup.v1', 'operation_id': args.operation_id,
-                   'box': args.box, 'engine_commit': 'a' * 40, 'source_evidence_sha256': 'b' * 64,
+                   'box': args.box, 'engine_commit': synthetic['request']['engine_commit'] if args.candidate_id else 'a' * 40,
+                   'source_evidence_sha256': b.digest(synthetic) if args.candidate_id else 'b' * 64,
                    'source': {k: source[k] for k in ('path', 'uuid', 'bytes')},
                    'cow_bytes': 16 * b.MIB, 'requested_at': int(time.time())}
-        result = b.make_backup(work / 'backup', request, ChangingOrigin())
+        result = b.make_backup(work / 'backup', request, native if args.candidate_id else ChangingOrigin())
         backup = native.volume(result['backup']['path'])
         resources[backup['path']] = backup
         b.store(work / 'resources.json', resources)
@@ -154,13 +247,24 @@ def main():
                 any(result[k] for k in ('restore_verified', 'source_freshness_verified',
                                        'application_consistency_verified', 'adoption_accepted'))):
             raise b.BackupError('native backup receipt failed synthetic verification')
-        with native.open(source, True) as stream:
-            if stream.read(31) != b'synthetic-new-production-write\n':
-                raise b.BackupError('backup lost a later synthetic source write')
+        tests = {'independent_copy': True, 'snapshot_point_preserved': True, 'readonly_backup': True}
+        if args.candidate_id:
+            import vm_backup_verify
+            restore_request = dict(synthetic['request'], backup_receipt_sha256=result['receipt_sha256'])
+            (work / 'verification').mkdir(mode=0o700)
+            verified = vm_backup_verify.verify(work / 'verification', restore_request, result, candidate, host, native)
+            if (verified['identity'] != synthetic['expected_identity'] or
+                    verified['adoption_accepted'] is not False or verified['restore_verified'] is not True):
+                raise b.BackupError('pipeline restore failed synthetic identity or authority checks')
+            tests.update(isolated_restore=True, numeric_identity=True, private_identity=True, restore_cleanup=True)
+        else:
+            with native.open(source, True) as stream:
+                if stream.read(31) != b'synthetic-new-production-write\n':
+                    raise b.BackupError('backup lost a later synthetic source write')
+            tests['later_source_write_preserved'] = True
         b.store(work / 'result.json', {'kind': 'klokast.vm-disk-backup-test.v1', 'operation_id': args.operation_id,
                 'success': True, 'receipt_sha256': result['receipt_sha256'],
-                'tests': {'independent_copy': True, 'snapshot_point_preserved': True,
-                          'later_source_write_preserved': True, 'readonly_backup': True}})
+                'verified_receipt_sha256': verified['receipt_sha256'] if args.candidate_id else None, 'tests': tests})
     finally:
         signal.alarm(0)
         # On failure, leave incomplete allocations and journals for inspection.

@@ -124,7 +124,8 @@ def references():
     if not isinstance(guests, list) or not any(v.get('domid') == 0 for v in guests):
         raise Refused('Xen reference inventory is incomplete')
     if any(v.get('config', {}).get('c_info', {}).get('name', '').startswith(
-            ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-restore-', 'vm-recovery-test-')) for v in guests):
+            ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-restore-',
+             'vm-backup-fixture-', 'vm-maintenance-backup-', 'vm-recovery-test-')) for v in guests):
         raise Refused('a disposable operation is still running')
     texts = [live]
     for path in Path('/etc/xen').glob('*.cfg'):

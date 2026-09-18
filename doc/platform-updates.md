@@ -741,8 +741,17 @@ remain for inspection; an unknown allocation is never reused or removed.
 The receipt binds the source, independent backup, snapshot time, and disk
 checksum. It leaves restore verification, source freshness, application
 consistency, and adoption acceptance false. A live snapshot alone cannot prove
-application consistency. The protected caller must connect this receipt to
-the isolated restore check above and fresh target qualification.
+application consistency. The protected caller must use the isolated restore
+connection below and fresh target qualification.
+
+`vm_backup_verify.py` connects that copy receipt to the maintenance boot. It
+checks the exact backup LV and bytes, clones a tested maintenance OS, allocates
+a separate restore LV, and verifies the returned request and restore receipts.
+It rechecks the unchanged backup after the guest stops. Its cleanup removes
+only recorded temporary resources. The resulting `klokast.vm-verified-backup.v1`
+record keeps source freshness, application consistency, and adoption acceptance
+false. Signed target qualification and the installation lease remain required
+before production use. This internal module has no public command.
 
 `74-platform-update-backup-test.yml` tests this primitive with new synthetic
 LVs. It changes the synthetic origin after snapshot creation and checks that
@@ -750,6 +759,11 @@ the backup preserves the earlier bytes while the origin preserves the later
 write. It removes only its recorded test LVs and verifies that production LV
 and Xen identities did not change. This play does not back up production data,
 install an executor, or activate a replacement policy.
+With an explicit `backup_test_candidate_id`, the same play also constructs a
+synthetic partitioned filesystem inside Xen, creates its independent backup,
+and checks that backup in a separate maintenance VM. It compares the restored
+numeric mappings and private identity measurement with the original synthetic
+fixture. No production data or credentials enter either test guest.
 
 Native test `8fceca0f96524484fc6041dd` at `0bc1c57` passed all four copy and
 source-write checks on 2026-09-18. Its cleanup removed both remaining test LVs
