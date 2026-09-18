@@ -528,8 +528,14 @@ only integrity evidence; they never grant adoption authority.
 
 The copy runs only in the networkless migration VM. The source must be attached
 read-only. The outer signed executor must prove that the old identity is no
-longer active before it boots a replacement. Personalization must attach this
-retained file at the standard Tailscale state path before starting Tailscale.
+longer active before it boots a replacement. Personalization must configure
+Tailscale's [`--state` path](https://tailscale.com/docs/reference/tailscaled)
+to use the retained regular file before starting Tailscale. Its parent must
+remain writable for state updates. Do not bind-mount the individual file:
+Tailscale [replaces state through an atomic write](https://github.com/tailscale/tailscale/blob/main/ipn/store/stores.go).
+Other Tailscale state,
+including Taildrop data, still requires separate accounting. Copy integrity
+does not prove that encrypted or hardware-bound state can be used by the new VM.
 These production attachment, fencing, and personalization steps remain
 unfinished. The copy helper must not be used to enroll a second live machine.
 
@@ -538,6 +544,15 @@ uses opaque synthetic state on disposable disks, checks exact-file final sync
 and the next retained generation, and refuses whole-directory mappings and
 unsafe permissions. No production identity enters a generic template or test
 VM. Missing or failed identity-test evidence prevents candidate publication.
+
+On 2026-09-18, source `14ff843` passed all eight native base test groups in
+operation `466b474faf45e10a820f4f9f`. The identity test verified file contents,
+numeric ownership, permissions, metadata, and the next retained generation.
+It refused whole-directory and unsafe-permission requests. Both disposable VM
+lifecycle records reported cleanup. All 193 relevant local tests and the
+controller Ansible syntax check also passed. The result remains an unaccepted
+candidate, with no production identity or data used. Evidence is under
+`/var/lib/klokast/updates/discovery/builds/466b474faf45e10a820f4f9f` on the controller.
 
 On 2026-09-17, operation `d1b0a326a02f008c4b083b17` at source `e646a3f`
 completed `platform-update prepare` on k002 with all seven base test groups,
