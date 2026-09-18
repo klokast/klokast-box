@@ -2,6 +2,14 @@
 # Summary:
 # - Mounts the installed guest root filesystem and seeds the first-boot admin access needed for guest bootstrap automation.
 #
+- name: Protect accepted shared VM state from legacy filesystem changes
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ xen_guest_name }}"
+    vm_boot_assignment_require_legacy: true
+  when: xen_guest_name in ['bak', 'dmz', 'iot']
+
 - name: Assert the Xen guest LV path is defined
   ansible.builtin.assert:
     that:

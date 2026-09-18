@@ -4,6 +4,14 @@
 #   guest identity, static networking, and first-contact SSH state.
 #
 ---
+- name: Protect accepted shared VM state from legacy infrastructure changes
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ podman_clone_guest_spec.guest_name }}"
+    vm_boot_assignment_require_legacy: true
+  when: podman_clone_guest_spec.guest_name in ['bak', 'dmz', 'iot']
+
 - name: Assert Podman guest clone inputs are defined
   ansible.builtin.assert:
     that:

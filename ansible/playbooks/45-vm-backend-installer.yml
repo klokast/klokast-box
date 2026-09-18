@@ -5,6 +5,13 @@
   vars:
     backend_installer_spec: >-
       {{ node_xen_guest_specs.backend | combine({'stage': 'installer'}, recursive=True) }}
+  pre_tasks:
+    - name: Refuse legacy provisioning of an assigned shared VM
+      ansible.builtin.include_role:
+        name: vm-boot-assignment
+      vars:
+        vm_boot_assignment_role: bak
+        vm_boot_assignment_require_legacy: true
   tasks:
     - name: Keep the backend Xen config in installer stage before first install
       ansible.builtin.import_role:

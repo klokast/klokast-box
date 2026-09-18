@@ -3,6 +3,14 @@
 # - Converges the common Alpine VM baseline: hostname, packages, admin user, SSH policy, doas, and package removals.
 #
 ---
+- name: Protect accepted shared VM packages and configuration from legacy convergence
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ node_hostname | regex_replace('^' ~ node_name ~ '-', '') }}"
+    vm_boot_assignment_require_legacy: true
+  when: node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
+
 - name: Collect the current VM hostname
   ansible.builtin.command: hostname
   register: vm_base_current_hostname

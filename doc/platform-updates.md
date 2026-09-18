@@ -665,8 +665,24 @@ configuration and autostart drift without changing either. A pending operation
 has no accepted selection. A recovered legacy generation has no inferred
 release hash or template profile. Generated Xen definitions carry the operation,
 source configuration checksum, and accepted release provenance.
-This read-only report is not a mutation lease. Provisioning integration must
-keep the transaction lock through its changes; that integration is still pending.
+This read-only report is not a mutation lease.
+
+The shared-VM runtime playbook uses `reconcile-assignment` for an assigned VM.
+It supplies the inspected request checksum, compiled intent checksum, and
+desired running or stopped state. The helper revalidates the pointer under
+the box lock and keeps that lock through configuration publication and the
+native runtime change. It uses only the recorded disks and boot artifacts.
+Pending or incomplete operations block this path. Runtime intent is stored
+separately from the immutable release request; boot recovery preserves an
+approved stopped state. This is an internal root operation under existing
+general Apply authority, not standing permission to select a release.
+
+Legacy shared-VM installers, clones, kernel extraction, and guest package
+roles now refuse a protected assignment before changing it. Runtime checks
+report incomplete assignments and configuration drift. Full immutable guest
+personalization, release qualification, controller recovery of update records,
+and installation-wide serialization with legacy provisioning remain required
+before adoption. The legacy guard is a preflight, not a lock for its later work.
 
 Before old-guest shutdown, the helper starts a bounded local recovery process.
 The process identity includes its PID, start time, boot ID, and operation ID.
@@ -895,10 +911,11 @@ test exercises the installed OpenRC ordering and persistent records.
    adapters, unchanged image and native application versions, and synthetic
    compatibility tests. The delivered generic OpenRC test is not this target
    qualification.
-3. Add protected release and assignment records. Connect normal provisioning
-   and reconciliation to those assignments before production adoption. Prevent
-   legacy package resolution, old kernels, and old repository branches from
-   replacing accepted state. Include execution records in controller recovery.
+3. Complete protected release records and normal provisioning integration.
+   The delivered box assignment reader, locked runtime reconciliation, and
+   legacy mutation guards preserve recorded boot assignments. Add immutable
+   guest personalization and serialize all legacy provisioning with adoption
+   and replacement. Include execution records in controller recovery.
 4. Complete separately signed adoption with measured capacity and time,
    read-only staging snapshots, writer shutdown, final synchronization, identity
    preservation, and recovery to the original disk generation. Use the explicit

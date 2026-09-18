@@ -1,4 +1,18 @@
 ---
+- name: Read the protected assignment during runtime verification
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ platform_shared_guest_role }}"
+
+- name: Require a complete assignment without generated configuration drift
+  ansible.builtin.assert:
+    that:
+      - vm_boot_assignment.stage in ['complete', 'recovered']
+      - not vm_boot_assignment.configuration_drift
+      - not vm_boot_assignment.autostart_drift
+  when: vm_boot_assignment.managed
+
 - name: Select shared Xen guest verification request
   ansible.builtin.set_fact:
     platform_shared_guest_spec_key: "{{ platform_shared_guest_role_spec_keys[platform_shared_guest_role] }}"

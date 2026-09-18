@@ -430,10 +430,25 @@ class Transaction:
             link.unlink()
         elif link.exists():
             raise Refused('autostart path is not a managed symbolic link')
-        if self.request['autostart']:
+        if self.runtime_intent()['runtime_state'] == 'running':
             link.symlink_to('../' + link.name)
         syncdir(link.parent)
         self.native.persist()
+
+    def runtime_intent(self):
+        path = self.work / 'runtime.json'
+        if not path.exists() and not path.is_symlink():
+            return {'runtime_state': 'running' if self.request['autostart'] else 'stopped'}
+        value = read(path)
+        if (not isinstance(value, dict) or
+                set(value) != {'kind', 'request_sha256', 'intent_sha256', 'runtime_state'} or
+                value['kind'] != 'klokast.vm-runtime-intent.v1' or
+                value['request_sha256'] != digest(self.request) or
+                not isinstance(value['intent_sha256'], str) or not HEX.fullmatch(value['intent_sha256']) or
+                value['runtime_state'] not in {'running', 'stopped'} or
+                not self.journal or self.journal['stage'] not in {'complete', 'recovered'}):
+            raise Refused('runtime intent differs from the completed assignment')
+        return value
 
     def arm(self):
         if self.journal is not None:
@@ -669,52 +684,103 @@ def controller_lost(state, now):
     return not 0 <= now - state['controller_seen_at'] < state['controller_timeout_seconds']
 
 
-def assignment_status(role, native=None):
-    """Read only the current protected pointer, never select from old journals.
-
-    This record can identify an accepted offline boot assignment. It cannot
-    qualify a release, authorize a new operation, or accept local config edits.
-    """
+@contextmanager
+def current_assignment(role, native=None):
     if role not in {'bak', 'dmz', 'iot'}:
-        raise Refused('assignment status requires a supported shared VM role')
+        raise Refused('assignment requires a supported shared VM role')
     pointer = BASE / 'active' / (role + '.json')
-    if not pointer.exists() and not pointer.is_symlink():
-        return {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': False}
-    selection = read(pointer)
-    if (not isinstance(selection, dict) or set(selection) != {'operation_id', 'request_sha256'} or
-            not isinstance(selection['operation_id'], str) or not OP.fullmatch(selection['operation_id'])):
-        raise Refused('current boot assignment pointer is invalid')
-    work = secure(BASE / 'operations' / selection['operation_id'], True)
-    with budget(180), operation_lock(work):
+    with budget(180), operation_lock(BASE):
+        if not pointer.exists() and not pointer.is_symlink():
+            yield None
+            return
+        selection = read(pointer)
+        if (not isinstance(selection, dict) or set(selection) != {'operation_id', 'request_sha256'} or
+                not isinstance(selection['operation_id'], str) or not OP.fullmatch(selection['operation_id'])):
+            raise Refused('current boot assignment pointer is invalid')
+        work = secure(BASE / 'operations' / selection['operation_id'], True)
         tx = Transaction(work, native)
         if (tx.request['role'] != role or selection['request_sha256'] != digest(tx.request) or
                 socket.gethostname().split('.')[0] != tx.request['box'] + '-dom0' or not tx.journal):
             raise Refused('current boot assignment differs from its operation or box')
-        stage = tx.journal['stage']
-        side = 'new' if stage in {'accepted', 'complete'} else ('old' if stage == 'recovered' else None)
-        result = {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': True,
-                  'operation_id': selection['operation_id'], 'request_sha256': selection['request_sha256'],
-                  'stage': stage, 'selection': 'accepted' if side == 'new' else ('recorded-previous' if side else 'pending'),
-                  'release_sha256': tx.request['release_sha256'] if side == 'new' else None,
-                  'engine_commit': tx.request['engine_commit'],
-                  'profile': 'shared-alpine-v1' if side == 'new' else None}
-        if side:
-            tx.artifacts(side)
-            guest = tx.guest((side,))
-            expected = tx.assignment_content(side)
-            current = secure(XEN / (role + '.cfg')).read_bytes()
-            link = XEN / 'auto' / (role + '.cfg')
-            valid_link = link.is_symlink() and os.readlink(link) in {'../' + link.name, str(XEN / link.name)}
-            autostart_drift = not valid_link if tx.request['autostart'] else link.exists() or link.is_symlink()
-            result.update(vm_uuid=tx.request[side + '_uuid'],
-                          boot_configuration=tx.configs[side], disks=tx.request[side + '_disks'],
-                          artifacts=tx.request[side + '_artifacts'], autostart=tx.request['autostart'],
-                          runtime='running' if guest else 'stopped',
-                          configuration_sha256=hashlib.sha256(expected).hexdigest(),
-                          configuration_drift=current != expected, autostart_drift=bool(autostart_drift))
+        yield tx
         if read(pointer) != selection:
             raise Refused('current boot assignment changed during inspection')
-        return result
+
+
+def assignment_report(tx):
+    stage = tx.journal['stage']
+    role = tx.request['role']
+    side = 'new' if stage in {'accepted', 'complete'} else ('old' if stage == 'recovered' else None)
+    result = {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': True,
+              'operation_id': tx.work.name, 'request_sha256': digest(tx.request),
+              'stage': stage, 'selection': 'accepted' if side == 'new' else ('recorded-previous' if side else 'pending'),
+              'release_sha256': tx.request['release_sha256'] if side == 'new' else None,
+              'engine_commit': tx.request['engine_commit'],
+              'profile': 'shared-alpine-v1' if side == 'new' else None}
+    if side:
+        tx.artifacts(side)
+        guest = tx.guest((side,))
+        expected = tx.assignment_content(side)
+        path = XEN / (role + '.cfg')
+        current = secure(path).read_bytes() if path.exists() or path.is_symlink() else None
+        link = XEN / 'auto' / (role + '.cfg')
+        autostart = tx.runtime_intent()['runtime_state'] == 'running'
+        valid_link = link.is_symlink() and os.readlink(link) in {'../' + link.name, str(XEN / link.name)}
+        autostart_drift = not valid_link if autostart else link.exists() or link.is_symlink()
+        result.update(vm_uuid=tx.request[side + '_uuid'],
+                      boot_configuration=tx.configs[side], disks=tx.request[side + '_disks'],
+                      artifacts=tx.request[side + '_artifacts'], autostart=autostart,
+                      runtime='running' if guest else 'stopped',
+                      configuration_sha256=hashlib.sha256(expected).hexdigest(),
+                      configuration_drift=current != expected, autostart_drift=bool(autostart_drift))
+    return result
+
+
+def assignment_status(role, native=None):
+    """Read the protected selection and drift; never approve observed settings."""
+    with current_assignment(role, native) as tx:
+        if tx is None:
+            return {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': False}
+        return assignment_report(tx)
+
+
+def reconcile_assignment(role, request_sha256, runtime_state, intent_sha256, native=None):
+    """Root-only primitive for the existing approved runtime Apply workflow.
+
+    The caller must validate current desired state and general Apply authority.
+    This primitive cannot choose a release or change disk, network, or package
+    definitions. The box lock covers selection, rendering, and native transitions.
+    """
+    if (runtime_state not in {'running', 'stopped'} or
+            any(not isinstance(v, str) or not HEX.fullmatch(v) for v in (request_sha256, intent_sha256))):
+        raise Refused('runtime reconciliation requires exact assignment and intent checksums')
+    with current_assignment(role, native) as tx:
+        if tx is None or digest(tx.request) != request_sha256:
+            raise Refused('runtime reconciliation assignment changed or is absent')
+        if tx.journal['stage'] not in {'complete', 'recovered'}:
+            raise Refused('runtime reconciliation requires a completed operation')
+        before = assignment_report(tx)
+        value = {'kind': 'klokast.vm-runtime-intent.v1', 'request_sha256': request_sha256,
+                 'intent_sha256': intent_sha256, 'runtime_state': runtime_state}
+        previous = tx.runtime_intent()
+        changed = (previous != value or before['configuration_drift'] or before['autostart_drift'] or
+                   before['runtime'] != runtime_state)
+        if previous != value:
+            # Intent survives loss of the controller and is used by boot recovery.
+            # It cannot modify the immutable accepted release or operation request.
+            store(tx.work / 'runtime.json', value)
+        side = 'new' if tx.journal['stage'] == 'complete' else 'old'
+        if changed:
+            tx.assignment(side)
+        guest = tx.guest((side,))
+        if runtime_state == 'stopped' and guest:
+            tx.native.stop(guest, True)
+        elif runtime_state == 'running' and not guest:
+            tx.native.start(XEN / (role + '.cfg'))
+        result = assignment_report(tx)
+        if result['runtime'] != runtime_state or result['configuration_drift'] or result['autostart_drift']:
+            raise Refused('accepted VM did not reach its approved runtime state')
+        return dict(result, changed=changed, intent_sha256=intent_sha256)
 
 
 def invoke(operation, action):
@@ -746,12 +812,18 @@ def invoke(operation, action):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover', 'heartbeat',
-                                           'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage', 'assignment-status'))
+                                           'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage',
+                                           'assignment-status', 'reconcile-assignment'))
     parser.add_argument('--operation-id')
     parser.add_argument('--role')
+    parser.add_argument('--request-sha256')
+    parser.add_argument('--intent-sha256')
+    parser.add_argument('--runtime-state', choices=('running', 'stopped'))
     args = parser.parse_args(argv)
-    if args.role and args.action != 'assignment-status':
-        raise Refused('a role selector is only valid for assignment status')
+    if args.role and args.action not in {'assignment-status', 'reconcile-assignment'}:
+        raise Refused('a role selector is only valid for assignment commands')
+    if args.action != 'reconcile-assignment' and any((args.request_sha256, args.intent_sha256, args.runtime_state)):
+        raise Refused('runtime intent is only valid for assignment reconciliation')
     os.umask(0o077)
     if args.action == 'fence-autostart':
         if os.geteuid() != 0 or 'control_d' not in Path('/proc/xen/capabilities').read_text():
@@ -759,6 +831,11 @@ def main(argv=None):
         fence_autostart()
         return 0
     require_dom0()
+    if args.action == 'reconcile-assignment':
+        if args.operation_id or not args.role:
+            raise Refused('runtime reconciliation requires the current role assignment')
+        print(canonical(reconcile_assignment(args.role, args.request_sha256, args.runtime_state, args.intent_sha256)))
+        return 0
     if args.action == 'assignment-status':
         if args.operation_id or not args.role:
             raise Refused('assignment status accepts only the selected shared VM role')

@@ -3,6 +3,14 @@
 # - Starts or stops a Xen guest instance and recovers the required Xen daemons if they are not healthy.
 #
 ---
+- name: Protect accepted shared VM state from legacy infrastructure changes
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ xen_guest_name }}"
+    vm_boot_assignment_require_legacy: true
+  when: xen_guest_name in ['bak', 'dmz', 'iot']
+
 - name: Assert the requested Xen guest runtime state is supported
   ansible.builtin.assert:
     that:

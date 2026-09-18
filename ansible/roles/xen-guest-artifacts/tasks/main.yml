@@ -3,6 +3,14 @@
 # - Extracts the installed guest kernel and initramfs artifacts from a guest LV onto dom0 for the installed Xen boot stage.
 #
 ---
+- name: Protect accepted shared VM state from legacy infrastructure changes
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ xen_guest_name }}"
+    vm_boot_assignment_require_legacy: true
+  when: xen_guest_name in ['bak', 'dmz', 'iot']
+
 - name: Assert the Xen guest LV path is defined
   ansible.builtin.assert:
     that:

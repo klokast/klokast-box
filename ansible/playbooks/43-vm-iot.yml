@@ -4,6 +4,13 @@
   gather_facts: false
   vars:
     iot_installed_spec: "{{ node_xen_guest_specs.iot | combine({'stage': 'installed'}, recursive=True) }}"
+  pre_tasks:
+    - name: Refuse legacy provisioning of an assigned shared VM
+      ansible.builtin.include_role:
+        name: vm-boot-assignment
+      vars:
+        vm_boot_assignment_role: iot
+        vm_boot_assignment_require_legacy: true
   tasks:
     - name: Persist the dom0 bridge configuration
       ansible.builtin.import_role:

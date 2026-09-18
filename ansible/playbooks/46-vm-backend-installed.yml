@@ -5,6 +5,13 @@
   vars:
     backend_installed_spec: >-
       {{ node_xen_guest_specs.backend | combine({'stage': 'installed'}, recursive=True) }}
+  pre_tasks:
+    - name: Refuse legacy provisioning of an assigned shared VM
+      ansible.builtin.include_role:
+        name: vm-boot-assignment
+      vars:
+        vm_boot_assignment_role: bak
+        vm_boot_assignment_require_legacy: true
   tasks:
     - name: Ensure the backend guest is stopped before extracting boot artifacts
       ansible.builtin.import_role:

@@ -16,3 +16,28 @@
     xen_guest_name: "{{ node_xen_guest_specs[platform_shared_guest_spec_key].guest_name }}"
     xen_guest_config_path: "{{ node_xen_guest_specs[platform_shared_guest_spec_key].config_path }}"
     xen_guest_runtime_state: "{{ platform_shared_guest_runtime_state }}"
+  when: not platform_shared_guest_assignments[platform_shared_guest_role].managed
+
+- name: Require compiled intent for accepted-release runtime reconciliation
+  ansible.builtin.assert:
+    that:
+      - platform_resources_desired_json is defined
+      - platform_resources_desired_json | length > 0
+  when: platform_shared_guest_assignments[platform_shared_guest_role].managed
+
+- name: Reconcile the accepted assignment and runtime under the box transaction lock
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/vm-update-transaction
+      - reconcile-assignment
+      - --role
+      - "{{ platform_shared_guest_role }}"
+      - --request-sha256
+      - "{{ platform_shared_guest_assignments[platform_shared_guest_role].request_sha256 }}"
+      - --intent-sha256
+      - "{{ platform_resources_desired_json | hash('sha256') }}"
+      - --runtime-state
+      - "{{ platform_shared_guest_runtime_state }}"
+  register: platform_shared_guest_reconcile
+  changed_when: (platform_shared_guest_reconcile.stdout | from_json).changed
+  when: platform_shared_guest_assignments[platform_shared_guest_role].managed

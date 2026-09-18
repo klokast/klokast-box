@@ -1,0 +1,56 @@
+---
+# Read protected dom0 state even when called from a guest play. Guest markers
+# are evidence only and cannot select the accepted disk or package generation.
+- name: Validate the shared VM assignment selector
+  ansible.builtin.assert:
+    that:
+      - vm_boot_assignment_role in ['bak', 'dmz', 'iot']
+      - node_name is match('^[a-z0-9][a-z0-9-]{0,30}$')
+
+- name: Verify the box data filesystem is mounted before reading assignment state
+  ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  changed_when: false
+
+- name: Inspect the protected role pointer without following links
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-vm-updates/active/{{ vm_boot_assignment_role }}.json"
+    follow: false
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  register: vm_boot_assignment_pointer
+
+- name: Default an absent pointer to unmanaged state
+  ansible.builtin.set_fact:
+    vm_boot_assignment:
+      kind: klokast.vm-boot-assignment.v1
+      role: "{{ vm_boot_assignment_role }}"
+      managed: false
+
+- name: Read the current protected assignment through its validator
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/vm-update-transaction, assignment-status, --role, "{{ vm_boot_assignment_role }}"]
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  changed_when: false
+  register: vm_boot_assignment_result
+  when: vm_boot_assignment_pointer.stat.exists
+
+- name: Select the validated boot assignment
+  ansible.builtin.set_fact:
+    vm_boot_assignment: "{{ vm_boot_assignment_result.stdout | from_json }}"
+  when: vm_boot_assignment_pointer.stat.exists
+
+- name: Refuse legacy mutations of an assigned VM
+  ansible.builtin.assert:
+    that:
+      - not vm_boot_assignment.managed
+    fail_msg: >-
+      {{ node_name }}-{{ vm_boot_assignment_role }} has a protected boot assignment.
+      Legacy cloning, package installation, and boot rendering are disabled.
+      Use accepted-release reconciliation through the approved Platform workflow.
+  when: vm_boot_assignment_require_legacy | default(false) | bool

@@ -9,6 +9,13 @@
     iot_clone_target_mount_path: /tmp/iot-root
     iot_clone_bootstrap_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub"
   pre_tasks:
+    - name: Refuse legacy provisioning of an assigned shared VM
+      ansible.builtin.include_role:
+        name: vm-boot-assignment
+      vars:
+        vm_boot_assignment_role: iot
+        vm_boot_assignment_require_legacy: true
+
     - name: Unlock reviewed legacy IoT clone maintenance packages in RAM
       ansible.builtin.import_role:
         name: dom0-apk-policy

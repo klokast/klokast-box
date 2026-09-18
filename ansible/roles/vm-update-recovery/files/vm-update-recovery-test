@@ -335,6 +335,22 @@ def main():
                     source.seek(4096)
                     if source.read(26) != b'accepted-production-write\n':
                         raise RuntimeError('accepted production write changed during boot recovery')
+            if scenario == 'accepted':
+                # Exercise approved runtime reconciliation independently of
+                # release selection. Boot recovery must preserve stopped intent.
+                stopped = t.reconcile_assignment('bak', t.digest(request), 'stopped', 'e' * 64, backend)
+                if stopped['runtime'] != 'stopped' or stopped['autostart']:
+                    raise RuntimeError('accepted runtime reconciliation did not stop the test guest')
+                t.command(['/usr/bin/python3', t.HELPER, 'boot-recover'], timeout=1800)
+                if recovered.guest() or (t.XEN / 'auto/bak.cfg').exists():
+                    raise RuntimeError('boot recovery reversed approved stopped intent')
+                # Rebuild missing generated configuration from the same record.
+                (t.XEN / 'bak.cfg').unlink()
+                running = t.reconcile_assignment('bak', t.digest(request), 'running', 'f' * 64, backend)
+                if (running['vm_uuid'] != identities['new'] or running['configuration_drift'] or
+                        running['release_sha256'] != request['release_sha256']):
+                    raise RuntimeError('runtime reconciliation changed the accepted release')
+                guest = recovered.guest()
             results.append({'stage': scenario, 'recovered_side': expected, 'data_unchanged': True,
                             'assignment_verified': True,
                             'elapsed_seconds': round(time.monotonic() - started, 3)})
@@ -361,6 +377,7 @@ def main():
               'success': True, 'tests': results, 'production_replacement': False,
               'watchdog_tested': args.watchdog_expiry, 'process_restart_tested': True,
               'controller_loss_tested': args.controller_loss,
+              'runtime_reconciliation_tested': True,
               'dom0_reboot_tested': False, 'candidate_id': args.candidate_id,
               'candidate_sha256': t.digest(manifest),
               'transaction_sha256': hashlib.sha256((work / 'vm-update-transaction').read_bytes()).hexdigest(),

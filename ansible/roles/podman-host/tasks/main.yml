@@ -3,6 +3,14 @@
 # - Converges the rootless Podman host baseline, registry policy, cgroup/runtime state, and host/container egress checks.
 #
 ---
+- name: Protect accepted shared VM packages and configuration from legacy convergence
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ node_hostname | regex_replace('^' ~ node_name ~ '-', '') }}"
+    vm_boot_assignment_require_legacy: true
+  when: node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
+
 - name: Select the Podman runtime owner
   ansible.builtin.set_fact:
     podman_host_runner_user: "{{ podman_host_runner_user | default(vm_admin_user_name) }}"

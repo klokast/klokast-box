@@ -61,7 +61,7 @@ class Xen:
             raise InterruptedError('crash after Xen shutdown')
 
     def start(self, path):
-        self.running = 'new' if 'new.cfg' in str(path) else 'old'
+        self.running = 'new' if self.request['new_uuid'] in path.read_text() else 'old'
         self.calls.append(('start', self.running))
         if self.crash == 'start':
             raise InterruptedError('crash after Xen create')
@@ -239,6 +239,61 @@ class Transactions(unittest.TestCase):
         self.assertIsNone(value['release_sha256']); self.assertIsNone(value['profile'])
         self.assertEqual(value['boot_configuration']['kernel'], '/mnt/dom0_data/old-kernel')
         self.assertFalse(value['configuration_drift'])
+
+    def reconcile(self, state, request_sha256=None):
+        with patch.object(t.socket, 'gethostname', return_value='boxa-dom0'), \
+                patch.object(t, 'operation_lock', return_value=nullcontext()):
+            return t.reconcile_assignment('bak', request_sha256 or t.digest(self.request), state,
+                                          'e' * 64, self.backend)
+
+    def test_runtime_reconcile_preserves_release_and_survives_boot_recovery(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
+        original = (self.work / 'request.json').read_bytes()
+        result = self.reconcile('stopped')
+        self.assertTrue(result['changed']); self.assertFalse(result['autostart'])
+        self.assertEqual(result['runtime'], 'stopped')
+        self.tx().recover()
+        self.assertIsNone(self.backend.running)
+        self.assertFalse((self.xen / 'auto/bak.cfg').exists())
+        self.assertFalse(self.reconcile('stopped')['changed'])
+        result = self.reconcile('running')
+        self.assertTrue(result['autostart']); self.assertEqual(self.backend.running, 'new')
+        self.assertEqual(result['release_sha256'], self.request['release_sha256'])
+        self.assertEqual((self.work / 'request.json').read_bytes(), original)
+        self.assertFalse(self.reconcile('running')['changed'])
+
+    def test_runtime_reconcile_repairs_generated_config_from_protected_input(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
+        path = self.xen / 'bak.cfg'
+        path.write_text(path.read_text().replace('new-kernel', 'obsolete-kernel'))
+        result = self.reconcile('running')
+        self.assertTrue(result['changed']); self.assertFalse(result['configuration_drift'])
+        self.assertIn('new-kernel', path.read_text()); self.assertNotIn('obsolete-kernel', path.read_text())
+        path.unlink()
+        self.assertTrue(self.assignment_status()['configuration_drift'])
+        self.assertTrue(self.reconcile('running')['changed'])
+
+    def test_runtime_reconcile_refuses_pending_or_changed_assignment(self):
+        tx = self.boot()
+        with self.assertRaisesRegex(t.Refused, 'completed operation'): self.reconcile('stopped')
+        self.checks(); tx.step('tested'); tx.step('accept')
+        with self.assertRaisesRegex(t.Refused, 'completed operation'): self.reconcile('stopped')
+        tx.step('complete')
+        before = list(self.backend.calls)
+        with self.assertRaisesRegex(t.Refused, 'changed or is absent'): self.reconcile('stopped', '0' * 64)
+        self.assertEqual(self.backend.calls, before)
+
+    def test_runtime_intent_rejects_corrupt_or_foreign_state(self):
+        tx = self.boot(); tx.recover()
+        self.reconcile('stopped')
+        path = self.work / 'runtime.json'
+        original = t.read(path)
+        for fields in ({'request_sha256': '0' * 64}, {'runtime_state': 'restart'}, {'extra': True}):
+            t.store(path, dict(original, **fields))
+            with self.assertRaisesRegex(t.Refused, 'runtime intent'): self.tx().recover()
+        t.store(path, original)
+        self.reconcile('running')
+        self.assertEqual(self.backend.running, 'old')
 
     def test_assignment_pointer_conflicts_and_other_box_fail_closed(self):
         tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept')

@@ -1,4 +1,16 @@
 ---
+- name: Read the protected shared VM boot assignment
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ platform_shared_guest_role }}"
+
+- name: Keep the inspected assignment for the locked runtime operation
+  ansible.builtin.set_fact:
+    platform_shared_guest_assignments: >-
+      {{ (platform_shared_guest_assignments | default({}))
+         | combine({platform_shared_guest_role: vm_boot_assignment}) }}
+
 - name: Select shared Xen guest desired definition
   ansible.builtin.set_fact:
     platform_shared_guest_spec_key: "{{ platform_shared_guest_role_spec_keys[platform_shared_guest_role] }}"
@@ -41,8 +53,10 @@
     name: xen-guest
   vars:
     xen_guest_spec: "{{ platform_shared_guest_spec }}"
+  when: not vm_boot_assignment.managed
 
 - name: Schedule persistence when shared Xen guest definition changed
   ansible.builtin.command: /bin/true
   changed_when: xen_guest_definition_changed | bool
   notify: Persist shared Xen guest dom0 state
+  when: not vm_boot_assignment.managed
