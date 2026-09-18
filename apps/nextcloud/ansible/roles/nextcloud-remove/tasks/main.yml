@@ -29,6 +29,35 @@
   loop_control:
     label: '{{ item.item }}'
 
+- name: Stop the exact private ingress supervisor when its OpenRC marker is absent
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import subprocess
+        from pathlib import Path
+        pidfile='/run/nextcloud-private-ingress/tailscaled.pid'
+        expected=[b'supervise-daemon',b'nextcloud-private-ingress',b'--start',
+                  b'--pidfile',pidfile.encode()]
+        matches=[]
+        for p in Path('/proc').iterdir():
+          if not p.name.isdigit(): continue
+          try: argv=(p/'cmdline').read_bytes().split(b'\0')
+          except FileNotFoundError: continue
+          if argv[:5]==expected: matches.append(p.name)
+        assert len(matches)<=1, 'multiple private ingress supervisors; files are preserved'
+        if matches:
+          p=Path(pidfile)
+          assert not p.is_symlink() and p.stat().st_size<32, 'unsafe private ingress pidfile'
+          assert p.read_text().strip()==matches[0], 'private ingress pidfile differs from its supervisor'
+          subprocess.run(['/sbin/supervise-daemon','nextcloud-private-ingress','--stop',
+                          '--pidfile',pidfile],check=True,timeout=30)
+          print('stopped')
+  when: node_domain_role == 'dmz'
+  register: nextcloud_remove_orphan_supervisor
+  changed_when: "'stopped' in nextcloud_remove_orphan_supervisor.stdout_lines"
+
 - name: Verify no native Nextcloud ingress writer remains before file removal
   ansible.builtin.command:
     argv:

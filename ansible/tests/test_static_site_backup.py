@@ -134,6 +134,34 @@ class BackupTests(unittest.TestCase):
 
 
 class BackupOrchestrationTests(unittest.TestCase):
+    def test_orphan_stop_checks_exact_service_and_pid_before_native_stop(self):
+        tasks = yaml.safe_load((REPO / 'apps/nextcloud/ansible/roles/nextcloud-remove/tasks/main.yml').read_text())
+        task = next(v for v in tasks if 'exact private ingress supervisor' in v['name'])
+        code = task['ansible.builtin.command']['argv'][-1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proc = root / 'proc'; proc.mkdir()
+            pidfile = root / 'pid'
+            code = code.replace("Path('/proc')", f'Path({str(proc)!r})')
+            code = code.replace('/run/nextcloud-private-ingress/tailscaled.pid', str(pidfile))
+            management = proc / '12'; management.mkdir()
+            (management / 'cmdline').write_bytes(b'supervise-daemon\0tailscale\0--start\0')
+            with patch('subprocess.run') as run:
+                exec(compile(code, '<orphan-stop>', 'exec'), {})
+                run.assert_not_called()
+            app = proc / '13'; app.mkdir()
+            (app / 'cmdline').write_bytes(b'\0'.join([b'supervise-daemon', b'nextcloud-private-ingress',
+                                                   b'--start', b'--pidfile', str(pidfile).encode(), b'']))
+            pidfile.write_text('12\n')
+            with patch('subprocess.run') as run, self.assertRaisesRegex(AssertionError, 'differs'):
+                exec(compile(code, '<orphan-stop>', 'exec'), {})
+            run.assert_not_called()
+            pidfile.write_text('13\n')
+            with patch('subprocess.run') as run:
+                exec(compile(code, '<orphan-stop>', 'exec'), {})
+                run.assert_called_once_with(['/sbin/supervise-daemon', 'nextcloud-private-ingress',
+                                             '--stop', '--pidfile', str(pidfile)], check=True, timeout=30)
+
     def test_bounded_backup_uses_an_async_supported_command_after_staging(self):
         tasks = yaml.safe_load((SCRIPT.parents[1] / 'tasks/main.yml').read_text())
         asynchronous = [v for v in tasks if v.get('async')]

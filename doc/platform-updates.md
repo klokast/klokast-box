@@ -614,6 +614,14 @@ heartbeat and makes no controller recovery request. It uses synthetic disks
 and does not install a production helper. Controller heartbeat delivery and
 production fencing remain executor integration work.
 
+Native validation on 2026-09-18 passed all eight disposable recovery cases,
+including controller loss. The detached watcher restored the old generation
+in 104 seconds without a controller recovery request. The accepted restart
+case preserved its later write. Cleanup confirmed that all four test LVs and
+the test domain were removed, and that production domain UUIDs were unchanged.
+This is evidence for the local transaction primitive, not a production
+replacement or physical dom0 reboot test.
+
 Acceptance is written and synced before the new boot assignment is published.
 After acceptance, recovery can republish the new assignment but cannot select
 old data. The boot check runs before normal Xen autostart. If a record is
