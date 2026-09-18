@@ -373,6 +373,9 @@ The smoke boot now runs the installed `mdev` coldplug rules and verifies the
 standard device identities and permissions. The normal OpenRC boot verifies
 those devices without repairing them. Both tests must pass for this branch;
 the failure does not permit an exception to rootless Podman qualification.
+The retry passed all nine base groups and all five normal OpenRC checks on
+2026-09-18, source `07c8ffa`, operation `a7bb41a08facb9e9fa48bd7a`. Both lifecycle
+records confirmed cleanup, and the v3.24 candidate remained unaccepted.
 
 Dom0 reads bounded raw output bytes and verifies their checksums. It never
 mounts the generated filesystem. The root image, matching kernel, and initramfs
