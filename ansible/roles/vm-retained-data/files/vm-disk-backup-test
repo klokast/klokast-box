@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Test native snapshot copying with new opaque synthetic LVs only."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import time
+
+import vm_disk_backup as b
+
+
+BASE = Path('/mnt/dom0_data/klokast-vm-backup-tests')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch(r'[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            'control_d' not in Path('/proc/xen/capabilities').read_text()):
+        raise b.BackupError('backup test requires root on the selected dom0')
+    os.umask(0o077)
+    work = BASE / args.operation_id
+    for path in (BASE, work): b.secure(path, True)
+    if (work / 'resources.json').exists() or (work / 'backup').exists():
+        raise b.BackupError('backup test operation cannot be reused')
+    # Reuse the build/recovery capacity lock. No production update schedule is
+    # enabled by this test or by staging its public helper.
+    lockpath = Path('/mnt/dom0_data/klokast-vm-templates/build.lock')
+    fd = os.open(lockpath, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    b.secure(lockpath)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    native = b.Native()
+    volumes_before = {r['lv_path']: r['lv_uuid'] for r in native.volumes()}
+    domains_before = json.loads(native.command(['xl', 'list', '-l']))
+    identities_before = {r['config']['c_info']['name']: r['config']['c_info'].get('uuid') for r in domains_before}
+    groups = native.rows(['vgs', '--reportformat', 'json', '-o', 'vg_name'], 'vg')
+    if len(groups) != 1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_+.-]{0,63}', groups[0]['vg_name']):
+        raise b.BackupError('backup test requires one known volume group')
+    vg = groups[0]['vg_name']
+    free, extent = native.capacity(vg)
+    if free < 2 * 1024**3 or 64 * b.MIB % extent or 16 * b.MIB % extent:
+        raise b.BackupError('backup test requires 2 GiB free and compatible extent size')
+    sourcepath = '/dev/' + vg + '/vmbackuptest_' + args.operation_id
+    tag = 'klokast.vm-backup-test.' + args.operation_id
+    if sourcepath in volumes_before:
+        raise b.BackupError('synthetic backup source already exists')
+    (work / 'backup').mkdir(mode=0o700)
+    b.store(work / 'allocation.json', {'source': sourcepath, 'tag': tag})
+    resources = {}
+    def interrupted(*unused):
+        raise b.BackupError('native backup test interrupted; inspect retained resources')
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM): signal.signal(signum, interrupted)
+    signal.alarm(300)
+    try:
+        native.create(sourcepath, 64 * b.MIB, tag)
+        source = native.volume(sourcepath)
+        if source['tags'] != [tag]: raise b.BackupError('synthetic source tag mismatch')
+        b.ordinary(source); native.unmounted([source]); native.unattached([source])
+        resources[sourcepath] = source
+        b.store(work / 'resources.json', resources)
+        source['device_bytes'] = source['bytes']
+        old_block = b'synthetic-backup-before-snapshot\n'.ljust(b.MIB, b'0')
+        old_hash = hashlib.sha256(old_block * 64).hexdigest()
+        with native.open(source, True) as stream:
+            for unused in range(64):
+                if stream.write(old_block) != b.MIB: raise b.BackupError('synthetic source write was short')
+            os.fsync(stream.fileno())
+        class ChangingOrigin(b.Native):
+            def open(self, volume, writable=False):
+                if volume['path'].endswith('_snapshot') and not writable:
+                    # Exercise native COW: the backup must contain the old
+                    # bytes while this separate source receives a new write.
+                    current = self.volume(sourcepath); b.same_identity(current, source)
+                    self.unmounted([current]); self.unattached([current])
+                    with native.open(source, True) as stream:
+                        stream.write(b'synthetic-new-production-write\n'); os.fsync(stream.fileno())
+                return super().open(volume, writable)
+        request = {'kind': 'klokast.vm-disk-backup.v1', 'operation_id': args.operation_id,
+                   'box': args.box, 'engine_commit': 'a' * 40, 'source_evidence_sha256': 'b' * 64,
+                   'source': {k: source[k] for k in ('path', 'uuid', 'bytes')},
+                   'cow_bytes': 16 * b.MIB, 'requested_at': int(time.time())}
+        result = b.make_backup(work / 'backup', request, ChangingOrigin())
+        backup = native.volume(result['backup']['path'])
+        resources[backup['path']] = backup
+        b.store(work / 'resources.json', resources)
+        if (result['disk_sha256'] != old_hash or not result['backup_readonly'] or not result['independent_copy'] or
+                any(result[k] for k in ('restore_verified', 'source_freshness_verified',
+                                       'application_consistency_verified', 'adoption_accepted'))):
+            raise b.BackupError('native backup receipt failed synthetic verification')
+        with native.open(source, True) as stream:
+            if stream.read(31) != b'synthetic-new-production-write\n':
+                raise b.BackupError('backup lost a later synthetic source write')
+        b.store(work / 'result.json', {'kind': 'klokast.vm-disk-backup-test.v1', 'operation_id': args.operation_id,
+                'success': True, 'receipt_sha256': result['receipt_sha256'],
+                'tests': {'independent_copy': True, 'snapshot_point_preserved': True,
+                          'later_source_write_preserved': True, 'readonly_backup': True}})
+    finally:
+        signal.alarm(0)
+        # On failure, leave incomplete allocations and journals for inspection.
+        # A successful test removes only its exact recorded synthetic volumes.
+        if (work / 'result.json').exists():
+            for path, expected in reversed(list(resources.items())):
+                current = native.volume(path); b.same_identity(current, expected)
+                if current['tags'] != expected['tags']: raise b.BackupError('test cleanup tags changed')
+                native.unmounted([current]); native.unattached([current])
+                native.remove(path)
+            after = {r['lv_path']: r['lv_uuid'] for r in native.volumes()}
+            domains_after = json.loads(native.command(['xl', 'list', '-l']))
+            identities_after = {r['config']['c_info']['name']: r['config']['c_info'].get('uuid') for r in domains_after}
+            if after != volumes_before or identities_after != identities_before:
+                raise b.BackupError('native test changed storage or domain inventory outside its allocations')
+            b.store(work / 'cleanup.json', {'success': True, 'production_lvs_unchanged': True,
+                    'production_domains_unchanged': True, 'removed': list(resources)})
+    print((work / 'result.json').read_text().strip())
+
+
+if __name__ == '__main__':
+    try: main()
+    except Exception as error:
+        print('vm-disk-backup-test: ' + type(error).__name__ + ': ' + str(error), flush=True)
+        raise SystemExit(1)

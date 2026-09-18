@@ -705,6 +705,43 @@ partition fixture tests full restore, ownership and identity preservation,
 read-only backup enforcement, changed-backup refusal before writes, and refusal
 to reuse the restore staging. No production data enters the template builder.
 
+Native v3.24 build `c48cf0c5852aa61828928baf` at `03cd90b` passed all eleven
+base checks, five generic OpenRC checks, and eight personalized boot checks.
+Build `7984e04ea7afd0514e15843e` at `722f599` repeated those checks with exact
+kernel block-device identity validation. Both builds cleaned their disposable
+guests and kept `accepted: false`. Their controller records remain in
+`discovery/builds/OPERATION`.
+
+### Independent disk copy
+
+`vm-retained-data/files/vm_disk_backup.py` supplies the dom0 allocation and
+opaque copy primitive. It accepts an exact source LV UUID, size, source-evidence
+checksum, and engine. It checks request age and free space for the snapshot,
+an independent backup, a later restore disk, and a 1 GiB reserve. It refuses
+thin or other unsupported LV types, mounted sources, reused allocations, and
+changed block identities. It has no public command or standing authority.
+The future signed caller must hold the installation mutation lease.
+
+It creates a read-only native LVM snapshot and copies all logical disk bytes
+into a new ordinary LV. It checks snapshot validity and refuses 80 percent
+or greater COW usage. It makes the backup read-only, verifies the copied bytes,
+and removes only the exact recorded snapshot. It never mounts a guest
+filesystem on dom0. Failed destinations and interrupted allocation records
+remain for inspection; an unknown allocation is never reused or removed.
+
+The receipt binds the source, independent backup, snapshot time, and disk
+checksum. It leaves restore verification, source freshness, application
+consistency, and adoption acceptance false. A live snapshot alone cannot prove
+application consistency. The protected caller must connect this receipt to
+the isolated restore check above and fresh target qualification.
+
+`74-platform-update-backup-test.yml` tests this primitive with new synthetic
+LVs. It changes the synthetic origin after snapshot creation and checks that
+the backup preserves the earlier bytes while the origin preserves the later
+write. It removes only its recorded test LVs and verifies that production LV
+and Xen identities did not change. This play does not back up production data,
+install an executor, or activate a replacement policy.
+
 ## Isolated clone personalization
 
 `vm-personalize/files/vm_personalize.py` applies a closed machine configuration

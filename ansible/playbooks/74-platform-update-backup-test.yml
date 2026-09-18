@@ -1,0 +1,70 @@
+---
+- name: Test independent disk backup with disposable synthetic LVs
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the selected backup test target
+      ansible.builtin.assert:
+        that:
+          - backup_test_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - backup_test_operation_id is match('^[0-9a-f]{24}$')
+          - inventory_hostname == backup_test_box ~ '-dom0'
+
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: backup_test_authority
+
+    - name: Check configured active controller authority
+      ansible.builtin.assert:
+        that:
+          - (backup_test_authority.stdout | from_json).configured | bool
+          - (backup_test_authority.stdout | from_json).active | bool
+
+    - name: Check persistent dom0 storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create private disposable test records
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-backup-tests/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', "{{ backup_test_operation_id }}", "{{ backup_test_operation_id }}/async"]
+
+    - name: Stage the public synthetic backup test
+      ansible.builtin.copy:
+        src: "../roles/vm-retained-data/files/{{ item }}"
+        dest: "/mnt/dom0_data/klokast-vm-backup-tests/{{ backup_test_operation_id }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [vm_disk_backup.py, vm-disk-backup-test]
+
+    - name: Test snapshot copy and source-write preservation independently of SSH
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '360'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-backup-tests/{{ backup_test_operation_id }}/vm-disk-backup-test"
+          - --box
+          - "{{ backup_test_box }}"
+          - --operation-id
+          - "{{ backup_test_operation_id }}"
+      async: 420
+      poll: 5
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-vm-backup-tests/{{ backup_test_operation_id }}/async"
+      register: backup_test_result
+
+    - name: Report the native synthetic backup result
+      ansible.builtin.debug:
+        msg: "{{ backup_test_result.stdout | from_json }}"
