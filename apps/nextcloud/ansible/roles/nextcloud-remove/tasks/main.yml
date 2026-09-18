@@ -52,7 +52,8 @@
           assert not p.is_symlink() and p.stat().st_size<32, 'unsafe private ingress pidfile'
           assert p.read_text().strip()==matches[0], 'private ingress pidfile differs from its supervisor'
           subprocess.run(['/sbin/supervise-daemon','nextcloud-private-ingress','--stop',
-                          '--pidfile',pidfile],check=True,timeout=30)
+                          '--pidfile',pidfile],check=True,timeout=30,
+                         env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','RC_SVCNAME':'nextcloud-private-ingress'})
           print('stopped')
   when: node_domain_role == 'dmz'
   register: nextcloud_remove_orphan_supervisor

@@ -160,7 +160,9 @@ class BackupOrchestrationTests(unittest.TestCase):
             with patch('subprocess.run') as run:
                 exec(compile(code, '<orphan-stop>', 'exec'), {})
                 run.assert_called_once_with(['/sbin/supervise-daemon', 'nextcloud-private-ingress',
-                                             '--stop', '--pidfile', str(pidfile)], check=True, timeout=30)
+                                             '--stop', '--pidfile', str(pidfile)], check=True, timeout=30,
+                                            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin',
+                                                 'RC_SVCNAME': 'nextcloud-private-ingress'})
 
     def test_bounded_backup_uses_an_async_supported_command_after_staging(self):
         tasks = yaml.safe_load((SCRIPT.parents[1] / 'tasks/main.yml').read_text())
