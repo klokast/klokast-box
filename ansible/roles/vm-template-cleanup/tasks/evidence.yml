@@ -24,6 +24,8 @@
     group: root
     mode: '0600'
   loop: "{{ cleanup_receipts.results }}"
+  loop_control:
+    label: "{{ cleanup_candidate.path | basename }}/{{ item.item }}"
   when:
     - item.stat.isreg | default(false)
     - not (item.stat.islnk | default(false))

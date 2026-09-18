@@ -32,10 +32,18 @@ def prepare_boot(run, operation, inputs_sha256, source_sha256):
     value = hashlib.sha256()
     with open('/dev/xvdf', 'rb', buffering=0) as source, open('/dev/xvdd', 'wb', buffering=0) as target:
         while chunk := source.read(1024 * 1024):
-            p.data.remaining(deadline); value.update(chunk); target.write(chunk)
+            p.data.remaining(deadline); value.update(chunk)
+            if target.write(chunk) != len(chunk):
+                raise RuntimeError('personalized test root copy has a short device write')
         os.fsync(target.fileno())
     if value.hexdigest() != source_sha256:
         raise RuntimeError('personalized boot source differs from the sealed root image')
+    copied = hashlib.sha256()
+    with open('/dev/xvdd', 'rb', buffering=0) as target:
+        while chunk := target.read(1024 * 1024):
+            p.data.remaining(deadline); copied.update(chunk)
+    if copied.hexdigest() != source_sha256:
+        raise RuntimeError('personalized test root copy differs from the sealed source')
     # Remove the preceding synthetic partition fixture on this exact test disk.
     with open('/dev/xvdc', 'r+b', buffering=0) as disk:
         disk.write(b'\0' * (4 * 1024 * 1024)); os.fsync(disk.fileno())
