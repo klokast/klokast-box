@@ -74,7 +74,8 @@ def main():
     module = collector(); root = Path('/var/lib/containers/storage')
     value = module.collect_no_application_store(Path('/'), module.mount_inventory(), {'uid': 0, 'gid': 0}, str(root))
     if value['complete'] is not True or value['stable'] is not True or value['empty'] is not True:
-        raise ValueError('probe store is not the exact supported empty layout; preserve it')
+        raise ValueError('probe store is not the exact supported empty layout; preserve it: ' +
+                         json.dumps({'error': value['error'], 'unresolved_paths': value['unresolved_paths']}))
     # Fixed time bounds cover this task's accidental Podman initialization.
     # Older and later directories are outside this correction's scope.
     entries = value['metadata']['entries']

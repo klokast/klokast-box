@@ -46,7 +46,13 @@
             argv: [python3, '{{ probe_correction_staging.path }}/cleanup-empty-podman-probe-20260919.py']
           changed_when: false
           register: probe_correction_plan
+          failed_when: false
           no_log: true
+
+        - name: Report fixed correction qualification failures
+          ansible.builtin.assert:
+            that: probe_correction_plan.rc == 0
+            fail_msg: '{{ probe_correction_plan.stderr_lines | last | default("Probe store qualification failed") }}'
 
         - name: Apply only the unchanged correction plan when selected
           ansible.builtin.command:
