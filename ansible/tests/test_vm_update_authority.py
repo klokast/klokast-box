@@ -18,6 +18,18 @@ class VMUpdateAuthorityTest(unittest.TestCase):
         self.fixture = verification_fixture.InstanceVerificationTest()
         self.fixture.setUp()
         self.m = self.fixture.m
+        lock_home = tempfile.TemporaryDirectory()
+        self.addCleanup(lock_home.cleanup)
+        lock_path = Path(lock_home.name) / 'operation.lock'
+        lock_path.touch()
+        lock_path.chmod(0o660)
+        self.lock_path = lock_path
+        lock_location = patch.object(self.m, 'VM_UPDATE_LOCK', lock_path)
+        lock_location.start()
+        self.addCleanup(lock_location.stop)
+        lock_group = patch.object(self.m, 'smith_gid', return_value=0)
+        lock_group.start()
+        self.addCleanup(lock_group.stop)
         # Test real files and flock as an unprivileged runner. Mock only the
         # root identity checks; do not weaken the production executor.
         self.directory_check = patch.object(self.m, 'ensure_protected_dir', side_effect=lambda p, mode, group: self.m.ensure_dir(p, mode))
@@ -190,10 +202,12 @@ class VMUpdateAuthorityTest(unittest.TestCase):
 
     def test_duplicate_operations_share_one_installation_lock(self):
         m=self.m
-        with tempfile.TemporaryDirectory() as temporary, patch.object(m,'VM_UPDATE_ROOT',Path(temporary)/'executor'):
-            with m.vm_update_lock():
-                with self.assertRaisesRegex(m.ApplyError,'installation lock'):
-                    with m.vm_update_lock():pass
+        with m.vm_update_lock():
+            with self.assertRaisesRegex(m.ApplyError,'installation lock'):
+                with m.vm_update_lock():pass
+        self.lock_path.chmod(0o600)
+        with self.assertRaisesRegex(m.ApplyError,'unsafe metadata'):
+            with m.vm_update_lock():pass
 
     def test_unknown_cli_controls_accept_no_evidence(self):
         m=self.m

@@ -2,13 +2,15 @@
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
@@ -45,6 +47,59 @@ def load_reconcile_module():
 class PlatformResourcesTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_module()
+
+    def test_shared_guest_apply_holds_the_installed_update_lock(self):
+        module = self.mod
+        with tempfile.TemporaryDirectory() as temporary:
+            lock = Path(temporary) / 'operation.lock'
+            lock.touch()
+            lock.chmod(0o660)
+            original_lstat, original_fstat = Path.lstat, os.fstat
+            def lstat(path):
+                value = list(original_lstat(path))
+                if Path(path) == lock.parent:
+                    value[4] = 0
+                return os.stat_result(value)
+            def fstat(descriptor):
+                value = list(original_fstat(descriptor))
+                value[4] = 0
+                return os.stat_result(value)
+            with patch.object(module, 'VM_UPDATE_INSTALL_LOCK', lock), \
+                    patch.object(Path, 'lstat', autospec=True, side_effect=lstat), \
+                    patch.object(os, 'fstat', side_effect=fstat):
+                with module.vm_update_installation_lock():
+                    with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                        with module.vm_update_installation_lock():
+                            pass
+
+    def test_resource_apply_keeps_the_installation_lock_through_reconciliation(self):
+        module = self.mod
+        args = SimpleNamespace(command='apply', registry='/unused', app=[],
+                               magicdns_suffix='tail.test.ts.net', approved_commit='c' * 40)
+        held = [False]
+        @contextmanager
+        def lock():
+            held[0] = True
+            try:
+                yield
+            finally:
+                held[0] = False
+        def checked(*_args, **_kwargs):
+            self.assertTrue(held[0])
+        with patch.object(module, 'parse_args', return_value=args), \
+                patch.object(module, 'assert_command_scope'), \
+                patch.object(module, 'registry_source_input'), \
+                patch.object(module, 'compile_registry', return_value={}), \
+                patch.object(module, 'requested_apps_present'), \
+                patch.object(module, 'assert_approved_commit'), \
+                patch.object(module, 'require_active_controller'), \
+                patch.object(module, 'vm_update_installation_lock', side_effect=lock), \
+                patch.object(module, 'run_shared_guests', side_effect=checked) as guests, \
+                patch.object(module, 'run_ansible', side_effect=checked) as resources:
+            module.main()
+        guests.assert_called_once()
+        resources.assert_called_once()
+        self.assertFalse(held[0])
 
     def per_user_app_users(self):
         return [

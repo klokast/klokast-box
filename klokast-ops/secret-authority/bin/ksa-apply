@@ -43,6 +43,7 @@ KIND_VERIFICATION_INTENT = "klokast.instance-verification-intent.v1"
 KIND_VM_UPDATE_INTENT = "klokast.vm-update-policy-intent.v1"
 VM_UPDATE_EXECUTOR = "vm_update_policy_v1"
 VM_UPDATE_ROOT = Path("/var/lib/klokast/updates/executor")
+VM_UPDATE_LOCK = Path("/var/lib/klokast/updates/operation.lock")
 VERIFICATION_EXECUTOR = "instance_verification_v1"
 KIND_RETIREMENT_EVIDENCE = "klokast.legacy-retirement-evidence.v1"
 KIND_RETIREMENT_INTENT = "klokast.legacy-input-retirement-intent.v1"
@@ -5116,12 +5117,19 @@ def vm_update_collect(args, nonce):
 
 @contextmanager
 def vm_update_lock():
-    # This lock serializes policy control and future production operations.
-    ensure_protected_dir(VM_UPDATE_ROOT, 0o700, 0)
-    descriptor = os.open(VM_UPDATE_ROOT / "operation.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    # The fixed file is root-owned in a root-owned directory. Group smith may
+    # lock it for the entire approved provisioning or reconciliation workflow,
+    # but cannot replace it or read the protected execution records.
+    ensure_protected_dir(VM_UPDATE_LOCK.parent, 0o755, 0)
+    try:
+        descriptor = os.open(VM_UPDATE_LOCK, os.O_RDWR | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ApplyError("install the shared VM update operation lock before policy control") from error
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+                metadata.st_gid != smith_gid() or metadata.st_nlink != 1 or
+                stat.S_IMODE(metadata.st_mode) != 0o660):
             raise ApplyError("VM update operation lock has unsafe metadata")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -5331,6 +5339,7 @@ def vm_update_policy_control(action):
     with vm_update_lock():
         if action == "pause":
             # Restriction remains possible when the policy is absent or revoked.
+            ensure_protected_dir(VM_UPDATE_ROOT, 0o700, 0)
             vm_update_store(VM_UPDATE_ROOT / "pause.json", (canonical({"paused": True, "changed_at": format_utc(now_utc())}) + "\n").encode(), replace=True)
         else:
             receipt = vm_update_policy_current()

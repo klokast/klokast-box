@@ -349,8 +349,11 @@ State, and sealed current Instance input. The activation Observation is not
 reused as execution evidence. Policy changes, engine promotion, signer
 revocation, or authority changes require new activation. Local pause is a
 root-owned restriction and can still be set when policy validation fails.
-One installation lock serializes activation, pause, resume, and future
-replacements. Acceptance of a standing policy is not a successful VM update.
+One fixed installation lock at `/var/lib/klokast/updates/operation.lock`
+serializes activation, pause, resume, box provisioning, Platform resource Apply,
+and future replacements. Root owns the file and its parent directory; the
+`smith` group can lock the file but cannot replace it. The lock grants no
+execution authority. Acceptance of a standing policy is not a successful VM update.
 The root-only `ksa-apply vm-update-policy source-status` action returns the
 current signed policy, activation checksum, engine and private commits,
 Authority State checksum, and local pause state to the active controller. It

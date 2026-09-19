@@ -245,6 +245,12 @@ use `policy activate` with its intent, signature, and signer ID. `policy status`
 `pause`, and `resume` retain their existing authority checks. Do not interpret
 policy activation as proof that replacement is available.
 
+Install `74-platform-update-authority.yml` before using the updated
+provisioning or Platform resource Apply wrappers. It creates the fixed operation
+lock. Those wrappers hold the lock until their mutation work ends; policy
+control uses the same file. Direct legacy playbook calls remain outside this
+serialization and must not run during an update operation.
+
 ## Production acceptance evidence
 
 | Required evidence | Status |
