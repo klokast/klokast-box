@@ -1244,7 +1244,8 @@ def with_source_status(base, source, discovery, now):
             base.get('report_sha256') != digest({k: v for k, v in base.items()
                                                  if k != 'report_sha256'}) or
             base.get('discovery_sha256') != digest(discovery) or
-            not base.get('intent', {}).get('eligible') or
+            not isinstance(base.get('intent'), dict) or
+            not base['intent'].get('eligible') or
             base['intent'].get('engine_commit') != base.get('implementation_commit')):
         raise UpdateError('source binding requires an approved, complete qualification')
     host = base['box'] + '-' + base['role']
@@ -1292,7 +1293,8 @@ def with_source_status(base, source, discovery, now):
             mounts['evidence_sha256'] != digest({k: v for k, v in mounts.items()
                                                  if k != 'evidence_sha256'})):
         raise UpdateError('guest source mount receipt is invalid')
-    observed = fact.get('storage', {}).get('mounts')
+    storage_facts = fact.get('storage')
+    observed = storage_facts.get('mounts') if isinstance(storage_facts, dict) else None
     by_path = {row.get('path'): row for row in observed if isinstance(row, dict)} if isinstance(observed, list) else {}
     mount_match = (mounts['complete'] is True and mounts['stable'] is True and mounts['error'] is None and
                    mounts['devices'] == {'/': {'source': '/dev/xvda3', 'device': by_path.get('/', {}).get('device')},
@@ -1329,4 +1331,78 @@ def with_source_status(base, source, discovery, now):
         result['findings'].append(findings('qualification.source-mismatch',
                                            'Live Xen source, guest partitions, boot bytes, or autostart differ.',
                                            'critical', host))
+    return finish(result)
+
+
+def with_identity_status(base, discovery):
+    """Recognize exact private machine files for the typed retention adapter."""
+    if (not isinstance(base, dict) or
+            base.get('kind') != 'klokast.vm-no-application-qualification.v5' or
+            base.get('report_sha256') != digest({k: v for k, v in base.items()
+                                                 if k != 'report_sha256'}) or
+            base.get('discovery_sha256') != digest(discovery) or
+            base.get('source_match') is not True or
+            not isinstance(base.get('intent'), dict) or
+            base['intent'].get('engine_commit') != base.get('implementation_commit')):
+        raise UpdateError('machine identity requires matching approved source evidence')
+    host = base['box'] + '-' + base['role']
+    matches = [row.get('facts') for row in discovery.get('hosts', [])
+               if isinstance(row, dict) and row.get('host') == host]
+    if len(matches) != 1 or not isinstance(matches[0], dict):
+        raise UpdateError('machine identity target facts are unavailable')
+    fact = matches[0]
+    value = fact.get('machine_identity_files')
+    fields = {'kind', 'complete', 'stable', 'management_running', 'entries', 'error', 'evidence_sha256'}
+    tailscale = fact.get('tailscale')
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.vm-machine-identity-files.v1' or
+            value['complete'] is not True or value['stable'] is not True or
+            value['management_running'] is not True or value['error'] is not None or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items()
+                                                if k != 'evidence_sha256'}) or
+            not isinstance(tailscale, dict) or tailscale.get('backend_state') != 'Running' or
+            not isinstance(value['entries'], dict) or set(value['entries']) != set(IDENTITIES)):
+        raise UpdateError('complete, stable machine identity evidence is unavailable')
+    inventory = fact.get('host_inventory')
+    if not isinstance(inventory, dict):
+        raise UpdateError('machine identity host coverage is unavailable')
+    shallow, deep = inventory.get('unowned_paths'), inventory.get('unowned_tree')
+    if not isinstance(shallow, list) or not isinstance(deep, dict) or not isinstance(deep.get('entries'), list):
+        raise UpdateError('machine identity host accounting is incomplete')
+    observed = shallow + deep['entries']
+    for path, metadata in value['entries'].items():
+        gid = 102 if path == '/var/lib/tailscale/tailscaled.state' else 0
+        if (not isinstance(metadata, dict) or
+                set(metadata) != {'mode', 'uid', 'gid', 'links', 'bytes', 'sha256'} or
+                metadata['mode'] != stat.S_IFREG | 0o600 or metadata['uid'] != 0 or
+                metadata['gid'] != gid or metadata['links'] != 1 or
+                type(metadata['bytes']) is not int or not 0 < metadata['bytes'] <= 8 * 1024 * 1024 or
+                not isinstance(metadata['sha256'], str) or
+                not re.fullmatch(r'[0-9a-f]{64}', metadata['sha256'])):
+            raise UpdateError('machine identity file has unsafe metadata')
+        rows = [row for row in observed if isinstance(row, dict) and row.get('path') == path]
+        if (not rows or any(any(row.get(key) != metadata[key] for key in ('mode', 'uid', 'gid')) or
+                            any(key in row and row[key] != metadata[key] for key in ('links', 'bytes'))
+                            for row in rows)):
+            raise UpdateError('machine identity file differs from host accounting')
+    selected = [item for item in base['items'] if item['key'] in IDENTITIES and
+                item['area'] == 'file' and item['classification'] == 'retained-machine-identity']
+    if len(selected) != len(IDENTITIES) or {item['key'] for item in selected} != set(IDENTITIES):
+        raise UpdateError('qualification lacks the complete management identity set')
+    result = {**base, 'kind': 'klokast.vm-no-application-qualification.v6',
+              'prior_report_sha256': base['report_sha256'],
+              'identity_evidence_sha256': value['evidence_sha256']}
+    result.pop('report_sha256')
+    result['items'] = []
+    for item in base['items']:
+        row = dict(item)
+        if item in selected:
+            row['resolved'] = True
+            row['rule'] = 'exact stable management identity; copy through the typed retention adapter'
+            row['evidence_sha256'] = digest({'item': item['evidence_sha256'],
+                                             'identity': value['evidence_sha256'],
+                                             'path': item['key']})
+        result['items'].append(row)
+    result['findings'] = [finding for finding in base['findings']
+                          if finding['code'] != 'qualification.unresolved']
     return finish(result)

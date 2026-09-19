@@ -522,6 +522,18 @@ def adoption_prepare(box, role):
                                                     'Installed dom0 source reader or matching guest mount evidence is unavailable.',
                                                     'critical', host))
                 result = vm_no_application.finish(result)
+        if result['kind'] == 'klokast.vm-no-application-qualification.v5' and result['source_match']:
+            try:
+                result = vm_no_application.with_identity_status(result, discovery)
+            except UpdateError:
+                result = dict(result)
+                result.pop('report_sha256')
+                result['findings'] = [finding for finding in result['findings']
+                                      if finding['code'] != 'qualification.unresolved']
+                result['findings'].append(findings('qualification.identity-unavailable',
+                                                    'The four private machine files lack stable typed-retention evidence.',
+                                                    'critical', host))
+                result = vm_no_application.finish(result)
     if (sources is not None and read_sources() != sources or
             optional(STATE / 'current.json') != discovery or
             command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or

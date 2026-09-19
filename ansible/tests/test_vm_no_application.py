@@ -750,6 +750,49 @@ class ConfigComparison(unittest.TestCase):
             with self.assertRaises(UpdateError):
                 noapp.with_source_status(base, changed, discovery, NOW)
 
+    def test_identity_binding_accepts_only_four_stable_private_files(self):
+        base = self.base()
+        base['kind'] = 'klokast.vm-no-application-qualification.v5'
+        base['source_match'] = True
+        for path in noapp.IDENTITIES:
+            if path == '/etc/ssh/ssh_host_ed25519_key':
+                continue
+            base['items'].append({'area': 'file', 'key': path,
+                                  'classification': 'retained-machine-identity',
+                                  'rule': 'retain', 'resolved': False,
+                                  'evidence_sha256': '5' * 64})
+        entries = {path: {'mode': stat.S_IFREG | 0o600, 'uid': 0,
+                          'gid': 102 if path == '/var/lib/tailscale/tailscaled.state' else 0,
+                          'links': 1, 'bytes': 100, 'sha256': 'a' * 64}
+                   for path in noapp.IDENTITIES}
+        receipt = {'kind': 'klokast.vm-machine-identity-files.v1',
+                   'complete': True, 'stable': True, 'management_running': True,
+                   'entries': entries, 'error': None}
+        receipt['evidence_sha256'] = digest(receipt)
+        discovery = {'hosts': [{'host': 'boxa-dmz', 'facts': {
+            'machine_identity_files': receipt,
+            'tailscale': {'backend_state': 'Running'},
+            'host_inventory': {'unowned_paths': [
+                {'path': path, 'mode': row['mode'], 'uid': row['uid'], 'gid': row['gid']}
+                for path, row in entries.items()], 'unowned_tree': {'entries': []}}}}]}
+        base['discovery_sha256'] = digest(discovery)
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        result = noapp.with_identity_status(base, discovery)
+        self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v6')
+        self.assertEqual(result['summary']['unresolved'], 2)
+        self.assertEqual({row['key'] for row in result['items'] if row['resolved']}, set(noapp.IDENTITIES))
+        changed = copy.deepcopy(discovery)
+        changed['hosts'][0]['facts']['machine_identity_files']['entries'][
+            '/var/lib/tailscale/tailscaled.state']['gid'] = 0
+        changed['hosts'][0]['facts']['machine_identity_files']['evidence_sha256'] = digest({
+            k: v for k, v in changed['hosts'][0]['facts']['machine_identity_files'].items()
+            if k != 'evidence_sha256'})
+        base['discovery_sha256'] = digest(changed)
+        base['report_sha256'] = digest({k: v for k, v in base.items() if k != 'report_sha256'})
+        with self.assertRaises(UpdateError):
+            noapp.with_identity_status(base, changed)
+
 
 class CLI(unittest.TestCase):
     def test_dom0_source_reader_uses_fixed_controller_route_and_rejects_duplicate_json(self):

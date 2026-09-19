@@ -108,6 +108,26 @@ class HostInventory(unittest.TestCase):
         readings = iter((mountinfo, mountinfo.replace('202:1', '202:2')))
         self.assertFalse(self.m.legacy_mount_sources(lambda: next(readings), probe)['stable'])
 
+    def test_machine_identity_receipt_exports_hashes_only_and_requires_management(self):
+        names = ('var/lib/tailscale/tailscaled.state',
+                 'etc/ssh/ssh_host_rsa_key', 'etc/ssh/ssh_host_ecdsa_key',
+                 'etc/ssh/ssh_host_ed25519_key')
+        for name in names:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'PRIVATE-' + name.encode())
+        with patch.object(self.m, 'stable_regular_bytes', side_effect=lambda path, *_: path.read_bytes()) as read:
+            result = self.m.machine_identity_files({'BackendState': 'Running'}, self.root)
+        self.assertTrue(result['complete'] and result['stable'])
+        self.assertEqual(set(result['entries']), {'/' + name for name in names})
+        self.assertEqual(read.call_args_list[0].args[3], 102)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        refused = self.m.machine_identity_files({'BackendState': 'Stopped'}, self.root)
+        self.assertFalse(refused['complete'])
+        (self.root / names[0]).unlink()
+        (self.root / names[0]).symlink_to(self.root / names[1])
+        self.assertFalse(self.m.machine_identity_files({'BackendState': 'Running'}, self.root)['complete'])
+
     def test_apk_world_probe_rejects_unbounded_or_linked_requests(self):
         world = self.root / 'etc/apk/world'
         world.parent.mkdir(parents=True, exist_ok=True)

@@ -1128,6 +1128,41 @@ def stable_regular_bytes(path, maximum, uid, gid, mode):
         return None
 
 
+def machine_identity_files(status, root=Path('/')):
+    """Measure only the four declared machine files; never export their bytes."""
+    names = {'/var/lib/tailscale/tailscaled.state': 102,
+             '/etc/ssh/ssh_host_rsa_key': 0,
+             '/etc/ssh/ssh_host_ecdsa_key': 0,
+             '/etc/ssh/ssh_host_ed25519_key': 0}
+    result = {'kind': 'klokast.vm-machine-identity-files.v1', 'complete': False,
+              'stable': False, 'management_running': False, 'entries': {}, 'error': None}
+    try:
+        if not isinstance(status, dict) or status.get('BackendState') != 'Running':
+            raise HostInventoryError('Tailscale management identity is not running')
+        result['management_running'] = True
+        for name, gid in names.items():
+            path = root / name.lstrip('/')
+            before = path.lstat()
+            content = stable_regular_bytes(path, 8 * 1024 * 1024, 0, gid, 0o600)
+            after = path.lstat()
+            again = stable_regular_bytes(path, 8 * 1024 * 1024, 0, gid, 0o600)
+            fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid',
+                      'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            if (content is None or again != content or
+                    any(getattr(before, field) != getattr(after, field) for field in fields)):
+                raise HostInventoryError('machine identity file changed or has unsafe metadata')
+            result['entries'][name] = {'mode': before.st_mode, 'uid': before.st_uid,
+                                       'gid': before.st_gid, 'links': before.st_nlink,
+                                       'bytes': before.st_size,
+                                       'sha256': hashlib.sha256(content).hexdigest()}
+        result.update(complete=True, stable=True)
+    except (HostInventoryError, OSError) as error:
+        result['error'] = str(error) if isinstance(error, HostInventoryError) else 'machine identity file inspection failed'
+    result['evidence_sha256'] = hashlib.sha256(json.dumps(
+        result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return result
+
+
 def apk_world(path="/etc/apk/world"):
     """Record only bounded APK requests, with stable file identity."""
     try:
@@ -1470,6 +1505,7 @@ def main():
         "legacy_account_files": {name: legacy_account_file(name) for name in ('passwd', 'group')},
         "legacy_shadow_file": legacy_shadow_file(),
         "legacy_mount_sources": legacy_mount_sources(),
+        "machine_identity_files": machine_identity_files(status),
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
         "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},

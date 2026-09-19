@@ -113,7 +113,9 @@ a v3 report also binds a historical firewall comparison when needed. A v4
 report binds the old shadow file to the checked admin password input without
 recording the hash. After engine approval and installation of the dom0 source
 reader, a v5 report also compares the live Xen disk and boot artifacts with
-the guest's fixed `/` and `/boot` partition evidence.
+the guest's fixed `/` and `/boot` partition evidence. A v6 report measures
+the four fixed private machine files and binds them to the typed retention
+adapter. It records hashes and metadata only.
 Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and

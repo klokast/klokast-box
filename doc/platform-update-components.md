@@ -612,6 +612,12 @@ uses a checksum even when size and timestamp are unchanged. It applies no
 directory deletion flags to the file. The helper neither parses nor logs
 identity contents. Versioned receipts bind the exact typed request and record
 only integrity evidence; they never grant adoption authority.
+The old guest discovery reader measures these four files twice and records
+only hashes, size, owner, group, and mode. The selected old Tailscale state
+uses root UID and Tailscale GID 102; SSH host keys use root UID and GID. A v6
+qualification resolves these retained-identity rows only when the exact
+receipt matches complete host accounting and Tailscale is running. The copy
+and personalizer still verify the private file bytes before candidate boot.
 
 The copy runs only in the networkless migration VM. The source must be attached
 read-only. The outer signed executor must prove that the old identity is no
