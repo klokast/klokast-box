@@ -84,14 +84,6 @@ The catalog is reviewed public implementation in
 and names do not expand app authority or authorize deletion. Other apps and
 Music runtime or identity volumes remain unclassified by this initial mapping.
 
-On 2026-09-17, a native read-only scan at source `81e0f03` completed storage
-collection with stable inventories on all five running shared VMs. It found
-both Music data volumes. Unknown volumes, bind mounts, writable layers, and
-missing app or pod adapters remained explicit findings. Every assessment kept
-adoption blocked. Exit status 1 reported these critical findings; it was not
-a collection failure. Ansible syntax validation and 132 relevant local tests
-passed. No production workload changed and no update schedule was enabled.
-
 The controller retains the report at
 `/var/lib/klokast/updates/discovery/storage-assessment-validation-81e0f03.json`.
 This is discovery evidence only. It does not satisfy the production-adoption
@@ -147,43 +139,6 @@ approved recipes and generated configuration. Empty output is only a match with
 the local database. It does not prove that the database or local configuration
 matches approved signed inputs, and it does not clear the adoption gate.
 
-Native scan `aba75c0` completed all 12 inventory entries on 2026-09-18. All
-five running shared VMs returned complete, stable package audits. Each selected
-VM had 12 changed `/etc` files and five directory-metadata differences. Both
-backend VMs remained outside mutation scope, and k001-iot stayed stopped.
-The report still blocks adoption. Its controller record is
-`discovery/package-audit-validation-aba75c0.json`, checksum
-`97c155a4886e4229815e4019d0fc07e50a7e205556701f7ad868d8b851b9ed40`.
-
-The native scan at `f7f236b` on 2026-09-18 completed stable deep metadata for
-the three selected guests: 1,322 entries on k001-dmz, 1,272 on k002-dmz, and
-1,234 on k002-iot. Both backend trees exceeded the bounded scan limits and
-remain unresolved; those VMs are excluded from mutation. k001-iot stayed
-stopped. The controller report is `discovery/deep-validation-f7f236b.json`.
-It also found inactive Immich ingress state on k001-dmz. The operator approved
-deletion of its credentials and logs on 2026-09-18: this was a development
-deployment. Both backend VMs and their Immich data remain excluded from
-mutation. The app's separate ingress-state cleanup checks the two fixed paths
-and management continuity; see [Immich removal](../apps/immich/README.md#remove).
-This approval does not qualify other unknown host data for adoption.
-
-Cleanup operation `680ebc1c7a0445d197589cf8` completed from the active controller
-at source `321dab7` on 2026-09-18. The preview found 18 filesystem entries in
-the credential/state directory and three in the log directory, including the
-two directory roots. The cleanup verified absent ingress services and processes,
-refused mounted paths, removed both trees, and verified their absence and the
-unchanged running VM management identity. Neither backend VM was selected.
-The candidate checkout keeps the private receipt at
-`.run/immich-ingress-cleanup/680ebc1c7a0445d197589cf8/k001-dmz-applied.json`.
-Eight local boundary tests and native preview/apply checks passed.
-
-The next full scan completed all 12 inventory entries with stable deep metadata
-for the three selected running guests. It found no Immich paths on k001-dmz.
-k001-iot remained stopped. The controller report is
-`discovery/post-ingress-cleanup-321dab7.json`, checksum
-`b28d961227febdaf0b6e30aba482094d6612595b8fcdea2c2cfdc4c3d2ba9179`.
-Host classification and the other adoption gates remain blocked.
-
 A separate read-only pass inspects the standard rootful Podman store at
 `/var/lib/containers/storage`. It compares two bounded metadata trees and, when
 present, copies at most 8 MiB of the native SQLite database into memory. It
@@ -200,17 +155,6 @@ sidecars, unsafe paths, mounts, changed evidence, or exceeded limits produce
 `host.rootful-registrations`. An absent database or zero object counts do not
 prove that layers, volumes, custom stores, or other accounts contain no data.
 Those cases remain `host.rootful-store-unqualified`; adoption stays blocked.
-
-Native scan `8c18852` completed all 12 inventory entries on 2026-09-19. All
-five running shared VMs returned complete, stable rootful-store evidence.
-k001-dmz's standard store had one configuration row and zero registered
-containers, pods, volumes, or related state rows. The standard store was absent
-on k002-dmz and k002-iot. Both backend VMs remained outside mutation scope;
-k001-iot stayed stopped. The controller report is
-`discovery/rootful-store-validation-8c18852.json`, checksum
-`a57112bb44fbb7c5fc4f1ac0e04a0e25751af03027caa191ef86f80b5d5da348`.
-The local VM and CLI suites passed 261 and 24 tests respectively. No rootful
-store, database, layer, or volume was initialized, removed, or approved for disposal.
 
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
@@ -243,33 +187,6 @@ Deleted executables, missing user executables, and supervisors
 without a started marker have explicit findings. Missing or changing process
 coverage remains unknown. This detects unmarked services but does not approve
 their code, configuration, health, or shutdown procedure.
-
-On 2026-09-18, source `67c698f` completed a fresh scan of all 12 managed VM
-entries after controlled DMZ retirement. All five running shared VMs had
-complete, stable process inventories. No unmarked service supervisor remained
-on the three selected guests; each had zero containers and named volumes.
-The stopped shared VM stayed stopped. The report remains blocked on host
-classification, package integrity, qualified backups, and the production
-adoption and release-assignment workflow. Its controller evidence is
-`/var/lib/klokast/updates/discovery/process-validation-67c698f.json`.
-
-On 2026-09-18, candidate source `9f1d977` completed native validation on all
-five running shared VMs. Both inventory passes agreed. Native application
-service markers remained visible on a VM with no containers; the assessment
-kept adoption blocked. The stopped shared VM stayed stopped. All 184 relevant
-local tests and the controller Ansible syntax check passed. Exit status 1
-reported unresolved findings, not collection failure. The candidate did not
-change the approved engine, installed wrappers, guest packages, or services.
-The controller retains the report at
-`/var/lib/klokast/updates/discovery/native-services-validation-9f1d977.json`.
-
-On 2026-09-17, a native scan at `3a8c9f4` completed stable host metadata
-collection on all five running shared VMs. The scan kept every target blocked
-on unclassified paths, unqualified maintenance files, and incomplete adoption
-checks. It also distinguished stopped application containers from running
-services. The report is retained on the controller at
-`/var/lib/klokast/updates/discovery/host-assessment-validation-3a8c9f4.json`.
-No application, VM, or update schedule changed during this inspection.
 
 ### Fixed empty-store qualification
 
@@ -367,12 +284,6 @@ direct private-file fallback for candidate code.
 The authority setup playbook verifies this read-only interface. Local tests
 cover input hashes, source changes, absent apps, wrong-box declarations,
 missing datasets, stopped VMs, stale evidence, and unchanged discovery files.
-On 2026-09-18, engine `5b2f4a8` passed live validation after signed promotion
-and installed-wrapper convergence. Discovery completed for 12 VM entries.
-The retention report matched both Music library volumes to declared retention
-for an absent app. It kept unclassified application and host data, writable
-container layers, and the remaining adoption gates blocked. Exit status 1
-reported these findings; it did not indicate a reader failure.
 
 The controller retains the reports under
 `/var/lib/klokast/updates/discovery/scan-validation-5b2f4a8.json` and
@@ -478,10 +389,7 @@ The test has a separate five-minute limit and console log. The pipeline also
 prepares and boots a separate personalized clone as described below. Candidate
 publication requires all test phases, exact input identities, and complete guest cleanup.
 These generic tests still do not qualify target-specific network rules or
-application behavior. Native validation on 2026-09-18 passed all nine base
-groups and all five OpenRC checks in operation `30356d6442104b0254df1ad6`,
-using source `5f39303`. Both lifecycle records confirmed cleanup. The candidate
-was not accepted for production.
+application behavior.
 
 The first v3.24 trial was refused because the custom-init smoke boot did not
 run Alpine's device setup. Rootless Podman could not open `/dev/null`.
@@ -489,9 +397,6 @@ The smoke boot now runs the installed `mdev` coldplug rules and verifies the
 standard device identities and permissions. The normal OpenRC boot verifies
 those devices without repairing them. Both tests must pass for this branch;
 the failure does not permit an exception to rootless Podman qualification.
-The retry passed all nine base groups and all five normal OpenRC checks on
-2026-09-18, source `07c8ffa`, operation `a7bb41a08facb9e9fa48bd7a`. Both lifecycle
-records confirmed cleanup, and the v3.24 candidate remained unaccepted.
 
 Dom0 reads bounded raw output bytes and verifies their checksums. It never
 mounts the generated filesystem. The root image, matching kernel, and initramfs
@@ -575,16 +480,6 @@ UIDs, publisher and tunnel behavior, and deployed-image/configuration agreement
 remain required. Other catalog applications do not yet have adapters. This
 option does not authorize adoption, release acceptance, or replacement.
 
-On 2026-09-17, operation `eaafa2b0d7c96378108713e2` at source `b9dc4d0`
-passed all six base test groups and all eight Static Site component checks on
-k002-dom0. It used the unchanged catalog manifest
-`sha256:1a5b9e155d6921968e9bfe5107774a57e3bedf00436675c7d95298c906a057e2`.
-The candidate booted kernel `6.18.52-0-virt` with Podman `5.7.0-r6` and
-Tailscale `1.90.9-r6`. Both lifecycle records report `cleaned`; the disposable
-guests, loop attachments, and temporary test disks were removed. The six base
-test groups include retained-data copying and its ten refusal or corruption
-checks. The controller syntax check and 108 relevant local tests passed.
-
 Candidate and cleanup receipts remain in the controller's matching
 `discovery/builds/OPERATION` directory. The generic candidate remains in the
 box's matching `candidates/OPERATION` directory. No production VM, application,
@@ -632,17 +527,6 @@ test also checks numeric owners, hardlinks, nanosecond timestamps, extended
 attributes, symlink preservation, and sparse files. This does not test a catalog
 app, a recoverable backup, live staging, writer shutdown, or retained machine
 identities.
-
-On 2026-09-17, candidate operation `a0eb34b4a6aaac0d48dbdc1e` at engine
-`ae9cf11` passed all six native Xen test groups, including the retained-data
-copy and ten refusal or corruption checks. Build and test lifecycle records
-both report `cleaned`: both disposable domains, loop attachments, and temporary
-test disks were removed. The candidate remains unaccepted. No production data,
-VM, or application was changed. The relevant local suites passed 97 tests.
-The earlier operation `c93d43e35ad6a5670ca5ec36` stopped before copying because
-the UUID probe used unsupported util-linux options with BusyBox `blkid`.
-Its cleanup passed. The corrected probe uses native BusyBox output and rejects
-ambiguous records. Controller build receipts and logs retain both results.
 
 The future adoption executor must still derive mappings from approved catalog
 adapters and Instance intent, account for all observed storage, verify a
@@ -706,11 +590,7 @@ Dom0 still does not mount the source filesystem.
 Candidate preparation requires a ninth base test, `retained_partition`. It
 constructs a synthetic partitioned source on a disposable test disk, refuses
 a writable source disk, and verifies identity copying from partition 3. No
-production disk or identity is attached to this test. Native validation on
-2026-09-18 passed all nine base groups in operation `a27a7ec5e6d1fee375b49899`,
-using source `b587575`. The partition case verified the copy and the
-block-read-only refusal. Both guest cleanup records passed. The result remains
-an unaccepted candidate, not an adoption receipt.
+production disk or identity is attached to this test.
 
 ### Exact machine identity files
 
@@ -751,25 +631,6 @@ uses opaque synthetic state on disposable disks, checks exact-file final sync
 and the next retained generation, and refuses whole-directory mappings and
 unsafe permissions. No production identity enters a generic template or test
 VM. Missing or failed identity-test evidence prevents candidate publication.
-
-On 2026-09-18, source `14ff843` passed all eight native base test groups in
-operation `466b474faf45e10a820f4f9f`. The identity test verified file contents,
-numeric ownership, permissions, metadata, and the next retained generation.
-It refused whole-directory and unsafe-permission requests. Both disposable VM
-lifecycle records reported cleanup. All 193 relevant local tests and the
-controller Ansible syntax check also passed. The result remains an unaccepted
-candidate, with no production identity or data used. Evidence is under
-`/var/lib/klokast/updates/discovery/builds/466b474faf45e10a820f4f9f` on the controller.
-
-On 2026-09-17, operation `d1b0a326a02f008c4b083b17` at source `e646a3f`
-completed `platform-update prepare` on k002 with all seven base test groups,
-including staged retained-data synchronization. Both disposable guest lifecycle
-records passed cleanup. The initial native attempt at `70102bd` passed the
-guest tests but exposed a controller test-list mismatch; `e646a3f` corrects that
-check and adds controller acceptance and refusal tests. Neither run adopted or
-replaced a production VM. Candidate receipts remain under the matching
-controller `discovery/builds/OPERATION` directory. Production snapshot staging,
-backup qualification, writer fencing, and signed execution remain required.
 
 ## Isolated backup restore verification
 
@@ -824,25 +685,6 @@ partition fixture tests full restore, ownership and identity preservation,
 read-only backup enforcement, changed-backup refusal before writes, and refusal
 to reuse the restore staging. No production data enters the template builder.
 
-Native v3.24 build `c48cf0c5852aa61828928baf` at `03cd90b` passed all eleven
-base checks, five generic OpenRC checks, and eight personalized boot checks.
-Build `7984e04ea7afd0514e15843e` at `722f599` repeated those checks with exact
-kernel block-device identity validation. Both builds cleaned their disposable
-guests and kept `accepted: false`. Their controller records remain in
-`discovery/builds/OPERATION`.
-
-Build `389042f01cb9a724767d3ec9` at `c560e59` also passed the dedicated
-maintenance boot, all eleven base checks, five generic OpenRC checks, and
-eight personalized boot checks. All disposable guests were cleaned. The first
-maintenance boot at `6dca4ba` exposed the initramfs read-only root; `040937a`
-adds a checked remount of the disposable OS disk and private volatile runtime
-storage. A retry stopped at the 14 GiB capacity guard before guest creation.
-Checked cleanup then removed 1,272,483,840 allocated bytes from three obsolete
-unaccepted candidates under plan
-`c31781ee0af2aeba9be15bd74d7fd180cbad05d7b41903b1b4b48ded3c407871`.
-It retained the two newest candidates, all receipts, and unknown artifacts.
-No failed check was waived and no production release was accepted.
-
 ### Independent disk copy
 
 `vm-retained-data/files/vm_disk_backup.py` supplies the dom0 allocation and
@@ -875,52 +717,11 @@ record keeps source freshness, application consistency, and adoption acceptance
 false. Signed target qualification and the installation lease remain required
 before production use. This internal module has no public command.
 
-`74-platform-update-backup-test.yml` tests this primitive with new synthetic
-LVs. It changes the synthetic origin after snapshot creation and checks that
-the backup preserves the earlier bytes while the origin preserves the later
-write. It removes only its recorded test LVs and verifies that production LV
-and Xen identities did not change. This play does not back up production data,
-install an executor, or activate a replacement policy.
-With an explicit `backup_test_candidate_id`, the same play also constructs a
-synthetic partitioned filesystem inside Xen, creates its independent backup,
-and checks that backup in a separate maintenance VM. It compares the restored
-numeric mappings and private identity measurement with the original synthetic
-fixture. No production data or credentials enter either test guest.
-Set `backup_test_layout=retained-data` with that candidate ID to test the v2
-layout instead. Its fixture has a synthetic final-sync generation, all four
-management identity files, and application data with subordinate numeric
-ownership. It changes data and Tailscale state after making the generation
-receipt. The separate restore must preserve these later bytes and the complete
-dataset measurements. The fixture has no application processes or credentials.
-Native retained-layout test `b04aa0fc405c7daaaf887d75` at `98ce392` passed all
-nine checks using candidate `776a5f969bbc7730479a9587`. It verified the recorded
-generation and later data and identity writes, in addition to the seven legacy
-pipeline checks below. Both guests and all test LVs were cleaned; production LV
-and Xen identities did not change. The copy receipt checksum is
-`2390802390d2066d88995a4a283dc051196ab0242c75ac3862ba053d6b2aee2b`; the
-verified-backup receipt checksum is
-`76eb2d695bd9ebc9e582343628658a9f049617c473274ea3f3ee3a57db79ab53`.
-This proves the synthetic data-layout path, not production backup qualification.
-
-Native test `8fceca0f96524484fc6041dd` at `0bc1c57` passed all four copy and
-source-write checks on 2026-09-18. Its cleanup removed both remaining test LVs
-and verified unchanged production LV and Xen identities. The first test
-`b22dba9b880cc53a9947d979` stopped before copying because classic snapshots
-report their backing segments as `linear`. The corrected check uses snapshot
-attributes, target type, and the exact origin UUID. Checked cleanup removed
-that test's three recorded LVs. Both tests retain protected records under
-`/mnt/dom0_data/klokast-vm-backup-tests/OPERATION`.
-
-Complete pipeline test `bdd76cf953d0f83fdccace26` at `c560e59` passed on
-2026-09-18, using candidate `389042f01cb9a724767d3ec9`. All seven checks passed:
-independent copy, snapshot contents, read-only backup, isolated restore,
-numeric identity, private identity measurement, and restore cleanup.
-Final cleanup removed its synthetic source and backup LVs and verified that
-production LV and Xen identities did not change. The copy receipt checksum is
-`717349890aefc8e3ea3f108327dbc88ac2e4939454d292e348f1e2c7b8fd25c3`;
-the verified-backup receipt checksum is
-`bdf73698aa066063fea325777bbfa1924f76ab592aea14e570e3c33e8684d55f`.
-These are synthetic legacy-disk results, not production backup qualification.
+`74-platform-update-backup-test.yml` tests the primitive with synthetic LVs.
+It checks snapshot bytes and later source writes, then removes only recorded
+test LVs. With an explicit candidate ID, it also restores a synthetic
+partitioned or retained-data layout in an isolated maintenance VM and checks
+numeric ownership and machine identity. No production data enters the test.
 
 ## Isolated clone personalization
 
@@ -951,10 +752,7 @@ and rejects the old v1 request, which did not require SSH identity preservation.
 Tailscale [uses system SSH host keys when running as root](https://github.com/tailscale/tailscale/blob/main/ssh/tailssh/hostkeys.go);
 the node state file alone does not preserve this identity. Hosts that use
 Tailscale's fallback key directory require separate qualification and are not
-supported by this initial key-copy layout. On 2026-09-18, read-only inspection
-through the controller found all three system keys on k001-dmz, k002-dmz, and
-k002-iot, each root-owned, single-linked, and mode `0600`. No key contents were
-returned to the runner.
+supported by this initial key-copy layout.
 
 Configuration
 includes the retained mount, network and firewall files, and fixed boot
@@ -986,20 +784,6 @@ persistent filesystem space; the bounded Ansible job allows 55 minutes.
 These synthetic checks do not qualify a real machine identity or production
 network paths. Approved per-machine input generation, target network tests,
 and signed adoption orchestration are still required before production use.
-
-On 2026-09-18, operation `63ca0552de85c364b0739f97` at source `d048a94`
-passed ten base checks, five generic OpenRC checks, and eight personalized
-boot checks on Alpine v3.24. The preparation guest also verified the copied
-root bytes before personalization. All disposable guests and disks were
-cleaned up. The controller retained the receipts under its matching
-`discovery/builds/` directory. The candidate remains unaccepted and used no
-production identity, data, or application image.
-
-Native build `e1a08139aa49a7b67cdcefd6` at source `c0ab1c3` passed all eleven
-base checks, the separate maintenance restore boot, five generic OpenRC checks,
-and eight personalized checks with SSH key preservation enabled. Its input
-checksum is `416aa941a67db831561febea8c93afabf481c18cd2c05b52bdd0eb28aaf746b3`.
-All disposable guests were cleaned. The result is an unaccepted candidate.
 
 Before this run, the setup cleanup play reclaimed 3,735,310,336 allocated bytes
 from nine older unaccepted candidates. It kept the two newest successful
@@ -1100,26 +884,6 @@ preservation of writes on both accepted data disks through process restart.
 These are synthetic transaction checks. They do not qualify application health,
 data copying, a production release, or a physical dom0 reboot.
 
-Native operation `3c1e4028fd174863a6a8e8ef` passed at source `24dd0cb` on
-2026-09-18 with candidate `776a5f969bbc7730479a9587`. All seven existing
-recovery cases and the new release chain passed. The chain completed in
-84.497 seconds: two releases accepted, an intervening failed attempt recovered,
-the retry used the recovered assignment, both accepted writes survived, and
-the obsolete original generation was refused. Cleanup removed all six test LVs
-and the disposable guest and verified unchanged production domain UUIDs.
-The full local VM suite passed 252 tests. This run did not repeat the separate
-90-second controller-loss or 30-minute watchdog-expiry cases.
-The box-local `result.json` checksum is
-`8c7638cfd34653387fdbdde12e3ff595f12e0680633c78f2af45365df72c2445`.
-
-Native validation on 2026-09-18 passed all eight disposable recovery cases,
-including controller loss. The detached watcher restored the old generation
-in 104 seconds without a controller recovery request. The accepted restart
-case preserved its later write. Cleanup confirmed that all four test LVs and
-the test domain were removed, and that production domain UUIDs were unchanged.
-This is evidence for the local transaction primitive, not a production
-replacement or physical dom0 reboot test.
-
 Acceptance is written and synced before the new boot assignment is published.
 After acceptance, recovery can republish the new assignment but cannot select
 old data. The boot check runs before normal Xen autostart. If a record is
@@ -1153,29 +917,6 @@ only after cleanup passes. The receipt includes candidate and test-code
 checksums. This mode has a 70-minute limit to allow the full replacement and recovery budgets plus test
 setup. Physical dom0 reboot testing is deferred as described in the acceptance
 section below; this test does not establish physical reboot recovery.
-
-On 2026-09-17, operation `61ab8c3297a98b8828a5e86f` passed all three native
-Xen cases on k002-dom0 with candidate `0d66858d5082567778a3d3b3`. Test data
-markers stayed unchanged. Cleanup removed the disposable guest and all four
-test LVs, and verified that production domain UUIDs stayed unchanged. No
-production VM was replaced and the production boot hook was not installed.
-The final code at `2b9684f` passed the same native cases in operation
-`407a52ac0bbe921c4e828c0b`, including cleanup. The relevant unit suites passed
-74 tests. Native watchdog expiry and physical dom0 reboot remain untested at that commit.
-
-The full native watchdog test at `718ecb0` passed in operation
-`0b8065f399885cbfa958bfa6`. The unaccepted candidate recovered to its old disks
-after 1814.725 seconds, including the complete 1800-second replacement wait.
-Both data markers stayed unchanged. Cleanup removed the disposable guest and
-all four LVs and verified unchanged production domain UUIDs. This closes the
-native watchdog-expiry gate; physical dom0 reboot remains untested.
-
-The final recovery code at `e96a911` passed all seven native cases in operation
-`fa159d83e99659087e917d51`. This includes interrupted old-guest shutdown,
-recovery in a new process, and preservation of the synthetic write made after
-acceptance. Cleanup passed, including unchanged production UUIDs. The relevant
-unit suites passed 82 tests. Neither run replaced a production VM, changed an
-application, installed the production boot hook, or activated update policy.
 
 To repeat on an approved test target, run from the active controller's public
 candidate checkout. Use a new random 24-character lowercase hex operation ID
