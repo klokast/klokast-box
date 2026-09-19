@@ -11,8 +11,6 @@
     legacy_temp_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-legacy-temp-cleanup/{{ legacy_temp_operation }}'
     legacy_temp_paths_by_host:
       k001-dmz:
-        - /tmp/ansible-tmp-1779970503.0375876-28224-245422693765094/AnsiballZ_ping.py
-        - /tmp/ansible-tmp-1779970914.089145-30625-230127138267759/AnsiballZ_ping.py
         - /tmp/banner-local.png
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
@@ -23,18 +21,10 @@
         - /tmp/tmp.PPOkdH
         - /tmp/wget.out
       k002-dmz:
-        - /tmp/ansible-tmp-1779970503.090894-28225-168299957264798/AnsiballZ_ping.py
-        - /tmp/ansible-tmp-1779970914.149261-30626-138429900787871/AnsiballZ_ping.py
-        - /tmp/ansible-tmp-1780290331.9024324-28083-11330378981742/AnsiballZ_command.py
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
         - /tmp/klokast-platform-resources-desired.json
       k002-iot:
-        - /tmp/ansible-tmp-1779970094.9713976-25447-109064254166639/AnsiballZ_file.py
-        - /tmp/ansible-tmp-1779970094.9713976-25447-109064254166639/AnsiballZ_stat.py
-        - /tmp/ansible-tmp-1779970503.1320307-28227-41766370646129/AnsiballZ_ping.py
-        - /tmp/ansible-tmp-1779970914.2521405-30630-249949132083764/AnsiballZ_ping.py
-        - /tmp/ansible-tmp-1780290331.9212863-28082-100244416096117/AnsiballZ_command.py
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
         - /tmp/klokast-platform-resources-desired.json
