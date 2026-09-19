@@ -79,15 +79,25 @@
         or (dom0_apk_release_reconcile.changed | default(false) | bool)
       }}
 
+- name: Prepare the private volatile Tailscale restart result directory
+  ansible.builtin.file:
+    path: /tmp/klokast-ansible-async
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  when: tailscale_restart_required | bool
+
 - name: Launch a detached Tailscale restart when required
   ansible.builtin.shell: |
     set -eu
     sleep 3
-    rc-service tailscale restart >/tmp/klokast-tailscale-restart.log 2>&1
+    rc-service tailscale restart
   args:
     executable: /bin/sh
   async: 120
   poll: 0
+  register: tailscale_restart_job
   vars:
     # The async wrapper double-forks away from the Tailscale SSH session. Keep
     # its result in RAM because the dom0 admin home is persisted by lbu.
@@ -106,6 +116,12 @@
     connect_timeout: 10
     sleep: 3
     timeout: 120
+  when: tailscale_restart_required | bool
+
+- name: Collect the detached restart result and clean its completed job record
+  ansible.builtin.import_tasks: restart-result.yml
+  vars:
+    ansible_async_dir: /tmp/klokast-ansible-async
   when: tailscale_restart_required | bool
 
 - name: Verify the Tailscale OpenRC service after daemon restart

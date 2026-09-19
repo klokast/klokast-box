@@ -1,0 +1,21 @@
+---
+- name: Collect the detached Tailscale restart result
+  block:
+    - name: Wait for the exact detached restart job to finish
+      ansible.builtin.async_status:
+        jid: "{{ tailscale_restart_job.ansible_job_id }}"
+      register: tailscale_restart_result
+      until: tailscale_restart_result.finished | default(false) | bool
+      retries: 24
+      delay: 5
+  always:
+    - name: Remove the completed restart job record even when its command failed
+      ansible.builtin.async_status:
+        jid: "{{ tailscale_restart_job.ansible_job_id }}"
+        mode: cleanup
+      # A missing record or wrapper timeout can report finished without a command
+      # return code. Preserve uncertain results for inspection and reconciliation.
+      when:
+        - tailscale_restart_result is defined
+        - tailscale_restart_result.finished | default(false) | bool
+        - tailscale_restart_result.rc is defined

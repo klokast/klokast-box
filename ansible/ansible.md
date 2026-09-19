@@ -47,6 +47,54 @@ ansible
 ├── playbooks
 └── roles
 
+# Remote task execution and cleanup
+
+- Use synchronous tasks with SSH connection reuse and pipelining for short work.
+  Use bounded async tasks for long work or a service restart that breaks its own
+  connection. High latency alone is not a reason to use async for every task.
+  Choose a poll interval that limits round trips without delaying recovery.
+- Check the installed become plugin before relying on pipelining. The
+  `community.general.doas` plugin requires version 12.4.0 or later and explicit
+  `allow_pipelining` for `nopass` rules. Qualify the controller toolchain before
+  enabling this option. Pipelining does not remove staging required by file
+  transfers or async tasks.
+- Every async task must specify a time limit, poll interval, registered result,
+  and `ansible_async_dir`. Use a private directory owned by the execution account.
+  Use volatile storage for transient results where possible. Use an operation
+  directory when recovery needs persistent evidence. Do not put job caches in
+  persisted account homes by default.
+- With `poll > 0`, Ansible removes the job cache after it observes a completed
+  result, including a command failure. Do not add duplicate cleanup tasks.
+- With `poll: 0`, the launching workflow owns result collection and cleanup.
+  Save the returned job ID, wait with `async_status`, and use `mode: cleanup` for
+  that exact ID after completion. Use the same account and async directory for
+  launch, status, and cleanup. Put cleanup in `always` so a completed command
+  failure does not bypass it. Propagate the original failure.
+- Do not delete results when completion is uncertain, the target is unreachable,
+  or the controller stops. Report the job ID and result path for reconciliation
+  before retrying the operation. Cleanup does not stop a running job. A wrapper
+  timeout is not proof that all child work stopped. Never remove a shared tree
+  or use a wildcard to clear job results.
+- The producing workflow must also own its module staging, helper files, and
+  temporary output. Capture command output in the task result instead of a fixed
+  `/tmp` log. Follow [the shell temporary-file rules](../doc/shell.md). Keep
+  recovery journals, required backups, and audit evidence under their separate
+  retention rules. Do not treat them as async cache files.
+- Test changed async flows with completed success, command failure, and uncertain
+  completion. Verify that cleanup leaves unrelated records intact. Test loss of
+  connection or controller execution when the flow depends on recovery from it.
+  Never rely on a later blanket cleanup playbook to repair routine task hygiene.
+
+The native cleanup regression tests run on the active controller, without
+restarting Tailscale or touching guest state:
+
+```sh
+python3 -m unittest discover -s ansible/tests -p 'test_async_cleanup.py' -v
+```
+
+See the Ansible documentation for [async cleanup](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_async.html)
+and [doas pipelining](https://docs.ansible.com/projects/ansible/latest/collections/community/general/doas_become.html).
+
 # Automation flow
 
 MacBook initiates, ops orchestrates, ISO only enrolls, Ansible mutates:
