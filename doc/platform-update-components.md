@@ -287,6 +287,32 @@ counter, PID, and random format defined by
 [containers/storage v1.59.1](https://github.com/containers/storage/blob/v1.59.1/pkg/lockfile/lastwrite.go).
 The binary timestamp must agree with file metadata within one second.
 
+### Separate boot filesystem coverage
+
+The fixed no-application assessment includes the separately mounted `/boot`
+filesystem. The guest checks its mount identity, reads bounded file metadata
+twice, and hashes only the fixed kernel, initramfs, configuration, and symbol-map
+names. Linked artifacts, nested mounts, changed files, and incomplete coverage
+fail the check. Other files remain unknown. This is source evidence; matching
+boot artifacts to approved source inputs remains a separate requirement.
+The check mounts no filesystem and executes no boot artifact.
+
+### Qualification findings on 2026-09-19
+
+Source `e0b4557` produced fresh reports for all three selected guests. No target
+qualified and no adoption intent was issued. The k002-iot store contained
+image and layer files. Both DMZ rootless stores exceeded the bounded empty-store
+file limit. Empty container and volume lists do not resolve these findings.
+Existing cached images, unknown files, generated configuration, and legacy
+package and boot provenance still require qualification.
+
+An ad-hoc inspection inherited inventory privilege escalation and created empty
+rootful stores on k002-dmz and k002-iot. The fixed dated correction play verified
+and removed exactly 16 entries per store. It preserved the pre-existing k001-dmz
+store. Correction receipts are under the controller candidate checkout at
+`.run/probe-correction-20260919/`. The fresh scan confirmed that the two corrected
+rootful stores were absent. This correction is not production update evidence.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on

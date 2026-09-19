@@ -140,6 +140,41 @@ def source_intent(retention, registry, catalogs, box, role):
             'inputs': retention['inputs']}
 
 
+def checked_boot_files(value, mounts):
+    fields = {'kind', 'complete', 'stable', 'mount', 'metadata', 'artifacts',
+              'adoption_authorized', 'error', 'evidence_sha256'}
+    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-boot-files.v1' or
+            value['complete'] is not True or value['stable'] is not True or
+            value['adoption_authorized'] is not False or value['error'] is not None or
+            not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts) or
+            [m for m in mounts if m.get('path') == '/boot'] != [value['mount']] or
+            any(str(m.get('path', '')).startswith('/boot/') for m in mounts) or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items() if k != 'evidence_sha256'})):
+        raise UpdateError('complete stable boot filesystem coverage is unavailable')
+    mount = value['mount']
+    if (not isinstance(mount, dict) or set(mount) != {'path', 'root', 'type', 'device'} or
+            mount['path'] != '/boot' or mount['root'] != '/' or mount['type'] != 'ext4' or
+            not isinstance(mount['device'], str) or not re.fullmatch(r'[0-9]+:[0-9]+', mount['device'])):
+        raise UpdateError('boot filesystem identity is unsupported')
+    metadata = value['metadata']
+    if (not isinstance(metadata, dict) or set(metadata) != {'roots', 'entries', 'excluded'} or
+            metadata['roots'] != ['/boot'] or metadata['excluded'] != []):
+        raise UpdateError('boot file coverage is incomplete')
+    storage.checked_unowned_tree({**metadata, 'kind': 'klokast.vm-unowned-tree.v1', 'complete': True,
+                                  'stable': True, 'data_accounted': False, 'metadata_sha256': digest(metadata)},
+                                 [{'path': '/boot', 'reason': 'unclassified-directory'}])
+    names = {'/boot/' + name for name in ('vmlinuz-virt', 'initramfs-virt', 'config-virt', 'System.map-virt')}
+    present = {row['path'] for row in metadata['entries']}
+    hashes = value['artifacts']
+    if (not isinstance(hashes, dict) or set(hashes) != names & present or
+            not {'/boot/vmlinuz-virt', '/boot/initramfs-virt'} <= set(hashes) or
+            any(not stat.S_ISREG(r['mode']) or r['links'] != 1 or r['mode'] & 0o022
+                for r in metadata['entries'] if r['path'] in hashes) or
+            any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in hashes.values())):
+        raise UpdateError('boot artifact hashes are missing or outside the fixed scope')
+    return value
+
+
 def path_classification(entry):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
@@ -279,6 +314,17 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         item('process', str(process['pid']), 'reconstructable-os-state' if profile_role != 'unknown' else 'unknown',
              profile_role if profile_role != 'unknown' else 'bind live process to fixed service or inspection ancestry', resolved, process)
     mounts = fact.get('storage', {}).get('mounts')
+    try:
+        boot = checked_boot_files(fact.get('host_inventory', {}).get('boot_files'), mounts)
+        for entry in boot['metadata']['entries']:
+            known = entry['path'] in boot['artifacts']
+            directory = stat.S_ISDIR(entry['mode'])
+            item('boot-file', entry['path'], 'reconstructable-os-state' if known or directory else 'unknown',
+                 'compare boot bytes with the recorded source artifact' if known else
+                 ('directory; every descendant needs its own rule' if directory else 'unclassified boot filesystem file'),
+                 directory, {'metadata': entry, 'sha256': boot['artifacts'].get(entry['path'])})
+    except UpdateError:
+        add('qualification.boot-unknown', 'The separate boot filesystem requires complete stable file and artifact coverage.')
     expected = {'/': 'ext4', '/boot': 'ext4', '/dev': 'devtmpfs', '/dev/pts': 'devpts', '/dev/shm': 'tmpfs',
                 '/proc': 'proc', '/proc/xen': 'xenfs', '/run': 'tmpfs', '/sys': 'sysfs', '/sys/fs/cgroup': 'cgroup2'}
     if not isinstance(mounts, list) or not mounts:

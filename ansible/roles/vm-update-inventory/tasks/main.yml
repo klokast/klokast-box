@@ -12,7 +12,7 @@
     ansible_become_method: >-
       {{ 'sudo' if (vm_update_os_release.stdout | default('') is regex('(?m)^ID="?(debian|ubuntu)"?\r?$')) else 'doas' }}
 
-- name: Collect VM updates, package audit, host metadata, and fixed empty-store coverage without executing maintenance scripts
+- name: Collect VM updates, package audit, host and boot metadata, and fixed empty-store coverage without executing maintenance scripts
   ansible.builtin.script:
     cmd: "collect-vm-update-facts{{ ' --host-storage' if vm_update_shared_storage | default(false) | bool else '' }}"
     executable: python3
