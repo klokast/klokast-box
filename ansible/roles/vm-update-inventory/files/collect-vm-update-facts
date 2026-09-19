@@ -1168,6 +1168,22 @@ def tailscale_resolver(status, path="/etc/resolv.conf"):
             'observed_sha256': hashlib.sha256(content).hexdigest()}
 
 
+def mdev_tun_override(path="/etc/mdev.conf"):
+    """Record the one Podman TUN line against the original package bytes."""
+    content = stable_regular_bytes(path, 8192, 0, 0, 0o644)
+    marker = b'net/tun root:netdev 0666\n'
+    next_line = b'net/tun[0-9]*\troot:netdev 0666\n'
+    if content is None or content.count(marker) != 1:
+        return None
+    before, after = content.split(marker, 1)
+    if not after.startswith(next_line):
+        return None
+    baseline = before + after
+    return {'kind': 'klokast.vm-mdev-tun-override.v1',
+            'observed_sha256': hashlib.sha256(content).hexdigest(),
+            'baseline_sha256': hashlib.sha256(baseline).hexdigest()}
+
+
 def read_json_command(argv):
     result = capture(argv)
     try:
@@ -1287,6 +1303,7 @@ def main():
     status = read_json_command(["tailscale", "status", "--json"]) or {}
     configs = {}
     for name in ("/etc/apk/repositories", "/etc/apk/world", "/etc/fstab", "/etc/nftables.nft",
+                 "/etc/mdev.conf",
                  "/etc/subuid", "/etc/subgid", "/etc/containers/storage.conf", "/etc/containers/registries.conf"):
         value = text(name, 1024 * 1024)
         configs[name] = hashlib.sha256(value.encode()).hexdigest() if value else None
@@ -1304,6 +1321,7 @@ def main():
         "configuration": {"status": "unknown", "sha256": configs},
         "apk_world": apk_world(),
         "tailscale_resolver": tailscale_resolver(status),
+        "mdev_tun_override": mdev_tun_override(),
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
         "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},

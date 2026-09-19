@@ -186,6 +186,26 @@ class Qualification(unittest.TestCase):
             fact, {'/etc/resolv.conf': {**entry, 'gid': 0}}))
         self.assertFalse(noapp.path_classification(entry)[2])
 
+    def test_mdev_override_requires_signed_package_baseline_and_native_audit(self):
+        fact = {'mdev_tun_override': {
+                    'kind': 'klokast.vm-mdev-tun-override.v1',
+                    'observed_sha256': 'a' * 64,
+                    'baseline_sha256': noapp.MDEV_CONF_BASELINE_SHA256},
+                'configuration': {'sha256': {'/etc/mdev.conf': 'a' * 64}},
+                'packages': {'mdev-conf': {'origin': 'mdev-conf', 'version': '4.9-r0',
+                                           'architecture': 'x86_64'}}}
+        changed = {'/etc/mdev.conf'}
+        self.assertTrue(noapp.checked_mdev_tun_override(fact, True, changed))
+        self.assertFalse(noapp.checked_mdev_tun_override(fact, False, changed))
+        self.assertFalse(noapp.checked_mdev_tun_override(fact, True, set()))
+        for alter in (
+                lambda f: f['mdev_tun_override'].update(baseline_sha256='0' * 64),
+                lambda f: f['configuration']['sha256'].update({'/etc/mdev.conf': '0' * 64}),
+                lambda f: f['packages']['mdev-conf'].update(version='other')):
+            copy_fact = copy.deepcopy(fact)
+            alter(copy_fact)
+            self.assertFalse(noapp.checked_mdev_tun_override(copy_fact, True, changed))
+
     def test_incomplete_stale_future_and_stopped_guest_never_qualify(self):
         for mode in ('incomplete', 'stale', 'future', 'stopped', 'duplicate'):
             observed = copy.deepcopy(self.observed)

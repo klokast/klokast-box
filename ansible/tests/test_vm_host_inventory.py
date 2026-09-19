@@ -1,5 +1,6 @@
 """Host metadata coverage, bounded traversal, and secret exclusion."""
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -110,6 +111,19 @@ class HostInventory(unittest.TestCase):
         self.assertNotEqual(changed['expected_sha256'], changed['observed_sha256'])
         self.assertIsNone(self.m.tailscale_resolver({'BackendState': 'Stopped',
                                                      'MagicDNSSuffix': status['MagicDNSSuffix']}))
+
+    def test_mdev_override_records_only_the_single_declared_tun_line(self):
+        baseline = b'first\nnet/tun[0-9]*\troot:netdev 0666\nlast\n'
+        observed = baseline.replace(b'net/tun[0-9]*',
+                                    b'net/tun root:netdev 0666\nnet/tun[0-9]*')
+        with patch.object(self.m, 'stable_regular_bytes', return_value=observed):
+            receipt = self.m.mdev_tun_override()
+        self.assertEqual(receipt['baseline_sha256'], hashlib.sha256(baseline).hexdigest())
+        for changed in (observed + b'net/tun root:netdev 0666\n',
+                        b'net/tun root:netdev 0666\n' + baseline,
+                        baseline):
+            with patch.object(self.m, 'stable_regular_bytes', return_value=changed):
+                self.assertIsNone(self.m.mdev_tun_override())
 
     def test_symlink_does_not_expand_metadata_scope(self):
         (self.root / 'srv/data/alias').symlink_to(self.root / 'proc')

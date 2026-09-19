@@ -104,6 +104,9 @@ alpine-base ca-certificates doas iproute2 iptables jq nftables podman python3
 shadow-subids tailscale tailscale-openrc wget
 '''.split())
 LEGACY_APK_WORLD_DMZ = frozenset({'nginx', 'cloudflared=2026.3.0-r1'})
+# Native `apk verify` accepted the official v3.23/main package recorded in
+# the update runbook. Removing the checked Podman-host TUN line restores it.
+MDEV_CONF_BASELINE_SHA256 = '531f583f2d9e8555f842d735a771835c226ba93382ac8b69ad106d1dcb62ebf7'
 TAILSCALE_LOGS = frozenset('/home/neo/.local/share/tailscale/tailscaled.log' + suffix
                            for suffix in ('.conf', '1.txt', '2.txt'))
 COLLECTOR_SOURCE = Path(__file__).resolve().parents[1] / 'roles/vm-update-inventory/files/collect-vm-update-facts'
@@ -184,6 +187,27 @@ def checked_tailscale_resolver(fact, entries):
             entry.get('uid') == 0 and entry.get('gid') == 102 and
             isinstance(tailscale, dict) and tailscale.get('backend_state') == 'Running' and
             isinstance(packages, dict) and 'tailscale' in packages)
+
+
+def checked_mdev_tun_override(fact, audited_package_paths, changed_package_paths):
+    """Accept only the old Podman line on the signed mdev-conf baseline."""
+    value = fact.get('mdev_tun_override')
+    configuration = fact.get('configuration')
+    packages = fact.get('packages')
+    package = packages.get('mdev-conf') if isinstance(packages, dict) else None
+    return (audited_package_paths and '/etc/mdev.conf' in changed_package_paths and
+            isinstance(value, dict) and
+            set(value) == {'kind', 'observed_sha256', 'baseline_sha256'} and
+            value['kind'] == 'klokast.vm-mdev-tun-override.v1' and
+            value['baseline_sha256'] == MDEV_CONF_BASELINE_SHA256 and
+            isinstance(value['observed_sha256'], str) and
+            re.fullmatch('[0-9a-f]{64}', value['observed_sha256']) is not None and
+            isinstance(configuration, dict) and
+            isinstance(configuration.get('sha256'), dict) and
+            configuration['sha256'].get('/etc/mdev.conf') == value['observed_sha256'] and
+            isinstance(package, dict) and package.get('origin') == 'mdev-conf' and
+            package.get('version') == '4.9-r0' and
+            package.get('architecture') == 'x86_64')
 
 
 def checked_empty_store(value, graph='/home/neo/.local/share/containers/storage'):
@@ -765,6 +789,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         verified_runtime_directories = {}
     verified_apk_world = checked_legacy_apk_world(fact, entries, role)
     verified_tailscale_resolver = checked_tailscale_resolver(fact, entries)
+    verified_mdev_tun_override = checked_mdev_tun_override(
+        fact, audited_package_paths, changed_package_paths)
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -806,6 +832,9 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
         rule = 'compare changed package file with approved machine recipe'
         resolved = False
+        if name == '/etc/mdev.conf' and verified_mdev_tun_override:
+            rule = 'exact Podman TUN line on the verified Alpine mdev-conf package file; rebuild from candidate package and recipe'
+            resolved = True
         if difference['code'] == 'm' and name in {'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'}:
             category, rule = 'reconstructable-os-state', 'verify runtime directory ownership and mode'
             mount_verified = any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))

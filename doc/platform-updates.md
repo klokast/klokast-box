@@ -141,6 +141,14 @@ The three old resolver files have the exact Tailscale-generated form. The
 collector compares each file with the live Tailnet DNS suffix and records only
 hashes. The candidate uses approved DNS input and Tailscale policy; it does
 not copy the old resolver file.
+The Podman host role inserted one `net/tun root:netdev 0666` line into
+`/etc/mdev.conf`. Removing only that line restores the exact file from the
+Alpine v3.23 `mdev-conf=4.9-r0` package. Native `apk verify` accepted the
+signed package with SHA-256
+`cb9b68c5804508ab1a7fb53685c514ebcab132ddb58a1f3f02c2098de2b208cb`.
+The fixed qualification rule checks the restored file checksum and the live
+package audit. The candidate rebuilds the device rule from its package and
+checked Podman recipe.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does
