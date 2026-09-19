@@ -372,6 +372,11 @@ the same cleanup after an upload failure. It preserves unexpected files for
 review. Existing cache directories still need exact evidence and cleanup;
 the code change does not classify or delete them.
 
+The Ansible app-resource apply and verify roles also left their desired ledger
+at the fixed path `/tmp/klokast-platform-resources-desired.json`. Both now use
+an owner-only file under volatile `/run` and remove that file after success or
+task failure. They leave the old `/tmp` files untouched until exact review.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on

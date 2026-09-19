@@ -17,37 +17,58 @@
     mode: "0755"
   become: true
 
-- name: Stage desired platform-resource ledger for verification
-  ansible.builtin.copy:
-    dest: /tmp/klokast-platform-resources-desired.json
-    content: "{{ platform_resources_desired_json }}\n"
-    owner: root
-    group: root
-    mode: "0600"
-  become: true
-
-- name: Verify keyed app-resource snippets and live nftables state
-  ansible.builtin.command:
-    argv: >-
-      {{
-        [
-          '/usr/bin/python3',
-          '/usr/local/libexec/klokast-app-resources-reconcile',
-          'verify',
-          '--desired',
-          '/tmp/klokast-platform-resources-desired.json',
-          '--node-name',
-          node_name,
-          '--node-role',
-          node_domain_role
-        ]
-        + (
-          platform_resources_apply_scope_apps
-          | default([])
-          | map('regex_replace', '^', '--scope-app=')
-          | list
-        )
-      }}
-  become: true
-  changed_when: false
+- name: Verify app-resource rules with a temporary desired ledger
   when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']
+  block:
+    - name: Allocate a volatile desired ledger path for verification
+      ansible.builtin.tempfile:
+        state: file
+        path: /run
+        prefix: klokast-platform-resources-
+        suffix: .json
+      become: true
+      register: app_resources_verify_desired_file
+      changed_when: false
+
+    - name: Stage desired platform-resource ledger for verification
+      ansible.builtin.copy:
+        dest: "{{ app_resources_verify_desired_file.path }}"
+        content: "{{ platform_resources_desired_json }}\n"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+      changed_when: false
+
+    - name: Verify keyed app-resource snippets and live nftables state
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              '/usr/bin/python3',
+              '/usr/local/libexec/klokast-app-resources-reconcile',
+              'verify',
+              '--desired',
+              app_resources_verify_desired_file.path,
+              '--node-name',
+              node_name,
+              '--node-role',
+              node_domain_role
+            ]
+            + (
+              platform_resources_apply_scope_apps
+              | default([])
+              | map('regex_replace', '^', '--scope-app=')
+              | list
+            )
+          }}
+      become: true
+      changed_when: false
+  always:
+    - name: Remove the volatile app-resource verification ledger
+      ansible.builtin.file:
+        path: "{{ app_resources_verify_desired_file.path }}"
+        state: absent
+      become: true
+      changed_when: false
+      when: app_resources_verify_desired_file.path is defined
