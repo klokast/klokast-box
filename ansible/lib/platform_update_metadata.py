@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import datetime as dt
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -13,6 +15,49 @@ import urllib.request
 from platform_updates import UpdateError, branch_number, parse_apk_database, timestamp, unique_object
 
 MAX_DOWNLOAD = 32 * 1024 * 1024
+
+
+def adjacent_stable_branch(current, releases, now):
+    """Select only the next supported stable branch as a build candidate.
+
+    This is a hint from release metadata. collect_branch() and freeze() must
+    still verify the target's signed APK indexes and complete package set.
+    An expired source branch is permitted because updating it is the goal.
+    """
+    major, minor = branch_number(current)
+    if (not isinstance(releases, dict) or not isinstance(releases.get('release_branches'), list) or
+            not isinstance(now, dt.datetime) or now.tzinfo is None or
+            now.utcoffset() != dt.timedelta(0)):
+        raise UpdateError('adjacent branch selection requires current release metadata and UTC time')
+    selected = 'v' + str(major) + '.' + str(minor + 1)
+    matches = [item for item in releases['release_branches']
+               if isinstance(item, dict) and item.get('rel_branch') == selected]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise UpdateError('adjacent stable branch is duplicated')
+    value = matches[0]
+    try:
+        branch_date = dt.date.fromisoformat(value['branch_date'])
+        main_eol = dt.date.fromisoformat(value['eol_date'])
+        repositories = value['repos']
+        community = next(item for item in repositories if item['name'] == 'community')
+        community_eol = dt.date.fromisoformat(community['eol_date'])
+        names = [item['name'] for item in repositories]
+        versions = value['releases']
+        valid_release = any(isinstance(item, dict) and
+                            re.fullmatch(re.escape(selected[1:]) + r'\.[0-9]+', item.get('version', '')) and
+                            dt.date.fromisoformat(item['date']) <= now.date()
+                            for item in versions)
+    except (KeyError, TypeError, ValueError, StopIteration) as error:
+        raise UpdateError('adjacent stable branch has incomplete release or support metadata') from error
+    if (not isinstance(value.get('arches'), list) or 'x86_64' not in value['arches'] or
+            value.get('git_branch') != selected[1:] + '-stable' or
+            names != ['main', 'community'] or not isinstance(versions, list)):
+        raise UpdateError('adjacent stable branch has unsupported architecture or repositories')
+    if not valid_release or not branch_date <= now.date() < min(main_eol, community_eol):
+        return None
+    return selected
 
 
 def invoke(argv, timeout=120):

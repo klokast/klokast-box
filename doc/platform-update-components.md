@@ -979,6 +979,12 @@ application health, matching boot artifacts, approved configuration, adopted
 storage, or permission to replace a VM. Guest template markers are evidence
 only; they cannot establish accepted release authority.
 
+Automatic branch selection considers only the adjacent stable Alpine branch
+from current release metadata. It requires a published x86_64 release and
+unexpired `main` and `community` support. An expired source branch does not
+block selection. The selected branch is an input hint: the template freezer
+must still verify signed indexes and resolve the complete package set.
+
 ## Controlled DMZ app retirement
 
 `74-platform-update-dmz-cleanup.yml` is a separately invoked setup playbook.

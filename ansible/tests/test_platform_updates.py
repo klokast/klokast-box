@@ -27,6 +27,32 @@ def load_cli():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_adjacent_branch_selection_ignores_expired_source_and_skips_no_branch(self):
+        releases = {'release_branches': [
+            {'rel_branch': 'v3.23', 'git_branch': '3.23-stable',
+             'branch_date': '2025-12-03', 'eol_date': '2027-11-01',
+             'arches': ['x86_64'], 'repos': [{'name': 'main'},
+                                              {'name': 'community', 'eol_date': '2026-05-01'}],
+             'releases': [{'version': '3.23.6', 'date': '2026-09-17'}]},
+            {'rel_branch': 'v3.24', 'git_branch': '3.24-stable',
+             'branch_date': '2026-06-09', 'eol_date': '2028-06-01',
+             'arches': ['x86_64'], 'repos': [{'name': 'main'},
+                                              {'name': 'community', 'eol_date': '2026-11-01'}],
+             'releases': [{'version': '3.24.2', 'date': '2026-09-17'}]}]}
+        self.assertEqual(m.adjacent_stable_branch('v3.23', releases, NOW), 'v3.24')
+        self.assertIsNone(m.adjacent_stable_branch('v3.21', releases, NOW))
+        changed = copy.deepcopy(releases)
+        changed['release_branches'][1]['repos'][1]['eol_date'] = '2026-05-01'
+        self.assertIsNone(m.adjacent_stable_branch('v3.23', changed, NOW))
+        changed = copy.deepcopy(releases)
+        changed['release_branches'][1]['arches'] = ['aarch64']
+        with self.assertRaises(u.UpdateError):
+            m.adjacent_stable_branch('v3.23', changed, NOW)
+        changed = copy.deepcopy(releases)
+        changed['release_branches'].append(changed['release_branches'][1])
+        with self.assertRaises(u.UpdateError):
+            m.adjacent_stable_branch('v3.23', changed, NOW)
+
     def metadata(self):
         return {"v3.23": {"observed_at": u.timestamp(NOW), "signature_verified": True,
             "releases": {"release_branches": [{"rel_branch": "v3.23", "eol_date": "2027-01-01", "repos": [{"name":"main"}, {"name":"community", "eol_date":"2027-01-01"}]}]},
