@@ -274,8 +274,10 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
             item('timer', maintenance['path'], 'unknown', 'compare exact timer contents with OS baseline', False, maintenance)
     for process in inventory.get('processes', {}).get('processes', []):
         kernel = process['kernel_thread'] and process['uids'] == [0] * 4
-        item('process', str(process['pid']), 'reconstructable-os-state' if kernel else 'unknown',
-             'kernel thread' if kernel else 'bind live process to fixed service or inspection ancestry', kernel, process)
+        profile_role = process.get('no_application_role', 'kernel-thread' if kernel else 'unknown')
+        resolved = profile_role in ('kernel-thread', 'os-init', 'console-getty', 'inspection-process')
+        item('process', str(process['pid']), 'reconstructable-os-state' if profile_role != 'unknown' else 'unknown',
+             profile_role if profile_role != 'unknown' else 'bind live process to fixed service or inspection ancestry', resolved, process)
     mounts = fact.get('storage', {}).get('mounts')
     expected = {'/': 'ext4', '/boot': 'ext4', '/dev': 'devtmpfs', '/dev/pts': 'devpts', '/dev/shm': 'tmpfs',
                 '/proc': 'proc', '/proc/xen': 'xenfs', '/run': 'tmpfs', '/sys': 'sysfs', '/sys/fs/cgroup': 'cgroup2'}

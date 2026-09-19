@@ -342,6 +342,31 @@ def native_services(root, maintenance, deadline):
             'markers_sha256': topology.hexdigest()}
 
 
+def no_application_process_role(row, argv):
+    """Identify fixed OS commands without emitting command lines or secrets."""
+    if row['executable_deleted']:
+        return 'unknown'
+    if row['kernel_thread'] and row['uids'] == [0] * 4:
+        return 'kernel-thread'
+    if row['executable'] == '/bin/busybox' and row['uids'] == [0] * 4:
+        if row['pid'] == 1 and argv in ([b'init'], [b'/sbin/init']):
+            return 'os-init'
+        if (row['parent_pid'] == 1 and len(argv) == 3 and argv[0] == b'/sbin/getty' and
+                argv[1] == b'38400' and re.fullmatch(b'tty[1-6]', argv[2])):
+            return 'console-getty'
+    if (row['executable'] == '/usr/bin/catatonit' and row['parent_pid'] == 1 and
+            len(set(row['uids'])) == 1 and row['uids'][0] >= 1000 and
+            argv in ([b'/usr/bin/catatonit', b'-P'], [b'catatonit', b'-P'])):
+        return 'podman-pause'
+    # The observer verifies parent/child relationships separately. These roles
+    # still need configuration and store qualification in the outer report.
+    if row['executable'] == '/sbin/supervise-daemon' and row['service'] == 'tailscale' and row['uids'] == [0] * 4:
+        return 'tailscale-supervisor'
+    if row['executable'] == '/usr/sbin/tailscaled' and row['uids'] == [0] * 4:
+        return 'tailscale-daemon'
+    return 'unknown'
+
+
 def process_inventory(root, services, deadline):
     """Account for live processes, including daemons with no OpenRC marker.
 
@@ -395,21 +420,39 @@ def process_inventory(root, services, deadline):
             # an absent executable does not prove that it is a kernel thread.
             pass
         service = None
+        argv = bounded(directory / 'cmdline', 65536).split(b'\0')
+        if argv and argv[-1] == b'':
+            argv.pop()
         if executable and Path(executable).name == 'supervise-daemon':
-            argv = bounded(directory / 'cmdline', 65536).split(b'\0')
             if len(argv) > 1:
                 candidate = argv[1].decode(errors='replace')
                 if candidate in known: service = candidate
         after = bounded(directory / 'stat', 8192).rpartition(b') ')[2].split()
         if len(after) < 20 or after[1] != fields[1] or after[19] != fields[19]:
             raise HostInventoryError('process identity changed during collection')
-        rows.append({'pid': int(directory.name), 'parent_pid': int(fields[1]), 'start_ticks': int(fields[19]),
+        row = {'pid': int(directory.name), 'parent_pid': int(fields[1]), 'start_ticks': int(fields[19]),
                      'uids': status['Uid'], 'gids': status['Gid'], 'executable': executable,
                      'executable_deleted': deleted, 'kernel_thread': bool(int(fields[6]) & 0x00200000),
-                     'service': service})
+                     'service': service}
+        row['no_application_role'] = no_application_process_role(row, argv)
+        rows.append(row)
     if [int(p.name) for p in sorted((p for p in proc.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))] != [v['pid'] for v in rows]:
         raise HostInventoryError('process inventory changed during collection')
-    return {'kind': 'klokast.vm-process-inventory.v1', 'health_verified': False,
+    # Only the actual collector and its live SSH session ancestors can be
+    # inspection processes. A separate shell or Python process stays unknown.
+    by_pid = {row['pid']: row for row in rows}
+    current = os.getpid() if root == Path('/') else None
+    seen = set()
+    while current in by_pid and current not in seen:
+        seen.add(current)
+        row = by_pid[current]
+        if (row['no_application_role'] != 'unknown' or row['executable_deleted'] or
+                row['executable'] not in ('/bin/busybox', '/usr/sbin/tailscaled', '/usr/bin/python3.12', '/usr/bin/python3.13', '/usr/bin/python3.14')):
+            break
+        row['no_application_role'] = 'inspection-process'
+        current = row['parent_pid']
+    return {'kind': 'klokast.vm-process-inventory.v2', 'health_verified': False,
+            'collector_pid': os.getpid() if root == Path('/') else None,
             'boot_id': boot_id, 'processes': rows}
 
 
@@ -627,9 +670,17 @@ def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/sh
                 elif relative in markers or relative == 'storage.lock':
                     content = rootful_database_bytes(root, relative, graph=graph, owner=owner['uid'])
                     contents[relative] = content
-                    # containers/storage writes a 64-byte lowercase hex lock ID.
-                    accepted = (bool(re.fullmatch(b'[0-9a-f]{64}', content)) if relative == 'storage.lock'
-                                else content in markers[relative])
+                    if relative == 'storage.lock':
+                        # containers/storage v1.59.1 lastwrite.go uses a
+                        # 64-byte binary time/counter/PID/random identifier.
+                        # Older releases used a 64-byte hexadecimal ID.
+                        accepted = bool(re.fullmatch(b'[0-9a-f]{64}', content)) or (
+                            len(content) == 64 and
+                            0 <= row['mtime_ns'] - int.from_bytes(content[:8], 'little') <= 1_000_000_000 and
+                            int.from_bytes(content[8:16], 'little') > 0 and
+                            0 < int.from_bytes(content[16:20], 'little') < 2**22)
+                    else:
+                        accepted = content in markers[relative]
             if not accepted:
                 result['unresolved_paths'].append(row['path'])
         if len(databases) != 1:

@@ -228,17 +228,22 @@ def checked_native_services(value, maintenance):
 
 
 def checked_processes(value, services):
-    if (not isinstance(value, dict) or set(value) != {'kind', 'health_verified', 'boot_id', 'processes'} or
-            value['kind'] != 'klokast.vm-process-inventory.v1' or value['health_verified'] is not False or
+    v2 = isinstance(value, dict) and value.get('kind') == 'klokast.vm-process-inventory.v2'
+    if (not isinstance(value, dict) or set(value) != {'kind', 'health_verified', 'boot_id', 'processes'} | ({'collector_pid'} if v2 else set()) or
+            value['kind'] not in ('klokast.vm-process-inventory.v1', 'klokast.vm-process-inventory.v2') or value['health_verified'] is not False or
             not isinstance(value['boot_id'], str) or
             not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value['boot_id']) or
             not isinstance(value['processes'], list) or not 1 <= len(value['processes']) <= 4096):
         raise UpdateError('process inventory is unavailable')
     known = {v['name'] for v in services['services']}
     pids = []
+    extra = {'no_application_role'} if value['kind'] == 'klokast.vm-process-inventory.v2' else set()
     for item in value['processes']:
         if (not isinstance(item, dict) or set(item) != {'pid', 'parent_pid', 'start_ticks', 'uids', 'gids',
-                'executable', 'executable_deleted', 'kernel_thread', 'service'} or
+                'executable', 'executable_deleted', 'kernel_thread', 'service'} | extra or
+                ('no_application_role' in extra and item['no_application_role'] not in
+                 ('unknown', 'kernel-thread', 'os-init', 'console-getty', 'podman-pause',
+                  'tailscale-supervisor', 'tailscale-daemon', 'inspection-process')) or
                 any(type(item[k]) is not int or not 0 <= item[k] < 2**63 for k in ('pid', 'parent_pid', 'start_ticks')) or
                 item['pid'] == 0 or item['pid'] == item['parent_pid'] or
                 any(not isinstance(item[k], list) or len(item[k]) != 4 or
@@ -253,6 +258,32 @@ def checked_processes(value, services):
     if (pids != sorted(set(pids)) or 1 not in pids or
             any(v['parent_pid'] not in {0, *pids} for v in value['processes'])):
         raise UpdateError('process coverage is incomplete or duplicated')
+    if v2:
+        collector = value['collector_pid']
+        if collector is not None and (type(collector) is not int or collector not in pids):
+            raise UpdateError('inspection process has no observed identity')
+        by_pid = {row['pid']: row for row in value['processes']}
+        ancestry = set()
+        while collector in by_pid and collector not in ancestry:
+            ancestry.add(collector)
+            collector = by_pid[collector]['parent_pid']
+        for row in value['processes']:
+            role = row['no_application_role']
+            if role == 'unknown':
+                continue
+            root = row['uids'] == [0] * 4
+            executable = row['executable']
+            valid = {
+                'kernel-thread': row['kernel_thread'] and root,
+                'os-init': row['pid'] == 1 and root and executable == '/bin/busybox',
+                'console-getty': row['parent_pid'] == 1 and root and executable == '/bin/busybox',
+                'podman-pause': row['parent_pid'] == 1 and len(set(row['uids'])) == 1 and row['uids'][0] >= 1000 and executable == '/usr/bin/catatonit',
+                'tailscale-supervisor': root and executable == '/sbin/supervise-daemon' and row['service'] == 'tailscale',
+                'tailscale-daemon': root and executable == '/usr/sbin/tailscaled',
+                'inspection-process': row['pid'] in ancestry and executable in ('/bin/busybox', '/usr/sbin/tailscaled', '/usr/bin/python3.12', '/usr/bin/python3.13', '/usr/bin/python3.14'),
+            }[role]
+            if not valid or row['executable_deleted']:
+                raise UpdateError('fixed process role conflicts with process identity or collector ancestry')
     return value
 
 

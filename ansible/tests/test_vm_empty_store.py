@@ -75,6 +75,19 @@ class EmptyStore(unittest.TestCase):
         self.path.unlink(); self.path.symlink_to('/not-readable')
         self.assertFalse(self.collect()['complete'])
 
+    def test_binary_lock_identifier_requires_native_timestamp_counter_and_pid(self):
+        marker = self.fixture.graph / 'storage.lock'
+        timestamp = 1789778963100000000
+        content = timestamp.to_bytes(8, 'little') + (1).to_bytes(8, 'little') + (123).to_bytes(4, 'little') + bytes(range(44))
+        marker.write_bytes(content); os.utime(marker, ns=(timestamp, timestamp))
+        self.assertTrue(self.collect()['empty'])
+        for changed in (content + b'X', b'PRIVATE'.ljust(64, b'X'),
+                        content[:8] + bytes(8) + content[16:], content[:16] + bytes(4) + content[20:]):
+            marker.write_bytes(changed); os.utime(marker, ns=(timestamp, timestamp))
+            self.assertFalse(self.collect()['empty'])
+        marker.write_bytes(content); os.utime(marker, ns=(timestamp, timestamp + 2_000_000_000))
+        self.assertFalse(self.collect()['empty'])
+
     def test_receiver_refuses_tampering_omitted_coverage_and_false_empty_claim(self):
         original = self.collect()
         for field, replacement in [('adoption_authorized', True), ('stable', False), ('graph_root', '/outside'),

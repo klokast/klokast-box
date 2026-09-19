@@ -167,6 +167,39 @@ class HostInventory(unittest.TestCase):
             value = self.collect()
         self.assertTrue(value['complete']); self.assertFalse(value['stable'])
 
+    def test_fixed_process_roles_do_not_approve_arbitrary_shell_commands(self):
+        (self.root / 'proc/1/cmdline').write_bytes(b'/sbin/init\0')
+        getty = self.process(21, '/bin/busybox')
+        getty.joinpath('cmdline').write_bytes(b'/sbin/getty\00038400\0tty1\0')
+        shell = self.process(22, '/bin/busybox')
+        shell.joinpath('cmdline').write_bytes(b'sh\0-c\0PRIVATE SECRET\0')
+        value = self.collect()
+        rows = value['processes']['processes']
+        self.assertEqual([row['no_application_role'] for row in rows],
+                         ['os-init', 'console-getty', 'unknown'])
+        self.assertNotIn('PRIVATE', json.dumps(value)); self.assertNotIn('SECRET', json.dumps(value))
+        self.assertIsNotNone(storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')['inventory'])
+        getty.joinpath('cmdline').write_bytes(b'/sbin/getty\00038400\0tty1\0EXTRA\0')
+        self.assertEqual(self.collect()['processes']['processes'][1]['no_application_role'], 'unknown')
+
+    def test_process_roles_cannot_claim_other_identity_or_inspection_ancestry(self):
+        self.process(21, '/usr/bin/python3.14')
+        self.process(22, '/bin/busybox')
+        original = self.collect()
+        for role in ('os-init', 'console-getty', 'kernel-thread', 'podman-pause',
+                     'tailscale-supervisor', 'tailscale-daemon', 'inspection-process'):
+            value = copy.deepcopy(original)
+            value['processes']['processes'][1]['no_application_role'] = role
+            result = storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')
+            self.assertIn('host.processes-unknown', {v['code'] for v in result['findings']})
+        value = copy.deepcopy(original)
+        value['processes']['collector_pid'] = 21
+        value['processes']['processes'][1]['no_application_role'] = 'inspection-process'
+        self.assertIsNotNone(storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')['inventory'])
+        value['processes']['processes'][2]['no_application_role'] = 'inspection-process'
+        result = storage.assess_host_data({'host_inventory': value}, 'boxa-dmz')
+        self.assertIn('host.processes-unknown', {v['code'] for v in result['findings']})
+
     def test_deleted_and_missing_user_executables_are_unknown(self):
         p = self.process(21, '/usr/sbin/tailscaled (deleted)')
         for deleted in (True, False):

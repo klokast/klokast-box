@@ -233,8 +233,13 @@ The same bounded inventory now reads live process identities twice. It records
 the boot ID, PID, parent PID, start time, numeric user and group identities,
 executable path, and kernel-thread flag. For `supervise-daemon`, it correlates
 only a known service name with the native service inventory. Arguments,
-environment values, and process titles are not emitted. Other command lines
-are not read. Deleted executables, missing user executables, and supervisors
+environment values, and process titles are not emitted. The closed v2 process
+record adds fixed no-application roles. Bounded command-line reads distinguish
+PID 1, console getties, and the Podman pause process from other commands that
+use the same executable. Only the actual collector and its observed ancestors
+can have the inspection role. Other shells and Python processes remain unknown.
+Role checks do not approve service configuration or a container store.
+Deleted executables, missing user executables, and supervisors
 without a started marker have explicit findings. Missing or changing process
 coverage remains unknown. This detects unmarked services but does not approve
 their code, configuration, health, or shutdown procedure.
@@ -277,6 +282,10 @@ row is DBConfig. Unknown paths, nonempty indexes, registrations, symlinks,
 mounts, unsafe ownership, or changed evidence block empty-store qualification.
 The result has no adoption authority and does not qualify other account stores.
 No application image is downloaded, loaded, or run by this inspection.
+The storage lock accepts the legacy hexadecimal ID or the binary timestamp,
+counter, PID, and random format defined by
+[containers/storage v1.59.1](https://github.com/containers/storage/blob/v1.59.1/pkg/lockfile/lastwrite.go).
+The binary timestamp must agree with file metadata within one second.
 
 ### Declared retention report
 
@@ -1209,4 +1218,3 @@ hexadecimal `vm_update_cleanup_operation` through an owner-only JSON extra-vars
 file. The `--limit` host set must match those boxes' DMZ VMs exactly. First run
 the Ansible syntax check, then run with `-vv`. Keep the full log private on the
 controller. No production execution is implied by installing this playbook.
-
