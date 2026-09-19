@@ -42,6 +42,15 @@
       - /usr/local/share/klokast/ansible/12.6.2
     creates: /usr/local/share/klokast/ansible/12.6.2/ansible_collections/community/general/MANIFEST.json
 
+- name: Make the public collection readable without allowing controller writes
+  ansible.builtin.file:
+    path: /usr/local/share/klokast/ansible/12.6.2
+    state: directory
+    owner: root
+    group: root
+    mode: u=rwX,go=rX
+    recurse: true
+
 - name: Check the installed manifest against the pinned archive
   ansible.builtin.stat:
     path: /usr/local/share/klokast/ansible/12.6.2/ansible_collections/community/general/MANIFEST.json

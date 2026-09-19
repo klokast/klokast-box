@@ -6,6 +6,24 @@
   become: true
   become_method: community.general.doas
   tasks:
+    - name: Require the pinned become plugin in the controller runtime
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            from ansible.plugins.loader import init_plugin_loader, become_loader
+            init_plugin_loader()
+            plugin = become_loader.get('community.general.doas')
+            expected = '/usr/local/share/klokast/ansible/12.6.2/ansible_collections/community/general/plugins/become/doas.py'
+            assert plugin._original_path == expected, 'controller loaded an unqualified doas plugin'
+            plugin.set_options(direct={'allow_pipelining': True})
+            assert plugin.pipelining, 'doas plugin refuses pipelining'
+            print('Pinned doas plugin supports privileged pipelining')
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
     - name: Require explicit passwordless pipelining intent
       ansible.builtin.assert:
         that:
