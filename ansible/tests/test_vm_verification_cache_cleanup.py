@@ -27,10 +27,10 @@ class VerificationCacheCleanup(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name) / 'cache'
         self.root.mkdir(mode=0o755)
-        self.root.chmod(0o755)
+        self.root.chmod(0o2755)
         self.stage = self.root / 'verify-one'
         self.stage.mkdir(mode=0o700)
-        self.stage.chmod(0o700)
+        self.stage.chmod(0o2700)
         self.desired = self.stage / 'desired.json'
         self.desired.write_text(json.dumps({'schema_version': 1, 'compiler': 'platform-resources',
                                             'compiler_version': 21, 'app_resource_effective_files': []}))

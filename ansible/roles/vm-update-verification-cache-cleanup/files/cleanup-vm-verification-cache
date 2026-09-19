@@ -98,7 +98,7 @@ def inspect(host):
     with ExitStack() as stack:
         opened, root = directory(ROOT)
         stack.enter_context(opened)
-        if not safe_directory(os.fstat(root), mode=(0o755,)):
+        if not safe_directory(os.fstat(root), mode=(0o2755,)):
             raise ValueError('Platform resource cache root differs from its reviewed owner and mode')
         names = os.listdir(root)
         if sorted(names) != sorted(EXPECTED[host]):
@@ -108,7 +108,7 @@ def inspect(host):
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
             stack.callback(os.close, child)
             before = os.fstat(child)
-            if not safe_directory(before, mode=(0o700, 0o755)) or sorted(os.listdir(child)) != sorted(FILES):
+            if not safe_directory(before, mode=(0o2700, 0o2755)) or sorted(os.listdir(child)) != sorted(FILES):
                 raise ValueError('verification staging directory has an unknown entry or unsafe owner')
             files = [file_record(child, filename) for filename in FILES]
             if identity(before) != identity(os.fstat(child)):
