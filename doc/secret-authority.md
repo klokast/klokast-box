@@ -351,6 +351,12 @@ revocation, or authority changes require new activation. Local pause is a
 root-owned restriction and can still be set when policy validation fails.
 One installation lock serializes activation, pause, resume, and future
 replacements. Acceptance of a standing policy is not a successful VM update.
+The root-only `ksa-apply vm-update-policy source-status` action returns the
+current signed policy, activation checksum, engine and private commits,
+Authority State checksum, and local pause state to the active controller. It
+accepts no caller-selected evidence. A resume record names one activation;
+it cannot enable a later activation. This reader gives selection evidence,
+not permission to execute a replacement.
 
 The discovery collector has inspection authority and writes non-authoritative
 evidence as `smith`. Package indexes and VM facts are untrusted input. Native

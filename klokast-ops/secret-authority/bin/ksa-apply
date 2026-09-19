@@ -5288,6 +5288,43 @@ def vm_update_policy_current():
     return receipt
 
 
+def vm_update_pause_state(activation_sha256):
+    path = VM_UPDATE_ROOT / 'pause.json'
+    if not path.exists() and not path.is_symlink():
+        return False
+    value = load_json(path, canonical_stored=True)
+    fields = {'paused', 'changed_at'} if value.get('paused') is True else {
+        'paused', 'changed_at', 'activation_sha256'}
+    if (set(value) != fields or type(value['paused']) is not bool or
+            not isinstance(value['changed_at'], str)):
+        raise ApplyError('VM update pause record is invalid')
+    parse_utc(value['changed_at'], 'VM update pause time')
+    if value['paused']:
+        return True
+    if (not isinstance(value['activation_sha256'], str) or
+            not DIGEST_RE.fullmatch(value['activation_sha256'])):
+        raise ApplyError('VM update resume record has an invalid activation')
+    # A resume for an old activation cannot enable a newly signed policy.
+    return value['activation_sha256'] != activation_sha256
+
+
+def vm_update_policy_source_status():
+    """Expose only the current signed policy projection to the active controller."""
+    require_root_active()
+    require_self_match()
+    receipt = vm_update_policy_current()
+    intent = receipt['intent']
+    result = {'kind': 'klokast.vm-update-policy-source.v1',
+              'policy': intent['policy'], 'policy_sha256': intent['policy_sha256'],
+              'activation_sha256': receipt['receipt_sha256'],
+              'engine_commit': intent['engine_commit'],
+              'private_commit': intent['private_commit'],
+              'authority_state_sha256': intent['evidence']['authority_state_sha256'],
+              'paused': vm_update_pause_state(receipt['receipt_sha256']),
+              'replacement_executor_available': False}
+    return result
+
+
 def vm_update_policy_control(action):
     require_root_active()
     require_self_match()
@@ -5300,8 +5337,7 @@ def vm_update_policy_control(action):
             if action == "resume":
                 vm_update_store(VM_UPDATE_ROOT / "pause.json", (canonical({"paused": False, "changed_at": format_utc(now_utc()),
                                 "activation_sha256": receipt["receipt_sha256"]}) + "\n").encode(), replace=True)
-        pause_path = VM_UPDATE_ROOT / "pause.json"
-        paused = load_json(pause_path).get("paused") is not False if pause_path.exists() else False
+        paused = vm_update_pause_state(receipt['receipt_sha256']) if action != 'pause' else True
         append_audit("vm-update-policy." + action, paused=paused)
         print(canonical({"kind": "klokast.vm-update-policy-status.v1", "paused": paused,
                          "replacement_executor_available": False, "action": action}))
@@ -5720,7 +5756,7 @@ def parse_args(argv):
     commands.add_parser("inventory-source-status")
     commands.add_parser("vm-retention-status")
     update_policy_parser = commands.add_parser("vm-update-policy")
-    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume"))
+    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "source-status"))
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
         update_policy_parser.add_argument("--" + name)
     retirement_evidence_parser = commands.add_parser("retirement-evidence")
@@ -5781,6 +5817,10 @@ def main(argv=None):
                 if any(not getattr(args, name) for name in names):
                     raise ApplyError("VM update policy preparation requires complete fresh Plan v8 evidence")
                 vm_update_policy_prepare(args)
+            elif args.action == "source-status":
+                if any(getattr(args, name) for name in names):
+                    raise ApplyError("VM update policy source reader accepts no caller-selected inputs")
+                print(canonical(vm_update_policy_source_status()))
             else:
                 if any(getattr(args, name) for name in names):
                     raise ApplyError("VM update policy control accepts no caller-selected inputs")

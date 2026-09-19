@@ -110,6 +110,39 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                 with self.assertRaisesRegex(m.ApplyError,'revoked'):m.vm_update_policy_control('resume')
                 self.assertTrue(json.loads((root/'executor/pause.json').read_text())['paused'])
 
+    def test_source_reader_requires_current_signed_policy_and_bound_resume(self):
+        m = self.m
+        intent = self.intent()
+        receipt = {'intent': intent, 'receipt_sha256': 'f' * 64}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'executor'
+            root.mkdir()
+            with patch.object(m, 'VM_UPDATE_ROOT', root), patch.object(m, 'require_root_active'), \
+                    patch.object(m, 'require_self_match'), \
+                    patch.object(m, 'vm_update_policy_current', return_value=receipt):
+                status = m.vm_update_policy_source_status()
+                self.assertEqual(status['kind'], 'klokast.vm-update-policy-source.v1')
+                self.assertEqual(status['policy'], self.policy)
+                self.assertEqual(status['activation_sha256'], 'f' * 64)
+                self.assertFalse(status['paused'])
+                for activation, paused in (('0' * 64, True), ('f' * 64, False)):
+                    value = {'paused': False, 'changed_at': m.format_utc(m.now_utc()),
+                             'activation_sha256': activation}
+                    (root / 'pause.json').write_text(m.canonical(value) + '\n')
+                    self.assertEqual(m.vm_update_policy_source_status()['paused'], paused)
+                value['paused'] = 'false'
+                (root / 'pause.json').write_text(m.canonical(value) + '\n')
+                with self.assertRaisesRegex(m.ApplyError, 'pause record'):
+                    m.vm_update_policy_source_status()
+
+    def test_source_reader_cli_accepts_no_caller_evidence(self):
+        m = self.m
+        with patch.object(m, 'vm_update_policy_source_status', return_value={'paused': True}) as source, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(m.main(['vm-update-policy', 'source-status']), 0)
+            self.assertEqual(m.main(['vm-update-policy', 'source-status', '--plan', 'fake']), 1)
+        source.assert_called_once()
+
     def test_current_policy_revalidates_engine_toolchain_signer_and_revocation(self):
         m=self.m; intent=self.intent()
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
