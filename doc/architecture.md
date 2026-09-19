@@ -714,6 +714,9 @@ keep its executed script with its private receipt, but does not become a
 standing upstream playbook. The private Instance repository declares desired
 state only; it is not an audit log. Copy required controller evidence through
 the controller recovery path before retiring the source controller.
+Short case notes and agent handoffs use the active-controller
+[operations journal](operations-journal.md). The journal grants no execution
+authority and is not yet copied to standby or backed up off-controller.
 
 Klokast Instance Specification v1 contains only `klokast-instance.json` and
 `klokast.lock.json` as authoritative inputs. `klokast.lock.json` binds the
