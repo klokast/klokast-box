@@ -10,6 +10,13 @@ that may run on Alpine targets. Prefer normal pipes, real temporary files from
 `mktemp`, here-docs written to explicit files, or direct command argument
 arrays.
 
+For a guest probe, use an owner-only temporary directory with a unique name.
+Install an exit trap before writing a file. Remove only that probe's files on
+success and failure, and verify the directory is empty before removal. Use a
+managed state path with an explicit cleanup rule when evidence must survive
+the process. Do not write diagnostic output to fixed `/tmp` names or remove a
+shared temporary tree.
+
 Developer Mac wrappers run on macOS Bash 3.2 unless proven otherwise; avoid
 newer Bash builtins such as `mapfile`/`readarray`.
 

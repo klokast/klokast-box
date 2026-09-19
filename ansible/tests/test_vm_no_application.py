@@ -269,6 +269,25 @@ class Qualification(unittest.TestCase):
             self.assertFalse(noapp.fixed_service_resolution(changed_service, entries,
                                                             audited, changed))
 
+    def test_fixed_accounts_do_not_accept_extra_identity_or_role_drift(self):
+        account = {'name': 'nginx', 'uid': 103, 'gid': 104,
+                   'home': '/var/lib/nginx', 'shell': '/sbin/nologin'}
+        self.assertTrue(noapp.fixed_account_classification(account, 'dmz', True,
+                                                            {'nginx': {}})[2])
+        self.assertFalse(noapp.fixed_account_classification(account, 'iot', True,
+                                                             {'nginx': {}})[2])
+        self.assertFalse(noapp.fixed_account_classification(account, 'dmz', True, {})[2])
+        self.assertFalse(noapp.fixed_account_classification({**account, 'shell': '/bin/ash'},
+                                                             'dmz', True, {'nginx': {}})[2])
+        self.assertFalse(noapp.fixed_account_classification({**account, 'name': 'app'},
+                                                             'dmz', True, {'nginx': {}})[2])
+        old = {'name': 'sshd', 'uid': 22, 'gid': 22,
+               'home': '/dev/null', 'shell': '/sbin/nologin'}
+        self.assertTrue(noapp.fixed_account_classification(old, 'iot', True, {})[2])
+        self.assertFalse(noapp.fixed_account_classification(old, 'iot', False, {})[2])
+        self.assertFalse(noapp.fixed_account_classification({**old, 'name': 'neo'},
+                                                             'iot', True, {})[2])
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):

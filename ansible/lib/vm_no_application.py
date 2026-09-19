@@ -53,6 +53,33 @@ ACTIVE_SERVICE_STATE = {
     'networking': ['default'], 'nftables': ['default'], 'root': [],
     'tailscale': ['default'],
 }
+SYSTEM_ACCOUNTS = {
+    'bin': (1, 1, '/bin', '/sbin/nologin'),
+    'cron': (16, 16, '/var/spool/cron', '/sbin/nologin'),
+    'daemon': (2, 2, '/sbin', '/sbin/nologin'),
+    'ftp': (21, 21, '/var/lib/ftp', '/sbin/nologin'),
+    'games': (35, 35, '/usr/games', '/sbin/nologin'),
+    'guest': (405, 100, '/dev/null', '/sbin/nologin'),
+    'halt': (7, 0, '/sbin', '/sbin/halt'),
+    'klogd': (100, 101, '/dev/null', '/sbin/nologin'),
+    'lp': (4, 7, '/var/spool/lpd', '/sbin/nologin'),
+    'mail': (8, 12, '/var/mail', '/sbin/nologin'),
+    'news': (9, 13, '/usr/lib/news', '/sbin/nologin'),
+    'nobody': (65534, 65534, '/', '/sbin/nologin'),
+    'root': (0, 0, '/root', '/bin/sh'),
+    'shutdown': (6, 0, '/sbin', '/sbin/shutdown'),
+    'sync': (5, 0, '/sbin', '/bin/sync'),
+    'tailscale': (101, 102, '/var/lib/tailscale', '/sbin/nologin'),
+    'uucp': (10, 14, '/var/spool/uucppublic', '/sbin/nologin'),
+}
+LEGACY_SYSTEM_ACCOUNTS = {
+    'ntp': (123, 123, '/var/empty', '/sbin/nologin'),
+    'sshd': (22, 22, '/dev/null', '/sbin/nologin'),
+}
+DMZ_PACKAGE_ACCOUNTS = {
+    'cloudflared': (102, 103, '/home/cloudflared', '/sbin/nologin'),
+    'nginx': (103, 104, '/var/lib/nginx', '/sbin/nologin'),
+}
 # These paths are application state even if no process uses them. A report
 # lists exact observed descendants; it does not turn this list into rm -rf.
 CLEANUP_ROOTS = (
@@ -277,6 +304,25 @@ def fixed_service_resolution(service, entries, audit_verified, changed_paths):
     return package_source and (not active or expected)
 
 
+def fixed_account_classification(account, role, legacy_template, packages):
+    """Recognize exact template accounts; the neo identity needs machine inputs."""
+    name = account['name']
+    if name == 'neo':
+        return 'retained-machine-identity', 'compare UID, GID, home, shell, and subordinate ranges with approved inputs', False
+    expected = SYSTEM_ACCOUNTS.get(name)
+    if name == 'tailscale' and 'tailscale' not in packages:
+        expected = None
+    if name in LEGACY_SYSTEM_ACCOUNTS and legacy_template:
+        expected = LEGACY_SYSTEM_ACCOUNTS[name]
+    if name in DMZ_PACKAGE_ACCOUNTS and role == 'dmz' and name in packages:
+        expected = DMZ_PACKAGE_ACCOUNTS[name]
+    observed = tuple(account[k] for k in ('uid', 'gid', 'home', 'shell'))
+    matched = expected == observed
+    return ('reconstructable-os-state' if matched else 'unknown',
+            'exact shared-VM system account; regenerate or omit with candidate packages' if matched else
+            'account is outside the fixed no-application template profile', matched)
+
+
 def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         busybox_suid_present=False, pinentry_present=False,
                         verified_ca_links=frozenset(), nginx_default_copy=False,
@@ -458,9 +504,10 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
             resolved = audited_package_paths and any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))
         item('package-difference', name, category, rule, resolved, difference)
     for account in inventory['accounts']:
-        # Numeric identities alone cannot establish an account's purpose.
-        category = 'retained-machine-identity' if account['name'] == 'neo' else 'approved-package-content'
-        item('account', account['name'], category, 'compare account with signed package or machine recipe', False, account)
+        category, rule, resolved = fixed_account_classification(
+            account, role, fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER,
+            installed_packages)
+        item('account', account['name'], category, rule, resolved, account)
     for service in inventory.get('native_services', {}).get('services', []):
         active = bool(service['runlevels'] or service['markers'])
         resolved = fixed_service_resolution(service, entries, audited_package_paths,
