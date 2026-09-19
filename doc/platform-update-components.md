@@ -401,18 +401,41 @@ convergence no longer downloads or runs a test image. Existing image caches
 remain unclassified until their registrations and files are checked or an
 exact cleanup operation removes them. The A/B update must not run this probe.
 
-`/tmp/storage-run-1000` is the rootless Podman runroot. The checked-in OpenRC
-helper clears its transient container and Libpod paths at boot only when no
-Podman process uses them. Ansible created the `ansible-tmp-*` and
-`.ansible_async` paths; the active scan also stages its own collector there.
-These paths need an inactive-use check before exact cleanup. The
-`tailscaled.log*` files under the neo account appear to be Tailscale client
-logs, but their producer is not yet proved. No checked-in producer was found
-for the old `/tmp` banner, HTTP response bodies, private-certificate check,
-manifest error, or nftables diagnostic files. Their names alone do not prove
-that they are disposable. Keep them unresolved until the operation history,
-file metadata, and process use identify their source and an exact cleanup is
-approved.
+`/tmp/storage-run-1000` is the rootless Podman runroot. The OpenRC helper now
+clears the complete runroot at boot only when no Podman process uses it. The
+reviewed cleanup records removed the old OCI configuration, network namespace,
+seccomp cache, and event data after they proved that the rootless store,
+containers, volumes, pods, and images were empty. Qualification accepts only
+the fixed small set of ordinary runroot files that Podman recreates during its
+empty-store check. It does not accept an OCI configuration, a namespace, or an
+unknown runroot path. The candidate omits all runroot data.
+
+Ansible created the remaining `ansible-tmp-*` module payloads and the two old
+`.ansible_async` result files. The current reports list them as unknown until
+an exact cleanup has a process-use check and a separate operation record. The
+active scan can also stage its own collector there. The
+[`v1.90.9` Tailscale log-policy source](https://github.com/tailscale/tailscale/blob/v1.90.9/logpolicy/logpolicy.go)
+creates `tailscaled.log.conf`, `tailscaled.log1.txt`, and
+`tailscaled.log2.txt`. Qualification now accepts only those exact files with
+owner-only, bounded metadata under the neo account. It does not copy them as
+Tailscale machine identity. No checked-in producer was found for the old
+`/tmp` banner, HTTP response bodies, private-certificate check, manifest error,
+or nftables diagnostic files. Their names did not prove that they were
+disposable. Exact preview records established their regular-file identity and
+unused state, then removed them. This resolves the files but does not establish
+a checked-in producer; future diagnostics must use the controlled volatile
+paths or clean up on exit.
+
+The existing Immich ingress cleanup play first previewed k002-dmz operation
+`e4b39a01a1493523ff459f15`: it found 8 entries under
+`/var/lib/klokast/immich-private-ingress` and one under
+`/var/log/klokast/immich-private-ingress`. It verified disabled app intent,
+absent ingress runtime use, and unchanged management identity. The same
+operation removed exactly those roots. A separate preview
+`67d7dfae1ee2c951bef86546` verified both paths absent and the same
+management identity. Receipts are in the controller candidate checkout at
+`.run/immich-ingress-cleanup/`. This cleanup did not select a backend VM or
+remove a Podman volume.
 
 ### Declared retention report
 

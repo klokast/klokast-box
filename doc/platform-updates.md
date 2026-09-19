@@ -122,12 +122,15 @@ available for controlled component tests. `adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
-The 2026-09-19 native reports remain blocked after the approved certificate
-cleanup. All selected guests have cached images; the two DMZ stores exceed the
-bounded empty-store inventory limit. Their native consistency checks passed,
-but full storage classification, legacy file provenance, exact cleanup, and
-machine inputs remain incomplete. Report references and item counts are kept
-in the [component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
+The 2026-09-19 reports remain blocked. Exact records removed the approved
+certificate, old image caches, old temporary diagnostics, stale verification
+staging, and old Podman runroot state. The latest reports have three unknown
+items on k001-dmz, four on k002-dmz, and five on k002-iot. They are old Ansible
+module payloads and two asynchronous-result files. They need their own exact
+process-use cleanup record. Approved machine inputs, source-disk and backup
+binding, independent management qualification, signed adoption, and the
+production transaction remain incomplete. Evidence references are in
+[component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence
 set for policy approval. Sign the exact intent on the trusted workstation, then
