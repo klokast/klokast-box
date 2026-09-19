@@ -8,9 +8,11 @@
   become_method: doas
   vars:
     legacy_temp_apply: false
+    legacy_temp_profile: diagnostics
     legacy_temp_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-legacy-temp-cleanup/{{ legacy_temp_operation }}'
-    legacy_temp_paths_by_host:
-      k001-dmz:
+    legacy_temp_path_profiles:
+      diagnostics:
+        k001-dmz:
         - /tmp/banner-local.png
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
@@ -20,20 +22,35 @@
         - /tmp/photos.body
         - /tmp/tmp.PPOkdH
         - /tmp/wget.out
-      k002-dmz:
+        k002-dmz:
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
         - /tmp/klokast-platform-resources-desired.json
-      k002-iot:
+        k002-iot:
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
         - /tmp/klokast-platform-resources-desired.json
+      ansible-residue:
+        k001-dmz:
+          - /tmp/ansible-tmp-1779970503.0375876-28224-245422693765094/AnsiballZ_ping.py
+          - /tmp/ansible-tmp-1779970914.089145-30625-230127138267759/AnsiballZ_ping.py
+        k002-dmz:
+          - /tmp/ansible-tmp-1779970503.090894-28225-168299957264798/AnsiballZ_ping.py
+          - /tmp/ansible-tmp-1779970914.149261-30626-138429900787871/AnsiballZ_ping.py
+          - /tmp/ansible-tmp-1780290331.9024324-28083-11330378981742/AnsiballZ_command.py
+        k002-iot:
+          - /tmp/ansible-tmp-1779970094.9713976-25447-109064254166639/AnsiballZ_file.py
+          - /tmp/ansible-tmp-1779970094.9713976-25447-109064254166639/AnsiballZ_stat.py
+          - /tmp/ansible-tmp-1779970503.1320307-28227-41766370646129/AnsiballZ_ping.py
+          - /tmp/ansible-tmp-1779970914.2521405-30630-249949132083764/AnsiballZ_ping.py
+          - /tmp/ansible-tmp-1780290331.9212863-28082-100244416096117/AnsiballZ_command.py
   pre_tasks:
     - name: Require one fixed target, operation, and record location
       ansible.builtin.assert:
         that:
           - ansible_play_hosts_all == [legacy_temp_box ~ '-' ~ legacy_temp_role]
-          - inventory_hostname in legacy_temp_paths_by_host
+          - legacy_temp_profile in legacy_temp_path_profiles
+          - inventory_hostname in legacy_temp_path_profiles[legacy_temp_profile]
           - inventory_hostname == legacy_temp_box ~ '-' ~ legacy_temp_role
           - node_name == legacy_temp_box
           - node_domain_role == legacy_temp_role
@@ -112,7 +129,7 @@
           - (legacy_temp_preview.content | b64decode | from_json).kind == 'klokast.vm-legacy-temp-cleanup.v1'
           - (legacy_temp_preview.content | b64decode | from_json).host == inventory_hostname
           - (legacy_temp_preview.content | b64decode | from_json).operation_id == legacy_temp_operation
-          - (legacy_temp_preview.content | b64decode | from_json).paths == legacy_temp_paths_by_host[inventory_hostname]
+          - (legacy_temp_preview.content | b64decode | from_json).paths == legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname]
           - not (legacy_temp_preview.content | b64decode | from_json).applied
       when: legacy_temp_apply | bool
 
@@ -137,7 +154,7 @@
         follow: false
         checksum_algorithm: sha256
         get_checksum: true
-      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      loop: '{{ legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname] }}'
       register: legacy_temp_before
       no_log: true
 
@@ -162,7 +179,7 @@
     - name: Check native process use of every exact file
       ansible.builtin.command:
         argv: [/bin/busybox, fuser, '{{ item }}']
-      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      loop: '{{ legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname] }}'
       register: legacy_temp_users
       changed_when: false
       failed_when: false
@@ -203,7 +220,7 @@
         follow: false
         checksum_algorithm: sha256
         get_checksum: true
-      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      loop: '{{ legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname] }}'
       register: legacy_temp_rechecked
       no_log: true
       when: legacy_temp_apply | bool
@@ -242,7 +259,7 @@
       ansible.builtin.copy:
         content: >-
           {{ {'kind': 'klokast.vm-legacy-temp-cleanup.v1', 'host': inventory_hostname,
-              'operation_id': legacy_temp_operation, 'paths': legacy_temp_paths_by_host[inventory_hostname],
+              'operation_id': legacy_temp_operation, 'paths': legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname],
               'files': legacy_temp_before, 'process_use': legacy_temp_users.results,
               'applied': false, 'adoption_authorized': false} | to_nice_json }}
         dest: '{{ legacy_temp_record_dir }}/{{ inventory_hostname }}-preview.json'
@@ -256,7 +273,7 @@
     - name: Remove only the reviewed regular-file paths without recursion
       ansible.builtin.command:
         argv: [/bin/rm, --, '{{ item }}']
-      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      loop: '{{ legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname] }}'
       changed_when: true
       when: legacy_temp_apply | bool
 
@@ -264,7 +281,7 @@
       ansible.builtin.stat:
         path: '{{ item }}'
         follow: false
-      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      loop: '{{ legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname] }}'
       register: legacy_temp_after
       when: legacy_temp_apply | bool
 
@@ -282,9 +299,9 @@
       ansible.builtin.copy:
         content: >-
           {{ {'kind': 'klokast.vm-legacy-temp-cleanup.v1', 'host': inventory_hostname,
-              'operation_id': legacy_temp_operation, 'paths': legacy_temp_paths_by_host[inventory_hostname],
+              'operation_id': legacy_temp_operation, 'paths': legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname],
               'files': legacy_temp_before, 'process_use': legacy_temp_users.results,
-              'applied': true, 'verified_absent': legacy_temp_paths_by_host[inventory_hostname],
+              'applied': true, 'verified_absent': legacy_temp_path_profiles[legacy_temp_profile][inventory_hostname],
               'adoption_authorized': false} | to_nice_json }}
         dest: '{{ legacy_temp_record_dir }}/{{ inventory_hostname }}-applied.json'
         mode: '0600'

@@ -13,7 +13,9 @@ class LegacyTempCleanup(unittest.TestCase):
     def test_fixed_no_application_targets_and_file_lists(self):
         play = yaml.safe_load(PLAY.read_text())[0]
         self.assertEqual(play['hosts'], 'k001-dmz:k002-dmz:k002-iot')
-        paths = play['vars']['legacy_temp_paths_by_host']
+        profiles = play['vars']['legacy_temp_path_profiles']
+        self.assertEqual(set(profiles), {'diagnostics', 'ansible-residue'})
+        paths = profiles['diagnostics']
         self.assertEqual(set(paths), {'k001-dmz', 'k002-dmz', 'k002-iot'})
         self.assertEqual(len(paths['k001-dmz']), 9)
         self.assertEqual(len(paths['k002-dmz']), 3)
@@ -21,6 +23,9 @@ class LegacyTempCleanup(unittest.TestCase):
         self.assertTrue(all(p.startswith('/tmp/') and p.count('/') == 2
                             for host_paths in paths.values() for p in host_paths))
         self.assertEqual(len({p for host_paths in paths.values() for p in host_paths}), 10)
+        residue = profiles['ansible-residue']
+        self.assertEqual([len(residue[name]) for name in ('k001-dmz', 'k002-dmz', 'k002-iot')], [2, 3, 5])
+        self.assertTrue(all('/AnsiballZ_' in path for paths in residue.values() for path in paths))
 
     def test_apply_requires_checked_intent_preview_and_no_process_use(self):
         play = yaml.safe_load(PLAY.read_text())[0]
