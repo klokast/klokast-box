@@ -149,6 +149,15 @@ signed package with SHA-256
 The fixed qualification rule checks the restored file checksum and the live
 package audit. The candidate rebuilds the device rule from its package and
 checked Podman recipe.
+The old `/etc/passwd` and `/etc/group` files are also checked against the
+signature-verified Alpine v3.23 `alpine-baselayout-data=3.7.2-r0` files.
+Its archive SHA-256 is
+`e6bdc54b720b4053a60aad2610fdc7b7bcc61b4ba818b650fad4f216dcf98c81`.
+The collector removes only exact `klogd`, `neo`, Tailscale, and declared DMZ
+package account rows for comparison. It restores the two known group membership
+changes before it checks the package checksum. The candidate regenerates these
+files and preserves the approved numeric `neo` identity. `/etc/shadow` needs
+separate private input validation.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does

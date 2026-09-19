@@ -125,6 +125,25 @@ class HostInventory(unittest.TestCase):
             with patch.object(self.m, 'stable_regular_bytes', return_value=changed):
                 self.assertIsNone(self.m.mdev_tun_override())
 
+    def test_legacy_account_files_normalize_only_fixed_package_additions(self):
+        base_passwd = b'root:x:0:0:root:/root:/bin/sh\n'
+        extra_passwd = '\n'.join(self.m.LEGACY_ADDED_PASSWD[key] for key in
+                                 ('klogd', 'neo', 'tailscale')).encode() + b'\n'
+        with patch.object(self.m, 'stable_regular_bytes', return_value=base_passwd + extra_passwd):
+            receipt = self.m.legacy_account_file('passwd')
+        self.assertEqual(receipt['baseline_sha256'], hashlib.sha256(base_passwd).hexdigest())
+        self.assertEqual(receipt['added_accounts'], ['klogd', 'neo', 'tailscale'])
+        base_group = b'wheel:x:10:root\nwww-data:x:82:\n'
+        changed_group = b'wheel:x:10:root,neo\nwww-data:x:82:nginx\n'
+        extra_group = '\n'.join(self.m.LEGACY_ADDED_GROUP[key] for key in
+                                ('klogd', 'neo', 'tailscale', 'cloudflared', 'nginx')).encode() + b'\n'
+        with patch.object(self.m, 'stable_regular_bytes', return_value=changed_group + extra_group):
+            receipt = self.m.legacy_account_file('group')
+        self.assertEqual(receipt['baseline_sha256'], hashlib.sha256(base_group).hexdigest())
+        with patch.object(self.m, 'stable_regular_bytes', return_value=
+                          changed_group.replace(b'root,neo', b'root,other') + extra_group):
+            self.assertIsNone(self.m.legacy_account_file('group'))
+
     def test_symlink_does_not_expand_metadata_scope(self):
         (self.root / 'srv/data/alias').symlink_to(self.root / 'proc')
         value = self.collect()

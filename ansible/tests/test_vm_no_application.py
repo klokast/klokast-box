@@ -206,6 +206,31 @@ class Qualification(unittest.TestCase):
             alter(copy_fact)
             self.assertFalse(noapp.checked_mdev_tun_override(copy_fact, True, changed))
 
+    def test_account_files_require_exact_role_additions_and_signed_baseline(self):
+        requested = ['cloudflared', 'klogd', 'neo', 'nginx', 'tailscale']
+        files = {name: {'kind': 'klokast.vm-legacy-account-file.v1',
+                        'file': name, 'observed_sha256': 'a' * 64,
+                        'baseline_sha256': noapp.LEGACY_ACCOUNT_BASELINES[name],
+                        'added_accounts': requested}
+                 for name in ('passwd', 'group')}
+        fact = {'legacy_account_files': files,
+                'configuration': {'sha256': {'/etc/passwd': 'a' * 64,
+                                             '/etc/group': 'a' * 64}},
+                'packages': {'alpine-baselayout-data': {
+                    'origin': 'alpine-baselayout', 'version': '3.7.2-r0',
+                    'architecture': 'x86_64'}}}
+        for name in files:
+            self.assertTrue(noapp.checked_legacy_account_file(
+                fact, name, 'dmz', True, {'/etc/passwd', '/etc/group'}))
+            self.assertFalse(noapp.checked_legacy_account_file(
+                fact, name, 'iot', True, {'/etc/passwd', '/etc/group'}))
+            self.assertFalse(noapp.checked_legacy_account_file(
+                fact, name, 'dmz', True, {'/etc/passwd', '/etc/group'} - {'/etc/' + name}))
+        changed = copy.deepcopy(fact)
+        changed['legacy_account_files']['group']['baseline_sha256'] = '0' * 64
+        self.assertFalse(noapp.checked_legacy_account_file(
+            changed, 'group', 'dmz', True, {'/etc/passwd', '/etc/group'}))
+
     def test_incomplete_stale_future_and_stopped_guest_never_qualify(self):
         for mode in ('incomplete', 'stale', 'future', 'stopped', 'duplicate'):
             observed = copy.deepcopy(self.observed)

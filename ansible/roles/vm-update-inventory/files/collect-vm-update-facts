@@ -1184,6 +1184,67 @@ def mdev_tun_override(path="/etc/mdev.conf"):
             'baseline_sha256': hashlib.sha256(baseline).hexdigest()}
 
 
+LEGACY_ADDED_PASSWD = {
+    'klogd': 'klogd:x:100:101:klogd:/dev/null:/sbin/nologin',
+    'neo': 'neo:x:1000:1000::/home/neo:/bin/ash',
+    'tailscale': 'tailscale:x:101:102:tailscale:/var/lib/tailscale:/sbin/nologin',
+    'cloudflared': 'cloudflared:x:102:103:cloudflared:/home/cloudflared:/sbin/nologin',
+    'nginx': 'nginx:x:103:104:nginx:/var/lib/nginx:/sbin/nologin',
+}
+LEGACY_ADDED_GROUP = {
+    'klogd': 'klogd:x:101:klogd',
+    'neo': 'neo:x:1000:',
+    'tailscale': 'tailscale:x:102:tailscale',
+    'cloudflared': 'cloudflared:x:103:cloudflared',
+    'nginx': 'nginx:x:104:nginx',
+}
+
+
+def legacy_account_file(name, path=None):
+    """Compare only known package/user additions to the signed base file."""
+    if name not in {'passwd', 'group'}:
+        return None
+    content = stable_regular_bytes(path or '/etc/' + name, 8192, 0, 0, 0o644)
+    if content is None or not content.endswith(b'\n'):
+        return None
+    try:
+        lines = content.decode('ascii').splitlines()
+    except UnicodeError:
+        return None
+    expected = LEGACY_ADDED_PASSWD if name == 'passwd' else LEGACY_ADDED_GROUP
+    base, added, names = [], [], set()
+    for line in lines:
+        key = line.partition(':')[0]
+        if key in names:
+            return None
+        names.add(key)
+        if key in expected:
+            if line != expected[key]:
+                return None
+            added.append(key)
+            continue
+        if name == 'group' and key == 'wheel':
+            if line != 'wheel:x:10:root,neo':
+                return None
+            line = 'wheel:x:10:root'
+        elif name == 'group' and key == 'www-data':
+            if line not in {'www-data:x:82:', 'www-data:x:82:nginx'}:
+                return None
+            line = 'www-data:x:82:'
+        base.append(line)
+    additions = set(added)
+    required = {'klogd', 'neo', 'tailscale'}
+    if (additions not in (required, required | {'cloudflared', 'nginx'}) or
+            (name == 'group' and ('nginx' in additions) !=
+             ('www-data:x:82:nginx' in lines))):
+        return None
+    baseline = ('\n'.join(base) + '\n').encode()
+    return {'kind': 'klokast.vm-legacy-account-file.v1', 'file': name,
+            'observed_sha256': hashlib.sha256(content).hexdigest(),
+            'baseline_sha256': hashlib.sha256(baseline).hexdigest(),
+            'added_accounts': sorted(additions)}
+
+
 def read_json_command(argv):
     result = capture(argv)
     try:
@@ -1303,7 +1364,7 @@ def main():
     status = read_json_command(["tailscale", "status", "--json"]) or {}
     configs = {}
     for name in ("/etc/apk/repositories", "/etc/apk/world", "/etc/fstab", "/etc/nftables.nft",
-                 "/etc/mdev.conf",
+                 "/etc/mdev.conf", "/etc/passwd", "/etc/group",
                  "/etc/subuid", "/etc/subgid", "/etc/containers/storage.conf", "/etc/containers/registries.conf"):
         value = text(name, 1024 * 1024)
         configs[name] = hashlib.sha256(value.encode()).hexdigest() if value else None
@@ -1322,6 +1383,7 @@ def main():
         "apk_world": apk_world(),
         "tailscale_resolver": tailscale_resolver(status),
         "mdev_tun_override": mdev_tun_override(),
+        "legacy_account_files": {name: legacy_account_file(name) for name in ('passwd', 'group')},
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
         "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},

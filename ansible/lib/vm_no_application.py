@@ -107,6 +107,12 @@ LEGACY_APK_WORLD_DMZ = frozenset({'nginx', 'cloudflared=2026.3.0-r1'})
 # Native `apk verify` accepted the official v3.23/main package recorded in
 # the update runbook. Removing the checked Podman-host TUN line restores it.
 MDEV_CONF_BASELINE_SHA256 = '531f583f2d9e8555f842d735a771835c226ba93382ac8b69ad106d1dcb62ebf7'
+# The official Alpine v3.23/main alpine-baselayout-data=3.7.2-r0 archive was
+# signature-verified before these baseline file checksums were fixed.
+LEGACY_ACCOUNT_BASELINES = {
+    'passwd': '31a94f06f17bc3b9085fccab1d0fa6ee9e79c4a1e4d91f617fa5de95863be015',
+    'group': '6fb6ab5a5526e6f4896b70c7e3c350fd475158a1f0d7b5fc0f3f9bd57f1c3be8',
+}
 TAILSCALE_LOGS = frozenset('/home/neo/.local/share/tailscale/tailscaled.log' + suffix
                            for suffix in ('.conf', '1.txt', '2.txt'))
 COLLECTOR_SOURCE = Path(__file__).resolve().parents[1] / 'roles/vm-update-inventory/files/collect-vm-update-facts'
@@ -207,6 +213,37 @@ def checked_mdev_tun_override(fact, audited_package_paths, changed_package_paths
             configuration['sha256'].get('/etc/mdev.conf') == value['observed_sha256'] and
             isinstance(package, dict) and package.get('origin') == 'mdev-conf' and
             package.get('version') == '4.9-r0' and
+            package.get('architecture') == 'x86_64')
+
+
+def checked_legacy_account_file(fact, name, role, audited_package_paths, changed_package_paths):
+    """Bind exact old account additions to a signature-verified OS baseline."""
+    if name not in LEGACY_ACCOUNT_BASELINES or role not in ROLES:
+        return False
+    files = fact.get('legacy_account_files')
+    value = files.get(name) if isinstance(files, dict) else None
+    configuration = fact.get('configuration')
+    packages = fact.get('packages')
+    package = packages.get('alpine-baselayout-data') if isinstance(packages, dict) else None
+    expected = sorted({'klogd', 'neo', 'tailscale'} |
+                      ({'cloudflared', 'nginx'} if role == 'dmz' else set()))
+    path = '/etc/' + name
+    return (audited_package_paths and path in changed_package_paths and
+            isinstance(files, dict) and set(files) == {'passwd', 'group'} and
+            isinstance(value, dict) and
+            set(value) == {'kind', 'file', 'observed_sha256', 'baseline_sha256',
+                           'added_accounts'} and
+            value['kind'] == 'klokast.vm-legacy-account-file.v1' and
+            value['file'] == name and value['added_accounts'] == expected and
+            value['baseline_sha256'] == LEGACY_ACCOUNT_BASELINES[name] and
+            isinstance(value['observed_sha256'], str) and
+            re.fullmatch('[0-9a-f]{64}', value['observed_sha256']) is not None and
+            isinstance(configuration, dict) and
+            isinstance(configuration.get('sha256'), dict) and
+            configuration['sha256'].get(path) == value['observed_sha256'] and
+            isinstance(package, dict) and
+            package.get('origin') == 'alpine-baselayout' and
+            package.get('version') == '3.7.2-r0' and
             package.get('architecture') == 'x86_64')
 
 
@@ -791,6 +828,9 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     verified_tailscale_resolver = checked_tailscale_resolver(fact, entries)
     verified_mdev_tun_override = checked_mdev_tun_override(
         fact, audited_package_paths, changed_package_paths)
+    verified_account_files = {name: checked_legacy_account_file(
+        fact, name, role, audited_package_paths, changed_package_paths)
+        for name in ('passwd', 'group')}
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -834,6 +874,9 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         resolved = False
         if name == '/etc/mdev.conf' and verified_mdev_tun_override:
             rule = 'exact Podman TUN line on the verified Alpine mdev-conf package file; rebuild from candidate package and recipe'
+            resolved = True
+        if name in {'/etc/passwd', '/etc/group'} and verified_account_files[name.removeprefix('/etc/')]:
+            rule = 'exact old package and declared account additions; regenerate candidate accounts from signed packages and approved numeric identity'
             resolved = True
         if difference['code'] == 'm' and name in {'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'}:
             category, rule = 'reconstructable-os-state', 'verify runtime directory ownership and mode'
