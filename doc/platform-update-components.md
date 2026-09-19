@@ -313,6 +313,27 @@ store. Correction receipts are under the controller candidate checkout at
 `.run/probe-correction-20260919/`. The fresh scan confirmed that the two corrected
 rootful stores were absent. This correction is not production update evidence.
 
+Source `107be5e` passed 289 local VM tests and native discovery of all 12 managed
+VMs. All three selected boot filesystems had complete, stable coverage of four
+entries. The two backend VMs remained running; k001-iot remained stopped.
+Separate rootless inspection found 7, 6, and 1 cached images on k001-dmz,
+k002-dmz, and k002-iot respectively. Native `podman system check`, without
+repair or force, passed on each. This does not establish complete accounting
+for unregistered files. No application image was downloaded or run.
+
+The latest qualification records are in
+`/var/lib/klokast/updates/discovery/qualifications/` on the controller:
+
+| Target | Report filename | Unresolved items |
+| --- | --- | --- |
+| k001-dmz | `257511c997dd051f95583566fc7086cd5533069948edf2cbf837befb163a94f7.json` | 1713 |
+| k002-dmz | `127cdc7b3b72aa3b39fb33e942e5d7388b81b4926b2a9ad3180a5557b03e5a9e.json` | 1694 |
+| k002-iot | `e8b65322c0fc824f51498eae7174eb98d7c8eb7ea79ce694d25645f95ae64384.json` | 2162 |
+
+These counts include proposed OS and package classes whose required source
+checks remain incomplete. None of these records qualifies a target, issues an
+adoption intent, or proves a production replacement.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
