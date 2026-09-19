@@ -99,6 +99,12 @@ class HostInventory(unittest.TestCase):
         (self.root / target[1:]).unlink()
         (self.root / target[1:]).symlink_to(self.root / source[1:])
         self.assertFalse(self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)['complete'])
+        (self.root / target[1:]).unlink()
+        (self.root / target[1:]).write_text('server { listen 80; }\n')
+        parent = (self.root / target[1:]).parent
+        parent.rename(parent.with_name('http.d-real'))
+        parent.symlink_to(parent.with_name('http.d-real'))
+        self.assertFalse(self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)['complete'])
 
     def test_deep_metadata_accounts_for_directories_without_file_contents(self):
         (self.root / 'home/neo/saved-data').write_text('PRIVATE APPLICATION CONTENT')
