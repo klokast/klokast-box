@@ -122,14 +122,15 @@ available for controlled component tests. `adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
-The 2026-09-19 08:12 UTC reports remain blocked with no unknown items. They
-have 64 unresolved checks on each DMZ and 45 on k002-iot. Most checks require
-approved machine inputs, preserved identity, source-disk binding, or package
-provenance. Three per guest are bootstrap access files. Each DMZ has 19 more
-rows for old Static Site backup staging. The backup role now removes new
-staging after verified transfer; old staging still needs exact audit-preserving
-cleanup. Independent management qualification, signed adoption, and the
-production transaction remain incomplete. Exact paths and sources are in
+The 2026-09-19 08:58 UTC reports remain blocked with no unknown items. All
+three selected guests now have 45 unresolved checks. Most require approved
+machine inputs, preserved identity, source-disk binding, or package
+provenance. Three per guest are bootstrap access files. The one-time Static
+Site staging cleanup removed the 19 old staging rows from each DMZ after
+verified controller copies were retained. The backup role also removes new
+staging after verified transfer. Independent management qualification, signed
+adoption, and the production transaction remain incomplete. Exact paths and
+sources are in
 [component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence

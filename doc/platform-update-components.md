@@ -385,6 +385,25 @@ checked before retiring bootstrap files. The legacy `vm-base` role adds a key
 without pruning old keys; replacement must render the approved key set and
 reject extra keys. No bootstrap access was removed by this review.
 
+The one-time
+`ansible/playbooks/74-platform-update-static-site-staging-cleanup.yml`
+completed on both DMZ guests on 2026-09-19. It copied operation
+`623ecdce63065238edb22fb3` to the active controller, verified all four
+archive, manifest, and receipt sets for each guest, checked that the fixed
+guest staging tree had no active user, and removed only staging with matching
+controller hashes. The protected controller copies remain under the ignored
+`.run/vm-update-backups/static-site/` tree in the approved checkout. Both
+guest staging roots were absent after the play. A fresh 12-VM scan from source
+`7fbc42b` confirmed both backends running and k001-iot stopped. Its new
+qualification reports have 45 unresolved rows, three exact bootstrap-access
+cleanup rows, and zero unknown rows on **each** selected guest:
+
+| Target | New report SHA-256 |
+| --- | --- |
+| k001-dmz | `9ab1570bf70002d7b9214ed8c18ec380943e448f6943152c3eca7da35e80ec56` |
+| k002-dmz | `6c3f3a6885535689f3d88ce9be897b6109b4460599750a7f695f03614921f0b3` |
+| k002-iot | `65f4e2c3ed06e8f714bdd0712bd8440f7473bee845280f157f0c09165fca6553` |
+
 The `verify-*` directories under the neo user's Platform resource cache have
 a specific producer: `platform-resources` uploads `desired.json` and its
 reconcile helper there. Its old remote script removed the directory only after
