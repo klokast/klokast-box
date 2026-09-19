@@ -121,7 +121,9 @@
     user: "{{ vm_admin_user_name }}"
     key: "{{ lookup('file', vm_admin_authorized_key_file) }}"
     state: present
-  when: vm_base_admin_authorized_key_file.stat.exists
+  when:
+    - vm_manage_sshd | default(true)
+    - vm_base_admin_authorized_key_file.stat.exists
 
 - name: Configure doas for the wheel group
   ansible.builtin.copy:

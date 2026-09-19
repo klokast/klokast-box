@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Retire only fixed first-contact OpenSSH files after Tailscale SSH handoff."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+
+
+PATHS = ('/root/.ssh/authorized_keys', '/home/neo/.ssh/authorized_keys',
+         '/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf')
+
+
+def digest(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+
+
+def read_exact(path, uid, mode):
+    for parent in path.parents:
+        if parent.is_symlink():
+            raise ValueError('bootstrap access has a linked parent')
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_gid != uid or
+            stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1 or
+            info.st_size < 1 or info.st_size > 4096):
+        raise ValueError('bootstrap access has changed type, owner, mode, or size')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if opened.st_dev != info.st_dev or opened.st_ino != info.st_ino:
+            raise ValueError('bootstrap access changed during inspection')
+        data = os.read(descriptor, 4097)
+    finally:
+        os.close(descriptor)
+    if len(data) != info.st_size:
+        raise ValueError('bootstrap access changed during inspection')
+    return {'sha256': digest(data), 'bytes': len(data), 'uid': uid, 'gid': uid,
+            'mode': mode}, data
+
+
+def inspect(host, address, admin_key_sha, root=Path('/'), root_uid=0, neo_uid=1000):
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-(?:dmz|iot)', host):
+        raise ValueError('expected one DMZ or IoT guest')
+    if not re.fullmatch(r'[0-9a-f]{64}', admin_key_sha):
+        raise ValueError('expected the approved controller public-key hash')
+    if not re.fullmatch(r'[0-9.]{7,15}', address):
+        raise ValueError('expected the configured bootstrap IPv4 address')
+    rows, contents = {}, {}
+    for name in PATHS:
+        path = root / name.lstrip('/')
+        if not path.exists() and not path.is_symlink():
+            rows[name] = None
+            continue
+        uid, mode = (neo_uid, 0o600) if name.startswith('/home/neo/') else (
+            (root_uid, 0o644) if name.endswith('.conf') else (root_uid, 0o600))
+        rows[name], contents[name] = read_exact(path, uid, mode)
+    present = [name for name in PATHS if rows[name] is not None]
+    if present and len(present) != len(PATHS):
+        raise ValueError('bootstrap access is partly present; reconcile exact files')
+    if present:
+        root_lines = [line.strip() for line in contents[PATHS[0]].splitlines() if line.strip()]
+        neo_lines = [line.strip() for line in contents[PATHS[1]].splitlines() if line.strip()]
+        if len(root_lines) != 1 or not 1 <= len(neo_lines) <= 2:
+            raise ValueError('bootstrap authorized-key count differs from the fixed profile')
+        if any(not line.startswith(b'ssh-ed25519 ') or len(line) > 1024
+               for line in root_lines + neo_lines):
+            raise ValueError('bootstrap authorized-key format differs from the fixed profile')
+        permitted = {digest(root_lines[0]), admin_key_sha}
+        if any(digest(line) not in permitted for line in neo_lines) or len(set(neo_lines)) != len(neo_lines):
+            raise ValueError('neo authorized keys include an unapproved or duplicate key')
+        expected_config = (f'ListenAddress {address}\nPasswordAuthentication no\n'
+                           'KbdInteractiveAuthentication no\nPubkeyAuthentication yes\n'
+                           'PermitRootLogin prohibit-password\n').encode()
+        if contents[PATHS[2]] != expected_config:
+            raise ValueError('bootstrap OpenSSH policy differs from the clone recipe')
+    state = {'kind': 'klokast.vm-bootstrap-access.v1', 'host': host, 'files': rows,
+             'admin_key_sha256': admin_key_sha, 'bootstrap_address': address}
+    return {'host': host, 'state_sha256': digest(canonical(state)),
+            'status': 'present' if present else 'absent', 'files': rows}
+
+
+def require_unused(root=Path('/')):
+    for name in ('usr/sbin/sshd', 'etc/init.d/sshd', 'etc/runlevels/default/sshd'):
+        path = root / name
+        if path.exists() or path.is_symlink():
+            raise ValueError('OpenSSH still has an executable, service, or runlevel entry')
+    proc = root / 'proc'
+    if proc.is_dir():
+        for table in ('net/tcp', 'net/tcp6'):
+            path = proc / table
+            if path.is_file():
+                for row in path.read_text().splitlines()[1:]:
+                    columns = row.split()
+                    if (len(columns) > 3 and
+                            columns[1].rsplit(':', 1)[-1].upper() == '0016' and
+                            columns[3] == '0A'):
+                        raise ValueError('a local TCP port 22 listener remains')
+        for entry in proc.iterdir():
+            if entry.name.isdigit():
+                try:
+                    if (entry / 'comm').read_text().strip() == 'sshd':
+                        raise ValueError('an sshd process still runs')
+                except (FileNotFoundError, ProcessLookupError, PermissionError):
+                    pass
+
+
+def retire(host, address, admin_key_sha, expected, root=Path('/'), root_uid=0, neo_uid=1000):
+    before = inspect(host, address, admin_key_sha, root, root_uid, neo_uid)
+    if before['state_sha256'] != expected:
+        raise ValueError('bootstrap access changed after the exact preview')
+    require_unused(root)
+    if before['status'] == 'present':
+        for name in PATHS:
+            path = root / name.lstrip('/')
+            current, _ = read_exact(path, before['files'][name]['uid'],
+                                    before['files'][name]['mode'])
+            if current != before['files'][name]:
+                raise ValueError('bootstrap access changed before exact removal')
+            path.unlink()
+    after = inspect(host, address, admin_key_sha, root, root_uid, neo_uid)
+    if after['status'] != 'absent':
+        raise ValueError('bootstrap access remains after exact removal')
+    return {'kind': 'klokast.vm-bootstrap-access-retirement.v1', 'host': host,
+            'before_sha256': before['state_sha256'], 'after_sha256': after['state_sha256'],
+            'removed': before['status'] == 'present'}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host', required=True)
+    parser.add_argument('--bootstrap-address', required=True)
+    parser.add_argument('--admin-key-sha256', required=True)
+    parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--expected-state-sha256')
+    args = parser.parse_args()
+    if os.geteuid() != 0 or socket.gethostname().split('.')[0] != args.host:
+        parser.error('run as root on the exact selected guest')
+    try:
+        if args.apply:
+            if not args.expected_state_sha256 or not re.fullmatch(r'[0-9a-f]{64}', args.expected_state_sha256):
+                raise ValueError('apply needs the exact preview checksum')
+            result = retire(args.host, args.bootstrap_address, args.admin_key_sha256,
+                            args.expected_state_sha256)
+        else:
+            if args.expected_state_sha256:
+                raise ValueError('a preview cannot select an earlier state')
+            require_unused()
+            result = inspect(args.host, args.bootstrap_address, args.admin_key_sha256)
+        print(json.dumps(result, sort_keys=True))
+    except (OSError, ValueError) as error:
+        raise SystemExit(f'Bootstrap SSH retirement stopped: {error}')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,81 @@
+---
+# Exact first-contact SSH cleanup on one no-application DMZ or IoT guest.
+- name: Retire selected guest bootstrap OpenSSH after Tailscale management handoff
+  hosts: dmz:iot
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    vm_manage_sshd: false
+    vm_bootstrap_retire_record_dir: '/home/smith/private/klokast/vm-update-cleanup/bootstrap-access/{{ vm_bootstrap_retire_operation }}'
+  pre_tasks:
+    - name: Require one exact selected guest and a fresh operation ID
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [vm_bootstrap_retire_box ~ '-' ~ vm_bootstrap_retire_role]
+          - vm_bootstrap_retire_role in ['dmz', 'iot']
+          - inventory_hostname == vm_bootstrap_retire_box ~ '-' ~ vm_bootstrap_retire_role
+          - node_name == vm_bootstrap_retire_box
+          - node_domain_role == vm_bootstrap_retire_role
+          - vm_bootstrap_retire_operation is match('^[0-9a-f]{24}$')
+
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: vm_bootstrap_retire_controller
+
+    - name: Refuse standby or unconfigured execution
+      ansible.builtin.assert:
+        that:
+          - (vm_bootstrap_retire_controller.stdout | from_json).configured
+          - (vm_bootstrap_retire_controller.stdout | from_json).active
+          - (vm_bootstrap_retire_controller.stdout | from_json).role == 'active'
+
+    - name: Recheck checked Instance intent and observed no-application state
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-update'
+          - adopt
+          - prepare
+          - --box
+          - '{{ vm_bootstrap_retire_box }}'
+          - --role
+          - '{{ vm_bootstrap_retire_role }}'
+          - --json
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      register: vm_bootstrap_retire_intent
+
+    - name: Require no application workload or retained dataset
+      ansible.builtin.assert:
+        that:
+          - vm_bootstrap_retire_intent.rc in [0, 1]
+          - (vm_bootstrap_retire_intent.stdout | from_json).intent.eligible
+          - (vm_bootstrap_retire_intent.stdout | from_json).intent.workloads == []
+          - (vm_bootstrap_retire_intent.stdout | from_json).intent.datasets == []
+        fail_msg: 'Current checked intent or observation does not permit bootstrap access retirement.'
+
+    - name: Refuse a reused controller operation record
+      ansible.builtin.stat:
+        path: '{{ vm_bootstrap_retire_record_dir }}'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: vm_bootstrap_retire_prior
+
+    - name: Require a new protected controller operation directory
+      ansible.builtin.assert:
+        that:
+          - not vm_bootstrap_retire_prior.stat.exists
+
+  tasks:
+    - name: Preview, retire, and record exact bootstrap access files
+      ansible.builtin.import_role:
+        name: vm-bootstrap-access-retire

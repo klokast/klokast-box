@@ -181,6 +181,11 @@
       ansible.builtin.import_role:
         name: vm-base
 
+    - name: Retire selected shared VM first-contact OpenSSH
+      ansible.builtin.import_role:
+        name: vm-bootstrap-access-retire
+      when: node_domain_role in ['dmz', 'iot']
+
     - name: Converge the Podman VM rootless Podman host
       ansible.builtin.import_role:
         name: podman-host

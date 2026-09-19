@@ -1,0 +1,88 @@
+---
+- name: Require the fixed Tailscale-only shared guest profile
+  ansible.builtin.assert:
+    that:
+      - node_domain_role in ['dmz', 'iot']
+      - inventory_hostname == node_name ~ '-' ~ node_domain_role
+      - vm_manage_sshd is defined
+      - not (vm_manage_sshd | bool)
+      - vm_bootstrap_host is match('^[0-9.]{7,15}$')
+      - vm_admin_authorized_key_file | length > 0
+
+- name: Prove independent Tailscale SSH from the active controller
+  ansible.builtin.command:
+    argv: [/usr/bin/tailscale, ssh, 'neo@{{ inventory_hostname }}', sh, -s]
+    stdin: "hostname\n"
+    stdin_add_newline: false
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: vm_bootstrap_retire_management
+
+- name: Require the exact management identity before retiring OpenSSH files
+  ansible.builtin.assert:
+    that:
+      - vm_bootstrap_retire_management.stdout | trim == inventory_hostname
+
+- name: Preview the fixed first-contact OpenSSH files and live use
+  ansible.builtin.script: >-
+    {{ role_path }}/files/retire-bootstrap-access
+    --host {{ inventory_hostname }}
+    --bootstrap-address {{ vm_bootstrap_host }}
+    --admin-key-sha256 {{ lookup('file', vm_admin_authorized_key_file) | trim | hash('sha256') }}
+  args:
+    executable: /usr/bin/python3
+  changed_when: false
+  register: vm_bootstrap_retire_preview
+
+- name: Require a complete exact preview
+  ansible.builtin.assert:
+    that:
+      - (vm_bootstrap_retire_preview.stdout | from_json).host == inventory_hostname
+      - (vm_bootstrap_retire_preview.stdout | from_json).status in ['present', 'absent']
+      - (vm_bootstrap_retire_preview.stdout | from_json).state_sha256 is match('^[0-9a-f]{64}$')
+
+- name: Create the protected controller receipt directory when requested
+  ansible.builtin.file:
+    path: '{{ vm_bootstrap_retire_record_dir }}'
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  when: vm_bootstrap_retire_record_dir | default('') | length > 0
+
+- name: Save the exact preview on the controller when requested
+  ansible.builtin.copy:
+    dest: '{{ vm_bootstrap_retire_record_dir }}/{{ inventory_hostname }}-preview.json'
+    content: "{{ vm_bootstrap_retire_preview.stdout | trim }}\n"
+    mode: '0600'
+    force: false
+  delegate_to: localhost
+  become: false
+  when: vm_bootstrap_retire_record_dir | default('') | length > 0
+
+- name: Retire only the previewed first-contact files
+  ansible.builtin.script: >-
+    {{ role_path }}/files/retire-bootstrap-access
+    --host {{ inventory_hostname }}
+    --bootstrap-address {{ vm_bootstrap_host }}
+    --admin-key-sha256 {{ lookup('file', vm_admin_authorized_key_file) | trim | hash('sha256') }}
+    --apply
+    --expected-state-sha256 {{ (vm_bootstrap_retire_preview.stdout | from_json).state_sha256 }}
+  args:
+    executable: /usr/bin/python3
+  register: vm_bootstrap_retire_result
+  changed_when: (vm_bootstrap_retire_result.stdout | from_json).removed
+  when: vm_bootstrap_retire_apply | default(true) | bool
+
+- name: Save the exact retirement receipt on the controller when requested
+  ansible.builtin.copy:
+    dest: '{{ vm_bootstrap_retire_record_dir }}/{{ inventory_hostname }}-applied.json'
+    content: "{{ vm_bootstrap_retire_result.stdout | trim }}\n"
+    mode: '0600'
+    force: false
+  delegate_to: localhost
+  become: false
+  when:
+    - vm_bootstrap_retire_record_dir | default('') | length > 0
+    - vm_bootstrap_retire_apply | default(true) | bool

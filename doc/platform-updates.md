@@ -117,6 +117,17 @@ an explicit refusal; it never falls back to reading private files directly.
 These smith-owned reports are review evidence, not protected acceptance records.
 No application test is recorded as successful when it was not run.
 
+The selected guests' first-contact OpenSSH cleanup has a separate fixed
+playbook, `74-platform-update-bootstrap-access-retire.yml`. It checks the
+active controller and current no-application intent, probes the guest through
+Tailscale SSH, and refuses a running or installed OpenSSH server. It checks the
+exact bootstrap policy and authorized-key set before it removes only three
+files. The protected controller receipt records hashes, not key contents.
+Steady-state DMZ and IoT provisioning uses the same check after Tailnet
+handoff. `vm-base` adds an admin OpenSSH key only while it manages OpenSSH.
+Machine identity and generated configuration still need source binding before
+adoption.
+
 The existing explicit `prepare` options, including `--inputs-only`, remain
 available for controlled component tests. `adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report

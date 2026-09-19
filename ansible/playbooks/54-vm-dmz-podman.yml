@@ -22,6 +22,10 @@
       ansible.builtin.import_role:
         name: vm-base
 
+    - name: Retire dmz first-contact OpenSSH after Tailscale SSH handoff
+      ansible.builtin.import_role:
+        name: vm-bootstrap-access-retire
+
     - name: Converge the dmz Podman host
       ansible.builtin.import_role:
         name: podman-host
