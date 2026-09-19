@@ -204,6 +204,18 @@
       owner: root
       group: root
       mode: "0755"
+    - path: /var/lib/klokast/operations-journal
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0700"
+    - path: /var/lib/klokast/operations-journal/cases
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0700"
+    - path: /var/lib/klokast/operations-journal/forum
+      owner: "{{ ops_infra_user }}"
+      group: "{{ ops_infra_user }}"
+      mode: "0700"
     - path: "{{ ops_approved_state_root }}"
       owner: root
       group: "{{ ops_app_user }}"

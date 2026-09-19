@@ -158,5 +158,5 @@ physical reboot recovery as unverified. Use [Platform recovery](platform-deploy.
 for controller recovery and console access.
 
 Deployment findings and receipts stay in private controller operational state.
-An ignored `.run/todo.md` may hold working notes, but it is not an evidence
-store or recovery copy.
+Use the [operations journal](operations-journal.md) for short case status and
+evidence references. The journal is not an evidence store or recovery copy.

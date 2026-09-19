@@ -1,0 +1,34 @@
+---
+- name: Create the private operations journal on the active controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: community.general.doas
+  become_flags: -n
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      become: false
+      changed_when: false
+      register: journal_controller
+
+    - name: Refuse a standby or non-controller host
+      ansible.builtin.assert:
+        that:
+          - (journal_controller.stdout | from_json).active
+          - (journal_controller.stdout | from_json).role == 'active'
+
+  tasks:
+    - name: Create owner-only journal directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ops_infra_user }}"
+        group: "{{ ops_infra_user }}"
+        mode: "0700"
+      loop:
+        - /var/lib/klokast/operations-journal
+        - /var/lib/klokast/operations-journal/cases
+        - /var/lib/klokast/operations-journal/forum
