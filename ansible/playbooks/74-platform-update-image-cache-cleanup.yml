@@ -8,7 +8,7 @@
   become_method: doas
   vars:
     image_cache_apply: false
-    image_cache_record_dir: '{{ playbook_dir }}/../../.run/vm-image-cache-cleanup/{{ image_cache_operation }}'
+    image_cache_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-image-cache-cleanup/{{ image_cache_operation }}'
   pre_tasks:
     - name: Require one exact selected guest and a fresh operation ID
       ansible.builtin.assert:
