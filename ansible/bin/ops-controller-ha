@@ -432,6 +432,7 @@ for path in \
   var/lib/klokast/apply-executions \
   var/lib/klokast/apply-rollback-material \
   var/lib/klokast/apply-used-nonces \
+  var/lib/klokast/updates/executor \
   var/log/klokast/secret-authority.jsonl \
   var/log/klokast/platform-apply.jsonl \
   etc/klokast/secret-authority/allowed-signers \

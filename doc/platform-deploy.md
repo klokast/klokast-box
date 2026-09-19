@@ -36,3 +36,10 @@ non-provider private state to the standby. After recovery, start one controller
 and use `platform-check-remote`. Emergency promotion requires the previous
 active controller to be fenced; provider authority is then reseeded from the
 operator workstation.
+
+The synchronization includes protected VM update policy and operation records
+under `/var/lib/klokast/updates/executor`. It also includes their signed
+preflight, signer, nonce, and Authority State evidence through the existing
+fixed copy list. A standby copy cannot authorize an update. After promotion,
+verify the active controller, the accepted assignments on dom0, and current
+signed authority before the next VM update.
