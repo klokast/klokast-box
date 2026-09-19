@@ -676,7 +676,7 @@ def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/sh
                         # Older releases used a 64-byte hexadecimal ID.
                         accepted = bool(re.fullmatch(b'[0-9a-f]{64}', content)) or (
                             len(content) == 64 and
-                            0 <= row['mtime_ns'] - int.from_bytes(content[:8], 'little') <= 1_000_000_000 and
+                            abs(row['mtime_ns'] - int.from_bytes(content[:8], 'little')) <= 1_000_000_000 and
                             int.from_bytes(content[8:16], 'little') > 0 and
                             0 < int.from_bytes(content[16:20], 'little') < 2**22)
                     else:

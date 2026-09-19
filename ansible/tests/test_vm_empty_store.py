@@ -81,6 +81,9 @@ class EmptyStore(unittest.TestCase):
         content = timestamp.to_bytes(8, 'little') + (1).to_bytes(8, 'little') + (123).to_bytes(4, 'little') + bytes(range(44))
         marker.write_bytes(content); os.utime(marker, ns=(timestamp, timestamp))
         self.assertTrue(self.collect()['empty'])
+        # Native file mtime can precede userspace UnixNano by one clock tick.
+        os.utime(marker, ns=(timestamp, timestamp - 2_000_000))
+        self.assertTrue(self.collect()['empty'])
         for changed in (content + b'X', b'PRIVATE'.ljust(64, b'X'),
                         content[:8] + bytes(8) + content[16:], content[:16] + bytes(4) + content[20:]):
             marker.write_bytes(changed); os.utime(marker, ns=(timestamp, timestamp))
