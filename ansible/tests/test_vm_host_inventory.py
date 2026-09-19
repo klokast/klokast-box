@@ -106,6 +106,24 @@ class HostInventory(unittest.TestCase):
         parent.symlink_to(parent.with_name('http.d-real'))
         self.assertFalse(self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)['complete'])
 
+    def test_legacy_firmware_receipt_rejects_links_and_changed_shape(self):
+        name = '/lib/firmware/qat_402xx.bin.zst'
+        target = self.root / name[1:]
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'firmware bytes')
+        result = self.m.collect_legacy_firmware(self.root, self.mounts)
+        self.assertTrue(result['complete']); self.assertTrue(result['stable'])
+        self.assertEqual([row['path'] for row in result['files']], [name])
+        self.assertNotIn('firmware bytes', json.dumps(result))
+        target.unlink()
+        target.symlink_to('/tmp/other')
+        self.assertFalse(self.m.collect_legacy_firmware(self.root, self.mounts)['complete'])
+        target.unlink()
+        target.write_bytes(b'firmware bytes')
+        target.parent.rename(target.parent.with_name('firmware-real'))
+        target.parent.symlink_to(target.parent.with_name('firmware-real'))
+        self.assertFalse(self.m.collect_legacy_firmware(self.root, self.mounts)['complete'])
+
     def test_deep_metadata_accounts_for_directories_without_file_contents(self):
         (self.root / 'home/neo/saved-data').write_text('PRIVATE APPLICATION CONTENT')
         (self.root / 'home/neo/alias').symlink_to(self.root / 'proc')

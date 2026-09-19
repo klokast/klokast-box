@@ -292,6 +292,32 @@ def checked_nginx_default_copy(value, packages, audit, database_sha256, entries)
     return value['error_log_empty']
 
 
+def checked_legacy_firmware(value, entries):
+    fields = {'kind', 'complete', 'stable', 'files', 'adoption_authorized', 'error', 'evidence_sha256'}
+    names = {'/lib/firmware/qat_' + stem + '.bin.zst' for stem in
+             ('402xx', '402xx_mmp', '4xxx', '4xxx_mmp')}
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.vm-legacy-firmware.v1' or
+            value['complete'] is not True or value['stable'] is not True or
+            value['adoption_authorized'] is not False or value['error'] is not None or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items() if k != 'evidence_sha256'}) or
+            not isinstance(value['files'], list) or len(value['files']) > 4 or
+            any(not isinstance(v, dict) or not isinstance(v.get('path'), str) for v in value['files']) or
+            [v['path'] for v in value['files']] != sorted({v['path'] for v in value['files']})):
+        raise UpdateError('legacy firmware metadata receipt is incomplete')
+    for row in value['files']:
+        if (not isinstance(row, dict) or set(row) != {'path', 'mode', 'uid', 'gid', 'links', 'bytes', 'sha256'} or
+                row['path'] not in names or row['path'] not in entries or
+                any(type(row[key]) is not int for key in ('mode', 'uid', 'gid', 'links', 'bytes')) or
+                not stat.S_ISREG(row['mode']) or row['uid'] != 0 or row['gid'] != 0 or
+                row['links'] != 1 or type(row['bytes']) is not int or
+                not 0 < row['bytes'] <= 16 * 1024 * 1024 or row['mode'] & 0o022 or
+                not isinstance(row['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', row['sha256']) or
+                any(entries[row['path']][key] != row[key] for key in ('mode', 'uid', 'gid'))):
+            raise UpdateError('legacy firmware metadata differs from host inventory')
+    return value['files']
+
+
 def fixed_service_resolution(service, entries, audit_verified, changed_paths):
     """Resolve only package-owned, unchanged scripts in the fixed boot profile."""
     script = '/etc/init.d/' + service['name']
@@ -462,6 +488,12 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         entries[value['path']] = value
     legacy_kernel = fact.get('kernel') if (fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER and
                                               fact.get('module_releases') == [fact.get('kernel')]) else None
+    if legacy_kernel:
+        try:
+            for row in checked_legacy_firmware(fact['host_inventory'].get('legacy_firmware'), entries):
+                entries[row['path']] = {**entries[row['path']], **row}
+        except UpdateError:
+            pass
     installed_packages = fact.get('packages') if isinstance(fact.get('packages'), dict) else {}
     package_audit = inventory.get('package_audit')
     try:

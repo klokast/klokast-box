@@ -288,6 +288,22 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.fixed_account_classification({**old, 'name': 'neo'},
                                                              'iot', True, {})[2])
 
+    def test_legacy_firmware_requires_a_matching_bounded_receipt(self):
+        name = '/lib/firmware/qat_402xx.bin.zst'
+        shallow = {name: {'path': name, 'mode': stat.S_IFREG | 0o644, 'uid': 0, 'gid': 0}}
+        row = {**shallow[name], 'links': 1, 'bytes': 32, 'sha256': 'a' * 64}
+        receipt = {'kind': 'klokast.vm-legacy-firmware.v1', 'complete': True,
+                   'stable': True, 'files': [row], 'adoption_authorized': False,
+                   'error': None}
+        receipt['evidence_sha256'] = digest(receipt)
+        self.assertEqual(noapp.checked_legacy_firmware(receipt, shallow), [row])
+        self.assertTrue(noapp.path_classification(row, legacy_kernel='6.18.8-0-virt')[2])
+        for changed in ({**receipt, 'stable': False},
+                        {**receipt, 'files': [{**row, 'links': 2}]},
+                        {**receipt, 'files': [{**row, 'path': '/tmp/unknown'}]}):
+            with self.assertRaises(UpdateError):
+                noapp.checked_legacy_firmware(changed, shallow)
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
