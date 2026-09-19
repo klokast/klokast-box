@@ -44,6 +44,9 @@ start() {
         fi
     fi
 
-    rm -rf -- "${runroot}/containers" "${runroot}/libpod/tmp"
+    # The runroot contains only Podman runtime state.  Do not retain a
+    # previous container's network namespace, OCI state, or event log across
+    # a boot.  Persistent images and data use the separate graphroot.
+    rm -rf -- "${runroot}"
     eend $?
 }

@@ -33,8 +33,7 @@ class PodmanHostRoleTest(unittest.TestCase):
             ROLE / "templates" / "klokast-podman-runroot-cleanup.init.j2"
         ).read_text(encoding="utf-8")
         self.assertIn('runroot="/tmp/storage-run-${uid}"', template)
-        self.assertIn('"${runroot}/containers"', template)
-        self.assertIn('"${runroot}/libpod/tmp"', template)
+        self.assertIn('rm -rf -- "${runroot}"', template)
         self.assertNotIn("/srv", template)
         self.assertNotIn(".local/share/containers/storage", template)
 
