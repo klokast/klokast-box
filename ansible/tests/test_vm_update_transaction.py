@@ -122,7 +122,7 @@ class Transactions(unittest.TestCase):
     def checks(self):
         t.store(self.work / 'checks.json', {'request_sha256': t.digest(self.request),
             'checks': {k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman',
-                'firewall', 'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
+                'firewall', 'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine')}})
 
     def boot(self):
         tx = self.tx(); tx.arm(); tx.step('stop'); tx.step('start'); return tx

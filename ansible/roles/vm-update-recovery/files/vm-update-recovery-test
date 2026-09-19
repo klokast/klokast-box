@@ -138,7 +138,7 @@ def accept_synthetic(t, directory, request):
     # exported as release, network, data-copy, or application-test evidence.
     t.store(directory / 'checks.json', {'request_sha256': t.digest(request), 'checks': {
         k: True for k in ('boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
-                         'application_compatibility', 'data', 'application_images_unchanged', 'quarantine')}})
+                         'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine')}})
     for action in ('tested', 'accept', 'complete'):
         t.invoke(request['operation_id'], action)
 

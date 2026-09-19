@@ -552,8 +552,11 @@ class Transaction:
             # A controller-side executor is responsible for the test evidence.
             # This internal command is root-only, not an approval interface.
             evidence = read(self.work / 'checks.json')
+            # The selected profile has no application workload. Its controller
+            # record proves current no-application qualification instead of
+            # falsely recording an omitted application compatibility test.
             required = {'boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
-                        'application_compatibility', 'data', 'application_images_unchanged', 'quarantine'}
+                        'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine'}
             if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
                     set(evidence['checks']) != required or any(v is not True for v in evidence['checks'].values())):
                 raise Refused('controller compatibility evidence is incomplete')
