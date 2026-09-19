@@ -802,8 +802,10 @@ dom0 cleanup record is
 `74-platform-update-recovery.yml` installs the root-only
 `vm-update-transaction` helper and an OpenRC boot check. Do not install it as
 proof that automatic replacement is ready. The signed controller executor,
-data adoption, configuration staging, network fencing, and application checks
-must supply its inputs before production use.
+data adoption, configuration staging, network fencing, and profile checks
+must supply its inputs before production use. The no-application profile
+requires current no-application qualification. It does not record an omitted
+application compatibility test as successful.
 
 The helper accepts only `bak`, `dmz`, and `iot`. Its protected request records
 the policy and release hashes, distinct old and candidate Xen UUIDs, LV UUIDs
