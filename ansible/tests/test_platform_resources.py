@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -1310,6 +1311,68 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertIn("/usr/sbin/nft -c -f /etc/nftables.nft", script)
         self.assertIn('if [ "$changed" = "1" ]; then', script)
         self.assertIn("/usr/sbin/nft -f /etc/nftables.nft", script)
+
+    def test_failed_podman_verification_cleans_only_its_staged_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / ".cache"
+            parent = cache / "klokast-platform-resources"
+            parent.mkdir(parents=True)
+            script = self.mod.podman_resource_remote_script()
+            script = script.replace("/home/neo/.cache/klokast-platform-resources", str(parent))
+            script = script.replace("/home/neo/.cache", str(cache))
+            script = script.replace(
+                "if [ ! -x /usr/sbin/nft ] || [ ! -f /etc/nftables.nft ]; then",
+                "if true; then",
+            )
+
+            for extra in (False, True):
+                with self.subTest(unexpected_file=extra):
+                    stage = parent / ("verify-with-extra" if extra else "verify-clean")
+                    stage.mkdir()
+                    files = [stage / name for name in (
+                        "desired.json", "klokast-app-resources-reconcile", "last-applied.json")]
+                    for path in files:
+                        path.write_text("staged")
+                    if extra:
+                        (stage / "unexpected").write_text("keep")
+                    result = subprocess.run(
+                        ["sh", "-s", "--", str(stage), *(str(path) for path in files),
+                         "verify", "boxa", "dmz"], input=script, text=True,
+                        capture_output=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 42, result.stderr)
+                    self.assertTrue(all(not path.exists() for path in files))
+                    self.assertEqual(stage.exists(), extra)
+                    if extra:
+                        self.assertEqual((stage / "unexpected").read_text(), "keep")
+                        self.assertIn("unexpected content", result.stderr)
+
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / "desired.json").write_text("keep")
+            result = subprocess.run(
+                ["sh", "-s", "--", str(outside), str(outside / "desired.json"),
+                 str(outside / "helper"), str(outside / "last-applied.json"),
+                 "verify", "boxa", "dmz"], input=script, text=True,
+                capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 64)
+            self.assertEqual((outside / "desired.json").read_text(), "keep")
+
+    def test_failed_podman_upload_requests_exact_remote_cleanup(self):
+        failure = subprocess.CalledProcessError(1, "tailscale ssh")
+        with patch.object(self.mod, "upload_tailscale_ssh_text", side_effect=failure), \
+                patch.object(self.mod, "run_tailscale_ssh") as remote:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.mod.run_podman_resource_host(
+                    "verify", "boxa-dmz", {"registry_sha256": "known"},
+                    "{}", None, [], "verify-a1",
+                )
+        self.assertEqual(remote.call_count, 1)
+        arguments = remote.call_args.args[1]
+        self.assertEqual(arguments[:4], [
+            "sh", "-s", "--", "/home/neo/.cache/klokast-platform-resources/verify-a1"])
+        self.assertEqual(arguments[7], "cleanup")
 
     def test_app_scoped_apply_is_allowed(self):
         args = self.mod.argparse.Namespace(command="apply", app=["nextcloud-v2"])

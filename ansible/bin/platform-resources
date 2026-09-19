@@ -3594,6 +3594,44 @@ mode="$5"
 node_name="$6"
 node_role="$7"
 shift 7
+case "$mode" in
+  apply|verify|cleanup) ;;
+  *) echo "invalid Platform resource staging action" >&2; exit 64 ;;
+esac
+
+# The controller uploads only these three files. Remove them on every exit,
+# including a failed verification, without removing unexpected guest data.
+stage_name=${staging_dir##*/}
+case "$stage_name" in
+  apply-*|verify-*) ;;
+  *) echo "invalid Platform resource staging name" >&2; exit 64 ;;
+esac
+case "$stage_name" in
+  *[!a-zA-Z0-9_-]*|'') echo "invalid Platform resource staging name" >&2; exit 64 ;;
+esac
+if [ "$staging_dir" != "/home/neo/.cache/klokast-platform-resources/$stage_name" ] ||
+   [ "$desired_path" != "$staging_dir/desired.json" ] ||
+   [ "$helper_path" != "$staging_dir/klokast-app-resources-reconcile" ] ||
+   [ "$last_applied_path" != "$staging_dir/last-applied.json" ]; then
+  echo "Platform resource staging paths differ" >&2
+  exit 64
+fi
+for stage_parent in /home/neo/.cache /home/neo/.cache/klokast-platform-resources "$staging_dir"; do
+  if [ -L "$stage_parent" ] || [ ! -d "$stage_parent" ]; then
+    echo "Platform resource staging directory is unsafe" >&2
+    exit 64
+  fi
+done
+cleanup_stage() {
+  rm -f -- "$desired_path" "$helper_path" "$last_applied_path"
+  if ! rmdir -- "$staging_dir" 2>/dev/null; then
+    echo "Platform resource staging directory has unexpected content; review its exact files" >&2
+  fi
+}
+trap cleanup_stage 0
+if [ "$mode" = "cleanup" ]; then
+  exit 0
+fi
 
 if [ ! -x /usr/sbin/nft ] || [ ! -f /etc/nftables.nft ]; then
   echo "missing Podman VM firewall baseline on $(hostname); run the Podman host convergence workflow before platform-resources" >&2
@@ -3639,7 +3677,6 @@ else
     "$@"
 fi
 
-rm -rf "$staging_dir"
 """
 
 
@@ -3659,26 +3696,39 @@ def run_podman_resource_host(
     last_applied_path = f"{staging_dir}/last-applied.json"
     scope_args = [f"--scope-app={app}" for app in sorted(set(scope_apps or []))]
 
-    upload_tailscale_ssh_text(host, desired_path, f"{desired_json}\n")
-    upload_tailscale_ssh_text(
-        host,
-        helper_path,
-        APP_RESOURCE_RECONCILE_SOURCE.read_text(encoding="utf-8"),
-    )
-
-    if command == "apply":
-        last_applied = {
-            "approved_commit": approved_commit,
-            "registry_sha256": compiled["registry_sha256"],
-            "compiler": "platform-resources",
-            "compiler_version": COMPILER_VERSION,
-            "inventory_hostname": host,
-        }
+    try:
+        upload_tailscale_ssh_text(host, desired_path, f"{desired_json}\n")
         upload_tailscale_ssh_text(
             host,
-            last_applied_path,
-            json.dumps(last_applied, indent=4, sort_keys=True) + "\n",
+            helper_path,
+            APP_RESOURCE_RECONCILE_SOURCE.read_text(encoding="utf-8"),
         )
+        if command == "apply":
+            last_applied = {
+                "approved_commit": approved_commit,
+                "registry_sha256": compiled["registry_sha256"],
+                "compiler": "platform-resources",
+                "compiler_version": COMPILER_VERSION,
+                "inventory_hostname": host,
+            }
+            upload_tailscale_ssh_text(
+                host,
+                last_applied_path,
+                json.dumps(last_applied, indent=4, sort_keys=True) + "\n",
+            )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # No verifier has started yet. A failed upload can still leave a
+        # partial file; retry only this exact staging directory if reachable.
+        try:
+            run_tailscale_ssh(
+                host,
+                ["sh", "-s", "--", staging_dir, desired_path, helper_path,
+                 last_applied_path, "cleanup", node_name, node_role],
+                input_text=podman_resource_remote_script(), timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            print(f"platform-resources: staged upload cleanup could not reach {host}; review {staging_dir}", file=sys.stderr)
+        raise
 
     run_tailscale_ssh(
         host,

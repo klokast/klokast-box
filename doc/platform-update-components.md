@@ -363,6 +363,15 @@ files, Tailscale logs, and one Nginx configuration file on each DMZ guest.
 The report classifies the remaining application staging and bootstrap-access
 paths as exact cleanup candidates; it does not approve their removal.
 
+The `verify-*` directories under the neo user's Platform resource cache have
+a specific producer: `platform-resources` uploads `desired.json` and its
+reconcile helper there. Its old remote script removed the directory only after
+successful verification, so a failed check could leave both files. The script
+now removes its exact staged files on exit, including a failed check, and tries
+the same cleanup after an upload failure. It preserves unexpected files for
+review. Existing cache directories still need exact evidence and cleanup;
+the code change does not classify or delete them.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
