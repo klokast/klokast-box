@@ -1,0 +1,194 @@
+---
+# Exact user-approved legacy cleanup. This is not an adoption or update action.
+- name: Remove the two approved obsolete Nextcloud certificates on k001-dmz
+  hosts: k001-dmz
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    obsolete_certificate_paths:
+      - /home/neo/next-1.tail6c4921.ts.net.crt
+      - /home/neo/next-1.tail6c4921.ts.net.key
+  pre_tasks:
+    - name: Require the exact target and private checksum evidence
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == ['k001-dmz']
+          - node_name == 'k001'
+          - node_domain_role == 'dmz'
+          - obsolete_certificate_evidence is sequence
+          - obsolete_certificate_evidence is not string
+          - obsolete_certificate_evidence | length == 2
+          - obsolete_certificate_evidence | map(attribute='path') | list == obsolete_certificate_paths
+          - obsolete_certificate_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\.run/obsolete-certificates-[0-9a-f]{24}$')
+
+    - name: Verify the active controller before the approved cleanup
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: obsolete_certificate_controller
+
+    - name: Require active controller authority
+      ansible.builtin.assert:
+        that:
+          - (obsolete_certificate_controller.stdout | from_json).configured
+          - (obsolete_certificate_controller.stdout | from_json).active
+          - (obsolete_certificate_controller.stdout | from_json).role == 'active'
+
+    - name: Read current checked Nextcloud intent
+      ansible.builtin.command:
+        argv: [/home/smith/src/klokast/klokast-box/ansible/bin/platform-registry, read, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: obsolete_certificate_source
+      no_log: true
+
+    - name: Require Nextcloud to remain absent from desired state
+      ansible.builtin.assert:
+        that:
+          - (obsolete_certificate_source.stdout | from_json).source == 'instance_specification_v1'
+          - not (obsolete_certificate_source.stdout | from_json).registry.apps.nextcloud.enabled
+
+    - name: Verify the native guest name
+      ansible.builtin.command:
+        argv: [/bin/hostname]
+      changed_when: false
+      register: obsolete_certificate_hostname
+
+    - name: Require the selected guest identity
+      ansible.builtin.assert:
+        that: obsolete_certificate_hostname.stdout | trim == inventory_hostname
+
+  tasks:
+    - name: Read the two file checksums without following links
+      ansible.builtin.stat:
+        path: '{{ item.path }}'
+        follow: false
+        checksum_algorithm: sha256
+        get_checksum: true
+      loop: '{{ obsolete_certificate_evidence }}'
+      loop_control:
+        label: '{{ item.path }}'
+      register: obsolete_certificate_before
+      no_log: true
+
+    - name: Require both files to match the approved evidence
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - not item.stat.islnk
+          - item.stat.nlink == 1
+          - item.stat.checksum == item.item.checksum
+          - item.stat.inode == item.item.inode
+          - item.stat.size == item.item.size
+          - item.stat.uid == item.item.uid
+          - item.stat.gid == item.item.gid
+          - item.stat.mode == item.item.mode
+        fail_msg: 'An obsolete certificate differs from the approved checksum or file identity; preserve both files.'
+      loop: '{{ obsolete_certificate_before.results }}'
+      loop_control:
+        label: '{{ item.item.path }}'
+      no_log: true
+
+    - name: Check for processes that have either file open or mapped
+      ansible.builtin.command:
+        argv: [/bin/busybox, fuser, '{{ item }}']
+      loop: '{{ obsolete_certificate_paths }}'
+      register: obsolete_certificate_users
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse removal when a file is used or its use cannot be checked
+      ansible.builtin.assert:
+        that:
+          - item.rc == 1
+          - item.stdout | trim == ''
+          - item.stderr | trim == ''
+        fail_msg: 'A process uses an obsolete certificate, or the native process-use check failed; preserve both files.'
+      loop: '{{ obsolete_certificate_users.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+
+    - name: Recheck file identity and bytes immediately before removal
+      ansible.builtin.stat:
+        path: '{{ item.path }}'
+        follow: false
+        checksum_algorithm: sha256
+        get_checksum: true
+      loop: '{{ obsolete_certificate_evidence }}'
+      loop_control:
+        label: '{{ item.path }}'
+      register: obsolete_certificate_rechecked
+      no_log: true
+
+    - name: Require unchanged files after the process-use checks
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - not item.stat.islnk
+          - item.stat.nlink == 1
+          - item.stat.checksum == item.item.checksum
+          - item.stat.inode == item.item.inode
+          - item.stat.size == item.item.size
+          - item.stat.uid == item.item.uid
+          - item.stat.gid == item.item.gid
+          - item.stat.mode == item.item.mode
+        fail_msg: 'An obsolete certificate changed during the checks; preserve both files.'
+      loop: '{{ obsolete_certificate_rechecked.results }}'
+      loop_control:
+        label: '{{ item.item.path }}'
+      no_log: true
+
+    - name: Keep exact preflight evidence on the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.obsolete-nextcloud-certificates.v1',
+              'host': inventory_hostname, 'files': obsolete_certificate_evidence,
+              'process_use': obsolete_certificate_users.results,
+              'removed': false, 'adoption_authorized': false} | to_nice_json }}
+        dest: '{{ obsolete_certificate_record_dir }}/preflight.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Remove only the two approved regular-file paths without recursion
+      ansible.builtin.command:
+        argv: '{{ ["/bin/rm", "--"] + obsolete_certificate_paths }}'
+      when: obsolete_certificate_apply | default(false) | bool
+      changed_when: true
+
+    - name: Verify the two exact paths are absent
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+      loop: '{{ obsolete_certificate_paths }}'
+      register: obsolete_certificate_after
+      when: obsolete_certificate_apply | default(false) | bool
+
+    - name: Require both removals before writing success evidence
+      ansible.builtin.assert:
+        that: not item.stat.exists
+      loop: '{{ obsolete_certificate_after.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when: obsolete_certificate_apply | default(false) | bool
+
+    - name: Record the completed exact cleanup on the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.obsolete-nextcloud-certificates.v1',
+              'host': inventory_hostname, 'files': obsolete_certificate_evidence,
+              'process_use': obsolete_certificate_users.results,
+              'removed': true, 'verified_absent': obsolete_certificate_paths,
+              'adoption_authorized': false} | to_nice_json }}
+        dest: '{{ obsolete_certificate_record_dir }}/receipt.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      when: obsolete_certificate_apply | default(false) | bool
