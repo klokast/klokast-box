@@ -457,6 +457,120 @@ def collect_package_audit(database_sha256, root=Path('/')):
     return result
 
 
+ROOTFUL_GRAPH = '/var/lib/containers/storage'
+ROOTFUL_TABLES = ('DBConfig', 'IDNamespace', 'ContainerConfig', 'ContainerState',
+                  'ContainerExecSession', 'ContainerDependency', 'ContainerVolume',
+                  'ContainerExitCode', 'PodConfig', 'PodState', 'VolumeConfig', 'VolumeState')
+
+
+def rootful_metadata(root, mounts, deadline):
+    if time.monotonic() >= deadline:
+        raise HostInventoryError('rootful store metadata exceeded its time limit')
+    if any(m['path'] != '/' and (m['path'] == ROOTFUL_GRAPH or
+            m['path'].startswith(ROOTFUL_GRAPH + '/') or ROOTFUL_GRAPH.startswith(m['path'] + '/')) for m in mounts):
+        raise HostInventoryError('rootful store crosses a mounted filesystem')
+    # Refuse linked ancestors even for an apparently absent standard store.
+    with ExitStack() as stack:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, descriptor)
+        for part in ROOTFUL_GRAPH[1:].split('/'):
+            try:
+                descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            except FileNotFoundError:
+                return {'roots': [ROOTFUL_GRAPH], 'entries': [], 'excluded': []}
+            stack.callback(os.close, descriptor)
+    return unowned_tree(root, [{'path': ROOTFUL_GRAPH, 'reason': 'unclassified-directory'}],
+                        mounts, None, deadline)
+
+
+def rootful_database_bytes(root, relative):
+    with ExitStack() as stack:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, descriptor)
+        parts = (ROOTFUL_GRAPH[1:] + '/' + relative).split('/')
+        for part in parts[:-1]:
+            descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            stack.callback(os.close, descriptor)
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+        stack.callback(os.close, descriptor)
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or before.st_nlink != 1 or
+                before.st_mode & 0o022 or not 0 < before.st_size <= 8 * 1024 * 1024):
+            raise HostInventoryError('rootful Podman database has unsafe metadata or size')
+        with os.fdopen(os.dup(descriptor), 'rb') as stream:
+            content = stream.read(8 * 1024 * 1024 + 1)
+        after = os.fstat(descriptor)
+        if (len(content) != before.st_size or
+                (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise HostInventoryError('rootful Podman database changed during inspection')
+        return content
+
+
+def rootful_table_counts(content, deadline):
+    # Never open the live database with SQLite or initialize Podman. Deserialize
+    # a bounded in-memory copy; query fixed table counts, never container JSON.
+    import sqlite3
+    if time.monotonic() >= deadline:
+        raise HostInventoryError('rootful registration inspection exceeded its time limit')
+    connection = sqlite3.connect(':memory:')
+    try:
+        connection.deserialize(content)
+        connection.enable_load_extension(False)
+        connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+        connection.execute('PRAGMA trusted_schema=OFF')
+        connection.execute('PRAGMA query_only=ON')
+        connection.execute('PRAGMA temp_store=MEMORY')
+        schema = connection.execute("SELECT name, type, sql FROM sqlite_master WHERE type != 'index'").fetchall()
+        if (len(schema) != len(ROOTFUL_TABLES) or {r[0] for r in schema} != set(ROOTFUL_TABLES) or
+                any(r[1] != 'table' or not isinstance(r[2], str) or not re.match(r'^CREATE TABLE\s', r[2], re.I) for r in schema)):
+            raise HostInventoryError('rootful Podman database has an unsupported schema')
+        config = connection.execute('SELECT SchemaVersion, GraphRoot FROM DBConfig').fetchall()
+        if config != [(1, ROOTFUL_GRAPH)]:
+            raise HostInventoryError('rootful Podman database version or graph root differs')
+        counts = {table: connection.execute('SELECT count(*) FROM "' + table + '"').fetchone()[0]
+                  for table in ROOTFUL_TABLES}
+        if time.monotonic() >= deadline or any(type(v) is not int or not 0 <= v <= 1000000 for v in counts.values()):
+            raise HostInventoryError('rootful Podman registration count exceeds its limit')
+        return counts
+    except sqlite3.Error as error:
+        raise HostInventoryError('rootful Podman database cannot be inspected safely') from error
+    finally:
+        connection.close()
+
+
+def collect_rootful_store(root, mounts):
+    result = {'kind': 'klokast.vm-rootful-store.v1', 'graph_root': ROOTFUL_GRAPH,
+              'complete': False, 'stable': False, 'present': None, 'entries': 0,
+              'metadata_sha256': None, 'database': None, 'adoption_authorized': False,
+              'custom_store_coverage': False, 'error': None}
+    try:
+        if not mounts:
+            raise HostInventoryError('mount inventory is unavailable')
+        deadline = time.monotonic() + 10
+        before = rootful_metadata(root, mounts, deadline)
+        rows = before['entries']
+        result.update(present=bool(rows), entries=len(rows), metadata_sha256=hashlib.sha256(
+            json.dumps(before, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+        paths = {v['path'] for v in rows}
+        candidates = [p for p in ('db.sql', 'libpod/db.sql') if ROOTFUL_GRAPH + '/' + p in paths]
+        if len(candidates) > 1 or any(p.endswith(('/bolt_state.db', '/db.sql-wal', '/db.sql-shm', '/db.sql-journal')) for p in paths):
+            raise HostInventoryError('rootful Podman database format or journal state is unsupported')
+        if candidates:
+            relative = candidates[0]
+            content = rootful_database_bytes(root, relative)
+            counts = rootful_table_counts(content, min(deadline, time.monotonic() + 2))
+            if content != rootful_database_bytes(root, relative):
+                raise HostInventoryError('rootful Podman database changed during inspection')
+            result['database'] = {'path': relative, 'sha256': hashlib.sha256(content).hexdigest(), 'table_rows': counts}
+        after = rootful_metadata(root, mounts, deadline)
+        result.update(complete=True, stable=before == after)
+    except (HostInventoryError, OSError, ValueError, ImportError, AttributeError) as error:
+        result['error'] = (str(error) if isinstance(error, HostInventoryError) else
+                           'rootful store metadata or the required SQLite capability is unavailable')
+    return result
+
+
 def collect_host(storage, root=Path('/')):
     result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
               'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
@@ -497,6 +611,10 @@ def collect_host(storage, root=Path('/')):
             if mounts != mount_inventory():
                 result['unowned_tree']['stable'] = False
         result['package_audit'] = collect_package_audit(result['package_database_sha256'], root)
+        if result['stable']:
+            result['rootful_store'] = collect_rootful_store(root, mounts)
+            if mounts != mount_inventory():
+                result['rootful_store']['stable'] = False
     except HostInventoryError as error:
         result['error'] = str(error)
     except (OSError, ValueError, UnicodeError):

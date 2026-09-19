@@ -326,6 +326,31 @@ def checked_package_audit(value, database_sha256):
     return value
 
 
+def checked_rootful_store(value):
+    fields = {'kind', 'graph_root', 'complete', 'stable', 'present', 'entries', 'metadata_sha256',
+              'database', 'adoption_authorized', 'custom_store_coverage', 'error'}
+    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-rootful-store.v1' or
+            value['graph_root'] != '/var/lib/containers/storage' or value['complete'] is not True or
+            value['stable'] is not True or value['error'] is not None or type(value['present']) is not bool or
+            value['adoption_authorized'] is not False or value['custom_store_coverage'] is not False or
+            type(value['entries']) is not int or not 0 <= value['entries'] <= 8192 or
+            value['present'] != (value['entries'] > 0) or not isinstance(value['metadata_sha256'], str) or
+            not re.fullmatch('[0-9a-f]{64}', value['metadata_sha256'])):
+        raise UpdateError('complete stable rootful store metadata is unavailable')
+    database = value['database']
+    if database is not None:
+        tables = {'DBConfig', 'IDNamespace', 'ContainerConfig', 'ContainerState', 'ContainerExecSession',
+                  'ContainerDependency', 'ContainerVolume', 'ContainerExitCode', 'PodConfig', 'PodState',
+                  'VolumeConfig', 'VolumeState'}
+        if (not value['present'] or not isinstance(database, dict) or set(database) != {'path', 'sha256', 'table_rows'} or
+                not isinstance(database['path'], str) or database['path'] not in {'db.sql', 'libpod/db.sql'} or not isinstance(database['sha256'], str) or
+                not re.fullmatch('[0-9a-f]{64}', database['sha256']) or not isinstance(database['table_rows'], dict) or
+                set(database['table_rows']) != tables or database['table_rows']['DBConfig'] != 1 or
+                any(type(v) is not int or not 0 <= v <= 1000000 for v in database['table_rows'].values())):
+            raise UpdateError('rootful store database evidence is invalid')
+    return value
+
+
 def assess_host_data(fact, host):
     """Host-wide metadata is evidence, never an allowlist of disposable files."""
     result = {'kind': 'klokast.vm-host-assessment.v1', 'adoption_ready': False,
@@ -404,6 +429,16 @@ def assess_host_data(fact, host):
             add('host.package-local-match', 'Native APK audit matches the local database; signed source and generated-configuration checks are still required.', 'warning')
     except UpdateError:
         add('host.package-audit-unknown', 'Complete stable native APK audit, including configuration and permissions, is unavailable.')
+    try:
+        rootful = checked_rootful_store(inventory.get('rootful_store'))
+        result['inventory']['rootful_store'] = rootful
+        database = rootful['database']
+        if database and any(v for k, v in database['table_rows'].items() if k != 'DBConfig'):
+            add('host.rootful-registrations', 'The standard rootful Podman database contains registered state; qualify it before adoption.')
+        else:
+            add('host.rootful-store-unqualified', 'Standard rootful store metadata is available. Zero database counts do not qualify other stores, unregistered layers, or host data.', 'warning')
+    except UpdateError:
+        add('host.rootful-store-unknown', 'Complete stable standard rootful Podman store evidence is unavailable; preserve its state.')
     if unowned:
         add('host.unowned-paths', 'Files outside package ownership require explicit retention, generated-configuration, or reconstructable-state classification.')
     if maintenance:

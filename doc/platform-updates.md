@@ -227,6 +227,23 @@ k001-iot remained stopped. The controller report is
 `b28d961227febdaf0b6e30aba482094d6612595b8fcdea2c2cfdc4c3d2ba9179`.
 Host classification and the other adoption gates remain blocked.
 
+A separate read-only pass inspects the standard rootful Podman store at
+`/var/lib/containers/storage`. It compares two bounded metadata trees and, when
+present, copies at most 8 MiB of the native SQLite database into memory. It
+reads only fixed registration-table counts from that copy and checks the
+[Podman schema version and graph-root binding](https://github.com/containers/podman/blob/v5.6.2/libpod/sqlite_state_internal.go).
+The live database is never opened with SQLite. The pass does not invoke Podman,
+initialize or migrate its store, or emit container names, configuration JSON,
+or environment values. Database bytes and tree metadata must remain unchanged.
+The overall pass has a ten-second limit; SQL inspection has a two-second limit.
+
+Unsupported schemas, views, legacy Bolt databases, multiple databases, journal
+sidecars, unsafe paths, mounts, changed evidence, or exceeded limits produce
+`host.rootful-store-unknown`. Registered state produces
+`host.rootful-registrations`. An absent database or zero object counts do not
+prove that layers, volumes, custom stores, or other accounts contain no data.
+Those cases remain `host.rootful-store-unqualified`; adoption stays blocked.
+
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
 started services, scheduled starts, and markers with missing scripts. The
@@ -1052,6 +1069,18 @@ checks release identity, refusal of the obsolete original generation, and
 preservation of writes on both accepted data disks through process restart.
 These are synthetic transaction checks. They do not qualify application health,
 data copying, a production release, or a physical dom0 reboot.
+
+Native operation `3c1e4028fd174863a6a8e8ef` passed at source `24dd0cb` on
+2026-09-18 with candidate `776a5f969bbc7730479a9587`. All seven existing
+recovery cases and the new release chain passed. The chain completed in
+84.497 seconds: two releases accepted, an intervening failed attempt recovered,
+the retry used the recovered assignment, both accepted writes survived, and
+the obsolete original generation was refused. Cleanup removed all six test LVs
+and the disposable guest and verified unchanged production domain UUIDs.
+The full local VM suite passed 252 tests. This run did not repeat the separate
+90-second controller-loss or 30-minute watchdog-expiry cases.
+The box-local `result.json` checksum is
+`8c7638cfd34653387fdbdde12e3ff595f12e0680633c78f2af45365df72c2445`.
 
 Native validation on 2026-09-18 passed all eight disposable recovery cases,
 including controller loss. The detached watcher restored the old generation
