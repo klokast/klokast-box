@@ -113,8 +113,12 @@ Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and
 subordinate ranges, and enabled package-owned OpenRC links with exact targets.
-The shadow file, retained keys, disks, and unowned service scripts still need
-their own evidence.
+The old Podman boot helper is an exact rendering of checked source at
+`17cfd0b`. It is recognized only with its exact bytes, root-owned mode, boot
+state, link target, and an empty rootless store. The candidate uses the current
+recipe; it does not copy the old helper. Other unowned service scripts need
+their own evidence. The shadow file, retained keys, and disks also remain
+separate checks.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does

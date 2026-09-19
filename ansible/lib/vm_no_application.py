@@ -106,6 +106,10 @@ CLEANUP_ROOTS = (
     '/var/log/klokast/immich-private-ingress',
 )
 LEGACY_TEMPLATE_MARKER = 'hostname=klokast-podman-template\nlv=/dev/vg0/lv_podman_template\n'
+# Rendered from the checked-in 17cfd0b podman-host boot helper with runner neo.
+# That version cleared only Podman's containers and libpod/tmp at boot. The
+# candidate recipe clears the whole ephemeral runroot; never copy this file.
+LEGACY_RUNROOT_HELPER_SHA256 = '90363aa710e409fc5d3fbb978ed79e6a8896d523ff536a23c1517b57d31b718e'
 BUSYBOX_LINK_SHA256 = hashlib.sha256(b'/bin/busybox').hexdigest()
 BBSUID_LINK_SHA256 = hashlib.sha256(b'/bin/bbsuid').hexdigest()
 PINENTRY_LINK_SHA256 = hashlib.sha256(b'pinentry-curses').hexdigest()
@@ -384,6 +388,17 @@ def fixed_service_resolution(service, entries, audit_verified, changed_paths):
     return package_source and (not active or expected)
 
 
+def legacy_runroot_service_resolution(service, entries, empty_rootless_runtime):
+    """Resolve only the old checked-in boot helper on an empty Podman guest."""
+    script = entries.get('/etc/init.d/klokast-podman-runroot-cleanup')
+    return (empty_rootless_runtime and service['name'] == 'klokast-podman-runroot-cleanup' and
+            service['script'] == {'sha256': LEGACY_RUNROOT_HELPER_SHA256} and
+            service['runlevels'] == ['boot'] and service['markers'] == ['started'] and
+            isinstance(script, dict) and
+            script.get('mode') == stat.S_IFREG | 0o755 and
+            script.get('uid') == 0 and script.get('gid') == 0)
+
+
 def fixed_account_classification(account, role, legacy_template, packages, *,
                                  runtime_owner=None, subuid=None, subgid=None):
     """Recognize exact template accounts; the neo identity needs machine inputs."""
@@ -416,7 +431,7 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         nginx_error_empty=False, inspection_artifact=None,
                         tailscale_log_owner=None, tailscale_present=False,
                         verified_rootful_paths=frozenset(), empty_rootless_runtime=False,
-                        verified_runlevel_links=frozenset()):
+                        verified_runlevel_links=frozenset(), legacy_runroot_helper=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -425,6 +440,9 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
         # Discovery alone does not validate private keys or state usability.
     elif name in CONFIGURATION:
         category, rule = 'generated-configuration', 'compare with rendered machine inputs'
+        if name == '/etc/init.d/klokast-podman-runroot-cleanup' and legacy_runroot_helper:
+            rule = 'exact former checked-in Podman boot helper; replace with current candidate recipe'
+            resolved = True
     elif name == '/etc/nginx/http.d/default.conf':
         category = 'reconstructable-os-state' if nginx_default_copy else 'unknown'
         rule = 'exact copy of the installed Nginx package default; replace with candidate packages'
@@ -643,10 +661,15 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     except UpdateError:
         empty_rootless_runtime = False
     verified_runlevel_links = set()
+    legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
-        if (service['name'] not in ACTIVE_SERVICE_STATE or
-                not fixed_service_resolution(service, entries, audited_package_paths,
-                                             changed_package_paths)):
+        legacy_helper = legacy_runroot_service_resolution(service, entries,
+                                                           empty_rootless_runtime)
+        legacy_runroot_helper |= legacy_helper
+        if not (legacy_helper or
+                (service['name'] in ACTIVE_SERVICE_STATE and
+                 fixed_service_resolution(service, entries, audited_package_paths,
+                                          changed_package_paths))):
             continue
         for runlevel in service['runlevels']:
             path = '/etc/runlevels/' + runlevel + '/' + service['name']
@@ -669,7 +692,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                tailscale_present='tailscale' in installed_packages,
                                                verified_rootful_paths=verified_rootful_paths,
                                                empty_rootless_runtime=empty_rootless_runtime,
-                                               verified_runlevel_links=verified_runlevel_links), entry)
+                                               verified_runlevel_links=verified_runlevel_links,
+                                               legacy_runroot_helper=legacy_runroot_helper), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
@@ -689,9 +713,13 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         active = bool(service['runlevels'] or service['markers'])
         resolved = fixed_service_resolution(service, entries, audited_package_paths,
                                             changed_package_paths)
+        if legacy_runroot_service_resolution(service, entries, empty_rootless_runtime):
+            resolved = True
         category = ('generated-configuration' if service['name'] in BOOT_SERVICES else
                     ('unknown' if active else 'approved-package-content'))
-        rule = ('verified package script and fixed OpenRC state' if resolved else
+        rule = ('exact former checked-in helper and fixed OpenRC state' if
+                resolved and service['name'] == 'klokast-podman-runroot-cleanup' else
+                'verified package script and fixed OpenRC state' if resolved else
                 'verify script and permitted OpenRC state')
         item('service', service['name'], category, rule, resolved, service)
     for maintenance in inventory['maintenance_files']:

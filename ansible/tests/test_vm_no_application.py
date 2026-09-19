@@ -280,6 +280,26 @@ class Qualification(unittest.TestCase):
             self.assertFalse(noapp.fixed_service_resolution(changed_service, entries,
                                                             audited, changed))
 
+    def test_old_runroot_helper_requires_exact_source_state_and_empty_store(self):
+        path = '/etc/init.d/klokast-podman-runroot-cleanup'
+        entry = {'path': path, 'mode': stat.S_IFREG | 0o755, 'uid': 0, 'gid': 0}
+        service = {'name': 'klokast-podman-runroot-cleanup',
+                   'script': {'sha256': noapp.LEGACY_RUNROOT_HELPER_SHA256},
+                   'runlevels': ['boot'], 'markers': ['started']}
+        self.assertTrue(noapp.legacy_runroot_service_resolution(service, {path: entry}, True))
+        self.assertFalse(noapp.legacy_runroot_service_resolution(service, {path: entry}, False))
+        for changed in ({**service, 'script': {'sha256': 'a' * 64}},
+                        {**service, 'runlevels': ['default']},
+                        {**service, 'markers': ['failed']},
+                        {**service, 'name': 'other'}):
+            self.assertFalse(noapp.legacy_runroot_service_resolution(changed, {path: entry}, True))
+        for changed in ({**entry, 'mode': stat.S_IFREG | 0o777},
+                        {**entry, 'uid': 1000},
+                        {**entry, 'mode': stat.S_IFLNK | 0o777}):
+            self.assertFalse(noapp.legacy_runroot_service_resolution(service, {path: changed}, True))
+        self.assertFalse(noapp.path_classification(entry)[2])
+        self.assertTrue(noapp.path_classification(entry, legacy_runroot_helper=True)[2])
+
     def test_fixed_accounts_do_not_accept_extra_identity_or_role_drift(self):
         account = {'name': 'nginx', 'uid': 103, 'gid': 104,
                    'home': '/var/lib/nginx', 'shell': '/sbin/nologin'}
