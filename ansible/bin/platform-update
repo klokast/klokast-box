@@ -458,6 +458,7 @@ def adoption_prepare(box, role):
     observed_configuration = None
     observed_firewall = None
     legacy_comparison = None
+    shadow_comparison = None
     if (intent and intent['eligible'] and result['items'] and
             discovery.get('implementation_commit') == commit):
         host = box + '-' + role
@@ -479,6 +480,15 @@ def adoption_prepare(box, role):
                 REPO, host, inventory, observed_firewall, result['report_sha256'],
                 commit, intent['engine_commit'] == commit)
             result = vm_no_application.with_legacy_firewall(result, comparison, legacy_comparison)
+        shadow_row = next((row for row in result['items']
+                           if row['area'] == 'package-difference' and row['key'] == '/etc/shadow'), None)
+        if (shadow_row and shadow_row['rule'] ==
+                'exact old package and locked service accounts; compare admin password hash with checked machine input'):
+            fact = next(row['facts'] for row in discovery['hosts'] if row['host'] == host)
+            shadow_comparison = vm_config_audit.shadow_input_report(
+                REPO, host, inventory, fact['legacy_shadow_file']['neo_hash_sha256'],
+                result['report_sha256'], commit, intent['engine_commit'] == commit)
+            result = vm_no_application.with_shadow_input(result, shadow_comparison, discovery)
     if (sources is not None and read_sources() != sources or
             optional(STATE / 'current.json') != discovery or
             command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
@@ -504,6 +514,13 @@ def adoption_prepare(box, role):
                     raise UpdateError('historical firewall comparison conflicts with existing evidence')
             else:
                 write(legacy_record, legacy_comparison)
+        if shadow_comparison is not None:
+            shadow_record = comparison_dir / (shadow_comparison['report_sha256'] + '.json')
+            if shadow_record.exists():
+                if load(shadow_record) != shadow_comparison:
+                    raise UpdateError('shadow comparison conflicts with existing evidence')
+            else:
+                write(shadow_record, shadow_comparison)
     destination = STATE / 'qualifications'
     destination.mkdir(mode=0o700, exist_ok=True)
     record = destination / (result['report_sha256'] + '.json')

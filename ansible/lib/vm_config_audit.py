@@ -31,6 +31,7 @@ HASH = re.compile(r'[0-9a-f]{64}')
 LEGACY_FIREWALL_SOURCE = 'ansible/update-profiles/legacy-shared-vm-firewall-v1.j2'
 LEGACY_FIREWALL_COMMIT = '17cfd0ba7501a733873d3c4b5e8ef90280865c32'
 LEGACY_FIREWALL_SHA256 = 'a72cd510fa5b6958bbafcd2a491db4639393dd6f77204f948f7bdb263de23a8e'
+ADMIN_HASH_SOURCE = 'ansible/inventory-policy/group_vars/all.yml'
 
 
 class ConfigAuditError(RuntimeError):
@@ -243,6 +244,38 @@ def legacy_firewall_report(repo, host, variables, observed, qualification_sha256
              'engine_commit': engine_commit, 'approved_engine': approved_engine,
              'qualification_sha256': qualification_sha256,
              'authority': 'comparison-only', **match}
+    value['report_sha256'] = sha(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+    return value
+
+
+def shadow_input_report(repo, host, variables, observed_sha256,
+                        qualification_sha256, engine_commit, approved_engine):
+    """Compare only a digest of the old admin hash with checked machine input."""
+    if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-(?:dmz|iot)', host) or
+            not HASH.fullmatch(observed_sha256) or not HASH.fullmatch(qualification_sha256) or
+            not re.fullmatch(r'[0-9a-f]{40}', engine_commit) or
+            type(approved_engine) is not bool):
+        raise ConfigAuditError('shadow comparison has invalid source identity')
+    source = Path(repo) / ADMIN_HASH_SOURCE
+    if source.is_symlink() or not source.is_file():
+        raise ConfigAuditError('checked admin password source is unavailable')
+    source_bytes = source.read_bytes()
+    try:
+        checked = yaml.safe_load(source_bytes)
+    except yaml.YAMLError as error:
+        raise ConfigAuditError('checked admin password source is invalid') from error
+    password = variables.get('vm_admin_password_hash')
+    if (not isinstance(checked, dict) or checked.get('vm_admin_password_hash') != password or
+            not isinstance(password, str) or not re.fullmatch(
+                r'\$6\$(?:rounds=[0-9]{1,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}', password)):
+        raise ConfigAuditError('admin password hash differs from the checked machine source')
+    expected = sha(password.encode())
+    value = {'kind': 'klokast.vm-shadow-input-comparison.v1', 'host': host,
+             'engine_commit': engine_commit, 'approved_engine': approved_engine,
+             'qualification_sha256': qualification_sha256,
+             'source': ADMIN_HASH_SOURCE, 'source_sha256': sha(source_bytes),
+             'expected_neo_hash_sha256': expected, 'observed_neo_hash_sha256': observed_sha256,
+             'match': expected == observed_sha256, 'authority': 'comparison-only'}
     value['report_sha256'] = sha(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
     return value
 

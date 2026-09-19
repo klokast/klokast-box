@@ -231,6 +231,28 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.checked_legacy_account_file(
             changed, 'group', 'dmz', True, {'/etc/passwd', '/etc/group'}))
 
+    def test_shadow_source_needs_package_evidence_and_keeps_admin_input_pending(self):
+        fact = {'legacy_shadow_file': {
+                    'kind': 'klokast.vm-legacy-shadow.v1',
+                    'observed_sha256': 'a' * 64,
+                    'baseline_sha256': noapp.LEGACY_SHADOW_BASELINE_SHA256,
+                    'added_accounts': ['cloudflared', 'klogd', 'neo', 'nginx', 'tailscale'],
+                    'neo_hash_sha256': 'b' * 64},
+                'configuration': {'sha256': {'/etc/shadow': 'a' * 64}},
+                'packages': {'alpine-baselayout-data': {
+                    'origin': 'alpine-baselayout', 'version': '3.7.2-r0',
+                    'architecture': 'x86_64'}}}
+        self.assertTrue(noapp.checked_legacy_shadow_file(
+            fact, 'dmz', True, {'/etc/shadow'}))
+        self.assertFalse(noapp.checked_legacy_shadow_file(
+            fact, 'iot', True, {'/etc/shadow'}))
+        self.assertFalse(noapp.checked_legacy_shadow_file(
+            fact, 'dmz', False, {'/etc/shadow'}))
+        changed = copy.deepcopy(fact)
+        changed['legacy_shadow_file']['baseline_sha256'] = '0' * 64
+        self.assertFalse(noapp.checked_legacy_shadow_file(
+            changed, 'dmz', True, {'/etc/shadow'}))
+
     def test_incomplete_stale_future_and_stopped_guest_never_qualify(self):
         for mode in ('incomplete', 'stale', 'future', 'stopped', 'duplicate'):
             observed = copy.deepcopy(self.observed)
@@ -634,6 +656,41 @@ class ConfigComparison(unittest.TestCase):
                                           if k != 'report_sha256'})
         self.assertFalse(next(v for v in noapp.with_legacy_firewall(v2, comparison, legacy)['items']
                               if v['key'] == '/etc/nftables.nft')['resolved'])
+
+    def test_shadow_comparison_resolves_only_checked_admin_input_after_approval(self):
+        source = config_audit.yaml.safe_load((Path(__file__).resolve().parents[2] /
+                                              config_audit.ADMIN_HASH_SOURCE).read_text())
+        password = source['vm_admin_password_hash']
+        observed = hashlib.sha256(password.encode()).hexdigest()
+        discovery = {'hosts': [{'host': 'boxa-dmz', 'facts': {
+            'legacy_shadow_file': {'neo_hash_sha256': observed}}}]}
+        base = self.base()
+        base['kind'] = 'klokast.vm-no-application-qualification.v2'
+        base['discovery_sha256'] = digest(discovery)
+        base['items'].append({'area': 'package-difference', 'key': '/etc/shadow',
+                              'classification': 'generated-configuration',
+                              'rule': 'exact old package and locked service accounts; compare admin password hash with checked machine input',
+                              'resolved': False, 'evidence_sha256': '4' * 64})
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        receipt = config_audit.shadow_input_report(
+            Path(__file__).resolve().parents[2], 'boxa-dmz',
+            {'vm_admin_password_hash': password}, observed,
+            base['report_sha256'], 'a' * 40, True)
+        result = noapp.with_shadow_input(base, receipt, discovery)
+        self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v4')
+        self.assertTrue(next(v for v in result['items'] if v['key'] == '/etc/shadow')['resolved'])
+        changed = {**receipt, 'observed_neo_hash_sha256': '0' * 64}
+        changed['match'] = False
+        changed['report_sha256'] = digest({k: v for k, v in changed.items() if k != 'report_sha256'})
+        with self.assertRaises(UpdateError):
+            noapp.with_shadow_input(base, changed, discovery)
+        base['intent']['engine_commit'] = '0' * 40
+        base['report_sha256'] = digest({k: v for k, v in base.items() if k != 'report_sha256'})
+        receipt.update(approved_engine=False, qualification_sha256=base['report_sha256'])
+        receipt['report_sha256'] = digest({k: v for k, v in receipt.items() if k != 'report_sha256'})
+        self.assertFalse(next(v for v in noapp.with_shadow_input(base, receipt, discovery)['items']
+                              if v['key'] == '/etc/shadow')['resolved'])
 
 
 class CLI(unittest.TestCase):

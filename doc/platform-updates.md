@@ -156,8 +156,12 @@ Its archive SHA-256 is
 The collector removes only exact `klogd`, `neo`, Tailscale, and declared DMZ
 package account rows for comparison. It restores the two known group membership
 changes before it checks the package checksum. The candidate regenerates these
-files and preserves the approved numeric `neo` identity. `/etc/shadow` needs
-separate private input validation.
+files and preserves the approved numeric `neo` identity. The shadow check
+restores the signed package baseline only after it verifies a locked root,
+locked service accounts, and the exact declared account set. It reports a
+digest of the `neo` password hash, not the hash. `adopt prepare` compares that
+digest with the checked machine input. The comparison resolves only after the
+engine is approved; the candidate regenerates its shadow file.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does

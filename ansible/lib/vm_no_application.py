@@ -113,6 +113,7 @@ LEGACY_ACCOUNT_BASELINES = {
     'passwd': '31a94f06f17bc3b9085fccab1d0fa6ee9e79c4a1e4d91f617fa5de95863be015',
     'group': '6fb6ab5a5526e6f4896b70c7e3c350fd475158a1f0d7b5fc0f3f9bd57f1c3be8',
 }
+LEGACY_SHADOW_BASELINE_SHA256 = '970fcd65d97c2ffb2f943084ccb87537892abf930e6d13376460db047f671351'
 TAILSCALE_LOGS = frozenset('/home/neo/.local/share/tailscale/tailscaled.log' + suffix
                            for suffix in ('.conf', '1.txt', '2.txt'))
 COLLECTOR_SOURCE = Path(__file__).resolve().parents[1] / 'roles/vm-update-inventory/files/collect-vm-update-facts'
@@ -243,6 +244,31 @@ def checked_legacy_account_file(fact, name, role, audited_package_paths, changed
             configuration['sha256'].get(path) == value['observed_sha256'] and
             isinstance(package, dict) and
             package.get('origin') == 'alpine-baselayout' and
+            package.get('version') == '3.7.2-r0' and
+            package.get('architecture') == 'x86_64')
+
+
+def checked_legacy_shadow_file(fact, role, audited_package_paths, changed_package_paths):
+    """Check old shadow provenance while leaving admin input approval separate."""
+    value = fact.get('legacy_shadow_file')
+    configuration = fact.get('configuration')
+    packages = fact.get('packages')
+    package = packages.get('alpine-baselayout-data') if isinstance(packages, dict) else None
+    expected = sorted({'klogd', 'neo', 'tailscale'} |
+                      ({'cloudflared', 'nginx'} if role == 'dmz' else set()))
+    return (role in ROLES and audited_package_paths and '/etc/shadow' in changed_package_paths and
+            isinstance(value, dict) and
+            set(value) == {'kind', 'observed_sha256', 'baseline_sha256',
+                           'added_accounts', 'neo_hash_sha256'} and
+            value['kind'] == 'klokast.vm-legacy-shadow.v1' and
+            value['baseline_sha256'] == LEGACY_SHADOW_BASELINE_SHA256 and
+            value['added_accounts'] == expected and
+            all(isinstance(value[key], str) and re.fullmatch('[0-9a-f]{64}', value[key])
+                for key in ('observed_sha256', 'neo_hash_sha256')) and
+            isinstance(configuration, dict) and
+            isinstance(configuration.get('sha256'), dict) and
+            configuration['sha256'].get('/etc/shadow') == value['observed_sha256'] and
+            isinstance(package, dict) and package.get('origin') == 'alpine-baselayout' and
             package.get('version') == '3.7.2-r0' and
             package.get('architecture') == 'x86_64')
 
@@ -831,6 +857,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     verified_account_files = {name: checked_legacy_account_file(
         fact, name, role, audited_package_paths, changed_package_paths)
         for name in ('passwd', 'group')}
+    verified_shadow_file = checked_legacy_shadow_file(
+        fact, role, audited_package_paths, changed_package_paths)
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -878,6 +906,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         if name in {'/etc/passwd', '/etc/group'} and verified_account_files[name.removeprefix('/etc/')]:
             rule = 'exact old package and declared account additions; regenerate candidate accounts from signed packages and approved numeric identity'
             resolved = True
+        if name == '/etc/shadow' and verified_shadow_file:
+            rule = 'exact old package and locked service accounts; compare admin password hash with checked machine input'
         if difference['code'] == 'm' and name in {'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'}:
             category, rule = 'reconstructable-os-state', 'verify runtime directory ownership and mode'
             mount_verified = any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))
@@ -1120,6 +1150,86 @@ def with_legacy_firewall(base, comparison, legacy):
             value['rule'] = 'exact old checked firewall recipe with no extra permit; replace with current candidate'
             value['evidence_sha256'] = digest({'item': item['evidence_sha256'],
                                                'legacy': legacy['report_sha256']})
+        result['items'].append(value)
+    result['findings'] = [finding for finding in base['findings']
+                          if finding['code'] != 'qualification.unresolved']
+    return finish(result)
+
+
+def with_shadow_input(base, comparison, discovery):
+    """Bind checked admin input to old shadow evidence without exporting it."""
+    if not isinstance(base, dict):
+        raise UpdateError('shadow comparison lacks a qualification report')
+    host = base.get('box', '') + '-' + base.get('role', '')
+    if (base.get('kind') not in {'klokast.vm-no-application-qualification.v2',
+                                'klokast.vm-no-application-qualification.v3'} or
+            base.get('report_sha256') != digest({k: v for k, v in base.items()
+                                                 if k != 'report_sha256'}) or
+            base.get('discovery_sha256') != digest(discovery) or
+            not isinstance(discovery, dict) or
+            not isinstance(discovery.get('hosts'), list)):
+        raise UpdateError('shadow comparison lacks a bound qualification observation')
+    selected = [row.get('facts') for row in discovery['hosts']
+                if isinstance(row, dict) and row.get('host') == host]
+    if len(selected) != 1 or not isinstance(selected[0], dict):
+        raise UpdateError('shadow comparison target facts are unavailable')
+    shadow = selected[0].get('legacy_shadow_file')
+    fields = {'kind', 'host', 'engine_commit', 'approved_engine',
+              'qualification_sha256', 'source', 'source_sha256',
+              'expected_neo_hash_sha256', 'observed_neo_hash_sha256',
+              'match', 'authority', 'report_sha256'}
+    source = Path(__file__).resolve().parents[2] / vm_config_audit.ADMIN_HASH_SOURCE
+    if source.is_symlink() or not source.is_file():
+        raise UpdateError('checked admin password source is unavailable')
+    source_bytes = source.read_bytes()
+    try:
+        checked = vm_config_audit.yaml.safe_load(source_bytes)
+    except vm_config_audit.yaml.YAMLError as error:
+        raise UpdateError('checked admin password source is invalid') from error
+    password = checked.get('vm_admin_password_hash') if isinstance(checked, dict) else None
+    if (not isinstance(password, str) or not re.fullmatch(
+            r'\$6\$(?:rounds=[0-9]{1,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}', password)):
+        raise UpdateError('checked admin password source is invalid')
+    if (not isinstance(comparison, dict) or set(comparison) != fields or
+            comparison['kind'] != 'klokast.vm-shadow-input-comparison.v1' or
+            comparison['host'] != host or
+            comparison['engine_commit'] != base['implementation_commit'] or
+            comparison['qualification_sha256'] != base['report_sha256'] or
+            comparison['source'] != vm_config_audit.ADMIN_HASH_SOURCE or
+            comparison['source_sha256'] != hashlib.sha256(source_bytes).hexdigest() or
+            comparison['expected_neo_hash_sha256'] != hashlib.sha256(password.encode()).hexdigest() or
+            comparison['authority'] != 'comparison-only' or
+            type(comparison['approved_engine']) is not bool or
+            comparison['approved_engine'] != bool(base['intent'] and
+                                                  base['intent']['engine_commit'] == base['implementation_commit']) or
+            not isinstance(shadow, dict) or
+            comparison['observed_neo_hash_sha256'] != shadow.get('neo_hash_sha256') or
+            any(not isinstance(comparison[key], str) or not re.fullmatch('[0-9a-f]{64}', comparison[key])
+                for key in ('source_sha256', 'expected_neo_hash_sha256', 'observed_neo_hash_sha256')) or
+            type(comparison['match']) is not bool or
+            comparison['match'] != (comparison['expected_neo_hash_sha256'] ==
+                                    comparison['observed_neo_hash_sha256']) or
+            comparison['report_sha256'] != digest({k: v for k, v in comparison.items()
+                                                   if k != 'report_sha256'})):
+        raise UpdateError('shadow input comparison conflicts with checked source or discovery')
+    original = [row for row in base['items'] if row['area'] == 'package-difference' and
+                row['key'] == '/etc/shadow']
+    if (len(original) != 1 or original[0]['classification'] != 'generated-configuration' or
+            original[0]['rule'] !=
+            'exact old package and locked service accounts; compare admin password hash with checked machine input'):
+        raise UpdateError('shadow package baseline is not qualified')
+    result = {**base, 'kind': 'klokast.vm-no-application-qualification.v4',
+              'prior_report_sha256': base['report_sha256'],
+              'shadow_input_evidence_sha256': comparison['report_sha256']}
+    result.pop('report_sha256')
+    result['items'] = []
+    for item in base['items']:
+        value = dict(item)
+        if item == original[0] and comparison['match'] and comparison['approved_engine']:
+            value['resolved'] = True
+            value['rule'] = 'exact old locked account state and checked admin hash; regenerate from approved machine input'
+            value['evidence_sha256'] = digest({'item': item['evidence_sha256'],
+                                               'shadow': comparison['report_sha256']})
         result['items'].append(value)
     result['findings'] = [finding for finding in base['findings']
                           if finding['code'] != 'qualification.unresolved']

@@ -97,6 +97,21 @@ class ConfigAuditTests(unittest.TestCase):
                 audit.guest_firewall_bytes('k001-dmz')
             self.assertNotIn('private diagnostic', str(error.exception))
 
+    def test_shadow_comparison_binds_checked_admin_source_without_raw_hash(self):
+        source = audit.yaml.safe_load((REPO / audit.ADMIN_HASH_SOURCE).read_text())
+        password = source['vm_admin_password_hash']
+        observed = audit.sha(password.encode())
+        receipt = audit.shadow_input_report(REPO, 'k001-dmz',
+                                            {'vm_admin_password_hash': password}, observed,
+                                            'c' * 64, 'a' * 40, False)
+        self.assertTrue(receipt['match'])
+        self.assertEqual(receipt['authority'], 'comparison-only')
+        self.assertNotIn(password, str(receipt))
+        with self.assertRaises(audit.ConfigAuditError):
+            audit.shadow_input_report(REPO, 'k001-dmz',
+                                      {'vm_admin_password_hash': '$6$other$' + 'a' * 86},
+                                      observed, 'c' * 64, 'a' * 40, False)
+
 
 if __name__ == '__main__':
     unittest.main()

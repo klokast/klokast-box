@@ -144,6 +144,24 @@ class HostInventory(unittest.TestCase):
                           changed_group.replace(b'root,neo', b'root,other') + extra_group):
             self.assertIsNone(self.m.legacy_account_file('group'))
 
+    def test_shadow_receipt_exports_no_password_and_rejects_unlocked_service(self):
+        def row(name, password, day, maximum='99999', warning='7'):
+            return ':'.join([name, password, day, '0', maximum, warning, '', '', ''])
+        root = ':'.join(['root', '!', '20578', '0', '', '', '', '', ''])
+        neo_hash = '$6$salt1234$' + 'a' * 86
+        content = ('\n'.join([root, row('klogd', '!', '20578'),
+                              row('neo', neo_hash, '20578'),
+                              row('tailscale', '!', '20578')]) + '\n').encode()
+        with patch.object(self.m, 'stable_regular_bytes', return_value=content):
+            receipt = self.m.legacy_shadow_file()
+        self.assertEqual(receipt['added_accounts'], ['klogd', 'neo', 'tailscale'])
+        self.assertNotIn(neo_hash, json.dumps(receipt))
+        self.assertEqual(receipt['baseline_sha256'], hashlib.sha256(
+            ':'.join(['root', '', '', '0', '', '', '', '', '']).encode() + b'\n').hexdigest())
+        with patch.object(self.m, 'stable_regular_bytes',
+                          return_value=content.replace(b'klogd:!:', b'klogd:$6$unsafe:')):
+            self.assertIsNone(self.m.legacy_shadow_file())
+
     def test_symlink_does_not_expand_metadata_scope(self):
         (self.root / 'srv/data/alias').symlink_to(self.root / 'proc')
         value = self.collect()

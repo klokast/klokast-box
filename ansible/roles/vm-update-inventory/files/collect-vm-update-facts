@@ -1245,6 +1245,52 @@ def legacy_account_file(name, path=None):
             'added_accounts': sorted(additions)}
 
 
+def legacy_shadow_file(path="/etc/shadow"):
+    """Return checksums only; never export password fields or raw lines."""
+    content = stable_regular_bytes(path, 8192, 0, 42, 0o640)
+    if content is None or not content.endswith(b'\n'):
+        return None
+    try:
+        lines = content.decode('ascii').splitlines()
+    except UnicodeError:
+        return None
+    added_names = {'klogd', 'neo', 'tailscale', 'cloudflared', 'nginx'}
+    base, added, names, neo_digest = [], [], set(), None
+    for line in lines:
+        row = line.split(':')
+        if len(row) != 9 or row[0] in names or not re.fullmatch(r'[a-z][a-z0-9-]*', row[0]):
+            return None
+        names.add(row[0])
+        if row[0] in added_names:
+            valid_date = re.fullmatch(r'[0-9]{1,6}', row[2]) is not None
+            if (not valid_date or row[3:] != ['0', '99999', '7', '', '', ''] or
+                    (row[0] != 'neo' and row[1] != '!')):
+                return None
+            if row[0] == 'neo':
+                if not re.fullmatch(r'\$6\$(?:rounds=[0-9]{1,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}', row[1]):
+                    return None
+                neo_digest = hashlib.sha256(row[1].encode()).hexdigest()
+            added.append(row[0])
+            continue
+        if row[0] == 'root':
+            if (row[1] != '!' or not re.fullmatch(r'[0-9]{1,6}', row[2]) or
+                    row[3:] != ['0', '', '', '', '', '']):
+                return None
+            row[1:3] = ['', '']
+            line = ':'.join(row)
+        base.append(line)
+    additions = set(added)
+    required = {'klogd', 'neo', 'tailscale'}
+    if (additions not in (required, required | {'cloudflared', 'nginx'}) or
+            'root' not in names or neo_digest is None):
+        return None
+    baseline = ('\n'.join(base) + '\n').encode()
+    return {'kind': 'klokast.vm-legacy-shadow.v1',
+            'observed_sha256': hashlib.sha256(content).hexdigest(),
+            'baseline_sha256': hashlib.sha256(baseline).hexdigest(),
+            'added_accounts': sorted(additions), 'neo_hash_sha256': neo_digest}
+
+
 def read_json_command(argv):
     result = capture(argv)
     try:
@@ -1364,7 +1410,7 @@ def main():
     status = read_json_command(["tailscale", "status", "--json"]) or {}
     configs = {}
     for name in ("/etc/apk/repositories", "/etc/apk/world", "/etc/fstab", "/etc/nftables.nft",
-                 "/etc/mdev.conf", "/etc/passwd", "/etc/group",
+                 "/etc/mdev.conf", "/etc/passwd", "/etc/group", "/etc/shadow",
                  "/etc/subuid", "/etc/subgid", "/etc/containers/storage.conf", "/etc/containers/registries.conf"):
         value = text(name, 1024 * 1024)
         configs[name] = hashlib.sha256(value.encode()).hexdigest() if value else None
@@ -1384,6 +1430,7 @@ def main():
         "tailscale_resolver": tailscale_resolver(status),
         "mdev_tun_override": mdev_tun_override(),
         "legacy_account_files": {name: legacy_account_file(name) for name in ('passwd', 'group')},
+        "legacy_shadow_file": legacy_shadow_file(),
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
         "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},
