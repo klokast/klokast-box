@@ -5,6 +5,7 @@ an accepted release, or start a VM. The caller supplies the exact build receipt
 from its clean controller checkout and holds the controller build lock.
 """
 import hashlib
+import gzip
 import json
 from pathlib import Path
 import re
@@ -57,39 +58,52 @@ def remote(host, *command, input_bytes=None, timeout=60):
                            input_bytes=input_bytes, timeout=timeout)
 
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def source_file(host, source, target, expected):
     try:
         with Path(target).open('xb') as output:
             result = subprocess.run(['tailscale', 'ssh', 'neo@' + host + '-dom0',
-                                     'doas', 'cat', source], stdout=output,
+                                     'doas', 'gzip', '-1', '-c', source], stdout=output,
                                     stderr=subprocess.PIPE, timeout=3600)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError('template source transfer failed or timed out') from error
-    if (result.returncode or Path(target).stat().st_size != expected['bytes'] or
-            sha256(target) != expected['sha256']):
+    if result.returncode:
+        raise UpdateError('template source compression failed')
+    digest, size = hashlib.sha256(), 0
+    try:
+        with gzip.open(target, 'rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                size += len(block)
+                if size > expected['bytes']:
+                    raise UpdateError('template source exceeds its build receipt')
+                digest.update(block)
+    except (EOFError, OSError) as error:
+        raise UpdateError('compressed template source is incomplete') from error
+    if size != expected['bytes'] or digest.hexdigest() != expected['sha256']:
         raise UpdateError('template source bytes differ from the build receipt')
 
 
 def target_file(host, source, target, expected):
+    compressed = target + '.gz'
     try:
         with Path(source).open('rb') as stream:
             result = subprocess.run(['tailscale', 'ssh', 'neo@' + host + '-dom0',
-                                     'doas', 'dd', 'of=' + target, 'bs=1048576',
+                                     'doas', 'dd', 'of=' + compressed, 'bs=1048576',
                                      'conv=fsync'], stdin=stream, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.PIPE, timeout=3600)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError('template target transfer failed or timed out') from error
     if result.returncode:
         raise UpdateError('template target transfer failed; retain exact staging for review')
-    remote(host, 'doas', 'chmod', '0400', target)
+    remote(host, 'doas', 'sh', '-s', '--', target,
+           input_bytes=(
+               'set -eu\n'
+               'set -C\n'
+               'target="$1"\n'
+               'gzip -dc "$target.gz" > "$target"\n'
+               'sync\n'
+               'chmod 0400 "$target"\n'
+               'rm "$target.gz"\n'
+           ).encode(), timeout=3600)
     details = remote(host, 'doas', 'sha256sum', target).decode().split()
     size = remote(host, 'doas', 'stat', '-c', '%s', target).decode().strip()
     if (len(details) != 2 or details[0] != expected['sha256'] or details[1] != target or
@@ -126,10 +140,13 @@ def transfer(candidate, operation, source_box, target_box, controller_candidate,
                ).encode())
         for name in LIMITS:
             expected = candidate['artifacts'][name]
-            local = temporary / name
+            local = temporary / (name + '.gz')
             source_file(source_box, source + '/' + name, local, expected)
             target_file(target_box, local, stage + '/' + name, expected)
-        target_file(target_box, controller_candidate, stage + '/candidate.json',
+        manifest = temporary / 'candidate.json.gz'
+        with gzip.open(manifest, 'wb', compresslevel=1) as stream:
+            stream.write(raw)
+        target_file(target_box, manifest, stage + '/candidate.json',
                     {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
         remote(target_box, 'doas', 'mv', '-nT', stage, target)
         remote(target_box, 'doas', 'sh', '-s', '--', operation,

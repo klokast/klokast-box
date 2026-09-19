@@ -1,5 +1,6 @@
 """Transfer must publish only the exact tested base template bytes."""
 import hashlib
+import gzip
 import json
 from pathlib import Path
 import sys
@@ -47,10 +48,13 @@ class ArtifactTransferTests(unittest.TestCase):
             def source_file(host, path, local, expected):
                 self.assertEqual(host, 'k001')
                 self.assertEqual(expected['sha256'], hashlib.sha256(b'x').hexdigest())
-                Path(local).write_bytes(b'x')
+                with gzip.open(local, 'wb') as stream:
+                    stream.write(b'x')
             def target_file(host, local, path, expected):
                 self.assertEqual(host, 'k002')
-                self.assertEqual(hashlib.sha256(Path(local).read_bytes()).hexdigest(),
+                with gzip.open(local, 'rb') as stream:
+                    payload = stream.read()
+                self.assertEqual(hashlib.sha256(payload).hexdigest(),
                                  expected['sha256'])
             with patch.object(transfer, 'remote', side_effect=remote), \
                     patch.object(transfer, 'source_file', side_effect=source_file), \

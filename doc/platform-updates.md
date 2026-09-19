@@ -14,8 +14,9 @@ components have native test evidence. Their production integration is unfinished
 `adopt prepare` now writes classification and exact cleanup reports. It does
 not issue an adoption intent while qualification is incomplete. `prepare --auto`
 uses the active signed policy and fresh discovery to select the adjacent stable
-branch. It builds one shared template and transfers the checked bytes to each
-other selected box. A failed transfer leaves an exact staging directory for
+branch. It builds one shared template and transfers compressed, checked bytes
+to each other selected box. The destination checks the unpacked artifact
+hashes against the same build receipt. A failed transfer leaves an exact staging directory for
 review; it cannot select a production disk. Signed adoption, replacement, and
 rollout remain unavailable. No production update schedule has been enabled.
 
