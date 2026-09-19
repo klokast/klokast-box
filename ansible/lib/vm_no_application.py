@@ -48,6 +48,11 @@ klokast-podman-runroot-cleanup localmount loopback mdev modules mount-ro
 mtab networking nftables procfs root savecache seedrng swap sysctl sysfs
 tailscale
 '''.split())
+ACTIVE_SERVICE_STATE = {
+    'cgroups': ['default'], 'fsck': [], 'hostname': [], 'localmount': [],
+    'networking': ['default'], 'nftables': ['default'], 'root': [],
+    'tailscale': ['default'],
+}
 # These paths are application state even if no process uses them. A report
 # lists exact observed descendants; it does not turn this list into rm -rf.
 CLEANUP_ROOTS = (
@@ -260,6 +265,18 @@ def checked_nginx_default_copy(value, packages, audit, database_sha256, entries)
     return value['error_log_empty']
 
 
+def fixed_service_resolution(service, entries, audit_verified, changed_paths):
+    """Resolve only package-owned, unchanged scripts in the fixed boot profile."""
+    script = '/etc/init.d/' + service['name']
+    package_source = (audit_verified and script not in entries and
+                      script not in changed_paths and service['script'] is not None)
+    active = bool(service['runlevels'] or service['markers'])
+    expected = (service['name'] in ACTIVE_SERVICE_STATE and
+                service['runlevels'] == ACTIVE_SERVICE_STATE.get(service['name']) and
+                service['markers'] == ['started'])
+    return package_source and (not active or expected)
+
+
 def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         busybox_suid_present=False, pinentry_present=False,
                         verified_ca_links=frozenset(), nginx_default_copy=False,
@@ -400,6 +417,18 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     legacy_kernel = fact.get('kernel') if (fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER and
                                               fact.get('module_releases') == [fact.get('kernel')]) else None
     installed_packages = fact.get('packages') if isinstance(fact.get('packages'), dict) else {}
+    package_audit = inventory.get('package_audit')
+    try:
+        storage.checked_package_audit(package_audit, fact['host_inventory'].get('package_database_sha256'))
+        audited_package_paths = True
+        changed_package_paths = {row['path'] for row in package_audit['differences']}
+    except UpdateError:
+        audited_package_paths = False
+        changed_package_paths = set()
+    storage_facts = fact.get('storage')
+    observed_mounts = storage_facts.get('mounts') if isinstance(storage_facts, dict) else None
+    if not isinstance(observed_mounts, list):
+        observed_mounts = []
     verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
                                                      inventory.get('package_audit'),
                                                      fact['host_inventory'].get('package_database_sha256'))
@@ -426,6 +455,7 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         resolved = False
         if difference['code'] == 'm' and name in {'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'}:
             category, rule = 'reconstructable-os-state', 'verify runtime directory ownership and mode'
+            resolved = audited_package_paths and any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))
         item('package-difference', name, category, rule, resolved, difference)
     for account in inventory['accounts']:
         # Numeric identities alone cannot establish an account's purpose.
@@ -433,18 +463,29 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         item('account', account['name'], category, 'compare account with signed package or machine recipe', False, account)
     for service in inventory.get('native_services', {}).get('services', []):
         active = bool(service['runlevels'] or service['markers'])
-        category = 'generated-configuration' if service['name'] in BOOT_SERVICES else ('unknown' if active else 'approved-package-content')
-        item('service', service['name'], category, 'verify script and permitted OpenRC state', False, service)
+        resolved = fixed_service_resolution(service, entries, audited_package_paths,
+                                            changed_package_paths)
+        category = ('generated-configuration' if service['name'] in BOOT_SERVICES else
+                    ('unknown' if active else 'approved-package-content'))
+        rule = ('verified package script and fixed OpenRC state' if resolved else
+                'verify script and permitted OpenRC state')
+        item('service', service['name'], category, rule, resolved, service)
     for maintenance in inventory['maintenance_files']:
         if not maintenance['path'].startswith(('/etc/init.d/', '/etc/runlevels/')):
-            item('timer', maintenance['path'], 'unknown', 'compare exact timer contents with OS baseline', False, maintenance)
+            package_source = (audited_package_paths and maintenance['path'] not in entries and
+                              maintenance['path'] not in changed_package_paths and
+                              maintenance['path'] in {'/etc/crontabs/root', '/etc/local.d/README'})
+            item('timer', maintenance['path'], 'approved-package-content' if package_source else 'unknown',
+                 'verified package file; no active timer' if package_source else
+                 'compare exact timer contents with OS baseline', package_source, maintenance)
     for process in inventory.get('processes', {}).get('processes', []):
         kernel = process['kernel_thread'] and process['uids'] == [0] * 4
         profile_role = process.get('no_application_role', 'kernel-thread' if kernel else 'unknown')
-        resolved = profile_role in ('kernel-thread', 'os-init', 'console-getty', 'inspection-process')
+        resolved = profile_role in ('kernel-thread', 'os-init', 'console-getty', 'inspection-process',
+                                    'podman-pause', 'tailscale-supervisor', 'tailscale-daemon')
         item('process', str(process['pid']), 'reconstructable-os-state' if profile_role != 'unknown' else 'unknown',
              profile_role if profile_role != 'unknown' else 'bind live process to fixed service or inspection ancestry', resolved, process)
-    mounts = fact.get('storage', {}).get('mounts')
+    mounts = observed_mounts
     try:
         boot = checked_boot_files(fact.get('host_inventory', {}).get('boot_files'), mounts)
         for entry in boot['metadata']['entries']:
@@ -463,8 +504,11 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     else:
         for mount in mounts:
             supported = (mount.get('path') in expected and mount.get('type') == expected[mount['path']] and mount.get('root') == '/')
+            runtime_mount = supported and mount['path'] not in {'/', '/boot'}
             item('mount', mount.get('path', '?'), 'reconstructable-os-state' if supported else 'unknown',
-                 'bind filesystem to the recorded source disk' if supported else 'unsupported filesystem boundary', False, mount)
+                 ('fixed runtime filesystem' if runtime_mount else
+                  'bind filesystem to the recorded source disk' if supported else
+                  'unsupported filesystem boundary'), runtime_mount, mount)
     for name in ('containers', 'volumes'):
         if fact.get(name) != []:
             add('qualification.' + name, 'The no-application profile requires a complete empty ' + name + ' inventory.')

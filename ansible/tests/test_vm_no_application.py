@@ -254,6 +254,21 @@ class Qualification(unittest.TestCase):
                 noapp.checked_nginx_default_copy(changed_value, {'nginx': {}},
                                                 changed_audit, database, changed_entries)
 
+    def test_fixed_service_rule_rejects_changed_scripts_and_extra_boot_state(self):
+        service = {'name': 'tailscale', 'script': {'sha256': 'a' * 64},
+                   'runlevels': ['default'], 'markers': ['started']}
+        self.assertTrue(noapp.fixed_service_resolution(service, {}, True, set()))
+        for entries, audited, changed, changed_service in (
+            ({'/etc/init.d/tailscale': {}}, True, set(), service),
+            ({}, False, set(), service),
+            ({}, True, {'/etc/init.d/tailscale'}, service),
+            ({}, True, set(), {**service, 'runlevels': ['boot']}),
+            ({}, True, set(), {**service, 'markers': ['failed']}),
+            ({}, True, set(), {**service, 'name': 'unreviewed'}),
+        ):
+            self.assertFalse(noapp.fixed_service_resolution(changed_service, entries,
+                                                            audited, changed))
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
