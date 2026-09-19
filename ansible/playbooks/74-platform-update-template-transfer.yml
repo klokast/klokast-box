@@ -1,0 +1,53 @@
+---
+- name: Prepare one dom0 for verified shared template transfer
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require the exact selected destination box
+      ansible.builtin.assert:
+        that:
+          - transfer_target_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - inventory_hostname == transfer_target_box ~ '-dom0'
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: transfer_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (transfer_controller.stdout | from_json).configured | bool
+          - (transfer_controller.stdout | from_json).active | bool
+
+    - name: Require persistent dom0 data storage
+      ansible.builtin.command:
+        argv: [/bin/mountpoint, -q, /mnt/dom0_data]
+      changed_when: false
+
+    - name: Inspect template storage without following links
+      ansible.builtin.stat:
+        path: "/mnt/dom0_data/klokast-vm-templates/{{ item }}"
+        follow: false
+      loop: ['', candidates]
+      register: transfer_directories
+
+    - name: Refuse unsafe existing template storage
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists or (item.stat.isdir and not item.stat.islnk and item.stat.uid == 0 and item.stat.mode == '0700')
+      loop: "{{ transfer_directories.results }}"
+
+    - name: Create private candidate storage
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-templates/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', candidates]

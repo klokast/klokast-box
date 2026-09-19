@@ -29,6 +29,7 @@ import vm_app_compatibility
 import vm_storage_inventory
 import vm_retention
 import vm_no_application
+import vm_artifact_transfer
 import vm_config_audit
 
 STATE = Path("/var/lib/klokast/updates/discovery")
@@ -461,7 +462,7 @@ def read_policy_source():
 
 
 def prepare_auto():
-    """Build one version-parameterized shared template under active policy."""
+    """Build once and stage identical checked bytes on selected boxes."""
     require_controller()
     if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip():
         raise UpdateError('automatic preparation requires clean committed engine source')
@@ -475,7 +476,37 @@ def prepare_auto():
             command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
             command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
         raise UpdateError('policy, discovery, metadata, or engine changed during automatic preparation')
-    return {**result, 'automatic_selection': selection}
+    if result['state'] != 'candidate-built' or result['accepted'] is not False:
+        raise UpdateError('automatic preparation did not produce an unaccepted template')
+    directory = Path(result['result_directory'])
+    candidate = load(directory / 'candidate.json')
+    release = load(directory / 'release-evidence.json')
+    if (release.get('kind') != 'klokast.vm-release.v2' or
+            release.get('release_sha256') != result['release_evidence_sha256'] or
+            release.get('artifacts') != candidate.get('artifacts') or
+            release.get('engine_commit') != commit or
+            release.get('branch') != selection['branch'] or
+            release.get('application_tests') != {'status': 'not-run', 'executed': False}):
+        raise UpdateError('automatic template release differs from the checked build')
+    transfers = []
+    for target_box in sorted({host.rsplit('-', 1)[0] for host in selection['targets']}
+                             - {selection['build_box']}):
+        arguments = canonical({'transfer_target_box': target_box})
+        with (directory / ('transfer-' + target_box + '.log')).open('w') as log:
+            command(['ansible-playbook', '-vv', '-i',
+                     APPROVED_REPO / 'ansible/execution-inventory/hosts',
+                     REPO / 'ansible/playbooks/74-platform-update-template-transfer.yml',
+                     '--limit', target_box + '-dom0', '-e', arguments],
+                    timeout=180, log=log)
+        receipt = vm_artifact_transfer.transfer(
+            candidate, result['operation_id'], selection['build_box'], target_box,
+            directory / 'candidate.json', CACHE)
+        write(directory / ('transfer-' + target_box + '.json'), receipt)
+        transfers.append(receipt)
+    if (read_policy_source() != source or
+            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit):
+        raise UpdateError('standing policy or engine changed during template transfer')
+    return {**result, 'automatic_selection': selection, 'transfers': transfers}
 
 
 def display(report, as_json):
