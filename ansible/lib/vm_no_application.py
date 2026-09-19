@@ -56,6 +56,8 @@ CLEANUP_ROOTS = (
 )
 LEGACY_TEMPLATE_MARKER = 'hostname=klokast-podman-template\nlv=/dev/vg0/lv_podman_template\n'
 BUSYBOX_LINK_SHA256 = hashlib.sha256(b'/bin/busybox').hexdigest()
+BBSUID_LINK_SHA256 = hashlib.sha256(b'/bin/bbsuid').hexdigest()
+PINENTRY_LINK_SHA256 = hashlib.sha256(b'pinentry-curses').hexdigest()
 
 
 def below(path, root):
@@ -197,12 +199,13 @@ def legacy_modloop_file(entry, kernel):
         re.fullmatch(r'/lib/firmware/qat_(?:402xx|4xxx)(?:_mmp)?\.bin\.zst', name))
 
 
-def certificate_link_resolutions(entries, packages, package_audit):
+def certificate_link_resolutions(entries, packages, package_audit, database_sha256):
     """Validate the fixed two-link chain made by Alpine CA package hooks."""
-    if (not isinstance(packages, dict) or
-            not {'ca-certificates', 'ca-certificates-bundle'} <= set(packages) or
-            not isinstance(package_audit, dict) or
-            not isinstance(package_audit.get('differences'), list)):
+    if not isinstance(packages, dict) or not {'ca-certificates', 'ca-certificates-bundle'} <= set(packages):
+        return set()
+    try:
+        storage.checked_package_audit(package_audit, database_sha256)
+    except UpdateError:
         return set()
     changed = {row.get('path') for row in package_audit['differences'] if isinstance(row, dict)}
     prefix = '/etc/ssl/certs/ca-cert-'
@@ -229,6 +232,7 @@ def certificate_link_resolutions(entries, packages, package_audit):
 
 
 def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
+                        busybox_suid_present=False, pinentry_present=False,
                         verified_ca_links=frozenset()):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
@@ -261,10 +265,13 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
     elif re.fullmatch(r'/var/cache/apk/APKINDEX\.[0-9a-f]+\.tar.gz', name):
         category, rule, resolved = 'reconstructable-os-state', 'rebuild package index cache from signed inputs', True
     elif re.fullmatch(r'/(?:usr/)?s?bin/[^/]+', name) and stat.S_ISLNK(mode):
-        if (busybox_present and entry.get('uid') == 0 and entry.get('gid') == 0 and
-                entry.get('link_sha256') == BUSYBOX_LINK_SHA256):
+        target = entry.get('link_sha256')
+        if entry.get('uid') == 0 and entry.get('gid') == 0 and (
+                (busybox_present and target == BUSYBOX_LINK_SHA256) or
+                (busybox_suid_present and target == BBSUID_LINK_SHA256) or
+                (pinentry_present and name == '/usr/bin/pinentry' and target == PINENTRY_LINK_SHA256)):
             category, rule, resolved = ('reconstructable-os-state',
-                                         'fixed BusyBox applet link; regenerate from candidate package', True)
+                                         'fixed package applet link; regenerate from candidate package', True)
         else:
             category, rule = 'approved-package-content', 'verify generated applet link against signed package recipe'
     elif below(name, '/etc/ssl/certs') and stat.S_ISLNK(mode):
@@ -277,7 +284,7 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
         category, rule = 'generated-configuration', 'compare enabled service with fixed boot recipe'
     # A known path with the wrong type or unsafe ownership is not disposable.
     if category != 'unknown' and not stat.S_ISDIR(mode):
-        expected_link = rule.startswith(('verify generated', 'fixed BusyBox', 'fixed CA link')) or name.startswith('/etc/runlevels/')
+        expected_link = rule.startswith(('verify generated', 'fixed package applet', 'fixed CA link')) or name.startswith('/etc/runlevels/')
         if (not (stat.S_ISLNK(mode) if expected_link else stat.S_ISREG(mode)) or
                 entry['uid'] not in (0, 1000) or (not expected_link and mode & 0o002)):
             category, rule, resolved = 'unknown', 'unexpected type, ownership, or writable metadata', False
@@ -353,12 +360,15 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         entries[value['path']] = value
     legacy_kernel = fact.get('kernel') if (fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER and
                                               fact.get('module_releases') == [fact.get('kernel')]) else None
-    busybox_present = isinstance(fact.get('packages'), dict) and 'busybox' in fact['packages']
+    installed_packages = fact.get('packages') if isinstance(fact.get('packages'), dict) else {}
     verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
-                                                     inventory.get('package_audit'))
+                                                     inventory.get('package_audit'),
+                                                     inventory.get('package_database_sha256'))
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
-                                               busybox_present=busybox_present,
+                                               busybox_present='busybox' in installed_packages,
+                                               busybox_suid_present='busybox-suid' in installed_packages,
+                                               pinentry_present='pinentry' in installed_packages,
                                                verified_ca_links=verified_ca_links), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']

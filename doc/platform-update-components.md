@@ -385,8 +385,9 @@ its read-only modloop into the guest. Qualification can now classify those
 files as replaceable OS state only when the exact template marker is present,
 the sole module release matches the running kernel, and each file has bounded
 root-owned, single-link, non-writable metadata. A link under the standard
-applet directories is replaceable only when the installed BusyBox package is
-present and its link target is exactly `/bin/busybox`. The fresh candidate
+applet directories is replaceable only when the corresponding BusyBox,
+BusyBox SUID, or Pinentry package is installed and the recorded target is the
+fixed package target. The fresh candidate
 supplies its own kernel and BusyBox package; none of these old files is copied.
 The checks classify old disk content. They do not verify the new template,
 resolve other links, or approve any remaining unknown file.

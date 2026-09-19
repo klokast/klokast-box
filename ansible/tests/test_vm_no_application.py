@@ -183,6 +183,12 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.path_classification(entry)[2])
         for key, value in (('uid', 1000), ('gid', 1000), ('link_sha256', '0' * 64)):
             self.assertFalse(noapp.path_classification({**entry, key: value}, busybox_present=True)[2])
+        suid = {**entry, 'path': '/bin/mount', 'link_sha256': noapp.BBSUID_LINK_SHA256}
+        self.assertTrue(noapp.path_classification(suid, busybox_suid_present=True)[2])
+        self.assertFalse(noapp.path_classification(suid, busybox_present=True)[2])
+        pinentry = {**entry, 'path': '/usr/bin/pinentry', 'link_sha256': noapp.PINENTRY_LINK_SHA256}
+        self.assertTrue(noapp.path_classification(pinentry, pinentry_present=True)[2])
+        self.assertFalse(noapp.path_classification({**pinentry, 'path': '/usr/bin/other'}, pinentry_present=True)[2])
 
     def test_generated_ca_links_require_the_package_chain_and_unchanged_target(self):
         pem = '/etc/ssl/certs/ca-cert-Example_Root.pem'
@@ -193,18 +199,23 @@ class Qualification(unittest.TestCase):
                     'link_sha256': hashlib.sha256(target.encode()).hexdigest()}
         entries = {pem: link(pem, source), hashed: link(hashed, pem.rsplit('/', 1)[1])}
         packages = {'ca-certificates': {}, 'ca-certificates-bundle': {}}
-        audit = {'differences': []}
-        self.assertEqual(noapp.certificate_link_resolutions(entries, packages, audit), {pem, hashed})
+        database = 'a' * 64
+        audit = {'kind': 'klokast.vm-package-audit.v1', 'complete': True, 'stable': True,
+                 'database_sha256': database, 'protected_paths': 'none',
+                 'check_permissions': True, 'differences': [], 'adoption_authorized': False}
+        self.assertEqual(noapp.certificate_link_resolutions(entries, packages, audit, database), {pem, hashed})
         for item in entries.values():
             self.assertTrue(noapp.path_classification(
                 item, verified_ca_links={pem, hashed})[2])
-        self.assertEqual(noapp.certificate_link_resolutions(entries, {}, audit), set())
+        self.assertEqual(noapp.certificate_link_resolutions(entries, {}, audit, database), set())
         self.assertEqual(noapp.certificate_link_resolutions(entries, packages,
-                                                            {'differences': [{'path': source}]}), set())
+                                                            {**audit, 'differences': [{'code': 'U', 'path': source}]}, database), set())
         self.assertEqual(noapp.certificate_link_resolutions({**entries, source: {'path': source}},
-                                                            packages, audit), set())
+                                                            packages, audit, database), set())
         changed = {**entries, pem: link(pem, '/tmp/private.crt')}
-        self.assertEqual(noapp.certificate_link_resolutions(changed, packages, audit), set())
+        self.assertEqual(noapp.certificate_link_resolutions(changed, packages, audit, database), set())
+        self.assertEqual(noapp.certificate_link_resolutions(entries, packages,
+                                                            {**audit, 'stable': False}, database), set())
 
 
 class CLI(unittest.TestCase):
