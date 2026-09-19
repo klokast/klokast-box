@@ -106,6 +106,11 @@ ansible/bin/platform-update prepare --box BOX --branch v3.24
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
 root registry and retention readers, verifies that both bind the same authority,
 engine, private commit, and input bytes, and rechecks sources before writing.
+When discovery and the checked source have the same commit, it compares 19
+fixed guest files with the checked recipes and repeats the guest hash probe
+before publication. A v2 qualification report binds the comparison receipt.
+Only exact matching rows from an approved engine resolve; identity, storage,
+boot, and other machine-input checks remain separate.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does

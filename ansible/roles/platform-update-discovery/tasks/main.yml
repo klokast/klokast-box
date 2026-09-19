@@ -33,6 +33,7 @@
   loop:
     - /var/lib/klokast/updates/discovery
     - /var/lib/klokast/updates/discovery/qualifications
+    - /var/lib/klokast/updates/discovery/config-audits
     - /var/cache/klokast/updates
 
 - name: Schedule bounded daily VM discovery with the OS cron facility

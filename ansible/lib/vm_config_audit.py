@@ -11,7 +11,6 @@ import re
 import shlex
 import subprocess
 
-from jinja2 import Environment, StrictUndefined
 import yaml
 
 
@@ -40,6 +39,7 @@ def sha(value):
 
 
 def environment():
+    from jinja2 import Environment, StrictUndefined
     result = Environment(undefined=StrictUndefined, autoescape=False,
                          keep_trailing_newline=True, trim_blocks=True)
     result.filters.update(to_json=json.dumps, quote=shlex.quote)

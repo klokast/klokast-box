@@ -14,6 +14,7 @@ from pathlib import Path
 from platform_updates import REPORT_KIND, VERIFY_AGE, UpdateError, digest, findings, fresh, timestamp
 import vm_retention
 import vm_storage_inventory as storage
+import vm_config_audit
 
 PROFILE = 'shared-alpine-no-application-v1'
 ROLES = ('dmz', 'iot')
@@ -744,3 +745,70 @@ def finish(result):
     # mark missing production checks successful, even for an empty fixture.
     result['report_sha256'] = digest(result)
     return result
+
+
+def with_config_comparison(base, comparison):
+    """Bind live fixed-file comparison to a qualification observation.
+
+    Matching bytes resolve only their own generated-configuration rows. The
+    result remains non-authoritative and cannot clear machine-input checks.
+    """
+    if (not isinstance(base, dict) or
+            base.get('kind') != 'klokast.vm-no-application-qualification.v1' or
+            base.get('report_sha256') != digest({k: v for k, v in base.items()
+                                                 if k != 'report_sha256'})):
+        raise UpdateError('base qualification is not a complete observation')
+    fields = {'kind', 'host', 'source_commit', 'approved_engine',
+              'qualification_sha256', 'authority', 'rows', 'report_sha256'}
+    host = base['box'] + '-' + base['role']
+    if (not isinstance(comparison, dict) or set(comparison) != fields or
+            comparison['kind'] != 'klokast.vm-config-comparison.v1' or
+            comparison['host'] != host or
+            comparison['source_commit'] != base['implementation_commit'] or
+            comparison['qualification_sha256'] != base['report_sha256'] or
+            comparison['authority'] != 'comparison-only' or
+            type(comparison['approved_engine']) is not bool or
+            comparison['approved_engine'] !=
+            bool(base['intent'] and base['intent']['engine_commit'] == base['implementation_commit']) or
+            comparison['report_sha256'] != digest({k: v for k, v in comparison.items()
+                                                   if k != 'report_sha256'})):
+        raise UpdateError('fixed configuration comparison does not bind this qualification')
+    rows = comparison['rows']
+    expected_fields = {'path', 'expected_sha256', 'observed_sha256', 'source',
+                       'source_sha256', 'match'}
+    if (not isinstance(rows, list) or len(rows) != len(vm_config_audit.PATHS) or
+            [row.get('path') for row in rows if isinstance(row, dict)] !=
+            list(vm_config_audit.PATHS)):
+        raise UpdateError('fixed configuration comparison has incomplete path coverage')
+    verified = {}
+    for row in rows:
+        if (set(row) != expected_fields or row['path'] not in CONFIGURATION or
+                not isinstance(row['source'], str) or
+                not re.fullmatch(r'ansible/[A-Za-z0-9_./-]+', row['source']) or
+                '..' in Path(row['source']).parts or
+                any(not isinstance(row[key], str) or not re.fullmatch(r'[0-9a-f]{64}', row[key])
+                    for key in ('expected_sha256', 'observed_sha256', 'source_sha256')) or
+                type(row['match']) is not bool or
+                row['match'] != (row['expected_sha256'] == row['observed_sha256'])):
+            raise UpdateError('fixed configuration comparison contains an unsafe row')
+        verified[row['path']] = row
+    result = {**base, 'kind': 'klokast.vm-no-application-qualification.v2',
+              'base_report_sha256': base['report_sha256'],
+              'configuration_evidence_sha256': comparison['report_sha256']}
+    result.pop('report_sha256')
+    result['items'] = []
+    for item in base['items']:
+        value = dict(item)
+        row = verified.get(item['key'])
+        if (item['area'] in {'file', 'package-difference'} and
+                item['classification'] == 'generated-configuration' and
+                row is not None and row['match'] and comparison['approved_engine']):
+            value['resolved'] = True
+            value['rule'] = 'exact checked recipe and approved inventory match'
+            value['evidence_sha256'] = digest({'item': item['evidence_sha256'],
+                                               'comparison': comparison['report_sha256'],
+                                               'row': row})
+        result['items'].append(value)
+    result['findings'] = [finding for finding in base['findings']
+                          if finding['code'] != 'qualification.unresolved']
+    return finish(result)

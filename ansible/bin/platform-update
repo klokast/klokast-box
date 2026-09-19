@@ -29,6 +29,7 @@ import vm_app_compatibility
 import vm_storage_inventory
 import vm_retention
 import vm_no_application
+import vm_config_audit
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -454,11 +455,35 @@ def adoption_prepare(box, role):
         # unavailable. Do not fall back to private files or observed workload.
         source_error = 'Installed source readers could not establish current no-application intent; check their controller diagnostics.'
     result = vm_no_application.report(discovery, box, role, commit, now(), intent=intent, source_error=source_error)
+    observed_configuration = None
+    if (intent and intent['eligible'] and result['items'] and
+            discovery.get('implementation_commit') == commit):
+        host = box + '-' + role
+        inventory = json.loads(command(['ansible-inventory', '-i',
+                                        REPO / 'ansible/execution-inventory/hosts',
+                                        '--host', host]), object_pairs_hook=unique_object)
+        expected = vm_config_audit.render(REPO, host, inventory)
+        observed_configuration = vm_config_audit.guest_hashes(host)
+        comparison = vm_config_audit.report(host, commit, result['report_sha256'],
+                                            expected, observed_configuration,
+                                            intent['engine_commit'] == commit)
+        result = vm_no_application.with_config_comparison(result, comparison)
     if (sources is not None and read_sources() != sources or
             optional(STATE / 'current.json') != discovery or
             command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
             command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
         raise UpdateError('qualification source, discovery, authority, or implementation changed during preparation')
+    if observed_configuration is not None and vm_config_audit.guest_hashes(host) != observed_configuration:
+        raise UpdateError('selected guest configuration changed during qualification')
+    if observed_configuration is not None:
+        comparison_dir = STATE / 'config-audits'
+        comparison_dir.mkdir(mode=0o700, exist_ok=True)
+        comparison_record = comparison_dir / (comparison['report_sha256'] + '.json')
+        if comparison_record.exists():
+            if load(comparison_record) != comparison:
+                raise UpdateError('configuration comparison conflicts with existing evidence')
+        else:
+            write(comparison_record, comparison)
     destination = STATE / 'qualifications'
     destination.mkdir(mode=0o700, exist_ok=True)
     record = destination / (result['report_sha256'] + '.json')

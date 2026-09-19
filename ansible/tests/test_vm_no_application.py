@@ -17,6 +17,7 @@ import test_vm_host_inventory as host_fixture
 from test_vm_storage_inventory import CATALOG
 from platform_updates import REPORT_KIND, UpdateError, digest, timestamp
 import vm_no_application as noapp
+import vm_config_audit as config_audit
 
 
 def registry(retention):
@@ -364,7 +365,91 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.path_classification(entry)[2])
 
 
+class ConfigComparison(unittest.TestCase):
+    def base(self):
+        rows = [
+            {'area': 'file', 'key': '/etc/motd', 'classification': 'generated-configuration',
+             'rule': 'compare with rendered machine inputs', 'resolved': False, 'evidence_sha256': '1' * 64},
+            {'area': 'package-difference', 'key': '/etc/fstab',
+             'classification': 'generated-configuration', 'rule': 'compare with approved machine recipe',
+             'resolved': False, 'evidence_sha256': '2' * 64},
+            {'area': 'file', 'key': '/etc/ssh/ssh_host_ed25519_key',
+             'classification': 'retained-machine-identity', 'rule': 'retain',
+             'resolved': False, 'evidence_sha256': '3' * 64},
+        ]
+        return noapp.finish({'kind': 'klokast.vm-no-application-qualification.v1',
+                             'box': 'boxa', 'role': 'dmz', 'implementation_commit': 'a' * 40,
+                             'intent': {'engine_commit': 'a' * 40}, 'items': rows,
+                             'cleanup_items': [], 'findings': [],
+                             'classification_complete': False, 'qualified': False,
+                             'application_tests': {'status': 'not-run', 'executed': False},
+                             'adoption_intent': None, 'adoption_authorized': False})
+
+    def comparison(self, base, approved=True):
+        expected = {path: {'sha256': 'b' * 64, 'source': 'ansible/roles/vm-base/tasks/main.yml',
+                           'source_sha256': 'c' * 64} for path in config_audit.PATHS}
+        observed = {path: 'b' * 64 for path in config_audit.PATHS}
+        observed['/etc/nftables.nft'] = 'd' * 64
+        return config_audit.report('boxa-dmz', 'a' * 40, base['report_sha256'],
+                                   expected, observed, approved)
+
+    def test_only_matching_generated_rows_resolve(self):
+        base = self.base()
+        result = noapp.with_config_comparison(base, self.comparison(base))
+        self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v2')
+        self.assertEqual(result['summary']['unresolved'], 1)
+        self.assertFalse(result['classification_complete'])
+        self.assertEqual([(row['area'], row['key']) for row in result['items'] if row['resolved']],
+                         [('file', '/etc/motd'), ('package-difference', '/etc/fstab')])
+
+    def test_unapproved_or_changed_comparison_cannot_resolve(self):
+        base = self.base()
+        base['intent']['engine_commit'] = '0' * 40
+        base['report_sha256'] = digest({k: v for k, v in base.items() if k != 'report_sha256'})
+        unapproved = self.comparison(base, False)
+        self.assertEqual(noapp.with_config_comparison(base, unapproved)['summary']['unresolved'], 3)
+        with self.assertRaises(UpdateError):
+            noapp.with_config_comparison(base, {**unapproved, 'source_commit': '0' * 40})
+        changed = copy.deepcopy(unapproved)
+        changed['rows'][0]['observed_sha256'] = '0' * 64
+        with self.assertRaises(UpdateError):
+            noapp.with_config_comparison(base, changed)
+
+
 class CLI(unittest.TestCase):
+    def test_prepare_binds_stable_live_config_without_granting_adoption(self):
+        cli = load_cli()
+        base = ConfigComparison().base()
+        intent = {'box': 'boxa', 'role': 'dmz', 'eligible': True,
+                  'engine_commit': 'a' * 40, 'workloads': [], 'datasets': []}
+        base['intent'] = intent
+        base['report_sha256'] = digest({k: v for k, v in base.items() if k != 'report_sha256'})
+        expected = {path: {'sha256': 'b' * 64, 'source': 'ansible/roles/vm-base/tasks/main.yml',
+                           'source_sha256': 'c' * 64} for path in config_audit.PATHS}
+        observed = {path: 'b' * 64 for path in config_audit.PATHS}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'current.json').write_text(json.dumps({'implementation_commit': 'a' * 40}))
+            def command(argv, **_kwargs):
+                if argv[0] == 'git':
+                    return 'a' * 40 if argv[-1] == 'HEAD' else ''
+                if argv[0] == 'ansible-inventory':
+                    return '{}'
+                return '{}'
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'command', side_effect=command), \
+                    patch.object(cli.vm_no_application, 'source_intent', return_value=intent), \
+                    patch.object(cli.vm_no_application, 'report', return_value=base), \
+                    patch.object(cli.vm_config_audit, 'render', return_value=expected), \
+                    patch.object(cli.vm_config_audit, 'guest_hashes', return_value=observed) as guest:
+                result, path = cli.adoption_prepare('boxa', 'dmz')
+            self.assertEqual(guest.call_count, 2)
+            self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v2')
+            self.assertEqual(result['summary']['unresolved'], 1)
+            self.assertFalse(result['qualified'])
+            self.assertEqual(json.loads(path.read_text()), result)
+            self.assertEqual(len(list((root / 'config-audits').glob('*.json'))), 1)
+
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
         cli = load_cli(); retained = source(); reg = registry(retained)
         with tempfile.TemporaryDirectory() as temporary:
