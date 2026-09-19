@@ -115,7 +115,10 @@ recording the hash. After engine approval and installation of the dom0 source
 reader, a v5 report also compares the live Xen disk and boot artifacts with
 the guest's fixed `/` and `/boot` partition evidence. A v6 report measures
 the four fixed private machine files and binds them to the typed retention
-adapter. It records hashes and metadata only.
+adapter. It records hashes and metadata only. A v7 report marks classification
+complete only after both the guest and dom0 answer separate controller Tailnet
+checks and every item is resolved. It still grants no adoption authority or
+application compatibility result.
 Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and

@@ -793,6 +793,48 @@ class ConfigComparison(unittest.TestCase):
         with self.assertRaises(UpdateError):
             noapp.with_identity_status(base, changed)
 
+    def test_complete_classification_still_grants_no_adoption_authority(self):
+        base = self.base()
+        base['kind'] = 'klokast.vm-no-application-qualification.v6'
+        base['source_match'] = True
+        base['intent'].update(eligible=True, workloads=[], datasets=[])
+        base['configuration_evidence_sha256'] = 'a' * 64
+        source = {'kind': 'klokast.vm-unmanaged-source.v1', 'disks': {'old': 'disk'}}
+        base['source_evidence_sha256'] = digest(source)
+        base['items'] = [{**item, 'resolved': True} for item in base['items']]
+        base['findings'] = [{'code': 'qualification.machine-inputs',
+                             'message': 'Pending machine inputs.', 'severity': 'critical',
+                             'scope': 'boxa-dmz'}]
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        comparison = {'kind': 'klokast.vm-config-comparison.v1', 'host': 'boxa-dmz',
+                      'approved_engine': True, 'report_sha256': 'a' * 64}
+        receipt = {'kind': 'klokast.vm-independent-management.v1',
+                   'host': 'boxa-dmz', 'dom0': 'boxa-dom0', 'controller': 'boxc-ops',
+                   'guest_transport': 'controller-tailnet-ssh',
+                   'dom0_transport': 'controller-tailnet-ssh',
+                   'configuration_evidence_sha256': 'a' * 64,
+                   'source_evidence_sha256': digest(source),
+                   'observed_at': timestamp(NOW), 'authority': 'comparison-only'}
+        receipt['report_sha256'] = digest(receipt)
+        result = noapp.with_management_paths(base, receipt, comparison, source, NOW)
+        self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v7')
+        self.assertTrue(result['classification_complete'])
+        self.assertTrue(result['machine_inputs_approved'])
+        self.assertFalse(result['qualified'] or result['adoption_authorized'])
+        self.assertIsNone(result['adoption_intent'])
+        self.assertEqual(result['application_tests'], {'status': 'not-run', 'executed': False})
+        self.assertEqual(result['summary']['unresolved'], 0)
+        changed = {**receipt, 'source_evidence_sha256': '0' * 64}
+        changed['report_sha256'] = digest({k: v for k, v in changed.items() if k != 'report_sha256'})
+        with self.assertRaises(UpdateError):
+            noapp.with_management_paths(base, changed, comparison, source, NOW)
+        base['items'][0]['resolved'] = False
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        with self.assertRaises(UpdateError):
+            noapp.with_management_paths(base, receipt, comparison, source, NOW)
+
 
 class CLI(unittest.TestCase):
     def test_dom0_source_reader_uses_fixed_controller_route_and_rejects_duplicate_json(self):

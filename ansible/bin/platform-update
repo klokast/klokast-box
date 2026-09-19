@@ -453,7 +453,7 @@ def unmanaged_source_status(box, role):
 
 def adoption_prepare(box, role):
     """Account for one target before requesting destructive or signed approval."""
-    require_controller()
+    controller_status = require_controller()
     if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
         raise UpdateError('adoption qualification requires a clean public engine checkout')
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
@@ -478,6 +478,7 @@ def adoption_prepare(box, role):
     legacy_comparison = None
     shadow_comparison = None
     source_status = None
+    management_receipt = None
     if (intent and intent['eligible'] and result['items'] and
             discovery.get('implementation_commit') == commit):
         host = box + '-' + role
@@ -548,6 +549,18 @@ def adoption_prepare(box, role):
         if {k: v for k, v in current_source.items() if k != 'observed_at'} != {
                 k: v for k, v in source_status.items() if k != 'observed_at'}:
             raise UpdateError('unmanaged Xen source changed during qualification')
+    if result['kind'] == 'klokast.vm-no-application-qualification.v6' and result['summary']['unresolved'] == 0:
+        management_receipt = {'kind': 'klokast.vm-independent-management.v1',
+                              'host': host, 'dom0': box + '-dom0',
+                              'controller': controller_status['hostname'],
+                              'guest_transport': 'controller-tailnet-ssh',
+                              'dom0_transport': 'controller-tailnet-ssh',
+                              'configuration_evidence_sha256': comparison['report_sha256'],
+                              'source_evidence_sha256': digest(source_status),
+                              'observed_at': timestamp(now()), 'authority': 'comparison-only'}
+        management_receipt['report_sha256'] = digest(management_receipt)
+        result = vm_no_application.with_management_paths(
+            result, management_receipt, comparison, source_status, now())
     if observed_configuration is not None:
         comparison_dir = STATE / 'config-audits'
         comparison_dir.mkdir(mode=0o700, exist_ok=True)
@@ -580,6 +593,15 @@ def adoption_prepare(box, role):
                 raise UpdateError('unmanaged Xen source receipt conflicts with existing evidence')
         else:
             write(source_record, source_status)
+    if management_receipt is not None:
+        management_dir = STATE / 'management-audits'
+        management_dir.mkdir(mode=0o700, exist_ok=True)
+        management_record = management_dir / (management_receipt['report_sha256'] + '.json')
+        if management_record.exists():
+            if load(management_record) != management_receipt:
+                raise UpdateError('independent management receipt conflicts with existing evidence')
+        else:
+            write(management_record, management_receipt)
     destination = STATE / 'qualifications'
     destination.mkdir(mode=0o700, exist_ok=True)
     record = destination / (result['report_sha256'] + '.json')
@@ -631,7 +653,10 @@ def main(argv=None):
             if args.json:
                 print(canonical(result))
             else:
-                print(f"{args.box}-{args.role}: no-application qualification blocked; adoption intent unavailable")
+                state = ('classification complete; signed adoption intent unavailable'
+                         if result['classification_complete'] else
+                         'no-application qualification blocked; adoption intent unavailable')
+                print(f"{args.box}-{args.role}: {state}")
                 print(f"Classification: {result['summary']['items']} items; {result['summary']['unresolved']} unresolved; {result['summary']['cleanup_items']} cleanup items")
                 print('Report: ' + str(record))
                 for finding in result['findings']:

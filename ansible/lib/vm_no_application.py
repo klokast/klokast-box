@@ -1406,3 +1406,59 @@ def with_identity_status(base, discovery):
     result['findings'] = [finding for finding in base['findings']
                           if finding['code'] != 'qualification.unresolved']
     return finish(result)
+
+
+def with_management_paths(base, receipt, comparison, source, now):
+    """Close classification after both independent controller routes worked."""
+    if (not isinstance(base, dict) or
+            base.get('kind') != 'klokast.vm-no-application-qualification.v6' or
+            base.get('report_sha256') != digest({k: v for k, v in base.items()
+                                                 if k != 'report_sha256'}) or
+            base.get('source_match') is not True or
+            base.get('summary', {}).get('unresolved') != 0 or
+            not isinstance(base.get('items'), list) or
+            any(not isinstance(item, dict) or item.get('resolved') is not True or
+                item.get('classification') == 'unknown' for item in base['items']) or
+            base.get('cleanup_items') != [] or
+            not isinstance(base.get('intent'), dict) or
+            base['intent'].get('eligible') is not True or
+            base['intent'].get('workloads') != [] or base['intent'].get('datasets') != [] or
+            base.get('application_tests') != {'status': 'not-run', 'executed': False} or
+            base.get('adoption_intent') is not None or base.get('adoption_authorized') is not False or
+            any(finding.get('code') not in {'qualification.machine-inputs', 'qualification.unresolved'}
+                for finding in base.get('findings', []))):
+        raise UpdateError('machine classification is not complete and safe')
+    host = base['box'] + '-' + base['role']
+    fields = {'kind', 'host', 'dom0', 'controller', 'guest_transport', 'dom0_transport',
+              'configuration_evidence_sha256', 'source_evidence_sha256',
+              'observed_at', 'authority', 'report_sha256'}
+    if (not isinstance(comparison, dict) or comparison.get('kind') != 'klokast.vm-config-comparison.v1' or
+            comparison.get('host') != host or comparison.get('approved_engine') is not True or
+            comparison.get('report_sha256') != base.get('configuration_evidence_sha256') or
+            not isinstance(source, dict) or digest(source) != base.get('source_evidence_sha256') or
+            not isinstance(receipt, dict) or set(receipt) != fields or
+            receipt['kind'] != 'klokast.vm-independent-management.v1' or
+            receipt['host'] != host or receipt['dom0'] != base['box'] + '-dom0' or
+            not isinstance(receipt['controller'], str) or
+            not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-ops', receipt['controller']) or
+            receipt['guest_transport'] != 'controller-tailnet-ssh' or
+            receipt['dom0_transport'] != 'controller-tailnet-ssh' or
+            receipt['configuration_evidence_sha256'] != comparison['report_sha256'] or
+            receipt['source_evidence_sha256'] != digest(source) or
+            not fresh(receipt['observed_at'], now, VERIFY_AGE) or
+            receipt['authority'] != 'comparison-only' or
+            receipt['report_sha256'] != digest({k: v for k, v in receipt.items()
+                                                if k != 'report_sha256'})):
+        raise UpdateError('independent management evidence is incomplete or changed')
+    result = {**base, 'kind': 'klokast.vm-no-application-qualification.v7',
+              'prior_report_sha256': base['report_sha256'],
+              'management_evidence_sha256': receipt['report_sha256'],
+              'classification_complete': True, 'machine_inputs_approved': True}
+    result.pop('report_sha256')
+    result['findings'] = [findings('qualification.adoption-unavailable',
+                                   'Classification is complete; signed adoption and backup qualification remain required.',
+                                   'critical', host)]
+    # This remains review evidence. A signed operation, not this report, may
+    # create the protected first assignment or stop the guest.
+    result['qualified'] = False
+    return finish(result)
