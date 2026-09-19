@@ -23,7 +23,7 @@ from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, 
                               no_application_release,
                               findings, fresh, health, parse_apk_database, timestamp,
                               unique_object, VERIFY_AGE)
-from platform_update_metadata import collect_branch, compare_versions
+from platform_update_metadata import adjacent_stable_branch, collect_branch, compare_versions
 import vm_template_inputs
 import vm_app_compatibility
 import vm_storage_inventory
@@ -37,6 +37,7 @@ PROFILE = REPO / "ansible/update-profiles/shared-alpine-v1.json"
 RETENTION_CATALOGS = (REPO / 'apps/music/vm-retention.json',)
 GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+AUTO_TARGETS = (('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot'))
 
 
 def now():
@@ -383,6 +384,98 @@ def prepare(box, branch, inputs_only=False, test_app=None):
                 "release_evidence_sha256": release_evidence['release_sha256'] if release_evidence else None}
 
 
+def automatic_selection(discovery, metadata, policy_source, engine_commit, observed_at):
+    """Select the one shared-template branch from signed policy and fresh scan.
+
+    This only selects inputs for the existing builder. It does not adopt a
+    guest, create an assignment, or start a replacement.
+    """
+    source_fields = {'kind', 'policy', 'policy_sha256', 'activation_sha256',
+                     'engine_commit', 'private_commit', 'authority_state_sha256',
+                     'paused', 'replacement_executor_available'}
+    if (not isinstance(policy_source, dict) or set(policy_source) != source_fields or
+            policy_source['kind'] != 'klokast.vm-update-policy-source.v1' or
+            policy_source['engine_commit'] != engine_commit or policy_source['paused'] is not False):
+        raise UpdateError('automatic preparation requires the current unpaused signed VM update policy')
+    policy = policy_source['policy']
+    if (not isinstance(policy, dict) or policy.get('enabled') is not True or
+            policy.get('branch-policy') != 'tested-stable' or not isinstance(policy.get('targets'), dict) or
+            not isinstance(policy.get('exclusions'), list)):
+        raise UpdateError('automatic preparation policy is incomplete or unsupported')
+    excluded = set()
+    for row in policy['exclusions']:
+        if (not isinstance(row, dict) or set(row) != {'box', 'role', 'reason'} or
+                not isinstance(row['box'], str) or not isinstance(row['role'], str) or
+                not isinstance(row['reason'], str) or not row['reason'].strip()):
+            raise UpdateError('automatic preparation policy has an invalid exclusion')
+        excluded.add((row['box'], row['role']))
+    declared = set()
+    for box, roles in policy['targets'].items():
+        if (not isinstance(box, str) or not isinstance(roles, list) or
+                any(role not in vm_no_application.ROLES for role in roles)):
+            raise UpdateError('automatic preparation policy has an invalid target')
+        declared.update((box, role) for role in roles)
+    selected = tuple(target for target in AUTO_TARGETS if target in declared and target not in excluded)
+    if selected != AUTO_TARGETS or declared - set(AUTO_TARGETS) - excluded:
+        raise UpdateError('automatic preparation is limited to k001-dmz, k002-dmz, and k002-iot')
+    if (not isinstance(discovery, dict) or discovery.get('complete') is not True or
+            not fresh(discovery.get('generated_at'), observed_at, VERIFY_AGE) or
+            not isinstance(discovery.get('hosts'), list) or not isinstance(metadata, dict)):
+        raise UpdateError('automatic preparation requires fresh complete discovery and release metadata')
+    hosts = {item.get('host'): item for item in discovery['hosts'] if isinstance(item, dict)}
+    branches = []
+    for box, role in selected:
+        host = box + '-' + role
+        item = hosts.get(host)
+        target = item.get('target', {}) if isinstance(item, dict) else {}
+        branch = item.get('branch') if isinstance(item, dict) else None
+        evidence = metadata.get(branch) if isinstance(branch, str) else None
+        if (not isinstance(item, dict) or item.get('profile') != 'shared-alpine-v1' or
+                target.get('box') != box or target.get('role') != role or target.get('runtime') != 'running' or
+                not isinstance(evidence, dict) or evidence.get('signature_verified') is not True or
+                not fresh(evidence.get('observed_at'), observed_at, VERIFY_AGE) or
+                not isinstance(evidence.get('releases'), dict)):
+            raise UpdateError('automatic preparation has incomplete target or signed metadata evidence: ' + host)
+        candidate = adjacent_stable_branch(branch, evidence['releases'], observed_at)
+        if candidate is None:
+            raise UpdateError('no adjacent supported Alpine branch is available for ' + host)
+        branches.append(candidate)
+    if len(set(branches)) != 1:
+        raise UpdateError('selected shared VMs require different template branches; automatic preparation is refused')
+    return {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': branches[0],
+            'build_box': selected[0][0], 'targets': [box + '-' + role for box, role in selected],
+            'policy_sha256': policy_source['policy_sha256'],
+            'activation_sha256': policy_source['activation_sha256'],
+            'engine_commit': engine_commit}
+
+
+def read_policy_source():
+    try:
+        return json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                                   'vm-update-policy', 'source-status'], timeout=900),
+                          object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise UpdateError('current VM update policy source returned invalid JSON') from error
+
+
+def prepare_auto():
+    """Build one version-parameterized shared template under active policy."""
+    require_controller()
+    if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip():
+        raise UpdateError('automatic preparation requires clean committed engine source')
+    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    source = read_policy_source()
+    discovery, metadata = optional(STATE / 'current.json'), optional(STATE / 'metadata.json')
+    selection = automatic_selection(discovery, metadata, source, commit, now())
+    result = prepare(selection['build_box'], selection['branch'])
+    if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
+            optional(STATE / 'metadata.json') != metadata or
+            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
+            command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
+        raise UpdateError('policy, discovery, metadata, or engine changed during automatic preparation')
+    return {**result, 'automatic_selection': selection}
+
+
 def display(report, as_json):
     if as_json:
         print(json.dumps(report, sort_keys=True, indent=2))
@@ -638,8 +731,10 @@ def main(argv=None):
     sub.add_parser("pause", help="restrict scheduled VM mutations without expanding authority")
     sub.add_parser("resume", help="revalidate the standing policy before removing the local pause")
     prepare_parser = sub.add_parser("prepare", help="construct an isolated candidate; does not accept or deploy it")
-    prepare_parser.add_argument("--box", required=True)
-    prepare_parser.add_argument("--branch", required=True, help="explicit stable Alpine branch, for example v3.23")
+    prepare_mode = prepare_parser.add_mutually_exclusive_group(required=True)
+    prepare_mode.add_argument("--box", help="box on which to build an explicitly selected candidate")
+    prepare_mode.add_argument("--auto", action="store_true", help="select the adjacent stable branch under the signed policy")
+    prepare_parser.add_argument("--branch", help="explicit stable Alpine branch, for example v3.24")
     prepare_parser.add_argument("--inputs-only", action="store_true", help="verify packages and assemble boot files without starting Xen")
     prepare_parser.add_argument('--test-app', choices=('static-site-web',),
                                 help='test an unchanged catalog image on synthetic data in the networkless test VM')
@@ -674,7 +769,15 @@ def main(argv=None):
                     print(f"{finding['severity']}: {finding['code']}: {finding['message']}")
             return 1 if any(v['severity'] == 'critical' for v in report['findings']) else 0
         if args.command == "prepare":
-            print(canonical(prepare(args.box, args.branch, args.inputs_only, args.test_app)))
+            if args.auto:
+                if args.branch or args.inputs_only or args.test_app:
+                    raise UpdateError('automatic preparation accepts no caller-selected branch or test options')
+                result = prepare_auto()
+            else:
+                if not args.branch:
+                    raise UpdateError('explicit preparation requires --branch')
+                result = prepare(args.box, args.branch, args.inputs_only, args.test_app)
+            print(canonical(result))
             return 0
         if args.command in {"policy", "pause", "resume"}:
             require_controller()

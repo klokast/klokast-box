@@ -53,6 +53,42 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(u.UpdateError):
             m.adjacent_stable_branch('v3.23', changed, NOW)
 
+    def test_automatic_selection_uses_only_the_signed_selected_shared_targets(self):
+        cli = load_cli()
+        releases = {'release_branches': [
+            {'rel_branch': 'v3.24', 'git_branch': '3.24-stable', 'branch_date': '2026-06-09',
+             'eol_date': '2028-06-01', 'arches': ['x86_64'],
+             'repos': [{'name': 'main'}, {'name': 'community', 'eol_date': '2026-11-01'}],
+             'releases': [{'version': '3.24.2', 'date': '2026-09-17'}]}]}
+        targets = [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+        report = {'complete': True, 'generated_at': u.timestamp(NOW), 'hosts': [
+            {'host': box + '-' + role, 'profile': 'shared-alpine-v1', 'branch': 'v3.23',
+             'target': {'box': box, 'role': role, 'runtime': 'running'}}
+            for box, role in targets]}
+        metadata = {'v3.23': {'signature_verified': True, 'observed_at': u.timestamp(NOW), 'releases': releases}}
+        policy = {'enabled': True, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']},
+                  'exclusions': [], 'branch-policy': 'tested-stable',
+                  'maintenance-window': {'start': '02:00', 'end': '04:00', 'last-start': '03:00'},
+                  'canary-hours': 24, 'replacement-minutes': 30, 'recovery-minutes': 30}
+        source = {'kind': 'klokast.vm-update-policy-source.v1', 'policy': policy,
+                  'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
+                  'engine_commit': 'c' * 40, 'private_commit': 'd' * 40,
+                  'authority_state_sha256': 'e' * 64, 'paused': False,
+                  'replacement_executor_available': False}
+        selected = cli.automatic_selection(report, metadata, source, 'c' * 40, NOW)
+        self.assertEqual(selected['branch'], 'v3.24')
+        self.assertEqual(selected['build_box'], 'k001')
+        self.assertEqual(selected['targets'], ['k001-dmz', 'k002-dmz', 'k002-iot'])
+        paused = copy.deepcopy(source); paused['paused'] = True
+        with self.assertRaises(u.UpdateError):
+            cli.automatic_selection(report, metadata, paused, 'c' * 40, NOW)
+        incomplete = copy.deepcopy(report); incomplete['hosts'].pop()
+        with self.assertRaises(u.UpdateError):
+            cli.automatic_selection(incomplete, metadata, source, 'c' * 40, NOW)
+        divergent = copy.deepcopy(report); divergent['hosts'][2]['branch'] = 'v3.22'
+        with self.assertRaises(u.UpdateError):
+            cli.automatic_selection(divergent, metadata, source, 'c' * 40, NOW)
+
     def metadata(self):
         return {"v3.23": {"observed_at": u.timestamp(NOW), "signature_verified": True,
             "releases": {"release_branches": [{"rel_branch": "v3.23", "eol_date": "2027-01-01", "repos": [{"name":"main"}, {"name":"community", "eol_date":"2027-01-01"}]}]},

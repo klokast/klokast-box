@@ -12,9 +12,10 @@ The release is **not complete**. The discovery, template builder, independent
 backup and isolated restore, retained-data, personalizer, and dom0 recovery
 components have native test evidence. Their production integration is unfinished.
 `adopt prepare` now writes classification and exact cleanup reports. It does
-not issue an adoption intent while qualification is incomplete. Signed adoption,
-the standing replacement executor, automatic preparation, and rollout remain
-unavailable. No production update schedule has been enabled by this work.
+not issue an adoption intent while qualification is incomplete. `prepare --auto`
+uses the active signed policy and fresh discovery to select the adjacent stable
+branch and build one shared template. Signed adoption, replacement, and rollout
+remain unavailable. No production update schedule has been enabled by this work.
 
 The [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
 owns desired state and assignment rules. [Secret Authority](secret-authority.md#standing-vm-update-authority)
@@ -101,6 +102,7 @@ ansible/bin/platform-update retention --json
 ansible/bin/platform-update status --json
 ansible/bin/platform-update verify
 ansible/bin/platform-update prepare --box BOX --branch v3.24
+ansible/bin/platform-update prepare --auto
 ```
 
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
@@ -215,7 +217,11 @@ writes `release-evidence.json` beside its candidate record. This closed v2
 record binds the complete frozen package manifest, boot artifacts, source
 receipts, and passed base tests. It records application tests as `not-run`.
 It is build evidence, not an accepted release or execution authority.
-`adopt apply`, `prepare --auto`, and
+`prepare --auto` has no caller-selected box or branch. It obtains the current
+signed policy through `ksa-apply`, requires the three selected running shared
+VMs to have fresh complete discovery, and selects only their common adjacent
+supported stable branch. It builds the template once on k001. It does not copy
+production data, assign a candidate, or replace a guest. `adopt apply` and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
