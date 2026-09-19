@@ -74,6 +74,22 @@ class ArtifactTransferTests(unittest.TestCase):
                     transfer.transfer(value, 'a' * 24, 'k001', 'k002', manifest, temporary)
             self.assertEqual(remote.call_count, 1)
 
+    def test_reuse_refuses_a_changed_published_artifact(self):
+        value = self.candidate()
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / 'candidate.json'
+            manifest.write_text(json.dumps(value, sort_keys=True) + '\n')
+            def remote(host, *command, **kwargs):
+                self.assertEqual(host, 'k002')
+                if command[:2] == ('doas', 'cat'):
+                    return manifest.read_bytes()
+                if command[:2] == ('doas', 'sha256sum'):
+                    return ('0' * 64 + '  ' + command[2] + '\n').encode()
+                return b'1\n'
+            with patch.object(transfer, 'remote', side_effect=remote):
+                with self.assertRaisesRegex(UpdateError, 'artifact differs'):
+                    transfer.verify_published(value, 'a' * 24, 'k001', 'k002', manifest)
+
 
 if __name__ == '__main__':
     unittest.main()

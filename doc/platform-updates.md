@@ -223,9 +223,13 @@ It is build evidence, not an accepted release or execution authority.
 `prepare --auto` has no caller-selected box or branch. It obtains the current
 signed policy through `ksa-apply`, requires the three selected running shared
 VMs to have fresh complete discovery, and selects only their common adjacent
-supported stable branch. It builds the template once on k001. It does not copy
-production data, assign a candidate, or replace a guest. `adopt apply` and
-`run` require the remaining integration. `status` and `verify` still report
+supported stable branch. It builds the template once on k001. A completed
+automatic build has one controller pointer. On a later run, current signed
+target-branch indexes and installed signing keys must match its frozen inputs;
+the controller then checks every published artifact on both boxes. Only that
+exact complete build returns `state: unchanged` without a new build or copy.
+This command does not copy production data, assign a candidate, or replace a
+guest. `adopt apply` and `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
 Read current qualification counts and cleanup candidates from the active

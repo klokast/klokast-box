@@ -2,7 +2,7 @@
 
 This module stages build artifacts only. It cannot select a guest disk, create
 an accepted release, or start a VM. The caller supplies the exact build receipt
-from its clean controller checkout and holds the controller build lock.
+from its clean controller checkout.
 """
 import hashlib
 import gzip
@@ -109,6 +109,25 @@ def target_file(host, source, target, expected):
     if (len(details) != 2 or details[0] != expected['sha256'] or details[1] != target or
             size != str(expected['bytes'])):
         raise UpdateError('template target bytes differ; retain exact staging for review')
+
+
+def verify_published(candidate, operation, source_box, target_box, controller_candidate):
+    """Check one published copy before reusing an unchanged template."""
+    validate(candidate, operation, source_box)
+    if not BOX.fullmatch(target_box) or not Path(controller_candidate).is_file() or Path(controller_candidate).is_symlink():
+        raise UpdateError('published template has an invalid target or controller receipt')
+    raw = Path(controller_candidate).read_bytes()
+    if len(raw) > 1024 * 1024 or json.loads(raw) != candidate:
+        raise UpdateError('published template differs from its controller receipt')
+    base = BASE + '/' + operation
+    if remote(target_box, 'doas', 'cat', base + '/candidate.json') != raw:
+        raise UpdateError('published template manifest differs from the controller receipt')
+    for name, expected in candidate['artifacts'].items():
+        path = base + '/' + name
+        details = remote(target_box, 'doas', 'sha256sum', path).decode().split()
+        size = remote(target_box, 'doas', 'stat', '-c', '%s', path).decode().strip()
+        if details != [expected['sha256'], path] or size != str(expected['bytes']):
+            raise UpdateError('published template artifact differs from the build receipt: ' + name)
 
 
 def transfer(candidate, operation, source_box, target_box, controller_candidate,

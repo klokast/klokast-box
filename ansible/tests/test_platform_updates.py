@@ -48,17 +48,21 @@ class EvidenceTests(unittest.TestCase):
                 (root / name).write_text(json.dumps(value))
             built = {'state': 'candidate-built', 'accepted': False,
                      'result_directory': str(root), 'operation_id': 'f' * 24,
+                     'inputs_sha256': '9' * 64,
                      'release_evidence_sha256': release['release_sha256']}
             def command(argv, **kwargs):
                 if argv[:3] == ['git', '-C', cli.REPO] and argv[3] == 'rev-parse':
                     return commit + '\n'
                 return ''
             with patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'STATE', root), \
                     patch.object(cli, 'command', side_effect=command), \
                     patch.object(cli, 'read_policy_source', return_value=source), \
                     patch.object(cli, 'optional', side_effect=[discovery, metadata,
+                                                               discovery, metadata,
                                                                discovery, metadata]), \
                     patch.object(cli, 'automatic_selection', return_value=selection), \
+                    patch.object(cli, 'reuse_auto_candidate', return_value=None), \
                     patch.object(cli, 'prepare', return_value=built), \
                     patch.object(cli.vm_artifact_transfer, 'transfer',
                                  return_value={'target_box': 'k002', 'accepted': False}) as transfer:
@@ -67,6 +71,61 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(transfer.call_count, 1)
             self.assertEqual(transfer.call_args.args[3], 'k002')
             self.assertTrue((root / 'transfer-k002.json').is_file())
+            self.assertEqual(json.loads((root / 'automatic.json').read_text())['operation_id'], 'f' * 24)
+
+    def test_automatic_prepare_reuses_only_a_complete_build_with_current_signed_indexes(self):
+        cli = load_cli()
+        operation = 'f' * 24
+        selection = {'branch': 'v3.24', 'build_box': 'k001',
+                     'targets': ['k001-dmz', 'k002-dmz', 'k002-iot'],
+                     'engine_commit': 'c' * 40}
+        profile = {'packages': ['linux-virt'], 'repositories': ['main', 'community']}
+        indexes = {'one': '1' * 64, 'two': '2' * 64}
+        inputs = {'engine_commit': selection['engine_commit'], 'branch': 'v3.24',
+                  'profile_sha256': u.digest(profile), 'world': ['linux-virt'],
+                  'keys': {'alpine.pub': '3' * 64}, 'indexes': indexes}
+        inputs['inputs_sha256'] = u.digest(inputs)
+        candidate = {'kind': 'klokast.vm-template-candidate.v1',
+                     'operation_id': operation, 'box': 'k001', 'success': True,
+                     'accepted': False, 'inputs_sha256': inputs['inputs_sha256'],
+                     'artifacts': {'root': {'sha256': '4' * 64, 'bytes': 1},
+                                   'kernel': {'sha256': '5' * 64, 'bytes': 1},
+                                   'initramfs': {'sha256': '6' * 64, 'bytes': 1}}}
+        release = {'release_sha256': '7' * 64}
+        transfer = {'kind': 'klokast.vm-template-transfer.v1',
+                    'operation_id': operation, 'source_box': 'k001',
+                    'target_box': 'k002', 'artifacts': candidate['artifacts'],
+                    'accepted': False}
+        pointer = {'kind': 'klokast.vm-update-auto-build.v1',
+                   'selection': selection, 'operation_id': operation,
+                   'inputs_sha256': inputs['inputs_sha256'],
+                   'release_sha256': release['release_sha256']}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / 'builds' / operation
+            directory.mkdir(parents=True)
+            for path, value in ((root / 'automatic.json', pointer),
+                                (root / 'profile.json', profile),
+                                (directory / 'inputs.json', inputs),
+                                (directory / 'candidate.json', candidate),
+                                (directory / 'release-evidence.json', release),
+                                (directory / 'transfer-k002.json', transfer)):
+                path.write_text(json.dumps(value))
+            metadata = {'signature_verified': True, 'observed_at': u.timestamp(dt.datetime.now(dt.timezone.utc)),
+                        'inputs_sha256': {'main:index': '1' * 64, 'community:index': '2' * 64}}
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'PROFILE', root / 'profile.json'), \
+                    patch.object(cli, 'installed_apk_keys', return_value=inputs['keys']), \
+                    patch.object(cli, 'collect_branch', return_value=metadata), \
+                    patch.object(cli, 'no_application_release', return_value=release), \
+                    patch.object(cli.vm_artifact_transfer, 'verify_published') as verify:
+                result = cli.reuse_auto_candidate(selection)
+                self.assertEqual(result['state'], 'unchanged')
+                self.assertEqual(verify.call_count, 2)
+                changed = copy.deepcopy(metadata)
+                changed['inputs_sha256']['main:index'] = '8' * 64
+                with patch.object(cli, 'collect_branch', return_value=changed):
+                    self.assertIsNone(cli.reuse_auto_candidate(selection))
+                self.assertEqual(verify.call_count, 2)
 
     def test_adjacent_branch_selection_ignores_expired_source_and_skips_no_branch(self):
         releases = {'release_branches': [

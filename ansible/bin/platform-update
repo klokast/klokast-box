@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import fcntl
 import functools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -461,15 +462,127 @@ def read_policy_source():
         raise UpdateError('current VM update policy source returned invalid JSON') from error
 
 
+def installed_apk_keys():
+    hashes = {}
+    for path in sorted(Path('/etc/apk/keys').glob('*.pub')):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
+            raise UpdateError('installed APK signing key is unsafe')
+        hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if not hashes:
+        raise UpdateError('installed APK signing keys are missing')
+    return hashes
+
+
+def reuse_auto_candidate(selection):
+    """Return a prior exact build only while its signed package inputs match."""
+    pointer = optional(STATE / 'automatic.json')
+    if pointer is None:
+        return None
+    if (not isinstance(pointer, dict) or set(pointer) !=
+            {'kind', 'selection', 'operation_id', 'inputs_sha256', 'release_sha256'} or
+            pointer['kind'] != 'klokast.vm-update-auto-build.v1' or
+            not isinstance(pointer['selection'], dict) or
+            not isinstance(pointer['operation_id'], str) or
+            not vm_artifact_transfer.OPERATION.fullmatch(pointer['operation_id'])):
+        raise UpdateError('automatic template pointer has an unknown contract')
+    if pointer['selection'] != selection:
+        return None
+    directory = STATE / 'builds' / pointer['operation_id']
+    inputs = load(directory / 'inputs.json')
+    candidate = load(directory / 'candidate.json')
+    release = load(directory / 'release-evidence.json')
+    profile = load(PROFILE)
+    if (not all(isinstance(value, dict) for value in (inputs, candidate, release, profile)) or
+            not isinstance(inputs.get('indexes'), dict) or
+            len(inputs['indexes']) != len(profile.get('repositories', [])) or
+            not isinstance(inputs.get('keys'), dict) or
+            inputs.get('inputs_sha256') != pointer['inputs_sha256'] or
+            inputs['inputs_sha256'] != digest({k: v for k, v in inputs.items() if k != 'inputs_sha256'}) or
+            inputs.get('engine_commit') != selection['engine_commit'] or
+            inputs.get('branch') != selection['branch'] or
+            inputs.get('profile_sha256') != digest(profile) or
+            inputs.get('world') != sorted(profile['packages']) or
+            candidate.get('inputs_sha256') != inputs['inputs_sha256'] or
+            release.get('release_sha256') != pointer['release_sha256']):
+        raise UpdateError('automatic template inputs or release differ from the completed build')
+    vm_artifact_transfer.validate(candidate, pointer['operation_id'], selection['build_box'])
+    boot_test = candidate.get('boot_test', {})
+    expected_release = no_application_release(
+        inputs, candidate, boot_test.get('openrc_test', {}),
+        boot_test.get('personalized_test', {}), boot_test.get('maintenance_restore', {}))
+    if release != expected_release:
+        raise UpdateError('automatic template release differs from its complete base tests')
+    for name, entry in inputs.get('keys', {}).items():
+        if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+\.pub', name) or
+                not isinstance(entry, str) or not re.fullmatch(r'[0-9a-f]{64}', entry)):
+            raise UpdateError('automatic template has invalid APK signing key evidence')
+    current_keys = installed_apk_keys()
+    metadata = collect_branch(selection['branch'], CACHE, profile, now())
+    if (not isinstance(metadata, dict) or metadata.get('signature_verified') is not True or
+            not fresh(metadata.get('observed_at'), now(), VERIFY_AGE)):
+        raise UpdateError('unchanged-template check needs current signed target-branch metadata')
+    index_hashes = metadata.get('inputs_sha256')
+    if (not isinstance(index_hashes, dict) or
+            any(not isinstance(index_hashes.get(repository + ':index'), str)
+                for repository in profile['repositories'])):
+        raise UpdateError('unchanged-template check lacks signed repository indexes')
+    if (current_keys != inputs.get('keys') or
+            sorted(inputs.get('indexes', {}).values()) !=
+            sorted(index_hashes[repository + ':index']
+                   for repository in profile['repositories'])):
+        return None
+    targets = sorted({host.rsplit('-', 1)[0] for host in selection['targets']})
+    transfers = []
+    for box in targets:
+        vm_artifact_transfer.verify_published(
+            candidate, pointer['operation_id'], selection['build_box'], box,
+            directory / 'candidate.json')
+        if box != selection['build_box']:
+            receipt = load(directory / ('transfer-' + box + '.json'))
+            if (receipt.get('kind') != 'klokast.vm-template-transfer.v1' or
+                    receipt.get('operation_id') != pointer['operation_id'] or
+                    receipt.get('source_box') != selection['build_box'] or
+                    receipt.get('target_box') != box or
+                    receipt.get('artifacts') != candidate['artifacts'] or
+                    receipt.get('accepted') is not False):
+                raise UpdateError('automatic template transfer receipt differs')
+            transfers.append(receipt)
+    return {'state': 'unchanged', 'operation_id': pointer['operation_id'],
+            'inputs_sha256': inputs['inputs_sha256'], 'accepted': False,
+            'result_directory': str(directory), 'artifacts': candidate['artifacts'],
+            'release_evidence_sha256': release['release_sha256'],
+            'automatic_selection': selection, 'transfers': transfers}
+
+
 def prepare_auto():
-    """Build once and stage identical checked bytes on selected boxes."""
+    """Serialize automatic selection, construction, and verified transfer."""
     require_controller()
+    if not STATE.is_dir():
+        raise UpdateError('install discovery state before automatic preparation')
+    with (STATE / 'auto.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise UpdateError('another automatic preparation holds the controller lock') from error
+        return prepare_auto_locked()
+
+
+def prepare_auto_locked():
+    """Build once and stage identical checked bytes on selected boxes."""
     if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip():
         raise UpdateError('automatic preparation requires clean committed engine source')
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     source = read_policy_source()
     discovery, metadata = optional(STATE / 'current.json'), optional(STATE / 'metadata.json')
     selection = automatic_selection(discovery, metadata, source, commit, now())
+    unchanged = reuse_auto_candidate(selection)
+    if unchanged is not None:
+        if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
+                optional(STATE / 'metadata.json') != metadata or
+                command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
+                command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
+            raise UpdateError('authority, discovery, or engine changed during unchanged-template check')
+        return unchanged
     result = prepare(selection['build_box'], selection['branch'])
     if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
             optional(STATE / 'metadata.json') != metadata or
@@ -503,9 +616,15 @@ def prepare_auto():
             directory / 'candidate.json', CACHE)
         write(directory / ('transfer-' + target_box + '.json'), receipt)
         transfers.append(receipt)
-    if (read_policy_source() != source or
-            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit):
-        raise UpdateError('standing policy or engine changed during template transfer')
+    if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
+            optional(STATE / 'metadata.json') != metadata or
+            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
+            command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
+        raise UpdateError('standing policy, discovery, metadata, or engine changed during template transfer')
+    write(STATE / 'automatic.json', {
+        'kind': 'klokast.vm-update-auto-build.v1', 'selection': selection,
+        'operation_id': result['operation_id'], 'inputs_sha256': result['inputs_sha256'],
+        'release_sha256': release['release_sha256']})
     return {**result, 'automatic_selection': selection, 'transfers': transfers}
 
 
