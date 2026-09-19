@@ -1,0 +1,130 @@
+---
+# One-time removal of exact stale Platform resource verification staging.
+- name: Retire reviewed verification staging on one no-application VM
+  hosts: k001-dmz:k002-dmz:k002-iot
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    verification_cache_apply: false
+    verification_cache_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-verification-cache-cleanup/{{ verification_cache_operation }}'
+  pre_tasks:
+    - name: Require one exact guest and a fresh operation ID
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [verification_cache_box ~ '-' ~ verification_cache_role]
+          - verification_cache_box ~ '-' ~ verification_cache_role in ['k001-dmz', 'k002-dmz', 'k002-iot']
+          - node_name == verification_cache_box
+          - node_domain_role == verification_cache_role
+          - inventory_hostname == verification_cache_box ~ '-' ~ verification_cache_role
+          - verification_cache_operation is match('^[0-9a-f]{24}$')
+          - verification_cache_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-verification-cache-cleanup/[0-9a-f]{24}$')
+
+    - name: Verify the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: verification_cache_controller
+
+    - name: Require active controller authority
+      ansible.builtin.assert:
+        that:
+          - (verification_cache_controller.stdout | from_json).configured
+          - (verification_cache_controller.stdout | from_json).active
+          - (verification_cache_controller.stdout | from_json).role == 'active'
+
+    - name: Recheck current no-application intent
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-update'
+          - adopt
+          - prepare
+          - --box
+          - '{{ verification_cache_box }}'
+          - --role
+          - '{{ verification_cache_role }}'
+          - --json
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      register: verification_cache_intent
+
+    - name: Require checked intent without workloads or retained datasets
+      ansible.builtin.assert:
+        that:
+          - verification_cache_intent.rc in [0, 1]
+          - (verification_cache_intent.stdout | from_json).intent.eligible
+          - (verification_cache_intent.stdout | from_json).intent.workloads == []
+          - (verification_cache_intent.stdout | from_json).intent.datasets == []
+        fail_msg: 'Current checked Instance and retention intent does not permit cache cleanup.'
+
+    - name: Inspect existing operation records without following links
+      ansible.builtin.stat:
+        path: '{{ verification_cache_record_dir }}/{{ inventory_hostname }}-{{ item }}.json'
+        follow: false
+      loop: [preview, applied]
+      delegate_to: localhost
+      become: false
+      register: verification_cache_prior
+
+    - name: Refuse reuse and require one preview before apply
+      ansible.builtin.assert:
+        that:
+          - not verification_cache_prior.results[1].stat.exists
+          - (verification_cache_apply | bool) == (verification_cache_prior.results[0].stat.exists | bool)
+        fail_msg: 'Use a fresh operation for preview, then apply only that preview once.'
+
+    - name: Read the protected preview for apply
+      ansible.builtin.slurp:
+        src: '{{ verification_cache_record_dir }}/{{ inventory_hostname }}-preview.json'
+      delegate_to: localhost
+      become: false
+      no_log: true
+      register: verification_cache_preview
+      when: verification_cache_apply | bool
+
+    - name: Bind apply to the reviewed guest, operation, and stage checksum
+      ansible.builtin.assert:
+        that:
+          - (verification_cache_preview.content | b64decode | from_json).kind == 'klokast.vm-verification-cache-cleanup.v1'
+          - (verification_cache_preview.content | b64decode | from_json).host == inventory_hostname
+          - (verification_cache_preview.content | b64decode | from_json).operation_id == verification_cache_operation
+          - not (verification_cache_preview.content | b64decode | from_json).applied
+          - (verification_cache_preview.content | b64decode | from_json).plan_sha256 is match('^[0-9a-f]{64}$')
+      when: verification_cache_apply | bool
+
+  tasks:
+    - name: Preview or remove only source-matched verification stages
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../roles/vm-update-verification-cache-cleanup/files/cleanup-vm-verification-cache
+          --host {{ inventory_hostname }} --operation {{ verification_cache_operation }}
+          {{ ('--apply --expected-sha ' ~ (verification_cache_preview.content | b64decode | from_json).plan_sha256)
+             if verification_cache_apply | bool else '' }}
+        executable: /usr/bin/python3
+      register: verification_cache_result
+      changed_when: verification_cache_apply | bool
+
+    - name: Create the protected controller operation directory
+      ansible.builtin.file:
+        path: '{{ verification_cache_record_dir }}'
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve the exact preview or completed cleanup receipt
+      ansible.builtin.copy:
+        content: '{{ (verification_cache_result.stdout | from_json) | to_nice_json }}'
+        dest: >-
+          {{ verification_cache_record_dir }}/{{ inventory_hostname }}-{{ 'applied' if verification_cache_apply | bool else 'preview' }}.json
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true

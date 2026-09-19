@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Retire only recorded Platform resource verification staging on no-app VMs."""
+
+import argparse
+from contextlib import ExitStack
+import hashlib
+import json
+import os
+import pwd
+import re
+import socket
+import stat
+import subprocess
+import sys
+
+
+ROOT = '/home/neo/.cache/klokast-platform-resources'
+OWNER_UID = 1000
+OWNER_GID = 1000
+EXPECTED = {
+    'k001-dmz': ('verify-1i62ilw_', 'verify-42619caq', 'verify-mp0q4adw', 'verify-ygrwcl6l'),
+    'k002-dmz': ('verify-1gnr6r8c', 'verify-v6_kx1rp'),
+    'k002-iot': ('verify-xvz7y69d',),
+}
+FILES = ('desired.json', 'klokast-app-resources-reconcile')
+HELPER_SHA256 = 'c094b63fe3d117d9d9dbdcf3ff2424c85aab14538e01344654f42d843936bd63'
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def checksum(value):
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def directory(root):
+    stack = ExitStack()
+    try:
+        current = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, current)
+        for part in root.strip('/').split('/'):
+            current = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            stack.callback(os.close, current)
+        return stack, current
+    except BaseException:
+        stack.close()
+        raise
+
+
+def identity(info):
+    return {'device': info.st_dev, 'inode': info.st_ino, 'mode': info.st_mode,
+            'uid': info.st_uid, 'gid': info.st_gid, 'links': info.st_nlink,
+            'bytes': info.st_size, 'mtime_ns': info.st_mtime_ns,
+            'ctime_ns': info.st_ctime_ns}
+
+
+def safe_directory(info, *, mode):
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid == OWNER_UID and info.st_gid == OWNER_GID and
+            stat.S_IMODE(info.st_mode) in mode and not info.st_mode & 0o022)
+
+
+def file_record(parent, name):
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    try:
+        before = os.fstat(descriptor)
+        maximum = 131072 if name == 'desired.json' else 8253
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != OWNER_UID or before.st_gid != OWNER_GID or
+                before.st_nlink != 1 or stat.S_IMODE(before.st_mode) not in (0o600, 0o644) or
+                not 0 < before.st_size <= maximum):
+            raise ValueError('verification cache file has an unexpected type, owner, mode, or size')
+        content = os.read(descriptor, maximum + 1)
+        after = os.fstat(descriptor)
+        if len(content) != before.st_size or identity(before) != identity(after):
+            raise ValueError('verification cache file changed while reading')
+        if os.stat(name, dir_fd=parent, follow_symlinks=False).st_ino != before.st_ino:
+            raise ValueError('verification cache path changed while reading')
+        digest = hashlib.sha256(content).hexdigest()
+        if name == 'klokast-app-resources-reconcile':
+            if before.st_size != 8253 or digest != HELPER_SHA256:
+                raise ValueError('staged reconcile helper differs from the reviewed source')
+        else:
+            try:
+                value = json.loads(content)
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                raise ValueError('staged desired JSON is invalid') from error
+            if (not isinstance(value, dict) or value.get('schema_version') != 1 or
+                    value.get('compiler') != 'platform-resources' or
+                    value.get('compiler_version') not in (10, 11, 21, 22) or
+                    not isinstance(value.get('app_resource_effective_files'), list)):
+                raise ValueError('staged desired JSON is not from the reviewed compiler')
+        return {'name': name, 'metadata': identity(before), 'sha256': digest}
+    finally:
+        os.close(descriptor)
+
+
+def inspect(host):
+    with ExitStack() as stack:
+        opened, root = directory(ROOT)
+        stack.enter_context(opened)
+        if not safe_directory(os.fstat(root), mode=(0o755,)):
+            raise ValueError('Platform resource cache root differs from its reviewed owner and mode')
+        names = os.listdir(root)
+        if sorted(names) != sorted(EXPECTED[host]):
+            raise ValueError('Platform resource cache has new or missing staging directories')
+        result = []
+        for name in EXPECTED[host]:
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            stack.callback(os.close, child)
+            before = os.fstat(child)
+            if not safe_directory(before, mode=(0o700, 0o755)) or sorted(os.listdir(child)) != sorted(FILES):
+                raise ValueError('verification staging directory has an unknown entry or unsafe owner')
+            files = [file_record(child, filename) for filename in FILES]
+            if identity(before) != identity(os.fstat(child)):
+                raise ValueError('verification staging directory changed while inspecting')
+            result.append({'name': name, 'metadata': identity(before), 'files': files})
+        return result
+
+
+def require_unused(host):
+    for name in EXPECTED[host]:
+        for path in [ROOT + '/' + name, *(ROOT + '/' + name + '/' + filename for filename in FILES)]:
+            result = subprocess.run(['/bin/busybox', 'fuser', path], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=15, check=False)
+            if result.returncode != 1 or result.stdout or result.stderr:
+                raise ValueError('a verification cache file is in use or its use could not be checked')
+
+
+def check_no_workload():
+    for area, arguments in (
+            ('containers', 'ps --all --format=json'),
+            ('volumes', 'volume ls --format=json'),
+            ('pods', 'pod ps --format=json')):
+        result = subprocess.run(['/bin/su', '-s', '/bin/sh', '-c',
+                                 '/usr/bin/podman ' + arguments, 'neo'],
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=30, check=False)
+        if result.returncode or len(result.stdout) > 2 * 1024 * 1024:
+            raise ValueError('live rootless ' + area + ' inventory is unavailable')
+        try:
+            values = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ValueError('live rootless ' + area + ' inventory is invalid') from error
+        if values != []:
+            raise ValueError('a live rootless ' + area + ' workload blocks no-application cleanup')
+
+
+def remove(host, records):
+    with ExitStack() as stack:
+        opened, root = directory(ROOT)
+        stack.enter_context(opened)
+        if sorted(os.listdir(root)) != sorted(EXPECTED[host]):
+            raise ValueError('verification cache changed before exact removal')
+        for record in records:
+            name = record['name']
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            stack.callback(os.close, child)
+            if identity(os.fstat(child)) != record['metadata'] or sorted(os.listdir(child)) != sorted(FILES):
+                raise ValueError('verification staging directory changed before removal')
+            for file in record['files']:
+                filename = file['name']
+                if identity(os.stat(filename, dir_fd=child, follow_symlinks=False)) != file['metadata']:
+                    raise ValueError('verification cache file changed before removal')
+                os.unlink(filename, dir_fd=child)
+            current = os.stat(name, dir_fd=root, follow_symlinks=False)
+            if (not stat.S_ISDIR(current.st_mode) or current.st_ino != record['metadata']['inode'] or
+                    current.st_dev != record['metadata']['device']):
+                raise ValueError('verification staging directory changed during removal')
+            os.rmdir(name, dir_fd=root)
+        os.fsync(root)
+        if os.listdir(root):
+            raise ValueError('verification cache still has staging entries after removal')
+
+
+def run(host, operation, apply=False, expected_sha=None):
+    user = pwd.getpwnam('neo')
+    if (host not in EXPECTED or socket.gethostname().split('.')[0] != host or
+            not re.fullmatch(r'[0-9a-f]{24}', operation) or os.geteuid() != 0 or
+            os.getegid() != 0 or user.pw_uid != OWNER_UID or user.pw_gid != OWNER_GID):
+        raise ValueError('verification cache cleanup requires one selected guest and root inspection')
+    check_no_workload()
+    records = inspect(host)
+    plan_sha256 = checksum(records)
+    if apply and plan_sha256 != expected_sha:
+        raise ValueError('verification cache changed since the preview; no file was removed')
+    require_unused(host)
+    if apply:
+        if checksum(inspect(host)) != plan_sha256:
+            raise ValueError('verification cache changed during the process-use check')
+        remove(host, records)
+        check_no_workload()
+    return {'kind': 'klokast.vm-verification-cache-cleanup.v1', 'host': host,
+            'operation_id': operation, 'applied': apply, 'plan_sha256': plan_sha256,
+            'records': records, 'removed_directories': len(records) if apply else 0,
+            'live_no_application': True, 'adoption_authorized': False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host', required=True)
+    parser.add_argument('--operation', required=True)
+    parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--expected-sha')
+    args = parser.parse_args()
+    try:
+        if (args.apply and not args.expected_sha or
+                not args.apply and args.expected_sha is not None):
+            raise ValueError('apply requires the exact preview checksum')
+        print(canonical(run(args.host, args.operation, args.apply, args.expected_sha)))
+    except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
+        print('verification-cache-cleanup: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
