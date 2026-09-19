@@ -122,11 +122,12 @@ available for controlled component tests. `adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
-The 2026-09-19 native reports remain blocked. All selected guests have cached
-images; the two DMZ stores exceed the bounded empty-store inventory limit.
-Their native consistency checks passed, but full storage classification,
-legacy file provenance, exact cleanup, and machine inputs remain incomplete.
-Report references are kept in the [component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
+The 2026-09-19 native reports remain blocked after the approved certificate
+cleanup. All selected guests have cached images; the two DMZ stores exceed the
+bounded empty-store inventory limit. Their native consistency checks passed,
+but full storage classification, legacy file provenance, exact cleanup, and
+machine inputs remain incomplete. Report references and item counts are kept
+in the [component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence
 set for policy approval. Sign the exact intent on the trusted workstation, then

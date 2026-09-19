@@ -344,6 +344,25 @@ is `.run/obsolete-certificates-949ad1edc7a0c8be026267a0/receipt.json`.
 The qualification reports above predate this cleanup. The remaining
 classification and production acceptance requirements still apply.
 
+The refresh at source `e4007eb` completed all 12 VM entries after the cleanup.
+The two obsolete certificate paths are absent. The backend VMs remained
+running, and k001-iot remained stopped. The selected guests are still on
+v3.23. No target qualified or received an adoption intent:
+
+| Target | Report filename | Unresolved items | Unknown items | Exact cleanup items |
+| --- | --- | ---: | ---: | ---: |
+| k001-dmz | `07d27158519ead1f46eced4aca88657615d3d5ab1a530f3cfb277f0324572354.json` | 1711 | 58 | 22 |
+| k002-dmz | `992abdfd2423051b7b3ee0195399e476dc52c630676a1e577a999d8265b16c72.json` | 1694 | 32 | 31 |
+| k002-iot | `7e651e694686ba5821cb85ca0336bd41806a0399784284764a1a54ea51800360.json` | 2162 | 532 | 3 |
+
+Most unresolved items are proposed system classes awaiting source proof:
+590 package links and about 906 old kernel module or firmware files on each
+target. The 532 unknown IoT items include 505 cached rootless Podman store
+files. Other unknown paths include temporary inspection files, Podman runtime
+files, Tailscale logs, and one Nginx configuration file on each DMZ guest.
+The report classifies the remaining application staging and bootstrap-access
+paths as exact cleanup candidates; it does not approve their removal.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
