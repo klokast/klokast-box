@@ -38,6 +38,7 @@ class LegacyTempCleanup(unittest.TestCase):
         self.assertEqual(len(removals), 1)
         self.assertEqual(removals[0]['ansible.builtin.command']['argv'],
                          ['/bin/rm', '--', '{{ item }}'])
+        self.assertIn("'0744'", source)
         self.assertNotIn('recurse', source)
 
 

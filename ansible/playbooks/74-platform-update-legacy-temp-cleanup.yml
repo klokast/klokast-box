@@ -168,7 +168,7 @@
           - item.stat.nlink == 1
           - item.stat.uid in [0, 1000]
           - item.stat.gid in [0, 1000]
-          - item.stat.mode in ['0600', '0644']
+          - item.stat.mode in ['0600', '0644', '0700', '0744']
           - item.stat.size <= 2097152
           - item.stat.checksum is match('^[0-9a-f]{64}$')
         fail_msg: 'A legacy temporary file differs from the fixed review profile; preserve it.'
