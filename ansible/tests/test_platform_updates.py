@@ -27,6 +27,47 @@ def load_cli():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_automatic_prepare_transfers_one_exact_candidate_to_other_box(self):
+        cli = load_cli()
+        commit = 'c' * 40
+        selection = {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': 'v3.24',
+                     'build_box': 'k001', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot'],
+                     'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
+                     'engine_commit': commit}
+        source = {'policy': 'checked'}
+        discovery, metadata = {'complete': True}, {'signed': True}
+        candidate = {'artifacts': {'root': {'sha256': 'd' * 64, 'bytes': 1}}}
+        release = {'kind': 'klokast.vm-release.v2', 'release_sha256': 'e' * 64,
+                   'artifacts': candidate['artifacts'], 'engine_commit': commit,
+                   'branch': 'v3.24',
+                   'application_tests': {'status': 'not-run', 'executed': False}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, value in (('candidate.json', candidate),
+                                ('release-evidence.json', release)):
+                (root / name).write_text(json.dumps(value))
+            built = {'state': 'candidate-built', 'accepted': False,
+                     'result_directory': str(root), 'operation_id': 'f' * 24,
+                     'release_evidence_sha256': release['release_sha256']}
+            def command(argv, **kwargs):
+                if argv[:3] == ['git', '-C', cli.REPO] and argv[3] == 'rev-parse':
+                    return commit + '\n'
+                return ''
+            with patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'command', side_effect=command), \
+                    patch.object(cli, 'read_policy_source', return_value=source), \
+                    patch.object(cli, 'optional', side_effect=[discovery, metadata,
+                                                               discovery, metadata]), \
+                    patch.object(cli, 'automatic_selection', return_value=selection), \
+                    patch.object(cli, 'prepare', return_value=built), \
+                    patch.object(cli.vm_artifact_transfer, 'transfer',
+                                 return_value={'target_box': 'k002', 'accepted': False}) as transfer:
+                result = cli.prepare_auto()
+            self.assertEqual(result['transfers'], [{'target_box': 'k002', 'accepted': False}])
+            self.assertEqual(transfer.call_count, 1)
+            self.assertEqual(transfer.call_args.args[3], 'k002')
+            self.assertTrue((root / 'transfer-k002.json').is_file())
+
     def test_adjacent_branch_selection_ignores_expired_source_and_skips_no_branch(self):
         releases = {'release_branches': [
             {'rel_branch': 'v3.23', 'git_branch': '3.23-stable',
