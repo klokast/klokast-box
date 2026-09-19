@@ -352,6 +352,17 @@ class Qualification(unittest.TestCase):
             self.assertFalse(noapp.path_classification(changed, **options)[2])
         self.assertFalse(noapp.path_classification(entry, tailscale_log_owner=options['tailscale_log_owner'])[2])
 
+    def test_only_exact_empty_rootless_runroot_files_are_reconstructable(self):
+        entry = {'path': '/tmp/storage-run-1000/libpod/tmp/events/events.log',
+                 'mode': stat.S_IFREG | 0o600, 'uid': 1000, 'gid': 1000,
+                 'links': 1, 'bytes': 2048}
+        self.assertTrue(noapp.path_classification(entry, empty_rootless_runtime=True)[2])
+        for changed in ({**entry, 'path': entry['path'] + '.old'}, {**entry, 'uid': 0},
+                        {**entry, 'links': 2}, {**entry, 'bytes': 3 * 1024 * 1024},
+                        {**entry, 'mode': stat.S_IFREG | 0o666}):
+            self.assertFalse(noapp.path_classification(changed, empty_rootless_runtime=True)[2])
+        self.assertFalse(noapp.path_classification(entry)[2])
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):

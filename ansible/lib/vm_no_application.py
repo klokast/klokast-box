@@ -44,6 +44,19 @@ OS_FILES = frozenset('''
 /home/neo/.cache/containers/short-name-aliases.conf.lock
 /etc/klokast/platform-resources/desired.json /etc/klokast/platform-resources/last-applied.json
 '''.split())
+PODMAN_RUNROOT_FILES = frozenset('''
+/tmp/storage-run-1000/containers/overlay-layers/mountpoints.lock
+/tmp/storage-run-1000/containers/overlay/idmapped-lower-dir-false
+/tmp/storage-run-1000/containers/overlay/metacopy()-false
+/tmp/storage-run-1000/containers/overlay/native-diff()-true
+/tmp/storage-run-1000/containers/overlay/overlay-true
+/tmp/storage-run-1000/containers/overlay/volatile-true
+/tmp/storage-run-1000/libpod/tmp/alive
+/tmp/storage-run-1000/libpod/tmp/alive.lck
+/tmp/storage-run-1000/libpod/tmp/events/events.log
+/tmp/storage-run-1000/libpod/tmp/events/events.log.lock
+/tmp/storage-run-1000/libpod/tmp/pause.pid
+'''.split())
 BOOT_SERVICES = frozenset('''
 bootmisc cgroups devfs dmesg fsck hostname hwclock hwdrivers killprocs
 klokast-podman-runroot-cleanup localmount loopback mdev modules mount-ro
@@ -394,7 +407,7 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         verified_ca_links=frozenset(), nginx_default_copy=False,
                         nginx_error_empty=False, inspection_artifact=None,
                         tailscale_log_owner=None, tailscale_present=False,
-                        verified_rootful_paths=frozenset()):
+                        verified_rootful_paths=frozenset(), empty_rootless_runtime=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -429,6 +442,12 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
     elif name in verified_rootful_paths:
         category, rule, resolved = ('reconstructable-os-state',
                                     'fixed empty rootful Podman metadata; omit from the candidate', True)
+    elif name in PODMAN_RUNROOT_FILES:
+        resolved = (empty_rootless_runtime and stat.S_ISREG(mode) and entry.get('uid') == 1000 and
+                    entry.get('gid') == 1000 and entry.get('links') == 1 and not mode & 0o022 and
+                    isinstance(entry.get('bytes'), int) and 0 <= entry['bytes'] <= 2 * 1024 * 1024)
+        category = 'reconstructable-os-state' if resolved else 'unknown'
+        rule = 'fixed empty rootless Podman runroot file; omit from the candidate and clear at boot'
     elif any(below(name, root) for root in CLEANUP_ROOTS):
         category, rule = 'exact-cleanup-item', 'application residue; verify independent copy and approve exact removal'
     elif re.fullmatch(r'/home/neo/next-[a-zA-Z0-9.-]+\.(?:crt|key)', name):
@@ -601,6 +620,13 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         verified_rootful_paths = frozenset(paths)
     except UpdateError:
         pass
+    try:
+        empty_rootless_runtime = (checked_empty_store(
+            fact['host_inventory'].get('no_application_store'))['empty'] and
+            fact.get('containers') == [] and fact.get('volumes') == [] and
+            fact.get('runtime_owner') == {'uid': 1000, 'gid': 1000})
+    except UpdateError:
+        empty_rootless_runtime = False
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
@@ -612,7 +638,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                inspection_artifact=inspection_artifact,
                                                tailscale_log_owner=fact.get('runtime_owner'),
                                                tailscale_present='tailscale' in installed_packages,
-                                               verified_rootful_paths=verified_rootful_paths), entry)
+                                               verified_rootful_paths=verified_rootful_paths,
+                                               empty_rootless_runtime=empty_rootless_runtime), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
