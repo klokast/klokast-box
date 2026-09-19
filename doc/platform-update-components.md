@@ -330,7 +330,7 @@ Syntax validation and native execution passed. The controller candidate receipt
 is `.run/obsolete-certificates-949ad1edc7a0c8be026267a0/receipt.json`.
 The pre-cleanup qualification records remain on the controller for audit.
 
-The latest native scan used source `d7af633` and covered all 12 managed VMs.
+The earlier scan used source `d7af633` and covered all 12 managed VMs.
 The two certificate paths remain absent. Both backend VMs remain running;
 k001-iot remains stopped. All three selected guests are still on v3.23.
 Source-matched qualification reports are in
@@ -342,12 +342,48 @@ Source-matched qualification reports are in
 | k002-dmz | `7376a4a68802a2501b7d00804b6079edfd363772965c8dc93c41419dd5a07297.json` | 200 | 30 | 31 |
 | k002-iot | `e5db6e5f62128b5524d738f96256a89d7dfb8ca8d572cf39ad9377ff6eb536ad.json` | 669 | 531 | 3 |
 
-The current rules account for fixed legacy kernel files, package links, and
-the two DMZ package-default Nginx copies. Unknown file paths now number 55,
-30, and 26. The IoT report also lists 505 cached rootless Podman store files
-as unknown. The other unresolved rows include package differences, accounts,
-services, mounts, boot artifacts, and machine inputs that still need approved
-source comparisons. No target qualifies or receives an adoption intent.
+That table is historical. The 2026-09-19 08:12 UTC discovery from source
+`0e69c5d` has no unknown items on the selected guests. It still does not
+qualify any target. Its exact reports on the active controller are:
+
+| Target | Report SHA-256 | Unresolved | Exact cleanup |
+| --- | --- | ---: | ---: |
+| k001-dmz | `a1b1ed3864053227e36c093b37453aa5fe763a468efef799c2a6ce6e16be7781` | 64 | 22 |
+| k002-dmz | `9347d5cdbb27b1045ae29edbc0e726d7cc6687e35c3746ed54307ca6a5f0eec0` | 64 | 22 |
+| k002-iot | `8ccff7561c24e78ef1e65ad3094ff6436213f226f07da912d325e299edd25817` | 45 | 3 |
+
+Each report has the same 45 common unresolved rows: the `neo` account; two
+boot artifacts and two mounts; 18 generated files for APK, Podman, doas,
+network, firewall, OpenRC, and resource reconciliation; four retained identity
+files (three SSH host keys and Tailscale state); 12 generated configuration
+differences from package defaults; two reconstructable OS differences; the
+Podman runroot cleanup service; and three bootstrap SSH access files. These
+are separate checks, not 45 unknown files. The generated files must match
+approved machine inputs. The host keys, Tailscale state, numeric identity,
+and subordinate ranges must be preserved. The boot files and mounts must be
+bound to the approved source and disk generation. Do not delete these inputs.
+
+The extra 19 rows on each DMZ are one Static Site backup staging tree:
+`/var/tmp/klokast-static-site-backup`, `helper.py`, `async`, and four operation
+directories with an archive, manifest, and receipt each. The one-time Static
+Site retirement role created these archives, verified a restore, copied them
+to the controller, and did not remove guest staging. Three operation copies
+have matching verified controller receipts. The fourth operation
+`623ecdce63065238edb22fb3` has matching archive and manifest hashes in a
+later verified controller copy, but its own receipt has no controller copy.
+Preserve that receipt before exact historical cleanup. The backup role now
+retires new guest staging only after it verifies controller archive and
+manifest hashes and rechecks the source. It preserves unexpected files.
+
+The three common cleanup paths are first-contact access:
+`/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf`,
+`/root/.ssh/authorized_keys`, and `/home/neo/.ssh/authorized_keys`. The
+template and clone roles create the root key and bootstrap policy. The
+`vm-base` role adds the controller key to `neo`. Key counts differ between
+guests, so exact key identity and independent management access must be
+checked before retiring bootstrap files. The legacy `vm-base` role adds a key
+without pruning old keys; replacement must render the approved key set and
+reject extra keys. No bootstrap access was removed by this review.
 
 The `verify-*` directories under the neo user's Platform resource cache have
 a specific producer: `platform-resources` uploads `desired.json` and its

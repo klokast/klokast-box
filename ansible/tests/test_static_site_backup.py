@@ -4,7 +4,9 @@ import importlib.util
 import io
 import json
 import os
+import hashlib
 from pathlib import Path
+import socket
 import tarfile
 import tempfile
 import time
@@ -36,6 +38,25 @@ class BackupTests(unittest.TestCase):
 
     def backup(self):
         return b.backup(self.operation, self.root, self.base)
+
+    def stage_retirement_fixture(self):
+        self.base.mkdir(mode=0o700)
+        work = self.base / self.operation
+        work.mkdir(mode=0o700)
+        archive = work / 'static-site.tar'
+        manifest = work / 'manifest.json'
+        archive.write_bytes(b'archive bytes')
+        manifest.write_bytes(b'manifest bytes')
+        archive.chmod(0o600)
+        manifest.chmod(0o600)
+        receipt = {'operation_id': self.operation, 'host': socket.gethostname().split('.')[0],
+                   'restore_verified': True, 'source_unchanged': True,
+                   'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                   'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest()}
+        evidence = work / 'receipt.json'
+        evidence.write_text(json.dumps(receipt))
+        evidence.chmod(0o600)
+        return receipt
 
     @unittest.skipUnless(hasattr(tarfile, 'data_filter'), 'requires controller/guest Python tar data filter')
     def test_archive_restores_data_metadata_xattrs_hardlinks_and_relative_symlinks(self):
@@ -123,6 +144,30 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.backup()
 
+    def test_verified_controller_copy_retires_exact_guest_staging(self):
+        receipt = self.stage_retirement_fixture()
+        helper = self.base / 'helper.py'
+        helper.write_bytes(b'fixed helper')
+        helper.chmod(0o600)
+        (self.base / 'async').mkdir(mode=0o700)
+        result = b.retire_staging(self.operation, receipt['archive_sha256'],
+                                  receipt['manifest_sha256'], self.base)
+        self.assertTrue(result['guest_staging_root_retired'])
+        self.assertFalse(self.base.exists())
+        self.assertTrue(self.page.exists())
+
+    def test_unverified_or_changed_staging_is_preserved(self):
+        receipt = self.stage_retirement_fixture()
+        work = self.base / self.operation
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            b.retire_staging(self.operation, '0' * 64, receipt['manifest_sha256'], self.base)
+        self.assertTrue((work / 'static-site.tar').exists())
+        (work / 'unexpected').write_bytes(b'unknown')
+        with self.assertRaisesRegex(ValueError, 'unexpected files'):
+            b.retire_staging(self.operation, receipt['archive_sha256'],
+                             receipt['manifest_sha256'], self.base)
+        self.assertTrue((work / 'unexpected').exists())
+
     def test_archive_path_traversal_is_refused_without_writing_outside_restore(self):
         archive = Path(self.tmp.name) / 'hostile.tar'
         with tarfile.open(archive, 'w') as stream:
@@ -172,6 +217,17 @@ class BackupOrchestrationTests(unittest.TestCase):
         self.assertEqual(asynchronous[0]['async'], 660)
         self.assertEqual(asynchronous[0]['vars']['ansible_async_dir'], '/var/tmp/klokast-static-site-backup/async')
         self.assertTrue(any('ansible.builtin.copy' in v for v in tasks[:tasks.index(asynchronous[0])]))
+
+    def test_guest_stage_retirement_follows_controller_and_source_checks(self):
+        tasks = yaml.safe_load((SCRIPT.parents[1] / 'tasks/main.yml').read_text())
+        names = [task['name'] for task in tasks]
+        verified = names.index('Verify the fetched bytes and bind the backup to this guest')
+        source = names.index('Recheck the original data against its verified backup before removal')
+        retired = names.index('Retire only guest staging whose bytes match the verified controller copy')
+        self.assertLess(verified, source)
+        self.assertLess(source, retired)
+        args = tasks[retired]['ansible.builtin.command']['argv']
+        self.assertIn('static_site_backup_verified.stdout | from_json', ' '.join(args))
 
     def test_cleanup_play_never_selects_backend_and_requires_backup_evidence(self):
         plays = yaml.safe_load((REPO / 'ansible/playbooks/74-platform-update-dmz-cleanup.yml').read_text())

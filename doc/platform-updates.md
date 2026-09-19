@@ -122,14 +122,14 @@ available for controlled component tests. `adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
-The 2026-09-19 reports remain blocked. Exact records removed the approved
-certificate, old image caches, old temporary diagnostics, stale verification
-staging, and old Podman runroot state. The latest reports have three unknown
-items on k001-dmz, four on k002-dmz, and five on k002-iot. They are old Ansible
-module payloads and two asynchronous-result files. They need their own exact
-process-use cleanup record. Approved machine inputs, source-disk and backup
-binding, independent management qualification, signed adoption, and the
-production transaction remain incomplete. Evidence references are in
+The 2026-09-19 08:12 UTC reports remain blocked with no unknown items. They
+have 64 unresolved checks on each DMZ and 45 on k002-iot. Most checks require
+approved machine inputs, preserved identity, source-disk binding, or package
+provenance. Three per guest are bootstrap access files. Each DMZ has 19 more
+rows for old Static Site backup staging. The backup role now removes new
+staging after verified transfer; old staging still needs exact audit-preserving
+cleanup. Independent management qualification, signed adoption, and the
+production transaction remain incomplete. Exact paths and sources are in
 [component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence

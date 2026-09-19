@@ -116,7 +116,7 @@
             os.fsync(f.fileno())
           assert h.hexdigest()==receipt[key], 'transferred backup checksum differs'
         assert (root/'static-site.tar').stat().st_size==receipt['archive_bytes']
-        print(json.dumps({'host':sys.argv[3],'restore_verified':True,'archive_sha256':receipt['archive_sha256'],'entries':receipt['entries'],'data_bytes':receipt['data_bytes']}))
+        print(json.dumps({'host':sys.argv[3],'restore_verified':True,'archive_sha256':receipt['archive_sha256'],'manifest_sha256':receipt['manifest_sha256'],'entries':receipt['entries'],'data_bytes':receipt['data_bytes']}))
       - '{{ static_site_backup_destination }}'
       - '{{ static_site_backup_operation }}'
       - '{{ inventory_hostname }}'
@@ -129,3 +129,17 @@
   ansible.builtin.command:
     argv: [/usr/bin/python3, /var/tmp/klokast-static-site-backup/helper.py, --operation, '{{ static_site_backup_operation }}', --verify-source]
   changed_when: false
+
+- name: Retire only guest staging whose bytes match the verified controller copy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /var/tmp/klokast-static-site-backup/helper.py
+      - --operation
+      - '{{ static_site_backup_operation }}'
+      - --retire-staging
+      - --controller-archive-sha
+      - "{{ (static_site_backup_verified.stdout | from_json).archive_sha256 }}"
+      - --controller-manifest-sha
+      - "{{ (static_site_backup_verified.stdout | from_json).manifest_sha256 }}"
+  register: static_site_backup_staging_retired

@@ -2,7 +2,8 @@
 """Bounded, guest-local Static Site archive and restore verification.
 
 The controller fetches opaque archive bytes and the receipt. No data or
-credentials are printed. This command neither removes data nor grants removal.
+credentials are printed. Staging retirement requires matching controller
+archive and manifest hashes; source data is never removed here.
 """
 import argparse
 import base64
@@ -220,10 +221,64 @@ def verify_source(operation, root=Path('/'), base=BASE):
     return receipt
 
 
+def retire_staging(operation, archive_sha, manifest_sha, base=BASE):
+    """Remove only a transferred, verified operation with matching controller hashes."""
+    if not re.fullmatch('[0-9a-f]{24}', operation):
+        raise ValueError('invalid backup operation')
+    if not all(re.fullmatch('[0-9a-f]{64}', value) for value in (archive_sha, manifest_sha)):
+        raise ValueError('controller backup hashes are required')
+    work = base / operation
+    for path, kind, mode in ((base, stat.S_ISDIR, 0o700),
+                             (work, stat.S_ISDIR, 0o700),
+                             (work / 'static-site.tar', stat.S_ISREG, 0o600),
+                             (work / 'manifest.json', stat.S_ISREG, 0o600),
+                             (work / 'receipt.json', stat.S_ISREG, 0o600)):
+        check_parents(path)
+        info = path.lstat()
+        if (not kind(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != mode):
+            raise ValueError('backup staging has unsafe ownership, type, or permissions')
+        if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+            raise ValueError('backup staging has a linked evidence file')
+    expected = {'static-site.tar', 'manifest.json', 'receipt.json'}
+    if {entry.name for entry in work.iterdir()} != expected:
+        raise ValueError('backup staging contains unexpected files')
+    receipt = json.loads((work / 'receipt.json').read_bytes())
+    if (receipt.get('operation_id') != operation or
+            receipt.get('host') != socket.gethostname().split('.')[0] or
+            receipt.get('restore_verified') is not True or
+            receipt.get('source_unchanged') is not True or
+            receipt.get('archive_sha256') != archive_sha or
+            receipt.get('manifest_sha256') != manifest_sha or
+            checksum(work / 'static-site.tar') != archive_sha or
+            checksum(work / 'manifest.json') != manifest_sha):
+        raise ValueError('guest backup differs from the verified controller copy')
+    for name in sorted(expected):
+        (work / name).unlink()
+    work.rmdir()
+    root_retired = False
+    if {entry.name for entry in base.iterdir()} == {'helper.py', 'async'}:
+        helper, jobs = base / 'helper.py', base / 'async'
+        helper_info, jobs_info = helper.lstat(), jobs.lstat()
+        if (stat.S_ISREG(helper_info.st_mode) and helper_info.st_uid == os.geteuid() and
+                stat.S_IMODE(helper_info.st_mode) == 0o600 and helper_info.st_nlink == 1 and
+                stat.S_ISDIR(jobs_info.st_mode) and jobs_info.st_uid == os.geteuid() and
+                stat.S_IMODE(jobs_info.st_mode) == 0o700 and not any(jobs.iterdir())):
+            helper.unlink()
+            jobs.rmdir()
+            base.rmdir()
+            root_retired = True
+    return {'operation_id': operation, 'guest_staging_retired': True,
+            'guest_staging_root_retired': root_retired}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--operation', required=True)
     parser.add_argument('--verify-source', action='store_true')
+    parser.add_argument('--retire-staging', action='store_true')
+    parser.add_argument('--controller-archive-sha')
+    parser.add_argument('--controller-manifest-sha')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('run the backup helper as root on the selected DMZ guest')
@@ -231,10 +286,18 @@ def main():
         parser.error('backup execution is restricted to a DMZ guest')
     os.umask(0o077)
     try:
-        action = verify_source if args.verify_source else backup
-        print(json.dumps(action(args.operation), sort_keys=True))
+        if args.verify_source and args.retire_staging:
+            raise ValueError('select one backup action')
+        if args.retire_staging:
+            result = retire_staging(args.operation, args.controller_archive_sha or '',
+                                    args.controller_manifest_sha or '')
+        elif args.verify_source:
+            result = verify_source(args.operation)
+        else:
+            result = backup(args.operation)
+        print(json.dumps(result, sort_keys=True))
     except (OSError, ValueError, KeyError, tarfile.TarError):
-        raise SystemExit('Static Site backup or restore verification failed; preserve the source and inspect protected staging')
+        raise SystemExit('Static Site backup, verification, or staging retirement failed; preserve the source and inspect protected staging')
 
 
 if __name__ == '__main__':
