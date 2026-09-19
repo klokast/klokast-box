@@ -1,0 +1,25 @@
+---
+- name: Verify privileged pipelining on explicitly selected managed hosts
+  hosts: all
+  serial: 1
+  gather_facts: false
+  become: true
+  become_method: community.general.doas
+  tasks:
+    - name: Require explicit passwordless pipelining intent
+      ansible.builtin.assert:
+        that:
+          - ansible_doas_allow_pipelining | default(false) | bool
+          - ansible_become_flags == '-n'
+          - ansible_limit | default('') | length > 0
+        fail_msg: Select managed nopass hosts with --limit before testing pipelining.
+
+    - name: Verify the privileged remote execution identity
+      ansible.builtin.command:
+        argv: [/usr/bin/id, -u]
+      changed_when: false
+      register: ops_pipelining_identity
+
+    - name: Require root execution through the configured become plugin
+      ansible.builtin.assert:
+        that: ops_pipelining_identity.stdout | trim == '0'

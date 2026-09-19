@@ -1,0 +1,71 @@
+---
+# This public controller toolchain has root authority. Its exact archive and
+# installed manifest are pinned; it holds no credentials or private inputs.
+- name: Require the qualified Ansible core family
+  ansible.builtin.assert:
+    that:
+      - ansible_version.full is version('2.20', '>=')
+      - ansible_version.full is version('2.21', '<')
+    fail_msg: Qualify the controller Ansible core before changing its collection.
+
+- name: Create protected controller collection and archive directories
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /usr/local/share/klokast/ansible
+    - /usr/local/share/klokast/ansible/12.6.2
+    - /var/cache/klokast/ansible
+
+- name: Fetch the exact upstream community.general archive
+  ansible.builtin.get_url:
+    url: https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/artifacts/community-general-12.6.2.tar.gz
+    dest: /var/cache/klokast/ansible/community-general-12.6.2.tar.gz
+    checksum: sha256:acc74862136d121ad5931df2a4946b209ec0d35c06f85e699705aab7bf486d91
+    owner: root
+    group: root
+    mode: '0644'
+    timeout: 60
+
+- name: Install only the pinned archive without resolving dependencies
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ansible-galaxy
+      - collection
+      - install
+      - /var/cache/klokast/ansible/community-general-12.6.2.tar.gz
+      - --no-deps
+      - --collections-path
+      - /usr/local/share/klokast/ansible/12.6.2
+    creates: /usr/local/share/klokast/ansible/12.6.2/ansible_collections/community/general/MANIFEST.json
+
+- name: Check the installed manifest against the pinned archive
+  ansible.builtin.stat:
+    path: /usr/local/share/klokast/ansible/12.6.2/ansible_collections/community/general/MANIFEST.json
+    checksum_algorithm: sha256
+    follow: false
+  register: ops_ansible_collection_manifest
+
+- name: Refuse an unexpected installed collection manifest
+  ansible.builtin.assert:
+    that:
+      - ops_ansible_collection_manifest.stat.isreg
+      - not ops_ansible_collection_manifest.stat.islnk
+      - ops_ansible_collection_manifest.stat.uid == 0
+      - ops_ansible_collection_manifest.stat.checksum == '8dfbcf16f28fcf3dd051150cbc9657d48104890631e6d66170df55029923f9f2'
+    fail_msg: Installed collection differs from the pinned upstream archive; preserve it for review.
+
+- name: Verify installed collection files offline against the pinned manifest
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ansible-galaxy
+      - collection
+      - verify
+      - community.general:12.6.2
+      - --offline
+      - --collections-path
+      - /usr/local/share/klokast/ansible/12.6.2
+  changed_when: false

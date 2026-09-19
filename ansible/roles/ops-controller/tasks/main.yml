@@ -156,6 +156,10 @@
       Expected {{ ops_controller_packages | unique | sort | list }},
       got {{ ops_controller_apk_world_after_packages }}.
 
+- name: Install the pinned controller Ansible collection
+  ansible.builtin.import_tasks: ansible-toolchain.yml
+  tags: ops-controller-ansible-toolchain
+
 - name: Verify Secret Authority GitHub dependency is importable
   ansible.builtin.command:
     argv:

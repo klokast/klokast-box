@@ -30,6 +30,11 @@
         - /tmp/klokast-nft-error.txt
         - /tmp/klokast-nft-ruleset.txt
         - /tmp/klokast-platform-resources-desired.json
+      completed-backup-jobs:
+        k001-dmz:
+          - /root/.ansible_async/j859100469499.10014
+        k002-dmz:
+          - /root/.ansible_async/j386165593963.13410
       ansible-residue:
         k001-dmz:
           - /tmp/ansible-tmp-1779970503.0375876-28224-245422693765094/AnsiballZ_ping.py

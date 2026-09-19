@@ -1,0 +1,23 @@
+---
+- name: Qualify the pinned public Ansible collection on the active controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: community.general.doas
+  become_flags: -n
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      become: false
+      changed_when: false
+      register: ops_ansible_controller
+    - name: Refuse installation outside the active controller
+      ansible.builtin.assert:
+        that:
+          - (ops_ansible_controller.stdout | from_json).active
+          - (ops_ansible_controller.stdout | from_json).role == 'active'
+  tasks:
+    - name: Install and verify the pinned collection
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/ansible-toolchain.yml

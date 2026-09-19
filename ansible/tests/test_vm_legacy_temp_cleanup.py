@@ -14,7 +14,11 @@ class LegacyTempCleanup(unittest.TestCase):
         play = yaml.safe_load(PLAY.read_text())[0]
         self.assertEqual(play['hosts'], 'k001-dmz:k002-dmz:k002-iot')
         profiles = play['vars']['legacy_temp_path_profiles']
-        self.assertEqual(set(profiles), {'diagnostics', 'ansible-residue'})
+        self.assertEqual(set(profiles), {'diagnostics', 'ansible-residue', 'completed-backup-jobs'})
+        self.assertEqual(profiles['completed-backup-jobs'], {
+            'k001-dmz': ['/root/.ansible_async/j859100469499.10014'],
+            'k002-dmz': ['/root/.ansible_async/j386165593963.13410'],
+        })
         paths = profiles['diagnostics']
         self.assertEqual(set(paths), {'k001-dmz', 'k002-dmz', 'k002-iot'})
         self.assertEqual(len(paths['k001-dmz']), 9)

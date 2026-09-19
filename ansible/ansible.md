@@ -53,11 +53,12 @@ ansible
   Use bounded async tasks for long work or a service restart that breaks its own
   connection. High latency alone is not a reason to use async for every task.
   Choose a poll interval that limits round trips without delaying recovery.
-- Check the installed become plugin before relying on pipelining. The
-  `community.general.doas` plugin requires version 12.4.0 or later and explicit
-  `allow_pipelining` for `nopass` rules. Qualify the controller toolchain before
-  enabling this option. Pipelining does not remove staging required by file
-  transfers or async tasks.
+- Check the installed become plugin before relying on pipelining. The controller
+  uses checksum-pinned `community.general` 12.6.2 with Ansible core 2.20.
+  Managed Alpine inventory enables `allow_pipelining` only for `nopass` groups.
+  The upstream docs label the option 12.4.0, but the inspected Galaxy 12.4.0
+  archive lacks it. Use the qualified artifact, not that version label.
+  Pipelining does not remove staging required by file transfers or async tasks.
 - Every async task must specify a time limit, poll interval, registered result,
   and `ansible_async_dir`. Use a private directory owned by the execution account.
   Use volatile storage for transient results where possible. Use an operation
@@ -94,6 +95,27 @@ python3 -m unittest discover -s ansible/tests -p 'test_async_cleanup.py' -v
 
 See the Ansible documentation for [async cleanup](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_async.html)
 and [doas pipelining](https://docs.ansible.com/projects/ansible/latest/collections/community/general/doas_become.html).
+
+The controller role installs the pinned collection in a root-owned versioned
+directory. It preserves Alpine's packaged collection. To prepare a candidate
+toolchain before engine promotion, run these checks on the active controller
+from the clean candidate checkout:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
+  ansible/playbooks/66-ops-ansible-toolchain.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vvv \
+  -i ansible/execution-inventory/hosts \
+  ansible/playbooks/66-ops-ansible-pipelining-verify.yml --limit HOSTS
+```
+
+Check that `ansible-doc -t become community.general.doas` resolves to
+`/usr/local/share/klokast/ansible/12.6.2/`. Keep the verbose qualification log on
+the controller: each remote module must show `Pipelining is enabled`, root UID
+`0`, and no module upload. The unchanged approved checkout continues to use its
+old configuration until signed engine activation. Re-run the native async
+tests with the new collection selected. Normal controller convergence uses the
+same pinned installation tasks after promotion.
 
 # Automation flow
 

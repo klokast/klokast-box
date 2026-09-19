@@ -3,6 +3,7 @@ ansible_user: neo
 ansible_become: true
 ansible_become_method: doas
 ansible_become_flags: -n
+ansible_doas_allow_pipelining: true
 ansible_become_timeout: 30
 ansible_remote_tmp: /tmp
 ansible_python_interpreter: /usr/bin/python3
