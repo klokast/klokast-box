@@ -1,6 +1,7 @@
 """Host metadata coverage, bounded traversal, and secret exclusion."""
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -123,6 +124,23 @@ class HostInventory(unittest.TestCase):
         target.parent.rename(target.parent.with_name('firmware-real'))
         target.parent.symlink_to(target.parent.with_name('firmware-real'))
         self.assertFalse(self.m.collect_legacy_firmware(self.root, self.mounts)['complete'])
+
+    def test_running_collector_receipt_binds_only_its_exact_staged_copy(self):
+        path = '/tmp/ansible-tmp-123.456-7-8/collect-vm-update-facts'
+        target = self.root / path[1:]
+        target.parent.mkdir(parents=True)
+        target.write_bytes(Path(self.m.__file__).read_bytes())
+        owner = {'uid': os.geteuid(), 'gid': os.getegid()}
+        with patch.object(self.m.os.path, 'abspath', return_value=path):
+            result = self.m.collect_inspection_artifact(self.root, owner)
+            self.assertTrue(result['complete']); self.assertTrue(result['stable'])
+            self.assertEqual(result['path'], path)
+            target.write_bytes(b'other collector')
+            self.assertNotEqual(self.m.collect_inspection_artifact(self.root, owner)['sha256'],
+                                result['sha256'])
+            target.unlink()
+            target.symlink_to('/tmp/other')
+            self.assertFalse(self.m.collect_inspection_artifact(self.root, owner)['complete'])
 
     def test_deep_metadata_accounts_for_directories_without_file_contents(self):
         (self.root / 'home/neo/saved-data').write_text('PRIVATE APPLICATION CONTENT')

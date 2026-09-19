@@ -915,6 +915,55 @@ def collect_legacy_firmware(root, mounts):
     return result
 
 
+def collect_inspection_artifact(root, owner):
+    """Bind only this running Ansible collector copy to its source bytes."""
+    path = os.path.abspath(__file__)
+    result = {'kind': 'klokast.vm-inspection-artifact.v1', 'path': path,
+              'pid': os.getpid(), 'complete': False, 'stable': False,
+              'mode': None, 'uid': None, 'gid': None, 'links': None,
+              'bytes': None, 'sha256': None, 'adoption_authorized': False,
+              'error': None}
+    try:
+        if not re.fullmatch(r'/tmp/ansible-tmp-[0-9]+(?:\.[0-9]+)?-[0-9]+-[0-9]+/collect-vm-update-facts', path):
+            raise HostInventoryError('collector is outside the fixed Ansible staging path')
+        owners = {(0, 0)}
+        if isinstance(owner, dict) and type(owner.get('uid')) is int and type(owner.get('gid')) is int:
+            owners.add((owner['uid'], owner['gid']))
+        def read():
+            with ExitStack() as stack:
+                parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                stack.callback(os.close, parent)
+                parts = path[1:].split('/')
+                for part in parts[:-1]:
+                    parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=parent)
+                    stack.callback(os.close, parent)
+                descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                     dir_fd=parent)
+                stack.callback(os.close, descriptor)
+                before = os.fstat(descriptor)
+                if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) not in owners or
+                        before.st_nlink != 1 or before.st_mode & 0o022 or
+                        not 0 < before.st_size <= 1024 * 1024):
+                    raise HostInventoryError('collector staging file has unsafe metadata')
+                content = os.read(descriptor, 1024 * 1024 + 1)
+                after = os.fstat(descriptor)
+                identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                                         info.st_gid, info.st_nlink, info.st_size,
+                                         info.st_mtime_ns, info.st_ctime_ns)
+                if len(content) != before.st_size or identity(before) != identity(after):
+                    raise HostInventoryError('collector staging file changed during inspection')
+                return {'mode': before.st_mode, 'uid': before.st_uid, 'gid': before.st_gid,
+                        'links': before.st_nlink, 'bytes': before.st_size,
+                        'sha256': hashlib.sha256(content).hexdigest()}
+        first, second = read(), read()
+        result.update(first, complete=True, stable=first == second)
+    except (HostInventoryError, OSError, ValueError) as error:
+        result['error'] = str(error) if isinstance(error, HostInventoryError) else 'collector staging file cannot be inspected safely'
+    result['evidence_sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return result
+
+
 def collect_host(storage, root=Path('/')):
     result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
               'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
@@ -958,6 +1007,8 @@ def collect_host(storage, root=Path('/')):
         if result['stable']:
             result['nginx_default_copy'] = collect_nginx_default_copy(root, owned, mounts)
             result['legacy_firmware'] = collect_legacy_firmware(root, mounts)
+            if root == Path('/'):
+                result['inspection_artifact'] = collect_inspection_artifact(root, storage.get('runtime_owner'))
         if result['stable']:
             result['rootful_store'] = collect_rootful_store(root, mounts)
             if storage.get('containers') == [] and storage.get('volumes') == []:

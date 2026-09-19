@@ -304,6 +304,44 @@ class Qualification(unittest.TestCase):
             with self.assertRaises(UpdateError):
                 noapp.checked_legacy_firmware(changed, shallow)
 
+    def test_current_ansible_collector_copy_does_not_hide_other_temp_files(self):
+        path = '/tmp/ansible-tmp-123.456-7-8/collect-vm-update-facts'
+        entry = {'path': path, 'mode': stat.S_IFREG | 0o700, 'uid': 1000, 'gid': 1000}
+        receipt = {'kind': 'klokast.vm-inspection-artifact.v1', 'path': path,
+                   'pid': 123, 'complete': True, 'stable': True,
+                   **{k: entry[k] for k in ('mode', 'uid', 'gid')},
+                   'links': 1, 'bytes': noapp.COLLECTOR_SOURCE.stat().st_size,
+                   'sha256': hashlib.sha256(noapp.COLLECTOR_SOURCE.read_bytes()).hexdigest(),
+                   'adoption_authorized': False, 'error': None}
+        receipt['evidence_sha256'] = digest(receipt)
+        self.assertEqual(noapp.checked_inspection_artifact(
+            receipt, {path: entry}, 123, {'uid': 1000, 'gid': 1000}), path)
+        self.assertTrue(noapp.path_classification(entry, inspection_artifact=path)[2])
+        other = '/tmp/ansible-tmp-122.456-7-8/collect-vm-update-facts'
+        self.assertFalse(noapp.path_classification({**entry, 'path': other},
+                                                   inspection_artifact=path)[2])
+        for changed in ({**receipt, 'pid': 124},
+                        {**receipt, 'sha256': '0' * 64},
+                        {**receipt, 'path': other}):
+            with self.assertRaises(UpdateError):
+                noapp.checked_inspection_artifact(changed, {path: entry}, 123,
+                                                  {'uid': 1000, 'gid': 1000})
+
+    def test_only_exact_bounded_tailscale_log_files_are_reconstructable(self):
+        entry = {'path': '/home/neo/.local/share/tailscale/tailscaled.log2.txt',
+                 'mode': stat.S_IFREG | 0o600, 'uid': 1000, 'gid': 1000,
+                 'links': 1, 'bytes': 2803}
+        options = {'tailscale_log_owner': {'uid': 1000, 'gid': 1000},
+                   'tailscale_present': True}
+        self.assertTrue(noapp.path_classification(entry, **options)[2])
+        for changed in ({**entry, 'path': entry['path'] + '.old'},
+                        {**entry, 'uid': 0},
+                        {**entry, 'mode': stat.S_IFREG | 0o666},
+                        {**entry, 'links': 2},
+                        {**entry, 'bytes': 17 * 1024 * 1024}):
+            self.assertFalse(noapp.path_classification(changed, **options)[2])
+        self.assertFalse(noapp.path_classification(entry, tailscale_log_owner=options['tailscale_log_owner'])[2])
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):

@@ -9,6 +9,7 @@ import hashlib
 import re
 import stat
 from collections import Counter
+from pathlib import Path
 
 from platform_updates import REPORT_KIND, VERIFY_AGE, UpdateError, digest, findings, fresh, timestamp
 import vm_retention
@@ -80,6 +81,9 @@ DMZ_PACKAGE_ACCOUNTS = {
     'cloudflared': (102, 103, '/home/cloudflared', '/sbin/nologin'),
     'nginx': (103, 104, '/var/lib/nginx', '/sbin/nologin'),
 }
+TAILSCALE_LOGS = frozenset('/home/neo/.local/share/tailscale/tailscaled.log' + suffix
+                           for suffix in ('.conf', '1.txt', '2.txt'))
+COLLECTOR_SOURCE = Path(__file__).resolve().parents[1] / 'roles/vm-update-inventory/files/collect-vm-update-facts'
 # These paths are application state even if no process uses them. A report
 # lists exact observed descendants; it does not turn this list into rm -rf.
 CLEANUP_ROOTS = (
@@ -318,6 +322,39 @@ def checked_legacy_firmware(value, entries):
     return value['files']
 
 
+def checked_inspection_artifact(value, entries, collector_pid, runtime_owner):
+    fields = {'kind', 'path', 'pid', 'complete', 'stable', 'mode', 'uid', 'gid',
+              'links', 'bytes', 'sha256', 'adoption_authorized', 'error', 'evidence_sha256'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.vm-inspection-artifact.v1' or
+            value['complete'] is not True or value['stable'] is not True or
+            value['adoption_authorized'] is not False or value['error'] is not None or
+            type(value['pid']) is not int or value['pid'] != collector_pid or
+            not isinstance(value['path'], str) or not re.fullmatch(
+                r'/tmp/ansible-tmp-[0-9]+(?:\.[0-9]+)?-[0-9]+-[0-9]+/collect-vm-update-facts', value['path']) or
+            value['path'] not in entries or
+            any(type(value[k]) is not int for k in ('mode', 'uid', 'gid', 'links', 'bytes')) or
+            not stat.S_ISREG(value['mode']) or value['links'] != 1 or
+            not 0 < value['bytes'] <= 1024 * 1024 or value['mode'] & 0o022 or
+            not isinstance(value['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['sha256']) or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items() if k != 'evidence_sha256'})):
+        raise UpdateError('running collector staging evidence is incomplete')
+    owners = {(0, 0)}
+    if (isinstance(runtime_owner, dict) and set(runtime_owner) == {'uid', 'gid'} and
+            all(type(runtime_owner[k]) is int and runtime_owner[k] >= 1000 for k in ('uid', 'gid'))):
+        owners.add((runtime_owner['uid'], runtime_owner['gid']))
+    if ((value['uid'], value['gid']) not in owners or
+            any(entries[value['path']][k] != value[k] for k in ('mode', 'uid', 'gid'))):
+        raise UpdateError('running collector staging metadata differs')
+    try:
+        source_sha256 = hashlib.sha256(COLLECTOR_SOURCE.read_bytes()).hexdigest()
+    except OSError as error:
+        raise UpdateError('checked-in collector source is unavailable') from error
+    if value['sha256'] != source_sha256:
+        raise UpdateError('running collector bytes differ from the checked-in source')
+    return value['path']
+
+
 def fixed_service_resolution(service, entries, audit_verified, changed_paths):
     """Resolve only package-owned, unchanged scripts in the fixed boot profile."""
     script = '/etc/init.d/' + service['name']
@@ -352,7 +389,8 @@ def fixed_account_classification(account, role, legacy_template, packages):
 def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         busybox_suid_present=False, pinentry_present=False,
                         verified_ca_links=frozenset(), nginx_default_copy=False,
-                        nginx_error_empty=False):
+                        nginx_error_empty=False, inspection_artifact=None,
+                        tailscale_log_owner=None, tailscale_present=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -370,6 +408,20 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                     entry.get('gid') == 0)
         category = 'reconstructable-os-state' if resolved else 'unknown'
         rule = 'empty Nginx runtime log; do not copy into the candidate'
+    elif name == inspection_artifact:
+        category, rule, resolved = ('reconstructable-os-state',
+                                    'exact running discovery collector; Ansible removes its staged copy', True)
+    elif name in TAILSCALE_LOGS:
+        maximum = 4096 if name.endswith('.conf') else 16 * 1024 * 1024
+        resolved = (tailscale_present and isinstance(tailscale_log_owner, dict) and
+                    set(tailscale_log_owner) == {'uid', 'gid'} and
+                    entry.get('uid') == tailscale_log_owner['uid'] and
+                    entry.get('gid') == tailscale_log_owner['gid'] and
+                    stat.S_ISREG(mode) and mode & 0o777 == 0o600 and
+                    entry.get('links') == 1 and type(entry.get('bytes')) is int and
+                    0 <= entry['bytes'] <= maximum)
+        category = 'reconstructable-os-state' if resolved else 'unknown'
+        rule = 'fixed Tailscale log policy files; keep machine state separately'
     elif any(below(name, root) for root in CLEANUP_ROOTS):
         category, rule = 'exact-cleanup-item', 'application residue; verify independent copy and approve exact removal'
     elif re.fullmatch(r'/home/neo/next-[a-zA-Z0-9.-]+\.(?:crt|key)', name):
@@ -518,6 +570,12 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     except UpdateError:
         nginx_default_copy = False
         nginx_error_empty = False
+    try:
+        inspection_artifact = checked_inspection_artifact(
+            fact['host_inventory'].get('inspection_artifact'), entries,
+            inventory.get('processes', {}).get('collector_pid'), fact.get('runtime_owner'))
+    except UpdateError:
+        inspection_artifact = None
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
@@ -525,7 +583,10 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                pinentry_present='pinentry' in installed_packages,
                                                verified_ca_links=verified_ca_links,
                                                nginx_default_copy=nginx_default_copy,
-                                               nginx_error_empty=nginx_error_empty), entry)
+                                               nginx_error_empty=nginx_error_empty,
+                                               inspection_artifact=inspection_artifact,
+                                               tailscale_log_owner=fact.get('runtime_owner'),
+                                               tailscale_present='tailscale' in installed_packages), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
