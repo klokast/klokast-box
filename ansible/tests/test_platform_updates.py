@@ -208,6 +208,10 @@ class SafetyRulesTests(unittest.TestCase):
         with self.assertRaises(u.UpdateError):
             u.validate_no_application_release(release, {**inputs, 'branch': 'v3.23'},
                                                candidate, normal, personalized, maintenance)
+        failed_boot = copy.deepcopy(candidate)
+        failed_boot['boot_test']['tests']['kernel_modules'] = False
+        with self.assertRaises(u.UpdateError):
+            u.no_application_release(inputs, failed_boot, normal, personalized, maintenance)
 
 
 class ControllerTests(unittest.TestCase):

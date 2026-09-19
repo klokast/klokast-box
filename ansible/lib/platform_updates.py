@@ -291,25 +291,39 @@ def validate_release(release, engine, profile, artifact_hashes):
         raise UpdateError("release manifest checksum differs")
 
 
-NO_APPLICATION_TESTS = frozenset((
-    "package_closure", "no_machine_identity", "boot", "kernel_modules",
+BASE_BUILD_TESTS = frozenset(("package_closure", "no_machine_identity"))
+BASE_BOOT_TESTS = frozenset((
+    "boot", "kernel_modules",
     "tailscale_offline", "rootless_podman", "nftables_kernel",
     "retained_data_copy", "retained_data_stage", "retained_identity",
     "retained_partition", "personalization", "backup_restore",
-    "openrc_boot", "cgroup_v2", "default_rootless_podman",
+))
+OPENRC_TESTS = frozenset((
+    "openrc_boot", "cgroup_v2", "kernel_modules", "tailscale_offline",
+    "default_rootless_podman",
+))
+PERSONALIZED_TESTS = frozenset((
     "personalized_boot", "configuration",
     "retained_mount", "runtime_identity", "tailscale_retained_state",
-    "firewall", "packages_unchanged",
+    "firewall", "default_rootless_podman", "packages_unchanged",
 ))
+NO_APPLICATION_TESTS = (BASE_BUILD_TESTS | BASE_BOOT_TESTS | OPENRC_TESTS |
+                        PERSONALIZED_TESTS)
 
 
 def no_application_release(inputs, candidate, normal, personalized, maintenance):
     """Create non-authoritative v2 evidence from one checked template build."""
-    if (candidate.get("tests") != {"package_closure": True, "no_machine_identity": True} or
-            candidate.get("boot_test", {}).get("success") is not True or
+    if (candidate.get("boot_test", {}).get("success") is not True or
             normal.get("success") is not True or personalized.get("success") is not True or
             maintenance.get("success") is not True):
         raise UpdateError("no-application release needs complete successful component evidence")
+    for source, required in ((candidate.get("tests"), BASE_BUILD_TESTS),
+                             (candidate["boot_test"].get("tests"), BASE_BOOT_TESTS),
+                             (normal.get("tests"), OPENRC_TESTS),
+                             (personalized.get("tests"), PERSONALIZED_TESTS)):
+        if (not isinstance(source, dict) or set(source) != required or
+                any(value is not True for value in source.values())):
+            raise UpdateError("no-application release has incomplete base tests")
     tests = dict(candidate["tests"])
     tests.update(candidate["boot_test"]["tests"])
     tests.update(normal["tests"])
