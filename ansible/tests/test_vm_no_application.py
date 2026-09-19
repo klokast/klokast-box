@@ -152,6 +152,37 @@ class Qualification(unittest.TestCase):
             category, _, resolved = noapp.path_classification({'path': '/var/log/apk.log', 'mode': mode, 'uid': 0})
             self.assertEqual(category, 'unknown'); self.assertFalse(resolved)
 
+    def test_legacy_modloop_files_are_reconstructable_only_with_exact_recipe_context(self):
+        kernel = '6.18.7-0-virt'
+        for path in (f'/lib/modules/{kernel}/kernel/crypto/example.ko',
+                     f'/lib/modules/{kernel}/modules.dep',
+                     f'/lib/modules/{kernel}/kernel-suffix',
+                     '/lib/firmware/qat_4xxx.bin.zst'):
+            entry = {'path': path, 'mode': stat.S_IFREG | 0o644,
+                     'uid': 0, 'gid': 0, 'links': 1, 'bytes': 32}
+            with self.subTest(path=path):
+                self.assertEqual(noapp.path_classification(entry, legacy_kernel=kernel)[0],
+                                 'reconstructable-os-state')
+                self.assertTrue(noapp.path_classification(entry, legacy_kernel=kernel)[2])
+                self.assertFalse(noapp.path_classification(entry)[2])
+                for key, value in (('uid', 1000), ('links', 2), ('bytes', 17 * 1024 * 1024),
+                                   ('mode', stat.S_IFREG | 0o666)):
+                    changed = {**entry, key: value}
+                    self.assertFalse(noapp.path_classification(changed, legacy_kernel=kernel)[2])
+        other = {'path': '/lib/modules/6.18.8-0-virt/kernel/crypto/example.ko',
+                 'mode': stat.S_IFREG | 0o644, 'uid': 0, 'gid': 0, 'links': 1, 'bytes': 32}
+        self.assertFalse(noapp.path_classification(other, legacy_kernel=kernel)[2])
+
+    def test_busybox_link_requires_exact_target_and_installed_package(self):
+        entry = {'path': '/bin/arch', 'mode': stat.S_IFLNK | 0o777, 'uid': 0,
+                 'gid': 0, 'link_sha256': noapp.BUSYBOX_LINK_SHA256}
+        category, _, resolved = noapp.path_classification(entry, busybox_present=True)
+        self.assertEqual(category, 'reconstructable-os-state')
+        self.assertTrue(resolved)
+        self.assertFalse(noapp.path_classification(entry)[2])
+        for key, value in (('uid', 1000), ('gid', 1000), ('link_sha256', '0' * 64)):
+            self.assertFalse(noapp.path_classification({**entry, key: value}, busybox_present=True)[2])
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):

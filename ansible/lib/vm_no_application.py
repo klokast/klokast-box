@@ -5,6 +5,7 @@ receipts and untrusted discovery, emits no copy request, and never removes
 files. A proposed classification is not an approved machine input. Incomplete
 coverage, unknown data, and pending cleanup must remain visible.
 """
+import hashlib
 import re
 import stat
 from collections import Counter
@@ -53,6 +54,8 @@ CLEANUP_ROOTS = (
     '/var/tmp/klokast-static-site-backup', '/var/lib/klokast/immich-private-ingress',
     '/var/log/klokast/immich-private-ingress',
 )
+LEGACY_TEMPLATE_MARKER = 'hostname=klokast-podman-template\nlv=/dev/vg0/lv_podman_template\n'
+BUSYBOX_LINK_SHA256 = hashlib.sha256(b'/bin/busybox').hexdigest()
 
 
 def below(path, root):
@@ -175,7 +178,26 @@ def checked_boot_files(value, mounts):
     return value
 
 
-def path_classification(entry):
+def legacy_modloop_file(entry, kernel):
+    """Recognize OS files copied by the checked-in legacy template recipe."""
+    name = entry['path']
+    if (not isinstance(kernel, str) or
+            not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-virt', kernel) or
+            entry.get('uid') != 0 or entry.get('gid') != 0 or
+            not stat.S_ISREG(entry['mode']) or entry.get('links') != 1 or
+            type(entry.get('bytes')) is not int or not 0 < entry['bytes'] <= 16 * 1024 * 1024 or
+            entry['mode'] & 0o022):
+        return False
+    prefix = '/lib/modules/' + kernel + '/'
+    relative = name[len(prefix):] if name.startswith(prefix) else ''
+    return bool((relative and (
+        re.fullmatch(r'kernel/.+\.ko(?:\.(?:gz|xz|zst))?', relative) or
+        re.fullmatch(r'modules\.[a-z_.]+', relative) or
+        (relative == 'kernel-suffix' and entry['bytes'] <= 64))) or
+        re.fullmatch(r'/lib/firmware/qat_(?:402xx|4xxx)(?:_mmp)?\.bin\.zst', name))
+
+
+def path_classification(entry, *, legacy_kernel=None, busybox_present=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -198,21 +220,28 @@ def path_classification(entry):
         category, rule, resolved = 'reconstructable-os-state', 'fixed OS cache, log, or generated record', True
     elif re.fullmatch(r'/etc/ssh/ssh_host_(?:rsa|ecdsa|ed25519)_key.pub', name):
         category, rule, resolved = 'reconstructable-os-state', 'derive public key from retained private key', True
-    elif re.fullmatch(r'/lib/modules/[^/]+/(?:kernel/.+\.ko(?:\.(?:gz|xz|zst))?|modules\.[a-z_.]+)', name):
-        category, rule = 'reconstructable-os-state', 'compare legacy modules with their signed source before discarding'
-    elif re.fullmatch(r'/lib/firmware/qat_(?:402xx|4xxx)(?:_mmp)?\.bin.zst', name):
-        category, rule = 'reconstructable-os-state', 'compare legacy firmware with its signed source before discarding'
+    elif re.fullmatch(r'/lib/modules/[^/]+/(?:kernel/.+\.ko(?:\.(?:gz|xz|zst))?|modules\.[a-z_.]+|kernel-suffix)', name):
+        category, rule = 'reconstructable-os-state', 'legacy template modloop file; replace with the candidate kernel'
+        resolved = legacy_modloop_file(entry, legacy_kernel)
+    elif re.fullmatch(r'/lib/firmware/qat_(?:402xx|4xxx)(?:_mmp)?\.bin\.zst', name):
+        category, rule = 'reconstructable-os-state', 'legacy template modloop firmware; replace with the candidate kernel'
+        resolved = legacy_modloop_file(entry, legacy_kernel)
     elif re.fullmatch(r'/var/cache/apk/APKINDEX\.[0-9a-f]+\.tar.gz', name):
         category, rule, resolved = 'reconstructable-os-state', 'rebuild package index cache from signed inputs', True
     elif re.fullmatch(r'/(?:usr/)?s?bin/[^/]+', name) and stat.S_ISLNK(mode):
-        category, rule = 'approved-package-content', 'verify generated applet link against signed package recipe'
+        if (busybox_present and entry.get('uid') == 0 and entry.get('gid') == 0 and
+                entry.get('link_sha256') == BUSYBOX_LINK_SHA256):
+            category, rule, resolved = ('reconstructable-os-state',
+                                         'fixed BusyBox applet link; regenerate from candidate package', True)
+        else:
+            category, rule = 'approved-package-content', 'verify generated applet link against signed package recipe'
     elif below(name, '/etc/ssl/certs') and stat.S_ISLNK(mode):
         category, rule = 'approved-package-content', 'verify generated certificate link against signed package recipe'
     elif re.fullmatch(r'/etc/runlevels/[^/]+/[^/]+', name):
         category, rule = 'generated-configuration', 'compare enabled service with fixed boot recipe'
     # A known path with the wrong type or unsafe ownership is not disposable.
     if category != 'unknown' and not stat.S_ISDIR(mode):
-        expected_link = rule.startswith('verify generated') or name.startswith('/etc/runlevels/')
+        expected_link = rule.startswith(('verify generated', 'fixed BusyBox')) or name.startswith('/etc/runlevels/')
         if (not (stat.S_ISLNK(mode) if expected_link else stat.S_ISREG(mode)) or
                 entry['uid'] not in (0, 1000) or (not expected_link and mode & 0o002)):
             category, rule, resolved = 'unknown', 'unexpected type, ownership, or writable metadata', False
@@ -286,8 +315,12 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         if previous and any(previous[k] != value.get(k) for k in previous):
             add('qualification.path-conflict', 'Shallow and deep file metadata disagree.')
         entries[value['path']] = value
+    legacy_kernel = fact.get('kernel') if (fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER and
+                                              fact.get('module_releases') == [fact.get('kernel')]) else None
+    busybox_present = isinstance(fact.get('packages'), dict) and 'busybox' in fact['packages']
     for name, entry in sorted(entries.items()):
-        item('file', name, *path_classification(entry), entry)
+        item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
+                                               busybox_present=busybox_present), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'

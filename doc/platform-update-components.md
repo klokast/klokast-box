@@ -377,6 +377,17 @@ at the fixed path `/tmp/klokast-platform-resources-desired.json`. Both now use
 an owner-only file under volatile `/run` and remove that file after success or
 task failure. They leave the old `/tmp` files untouched until exact review.
 
+The fixed legacy template recipe copied Alpine VIRT modules and firmware from
+its read-only modloop into the guest. Qualification can now classify those
+files as replaceable OS state only when the exact template marker is present,
+the sole module release matches the running kernel, and each file has bounded
+root-owned, single-link, non-writable metadata. A link under the standard
+applet directories is replaceable only when the installed BusyBox package is
+present and its link target is exactly `/bin/busybox`. The fresh candidate
+supplies its own kernel and BusyBox package; none of these old files is copied.
+The checks classify old disk content. They do not verify the new template,
+resolve other links, or approve any remaining unknown file.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
