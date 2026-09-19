@@ -1,21 +1,26 @@
 ---
-- name: Ensure app-resource reconcile helper directory exists
-  ansible.builtin.file:
-    path: /usr/local/libexec
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
+- name: Inspect the installed app-resource reconcile helper
+  ansible.builtin.stat:
+    path: /usr/local/libexec/klokast-app-resources-reconcile
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
   become: true
+  changed_when: false
+  register: app_resources_verify_helper
 
-- name: Install app-resource reconcile helper
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../roles/app-resources/files/reconcile-app-resources.py"
-    dest: /usr/local/libexec/klokast-app-resources-reconcile
-    owner: root
-    group: root
-    mode: "0755"
-  become: true
+- name: Refuse app-resource verification with a missing or changed helper
+  ansible.builtin.assert:
+    that:
+      - app_resources_verify_helper.stat.isreg | default(false)
+      - not (app_resources_verify_helper.stat.islnk | default(false))
+      - app_resources_verify_helper.stat.uid | default(-1) == 0
+      - app_resources_verify_helper.stat.gid | default(-1) == 0
+      - app_resources_verify_helper.stat.mode | default('') == '0755'
+      - >-
+        (app_resources_verify_helper.stat.checksum | default('')) ==
+        (lookup('ansible.builtin.file', playbook_dir ~ '/../roles/app-resources/files/reconcile-app-resources.py', rstrip=False) | hash('sha256'))
+    fail_msg: The installed app-resource helper differs from approved source. Apply Platform resources before verification.
 
 - name: Verify app-resource rules with a temporary desired ledger
   when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']

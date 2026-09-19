@@ -376,6 +376,9 @@ The Ansible app-resource apply and verify roles also left their desired ledger
 at the fixed path `/tmp/klokast-platform-resources-desired.json`. Both now use
 an owner-only file under volatile `/run` and remove that file after success or
 task failure. They leave the old `/tmp` files untouched until exact review.
+The verification role now checks the installed reconcile helper against the
+checked-in source checksum instead of installing it during a check. A missing
+or changed helper blocks verification and requires an approved apply.
 
 The fixed legacy template recipe copied Alpine VIRT modules and firmware from
 its read-only modloop into the guest. Qualification can now classify those
