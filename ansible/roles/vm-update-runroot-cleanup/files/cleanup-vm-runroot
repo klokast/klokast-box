@@ -85,12 +85,12 @@ def tree():
                 raise ValueError('the runroot changed during inspection') from error
             if stat.S_ISLNK(value.st_mode) or not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
                 raise ValueError('the runroot contains a linked or special entry')
-            if value.st_uid != 1000 or value.st_gid != 1000 or value.st_nlink != 1:
-                raise ValueError('the runroot contains an unexpected owner or link count')
+            if value.st_uid != 1000 or value.st_gid != 1000:
+                raise ValueError('the runroot contains an unexpected owner')
             relative = path.relative_to(ROOT).as_posix()
             entry = {'path': relative, 'type': 'directory' if stat.S_ISDIR(value.st_mode) else 'regular',
                      'mode': stat.S_IMODE(value.st_mode), 'size': value.st_size,
-                     'mtime_ns': value.st_mtime_ns, 'inode': value.st_ino}
+                     'mtime_ns': value.st_mtime_ns, 'inode': value.st_ino, 'links': value.st_nlink}
             if stat.S_ISREG(value.st_mode):
                 if value.st_size > 2 * 1024 * 1024:
                     raise ValueError('the runroot contains an oversized file')
@@ -102,6 +102,10 @@ def tree():
             entries.append(entry)
             if len(entries) > 128:
                 raise ValueError('the runroot has too many entries for fixed cleanup')
+    regulars = [entry for entry in entries if entry['type'] == 'regular']
+    for entry in regulars:
+        if entry['links'] != sum(other['inode'] == entry['inode'] for other in regulars):
+            raise ValueError('a runroot file has a link outside the reviewed tree')
     return entries
 
 
