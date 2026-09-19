@@ -775,6 +775,76 @@ def assignment_status(role, native=None):
         return assignment_report(tx)
 
 
+def source_status(role, native=None):
+    """Bind an unmanaged running guest to its exact disk and boot artifacts.
+
+    This read-only receipt is adoption evidence, not an assignment. A current
+    transaction pointer makes the old-source path invalid even if it is stale.
+    """
+    if role not in {'bak', 'dmz', 'iot'}:
+        raise Refused('source inspection requires a supported shared VM role')
+    native = native or Native()
+    with budget(180), operation_lock(BASE):
+        pointer = BASE / 'active' / (role + '.json')
+        if pointer.exists() or pointer.is_symlink():
+            raise Refused('source inspection requires an unmanaged guest')
+        secure(XEN, True)
+        secure(XEN / 'auto', True)
+        path = secure(XEN / (role + '.cfg'))
+        content = path.read_bytes()
+        inventory = native.inventory()
+        matches = [record for record in inventory if record['domid'] != 0 and
+                   record['config']['c_info']['name'] == role]
+        if len(matches) != 1:
+            raise Refused('source inspection requires exactly one running guest')
+        guest = matches[0]
+        identity = guest['config']['c_info']['uuid']
+        config, paths = configuration(content.decode(), role, identity)
+        disks = {disk: native.lv(disk) for disk in paths}
+        if len({item['device'] for item in disks.values()}) != len(disks):
+            raise Refused('source disk device identities overlap')
+        native.check_unmounted(disks)
+        expected = {}
+        for entry in config['disk']:
+            disk, vdev, _mode = entry.removeprefix('phy:').split(',')
+            expected[native.device(disk), vdev, 1] = disk
+        for record in inventory:
+            if record['domid'] == 0:
+                continue
+            attachments = record['config'].get('disks')
+            if not isinstance(attachments, list):
+                raise Refused('Xen did not report source disk attachments')
+            mappings = set()
+            for attachment in attachments:
+                disk = attachment.get('pdev_path') if isinstance(attachment, dict) else None
+                if not isinstance(disk, str) or not disk.startswith('/dev/'):
+                    raise Refused('guest has an unsupported disk attachment')
+                mappings.add((native.device(disk), attachment.get('vdev'), attachment.get('readwrite')))
+            overlap = {entry[0] for entry in mappings} & {item['device'] for item in disks.values()}
+            if record is guest:
+                if len(attachments) != len(expected) or set(expected) != mappings:
+                    raise Refused('running source disk mappings differ from its Xen definition')
+            elif overlap:
+                raise Refused('another Xen guest holds a source disk')
+        artifacts = {config[name]: native.artifact(config[name]) for name in ('kernel', 'ramdisk')}
+        link = XEN / 'auto' / (role + '.cfg')
+        if link.is_symlink():
+            if os.readlink(link) not in {'../' + link.name, str(path)}:
+                raise Refused('source autostart link differs from its Xen definition')
+            autostart = True
+        elif link.exists():
+            raise Refused('source autostart entry is not a supported link')
+        else:
+            autostart = False
+        return {'kind': 'klokast.vm-unmanaged-source.v1', 'role': role,
+                'dom0': socket.gethostname().split('.')[0], 'observed_at': int(time.time()),
+                'vm_uuid': identity, 'configuration_sha256': hashlib.sha256(content).hexdigest(),
+                'disks': {path: {key: value[key] for key in ('uuid', 'bytes')}
+                          for path, value in disks.items()},
+                'disk_mappings': {path: vdev for (_device, vdev, _write), path in expected.items()},
+                'artifacts': artifacts, 'autostart': autostart, 'runtime': 'running'}
+
+
 def reconcile_assignment(role, request_sha256, runtime_state, intent_sha256, native=None):
     """Root-only primitive for the existing approved runtime Apply workflow.
 
@@ -844,14 +914,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover', 'heartbeat',
                                            'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage',
-                                           'assignment-status', 'reconcile-assignment'))
+                                           'assignment-status', 'source-status', 'reconcile-assignment'))
     parser.add_argument('--operation-id')
     parser.add_argument('--role')
     parser.add_argument('--request-sha256')
     parser.add_argument('--intent-sha256')
     parser.add_argument('--runtime-state', choices=('running', 'stopped'))
     args = parser.parse_args(argv)
-    if args.role and args.action not in {'assignment-status', 'reconcile-assignment'}:
+    if args.role and args.action not in {'assignment-status', 'source-status', 'reconcile-assignment'}:
         raise Refused('a role selector is only valid for assignment commands')
     if args.action != 'reconcile-assignment' and any((args.request_sha256, args.intent_sha256, args.runtime_state)):
         raise Refused('runtime intent is only valid for assignment reconciliation')
@@ -871,6 +941,11 @@ def main(argv=None):
         if args.operation_id or not args.role:
             raise Refused('assignment status accepts only the selected shared VM role')
         print(canonical(assignment_status(args.role)))
+        return 0
+    if args.action == 'source-status':
+        if args.operation_id or not args.role:
+            raise Refused('source status accepts only the selected shared VM role')
+        print(canonical(source_status(args.role)))
         return 0
     if args.action == 'check-storage':
         if args.operation_id:
@@ -914,6 +989,6 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except (Refused, OSError, ValueError, KeyError, TypeError) as error:
+    except (Refused, OSError, ValueError, KeyError, TypeError, UnicodeError) as error:
         print('vm-update-transaction: ' + str(error), file=sys.stderr)
         raise SystemExit(1)

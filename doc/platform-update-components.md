@@ -807,6 +807,15 @@ Old and candidate writable LVs must be separate ordinary volumes. Recovery
 selects the unchanged old volumes; it does not merge snapshots. This requires
 capacity for both generations and a verified data copy before candidate boot.
 
+Before first adoption, `vm-update-transaction source-status --role ROLE` gives
+a read-only receipt for one running, unmanaged guest. Under the dom0
+transaction lock, it checks the Xen definition, live UUID and disk mappings,
+ordinary LV UUIDs and sizes, boot artifact hashes, and autostart link. It
+refuses a current assignment pointer, a disk mounted on dom0, or another
+guest that holds a source disk. This receipt is source evidence only. The
+controller must still bind it to fresh guest boot and mount evidence, approved
+machine inputs, and a signed adoption operation.
+
 The request, journal, and active role pointer stay under
 `/mnt/dom0_data/klokast-vm-updates`. They are generated operation records,
 outside the instance repository and diskless apkovl. Setup and execution verify

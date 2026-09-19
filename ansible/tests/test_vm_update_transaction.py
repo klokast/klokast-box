@@ -199,6 +199,44 @@ class Transactions(unittest.TestCase):
                 patch.object(t, 'operation_lock', return_value=nullcontext()):
             return t.assignment_status('bak', self.backend)
 
+    def source_status(self):
+        with patch.object(t.socket, 'gethostname', return_value='boxa-dom0'), \
+                patch.object(t, 'operation_lock', return_value=nullcontext()):
+            return t.source_status('bak', self.backend)
+
+    def test_unmanaged_source_receipt_binds_live_disk_and_boot_artifacts(self):
+        before = list(self.backend.calls)
+        value = self.source_status()
+        self.assertEqual(value['kind'], 'klokast.vm-unmanaged-source.v1')
+        self.assertEqual(value['vm_uuid'], self.request['old_uuid'])
+        self.assertEqual(value['configuration_sha256'], self.request['old_config_sha256'])
+        self.assertEqual(value['disk_mappings'], {'/dev/vg0/old-os': 'xvda',
+                                                  '/dev/vg0/old-data': 'xvdb'})
+        self.assertEqual(value['disks'], self.request['old_disks'])
+        self.assertEqual(value['artifacts'], self.request['old_artifacts'])
+        self.assertEqual(value['runtime'], 'running')
+        self.assertFalse(value['autostart'])
+        self.assertEqual(self.backend.calls, before)
+        (self.xen / 'auto/bak.cfg').symlink_to('../bak.cfg')
+        self.assertTrue(self.source_status()['autostart'])
+
+    def test_unmanaged_source_rejects_changed_or_shared_disk_and_assignment(self):
+        self.backend.bad_uuid = True
+        with self.assertRaisesRegex(t.Refused, 'configuration UUID differs'):
+            self.source_status()
+        self.backend.bad_uuid = False
+        with patch.object(self.backend, 'device', side_effect=lambda path: 1):
+            with self.assertRaisesRegex(t.Refused, 'device identities overlap'):
+                self.source_status()
+        self.backend.running = None
+        with self.assertRaisesRegex(t.Refused, 'exactly one running guest'):
+            self.source_status()
+        self.backend.running = 'old'
+        t.store(self.base / 'active/bak.json', {'operation_id': self.work.name,
+                                               'request_sha256': t.digest(self.request)})
+        with self.assertRaisesRegex(t.Refused, 'unmanaged guest'):
+            self.source_status()
+
     def test_current_assignment_distinguishes_unmanaged_pending_and_accepted(self):
         self.assertFalse(self.assignment_status()['managed'])
         tx = self.boot()
