@@ -1,0 +1,130 @@
+---
+# One-time retirement of a reviewed rootless Podman runroot on one selected VM.
+- name: Remove the fixed transient Podman runroot from one no-application VM
+  hosts: k001-dmz:k002-dmz:k002-iot
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    runroot_cleanup_apply: false
+    runroot_cleanup_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-runroot-cleanup/{{ runroot_cleanup_operation }}'
+  pre_tasks:
+    - name: Require one exact guest and a fresh operation ID
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [runroot_cleanup_box ~ '-' ~ runroot_cleanup_role]
+          - runroot_cleanup_box ~ '-' ~ runroot_cleanup_role in ['k001-dmz', 'k002-dmz', 'k002-iot']
+          - node_name == runroot_cleanup_box
+          - node_domain_role == runroot_cleanup_role
+          - inventory_hostname == runroot_cleanup_box ~ '-' ~ runroot_cleanup_role
+          - runroot_cleanup_operation is match('^[0-9a-f]{24}$')
+          - runroot_cleanup_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-runroot-cleanup/[0-9a-f]{24}$')
+
+    - name: Verify the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: runroot_cleanup_controller
+
+    - name: Require active controller authority
+      ansible.builtin.assert:
+        that:
+          - (runroot_cleanup_controller.stdout | from_json).configured
+          - (runroot_cleanup_controller.stdout | from_json).active
+          - (runroot_cleanup_controller.stdout | from_json).role == 'active'
+
+    - name: Recheck current no-application intent
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-update'
+          - adopt
+          - prepare
+          - --box
+          - '{{ runroot_cleanup_box }}'
+          - --role
+          - '{{ runroot_cleanup_role }}'
+          - --json
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      register: runroot_cleanup_intent
+
+    - name: Require checked intent without workloads or retained datasets
+      ansible.builtin.assert:
+        that:
+          - runroot_cleanup_intent.rc in [0, 1]
+          - (runroot_cleanup_intent.stdout | from_json).intent.eligible
+          - (runroot_cleanup_intent.stdout | from_json).intent.workloads == []
+          - (runroot_cleanup_intent.stdout | from_json).intent.datasets == []
+        fail_msg: 'Current checked Instance and retention intent does not permit runroot cleanup.'
+
+    - name: Check existing operation records without following links
+      ansible.builtin.stat:
+        path: '{{ runroot_cleanup_record_dir }}/{{ inventory_hostname }}-{{ item }}.json'
+        follow: false
+      loop: [preview, applied]
+      delegate_to: localhost
+      become: false
+      register: runroot_cleanup_prior
+
+    - name: Require one preview followed by one exact apply
+      ansible.builtin.assert:
+        that:
+          - not runroot_cleanup_prior.results[1].stat.exists
+          - (runroot_cleanup_apply | bool) == (runroot_cleanup_prior.results[0].stat.exists | bool)
+        fail_msg: 'Use a fresh operation for preview, then apply only that preview once.'
+
+    - name: Read the protected preview before apply
+      ansible.builtin.slurp:
+        src: '{{ runroot_cleanup_record_dir }}/{{ inventory_hostname }}-preview.json'
+      delegate_to: localhost
+      become: false
+      no_log: true
+      register: runroot_cleanup_preview
+      when: runroot_cleanup_apply | bool
+
+    - name: Bind apply to the reviewed host, operation, and runroot checksum
+      ansible.builtin.assert:
+        that:
+          - (runroot_cleanup_preview.content | b64decode | from_json).kind == 'klokast.vm-runroot-cleanup.v1'
+          - (runroot_cleanup_preview.content | b64decode | from_json).host == inventory_hostname
+          - (runroot_cleanup_preview.content | b64decode | from_json).operation_id == runroot_cleanup_operation
+          - not (runroot_cleanup_preview.content | b64decode | from_json).applied
+          - (runroot_cleanup_preview.content | b64decode | from_json).plan_sha256 is match('^[0-9a-f]{64}$')
+      when: runroot_cleanup_apply | bool
+
+  tasks:
+    - name: Preview or remove only the fixed unused rootless runroot
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../roles/vm-update-runroot-cleanup/files/cleanup-vm-runroot
+          --host {{ inventory_hostname }} --operation {{ runroot_cleanup_operation }}
+          {{ ('--apply --expected-sha ' ~ (runroot_cleanup_preview.content | b64decode | from_json).plan_sha256)
+             if runroot_cleanup_apply | bool else '' }}
+        executable: /usr/bin/python3
+      register: runroot_cleanup_result
+      changed_when: runroot_cleanup_apply | bool
+
+    - name: Create the protected controller operation directory
+      ansible.builtin.file:
+        path: '{{ runroot_cleanup_record_dir }}'
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve the exact preview or completed cleanup receipt
+      ansible.builtin.copy:
+        content: '{{ (runroot_cleanup_result.stdout | from_json) | to_nice_json }}'
+        dest: >-
+          {{ runroot_cleanup_record_dir }}/{{ inventory_hostname }}-{{ 'applied' if runroot_cleanup_apply | bool else 'preview' }}.json
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true

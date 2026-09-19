@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Remove the fixed rootless Podman runroot only after a no-workload check."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+
+HOSTS = frozenset(('k001-dmz', 'k002-dmz', 'k002-iot'))
+ROOT = Path('/tmp/storage-run-1000')
+HASH = re.compile(r'[0-9a-f]{64}')
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def run(argv, *, preexec_fn=None, timeout=90):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, preexec_fn=preexec_fn,
+                            timeout=timeout, check=False)
+    if result.returncode:
+        raise ValueError('native runtime inspection failed: ' + Path(argv[0]).name)
+    if len(result.stdout) > 2 * 1024 * 1024:
+        raise ValueError('native runtime inspection output exceeds its bound')
+    return result.stdout
+
+
+def neo_preexec():
+    account = pwd.getpwnam('neo')
+    os.setgroups([account.pw_gid])
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+
+
+def podman_json(*args):
+    try:
+        return json.loads(run(['/usr/bin/podman', *args], preexec_fn=neo_preexec))
+    except json.JSONDecodeError as error:
+        raise ValueError('rootless Podman returned incomplete JSON') from error
+
+
+def runtime_clear():
+    account = pwd.getpwnam('neo')
+    if account.pw_uid != 1000 or account.pw_gid != 1000:
+        raise ValueError('the fixed rootless Podman account is absent')
+    info = podman_json('info', '--format=json')
+    if (not isinstance(info, dict) or info.get('host', {}).get('security', {}).get('rootless') is not True or
+            info.get('store', {}).get('graphRoot') != '/home/neo/.local/share/containers/storage' or
+            not str(info.get('store', {}).get('runRoot', '')).startswith(str(ROOT) + '/')):
+        raise ValueError('Podman is not using the fixed rootless storage profile')
+    for name, argv in (
+        ('containers', ('ps', '--all', '--format', 'json')),
+        ('volumes', ('volume', 'ls', '--format', 'json')),
+        ('pods', ('pod', 'ps', '--format', 'json')),
+        ('images', ('image', 'ls', '--all', '--format', 'json')),
+    ):
+        if podman_json(*argv) != []:
+            raise ValueError('the ' + name + ' inventory is not empty')
+    active = subprocess.run(['/usr/bin/pgrep', '-u', '1000', '-f', 'podman|conmon|crun|netavark|pasta'],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, timeout=10, check=False)
+    if active.returncode not in (0, 1) or active.stderr:
+        raise ValueError('native Podman process inspection failed')
+    if active.returncode == 0 or active.stdout.strip():
+        raise ValueError('the rootless Podman runtime is active')
+
+
+def tree():
+    try:
+        root_stat = ROOT.lstat()
+    except FileNotFoundError:
+        return []
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+        raise ValueError('the fixed runroot is not a directory')
+    entries = []
+    for directory, directories, files in os.walk(ROOT, topdown=True, followlinks=False):
+        current = Path(directory)
+        names = sorted(directories + files)
+        for name in names:
+            path = current / name
+            try:
+                value = path.lstat()
+            except FileNotFoundError as error:
+                raise ValueError('the runroot changed during inspection') from error
+            if stat.S_ISLNK(value.st_mode) or not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                raise ValueError('the runroot contains a linked or special entry')
+            if value.st_uid != 1000 or value.st_gid != 1000 or value.st_nlink != 1:
+                raise ValueError('the runroot contains an unexpected owner or link count')
+            relative = path.relative_to(ROOT).as_posix()
+            entry = {'path': relative, 'type': 'directory' if stat.S_ISDIR(value.st_mode) else 'regular',
+                     'mode': stat.S_IMODE(value.st_mode), 'size': value.st_size,
+                     'mtime_ns': value.st_mtime_ns, 'inode': value.st_ino}
+            if stat.S_ISREG(value.st_mode):
+                if value.st_size > 2 * 1024 * 1024:
+                    raise ValueError('the runroot contains an oversized file')
+                digest = hashlib.sha256()
+                with path.open('rb') as stream:
+                    for block in iter(lambda: stream.read(65536), b''):
+                        digest.update(block)
+                entry['sha256'] = digest.hexdigest()
+            entries.append(entry)
+            if len(entries) > 128:
+                raise ValueError('the runroot has too many entries for fixed cleanup')
+    return entries
+
+
+def inspect(host):
+    if host not in HOSTS or socket.gethostname() != host or os.geteuid() != 0:
+        raise ValueError('runroot cleanup requires one selected guest as root')
+    runtime_clear()
+    entries = tree()
+    if not entries:
+        raise ValueError('the reviewed rootless runroot is already absent')
+    return entries
+
+
+def execute(host, operation, apply=False, expected_sha=None):
+    if not re.fullmatch(r'[0-9a-f]{24}', operation):
+        raise ValueError('the operation ID is invalid')
+    entries = inspect(host)
+    plan_sha256 = hashlib.sha256(canonical(entries).encode()).hexdigest()
+    if apply:
+        if expected_sha != plan_sha256:
+            raise ValueError('the runroot changed since preview; no path was removed')
+        if hashlib.sha256(canonical(tree()).encode()).hexdigest() != plan_sha256:
+            raise ValueError('the runroot changed before removal; no path was removed')
+        shutil.rmtree(ROOT)
+        if ROOT.exists() or ROOT.is_symlink():
+            raise ValueError('the fixed runroot remains after removal')
+        runtime_clear()
+    return {'kind': 'klokast.vm-runroot-cleanup.v1', 'host': host, 'operation_id': operation,
+            'applied': apply, 'plan_sha256': plan_sha256, 'root': str(ROOT), 'entries': entries,
+            'containers': 0, 'volumes': 0, 'pods': 0, 'images': 0, 'adoption_authorized': False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host', required=True)
+    parser.add_argument('--operation', required=True)
+    parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--expected-sha')
+    args = parser.parse_args()
+    try:
+        if (args.apply and not args.expected_sha) or (not args.apply and args.expected_sha is not None):
+            raise ValueError('apply requires the exact preview plan checksum')
+        if args.expected_sha is not None and not HASH.fullmatch(args.expected_sha):
+            raise ValueError('the preview plan checksum is invalid')
+        print(canonical(execute(args.host, args.operation, args.apply, args.expected_sha)))
+    except (ValueError, OSError, subprocess.TimeoutExpired, KeyError) as error:
+        print('runroot-cleanup: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
