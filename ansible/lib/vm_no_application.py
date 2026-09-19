@@ -231,9 +231,39 @@ def certificate_link_resolutions(entries, packages, package_audit, database_sha2
     return resolved
 
 
+def checked_nginx_default_copy(value, packages, audit, database_sha256, entries):
+    source = '/usr/share/nginx/http-default_server.conf'
+    target = '/etc/nginx/http.d/default.conf'
+    fields = {'kind', 'source', 'target', 'complete', 'stable', 'present', 'source_owned',
+              'source_sha256', 'target_sha256', 'matching', 'adoption_authorized',
+              'error_log_empty', 'error', 'evidence_sha256'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.vm-nginx-default-copy.v1' or
+            value['source'] != source or value['target'] != target or
+            any(value[k] is not True for k in ('complete', 'stable', 'present', 'source_owned', 'matching')) or
+            value['adoption_authorized'] is not False or value['error'] is not None or
+            type(value['error_log_empty']) is not bool or
+            value['source_sha256'] != value['target_sha256'] or
+            not isinstance(value['source_sha256'], str) or
+            not re.fullmatch('[0-9a-f]{64}', value['source_sha256']) or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items() if k != 'evidence_sha256'}) or
+            not isinstance(packages, dict) or 'nginx' not in packages or
+            source in entries or target not in entries):
+        raise UpdateError('Nginx default copy lacks complete package-source evidence')
+    storage.checked_package_audit(audit, database_sha256)
+    if any(v['path'] in {source, target} for v in audit['differences']):
+        raise UpdateError('Nginx default copy or its package source changed')
+    item = entries[target]
+    if (not stat.S_ISREG(item['mode']) or item['uid'] != 0 or item['gid'] != 0 or
+            item['mode'] & 0o022):
+        raise UpdateError('Nginx default copy metadata differs')
+    return value['error_log_empty']
+
+
 def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         busybox_suid_present=False, pinentry_present=False,
-                        verified_ca_links=frozenset()):
+                        verified_ca_links=frozenset(), nginx_default_copy=False,
+                        nginx_error_empty=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -242,6 +272,15 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
         # Discovery alone does not validate private keys or state usability.
     elif name in CONFIGURATION:
         category, rule = 'generated-configuration', 'compare with rendered machine inputs'
+    elif name == '/etc/nginx/http.d/default.conf':
+        category = 'reconstructable-os-state' if nginx_default_copy else 'unknown'
+        rule = 'exact copy of the installed Nginx package default; replace with candidate packages'
+        resolved = nginx_default_copy
+    elif name == '/var/log/nginx/error.log':
+        resolved = (nginx_error_empty and stat.S_ISREG(mode) and entry.get('uid') == 0 and
+                    entry.get('gid') == 0)
+        category = 'reconstructable-os-state' if resolved else 'unknown'
+        rule = 'empty Nginx runtime log; do not copy into the candidate'
     elif any(below(name, root) for root in CLEANUP_ROOTS):
         category, rule = 'exact-cleanup-item', 'application residue; verify independent copy and approve exact removal'
     elif re.fullmatch(r'/home/neo/next-[a-zA-Z0-9.-]+\.(?:crt|key)', name):
@@ -364,12 +403,22 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
                                                      inventory.get('package_audit'),
                                                      fact['host_inventory'].get('package_database_sha256'))
+    try:
+        nginx_error_empty = checked_nginx_default_copy(
+            fact['host_inventory'].get('nginx_default_copy'), fact.get('packages'),
+            inventory.get('package_audit'), fact['host_inventory'].get('package_database_sha256'), entries)
+        nginx_default_copy = True
+    except UpdateError:
+        nginx_default_copy = False
+        nginx_error_empty = False
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
                                                busybox_suid_present='busybox-suid' in installed_packages,
                                                pinentry_present='pinentry' in installed_packages,
-                                               verified_ca_links=verified_ca_links), entry)
+                                               verified_ca_links=verified_ca_links,
+                                               nginx_default_copy=nginx_default_copy,
+                                               nginx_error_empty=nginx_error_empty), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'

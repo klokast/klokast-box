@@ -77,6 +77,29 @@ class HostInventory(unittest.TestCase):
         self.assertIn('link_sha256', rows['/srv/data/alias'])
         self.assertNotIn('/srv/data/alias/must-not-read', rows)
 
+    def test_nginx_default_copy_requires_an_owned_source_and_exact_safe_bytes(self):
+        source = '/usr/share/nginx/http-default_server.conf'
+        target = '/etc/nginx/http.d/default.conf'
+        for name in (source, target):
+            (self.root / name[1:]).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name[1:]).write_text('server { listen 80; }\n')
+        log = self.root / 'var/log/nginx/error.log'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.touch()
+        good = self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)
+        self.assertTrue(good['complete']); self.assertTrue(good['stable'])
+        self.assertTrue(good['matching']); self.assertTrue(good['source_owned'])
+        self.assertTrue(good['error_log_empty'])
+        self.assertNotIn('listen 80', json.dumps(good))
+        self.assertFalse(self.m.collect_nginx_default_copy(self.root, set(), self.mounts)['matching'])
+        log.write_text('request details\n')
+        self.assertFalse(self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)['error_log_empty'])
+        (self.root / target[1:]).write_text('different default\n')
+        self.assertFalse(self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)['matching'])
+        (self.root / target[1:]).unlink()
+        (self.root / target[1:]).symlink_to(self.root / source[1:])
+        self.assertFalse(self.m.collect_nginx_default_copy(self.root, {source}, self.mounts)['complete'])
+
     def test_deep_metadata_accounts_for_directories_without_file_contents(self):
         (self.root / 'home/neo/saved-data').write_text('PRIVATE APPLICATION CONTENT')
         (self.root / 'home/neo/alias').symlink_to(self.root / 'proc')

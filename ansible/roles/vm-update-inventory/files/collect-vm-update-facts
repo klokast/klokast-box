@@ -772,6 +772,80 @@ def collect_boot_files(root, mounts):
     return result
 
 
+def collect_nginx_default_copy(root, owned, mounts):
+    """Check the one unowned default file against its package-owned source."""
+    source = '/usr/share/nginx/http-default_server.conf'
+    target = '/etc/nginx/http.d/default.conf'
+    result = {'kind': 'klokast.vm-nginx-default-copy.v1', 'source': source,
+              'target': target, 'complete': False, 'stable': False, 'present': False,
+              'source_owned': False, 'source_sha256': None, 'target_sha256': None,
+              'matching': False, 'error_log_empty': False,
+              'adoption_authorized': False, 'error': None}
+    try:
+        try:
+            (root / target[1:]).lstat()
+        except FileNotFoundError:
+            result.update(complete=True, stable=True)
+            return {**result, 'evidence_sha256': hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+        result['present'] = True
+        if (source not in owned or target in owned or
+                any(m['path'] != '/' and any(p == m['path'] or p.startswith(m['path'] + '/')
+                                             for p in (source, target)) for m in mounts)):
+            raise HostInventoryError('Nginx default copy lacks package or mount coverage')
+        result['source_owned'] = True
+        device = root.stat().st_dev
+        def read(path):
+            descriptor = os.open(root / path[1:], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                before = os.fstat(descriptor)
+                if (not stat.S_ISREG(before.st_mode) or before.st_dev != device or
+                        before.st_uid != os.geteuid() or before.st_gid != os.getegid() or before.st_nlink != 1 or
+                        before.st_mode & 0o022 or not 0 < before.st_size <= 65536):
+                    raise HostInventoryError('Nginx default copy has unsafe file metadata')
+                content = os.read(descriptor, 65537)
+                after = os.fstat(descriptor)
+                identity = (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                            before.st_gid, before.st_nlink, before.st_size, before.st_mtime_ns,
+                            before.st_ctime_ns)
+                if (len(content) != before.st_size or identity !=
+                        (after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                         after.st_gid, after.st_nlink, after.st_size, after.st_mtime_ns,
+                         after.st_ctime_ns)):
+                    raise HostInventoryError('Nginx default copy changed during inspection')
+                return hashlib.sha256(content).hexdigest(), identity
+            finally:
+                os.close(descriptor)
+        first = (read(source), read(target))
+        second = (read(source), read(target))
+        result.update(complete=True, stable=first == second,
+                      source_sha256=first[0][0], target_sha256=first[1][0],
+                      matching=first == second and first[0][0] == first[1][0])
+        log = '/var/log/nginx/error.log'
+        if log not in owned and not any(m['path'] != '/' and
+                (log == m['path'] or log.startswith(m['path'] + '/')) for m in mounts):
+            def empty_log():
+                try:
+                    descriptor = os.open(root / log[1:], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                except FileNotFoundError:
+                    return None
+                try:
+                    info = os.fstat(descriptor)
+                    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                            info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns,
+                            info.st_ctime_ns)
+                finally:
+                    os.close(descriptor)
+            log_first, log_second = empty_log(), empty_log()
+            result['error_log_empty'] = (log_first is not None and log_first == log_second and
+                                         log_first[0] == device and stat.S_ISREG(log_first[2]) and
+                                         log_first[3:7] == (os.geteuid(), os.getegid(), 1, 0) and
+                                         not log_first[2] & 0o022)
+    except (HostInventoryError, OSError, ValueError) as error:
+        result['error'] = str(error) if isinstance(error, HostInventoryError) else 'Nginx default copy cannot be inspected safely'
+    result['evidence_sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return result
+
+
 def collect_host(storage, root=Path('/')):
     result = {'kind': 'klokast.vm-host-inventory.v1', 'complete': False, 'stable': False,
               'accounts': [], 'maintenance_files': [], 'unowned_paths': [], 'delegated_roots': [],
@@ -812,6 +886,8 @@ def collect_host(storage, root=Path('/')):
             if mounts != mount_inventory():
                 result['unowned_tree']['stable'] = False
         result['package_audit'] = collect_package_audit(result['package_database_sha256'], root)
+        if result['stable']:
+            result['nginx_default_copy'] = collect_nginx_default_copy(root, owned, mounts)
         if result['stable']:
             result['rootful_store'] = collect_rootful_store(root, mounts)
             if storage.get('containers') == [] and storage.get('volumes') == []:

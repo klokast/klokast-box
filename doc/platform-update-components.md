@@ -398,6 +398,15 @@ ownership, the installed CA packages, and the absence of an APK audit
 difference or unowned file at the final target. A different link remains
 unresolved. The candidate regenerates the CA links from its signed packages.
 
+Both DMZ guests contain the same unowned Nginx `default.conf`. Its SHA-256
+matches each guest's package-owned `/usr/share/nginx/http-default_server.conf`
+exactly. [Alpine's v3.23 package index](https://pkgs.alpinelinux.org/contents?arch=x86_64&branch=v3.23&name=nginx&repo=main)
+lists that source file. Discovery now records a bounded, stable two-file
+checksum comparison without reporting the file contents; qualification also
+requires package ownership and a clean native APK audit for the source. An
+empty Nginx error log is replaceable runtime state. Other Nginx content remains
+unknown.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on

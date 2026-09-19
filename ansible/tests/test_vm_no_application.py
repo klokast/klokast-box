@@ -223,6 +223,37 @@ class Qualification(unittest.TestCase):
             self.report()
         self.assertEqual(chain.call_args.args[3], original)
 
+    def test_nginx_default_copy_needs_matching_package_and_audit_evidence(self):
+        source = '/usr/share/nginx/http-default_server.conf'
+        target = '/etc/nginx/http.d/default.conf'
+        database = 'a' * 64
+        audit = {'kind': 'klokast.vm-package-audit.v1', 'complete': True, 'stable': True,
+                 'database_sha256': database, 'protected_paths': 'none',
+                 'check_permissions': True, 'differences': [], 'adoption_authorized': False}
+        value = {'kind': 'klokast.vm-nginx-default-copy.v1', 'source': source, 'target': target,
+                 'complete': True, 'stable': True, 'present': True, 'source_owned': True,
+                 'source_sha256': 'b' * 64, 'target_sha256': 'b' * 64,
+                 'matching': True, 'error_log_empty': True,
+                 'adoption_authorized': False, 'error': None}
+        value['evidence_sha256'] = digest(value)
+        entries = {target: {'path': target, 'mode': stat.S_IFREG | 0o644,
+                            'uid': 0, 'gid': 0}}
+        self.assertTrue(noapp.checked_nginx_default_copy(value, {'nginx': {}}, audit, database, entries))
+        self.assertTrue(noapp.path_classification(entries[target], nginx_default_copy=True)[2])
+        log = {'path': '/var/log/nginx/error.log', 'mode': stat.S_IFREG | 0o644,
+               'uid': 0, 'gid': 0}
+        self.assertTrue(noapp.path_classification(log, nginx_error_empty=True)[2])
+        self.assertFalse(noapp.path_classification(log, nginx_error_empty=False)[2])
+        for changed_value, changed_audit, changed_entries in (
+            ({**value, 'stable': False}, audit, entries),
+            (value, {**audit, 'differences': [{'code': 'U', 'path': source}]}, entries),
+            (value, audit, {**entries, source: {'path': source}}),
+            (value, audit, {target: {**entries[target], 'mode': stat.S_IFLNK | 0o777}}),
+        ):
+            with self.assertRaises(UpdateError):
+                noapp.checked_nginx_default_copy(changed_value, {'nginx': {}},
+                                                changed_audit, database, changed_entries)
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
