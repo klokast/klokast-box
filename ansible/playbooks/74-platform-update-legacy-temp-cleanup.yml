@@ -143,6 +143,7 @@
 
     - name: Refuse changed, linked, shared, or oversized diagnostic files
       ansible.builtin.assert:
+        quiet: true
         that:
           - item.stat.exists
           - item.stat.isreg
@@ -168,16 +169,19 @@
 
     - name: Refuse removal if any file is in use or cannot be checked
       ansible.builtin.assert:
+        quiet: true
         that:
           - item.rc == 1
           - item.stdout | trim == ''
           - item.stderr | trim == ''
+        fail_msg: 'A reviewed file is in use or the native process-use check failed; preserve all files.'
       loop: '{{ legacy_temp_users.results }}'
       loop_control:
         label: '{{ item.item }}'
 
     - name: Require unchanged preview identities before apply
       ansible.builtin.assert:
+        quiet: true
         that:
           - item.stat.inode == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.inode
           - item.stat.checksum == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.checksum
@@ -206,6 +210,7 @@
 
     - name: Require each file to retain its reviewed identity and bytes
       ansible.builtin.assert:
+        quiet: true
         that:
           - item.stat.exists
           - item.stat.isreg
@@ -218,6 +223,7 @@
           - item.stat.gid == legacy_temp_before.results[legacy_temp_index].stat.gid
           - item.stat.mode == legacy_temp_before.results[legacy_temp_index].stat.mode
           - item.stat.mtime == legacy_temp_before.results[legacy_temp_index].stat.mtime
+        fail_msg: 'A reviewed file changed after the process-use check; preserve all files.'
       loop: '{{ legacy_temp_rechecked.results }}'
       loop_control:
         label: '{{ item.item }}'
@@ -264,7 +270,9 @@
 
     - name: Refuse a completed receipt if a path remains
       ansible.builtin.assert:
+        quiet: true
         that: not item.stat.exists
+        fail_msg: 'An exact temporary path remains after removal; do not record a complete cleanup.'
       loop: '{{ legacy_temp_after.results }}'
       loop_control:
         label: '{{ item.item }}'
