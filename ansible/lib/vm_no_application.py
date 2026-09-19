@@ -384,11 +384,18 @@ def fixed_service_resolution(service, entries, audit_verified, changed_paths):
     return package_source and (not active or expected)
 
 
-def fixed_account_classification(account, role, legacy_template, packages):
+def fixed_account_classification(account, role, legacy_template, packages, *,
+                                 runtime_owner=None, subuid=None, subgid=None):
     """Recognize exact template accounts; the neo identity needs machine inputs."""
     name = account['name']
     if name == 'neo':
-        return 'retained-machine-identity', 'compare UID, GID, home, shell, and subordinate ranges with approved inputs', False
+        matched = (runtime_owner == {'uid': 1000, 'gid': 1000} and
+                   subuid == 'neo:100000:65536\n' and subgid == 'neo:100000:65536\n' and
+                   tuple(account[k] for k in ('uid', 'gid', 'home', 'shell')) ==
+                   (1000, 1000, '/home/neo', '/bin/ash'))
+        return ('retained-machine-identity',
+                'fixed no-application runtime identity; preserve UID, GID, home, shell, and subordinate ranges',
+                matched)
     expected = SYSTEM_ACCOUNTS.get(name)
     if name == 'tailscale' and 'tailscale' not in packages:
         expected = None
@@ -408,7 +415,8 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         verified_ca_links=frozenset(), nginx_default_copy=False,
                         nginx_error_empty=False, inspection_artifact=None,
                         tailscale_log_owner=None, tailscale_present=False,
-                        verified_rootful_paths=frozenset(), empty_rootless_runtime=False):
+                        verified_rootful_paths=frozenset(), empty_rootless_runtime=False,
+                        verified_runlevel_links=frozenset()):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -488,7 +496,13 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
         else:
             category, rule = 'approved-package-content', 'verify generated certificate link against signed package recipe'
     elif re.fullmatch(r'/etc/runlevels/[^/]+/[^/]+', name):
-        category, rule = 'generated-configuration', 'compare enabled service with fixed boot recipe'
+        service_name = name.rsplit('/', 1)[1]
+        resolved = (name in verified_runlevel_links and entry.get('uid') == 0 and
+                    entry.get('gid') == 0 and entry.get('link_sha256') ==
+                    hashlib.sha256(('/etc/init.d/' + service_name).encode()).hexdigest())
+        category, rule = ('generated-configuration',
+                          'fixed enabled package-owned service link' if resolved else
+                          'compare enabled service with fixed boot recipe')
     # A known path with the wrong type or unsafe ownership is not disposable.
     if category != 'unknown' and not stat.S_ISDIR(mode):
         expected_link = rule.startswith(('verify generated', 'fixed package applet', 'fixed CA link')) or name.startswith('/etc/runlevels/')
@@ -628,6 +642,20 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
             fact.get('runtime_owner') == {'uid': 1000, 'gid': 1000})
     except UpdateError:
         empty_rootless_runtime = False
+    verified_runlevel_links = set()
+    for service in inventory.get('native_services', {}).get('services', []):
+        if (service['name'] not in ACTIVE_SERVICE_STATE or
+                not fixed_service_resolution(service, entries, audited_package_paths,
+                                             changed_package_paths)):
+            continue
+        for runlevel in service['runlevels']:
+            path = '/etc/runlevels/' + runlevel + '/' + service['name']
+            entry = entries.get(path)
+            if (entry and stat.S_ISLNK(entry['mode']) and
+                    entry['uid'] == 0 and entry['gid'] == 0 and
+                    entry.get('link_sha256') ==
+                    hashlib.sha256(('/etc/init.d/' + service['name']).encode()).hexdigest()):
+                verified_runlevel_links.add(path)
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
@@ -640,7 +668,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                tailscale_log_owner=fact.get('runtime_owner'),
                                                tailscale_present='tailscale' in installed_packages,
                                                verified_rootful_paths=verified_rootful_paths,
-                                               empty_rootless_runtime=empty_rootless_runtime), entry)
+                                               empty_rootless_runtime=empty_rootless_runtime,
+                                               verified_runlevel_links=verified_runlevel_links), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
@@ -653,7 +682,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     for account in inventory['accounts']:
         category, rule, resolved = fixed_account_classification(
             account, role, fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER,
-            installed_packages)
+            installed_packages, runtime_owner=fact.get('runtime_owner'),
+            subuid=fact.get('subuid'), subgid=fact.get('subgid'))
         item('account', account['name'], category, rule, resolved, account)
     for service in inventory.get('native_services', {}).get('services', []):
         active = bool(service['runlevels'] or service['markers'])

@@ -298,6 +298,27 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.fixed_account_classification(old, 'iot', False, {})[2])
         self.assertFalse(noapp.fixed_account_classification({**old, 'name': 'neo'},
                                                              'iot', True, {})[2])
+        neo = {'name': 'neo', 'uid': 1000, 'gid': 1000,
+               'home': '/home/neo', 'shell': '/bin/ash'}
+        identity = {'runtime_owner': {'uid': 1000, 'gid': 1000},
+                    'subuid': 'neo:100000:65536\n', 'subgid': 'neo:100000:65536\n'}
+        self.assertTrue(noapp.fixed_account_classification(neo, 'dmz', True, {}, **identity)[2])
+        for changed in ({**neo, 'gid': 1001}, {**neo, 'shell': '/bin/sh'}):
+            self.assertFalse(noapp.fixed_account_classification(changed, 'dmz', True,
+                                                                 {}, **identity)[2])
+        self.assertFalse(noapp.fixed_account_classification(
+            neo, 'dmz', True, {}, **{**identity, 'subgid': 'neo:200000:65536\n'})[2])
+
+    def test_runlevel_link_needs_verified_service_and_exact_target(self):
+        path = '/etc/runlevels/default/tailscale'
+        entry = {'path': path, 'mode': stat.S_IFLNK | 0o777,
+                 'uid': 0, 'gid': 0,
+                 'link_sha256': hashlib.sha256(b'/etc/init.d/tailscale').hexdigest()}
+        self.assertTrue(noapp.path_classification(
+            entry, verified_runlevel_links={path})[2])
+        self.assertFalse(noapp.path_classification(entry)[2])
+        self.assertFalse(noapp.path_classification({**entry, 'uid': 1000},
+                                                   verified_runlevel_links={path})[2])
 
     def test_legacy_firmware_requires_a_matching_bounded_receipt(self):
         name = '/lib/firmware/qat_402xx.bin.zst'
