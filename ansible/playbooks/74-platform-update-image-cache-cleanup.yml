@@ -1,0 +1,131 @@
+---
+# One-time exact no-application image-cache retirement on one selected guest.
+- name: Remove only reviewed unused rootless images from one selected VM
+  hosts: k001-dmz:k002-dmz:k002-iot
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    image_cache_apply: false
+    image_cache_record_dir: '{{ playbook_dir }}/../../.run/vm-image-cache-cleanup/{{ image_cache_operation }}'
+  pre_tasks:
+    - name: Require one exact selected guest and a fresh operation ID
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [image_cache_box ~ '-' ~ image_cache_role]
+          - image_cache_box ~ '-' ~ image_cache_role in ['k001-dmz', 'k002-dmz', 'k002-iot']
+          - node_name == image_cache_box
+          - node_domain_role == image_cache_role
+          - inventory_hostname == image_cache_box ~ '-' ~ image_cache_role
+          - image_cache_operation is match('^[0-9a-f]{24}$')
+          - image_cache_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-image-cache-cleanup/[0-9a-f]{24}$')
+
+    - name: Verify the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: image_cache_controller
+
+    - name: Require active controller authority
+      ansible.builtin.assert:
+        that:
+          - (image_cache_controller.stdout | from_json).configured
+          - (image_cache_controller.stdout | from_json).active
+          - (image_cache_controller.stdout | from_json).role == 'active'
+
+    - name: Recheck both approved no-application intent sources
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-update'
+          - adopt
+          - prepare
+          - --box
+          - '{{ image_cache_box }}'
+          - --role
+          - '{{ image_cache_role }}'
+          - --json
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      register: image_cache_intent
+
+    - name: Require checked intent to declare no application or retained dataset
+      ansible.builtin.assert:
+        that:
+          - image_cache_intent.rc in [0, 1]
+          - (image_cache_intent.stdout | from_json).intent.eligible
+          - (image_cache_intent.stdout | from_json).intent.workloads == []
+          - (image_cache_intent.stdout | from_json).intent.datasets == []
+        fail_msg: 'Current checked Instance and retention intent does not permit this no-application cache cleanup.'
+
+    - name: Inspect prior operation records without following links
+      ansible.builtin.stat:
+        path: '{{ image_cache_record_dir }}/{{ inventory_hostname }}-{{ item }}.json'
+        follow: false
+      loop: [preview, applied]
+      delegate_to: localhost
+      become: false
+      register: image_cache_prior
+
+    - name: Refuse reuse and require a preview before apply
+      ansible.builtin.assert:
+        that:
+          - not image_cache_prior.results[1].stat.exists
+          - (image_cache_apply | bool) == (image_cache_prior.results[0].stat.exists | bool)
+        fail_msg: 'Use a fresh operation for preview, then apply that exact preview once.'
+
+    - name: Read the exact private preview for apply
+      ansible.builtin.slurp:
+        src: '{{ image_cache_record_dir }}/{{ inventory_hostname }}-preview.json'
+      delegate_to: localhost
+      become: false
+      no_log: true
+      register: image_cache_preview
+      when: image_cache_apply | bool
+
+    - name: Bind apply to the previewed host, operation, and image set
+      ansible.builtin.assert:
+        that:
+          - (image_cache_preview.content | b64decode | from_json).kind == 'klokast.vm-image-cache-cleanup.v1'
+          - (image_cache_preview.content | b64decode | from_json).host == inventory_hostname
+          - (image_cache_preview.content | b64decode | from_json).operation_id == image_cache_operation
+          - not (image_cache_preview.content | b64decode | from_json).applied
+          - (image_cache_preview.content | b64decode | from_json).image_set_sha256 is match('^[0-9a-f]{64}$')
+      when: image_cache_apply | bool
+
+  tasks:
+    - name: Preview or remove only the exact unused rootless images
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../roles/vm-update-image-cache-cleanup/files/cleanup-vm-image-cache
+          --host {{ inventory_hostname }} --operation {{ image_cache_operation }}
+          {{ ('--apply --expected-sha ' ~ (image_cache_preview.content | b64decode | from_json).image_set_sha256)
+             if image_cache_apply | bool else '' }}
+        executable: /usr/bin/python3
+      become: true
+      become_user: neo
+      register: image_cache_result
+      changed_when: image_cache_apply | bool
+
+    - name: Create the private operation record directory
+      ansible.builtin.file:
+        path: '{{ image_cache_record_dir }}'
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve the exact preview or completed cleanup receipt
+      ansible.builtin.copy:
+        content: '{{ (image_cache_result.stdout | from_json) | to_nice_json }}'
+        dest: >-
+          {{ image_cache_record_dir }}/{{ inventory_hostname }}-{{ 'applied' if image_cache_apply | bool else 'preview' }}.json
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false

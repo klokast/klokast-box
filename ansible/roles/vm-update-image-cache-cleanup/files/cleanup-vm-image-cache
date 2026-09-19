@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Remove only registered, unused old rootless images on selected no-app VMs."""
+
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import re
+import socket
+import subprocess
+import sys
+
+
+EXPECTED = {
+    'k001-dmz': {'redis', 'nextcloud', 'postgres', 'nginx', 'alpine',
+                 'static-web-server', 'podman-test'},
+    'k002-dmz': {'redis', 'nextcloud', 'postgres', 'nginx', 'alpine',
+                 'podman-test'},
+    'k002-iot': {'podman-test'},
+}
+ROOT = '/home/neo/.local/share/containers/storage'
+HASH = re.compile(r'[0-9a-f]{64}')
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def command(*argv, timeout=90):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, timeout=timeout, check=False)
+    if result.returncode:
+        raise ValueError('rootless Podman inspection or image removal failed: ' + argv[1])
+    if len(result.stdout) > 2 * 1024 * 1024:
+        raise ValueError('rootless Podman output exceeds the inspection limit')
+    return result.stdout
+
+
+def podman_json(*args):
+    try:
+        return json.loads(command('/usr/bin/podman', *args))
+    except json.JSONDecodeError as error:
+        raise ValueError('rootless Podman returned incomplete JSON') from error
+
+
+def image_kind(name):
+    if name == 'quay.io/libpod/alpine:latest':
+        return 'podman-test'
+    match = re.fullmatch(r'docker\.1ms\.run/library/(redis|nextcloud|postgres|nginx|alpine)@sha256:[0-9a-f]{64}', name)
+    if match:
+        return match[1]
+    if re.fullmatch(r'ghcr\.io/static-web-server/static-web-server@sha256:[0-9a-f]{64}', name):
+        return 'static-web-server'
+    raise ValueError('an image has an unapproved source name')
+
+
+def inspect(host):
+    info = podman_json('info', '--format=json')
+    if (not isinstance(info, dict) or info.get('host', {}).get('security', {}).get('rootless') is not True or
+            info.get('store', {}).get('graphRoot') != ROOT or
+            not str(info.get('store', {}).get('runRoot', '')).startswith('/tmp/storage-run-1000/')):
+        raise ValueError('Podman is not using the fixed rootless storage profile')
+    for area, argv in (
+        ('containers', ('ps', '--all', '--format', 'json')),
+        ('volumes', ('volume', 'ls', '--format', 'json')),
+        ('pods', ('pod', 'ps', '--format', 'json')),
+    ):
+        values = podman_json(*argv)
+        if values != []:
+            raise ValueError('the ' + area + ' inventory is not empty')
+    images = podman_json('image', 'ls', '--all', '--format', 'json')
+    if not isinstance(images, list) or len(images) != len(EXPECTED[host]):
+        raise ValueError('cached image count differs from the reviewed no-app profile')
+    selected = []
+    for image in images:
+        if not isinstance(image, dict):
+            raise ValueError('cached image metadata is invalid')
+        identity = image.get('Id')
+        names = image.get('Names')
+        if (not isinstance(identity, str) or not HASH.fullmatch(identity) or
+                not isinstance(names, list) or len(names) != 1 or not isinstance(names[0], str)):
+            raise ValueError('cached image identity or name is incomplete')
+        selected.append({'id': identity, 'name': names[0], 'kind': image_kind(names[0])})
+    selected.sort(key=lambda value: value['id'])
+    if (len({v['id'] for v in selected}) != len(selected) or
+            {v['kind'] for v in selected} != EXPECTED[host]):
+        raise ValueError('cached images differ from the reviewed sources')
+    command('/usr/bin/podman', 'system', 'check', timeout=180)
+    return selected
+
+
+def run(host, operation, apply=False, expected_sha=None):
+    user = pwd.getpwnam('neo')
+    if (host not in EXPECTED or socket.gethostname() != host or
+            not re.fullmatch(r'[0-9a-f]{24}', operation) or
+            os.geteuid() != user.pw_uid or os.getegid() != user.pw_gid or
+            user.pw_uid != 1000 or user.pw_gid != 1000):
+        raise ValueError('image cleanup requires one selected guest and its neo account')
+    images = inspect(host)
+    image_set_sha256 = hashlib.sha256(canonical(images).encode()).hexdigest()
+    if apply:
+        if expected_sha != image_set_sha256:
+            raise ValueError('cached images changed since the preview; no image was removed')
+        command('/usr/bin/podman', 'image', 'rm', *[v['id'] for v in images], timeout=600)
+        after = podman_json('image', 'ls', '--all', '--format', 'json')
+        if after != []:
+            raise ValueError('cached images remain after exact removal')
+        for area, argv in (
+            ('containers', ('ps', '--all', '--format', 'json')),
+            ('volumes', ('volume', 'ls', '--format', 'json')),
+            ('pods', ('pod', 'ps', '--format', 'json')),
+        ):
+            if podman_json(*argv) != []:
+                raise ValueError('the ' + area + ' inventory changed during cleanup')
+        command('/usr/bin/podman', 'system', 'check', timeout=180)
+    return {'kind': 'klokast.vm-image-cache-cleanup.v1', 'host': host,
+            'operation_id': operation, 'applied': apply,
+            'image_set_sha256': image_set_sha256, 'images': images,
+            'rootless_graph': ROOT, 'containers': 0, 'volumes': 0, 'pods': 0,
+            'registered_images_after': 0 if apply else len(images),
+            'adoption_authorized': False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host', required=True)
+    parser.add_argument('--operation', required=True)
+    parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--expected-sha')
+    args = parser.parse_args()
+    try:
+        if (args.apply and not args.expected_sha or
+                not args.apply and args.expected_sha is not None):
+            raise ValueError('apply requires the exact preview image-set checksum')
+        print(canonical(run(args.host, args.operation, args.apply, args.expected_sha)))
+    except (ValueError, OSError, subprocess.TimeoutExpired, KeyError) as error:
+        print('image-cache-cleanup: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
