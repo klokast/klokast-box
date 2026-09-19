@@ -1316,6 +1316,44 @@ def mount_inventory():
         return None
 
 
+def legacy_mount_sources(read_mountinfo=None, stat_path=None):
+    """Bind the two old ext4 mounts to Xen xvda partitions without contents."""
+    read_mountinfo = read_mountinfo or (lambda: text('/proc/self/mountinfo', 1024 * 1024))
+    stat_path = stat_path or os.lstat
+    result = {'kind': 'klokast.vm-legacy-mount-sources.v1', 'complete': False,
+              'stable': False, 'devices': {}, 'error': None}
+    expected = {'/': '/dev/xvda3', '/boot': '/dev/xvda1'}
+    try:
+        before = read_mountinfo()
+        if not before or len(before) > 1024 * 1024:
+            raise HostInventoryError('source mount inventory is unavailable')
+        selected = {}
+        for line in before.splitlines():
+            left, right = line.split(' - ', 1)
+            fields, filesystem = left.split(), right.split()
+            mount = fields[4]
+            if mount in expected:
+                if (mount in selected or fields[3] != '/' or
+                        filesystem[:2] != ['ext4', expected[mount]] or
+                        not re.fullmatch(r'[0-9]+:[0-9]+', fields[2])):
+                    raise HostInventoryError('source mount differs from the fixed Xen partition')
+                info = stat_path(expected[mount])
+                major, minor = map(int, fields[2].split(':'))
+                if not stat.S_ISBLK(info.st_mode) or info.st_rdev != os.makedev(major, minor):
+                    raise HostInventoryError('source mount and Xen device identity differ')
+                selected[mount] = {'source': expected[mount], 'device': fields[2]}
+            elif mount.startswith('/boot/'):
+                raise HostInventoryError('nested boot filesystem is unsupported')
+        if set(selected) != set(expected) or selected['/']['device'] == selected['/boot']['device']:
+            raise HostInventoryError('source root and boot mounts are incomplete')
+        result.update(complete=True, stable=before == read_mountinfo(), devices=selected)
+    except (HostInventoryError, OSError, ValueError, IndexError) as error:
+        result['error'] = str(error) if isinstance(error, HostInventoryError) else 'source mount inspection failed'
+    result['evidence_sha256'] = hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return result
+
+
 def directory_verified(value, mounts):
     """Inspect directory metadata only. Refuse symlinks and nested mounts."""
     if (not isinstance(value, str) or not value.startswith('/') or len(value) > 4096 or
@@ -1431,6 +1469,7 @@ def main():
         "mdev_tun_override": mdev_tun_override(),
         "legacy_account_files": {name: legacy_account_file(name) for name in ('passwd', 'group')},
         "legacy_shadow_file": legacy_shadow_file(),
+        "legacy_mount_sources": legacy_mount_sources(),
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
         "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},

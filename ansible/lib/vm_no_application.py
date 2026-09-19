@@ -8,6 +8,7 @@ coverage, unknown data, and pending cleanup must remain visible.
 import hashlib
 import re
 import stat
+import uuid
 from collections import Counter
 from pathlib import Path
 
@@ -1233,4 +1234,99 @@ def with_shadow_input(base, comparison, discovery):
         result['items'].append(value)
     result['findings'] = [finding for finding in base['findings']
                           if finding['code'] != 'qualification.unresolved']
+    return finish(result)
+
+
+def with_source_status(base, source, discovery, now):
+    """Compare live Xen source identity with guest mounts and boot bytes."""
+    if (not isinstance(base, dict) or
+            base.get('kind') != 'klokast.vm-no-application-qualification.v4' or
+            base.get('report_sha256') != digest({k: v for k, v in base.items()
+                                                 if k != 'report_sha256'}) or
+            base.get('discovery_sha256') != digest(discovery) or
+            not base.get('intent', {}).get('eligible') or
+            base['intent'].get('engine_commit') != base.get('implementation_commit')):
+        raise UpdateError('source binding requires an approved, complete qualification')
+    host = base['box'] + '-' + base['role']
+    matches = [row.get('facts') for row in discovery.get('hosts', [])
+               if isinstance(row, dict) and row.get('host') == host]
+    if len(matches) != 1 or not isinstance(matches[0], dict):
+        raise UpdateError('source binding target facts are unavailable')
+    fact = matches[0]
+    fields = {'kind', 'role', 'dom0', 'observed_at', 'vm_uuid', 'configuration_sha256',
+              'disks', 'disk_mappings', 'artifacts', 'autostart', 'runtime'}
+    role = base['role']
+    disk = '/dev/vg0/lv_podman_' + role
+    names = {'/mnt/dom0_data/xen_images/' + role + '-kernel': '/boot/vmlinuz-virt',
+             '/mnt/dom0_data/xen_images/' + role + '-initramfs': '/boot/initramfs-virt'}
+    try:
+        uuid_valid = str(uuid.UUID(source['vm_uuid'])) == source['vm_uuid']
+    except (KeyError, ValueError, TypeError, AttributeError):
+        uuid_valid = False
+    if (not isinstance(source, dict) or set(source) != fields or
+            source['kind'] != 'klokast.vm-unmanaged-source.v1' or
+            source['role'] != role or source['dom0'] != base['box'] + '-dom0' or
+            source['runtime'] != 'running' or type(source['autostart']) is not bool or
+            type(source['observed_at']) is not int or
+            not 0 <= now.timestamp() - source['observed_at'] <= VERIFY_AGE.total_seconds() or
+            not uuid_valid or
+            not isinstance(source['configuration_sha256'], str) or
+            not re.fullmatch(r'[0-9a-f]{64}', source['configuration_sha256']) or
+            source['disk_mappings'] != {disk: 'xvda'} or
+            not isinstance(source['disks'], dict) or set(source['disks']) != {disk} or
+            not isinstance(source['disks'][disk], dict) or
+            set(source['disks'][disk]) != {'uuid', 'bytes'} or
+            not isinstance(source['disks'][disk]['uuid'], str) or
+            not re.fullmatch(r'[A-Za-z0-9-]{6,128}', source['disks'][disk]['uuid']) or
+            type(source['disks'][disk]['bytes']) is not int or source['disks'][disk]['bytes'] <= 0 or
+            not isinstance(source['artifacts'], dict) or set(source['artifacts']) != set(names) or
+            any(not isinstance(value, dict) or set(value) != {'sha256', 'bytes'} or
+                not isinstance(value['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', value['sha256']) or
+                type(value['bytes']) is not int or not 0 < value['bytes'] <= 512 * 1024 * 1024
+                for value in source['artifacts'].values())):
+        raise UpdateError('unmanaged Xen source receipt is incomplete or stale')
+    mounts = fact.get('legacy_mount_sources')
+    mount_fields = {'kind', 'complete', 'stable', 'devices', 'error', 'evidence_sha256'}
+    if (not isinstance(mounts, dict) or set(mounts) != mount_fields or
+            mounts['kind'] != 'klokast.vm-legacy-mount-sources.v1' or
+            mounts['evidence_sha256'] != digest({k: v for k, v in mounts.items()
+                                                 if k != 'evidence_sha256'})):
+        raise UpdateError('guest source mount receipt is invalid')
+    observed = fact.get('storage', {}).get('mounts')
+    by_path = {row.get('path'): row for row in observed if isinstance(row, dict)} if isinstance(observed, list) else {}
+    mount_match = (mounts['complete'] is True and mounts['stable'] is True and mounts['error'] is None and
+                   mounts['devices'] == {'/': {'source': '/dev/xvda3', 'device': by_path.get('/', {}).get('device')},
+                                         '/boot': {'source': '/dev/xvda1', 'device': by_path.get('/boot', {}).get('device')}} and
+                   by_path.get('/', {}).get('type') == 'ext4' and
+                   by_path.get('/boot', {}).get('type') == 'ext4')
+    boot = checked_boot_files(fact.get('host_inventory', {}).get('boot_files'), observed)
+    boot_match = all(boot['artifacts'].get(guest) == source['artifacts'][dom0]['sha256']
+                     for dom0, guest in names.items())
+    source_match = mount_match and boot_match and source['autostart']
+    result = {**base, 'kind': 'klokast.vm-no-application-qualification.v5',
+              'prior_report_sha256': base['report_sha256'],
+              'source_evidence_sha256': digest(source),
+              'mount_source_evidence_sha256': mounts['evidence_sha256'],
+              'source_match': source_match, 'mount_match': mount_match,
+              'boot_match': boot_match}
+    result.pop('report_sha256')
+    result['items'] = []
+    for item in base['items']:
+        value = dict(item)
+        if (source_match and
+                ((item['area'] == 'boot-file' and item['key'] in names.values()) or
+                 (item['area'] == 'mount' and item['key'] in {'/', '/boot'}))):
+            value['resolved'] = True
+            value['rule'] = 'live Xen source, guest partition, and boot artifact identities match'
+            value['evidence_sha256'] = digest({'item': item['evidence_sha256'],
+                                               'source': result['source_evidence_sha256'],
+                                               'mounts': mounts['evidence_sha256'],
+                                               'boot': boot['evidence_sha256']})
+        result['items'].append(value)
+    result['findings'] = [finding for finding in base['findings']
+                          if finding['code'] != 'qualification.unresolved']
+    if not source_match:
+        result['findings'].append(findings('qualification.source-mismatch',
+                                           'Live Xen source, guest partitions, boot bytes, or autostart differ.',
+                                           'critical', host))
     return finish(result)

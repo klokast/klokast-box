@@ -109,7 +109,11 @@ engine, private commit, and input bytes, and rechecks sources before writing.
 When discovery and the checked source have the same commit, it compares 19
 fixed guest files with the checked recipes and repeats the guest hash probe
 before publication. A v2 qualification report binds the comparison receipt;
-a v3 report also binds a historical firewall comparison when needed.
+a v3 report also binds a historical firewall comparison when needed. A v4
+report binds the old shadow file to the checked admin password input without
+recording the hash. After engine approval and installation of the dom0 source
+reader, a v5 report also compares the live Xen disk and boot artifacts with
+the guest's fixed `/` and `/boot` partition evidence.
 Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and

@@ -692,8 +692,81 @@ class ConfigComparison(unittest.TestCase):
         self.assertFalse(next(v for v in noapp.with_shadow_input(base, receipt, discovery)['items']
                               if v['key'] == '/etc/shadow')['resolved'])
 
+    def test_source_binding_requires_live_xen_guest_mount_and_boot_match(self):
+        base = self.base()
+        base['kind'] = 'klokast.vm-no-application-qualification.v4'
+        base['intent']['eligible'] = True
+        for area, key in (('boot-file', '/boot/vmlinuz-virt'),
+                          ('boot-file', '/boot/initramfs-virt'),
+                          ('mount', '/'), ('mount', '/boot')):
+            base['items'].append({'area': area, 'key': key,
+                                  'classification': 'reconstructable-os-state',
+                                  'rule': 'bind to source', 'resolved': False,
+                                  'evidence_sha256': '7' * 64})
+        mount_receipt = {'kind': 'klokast.vm-legacy-mount-sources.v1',
+                         'complete': True, 'stable': True, 'error': None,
+                         'devices': {'/': {'source': '/dev/xvda3', 'device': '202:3'},
+                                     '/boot': {'source': '/dev/xvda1', 'device': '202:1'}}}
+        mount_receipt['evidence_sha256'] = digest(mount_receipt)
+        boot = {'artifacts': {'/boot/vmlinuz-virt': 'a' * 64,
+                              '/boot/initramfs-virt': 'b' * 64},
+                'evidence_sha256': 'c' * 64}
+        discovery = {'hosts': [{'host': 'boxa-dmz', 'facts': {
+            'legacy_mount_sources': mount_receipt,
+            'storage': {'mounts': [{'path': '/', 'type': 'ext4', 'device': '202:3'},
+                                   {'path': '/boot', 'type': 'ext4', 'device': '202:1'}]},
+            'host_inventory': {'boot_files': boot}}}]}
+        base['discovery_sha256'] = digest(discovery)
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        disk = '/dev/vg0/lv_podman_dmz'
+        source = {'kind': 'klokast.vm-unmanaged-source.v1', 'role': 'dmz',
+                  'dom0': 'boxa-dom0', 'observed_at': int(NOW.timestamp()),
+                  'vm_uuid': '11111111-1111-4111-8111-111111111111',
+                  'configuration_sha256': 'd' * 64,
+                  'disks': {disk: {'uuid': 'legacy-disk-uuid', 'bytes': 1000000}},
+                  'disk_mappings': {disk: 'xvda'},
+                  'artifacts': {'/mnt/dom0_data/xen_images/dmz-kernel':
+                                {'sha256': 'a' * 64, 'bytes': 100},
+                                '/mnt/dom0_data/xen_images/dmz-initramfs':
+                                {'sha256': 'b' * 64, 'bytes': 200}},
+                  'autostart': True, 'runtime': 'running'}
+        with patch.object(noapp, 'checked_boot_files', return_value=boot):
+            result = noapp.with_source_status(base, source, discovery, NOW)
+            self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v5')
+            self.assertTrue(result['source_match'])
+            self.assertEqual(result['summary']['unresolved'], 3)
+            self.assertFalse(next(row for row in result['items'] if row['key'].endswith('ed25519_key'))['resolved'])
+            changed = copy.deepcopy(source)
+            changed['artifacts']['/mnt/dom0_data/xen_images/dmz-kernel']['sha256'] = '0' * 64
+            mismatch = noapp.with_source_status(base, changed, discovery, NOW)
+            self.assertFalse(mismatch['source_match'])
+            self.assertEqual(mismatch['summary']['unresolved'], 7)
+            self.assertIn('qualification.source-mismatch', {row['code'] for row in mismatch['findings']})
+            changed = {**source, 'disk_mappings': {disk: 'xvdb'}}
+            with self.assertRaises(UpdateError):
+                noapp.with_source_status(base, changed, discovery, NOW)
+            changed = {**source, 'observed_at': int(NOW.timestamp()) - 7201}
+            with self.assertRaises(UpdateError):
+                noapp.with_source_status(base, changed, discovery, NOW)
+
 
 class CLI(unittest.TestCase):
+    def test_dom0_source_reader_uses_fixed_controller_route_and_rejects_duplicate_json(self):
+        cli = load_cli()
+        response = type('Response', (), {'returncode': 0, 'stdout': '{"kind":"receipt"}'})()
+        with patch.object(cli.subprocess, 'run', return_value=response) as run:
+            self.assertEqual(cli.unmanaged_source_status('boxa', 'dmz'), {'kind': 'receipt'})
+        self.assertEqual(run.call_args.args[0], ['tailscale', 'ssh', 'neo@boxa-dom0', 'sh', '-s'])
+        self.assertEqual(run.call_args.kwargs['input'],
+                         'doas /usr/local/sbin/vm-update-transaction source-status --role dmz\n')
+        with patch.object(cli.subprocess, 'run', return_value=type('Response', (), {
+                'returncode': 0, 'stdout': '{"kind":"one","kind":"two"}'})()):
+            with self.assertRaises(UpdateError):
+                cli.unmanaged_source_status('boxa', 'dmz')
+        with self.assertRaises(UpdateError):
+            cli.unmanaged_source_status('boxa', 'bak')
+
     def test_prepare_binds_stable_live_config_without_granting_adoption(self):
         cli = load_cli()
         base = ConfigComparison().base()
@@ -726,6 +799,50 @@ class CLI(unittest.TestCase):
             self.assertFalse(result['qualified'])
             self.assertEqual(json.loads(path.read_text()), result)
             self.assertEqual(len(list((root / 'config-audits').glob('*.json'))), 1)
+
+    def test_prepare_rejects_source_disk_change_before_record_publication(self):
+        cli = load_cli()
+        base = ConfigComparison().base()
+        base['items'].append({'area': 'package-difference', 'key': '/etc/shadow',
+                              'classification': 'generated-configuration',
+                              'rule': 'exact old package and locked service accounts; compare admin password hash with checked machine input',
+                              'resolved': False, 'evidence_sha256': '4' * 64})
+        intent = {'box': 'boxa', 'role': 'dmz', 'eligible': True,
+                  'engine_commit': 'a' * 40, 'workloads': [], 'datasets': []}
+        base['intent'] = intent
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        discovery = {'implementation_commit': 'a' * 40,
+                     'hosts': [{'host': 'boxa-dmz', 'facts': {
+                         'legacy_shadow_file': {'neo_hash_sha256': '9' * 64}}}]}
+        expected = {path: {'sha256': 'b' * 64, 'source': 'ansible/roles/vm-base/tasks/main.yml',
+                           'source_sha256': 'c' * 64} for path in config_audit.PATHS}
+        observed = {path: 'b' * 64 for path in config_audit.PATHS}
+        def command(argv, **_kwargs):
+            if argv[0] == 'git':
+                return 'a' * 40 if argv[-1] == 'HEAD' else ''
+            return '{}'
+        def v4(value, *_args):
+            return {**value, 'kind': 'klokast.vm-no-application-qualification.v4'}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'current.json').write_text(json.dumps(discovery))
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'command', side_effect=command), \
+                    patch.object(cli.vm_no_application, 'source_intent', return_value=intent), \
+                    patch.object(cli.vm_no_application, 'report', return_value=base), \
+                    patch.object(cli.vm_config_audit, 'render', return_value=expected), \
+                    patch.object(cli.vm_config_audit, 'guest_hashes', return_value=observed), \
+                    patch.object(cli.vm_config_audit, 'shadow_input_report',
+                                 return_value={'report_sha256': 'f' * 64}), \
+                    patch.object(cli.vm_no_application, 'with_shadow_input', side_effect=v4), \
+                    patch.object(cli.vm_no_application, 'with_source_status', side_effect=lambda value, *_: value), \
+                    patch.object(cli, 'unmanaged_source_status', side_effect=[
+                        {'observed_at': 1, 'disks': {'old': 'one'}},
+                        {'observed_at': 2, 'disks': {'old': 'changed'}}]):
+                with self.assertRaisesRegex(UpdateError, 'source changed'):
+                    cli.adoption_prepare('boxa', 'dmz')
+            self.assertEqual(list(root.iterdir()), [root / 'current.json'])
 
     def test_prepare_binds_historical_firewall_only_after_stable_guest_read(self):
         cli = load_cli()

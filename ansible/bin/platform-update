@@ -433,6 +433,24 @@ def retention_report():
     return report
 
 
+def unmanaged_source_status(box, role):
+    """Use the installed root-only dom0 reader from the active controller."""
+    if not HOST.fullmatch(box) or role not in vm_no_application.ROLES:
+        raise UpdateError('unmanaged source inspection requires one selected shared VM')
+    script = 'doas /usr/local/sbin/vm-update-transaction source-status --role ' + role + '\n'
+    try:
+        response = subprocess.run(['tailscale', 'ssh', 'neo@' + box + '-dom0', 'sh', '-s'],
+                                  input=script, text=True, capture_output=True, timeout=210)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise UpdateError('unmanaged Xen source inspection failed') from error
+    if response.returncode or not 0 < len(response.stdout) <= 16384:
+        raise UpdateError('installed dom0 source reader is unavailable or returned unsafe output')
+    try:
+        return json.loads(response.stdout, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise UpdateError('installed dom0 source reader returned invalid JSON') from error
+
+
 def adoption_prepare(box, role):
     """Account for one target before requesting destructive or signed approval."""
     require_controller()
@@ -459,6 +477,7 @@ def adoption_prepare(box, role):
     observed_firewall = None
     legacy_comparison = None
     shadow_comparison = None
+    source_status = None
     if (intent and intent['eligible'] and result['items'] and
             discovery.get('implementation_commit') == commit):
         host = box + '-' + role
@@ -489,6 +508,20 @@ def adoption_prepare(box, role):
                 REPO, host, inventory, fact['legacy_shadow_file']['neo_hash_sha256'],
                 result['report_sha256'], commit, intent['engine_commit'] == commit)
             result = vm_no_application.with_shadow_input(result, shadow_comparison, discovery)
+        if intent['engine_commit'] == commit and result['kind'] == 'klokast.vm-no-application-qualification.v4':
+            try:
+                source_status = unmanaged_source_status(box, role)
+                result = vm_no_application.with_source_status(result, source_status, discovery, now())
+            except UpdateError:
+                source_status = None
+                result = dict(result)
+                result.pop('report_sha256')
+                result['findings'] = [finding for finding in result['findings']
+                                      if finding['code'] != 'qualification.unresolved']
+                result['findings'].append(findings('qualification.source-unavailable',
+                                                    'Installed dom0 source reader or matching guest mount evidence is unavailable.',
+                                                    'critical', host))
+                result = vm_no_application.finish(result)
     if (sources is not None and read_sources() != sources or
             optional(STATE / 'current.json') != discovery or
             command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
@@ -498,6 +531,11 @@ def adoption_prepare(box, role):
         raise UpdateError('selected guest configuration changed during qualification')
     if observed_firewall is not None and vm_config_audit.guest_firewall_bytes(host) != observed_firewall:
         raise UpdateError('selected guest firewall changed during historical source comparison')
+    if source_status is not None:
+        current_source = unmanaged_source_status(box, role)
+        if {k: v for k, v in current_source.items() if k != 'observed_at'} != {
+                k: v for k, v in source_status.items() if k != 'observed_at'}:
+            raise UpdateError('unmanaged Xen source changed during qualification')
     if observed_configuration is not None:
         comparison_dir = STATE / 'config-audits'
         comparison_dir.mkdir(mode=0o700, exist_ok=True)
@@ -521,6 +559,15 @@ def adoption_prepare(box, role):
                     raise UpdateError('shadow comparison conflicts with existing evidence')
             else:
                 write(shadow_record, shadow_comparison)
+    if source_status is not None:
+        source_dir = STATE / 'source-audits'
+        source_dir.mkdir(mode=0o700, exist_ok=True)
+        source_record = source_dir / (digest(source_status) + '.json')
+        if source_record.exists():
+            if load(source_record) != source_status:
+                raise UpdateError('unmanaged Xen source receipt conflicts with existing evidence')
+        else:
+            write(source_record, source_status)
     destination = STATE / 'qualifications'
     destination.mkdir(mode=0o700, exist_ok=True)
     record = destination / (result['report_sha256'] + '.json')

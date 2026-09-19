@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -86,6 +88,25 @@ class HostInventory(unittest.TestCase):
         (self.root / 'run/lock').symlink_to('/tmp/other')
         self.assertFalse(self.m.collect_runtime_directories(
             before, self.m.runtime_directory_metadata(self.root))['stable'])
+
+    def test_legacy_mount_sources_require_exact_xen_partition_devices(self):
+        mountinfo = ('1 0 202:3 / / rw - ext4 /dev/xvda3 rw\n'
+                     '2 1 202:1 / /boot rw - ext4 /dev/xvda1 rw\n')
+        devices = {'/dev/xvda3': SimpleNamespace(st_mode=stat.S_IFBLK | 0o600,
+                                                 st_rdev=os.makedev(202, 3)),
+                   '/dev/xvda1': SimpleNamespace(st_mode=stat.S_IFBLK | 0o600,
+                                                 st_rdev=os.makedev(202, 1))}
+        probe = lambda value, records=devices: records[value]
+        result = self.m.legacy_mount_sources(lambda: mountinfo, probe)
+        self.assertTrue(result['complete'] and result['stable'])
+        self.assertEqual(result['devices']['/boot']['source'], '/dev/xvda1')
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        changed = mountinfo.replace('202:1', '202:2')
+        self.assertFalse(self.m.legacy_mount_sources(lambda: changed, probe)['complete'])
+        changed = mountinfo.replace('/dev/xvda3 rw', '/dev/xvdb3 rw')
+        self.assertFalse(self.m.legacy_mount_sources(lambda: changed, probe)['complete'])
+        readings = iter((mountinfo, mountinfo.replace('202:1', '202:2')))
+        self.assertFalse(self.m.legacy_mount_sources(lambda: next(readings), probe)['stable'])
 
     def test_apk_world_probe_rejects_unbounded_or_linked_requests(self):
         world = self.root / 'etc/apk/world'

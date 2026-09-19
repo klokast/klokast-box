@@ -815,6 +815,12 @@ refuses a current assignment pointer, a disk mounted on dom0, or another
 guest that holds a source disk. This receipt is source evidence only. The
 controller must still bind it to fresh guest boot and mount evidence, approved
 machine inputs, and a signed adoption operation.
+The guest discovery probe accepts only `/dev/xvda3` for `/` and `/dev/xvda1`
+for `/boot`. It checks each block device against its mount identity, reads the
+mount inventory twice, and reports device names and numbers only. A v5 qualification compares these
+devices and guest boot hashes with the dom0 source receipt. A mismatch keeps
+the four boot and mount rows unresolved. The source reader must be installed
+from the approved engine before this comparison runs.
 
 The request, journal, and active role pointer stay under
 `/mnt/dom0_data/klokast-vm-updates`. They are generated operation records,
