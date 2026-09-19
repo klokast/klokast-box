@@ -23,10 +23,9 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'))
 
 
-def run(argv, *, preexec_fn=None, timeout=90):
+def run(argv, *, timeout=90):
     result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, preexec_fn=preexec_fn,
-                            timeout=timeout, check=False)
+                            stderr=subprocess.PIPE, text=True, timeout=timeout, check=False)
     if result.returncode:
         raise ValueError('native runtime inspection failed: ' + Path(argv[0]).name)
     if len(result.stdout) > 2 * 1024 * 1024:
@@ -34,16 +33,9 @@ def run(argv, *, preexec_fn=None, timeout=90):
     return result.stdout
 
 
-def neo_preexec():
-    account = pwd.getpwnam('neo')
-    os.setgroups([account.pw_gid])
-    os.setgid(account.pw_gid)
-    os.setuid(account.pw_uid)
-
-
 def podman_json(*args):
     try:
-        return json.loads(run(['/usr/bin/podman', *args], preexec_fn=neo_preexec))
+        return json.loads(run(['/usr/bin/doas', '-u', 'neo', '/usr/bin/podman', *args]))
     except json.JSONDecodeError as error:
         raise ValueError('rootless Podman returned incomplete JSON') from error
 
