@@ -15,12 +15,13 @@ class LegacyTempCleanup(unittest.TestCase):
         self.assertEqual(play['hosts'], 'k001-dmz:k002-dmz:k002-iot')
         paths = play['vars']['legacy_temp_paths_by_host']
         self.assertEqual(set(paths), {'k001-dmz', 'k002-dmz', 'k002-iot'})
-        self.assertEqual(len(paths['k001-dmz']), 9)
-        self.assertEqual(len(paths['k002-dmz']), 3)
-        self.assertEqual(len(paths['k002-iot']), 3)
-        self.assertTrue(all(p.startswith('/tmp/') and p.count('/') == 2
+        self.assertEqual(len(paths['k001-dmz']), 11)
+        self.assertEqual(len(paths['k002-dmz']), 6)
+        self.assertEqual(len(paths['k002-iot']), 8)
+        self.assertTrue(all(p.startswith('/tmp/')
                             for host_paths in paths.values() for p in host_paths))
-        self.assertEqual(len({p for host_paths in paths.values() for p in host_paths}), 10)
+        self.assertEqual(len({p for host_paths in paths.values() for p in host_paths}), 20)
+        self.assertTrue(any('/AnsiballZ_' in p for host_paths in paths.values() for p in host_paths))
 
     def test_apply_requires_checked_intent_preview_and_no_process_use(self):
         play = yaml.safe_load(PLAY.read_text())[0]
