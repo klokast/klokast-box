@@ -110,6 +110,10 @@ LEGACY_TEMPLATE_MARKER = 'hostname=klokast-podman-template\nlv=/dev/vg0/lv_podma
 # That version cleared only Podman's containers and libpod/tmp at boot. The
 # candidate recipe clears the whole ephemeral runroot; never copy this file.
 LEGACY_RUNROOT_HELPER_SHA256 = '90363aa710e409fc5d3fbb978ed79e6a8896d523ff536a23c1517b57d31b718e'
+RUNTIME_DIRECTORY_MODES = {
+    '/run/lock': (stat.S_IFDIR | 0o775, 0, 14),
+    '/var/lib/tailscale': (stat.S_IFDIR | 0o700, 0, 0),
+}
 BUSYBOX_LINK_SHA256 = hashlib.sha256(b'/bin/busybox').hexdigest()
 BBSUID_LINK_SHA256 = hashlib.sha256(b'/bin/bbsuid').hexdigest()
 PINENTRY_LINK_SHA256 = hashlib.sha256(b'pinentry-curses').hexdigest()
@@ -399,6 +403,30 @@ def legacy_runroot_service_resolution(service, entries, empty_rootless_runtime):
             script.get('uid') == 0 and script.get('gid') == 0)
 
 
+def checked_runtime_directories(value):
+    """Accept only stable metadata for two known runtime-only APK changes."""
+    if (not isinstance(value, dict) or
+            set(value) != {'kind', 'complete', 'stable', 'entries', 'evidence_sha256'} or
+            value['kind'] != 'klokast.vm-runtime-directories.v1' or
+            value['complete'] is not True or value['stable'] is not True or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items()
+                                                if k != 'evidence_sha256'})):
+        raise UpdateError('stable runtime directory metadata is unavailable')
+    entries = value['entries']
+    if (not isinstance(entries, list) or len(entries) != len(RUNTIME_DIRECTORY_MODES) or
+            any(not isinstance(v, dict) for v in entries) or
+            [v.get('path') for v in entries] !=
+            list(RUNTIME_DIRECTORY_MODES)):
+        raise UpdateError('runtime directory metadata has incomplete path coverage')
+    for row in entries:
+        if (set(row) != {'path', 'mode', 'uid', 'gid'} or
+                any(type(row[key]) is not int for key in ('mode', 'uid', 'gid')) or
+                (row['mode'], row['uid'], row['gid']) !=
+                RUNTIME_DIRECTORY_MODES[row['path']]):
+            raise UpdateError('runtime directory ownership or mode differs from the fixed profile')
+    return {row['path']: row for row in entries}
+
+
 def fixed_account_classification(account, role, legacy_template, packages, *,
                                  runtime_owner=None, subuid=None, subgid=None):
     """Recognize exact template accounts; the neo identity needs machine inputs."""
@@ -660,6 +688,11 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
             fact.get('runtime_owner') == {'uid': 1000, 'gid': 1000})
     except UpdateError:
         empty_rootless_runtime = False
+    try:
+        verified_runtime_directories = checked_runtime_directories(
+            fact['host_inventory'].get('runtime_directories'))
+    except UpdateError:
+        verified_runtime_directories = {}
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -701,7 +734,16 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         resolved = False
         if difference['code'] == 'm' and name in {'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'}:
             category, rule = 'reconstructable-os-state', 'verify runtime directory ownership and mode'
-            resolved = audited_package_paths and any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))
+            mount_verified = any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))
+            metadata_verified = (name in verified_runtime_directories and
+                                 ('tailscale' if name == '/var/lib/tailscale' else 'alpine-baselayout')
+                                 in installed_packages and
+                                 not any(m.get('path') == name or
+                                         m.get('path', '').startswith(name + '/')
+                                         for m in observed_mounts if isinstance(m, dict)))
+            resolved = audited_package_paths and (mount_verified or metadata_verified)
+            if metadata_verified:
+                rule = 'exact fixed runtime directory metadata; rebuild from candidate package and boot policy'
         item('package-difference', name, category, rule, resolved, difference)
     for account in inventory['accounts']:
         category, rule, resolved = fixed_account_classification(

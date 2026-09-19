@@ -300,6 +300,51 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.path_classification(entry)[2])
         self.assertTrue(noapp.path_classification(entry, legacy_runroot_helper=True)[2])
 
+    def test_runtime_directory_receipt_rejects_changed_metadata_and_scope(self):
+        rows = [{'path': path, 'mode': mode, 'uid': uid, 'gid': gid}
+                for path, (mode, uid, gid) in noapp.RUNTIME_DIRECTORY_MODES.items()]
+        value = {'kind': 'klokast.vm-runtime-directories.v1', 'complete': True,
+                 'stable': True, 'entries': rows}
+        value['evidence_sha256'] = digest(value)
+        self.assertEqual(noapp.checked_runtime_directories(value),
+                         {row['path']: row for row in rows})
+        for change in (lambda v: v['entries'][0].update(mode=stat.S_IFDIR | 0o777),
+                       lambda v: v['entries'][1].update(uid=1000),
+                       lambda v: v['entries'].pop(),
+                       lambda v: v.update(stable=False),
+                       lambda v: v['entries'][0].update(path='/unknown')):
+            changed = copy.deepcopy(value); change(changed)
+            changed['evidence_sha256'] = digest({k: v for k, v in changed.items()
+                                                 if k != 'evidence_sha256'})
+            with self.assertRaises(UpdateError):
+                noapp.checked_runtime_directories(changed)
+
+    def test_exact_runtime_directory_receipt_resolves_only_its_package_changes(self):
+        fact = self.observed['hosts'][0]['facts']
+        inventory = fact['host_inventory']
+        fact['packages'] = {'alpine-baselayout': {}, 'tailscale': {}}
+        inventory['package_audit'] = {
+            'kind': 'klokast.vm-package-audit.v1', 'complete': True, 'stable': True,
+            'database_sha256': inventory['package_database_sha256'],
+            'protected_paths': 'none', 'check_permissions': True,
+            'differences': [{'code': 'm', 'path': p} for p in noapp.RUNTIME_DIRECTORY_MODES],
+            'adoption_authorized': False}
+        receipt = {'kind': 'klokast.vm-runtime-directories.v1', 'complete': True,
+                   'stable': True, 'entries': [
+                       {'path': path, 'mode': mode, 'uid': uid, 'gid': gid}
+                       for path, (mode, uid, gid) in noapp.RUNTIME_DIRECTORY_MODES.items()]}
+        receipt['evidence_sha256'] = digest(receipt)
+        inventory['runtime_directories'] = receipt
+        rows = {(r['area'], r['key']): r for r in self.report()['items']}
+        for path in noapp.RUNTIME_DIRECTORY_MODES:
+            self.assertTrue(rows['package-difference', path]['resolved'])
+        receipt['entries'][1]['mode'] = stat.S_IFDIR | 0o755
+        receipt['evidence_sha256'] = digest({k: v for k, v in receipt.items()
+                                             if k != 'evidence_sha256'})
+        rows = {(r['area'], r['key']): r for r in self.report()['items']}
+        for path in noapp.RUNTIME_DIRECTORY_MODES:
+            self.assertFalse(rows['package-difference', path]['resolved'])
+
     def test_fixed_accounts_do_not_accept_extra_identity_or_role_drift(self):
         account = {'name': 'nginx', 'uid': 103, 'gid': 104,
                    'home': '/var/lib/nginx', 'shell': '/sbin/nologin'}

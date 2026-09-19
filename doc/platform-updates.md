@@ -119,6 +119,11 @@ state, link target, and an empty rootless store. The candidate uses the current
 recipe; it does not copy the old helper. Other unowned service scripts need
 their own evidence. The shadow file, retained keys, and disks also remain
 separate checks.
+The package-owned `/run/lock` and `/var/lib/tailscale` directories can have
+runtime metadata that differs from the local package database. The fixed
+profile accepts only stable, exact owner and mode observations with a matching
+native package audit. It rebuilds the directories from candidate packages and
+boot policy; it does not retain their old metadata or copy their contents.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does

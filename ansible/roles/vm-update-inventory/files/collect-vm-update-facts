@@ -500,6 +500,38 @@ def collect_package_audit(database_sha256, root=Path('/')):
     return result
 
 
+RUNTIME_DIRECTORY_PATHS = ('/run/lock', '/var/lib/tailscale')
+
+
+def runtime_directory_metadata(root):
+    """Read only the two changed package directories needed by this profile."""
+    rows = []
+    try:
+        for path in RUNTIME_DIRECTORY_PATHS:
+            parent = Path(path[1:]).parent
+            while parent != Path('.'):
+                if not stat.S_ISDIR((root / parent).lstat().st_mode):
+                    return []
+                parent = parent.parent
+            info = (root / path[1:]).lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                return []
+            rows.append({'path': path, 'mode': info.st_mode, 'uid': info.st_uid,
+                         'gid': info.st_gid})
+    except OSError:
+        return []
+    return rows
+
+
+def collect_runtime_directories(before, after):
+    record = {'kind': 'klokast.vm-runtime-directories.v1',
+              'complete': len(before) == len(RUNTIME_DIRECTORY_PATHS),
+              'stable': bool(before) and before == after, 'entries': before}
+    record['evidence_sha256'] = hashlib.sha256(json.dumps(
+        record, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return record
+
+
 ROOTFUL_GRAPH = '/var/lib/containers/storage'
 ROOTFUL_TABLES = ('DBConfig', 'IDNamespace', 'ContainerConfig', 'ContainerState',
                   'ContainerExecSession', 'ContainerDependency', 'ContainerVolume',
@@ -992,6 +1024,7 @@ def collect_host(storage, root=Path('/')):
             graph = None
         accounts = text(root / 'etc/passwd', 65536)
         result['accounts'] = host_accounts(accounts)
+        runtime_before = runtime_directory_metadata(root)
         deadline = time.monotonic() + 30
         before = host_tree(root, owned, mounts, graph, deadline)
         result.update(before)
@@ -1013,6 +1046,8 @@ def collect_host(storage, root=Path('/')):
             if mounts != mount_inventory():
                 result['unowned_tree']['stable'] = False
         result['package_audit'] = collect_package_audit(result['package_database_sha256'], root)
+        result['runtime_directories'] = collect_runtime_directories(
+            runtime_before, runtime_directory_metadata(root))
         if result['stable']:
             result['nginx_default_copy'] = collect_nginx_default_copy(root, owned, mounts)
             result['legacy_firmware'] = collect_legacy_firmware(root, mounts)

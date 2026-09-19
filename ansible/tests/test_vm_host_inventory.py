@@ -71,6 +71,21 @@ class HostInventory(unittest.TestCase):
         self.assertIsNotNone(result['inventory'])
         self.assertIn('host.unowned-paths', {v['code'] for v in result['findings']})
 
+    def test_runtime_directory_probe_is_exact_and_stable(self):
+        for name in ('run/lock', 'var/lib/tailscale'):
+            (self.root / name).mkdir(parents=True)
+        before = self.m.runtime_directory_metadata(self.root)
+        receipt = self.m.collect_runtime_directories(before,
+                                                     self.m.runtime_directory_metadata(self.root))
+        self.assertTrue(receipt['complete'])
+        self.assertTrue(receipt['stable'])
+        self.assertEqual([row['path'] for row in receipt['entries']],
+                         ['/run/lock', '/var/lib/tailscale'])
+        (self.root / 'run/lock').rmdir()
+        (self.root / 'run/lock').symlink_to('/tmp/other')
+        self.assertFalse(self.m.collect_runtime_directories(
+            before, self.m.runtime_directory_metadata(self.root))['stable'])
+
     def test_symlink_does_not_expand_metadata_scope(self):
         (self.root / 'srv/data/alias').symlink_to(self.root / 'proc')
         value = self.collect()
