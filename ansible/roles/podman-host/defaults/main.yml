@@ -5,3 +5,4 @@
 ---
 podman_host_registries: []
 podman_host_registry_probe_images: []
+podman_host_container_probe: false

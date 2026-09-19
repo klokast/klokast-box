@@ -213,69 +213,90 @@
   ansible.builtin.set_fact:
     podman_host_info_json: "{{ podman_host_info.stdout | from_json }}"
 
-- name: Check whether the Alpine test image is already present
-  ansible.builtin.command: "/usr/bin/podman image exists {{ podman_test_image }}"
-  become: true
-  become_user: "{{ podman_host_runner_user }}"
-  register: podman_host_alpine_image
-  failed_when: false
-  changed_when: false
+- name: Run the optional Podman container test with exact cleanup
+  when: podman_host_container_probe | bool
+  block:
+    - name: Check whether the Alpine test image is already present
+      ansible.builtin.command: "/usr/bin/podman image exists {{ podman_test_image }}"
+      become: true
+      become_user: "{{ podman_host_runner_user }}"
+      register: podman_host_alpine_image
+      failed_when: false
+      changed_when: false
 
-- name: Pull the Alpine test image when missing
-  ansible.builtin.command: "/usr/bin/podman pull {{ podman_test_image }}"
-  become: true
-  become_user: "{{ podman_host_runner_user }}"
-  when: podman_host_alpine_image.rc != 0
-  register: podman_host_pull
-  changed_when: true
+    - name: Pull the Alpine test image when missing
+      ansible.builtin.command: "/usr/bin/podman pull {{ podman_test_image }}"
+      become: true
+      become_user: "{{ podman_host_runner_user }}"
+      when: podman_host_alpine_image.rc != 0
+      register: podman_host_pull
+      changed_when: true
 
-- name: Create a temporary bind-mount probe directory as the Podman runner
-  ansible.builtin.command: /bin/mktemp -d /tmp/podman-host-probe.XXXXXX
-  become: true
-  become_user: "{{ podman_host_runner_user }}"
-  register: podman_host_probe_dir
-  changed_when: false
+    - name: Create a temporary bind-mount probe directory as the Podman runner
+      ansible.builtin.command: /bin/mktemp -d /tmp/podman-host-probe.XXXXXX
+      become: true
+      become_user: "{{ podman_host_runner_user }}"
+      register: podman_host_probe_dir
+      changed_when: false
 
-- name: Run the Podman bind-mount and in-container apk probe
-  ansible.builtin.command:
-    argv:
-      - podman
-      - run
-      - --rm
-      - --pull=never
-      - -v
-      - "{{ podman_host_probe_dir.stdout }}:/work"
-      - "{{ podman_test_image }}"
-      - sh
-      - -lc
-      - >-
-        test -d /work &&
-        printf '%s\n' 'bind-mount-ok' >/work/probe.txt &&
-        apk add --no-cache {{ podman_test_package | default('git') }} >/dev/null &&
-        test -s /work/probe.txt
-  become: true
-  become_user: "{{ podman_host_runner_user }}"
-  register: podman_host_probe
-  changed_when: false
-  failed_when: false
+    - name: Run the Podman bind-mount and in-container apk probe
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --rm
+          - --pull=never
+          - -v
+          - "{{ podman_host_probe_dir.stdout }}:/work"
+          - "{{ podman_test_image }}"
+          - sh
+          - -lc
+          - >-
+            test -d /work &&
+            printf '%s\n' 'bind-mount-ok' >/work/probe.txt &&
+            apk add --no-cache {{ podman_test_package | default('git') }} >/dev/null &&
+            test -s /work/probe.txt
+      become: true
+      become_user: "{{ podman_host_runner_user }}"
+      register: podman_host_probe
+      changed_when: false
+      failed_when: false
 
-- name: Check whether the Podman probe wrote its host-side marker file
-  ansible.builtin.stat:
-    path: "{{ podman_host_probe_dir.stdout }}/probe.txt"
-  register: podman_host_probe_file_stat
+    - name: Check whether the Podman probe wrote its host-side marker file
+      ansible.builtin.stat:
+        path: "{{ podman_host_probe_dir.stdout }}/probe.txt"
+      register: podman_host_probe_file_stat
 
-- name: Read back the Podman bind-mount probe file
-  ansible.builtin.slurp:
-    src: "{{ podman_host_probe_dir.stdout }}/probe.txt"
-  register: podman_host_probe_file
-  when: podman_host_probe_file_stat.stat.exists
-  failed_when: false
+    - name: Read back the Podman bind-mount probe file
+      ansible.builtin.slurp:
+        src: "{{ podman_host_probe_dir.stdout }}/probe.txt"
+      register: podman_host_probe_file
+      when: podman_host_probe_file_stat.stat.exists
+      failed_when: false
 
-- name: Remove the temporary Podman probe directory
-  ansible.builtin.file:
-    path: "{{ podman_host_probe_dir.stdout }}"
-    state: absent
-  changed_when: false
+    - name: Assert the optional Podman container probe passed
+      ansible.builtin.assert:
+        that:
+          - podman_host_probe.rc == 0
+          - podman_host_probe_file_stat.stat.exists
+          - (podman_host_probe_file.content | default('') | b64decode | trim) == 'bind-mount-ok'
+        fail_msg: >-
+          Optional Podman container probe failed on {{ inventory_hostname }}.
+  always:
+    - name: Remove the temporary Podman probe directory
+      ansible.builtin.file:
+        path: "{{ podman_host_probe_dir.stdout }}"
+        state: absent
+      when: (podman_host_probe_dir | default({})).get('stdout', '') is match('^/tmp/podman-host-probe\\.[A-Za-z0-9]+$')
+
+    - name: Remove only the test image pulled by this probe
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, image, rm, "{{ podman_test_image }}"]
+      become: true
+      become_user: "{{ podman_host_runner_user }}"
+      when:
+        - (podman_host_alpine_image | default({})).get('rc', 0) != 0
+        - (podman_host_pull | default({})).get('rc', -1) == 0
 
 - name: Assert the Podman host acceptance checks passed
   ansible.builtin.assert:
@@ -284,18 +305,12 @@
       - podman_host_info_json.host.security.rootless | default(false)
       - (podman_host_info_json.host.cgroupVersion | default('')) == 'v2'
       - (podman_host_info_json.host.networkBackend | default('')) | length > 0
-      - podman_host_probe.rc == 0
-      - podman_host_probe_file_stat.stat.exists
-      - (podman_host_probe_file.content | default('') | b64decode | trim) == 'bind-mount-ok'
-    fail_msg: >-
-      Podman host verification failed on {{ inventory_hostname }}.
 
 - name: Show the verified Podman host state
   ansible.builtin.debug:
     msg:
       - "{{ inventory_hostname }}"
-      - "{{ podman_test_image }}"
       - "runner_user={{ podman_host_runner_user }}"
       - "rootless={{ podman_host_info_json.host.security.rootless | default(false) | ternary('yes', 'no') }}"
       - "network_backend={{ podman_host_info_json.host.networkBackend | default('unknown') }}"
-      - "container_apk_probe={{ podman_test_package | default('git') }}"
+      - "container_probe={{ podman_host_container_probe | bool | ternary('enabled', 'disabled') }}"

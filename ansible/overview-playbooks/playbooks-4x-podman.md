@@ -94,9 +94,9 @@ Enroll all Podman VMs into Tailscale over their first-contact SSH paths, then co
   - `tailscale-client`: keep Tailscale converged first.
   - `(reset_connection)`.
   - `vm-base`: lock root, keep the managed `neo` account, and remove bootstrap-only OpenSSH once Tailscale SSH is active.
-  - `podman-host`: install and verify rootless Podman, subordinate IDs, cgroup v2, registry policy, and a real bind-mount/container APK probe.
+  - `podman-host`: install and verify rootless Podman, subordinate IDs, cgroup v2, and registry policy. The image download and container package probe require the explicit `podman_host_container_probe` test input.
   - `podman-vm-firewall`: enforce a VM-local nftables input baseline so published service ports must be declared explicitly.
-  - `vm-egress-verification`: verify host HTTPS egress and container HTTPS egress.
+  - `vm-egress-verification`: verify host HTTPS egress. The optional `podman-host` container package probe checks container egress with a temporary test image.
 
 # Legacy development scaffolds
 Playbooks 45 through 64 are the older backend/dmz/iot installer-stage and transitional clone scaffolds. They remain useful as historical recovery references, but the current provisioning path for new shared Podman VMs is 40, 41, 42, 43, optionally 68, then 69.
