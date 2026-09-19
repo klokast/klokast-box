@@ -707,6 +707,14 @@ Persistence uses separate assets with separate authority:
   inventories, facts, plans, provenance, receipts, and verified build outputs;
 - application storage: persistent user-service data.
 
+Keep deployment cleanup receipts, report hashes, and exact target lists in
+protected controller operational state. Reusable qualification and cleanup
+logic belongs in the public implementation. A one-time site operation may
+keep its executed script with its private receipt, but does not become a
+standing upstream playbook. The private Instance repository declares desired
+state only; it is not an audit log. Copy required controller evidence through
+the controller recovery path before retiring the source controller.
+
 Klokast Instance Specification v1 contains only `klokast-instance.json` and
 `klokast.lock.json` as authoritative inputs. `klokast.lock.json` binds the
 private instance to the approved `klokast` engine identity. The sealed engine

@@ -22,6 +22,11 @@ The public `klokast-box` repository owns implementation, schemas, app
 manifests, connectivity capabilities, automation, and neutral tests. The private instance
 repository owns deployment intent and the engine lock. It must not contain
 secrets, generated state, live status, or user data.
+Qualification reports, cleanup receipts, backup hashes, and exact operation
+scripts are generated evidence for one installation. Keep them in protected
+controller operational state, separate from the Instance source files. A
+private human-readable operations journal may index that evidence, but it is
+not an Instance input and grants no execution authority.
 
 This document is the normative source for the JSON contract and `klokast` CLI
 behavior. [Secret Authority](secret-authority.md) owns signed execution rules.

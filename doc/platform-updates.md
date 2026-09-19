@@ -2,11 +2,11 @@
 
 ## Completion scope
 
-The reduced first release selects `k001-dmz`, `k002-dmz`, and `k002-iot`.
-Each target must pass the fixed `shared-alpine-no-application-v1` qualification.
-Both backend VMs remain excluded. `k001-iot` stays stopped. Discovery continues
-to inventory every managed VM. Application adapters, application data migration,
-and replacement of other VM types are separate follow-up work.
+The reduced first release supports selected shared Alpine VMs that pass the
+fixed `shared-alpine-no-application-v1` qualification. The private Instance
+selects targets and exclusions. Discovery continues to inventory every managed
+VM. Application adapters, application data migration, and replacement of other
+VM types are separate follow-up work.
 
 The release is **not complete**. The discovery, template builder, independent
 backup and isolated restore, retained-data, personalizer, and dom0 recovery
@@ -64,8 +64,8 @@ stays read-only. Standby recovery copies grant no execution authority.
    replace from 02:00, and verify hourly. Replace one VM at a time; permit no
    new start after 03:00. Use a 30-minute replacement budget and a separate
    30-minute recovery budget. Necessary recovery may continue past 04:00.
-   Start with `k001-dmz`, then `k002-dmz`, then `k002-iot`. Require 24 healthy
-   hours for each distinct template before wider deployment. Recheck no-app
+   Use one qualified canary per distinct template. Require 24 healthy hours
+   before wider deployment. Recheck no-app
    eligibility before every operation. A new workload blocks further updates.
    Failure stops rollout; resume requires journal reconciliation and current
    authority. Cleanup removes only proven temporary or unreferenced resources.
@@ -122,16 +122,12 @@ available for controlled component tests. `adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 
-The 2026-09-19 08:58 UTC reports remain blocked with no unknown items. All
-three selected guests now have 45 unresolved checks. Most require approved
-machine inputs, preserved identity, source-disk binding, or package
-provenance. Three per guest are bootstrap access files. The one-time Static
-Site staging cleanup removed the 19 old staging rows from each DMZ after
-verified controller copies were retained. The backup role also removes new
+Read current qualification counts and cleanup candidates from the active
+controller's protected reports. They are deployment observations, not upstream
+documentation or Instance inputs. The backup role removes new Static Site
 staging after verified transfer. Independent management qualification, signed
-adoption, and the production transaction remain incomplete. Exact paths and
-sources are in
-[component evidence](platform-update-components.md#qualification-findings-on-2026-09-19).
+adoption, and the production transaction remain incomplete. The rules are in
+[component evidence](platform-update-components.md#qualification-and-cleanup-evidence).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence
 set for policy approval. Sign the exact intent on the trusted workstation, then
@@ -161,4 +157,6 @@ running. Test process restart and recovery from persistent journals; report
 physical reboot recovery as unverified. Use [Platform recovery](platform-deploy.md#controller-recovery)
 for controller recovery and console access.
 
-Detailed unresolved operational items stay in ignored `.run/todo.md`.
+Deployment findings and receipts stay in private controller operational state.
+An ignored `.run/todo.md` may hold working notes, but it is not an evidence
+store or recovery copy.

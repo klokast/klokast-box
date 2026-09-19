@@ -236,17 +236,6 @@ class BackupOrchestrationTests(unittest.TestCase):
         self.assertIn('static_site_backup_verified.rc == 0', plays[1]['tasks'][0]['ansible.builtin.assert']['that'])
         self.assertTrue(plays[1]['tasks'][1]['vars']['nextcloud_remove_dmz_only'])
 
-    def test_historical_staging_cleanup_preserves_missing_copy_before_retirement(self):
-        plays = yaml.safe_load((REPO / 'ansible/playbooks/74-platform-update-static-site-staging-cleanup.yml').read_text())
-        self.assertEqual([play['hosts'] for play in plays], ['dmz', 'dmz'])
-        self.assertTrue(all(play['any_errors_fatal'] for play in plays))
-        self.assertEqual(len(plays[0]['vars']['stage_operations']), 4)
-        names = [task['name'] for task in plays[0]['tasks']]
-        self.assertLess(names.index('Preserve the missing guest archive, manifest, and receipt'),
-                        names.index('Verify all four independent controller backup copies'))
-        self.assertIn('stage_verified_copies.results', str(plays[1]['tasks']))
-        self.assertNotIn('static_site_wipe_data', str(plays))
-
 
 if __name__ == '__main__':
     unittest.main()

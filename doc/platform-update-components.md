@@ -297,200 +297,36 @@ fail the check. Other files remain unknown. This is source evidence; matching
 boot artifacts to approved source inputs remains a separate requirement.
 The check mounts no filesystem and executes no boot artifact.
 
-### Qualification findings on 2026-09-19
+### Qualification and cleanup evidence
 
-Source `e0b4557` produced fresh reports for all three selected guests. No target
-qualified and no adoption intent was issued. The k002-iot store contained
-image and layer files. Both DMZ rootless stores exceeded the bounded empty-store
-file limit. Empty container and volume lists do not resolve these findings.
-Existing cached images, unknown files, generated configuration, and legacy
-package and boot provenance still require qualification.
+A qualification report is an observation. It proposes a class for each file,
+account, service, timer, package difference, mount, and container-store item.
+An unresolved row can mean that a generated file needs comparison with approved
+machine inputs; it does not imply that the file should be deleted. Preserve
+machine identity and retained datasets. Reconstruct OS state from the selected
+signed template and packages.
 
-An ad-hoc inspection inherited inventory privilege escalation and created empty
-rootful stores on k002-dmz and k002-iot. The fixed dated correction play verified
-and removed exactly 16 entries per store. It preserved the pre-existing k001-dmz
-store. Correction receipts are under the controller candidate checkout at
-`.run/probe-correction-20260919/`. The fresh scan confirmed that the two corrected
-rootful stores were absent. This correction is not production update evidence.
+A cleanup must name exact paths and verify their origin, ownership, current
+use, and replacement or backup evidence before removal. Keep the original
+qualification report and the execution receipt in protected controller state.
+Do not put host-specific hashes, operation IDs, private paths, or live status
+in this public component guide or in the Instance JSON. The Instance declares
+only desired state. The controller stores observed qualification and operation
+records outside Git.
 
-Source `107be5e` passed 289 local VM tests and native discovery of all 12 managed
-VMs. All three selected boot filesystems had complete, stable coverage of four
-entries. The two backend VMs remained running; k001-iot remained stopped.
-Separate rootless inspection found 7, 6, and 1 cached images on k001-dmz,
-k002-dmz, and k002-iot respectively. Native `podman system check`, without
-repair or force, passed on each. This does not establish complete accounting
-for unregistered files. No application image was downloaded or run.
+The Static Site backup role stages a bounded guest archive and verifies an
+isolated restore. It transfers the archive, manifest, and receipt to the active
+controller, verifies their hashes, and rechecks the source. After successful
+transfer, its checked helper removes only the matching guest staging operation.
+Unexpected files or a failed transfer remain for exact reconciliation. Retain
+controller copies while recovery or audit rules require them.
 
-After explicit user approval, source `e0e977f` removed the two obsolete
-Nextcloud `.crt` and `.key` files from the k001-dmz runtime user's home.
-The exact cleanup play checked current absent Nextcloud intent, original file
-checksums and identities, and native process use. It rechecked both files,
-removed only their exact paths without recursion, and verified both absent.
-Syntax validation and native execution passed. The controller candidate receipt
-is `.run/obsolete-certificates-949ad1edc7a0c8be026267a0/receipt.json`.
-The pre-cleanup qualification records remain on the controller for audit.
-
-The earlier scan used source `d7af633` and covered all 12 managed VMs.
-The two certificate paths remain absent. Both backend VMs remain running;
-k001-iot remains stopped. All three selected guests are still on v3.23.
-Source-matched qualification reports are in
-`/var/lib/klokast/updates/discovery/qualifications/` on the controller:
-
-| Target | Report filename | Unresolved items | Unknown items | Exact cleanup items |
-| --- | --- | ---: | ---: | ---: |
-| k001-dmz | `64d817fbef45f89d4e204dccd8cc8abd2a922160139e57756d19904c30431baa.json` | 216 | 55 | 22 |
-| k002-dmz | `7376a4a68802a2501b7d00804b6079edfd363772965c8dc93c41419dd5a07297.json` | 200 | 30 | 31 |
-| k002-iot | `e5db6e5f62128b5524d738f96256a89d7dfb8ca8d572cf39ad9377ff6eb536ad.json` | 669 | 531 | 3 |
-
-That table is historical. The 2026-09-19 08:12 UTC discovery from source
-`0e69c5d` has no unknown items on the selected guests. It still does not
-qualify any target. Its exact reports on the active controller are:
-
-| Target | Report SHA-256 | Unresolved | Exact cleanup |
-| --- | --- | ---: | ---: |
-| k001-dmz | `a1b1ed3864053227e36c093b37453aa5fe763a468efef799c2a6ce6e16be7781` | 64 | 22 |
-| k002-dmz | `9347d5cdbb27b1045ae29edbc0e726d7cc6687e35c3746ed54307ca6a5f0eec0` | 64 | 22 |
-| k002-iot | `8ccff7561c24e78ef1e65ad3094ff6436213f226f07da912d325e299edd25817` | 45 | 3 |
-
-Each report has the same 45 common unresolved rows: the `neo` account; two
-boot artifacts and two mounts; 18 generated files for APK, Podman, doas,
-network, firewall, OpenRC, and resource reconciliation; four retained identity
-files (three SSH host keys and Tailscale state); 12 generated configuration
-differences from package defaults; two reconstructable OS differences; the
-Podman runroot cleanup service; and three bootstrap SSH access files. These
-are separate checks, not 45 unknown files. The generated files must match
-approved machine inputs. The host keys, Tailscale state, numeric identity,
-and subordinate ranges must be preserved. The boot files and mounts must be
-bound to the approved source and disk generation. Do not delete these inputs.
-
-The extra 19 rows on each DMZ are one Static Site backup staging tree:
-`/var/tmp/klokast-static-site-backup`, `helper.py`, `async`, and four operation
-directories with an archive, manifest, and receipt each. The one-time Static
-Site retirement role created these archives, verified a restore, copied them
-to the controller, and did not remove guest staging. Three operation copies
-have matching verified controller receipts. The fourth operation
-`623ecdce63065238edb22fb3` has matching archive and manifest hashes in a
-later verified controller copy, but its own receipt has no controller copy.
-Preserve that receipt before exact historical cleanup. The backup role now
-retires new guest staging only after it verifies controller archive and
-manifest hashes and rechecks the source. It preserves unexpected files.
-
-The three common cleanup paths are first-contact access:
-`/etc/ssh/sshd_config.d/10-klokast-bootstrap.conf`,
-`/root/.ssh/authorized_keys`, and `/home/neo/.ssh/authorized_keys`. The
-template and clone roles create the root key and bootstrap policy. The
-`vm-base` role adds the controller key to `neo`. Key counts differ between
-guests, so exact key identity and independent management access must be
-checked before retiring bootstrap files. The legacy `vm-base` role adds a key
-without pruning old keys; replacement must render the approved key set and
-reject extra keys. No bootstrap access was removed by this review.
-
-The one-time
-`ansible/playbooks/74-platform-update-static-site-staging-cleanup.yml`
-completed on both DMZ guests on 2026-09-19. It copied operation
-`623ecdce63065238edb22fb3` to the active controller, verified all four
-archive, manifest, and receipt sets for each guest, checked that the fixed
-guest staging tree had no active user, and removed only staging with matching
-controller hashes. The protected controller copies remain under the ignored
-`.run/vm-update-backups/static-site/` tree in the approved checkout. Both
-guest staging roots were absent after the play. A fresh 12-VM scan from source
-`7fbc42b` confirmed both backends running and k001-iot stopped. Its new
-qualification reports have 45 unresolved rows, three exact bootstrap-access
-cleanup rows, and zero unknown rows on **each** selected guest:
-
-| Target | New report SHA-256 |
-| --- | --- |
-| k001-dmz | `9ab1570bf70002d7b9214ed8c18ec380943e448f6943152c3eca7da35e80ec56` |
-| k002-dmz | `6c3f3a6885535689f3d88ce9be897b6109b4460599750a7f695f03614921f0b3` |
-| k002-iot | `65f4e2c3ed06e8f714bdd0712bd8440f7473bee845280f157f0c09165fca6553` |
-
-The `verify-*` directories under the neo user's Platform resource cache have
-a specific producer: `platform-resources` uploads `desired.json` and its
-reconcile helper there. Its old remote script removed the directory only after
-successful verification, so a failed check could leave both files. The script
-now removes its exact staged files on exit, including a failed check, and tries
-the same cleanup after an upload failure. It preserves unexpected files for
-review. Existing cache directories still need exact evidence and cleanup;
-the code change does not classify or delete them.
-
-The Ansible app-resource apply and verify roles also left their desired ledger
-at the fixed path `/tmp/klokast-platform-resources-desired.json`. Both now use
-an owner-only file under volatile `/run` and remove that file after success or
-task failure. They leave the old `/tmp` files untouched until exact review.
-The verification role now checks the installed reconcile helper against the
-checked-in source checksum instead of installing it during a check. A missing
-or changed helper blocks verification and requires an approved apply.
-
-The fixed legacy template recipe copied Alpine VIRT modules and firmware from
-its read-only modloop into the guest. Qualification can now classify those
-files as replaceable OS state only when the exact template marker is present,
-the sole module release matches the running kernel, and each file has bounded
-root-owned, single-link, non-writable metadata. A link under the standard
-applet directories is replaceable only when the corresponding BusyBox,
-BusyBox SUID, or Pinentry package is installed and the recorded target is the
-fixed package target. The fresh candidate
-supplies its own kernel and BusyBox package; none of these old files is copied.
-The checks classify old disk content. They do not verify the new template,
-resolve other links, or approve any remaining unknown file.
-The generated CA links use a two-link chain: a hash-named link points to a
-`ca-cert-*.pem` link, which points to a file under the installed Mozilla CA
-package. Qualification now checks both recorded link-target hashes, root
-ownership, the installed CA packages, and the absence of an APK audit
-difference or unowned file at the final target. A different link remains
-unresolved. The candidate regenerates the CA links from its signed packages.
-
-Both DMZ guests contain the same unowned Nginx `default.conf`. Its SHA-256
-matches each guest's package-owned `/usr/share/nginx/http-default_server.conf`
-exactly. [Alpine's v3.23 package index](https://pkgs.alpinelinux.org/contents?arch=x86_64&branch=v3.23&name=nginx&repo=main)
-lists that source file. Discovery now records a bounded, stable two-file
-checksum comparison without reporting the file contents; qualification also
-requires package ownership and a clean native APK audit for the source. An
-empty Nginx error log is replaceable runtime state. Other Nginx content remains
-unknown.
-
-The legacy `podman-host` role was one source of cached images. It pulled
-`quay.io/libpod/alpine:latest` when absent, then ran a container that installed
-a test package. Source `18faee4` makes that probe explicit and removes a test
-image that the probe pulled, even if the probe fails. Normal Podman host
-convergence no longer downloads or runs a test image. Existing image caches
-remain unclassified until their registrations and files are checked or an
-exact cleanup operation removes them. The A/B update must not run this probe.
-
-`/tmp/storage-run-1000` is the rootless Podman runroot. The OpenRC helper now
-clears the complete runroot at boot only when no Podman process uses it. The
-reviewed cleanup records removed the old OCI configuration, network namespace,
-seccomp cache, and event data after they proved that the rootless store,
-containers, volumes, pods, and images were empty. Qualification accepts only
-the fixed small set of ordinary runroot files that Podman recreates during its
-empty-store check. It does not accept an OCI configuration, a namespace, or an
-unknown runroot path. The candidate omits all runroot data.
-
-Ansible created the remaining `ansible-tmp-*` module payloads and the two old
-`.ansible_async` result files. The current reports list them as unknown until
-an exact cleanup has a process-use check and a separate operation record. The
-active scan can also stage its own collector there. The
-[`v1.90.9` Tailscale log-policy source](https://github.com/tailscale/tailscale/blob/v1.90.9/logpolicy/logpolicy.go)
-creates `tailscaled.log.conf`, `tailscaled.log1.txt`, and
-`tailscaled.log2.txt`. Qualification now accepts only those exact files with
-owner-only, bounded metadata under the neo account. It does not copy them as
-Tailscale machine identity. No checked-in producer was found for the old
-`/tmp` banner, HTTP response bodies, private-certificate check, manifest error,
-or nftables diagnostic files. Their names did not prove that they were
-disposable. Exact preview records established their regular-file identity and
-unused state, then removed them. This resolves the files but does not establish
-a checked-in producer; future diagnostics must use the controlled volatile
-paths or clean up on exit.
-
-The existing Immich ingress cleanup play first previewed k002-dmz operation
-`e4b39a01a1493523ff459f15`: it found 8 entries under
-`/var/lib/klokast/immich-private-ingress` and one under
-`/var/log/klokast/immich-private-ingress`. It verified disabled app intent,
-absent ingress runtime use, and unchanged management identity. The same
-operation removed exactly those roots. A separate preview
-`67d7dfae1ee2c951bef86546` verified both paths absent and the same
-management identity. Receipts are in the controller candidate checkout at
-`.run/immich-ingress-cleanup/`. This cleanup did not select a backend VM or
-remove a Podman volume.
+The fixed no-application profile still requires approved machine inputs,
+independent management access, exact source-disk and boot-artifact binding,
+complete host and rootless Podman accounting, and no observed or declared
+application workload. Bootstrap SSH keys require an independent access check
+before retirement. A package or branch that is old is an update reason, not
+proof that a target is unsafe to adopt.
 
 ### Declared retention report
 
@@ -1395,10 +1231,10 @@ and extended attributes. It refuses external links, special files, mount
 boundaries, changed sources, excessive data, and reuse of an operation.
 The native Python tar data filter is required; there is no unfiltered fallback.
 
-The active controller receives the archive, manifest, and receipt under
-`/home/smith/src/klokast/klokast-box/.run/vm-update-backups/static-site/OPERATION/HOST/`.
-These are private backups, including any app credentials. Keep the directory
-owner-only and its files mode `0600`. Do not commit or automatically prune it.
+The active controller receives the archive, manifest, and receipt in its
+protected backup directory. These are private backups, including any app
+credentials. Keep the directory owner-only and its files mode `0600`. Do not
+commit or automatically prune it.
 All selected targets must pass backup and transfer verification before the
 removal play starts. A target with no Static Site files records their absence.
 
@@ -1407,15 +1243,6 @@ the app files on the selected DMZ guests. Backend data and VM Tailscale state
 are outside this operation. The playbook verifies the VM management identity
 after removal. Its evidence does not establish complete host accounting,
 adoption, accepted releases, or replacement readiness.
-
-Controlled retirement completed on both selected DMZ guests on 2026-09-18,
-operation `9876db5374f6e5149f823741`. One backup preserved 1,336,137 data bytes
-in 14 entries; the other recorded that Static Site data was absent. Both
-passed guest restore and controller checksum verification before removal.
-Both guests retained their original running management Tailscale identity.
-The backend VMs were not selected. The cleanup also handled an exact private
-ingress supervisor whose OpenRC started marker was absent; files remained
-protected until its native shutdown and process-absence check passed.
 
 Run from a clean, pushed public controller checkout with the approved execution
 inventory. Supply `vm_update_cleanup_boxes` and a new 24-character lowercase
