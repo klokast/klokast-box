@@ -217,6 +217,12 @@ class Qualification(unittest.TestCase):
         self.assertEqual(noapp.certificate_link_resolutions(entries, packages,
                                                             {**audit, 'stable': False}, database), set())
 
+    def test_ca_chain_uses_the_collected_apk_database_identity(self):
+        original = self.observed['hosts'][0]['facts']['host_inventory']['package_database_sha256']
+        with patch.object(noapp, 'certificate_link_resolutions', return_value=set()) as chain:
+            self.report()
+        self.assertEqual(chain.call_args.args[3], original)
+
 
 class CLI(unittest.TestCase):
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):

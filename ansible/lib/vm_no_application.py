@@ -363,7 +363,7 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     installed_packages = fact.get('packages') if isinstance(fact.get('packages'), dict) else {}
     verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
                                                      inventory.get('package_audit'),
-                                                     inventory.get('package_database_sha256'))
+                                                     fact['host_inventory'].get('package_database_sha256'))
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
