@@ -164,6 +164,28 @@ class Qualification(unittest.TestCase):
             fact, {'/etc/apk/world': {**entry, 'mode': stat.S_IFLNK | 0o777}}, 'dmz'))
         self.assertFalse(noapp.path_classification(entry)[2])
 
+    def test_tailscale_resolver_requires_exact_receipt_status_and_metadata(self):
+        entry = {'path': '/etc/resolv.conf', 'mode': stat.S_IFREG | 0o644,
+                 'uid': 0, 'gid': 102}
+        fact = {'tailscale_resolver': {'kind': 'klokast.vm-tailscale-resolver.v1',
+                                       'suffix_sha256': 'a' * 64,
+                                       'expected_sha256': 'b' * 64,
+                                       'observed_sha256': 'b' * 64},
+                'tailscale': {'backend_state': 'Running'},
+                'packages': {'tailscale': {}}}
+        self.assertTrue(noapp.checked_tailscale_resolver(fact, {'/etc/resolv.conf': entry}))
+        self.assertTrue(noapp.path_classification(entry, verified_tailscale_resolver=True)[2])
+        for changed in (
+                lambda f: f['tailscale_resolver'].update(observed_sha256='c' * 64),
+                lambda f: f['tailscale'].update(backend_state='Stopped'),
+                lambda f: f['packages'].clear()):
+            copy_fact = copy.deepcopy(fact)
+            changed(copy_fact)
+            self.assertFalse(noapp.checked_tailscale_resolver(copy_fact, {'/etc/resolv.conf': entry}))
+        self.assertFalse(noapp.checked_tailscale_resolver(
+            fact, {'/etc/resolv.conf': {**entry, 'gid': 0}}))
+        self.assertFalse(noapp.path_classification(entry)[2])
+
     def test_incomplete_stale_future_and_stopped_guest_never_qualify(self):
         for mode in ('incomplete', 'stale', 'future', 'stopped', 'duplicate'):
             observed = copy.deepcopy(self.observed)

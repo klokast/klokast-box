@@ -168,6 +168,24 @@ def checked_legacy_apk_world(fact, entries, role):
     return True
 
 
+def checked_tailscale_resolver(fact, entries):
+    """Recognize Tailscale's exact generated DNS file, without its contents."""
+    value = fact.get('tailscale_resolver')
+    entry = entries.get('/etc/resolv.conf')
+    tailscale = fact.get('tailscale')
+    packages = fact.get('packages')
+    return (isinstance(value, dict) and
+            set(value) == {'kind', 'suffix_sha256', 'expected_sha256', 'observed_sha256'} and
+            value['kind'] == 'klokast.vm-tailscale-resolver.v1' and
+            all(isinstance(value[key], str) and re.fullmatch('[0-9a-f]{64}', value[key])
+                for key in ('suffix_sha256', 'expected_sha256', 'observed_sha256')) and
+            value['expected_sha256'] == value['observed_sha256'] and
+            isinstance(entry, dict) and entry.get('mode') == (stat.S_IFREG | 0o644) and
+            entry.get('uid') == 0 and entry.get('gid') == 102 and
+            isinstance(tailscale, dict) and tailscale.get('backend_state') == 'Running' and
+            isinstance(packages, dict) and 'tailscale' in packages)
+
+
 def checked_empty_store(value, graph='/home/neo/.local/share/containers/storage'):
     fields = {'kind', 'graph_root', 'complete', 'stable', 'empty', 'metadata', 'database_sha256',
               'unresolved_paths', 'adoption_authorized', 'error', 'evidence_sha256'}
@@ -505,7 +523,7 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         tailscale_log_owner=None, tailscale_present=False,
                         verified_rootful_paths=frozenset(), empty_rootless_runtime=False,
                         verified_runlevel_links=frozenset(), legacy_runroot_helper=False,
-                        verified_apk_world=False):
+                        verified_apk_world=False, verified_tailscale_resolver=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -515,6 +533,9 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
     elif name == '/etc/apk/world' and verified_apk_world:
         category, rule, resolved = ('reconstructable-os-state',
                                     'exact legacy package requests; generate candidate world from signed manifest and omit old DMZ application packages', True)
+    elif name == '/etc/resolv.conf' and verified_tailscale_resolver:
+        category, rule, resolved = ('generated-configuration',
+                                    'exact Tailscale-generated resolver; rebuild from approved DNS input and live Tailnet policy', True)
     elif name in CONFIGURATION:
         category, rule = 'generated-configuration', 'compare with rendered machine inputs'
         if name == '/etc/init.d/klokast-podman-runroot-cleanup' and legacy_runroot_helper:
@@ -743,6 +764,7 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     except UpdateError:
         verified_runtime_directories = {}
     verified_apk_world = checked_legacy_apk_world(fact, entries, role)
+    verified_tailscale_resolver = checked_tailscale_resolver(fact, entries)
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -777,7 +799,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                empty_rootless_runtime=empty_rootless_runtime,
                                                verified_runlevel_links=verified_runlevel_links,
                                                legacy_runroot_helper=legacy_runroot_helper,
-                                               verified_apk_world=verified_apk_world), entry)
+                                               verified_apk_world=verified_apk_world,
+                                               verified_tailscale_resolver=verified_tailscale_resolver), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'

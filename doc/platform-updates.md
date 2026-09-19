@@ -137,6 +137,10 @@ Podman template, Podman host role, and Tailscale role created the base set.
 Former DMZ app roles added `nginx`, pinned `cloudflared`, and sometimes `curl`.
 The candidate world comes from the signed template manifest. It does not copy
 these old requests or install those former app packages.
+The three old resolver files have the exact Tailscale-generated form. The
+collector compares each file with the live Tailnet DNS suffix and records only
+hashes. The candidate uses approved DNS input and Tailscale policy; it does
+not copy the old resolver file.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does
