@@ -334,6 +334,16 @@ These counts include proposed OS and package classes whose required source
 checks remain incomplete. None of these records qualifies a target, issues an
 adoption intent, or proves a production replacement.
 
+After explicit user approval, source `e0e977f` removed the two obsolete
+Nextcloud `.crt` and `.key` files from the k001-dmz runtime user's home.
+The exact cleanup play checked current absent Nextcloud intent, original file
+checksums and identities, and native process use. It rechecked both files,
+removed only their exact paths without recursion, and verified both absent.
+Syntax validation and native execution passed. The controller candidate receipt
+is `.run/obsolete-certificates-949ad1edc7a0c8be026267a0/receipt.json`.
+The qualification reports above predate this cleanup. The remaining
+classification and production acceptance requirements still apply.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on
