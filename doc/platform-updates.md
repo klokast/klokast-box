@@ -131,6 +131,12 @@ runtime metadata that differs from the local package database. The fixed
 profile accepts only stable, exact owner and mode observations with a matching
 native package audit. It rebuilds the directories from candidate packages and
 boot policy; it does not retain their old metadata or copy their contents.
+The old APK world file is reconstructable only when its bounded requests,
+checksum, ownership, installed packages, and fixed role set agree. The old
+Podman template, Podman host role, and Tailscale role created the base set.
+Former DMZ app roles added `nginx`, pinned `cloudflared`, and sometimes `curl`.
+The candidate world comes from the signed template manifest. It does not copy
+these old requests or install those former app packages.
 The registry alone cannot prove retained-data absence. The initial fixed
 profile refuses present applications in the registry until compute placement
 support is explicitly qualified. A backend-only known retention catalog does

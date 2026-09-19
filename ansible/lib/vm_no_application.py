@@ -96,6 +96,14 @@ DMZ_PACKAGE_ACCOUNTS = {
     'cloudflared': (102, 103, '/home/cloudflared', '/sbin/nologin'),
     'nginx': (103, 104, '/var/lib/nginx', '/sbin/nologin'),
 }
+# Old requests come from podman-template-rootfs, podman-host, and
+# tailscale-client. The DMZ additions came from the old local-ingress and
+# Nextcloud/Static Site roles. They are omitted from the candidate profile.
+LEGACY_APK_WORLD_BASE = frozenset('''
+alpine-base ca-certificates doas iproute2 iptables jq nftables podman python3
+shadow-subids tailscale tailscale-openrc wget
+'''.split())
+LEGACY_APK_WORLD_DMZ = frozenset({'nginx', 'cloudflared=2026.3.0-r1'})
 TAILSCALE_LOGS = frozenset('/home/neo/.local/share/tailscale/tailscaled.log' + suffix
                            for suffix in ('.conf', '1.txt', '2.txt'))
 COLLECTOR_SOURCE = Path(__file__).resolve().parents[1] / 'roles/vm-update-inventory/files/collect-vm-update-facts'
@@ -121,6 +129,43 @@ PINENTRY_LINK_SHA256 = hashlib.sha256(b'pinentry-curses').hexdigest()
 
 def below(path, root):
     return path == root or path.startswith(root + '/')
+
+
+def checked_legacy_apk_world(fact, entries, role):
+    """Recognize only the fixed old no-application package requests."""
+    value = fact.get('apk_world')
+    configuration = fact.get('configuration')
+    requests = value.get('requests') if isinstance(value, dict) else None
+    entry = entries.get('/etc/apk/world')
+    packages = fact.get('packages')
+    if (role not in ROLES or not isinstance(value, dict) or
+            set(value) != {'kind', 'sha256', 'requests'} or
+            value['kind'] != 'klokast.vm-apk-world.v1' or
+            not isinstance(requests, list) or not 0 < len(requests) <= 64 or
+            any(not isinstance(row, str) or not re.fullmatch(
+                r'[a-z0-9][a-z0-9+_.-]*(?:=[0-9][A-Za-z0-9._-]*)?', row)
+                for row in requests) or requests != sorted(set(requests)) or
+            not isinstance(value['sha256'], str) or
+            value['sha256'] != hashlib.sha256(('\n'.join(requests) + '\n').encode()).hexdigest() or
+            not isinstance(configuration, dict) or
+            not isinstance(configuration.get('sha256'), dict) or
+            configuration['sha256'].get('/etc/apk/world') != value['sha256'] or
+            not isinstance(entry, dict) or entry.get('mode') != (stat.S_IFREG | 0o644) or
+            entry.get('uid') != 0 or entry.get('gid') != 0 or
+            not isinstance(packages, dict)):
+        return False
+    expected = LEGACY_APK_WORLD_BASE | (LEGACY_APK_WORLD_DMZ if role == 'dmz' else frozenset())
+    observed = set(requests)
+    if role == 'dmz' and 'curl' in observed:
+        expected = expected | {'curl'}
+    if observed != expected:
+        return False
+    for request in requests:
+        name, separator, version = request.partition('=')
+        package = packages.get(name)
+        if not isinstance(package, dict) or (separator and package.get('version') != version):
+            return False
+    return True
 
 
 def checked_empty_store(value, graph='/home/neo/.local/share/containers/storage'):
@@ -459,13 +504,17 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         nginx_error_empty=False, inspection_artifact=None,
                         tailscale_log_owner=None, tailscale_present=False,
                         verified_rootful_paths=frozenset(), empty_rootless_runtime=False,
-                        verified_runlevel_links=frozenset(), legacy_runroot_helper=False):
+                        verified_runlevel_links=frozenset(), legacy_runroot_helper=False,
+                        verified_apk_world=False):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
     if name in IDENTITIES:
         category, rule = 'retained-machine-identity', IDENTITIES[name]
         # Discovery alone does not validate private keys or state usability.
+    elif name == '/etc/apk/world' and verified_apk_world:
+        category, rule, resolved = ('reconstructable-os-state',
+                                    'exact legacy package requests; generate candidate world from signed manifest and omit old DMZ application packages', True)
     elif name in CONFIGURATION:
         category, rule = 'generated-configuration', 'compare with rendered machine inputs'
         if name == '/etc/init.d/klokast-podman-runroot-cleanup' and legacy_runroot_helper:
@@ -693,6 +742,7 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
             fact['host_inventory'].get('runtime_directories'))
     except UpdateError:
         verified_runtime_directories = {}
+    verified_apk_world = checked_legacy_apk_world(fact, entries, role)
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -726,7 +776,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                verified_rootful_paths=verified_rootful_paths,
                                                empty_rootless_runtime=empty_rootless_runtime,
                                                verified_runlevel_links=verified_runlevel_links,
-                                               legacy_runroot_helper=legacy_runroot_helper), entry)
+                                               legacy_runroot_helper=legacy_runroot_helper,
+                                               verified_apk_world=verified_apk_world), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'

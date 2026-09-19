@@ -86,6 +86,15 @@ class HostInventory(unittest.TestCase):
         self.assertFalse(self.m.collect_runtime_directories(
             before, self.m.runtime_directory_metadata(self.root))['stable'])
 
+    def test_apk_world_probe_rejects_unbounded_or_linked_requests(self):
+        world = self.root / 'etc/apk/world'
+        world.parent.mkdir(parents=True, exist_ok=True)
+        world.write_text('unknown-app\nalpine-base\n')
+        self.assertIsNone(self.m.apk_world(world))
+        world.unlink()
+        world.symlink_to('/etc/apk/world')
+        self.assertIsNone(self.m.apk_world(world))
+
     def test_symlink_does_not_expand_metadata_scope(self):
         (self.root / 'srv/data/alias').symlink_to(self.root / 'proc')
         value = self.collect()

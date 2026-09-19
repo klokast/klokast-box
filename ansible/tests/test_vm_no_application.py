@@ -139,6 +139,31 @@ class Qualification(unittest.TestCase):
         after = self.report()
         self.assertEqual(before['findings'], after['findings'])
 
+    def test_legacy_apk_world_requires_exact_source_set_and_discovery_hash(self):
+        entry = {'path': '/etc/apk/world', 'mode': stat.S_IFREG | 0o644, 'uid': 0, 'gid': 0}
+        requests = sorted(noapp.LEGACY_APK_WORLD_BASE | noapp.LEGACY_APK_WORLD_DMZ | {'curl'})
+        world_hash = hashlib.sha256(('\n'.join(requests) + '\n').encode()).hexdigest()
+        packages = {request.partition('=')[0]: {'version': request.partition('=')[2] or '1.0-r0'}
+                    for request in requests}
+        fact = {'apk_world': {'kind': 'klokast.vm-apk-world.v1', 'sha256': world_hash,
+                              'requests': requests},
+                'configuration': {'sha256': {'/etc/apk/world': world_hash}},
+                'packages': packages}
+        self.assertTrue(noapp.checked_legacy_apk_world(fact, {'/etc/apk/world': entry}, 'dmz'))
+        self.assertTrue(noapp.path_classification(entry, verified_apk_world=True)[2])
+        for changed in (
+                lambda f: f['configuration']['sha256'].update({'/etc/apk/world': '0' * 64}),
+                lambda f: f['apk_world']['requests'].append('unknown-app'),
+                lambda f: f['packages'].pop('cloudflared'),
+                lambda f: f['packages']['cloudflared'].update(version='other')):
+            copy_fact = copy.deepcopy(fact)
+            changed(copy_fact)
+            self.assertFalse(noapp.checked_legacy_apk_world(copy_fact, {'/etc/apk/world': entry}, 'dmz'))
+        self.assertFalse(noapp.checked_legacy_apk_world(fact, {'/etc/apk/world': entry}, 'iot'))
+        self.assertFalse(noapp.checked_legacy_apk_world(
+            fact, {'/etc/apk/world': {**entry, 'mode': stat.S_IFLNK | 0o777}}, 'dmz'))
+        self.assertFalse(noapp.path_classification(entry)[2])
+
     def test_incomplete_stale_future_and_stopped_guest_never_qualify(self):
         for mode in ('incomplete', 'stale', 'future', 'stopped', 'duplicate'):
             observed = copy.deepcopy(self.observed)

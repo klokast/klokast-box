@@ -1102,6 +1102,38 @@ def text(path, maximum=8 * 1024 * 1024):
         return ""
 
 
+def apk_world(path="/etc/apk/world"):
+    """Record only bounded APK requests, with stable file identity."""
+    try:
+        before = os.lstat(path)
+        if (before.st_mode != (stat.S_IFREG | 0o644) or before.st_uid != 0 or
+                before.st_gid != 0 or before.st_nlink != 1 or
+                not 0 < before.st_size <= 4096):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(fd)
+            content = os.read(fd, 4097)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid',
+                  'st_nlink', 'st_size', 'st_mtime_ns')
+        if (any(getattr(before, field) != getattr(opened, field) or
+                getattr(before, field) != getattr(after, field) for field in fields) or
+                len(content) != before.st_size or not content.endswith(b'\n')):
+            return None
+        lines = content.decode('ascii').splitlines()
+        if (not lines or len(lines) > 64 or lines != sorted(set(lines)) or
+                any(not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*(?:=[0-9][A-Za-z0-9._-]*)?',
+                                         line) for line in lines)):
+            return None
+        return {'kind': 'klokast.vm-apk-world.v1', 'sha256': hashlib.sha256(content).hexdigest(),
+                'requests': lines}
+    except (OSError, UnicodeError):
+        return None
+
+
 def read_json_command(argv):
     result = capture(argv)
     try:
@@ -1236,6 +1268,7 @@ def main():
         "tailscale": {"running_version": status.get("Version"), "backend_state": status.get("BackendState"),
                       "client_version": capture(["tailscale", "version"])["stdout"].splitlines()[:1]},
         "configuration": {"status": "unknown", "sha256": configs},
+        "apk_world": apk_world(),
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),
         "storage": {"mounts": mount_inventory(), "capacity": capture(["df", "-Pk"])["stdout"]},
