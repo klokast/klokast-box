@@ -628,16 +628,22 @@ def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/sh
     result = {'kind': 'klokast.vm-empty-store.v1', 'graph_root': graph, 'complete': False,
               'stable': False, 'empty': False, 'metadata': None, 'database_sha256': None,
               'unresolved_paths': [], 'adoption_authorized': False, 'error': None}
-    directories = {'', 'libpod', 'overlay', 'overlay/l', 'overlay-containers', 'overlay-images',
-                   'overlay-layers', 'volumes', 'networks', 'tmp', 'mounts'}
+    directories = {'', 'libpod', 'overlay', 'overlay/l', 'overlay/tempdirs',
+                   'overlay-containers', 'overlay-images', 'overlay-layers',
+                   'overlay-layers/tmp', 'volumes', 'networks', 'tmp', 'mounts', 'secrets'}
     # Zero-length lock files and bounded native format markers carry no app
     # dataset. A nonempty image/layer index requires separate qualification.
-    empty_files = {'overlay-containers/containers.lock', 'overlay-images/images.lock',
-                   'overlay-layers/layers.lock', 'userns.lock', 'volumes/volumes.lock'}
+    empty_files = {'networks/netavark.lock', 'secrets/secrets.lock',
+                   'userns.lock', 'volumes/volumes.lock'}
+    native_locks = {'storage.lock', 'overlay-containers/containers.lock',
+                    'overlay-images/images.lock', 'overlay-layers/layers.lock'}
     markers = {'defaultNetworkBackend': {b'netavark', b'netavark\n'},
                'overlay/.has-mount-program': {b'true', b'true\n', b'false', b'false\n'},
+               'overlay-containers/containers.json': {b'[]', b'[]\n'},
+               'overlay-containers/volatile-containers.json': {b'[]', b'[]\n'},
                'overlay-images/images.json': {b'[]', b'[]\n'},
-               'overlay-layers/layers.json': {b'[]', b'[]\n'}}
+               'overlay-layers/layers.json': {b'[]', b'[]\n'},
+               'overlay-layers/volatile-layers.json': {b'[]', b'[]\n'}}
     try:
         if (graph not in (ROOTFUL_GRAPH, '/home/neo/.local/share/containers/storage') or
                 not mounts or not isinstance(owner, dict) or set(owner) != {'uid', 'gid'} or
@@ -667,10 +673,10 @@ def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/sh
                     contents[relative] = content
                     databases.append(relative)
                     result['database_sha256'] = hashlib.sha256(content).hexdigest()
-                elif relative in markers or relative == 'storage.lock':
+                elif relative in markers or relative in native_locks:
                     content = rootful_database_bytes(root, relative, graph=graph, owner=owner['uid'])
                     contents[relative] = content
-                    if relative == 'storage.lock':
+                    if relative in native_locks:
                         # containers/storage v1.59.1 lastwrite.go uses a
                         # 64-byte binary time/counter/PID/random identifier.
                         # Older releases used a 64-byte hexadecimal ID.

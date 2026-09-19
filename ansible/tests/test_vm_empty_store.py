@@ -61,6 +61,37 @@ class EmptyStore(unittest.TestCase):
         marker.write_bytes(b'[]EXTRA')
         self.assertFalse(self.collect()['empty'])
 
+    def test_post_image_removal_store_has_no_retained_container_or_secret(self):
+        graph = self.fixture.graph
+        for name in ('networks', 'overlay-containers', 'overlay-images',
+                     'overlay-layers/tmp', 'overlay/tempdirs', 'secrets'):
+            (graph / name).mkdir(parents=True, exist_ok=True)
+        for name in ('networks/netavark.lock', 'secrets/secrets.lock'):
+            (graph / name).touch()
+        for name in ('overlay-containers/containers.json',
+                     'overlay-containers/volatile-containers.json',
+                     'overlay-layers/volatile-layers.json'):
+            (graph / name).write_bytes(b'[]')
+        timestamp = 1789778963100000000
+        lock = (timestamp.to_bytes(8, 'little') + (1).to_bytes(8, 'little') +
+                (123).to_bytes(4, 'little') + bytes(range(44)))
+        for name in ('overlay-containers/containers.lock',
+                     'overlay-images/images.lock', 'overlay-layers/layers.lock'):
+            marker = graph / name
+            marker.write_bytes(lock)
+            os.utime(marker, ns=(timestamp, timestamp))
+        value = self.collect()
+        self.assertTrue(value['empty'])
+        self.assertEqual(value['unresolved_paths'], [])
+        (graph / 'secrets/unknown-secret').write_bytes(b'PRIVATE')
+        value = self.collect()
+        self.assertFalse(value['empty'])
+        self.assertIn(self.graph + '/secrets/unknown-secret', value['unresolved_paths'])
+        self.assertNotIn('PRIVATE', str(value))
+        (graph / 'secrets/unknown-secret').unlink()
+        (graph / 'overlay-containers/volatile-containers.json').write_bytes(b'[{}]')
+        self.assertFalse(self.collect()['empty'])
+
     def test_changed_database_link_mount_and_timeout_fail_closed(self):
         original = self.m.rootful_database_bytes; reads = []
         def changed(*args, **kwargs):
