@@ -17,6 +17,7 @@ import vm_storage_inventory as storage
 
 PROFILE = 'shared-alpine-no-application-v1'
 ROLES = ('dmz', 'iot')
+ROOTFUL_GRAPH = '/var/lib/containers/storage'
 IDENTITIES = {'/var/lib/tailscale/tailscaled.state': 'platform-tailscale-state',
               **{'/etc/ssh/ssh_host_' + k + '_key': 'platform-ssh-' + k
                  for k in ('rsa', 'ecdsa', 'ed25519')}}
@@ -100,11 +101,11 @@ def below(path, root):
     return path == root or path.startswith(root + '/')
 
 
-def checked_empty_store(value):
+def checked_empty_store(value, graph='/home/neo/.local/share/containers/storage'):
     fields = {'kind', 'graph_root', 'complete', 'stable', 'empty', 'metadata', 'database_sha256',
               'unresolved_paths', 'adoption_authorized', 'error', 'evidence_sha256'}
-    graph = '/home/neo/.local/share/containers/storage'
-    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-empty-store.v1' or
+    if (graph not in ('/home/neo/.local/share/containers/storage', ROOTFUL_GRAPH) or
+            not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-empty-store.v1' or
             value['graph_root'] != graph or value['complete'] is not True or value['stable'] is not True or
             type(value['empty']) is not bool or value['adoption_authorized'] is not False or value['error'] is not None or
             not isinstance(value['database_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['database_sha256']) or
@@ -118,6 +119,8 @@ def checked_empty_store(value):
                                  [{'path': graph, 'reason': 'unclassified-directory'}])
     unresolved = value['unresolved_paths']
     paths = {row['path'] for row in metadata['entries']}
+    if graph == ROOTFUL_GRAPH and any(row['uid'] != 0 or row['gid'] != 0 for row in metadata['entries']):
+        raise UpdateError('rootful empty-store ownership differs')
     if (not isinstance(unresolved, list) or any(not isinstance(p, str) or p not in paths for p in unresolved) or
             unresolved != sorted(set(unresolved)) or value['empty'] != (not unresolved)):
         raise UpdateError('empty-store result conflicts with unresolved files')
@@ -390,7 +393,8 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                         busybox_suid_present=False, pinentry_present=False,
                         verified_ca_links=frozenset(), nginx_default_copy=False,
                         nginx_error_empty=False, inspection_artifact=None,
-                        tailscale_log_owner=None, tailscale_present=False):
+                        tailscale_log_owner=None, tailscale_present=False,
+                        verified_rootful_paths=frozenset()):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -422,6 +426,9 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
                     0 <= entry['bytes'] <= maximum)
         category = 'reconstructable-os-state' if resolved else 'unknown'
         rule = 'fixed Tailscale log policy files; keep machine state separately'
+    elif name in verified_rootful_paths:
+        category, rule, resolved = ('reconstructable-os-state',
+                                    'fixed empty rootful Podman metadata; omit from the candidate', True)
     elif any(below(name, root) for root in CLEANUP_ROOTS):
         category, rule = 'exact-cleanup-item', 'application residue; verify independent copy and approve exact removal'
     elif re.fullmatch(r'/home/neo/next-[a-zA-Z0-9.-]+\.(?:crt|key)', name):
@@ -576,6 +583,24 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
             inventory.get('processes', {}).get('collector_pid'), fact.get('runtime_owner'))
     except UpdateError:
         inspection_artifact = None
+    verified_rootful_paths = frozenset()
+    rootful = inventory.get('rootful_store')
+    try:
+        empty_rootful = checked_empty_store(
+            fact['host_inventory'].get('rootful_empty_store'), ROOTFUL_GRAPH)
+        if (not empty_rootful['empty'] or not isinstance(rootful, dict) or
+                rootful.get('present') is not True or
+                rootful.get('entries') != len(empty_rootful['metadata']['entries']) or
+                rootful.get('metadata_sha256') != digest(empty_rootful['metadata']) or
+                not isinstance(rootful.get('database'), dict) or
+                rootful['database'].get('sha256') != empty_rootful['database_sha256']):
+            raise UpdateError('rootful empty-store and native registration evidence differ')
+        paths = {row['path'] for row in empty_rootful['metadata']['entries']}
+        if not paths <= set(entries):
+            raise UpdateError('rootful store file coverage differs from host inventory')
+        verified_rootful_paths = frozenset(paths)
+    except UpdateError:
+        pass
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
@@ -586,7 +611,8 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                                                nginx_error_empty=nginx_error_empty,
                                                inspection_artifact=inspection_artifact,
                                                tailscale_log_owner=fact.get('runtime_owner'),
-                                               tailscale_present='tailscale' in installed_packages), entry)
+                                               tailscale_present='tailscale' in installed_packages,
+                                               verified_rootful_paths=verified_rootful_paths), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
@@ -656,10 +682,12 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     for finding in assessed['findings']:
         if finding['severity'] == 'critical':
             result['findings'].append(finding)
-    rootful = inventory.get('rootful_store')
     if rootful:
-        item('container-store', rootful['graph_root'], 'unknown' if rootful['present'] else 'reconstructable-os-state',
-             'classify every store file and registration' if rootful['present'] else 'standard rootful store absent', not rootful['present'], rootful)
+        resolved = not rootful['present'] or bool(verified_rootful_paths)
+        item('container-store', rootful['graph_root'], 'reconstructable-os-state' if resolved else 'unknown',
+             'fixed empty rootful store, omitted from the candidate' if verified_rootful_paths else
+             ('standard rootful store absent' if not rootful['present'] else 'classify every store file and registration'),
+             resolved, rootful)
     try:
         empty_store = checked_empty_store(fact.get('host_inventory', {}).get('no_application_store'))
         item('container-store', empty_store['graph_root'],

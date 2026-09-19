@@ -92,6 +92,14 @@ class EmptyStore(unittest.TestCase):
         (graph / 'overlay-containers/volatile-containers.json').write_bytes(b'[{}]')
         self.assertFalse(self.collect()['empty'])
 
+    def test_new_store_zero_length_index_locks_remain_supported(self):
+        for name in ('overlay-containers/containers.lock',
+                     'overlay-images/images.lock', 'overlay-layers/layers.lock'):
+            marker = self.fixture.graph / name
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        self.assertTrue(self.collect()['empty'])
+
     def test_changed_database_link_mount_and_timeout_fail_closed(self):
         original = self.m.rootful_database_bytes; reads = []
         def changed(*args, **kwargs):

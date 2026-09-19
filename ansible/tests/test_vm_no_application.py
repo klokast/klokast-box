@@ -93,6 +93,16 @@ class Qualification(unittest.TestCase):
     def report(self, observed=None):
         return noapp.report(self.observed if observed is None else observed, 'boxa', 'dmz', 'b' * 40, NOW)
 
+    def test_only_verified_empty_rootful_paths_are_reconstructable(self):
+        path = '/var/lib/containers/storage/db.sql'
+        entry = {'path': path, 'mode': stat.S_IFREG | 0o600, 'uid': 0, 'gid': 0}
+        self.assertEqual(noapp.path_classification(entry)[0], 'unknown')
+        self.assertTrue(noapp.path_classification(
+            entry, verified_rootful_paths=frozenset({path}))[2])
+        changed = {**entry, 'mode': stat.S_IFREG | 0o666}
+        self.assertFalse(noapp.path_classification(
+            changed, verified_rootful_paths=frozenset({path}))[2])
+
     def test_unknown_file_and_timers_are_never_archived_away_or_approved(self):
         result = self.report()
         by_key = {row['key']: row for row in result['items']}

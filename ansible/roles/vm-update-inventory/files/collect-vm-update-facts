@@ -673,6 +673,9 @@ def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/sh
                     contents[relative] = content
                     databases.append(relative)
                     result['database_sha256'] = hashlib.sha256(content).hexdigest()
+                elif relative in native_locks and relative != 'storage.lock' and row['bytes'] == 0:
+                    # A newly created store can have an empty per-index lock.
+                    accepted = True
                 elif relative in markers or relative in native_locks:
                     content = rootful_database_bytes(root, relative, graph=graph, owner=owner['uid'])
                     contents[relative] = content
@@ -1017,11 +1020,19 @@ def collect_host(storage, root=Path('/')):
                 result['inspection_artifact'] = collect_inspection_artifact(root, storage.get('runtime_owner'))
         if result['stable']:
             result['rootful_store'] = collect_rootful_store(root, mounts)
+            if result['rootful_store']['present'] is True:
+                result['rootful_empty_store'] = collect_no_application_store(
+                    root, mounts, {'uid': 0, 'gid': 0}, ROOTFUL_GRAPH)
             if storage.get('containers') == [] and storage.get('volumes') == []:
                 result['no_application_store'] = collect_no_application_store(root, mounts, storage.get('runtime_owner'))
             result['boot_files'] = collect_boot_files(root, mounts)
             if mounts != mount_inventory():
                 result['rootful_store']['stable'] = False
+                if 'rootful_empty_store' in result:
+                    result['rootful_empty_store'].update(stable=False, empty=False)
+                    result['rootful_empty_store']['evidence_sha256'] = hashlib.sha256(json.dumps(
+                        {k: v for k, v in result['rootful_empty_store'].items() if k != 'evidence_sha256'},
+                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                 if 'no_application_store' in result:
                     result['no_application_store'].update(stable=False, empty=False)
                     result['no_application_store']['evidence_sha256'] = hashlib.sha256(json.dumps(
