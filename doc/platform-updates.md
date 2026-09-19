@@ -116,9 +116,15 @@ subordinate ranges, and enabled package-owned OpenRC links with exact targets.
 The old Podman boot helper is an exact rendering of checked source at
 `17cfd0b`. It is recognized only with its exact bytes, root-owned mode, boot
 state, link target, and an empty rootless store. The candidate uses the current
-recipe; it does not copy the old helper. Other unowned service scripts need
-their own evidence. The shadow file, retained keys, and disks also remain
-separate checks.
+recipe; it does not copy the old helper. The old helper clears two runroot
+subtrees. The current boot recipe clears the full transient runroot only when
+process inspection succeeds with no Podman process, the directory has the
+expected owner and mode, and no filesystem is mounted inside it. An unsafe
+check fails the service. Ansible convergence refuses stale boot state instead
+of deleting a partial runroot. Use a boot with the guarded helper or review
+and apply the exact no-application cleanup workflow. Other unowned
+service scripts need their own evidence. The shadow file, retained keys, and
+disks also remain separate checks.
 The package-owned `/run/lock` and `/var/lib/tailscale` directories can have
 runtime metadata that differs from the local package database. The fixed
 profile accepts only stable, exact owner and mode observations with a matching

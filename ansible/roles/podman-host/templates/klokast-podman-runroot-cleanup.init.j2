@@ -2,8 +2,59 @@
 description="Klokast rootless Podman boot preparation"
 
 depend() {
-    need localmount
+    need procfs localmount
     before net
+}
+
+clear_runroot() {
+    if ! command -v pgrep >/dev/null 2>&1; then
+        eend 1 "missing Podman process inspection tool"
+        return 1
+    fi
+    if pgrep -u "$uid" -f 'podman|conmon|crun|netavark|pasta' >/dev/null 2>&1; then
+        eend 1 "Podman runtime is active; runroot was not removed"
+        return 1
+    else
+        result=$?
+        if [ "$result" -ne 1 ]; then
+            eend 1 "Podman process inspection failed"
+            return 1
+        fi
+    fi
+
+    if [ -L /tmp ] || [ "$(stat -c '%u:%g:%a' /tmp 2>/dev/null)" != '0:0:1777' ]; then
+        eend 1 "temporary directory has unsafe ownership or mode"
+        return 1
+    fi
+    if [ -L "$runroot" ] || { [ -e "$runroot" ] && [ ! -d "$runroot" ]; }; then
+        eend 1 "Podman runroot is not a directory"
+        return 1
+    fi
+    if [ -e "$runroot" ] &&
+       [ "$(stat -c '%u:%g:%a' "$runroot" 2>/dev/null)" != "${uid}:${gid}:700" ]; then
+        eend 1 "Podman runroot has unexpected ownership or mode"
+        return 1
+    fi
+    mounts="$(awk -v root="$runroot" '$5 == root || index($5, root "/") == 1 { print $5 }' /proc/self/mountinfo)" || {
+        eend 1 "Podman runroot mount inspection failed"
+        return 1
+    }
+    if [ -n "$mounts" ]; then
+        eend 1 "a filesystem is mounted in the Podman runroot"
+        return 1
+    fi
+
+    # /tmp/storage-run-UID is Podman's transient runroot. Keep the separate
+    # graphroot and any retained data. The old recipe left other runtime files.
+    rm -rf -- "${runroot}" || {
+        eend 1 "Podman runroot removal failed"
+        return 1
+    }
+    if [ -e "$runroot" ] || [ -L "$runroot" ]; then
+        eend 1 "Podman runroot reappeared during removal"
+        return 1
+    fi
+    eend 0
 }
 
 start() {
@@ -35,18 +86,10 @@ start() {
         eend 1 "missing Podman runner user"
         return 1
     }
+    gid="$(id -g {{ podman_host_runner_user | quote }} 2>/dev/null)" || {
+        eend 1 "missing Podman runner group"
+        return 1
+    }
     runroot="/tmp/storage-run-${uid}"
-
-    if command -v pgrep >/dev/null 2>&1; then
-        if pgrep -u "$uid" -f 'podman|conmon|crun|netavark|pasta' >/dev/null 2>&1; then
-            eend 0 "Podman runtime is active; leaving runroot untouched"
-            return 0
-        fi
-    fi
-
-    # The runroot contains only Podman runtime state.  Do not retain a
-    # previous container's network namespace, OCI state, or event log across
-    # a boot.  Persistent images and data use the separate graphroot.
-    rm -rf -- "${runroot}"
-    eend $?
+    clear_runroot
 }

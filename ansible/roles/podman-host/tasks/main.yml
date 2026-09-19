@@ -161,13 +161,13 @@
   changed_when: false
   failed_when: false
 
-- name: Clear stale rootless Podman runtime state after reboot
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - "/tmp/storage-run-{{ podman_host_runner_uid.stdout }}/containers"
-    - "/tmp/storage-run-{{ podman_host_runner_uid.stdout }}/libpod/tmp"
+- name: Refuse in-place cleanup of stale rootless Podman boot state
+  ansible.builtin.fail:
+    msg: >-
+      Podman reports stale boot state on {{ inventory_hostname }}.
+      Boot with the guarded runroot cleanup service, or use the exact
+      no-application runroot cleanup workflow after reviewing its preview.
+      Do not remove only selected runroot directories during convergence.
   when: podman_host_runtime_probe.stderr is search('current system boot ID differs from cached boot ID')
 
 - name: Refresh the rootless Podman storage after subuid or subgid changes
