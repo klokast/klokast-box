@@ -27,6 +27,7 @@ import vm_template_inputs
 import vm_app_compatibility
 import vm_storage_inventory
 import vm_retention
+import vm_no_application
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -425,6 +426,44 @@ def retention_report():
     return report
 
 
+def adoption_prepare(box, role):
+    """Account for one target before requesting destructive or signed approval."""
+    require_controller()
+    if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('adoption qualification requires a clean public engine checkout')
+    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    discovery = optional(STATE / 'current.json')
+    sources, intent, source_error = None, None, None
+    def read_sources():
+        values = []
+        for name in ('vm-retention-status', 'registry-source-status'):
+            values.append(json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', name], timeout=900),
+                                     object_pairs_hook=unique_object))
+        return values
+    try:
+        sources = read_sources()
+        intent = vm_no_application.source_intent(*sources, [load(p) for p in RETENTION_CATALOGS], box, role)
+    except UpdateError:
+        # Keep a reviewable refusal report when the installed source reader is
+        # unavailable. Do not fall back to private files or observed workload.
+        source_error = 'Installed source readers could not establish current no-application intent; check their controller diagnostics.'
+    result = vm_no_application.report(discovery, box, role, commit, now(), intent=intent, source_error=source_error)
+    if (sources is not None and read_sources() != sources or
+            optional(STATE / 'current.json') != discovery or
+            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
+            command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+        raise UpdateError('qualification source, discovery, authority, or implementation changed during preparation')
+    destination = STATE / 'qualifications'
+    destination.mkdir(mode=0o700, exist_ok=True)
+    record = destination / (result['report_sha256'] + '.json')
+    if record.exists():
+        if load(record) != result:
+            raise UpdateError('qualification record conflicts with existing evidence')
+    else:
+        write(record, result)
+    return result, record
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -436,6 +475,12 @@ def main(argv=None):
         command_parser.add_argument("--json", action="store_true")
     retention_parser = sub.add_parser('retention', help='compare checked Instance retention with recent storage discovery; no adoption')
     retention_parser.add_argument('--json', action='store_true')
+    adopt_parser = sub.add_parser('adopt', help='qualify one no-application target before signed adoption')
+    adoption = adopt_parser.add_subparsers(dest='action', required=True)
+    adopt_prepare = adoption.add_parser('prepare', help='write exact classification and cleanup evidence; unresolved items block an intent')
+    adopt_prepare.add_argument('--box', required=True)
+    adopt_prepare.add_argument('--role', choices=vm_no_application.ROLES, required=True)
+    adopt_prepare.add_argument('--json', action='store_true')
     policy_parser = sub.add_parser("policy", help="prepare, activate, or validate the signed standing policy")
     policy_parser.add_argument("action", choices=("prepare", "activate", "status"))
     evidence_names = ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir")
@@ -454,6 +499,17 @@ def main(argv=None):
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command == 'adopt':
+            result, record = adoption_prepare(args.box, args.role)
+            if args.json:
+                print(canonical(result))
+            else:
+                print(f"{args.box}-{args.role}: no-application qualification blocked; adoption intent unavailable")
+                print(f"Classification: {result['summary']['items']} items; {result['summary']['unresolved']} unresolved; {result['summary']['cleanup_items']} cleanup items")
+                print('Report: ' + str(record))
+                for finding in result['findings']:
+                    print(finding['code'] + ': ' + finding['message'])
+            return 1 if not result['qualified'] else 0
         if args.command == 'retention':
             report = retention_report()
             if args.json:

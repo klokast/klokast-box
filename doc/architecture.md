@@ -178,8 +178,10 @@ See the [sealed Go builder](secure-builder.md), [OCI workflow](../ansible/bin/pl
 
 [Controller-managed VM updates](platform-updates.md) adds inspection of base
 packages, a closed shared-VM update policy contract, signed policy activation,
-local pause/resume controls, isolated candidate template construction, and an
-optional Static Site web component test on synthetic data.
+local pause/resume controls, fixed no-application qualification reports,
+isolated candidate template construction, and an optional Static Site web
+component test on synthetic data. Qualification joins the checked registry and
+retention sources; unknown items and pending cleanup block an adoption intent.
 A dom0 disk-switch and boot-recovery helper is also implemented. Full application
 compatibility and production configuration tests, retained-data adoption, the
 signed replacement executor, and production recovery integration remain required
