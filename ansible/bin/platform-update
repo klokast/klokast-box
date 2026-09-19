@@ -454,6 +454,8 @@ def read_policy_source():
         return json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
                                    'vm-update-policy', 'source-status'], timeout=900),
                           object_pairs_hook=unique_object)
+    except UpdateError as error:
+        raise UpdateError('automatic preparation requires the active signed VM update policy') from error
     except (ValueError, TypeError) as error:
         raise UpdateError('current VM update policy source returned invalid JSON') from error
 
