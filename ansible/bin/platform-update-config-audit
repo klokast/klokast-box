@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Compare fixed shared-VM files with checked recipes on the active controller."""
+import argparse
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import vm_config_audit as audit
+
+STATE = Path('/var/lib/klokast/updates/discovery/config-audits')
+
+
+def invoke(argv, timeout=90, accepted=(0,)):
+    try:
+        result = subprocess.run([str(v) for v in argv], cwd=REPO, text=True,
+                                capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise audit.ConfigAuditError('controller source or management command failed') from error
+    if result.returncode not in accepted or len(result.stdout) > 16 * 1024 * 1024:
+        raise audit.ConfigAuditError('controller source or management command failed: ' + str(argv[0]))
+    try:
+        return json.loads(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise audit.ConfigAuditError('controller source command returned invalid JSON') from error
+
+
+def git(*args):
+    try:
+        result = subprocess.run(['git', '-C', str(REPO), *args], text=True,
+                                capture_output=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise audit.ConfigAuditError('public engine source is unavailable') from error
+    if result.returncode:
+        raise audit.ConfigAuditError('public engine source is unavailable')
+    return result.stdout.strip()
+
+
+def active():
+    value = invoke(['/usr/local/sbin/klokast-controller-guard', '--status', '--json', '--require-active'])
+    hostname = socket.gethostname().split('.')[0]
+    if (not all(value.get(name) for name in ('configured', 'active')) or
+            value.get('role') != 'active' or value.get('hostname') != hostname or
+            not hostname.endswith('-ops') or hostname.startswith(('vultr-', 'hetzner-')) or
+            os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith'):
+        raise audit.ConfigAuditError('run configuration comparison as smith on the active box controller')
+
+
+def save(value):
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if STATE.is_symlink() or STATE.stat().st_uid != os.geteuid() or STATE.stat().st_mode & 0o077:
+        raise audit.ConfigAuditError('controller comparison directory is not private')
+    target = STATE / (value['report_sha256'] + '.json')
+    data = (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    if target.exists() or target.is_symlink():
+        if target.is_symlink() or target.read_bytes() != data:
+            raise audit.ConfigAuditError('comparison record conflicts with prior evidence')
+        return target
+    descriptor, name = tempfile.mkstemp(prefix='.comparison-', dir=STATE)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, target)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+    return target
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True, choices=('dmz', 'iot'))
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box):
+        parser.error('box must be one exact inventory name')
+    host = args.box + '-' + args.role
+    try:
+        active()
+        if git('status', '--porcelain', '--untracked-files=all'):
+            raise audit.ConfigAuditError('configuration comparison requires a clean public engine checkout')
+        commit = git('rev-parse', 'HEAD')
+        qualification = invoke([REPO / 'ansible/bin/platform-update', 'adopt', 'prepare',
+                                '--box', args.box, '--role', args.role, '--json'],
+                               timeout=180, accepted=(0, 1))
+        intent = qualification.get('intent') or {}
+        if (intent.get('box') != args.box or intent.get('role') != args.role or
+                intent.get('eligible') is not True or intent.get('workloads') != [] or
+                intent.get('datasets') != []):
+            raise audit.ConfigAuditError('checked no-application intent is unavailable for this guest')
+        variables = invoke(['ansible-inventory', '-i', REPO / 'ansible/execution-inventory/hosts',
+                            '--host', host])
+        expected = audit.render(REPO, host, variables)
+        observed = audit.guest_hashes(host)
+        if git('rev-parse', 'HEAD') != commit or git('status', '--porcelain', '--untracked-files=all'):
+            raise audit.ConfigAuditError('public recipe source changed during comparison')
+        active()
+        value = audit.report(host, commit, qualification['report_sha256'], expected,
+                             observed, intent.get('engine_commit') == commit)
+        record = save(value)
+        if args.json:
+            print(json.dumps(value, sort_keys=True))
+        else:
+            matches = sum(row['match'] for row in value['rows'])
+            print(f'{host}: {matches}/{len(value["rows"])} fixed files match checked recipes; '
+                  f'approved engine={value["approved_engine"]}; record={record}')
+            for row in value['rows']:
+                if not row['match']:
+                    print('  differs: ' + row['path'])
+        return 0 if all(row['match'] for row in value['rows']) else 1
+    except (audit.ConfigAuditError, KeyError, ValueError, OSError) as error:
+        print('platform-update-config-audit: ' + str(error), file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

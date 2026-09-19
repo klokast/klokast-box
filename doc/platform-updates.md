@@ -96,6 +96,7 @@ promotion. Do not change the approved checkout to bypass the private engine lock
 ansible/bin/platform-update scan
 ansible/bin/platform-update adopt prepare --box BOX --role dmz
 ansible/bin/platform-update adopt prepare --box BOX --role iot --json
+ansible/bin/platform-update-config-audit --box BOX --role dmz
 ansible/bin/platform-update retention --json
 ansible/bin/platform-update status --json
 ansible/bin/platform-update verify
@@ -116,6 +117,13 @@ Exit status 1 reports blocked qualification. Missing source evidence remains
 an explicit refusal; it never falls back to reading private files directly.
 These smith-owned reports are review evidence, not protected acceptance records.
 No application test is recorded as successful when it was not run.
+
+`platform-update-config-audit` compares a fixed set of guest files with the
+checked recipes and inventory. It writes only path names, checksums, and match
+results under `/var/lib/klokast/updates/discovery/config-audits/`. Exit status
+1 means at least one file differs. This comparison is read-only review evidence.
+It does not approve inputs, resolve other qualification rows, or authorize
+adoption. Investigate each difference before assigning its source.
 
 The selected guests' first-contact OpenSSH cleanup has a separate fixed
 playbook, `74-platform-update-bootstrap-access-retire.yml`. It checks the
