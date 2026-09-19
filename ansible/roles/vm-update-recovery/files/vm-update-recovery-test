@@ -167,8 +167,24 @@ def generation_chain(t, backend, create_request, identities, allocated):
     first, first_request = create_request('old', 'new', '1' * 64)
     t.atomic(t.XEN / 'bak.cfg', (first / 'old.cfg').read_bytes())
     backend.start(first / 'old.cfg')
+    source = t.source_status('bak', backend)
+    if (source['vm_uuid'] != identities['old'] or
+            source['configuration_sha256'] != first_request['old_config_sha256'] or
+            source['disks'] != first_request['old_disks'] or
+            source['artifacts'] != first_request['old_artifacts'] or
+            source['disk_mappings'] != {path: 'xvd' + letter for path, letter in
+                                        zip(first_request['old_disks'], 'ab')}):
+        raise RuntimeError('native unmanaged source receipt differs from disposable Xen state')
     for action in ('arm', 'stop', 'start'):
         t.invoke(first.name, action)
+        if action == 'arm':
+            try:
+                t.source_status('bak', backend)
+            except t.Refused as error:
+                if 'unmanaged guest' not in str(error):
+                    raise
+            else:
+                raise RuntimeError('source reader accepted a managed assignment')
     accept_synthetic(t, first, first_request)
     selected('new', '1' * 64, 'accepted')
     write('new', first_write)
@@ -215,6 +231,7 @@ def generation_chain(t, backend, create_request, identities, allocated):
     return {'stage': 'generation-chain', 'accepted_releases': 2, 'failed_attempt_recovered': True,
             'retry_used_recovered_assignment': True, 'stale_generation_refused': True,
             'accepted_writes_preserved': True, 'assignment_verified': True,
+            'source_inspection_tested': True,
             'elapsed_seconds': round(time.monotonic() - started, 3)}
 
 
