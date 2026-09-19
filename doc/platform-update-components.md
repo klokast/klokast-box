@@ -321,19 +321,6 @@ k002-dmz, and k002-iot respectively. Native `podman system check`, without
 repair or force, passed on each. This does not establish complete accounting
 for unregistered files. No application image was downloaded or run.
 
-The latest qualification records are in
-`/var/lib/klokast/updates/discovery/qualifications/` on the controller:
-
-| Target | Report filename | Unresolved items |
-| --- | --- | --- |
-| k001-dmz | `257511c997dd051f95583566fc7086cd5533069948edf2cbf837befb163a94f7.json` | 1713 |
-| k002-dmz | `127cdc7b3b72aa3b39fb33e942e5d7388b81b4926b2a9ad3180a5557b03e5a9e.json` | 1694 |
-| k002-iot | `e8b65322c0fc824f51498eae7174eb98d7c8eb7ea79ce694d25645f95ae64384.json` | 2162 |
-
-These counts include proposed OS and package classes whose required source
-checks remain incomplete. None of these records qualifies a target, issues an
-adoption intent, or proves a production replacement.
-
 After explicit user approval, source `e0e977f` removed the two obsolete
 Nextcloud `.crt` and `.key` files from the k001-dmz runtime user's home.
 The exact cleanup play checked current absent Nextcloud intent, original file
@@ -341,27 +328,26 @@ checksums and identities, and native process use. It rechecked both files,
 removed only their exact paths without recursion, and verified both absent.
 Syntax validation and native execution passed. The controller candidate receipt
 is `.run/obsolete-certificates-949ad1edc7a0c8be026267a0/receipt.json`.
-The qualification reports above predate this cleanup. The remaining
-classification and production acceptance requirements still apply.
+The pre-cleanup qualification records remain on the controller for audit.
 
-The refresh at source `e4007eb` completed all 12 VM entries after the cleanup.
-The two obsolete certificate paths are absent. The backend VMs remained
-running, and k001-iot remained stopped. The selected guests are still on
-v3.23. No target qualified or received an adoption intent:
+The latest native scan used source `d7af633` and covered all 12 managed VMs.
+The two certificate paths remain absent. Both backend VMs remain running;
+k001-iot remains stopped. All three selected guests are still on v3.23.
+Source-matched qualification reports are in
+`/var/lib/klokast/updates/discovery/qualifications/` on the controller:
 
 | Target | Report filename | Unresolved items | Unknown items | Exact cleanup items |
 | --- | --- | ---: | ---: | ---: |
-| k001-dmz | `07d27158519ead1f46eced4aca88657615d3d5ab1a530f3cfb277f0324572354.json` | 1711 | 58 | 22 |
-| k002-dmz | `992abdfd2423051b7b3ee0195399e476dc52c630676a1e577a999d8265b16c72.json` | 1694 | 32 | 31 |
-| k002-iot | `7e651e694686ba5821cb85ca0336bd41806a0399784284764a1a54ea51800360.json` | 2162 | 532 | 3 |
+| k001-dmz | `64d817fbef45f89d4e204dccd8cc8abd2a922160139e57756d19904c30431baa.json` | 216 | 55 | 22 |
+| k002-dmz | `7376a4a68802a2501b7d00804b6079edfd363772965c8dc93c41419dd5a07297.json` | 200 | 30 | 31 |
+| k002-iot | `e5db6e5f62128b5524d738f96256a89d7dfb8ca8d572cf39ad9377ff6eb536ad.json` | 669 | 531 | 3 |
 
-Most unresolved items are proposed system classes awaiting source proof:
-590 package links and about 906 old kernel module or firmware files on each
-target. The 532 unknown IoT items include 505 cached rootless Podman store
-files. Other unknown paths include temporary inspection files, Podman runtime
-files, Tailscale logs, and one Nginx configuration file on each DMZ guest.
-The report classifies the remaining application staging and bootstrap-access
-paths as exact cleanup candidates; it does not approve their removal.
+The current rules account for fixed legacy kernel files, package links, and
+the two DMZ package-default Nginx copies. Unknown file paths now number 55,
+30, and 26. The IoT report also lists 505 cached rootless Podman store files
+as unknown. The other unresolved rows include package differences, accounts,
+services, mounts, boot artifacts, and machine inputs that still need approved
+source comparisons. No target qualifies or receives an adoption intent.
 
 The `verify-*` directories under the neo user's Platform resource cache have
 a specific producer: `platform-resources` uploads `desired.json` and its
@@ -406,6 +392,27 @@ checksum comparison without reporting the file contents; qualification also
 requires package ownership and a clean native APK audit for the source. An
 empty Nginx error log is replaceable runtime state. Other Nginx content remains
 unknown.
+
+The legacy `podman-host` role was one source of cached images. It pulled
+`quay.io/libpod/alpine:latest` when absent, then ran a container that installed
+a test package. Source `18faee4` makes that probe explicit and removes a test
+image that the probe pulled, even if the probe fails. Normal Podman host
+convergence no longer downloads or runs a test image. Existing image caches
+remain unclassified until their registrations and files are checked or an
+exact cleanup operation removes them. The A/B update must not run this probe.
+
+`/tmp/storage-run-1000` is the rootless Podman runroot. The checked-in OpenRC
+helper clears its transient container and Libpod paths at boot only when no
+Podman process uses them. Ansible created the `ansible-tmp-*` and
+`.ansible_async` paths; the active scan also stages its own collector there.
+These paths need an inactive-use check before exact cleanup. The
+`tailscaled.log*` files under the neo account appear to be Tailscale client
+logs, but their producer is not yet proved. No checked-in producer was found
+for the old `/tmp` banner, HTTP response bodies, private-certificate check,
+manifest error, or nftables diagnostic files. Their names alone do not prove
+that they are disposable. Keep them unresolved until the operation history,
+file metadata, and process use identify their source and an exact cleanup is
+approved.
 
 ### Declared retention report
 
