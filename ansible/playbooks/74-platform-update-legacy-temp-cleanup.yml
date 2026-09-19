@@ -1,0 +1,287 @@
+---
+# One-time cleanup of exact legacy diagnostics after evidence and process review.
+- name: Retire only reviewed legacy temporary files on one no-application VM
+  hosts: k001-dmz:k002-dmz:k002-iot
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  vars:
+    legacy_temp_apply: false
+    legacy_temp_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-legacy-temp-cleanup/{{ legacy_temp_operation }}'
+    legacy_temp_paths_by_host:
+      k001-dmz:
+        - /tmp/banner-local.png
+        - /tmp/klokast-nft-error.txt
+        - /tmp/klokast-nft-ruleset.txt
+        - /tmp/manifest.err
+        - /tmp/next.body
+        - /tmp/nextcloud-private-cert-check.crt
+        - /tmp/photos.body
+        - /tmp/tmp.PPOkdH
+        - /tmp/wget.out
+      k002-dmz:
+        - /tmp/klokast-nft-error.txt
+        - /tmp/klokast-nft-ruleset.txt
+        - /tmp/klokast-platform-resources-desired.json
+      k002-iot:
+        - /tmp/klokast-nft-error.txt
+        - /tmp/klokast-nft-ruleset.txt
+        - /tmp/klokast-platform-resources-desired.json
+  pre_tasks:
+    - name: Require one fixed target, operation, and record location
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [legacy_temp_box ~ '-' ~ legacy_temp_role]
+          - inventory_hostname in legacy_temp_paths_by_host
+          - inventory_hostname == legacy_temp_box ~ '-' ~ legacy_temp_role
+          - node_name == legacy_temp_box
+          - node_domain_role == legacy_temp_role
+          - legacy_temp_operation is match('^[0-9a-f]{24}$')
+          - legacy_temp_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-legacy-temp-cleanup/[0-9a-f]{24}$')
+
+    - name: Verify the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: legacy_temp_controller
+
+    - name: Require active controller authority
+      ansible.builtin.assert:
+        that:
+          - (legacy_temp_controller.stdout | from_json).configured
+          - (legacy_temp_controller.stdout | from_json).active
+          - (legacy_temp_controller.stdout | from_json).role == 'active'
+
+    - name: Recheck current no-application intent
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-update'
+          - adopt
+          - prepare
+          - --box
+          - '{{ legacy_temp_box }}'
+          - --role
+          - '{{ legacy_temp_role }}'
+          - --json
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      register: legacy_temp_intent
+
+    - name: Require checked intent without workloads or retained datasets
+      ansible.builtin.assert:
+        that:
+          - legacy_temp_intent.rc in [0, 1]
+          - (legacy_temp_intent.stdout | from_json).intent.eligible
+          - (legacy_temp_intent.stdout | from_json).intent.workloads == []
+          - (legacy_temp_intent.stdout | from_json).intent.datasets == []
+        fail_msg: 'Current checked Instance and retention intent does not permit legacy cleanup.'
+
+    - name: Check whether this operation already has a preview or receipt
+      ansible.builtin.stat:
+        path: '{{ legacy_temp_record_dir }}/{{ inventory_hostname }}-{{ item }}.json'
+        follow: false
+      loop: [preview, applied]
+      delegate_to: localhost
+      become: false
+      register: legacy_temp_prior
+
+    - name: Require one preview followed by one exact apply
+      ansible.builtin.assert:
+        that:
+          - not legacy_temp_prior.results[1].stat.exists
+          - (legacy_temp_apply | bool) == (legacy_temp_prior.results[0].stat.exists | bool)
+
+    - name: Read the protected preview before apply
+      ansible.builtin.slurp:
+        src: '{{ legacy_temp_record_dir }}/{{ inventory_hostname }}-preview.json'
+      delegate_to: localhost
+      become: false
+      no_log: true
+      register: legacy_temp_preview
+      when: legacy_temp_apply | bool
+
+    - name: Bind apply to its reviewed host, operation, and paths
+      ansible.builtin.assert:
+        that:
+          - (legacy_temp_preview.content | b64decode | from_json).kind == 'klokast.vm-legacy-temp-cleanup.v1'
+          - (legacy_temp_preview.content | b64decode | from_json).host == inventory_hostname
+          - (legacy_temp_preview.content | b64decode | from_json).operation_id == legacy_temp_operation
+          - (legacy_temp_preview.content | b64decode | from_json).paths == legacy_temp_paths_by_host[inventory_hostname]
+          - not (legacy_temp_preview.content | b64decode | from_json).applied
+      when: legacy_temp_apply | bool
+
+  tasks:
+    - name: Verify the temporary directory is the standard sticky root directory
+      ansible.builtin.stat:
+        path: /tmp
+        follow: false
+      register: legacy_temp_root
+
+    - name: Refuse a changed or linked temporary directory
+      ansible.builtin.assert:
+        that:
+          - legacy_temp_root.stat.isdir
+          - not legacy_temp_root.stat.islnk
+          - legacy_temp_root.stat.uid == 0
+          - legacy_temp_root.stat.mode == '1777'
+
+    - name: Read exact regular-file identities and checksums
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+        checksum_algorithm: sha256
+        get_checksum: true
+      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      register: legacy_temp_before
+      no_log: true
+
+    - name: Refuse changed, linked, shared, or oversized diagnostic files
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - not item.stat.islnk
+          - item.stat.nlink == 1
+          - item.stat.uid in [0, 1000]
+          - item.stat.gid in [0, 1000]
+          - item.stat.mode in ['0600', '0644']
+          - item.stat.size <= 2097152
+          - item.stat.checksum is match('^[0-9a-f]{64}$')
+        fail_msg: 'A legacy temporary file differs from the fixed review profile; preserve it.'
+      loop: '{{ legacy_temp_before.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+
+    - name: Check native process use of every exact file
+      ansible.builtin.command:
+        argv: [/bin/busybox, fuser, '{{ item }}']
+      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      register: legacy_temp_users
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse removal if any file is in use or cannot be checked
+      ansible.builtin.assert:
+        that:
+          - item.rc == 1
+          - item.stdout | trim == ''
+          - item.stderr | trim == ''
+      loop: '{{ legacy_temp_users.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+
+    - name: Require unchanged preview identities before apply
+      ansible.builtin.assert:
+        that:
+          - item.stat.inode == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.inode
+          - item.stat.checksum == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.checksum
+          - item.stat.size == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.size
+          - item.stat.uid == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.uid
+          - item.stat.gid == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.gid
+          - item.stat.mode == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.mode
+          - item.stat.mtime == (legacy_temp_preview.content | b64decode | from_json).files.results[legacy_temp_index].stat.mtime
+        fail_msg: 'A temporary file changed after preview; preserve all files.'
+      loop: '{{ legacy_temp_before.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+        index_var: legacy_temp_index
+      when: legacy_temp_apply | bool
+
+    - name: Recheck every file after the process-use checks
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+        checksum_algorithm: sha256
+        get_checksum: true
+      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      register: legacy_temp_rechecked
+      no_log: true
+      when: legacy_temp_apply | bool
+
+    - name: Require each file to retain its reviewed identity and bytes
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - not item.stat.islnk
+          - item.stat.nlink == 1
+          - item.stat.inode == legacy_temp_before.results[legacy_temp_index].stat.inode
+          - item.stat.checksum == legacy_temp_before.results[legacy_temp_index].stat.checksum
+          - item.stat.size == legacy_temp_before.results[legacy_temp_index].stat.size
+          - item.stat.uid == legacy_temp_before.results[legacy_temp_index].stat.uid
+          - item.stat.gid == legacy_temp_before.results[legacy_temp_index].stat.gid
+          - item.stat.mode == legacy_temp_before.results[legacy_temp_index].stat.mode
+          - item.stat.mtime == legacy_temp_before.results[legacy_temp_index].stat.mtime
+      loop: '{{ legacy_temp_rechecked.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+        index_var: legacy_temp_index
+      when: legacy_temp_apply | bool
+
+    - name: Create the private controller operation directory
+      ansible.builtin.file:
+        path: '{{ legacy_temp_record_dir }}'
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve the exact preview and process-use evidence
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.vm-legacy-temp-cleanup.v1', 'host': inventory_hostname,
+              'operation_id': legacy_temp_operation, 'paths': legacy_temp_paths_by_host[inventory_hostname],
+              'files': legacy_temp_before, 'process_use': legacy_temp_users.results,
+              'applied': false, 'adoption_authorized': false} | to_nice_json }}
+        dest: '{{ legacy_temp_record_dir }}/{{ inventory_hostname }}-preview.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: not (legacy_temp_apply | bool)
+
+    - name: Remove only the reviewed regular-file paths without recursion
+      ansible.builtin.command:
+        argv: [/bin/rm, --, '{{ item }}']
+      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      changed_when: true
+      when: legacy_temp_apply | bool
+
+    - name: Confirm all exact paths are absent
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+      loop: '{{ legacy_temp_paths_by_host[inventory_hostname] }}'
+      register: legacy_temp_after
+      when: legacy_temp_apply | bool
+
+    - name: Refuse a completed receipt if a path remains
+      ansible.builtin.assert:
+        that: not item.stat.exists
+      loop: '{{ legacy_temp_after.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when: legacy_temp_apply | bool
+
+    - name: Preserve the completed exact cleanup receipt
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.vm-legacy-temp-cleanup.v1', 'host': inventory_hostname,
+              'operation_id': legacy_temp_operation, 'paths': legacy_temp_paths_by_host[inventory_hostname],
+              'files': legacy_temp_before, 'process_use': legacy_temp_users.results,
+              'applied': true, 'verified_absent': legacy_temp_paths_by_host[inventory_hostname],
+              'adoption_authorized': false} | to_nice_json }}
+        dest: '{{ legacy_temp_record_dir }}/{{ inventory_hostname }}-applied.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: legacy_temp_apply | bool
