@@ -165,12 +165,62 @@ class SafetyRulesTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(u.UpdateError): u.validate_release(bad, "a"*40, "shared-alpine-v1", artifacts)
         with self.assertRaises(u.UpdateError): u.validate_release(release, "a"*40, "shared-alpine-v1", {**artifacts, "kernel":"c"*64})
 
+    def test_no_application_release_binds_full_manifest_and_records_omitted_app_tests(self):
+        manifest = [{'name': name, 'version': '1-r0', 'origin': name,
+                     'architecture': 'x86_64', 'file': 'packages/' + name + '-1-r0.apk',
+                     'bytes': 100, 'sha256': 'd' * 64}
+                    for name in ('linux-virt', 'podman', 'tailscale')]
+        inputs = {'kind': 'klokast.vm-template-inputs.v1', 'engine_commit': 'a' * 40,
+                  'profile': 'shared-alpine-v1', 'branch': 'v3.24',
+                  'architecture': 'x86_64', 'packages': manifest}
+        inputs['inputs_sha256'] = u.digest(inputs)
+        candidate = {'success': True, 'accepted': False,
+                     'inputs_sha256': inputs['inputs_sha256'],
+                     'tests': {'package_closure': True, 'no_machine_identity': True},
+                     'artifacts': {name: {'sha256': 'c' * 64, 'bytes': 100}
+                                   for name in ('root', 'kernel', 'initramfs')},
+                     'kernel_release': '6.18-virt', 'modules_release': '6.18-virt',
+                     'boot_test': {'success': True, 'tests': dict.fromkeys((
+                         'boot', 'kernel_modules', 'tailscale_offline', 'rootless_podman',
+                         'nftables_kernel', 'retained_data_copy', 'retained_data_stage',
+                         'retained_identity', 'retained_partition', 'personalization',
+                         'backup_restore'), True)}}
+        normal = {'success': True, 'tests': dict.fromkeys((
+            'openrc_boot', 'cgroup_v2', 'kernel_modules', 'tailscale_offline',
+            'default_rootless_podman'), True)}
+        personalized = {'success': True, 'tests': dict.fromkeys((
+            'personalized_boot', 'configuration', 'retained_mount', 'runtime_identity',
+            'tailscale_retained_state', 'firewall', 'default_rootless_podman',
+            'packages_unchanged'), True)}
+        maintenance = {'success': True}
+        release = u.no_application_release(inputs, candidate, normal, personalized, maintenance)
+        self.assertEqual(release['application_tests'], {'status': 'not-run', 'executed': False})
+        self.assertEqual(release['package_manifest'], manifest)
+        for change in ({'application_tests': {'status': 'passed', 'executed': False}},
+                       {'tests': {**release['tests'], 'application_compatibility': True}},
+                       {'package_manifest': manifest[:-1]},
+                       {'packages': {'podman': '1-r0'}},
+                       {'artifacts': {'root': release['artifacts']['root']}},
+                       {'component_sha256': {**release['component_sha256'], 'openrc': '0' * 64}}):
+            with self.subTest(change=change), self.assertRaises(u.UpdateError):
+                u.validate_no_application_release({**release, **change}, inputs, candidate,
+                                                   normal, personalized, maintenance)
+        with self.assertRaises(u.UpdateError):
+            u.validate_no_application_release(release, {**inputs, 'branch': 'v3.23'},
+                                               candidate, normal, personalized, maintenance)
+
 
 class ControllerTests(unittest.TestCase):
     def test_prepare_accepts_complete_stage_evidence_and_refuses_missing_or_failed_stage(self):
         cli = load_cli()
         operation = 'a' * 24
-        inputs = {'inputs_sha256': 'b' * 64, 'packages': [{'name': 'linux-virt', 'version': '1'}]}
+        packages = [{'name': name, 'version': '1', 'origin': name, 'architecture': 'x86_64',
+                     'file': 'packages/' + name + '-1.apk', 'bytes': 100, 'sha256': 'd' * 64}
+                    for name in ('linux-virt', 'podman', 'tailscale')]
+        inputs = {'kind': 'klokast.vm-template-inputs.v1', 'engine_commit': 'a' * 40,
+                  'profile': 'shared-alpine-v1', 'branch': 'v3.23', 'architecture': 'x86_64',
+                  'packages': packages}
+        inputs['inputs_sha256'] = u.digest(inputs)
         for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
                      'missing-partition', 'failed-partition', 'missing-openrc', 'failed-openrc',
                      'changed-openrc-input', 'missing-openrc-cleanup', 'missing-personalization', 'failed-personalization',
@@ -208,8 +258,11 @@ class ControllerTests(unittest.TestCase):
                         candidate = {'kind': 'klokast.vm-template-candidate.v1', 'accepted': False,
                                      'success': True, 'box': 'boxa', 'validation': 'base-boot-tested',
                                      'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
-                                     'packages': {'linux-virt': '1'}, 'kernel_release': 'test-kernel',
-                                     'artifacts': {'root': {'sha256': 'c' * 64}},
+                                     'packages': {row['name']: row['version'] for row in packages},
+                                     'kernel_release': 'test-kernel', 'modules_release': 'test-kernel',
+                                     'tests': {'package_closure': True, 'no_machine_identity': True},
+                                     'artifacts': {name: {'sha256': 'c' * 64, 'bytes': 100}
+                                                   for name in ('root', 'kernel', 'initramfs')},
                                      'boot_test': {'kind': 'klokast.vm-template-test-result.v1', 'success': True,
                                          'operation_id': operation, 'inputs_sha256': inputs['inputs_sha256'],
                                          'kernel_release': 'test-kernel', 'tested_root_sha256': 'c' * 64,
@@ -268,6 +321,9 @@ class ControllerTests(unittest.TestCase):
                         self.assertTrue(result['base_tests']['retained_data_stage'])
                         self.assertTrue(result['base_tests']['retained_identity'])
                         self.assertTrue(result['openrc_tests']['default_rootless_podman'])
+                        release = json.loads((root / 'builds' / operation / 'release-evidence.json').read_text())
+                        self.assertEqual(result['release_evidence_sha256'], release['release_sha256'])
+                        self.assertEqual(release['application_tests'], {'status': 'not-run', 'executed': False})
                     else:
                         with self.assertRaisesRegex(u.UpdateError, 'candidate or cleanup evidence'):
                             cli.prepare('boxa', 'v3.23')

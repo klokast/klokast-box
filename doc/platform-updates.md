@@ -137,7 +137,12 @@ Machine identity and generated configuration still need source binding before
 adoption.
 
 The existing explicit `prepare` options, including `--inputs-only`, remain
-available for controlled component tests. `adopt apply`, `prepare --auto`, and
+available for controlled component tests. A successful base-only build now
+writes `release-evidence.json` beside its candidate record. This closed v2
+record binds the complete frozen package manifest, boot artifacts, source
+receipts, and passed base tests. It records application tests as `not-run`.
+It is build evidence, not an accepted release or execution authority.
+`adopt apply`, `prepare --auto`, and
 `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.
 

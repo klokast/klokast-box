@@ -291,6 +291,137 @@ def validate_release(release, engine, profile, artifact_hashes):
         raise UpdateError("release manifest checksum differs")
 
 
+NO_APPLICATION_TESTS = frozenset((
+    "package_closure", "no_machine_identity", "boot", "kernel_modules",
+    "tailscale_offline", "rootless_podman", "nftables_kernel",
+    "retained_data_copy", "retained_data_stage", "retained_identity",
+    "retained_partition", "personalization", "backup_restore",
+    "openrc_boot", "cgroup_v2", "default_rootless_podman",
+    "personalized_boot", "configuration",
+    "retained_mount", "runtime_identity", "tailscale_retained_state",
+    "firewall", "packages_unchanged",
+))
+
+
+def no_application_release(inputs, candidate, normal, personalized, maintenance):
+    """Create non-authoritative v2 evidence from one checked template build."""
+    if (candidate.get("tests") != {"package_closure": True, "no_machine_identity": True} or
+            candidate.get("boot_test", {}).get("success") is not True or
+            normal.get("success") is not True or personalized.get("success") is not True or
+            maintenance.get("success") is not True):
+        raise UpdateError("no-application release needs complete successful component evidence")
+    tests = dict(candidate["tests"])
+    tests.update(candidate["boot_test"]["tests"])
+    tests.update(normal["tests"])
+    tests.update(personalized["tests"])
+    if set(tests) != NO_APPLICATION_TESTS or any(value is not True for value in tests.values()):
+        raise UpdateError("no-application release has incomplete base tests")
+    value = {
+        "kind": "klokast.vm-release.v2",
+        "engine_commit": inputs["engine_commit"],
+        "profile": inputs["profile"],
+        "qualification_profile": "shared-alpine-no-application-v1",
+        "branch": inputs["branch"],
+        "architecture": inputs["architecture"],
+        "inputs_sha256": inputs["inputs_sha256"],
+        "package_manifest": inputs["packages"],
+        "packages": {row["name"]: row["version"] for row in inputs["packages"]},
+        "artifacts": candidate["artifacts"],
+        "kernel_release": candidate["kernel_release"],
+        "modules_release": candidate["modules_release"],
+        "tests": tests,
+        "application_tests": {"status": "not-run", "executed": False},
+        "component_sha256": {
+            "candidate": digest(candidate), "openrc": digest(normal),
+            "personalized": digest(personalized), "maintenance_restore": digest(maintenance),
+        },
+    }
+    value["release_sha256"] = digest(value)
+    validate_no_application_release(value, inputs, candidate, normal, personalized, maintenance)
+    return value
+
+
+def validate_no_application_release(release, inputs, candidate, normal, personalized, maintenance):
+    """Validate the closed no-application record and its frozen build inputs."""
+    fields = {"kind", "engine_commit", "profile", "qualification_profile", "branch",
+              "architecture", "inputs_sha256", "package_manifest", "packages",
+              "artifacts", "kernel_release", "modules_release", "tests",
+              "application_tests", "component_sha256", "release_sha256"}
+    if (not isinstance(release, dict) or set(release) != fields or
+            release.get("kind") != "klokast.vm-release.v2" or
+            release.get("qualification_profile") != "shared-alpine-no-application-v1" or
+            release.get("profile") != "shared-alpine-v1" or
+            release.get("architecture") != "x86_64" or
+            release.get("application_tests") != {"status": "not-run", "executed": False}):
+        raise UpdateError("no-application release contract is incomplete or unsupported")
+    branch_number(release["branch"])
+    if (not isinstance(inputs, dict) or not isinstance(candidate, dict) or
+            inputs.get("kind") != "klokast.vm-template-inputs.v1" or
+            inputs.get("inputs_sha256") != digest({k: v for k, v in inputs.items()
+                                                    if k != "inputs_sha256"}) or
+            any(release[key] != inputs.get(key) for key in
+                ("engine_commit", "profile", "branch", "architecture", "inputs_sha256")) or
+            not isinstance(release["engine_commit"], str) or
+            not re.fullmatch(r"[0-9a-f]{40}", release["engine_commit"]) or
+            not isinstance(release["inputs_sha256"], str) or
+            not DIGEST.fullmatch(release["inputs_sha256"])):
+        raise UpdateError("no-application release differs from frozen source inputs")
+    manifest = release["package_manifest"]
+    if (not isinstance(manifest, list) or not 3 <= len(manifest) <= 512 or
+            manifest != inputs.get("packages") or
+            any(not isinstance(row, dict) or set(row) !=
+                {"name", "version", "origin", "architecture", "file", "bytes", "sha256"} or
+                not isinstance(row["name"], str) or
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.-]*", row["name"]) or
+                not isinstance(row["version"], str) or
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.~-]*", row["version"]) or
+                not isinstance(row["origin"], str) or
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.-]*", row["origin"]) or
+                row["architecture"] not in {"x86_64", "noarch"} or
+                row["file"] != "packages/" + row["name"] + "-" + row["version"] + ".apk" or
+                type(row["bytes"]) is not int or not 0 < row["bytes"] <= 512 * 1024 * 1024 or
+                not isinstance(row["sha256"], str) or not DIGEST.fullmatch(row["sha256"])
+                for row in manifest)):
+        raise UpdateError("no-application release lacks the exact package manifest")
+    names = [row["name"] for row in manifest]
+    if (len(names) != len(set(names)) or
+            not {"linux-virt", "tailscale", "podman"} <= set(names) or
+            release["packages"] != {row["name"]: row["version"] for row in manifest}):
+        raise UpdateError("no-application release package identities differ")
+    artifacts = release["artifacts"]
+    if (not isinstance(artifacts, dict) or set(artifacts) != {"root", "kernel", "initramfs"} or
+            artifacts != candidate.get("artifacts") or
+            candidate.get("accepted") is not False or candidate.get("success") is not True or
+            candidate.get("inputs_sha256") != release["inputs_sha256"] or
+            any(not isinstance(row, dict) or set(row) != {"sha256", "bytes"} or
+                not isinstance(row["sha256"], str) or not DIGEST.fullmatch(row["sha256"]) or
+                type(row["bytes"]) is not int or row["bytes"] <= 0
+                for row in artifacts.values()) or
+            release["kernel_release"] != candidate.get("kernel_release") or
+            release["modules_release"] != candidate.get("modules_release") or
+            not isinstance(release["kernel_release"], str) or
+            not re.fullmatch(r"[A-Za-z0-9_.+-]+", release["kernel_release"]) or
+            release["kernel_release"] != release["modules_release"]):
+        raise UpdateError("no-application release artifact or kernel identity differs")
+    if (not isinstance(release["tests"], dict) or
+            set(release["tests"]) != NO_APPLICATION_TESTS or
+            any(value is not True for value in release["tests"].values()) or
+            not isinstance(release["component_sha256"], dict) or
+            set(release["component_sha256"]) !=
+            {"candidate", "openrc", "personalized", "maintenance_restore"} or
+            any(not isinstance(value, str) or not DIGEST.fullmatch(value)
+                for value in release["component_sha256"].values()) or
+            release["component_sha256"] != {
+                "candidate": digest(candidate), "openrc": digest(normal),
+                "personalized": digest(personalized), "maintenance_restore": digest(maintenance),
+            }):
+        raise UpdateError("no-application release test evidence is incomplete")
+    if (not isinstance(release["release_sha256"], str) or
+            release["release_sha256"] != digest({k: v for k, v in release.items()
+                                                if k != "release_sha256"})):
+        raise UpdateError("no-application release checksum differs")
+
+
 def check_dependencies(target, dependencies):
     """The required controller, DNS, dom0 and artifact graph must be closed."""
     roots = ("controller", "dom0", "dns", "artifacts", "recovery")

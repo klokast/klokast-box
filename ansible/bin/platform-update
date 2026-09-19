@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 APPROVED_REPO = Path("/home/smith/src/klokast/klokast-box")
 sys.path.insert(0, str(REPO / "ansible/lib"))
 from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, digest,
+                              no_application_release,
                               findings, fresh, health, parse_apk_database, timestamp,
                               unique_object, VERIFY_AGE)
 from platform_update_metadata import collect_branch, compare_versions
@@ -368,12 +369,17 @@ def prepare(box, branch, inputs_only=False, test_app=None):
             vm_app_compatibility.verify_result(boot_test.get('application_test'), app_test['selection'])
         elif 'application_test' in boot_test:
             raise UpdateError('unexpected application evidence without an approved test selection')
+        release_evidence = None
+        if not app_test:
+            release_evidence = no_application_release(inputs, candidate, normal, personalized, maintenance)
+            write(result / 'release-evidence.json', release_evidence)
         return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
                 "validation": candidate["validation"], "base_tests": boot_test["tests"],
                 'openrc_tests': normal['tests'], 'personalized_tests': personalized['tests'],
                 'maintenance_restore_verified': True,
-                "application_test": boot_test.get("application_test")}
+                "application_test": boot_test.get("application_test"),
+                "release_evidence_sha256": release_evidence['release_sha256'] if release_evidence else None}
 
 
 def display(report, as_json):
