@@ -30,20 +30,23 @@ class AsyncCleanupTest(unittest.TestCase):
                 "async": timeout,
                 "poll": poll,
                 "register": "tailscale_restart_job",
+                "vars": {"ansible_async_dir": str(cache)},
             }]
             if interrupted:
                 tasks.append({"ansible.builtin.fail": {
                     "msg": "Test interruption before result collection",
                 }})
             elif poll == 0:
-                tasks.append({"ansible.builtin.import_tasks": str(RESTART_RESULT)})
+                tasks.append({
+                    "ansible.builtin.import_tasks": str(RESTART_RESULT),
+                    "vars": {"ansible_async_dir": str(cache)},
+                })
             playbook = root / "test.json"
             playbook.write_text(json.dumps([{
                 "hosts": "localhost",
                 "connection": "local",
                 "gather_facts": False,
                 "vars": {
-                    "ansible_async_dir": str(cache),
                     "ansible_python_interpreter": shutil.which("python3"),
                     **({"tailscale_restart_job": {"ansible_job_id": "missing-job"}}
                        if missing else {}),
@@ -73,6 +76,7 @@ class AsyncCleanupTest(unittest.TestCase):
                 }
                 resumed[0]["tasks"] = [{
                     "ansible.builtin.import_tasks": str(RESTART_RESULT),
+                    "vars": {"ansible_async_dir": str(cache)},
                 }]
                 playbook.write_text(json.dumps(resumed), encoding="utf-8")
                 result = subprocess.run(
