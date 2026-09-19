@@ -390,6 +390,12 @@ present and its link target is exactly `/bin/busybox`. The fresh candidate
 supplies its own kernel and BusyBox package; none of these old files is copied.
 The checks classify old disk content. They do not verify the new template,
 resolve other links, or approve any remaining unknown file.
+The generated CA links use a two-link chain: a hash-named link points to a
+`ca-cert-*.pem` link, which points to a file under the installed Mozilla CA
+package. Qualification now checks both recorded link-target hashes, root
+ownership, the installed CA packages, and the absence of an APK audit
+difference or unowned file at the final target. A different link remains
+unresolved. The candidate regenerates the CA links from its signed packages.
 
 ### Declared retention report
 

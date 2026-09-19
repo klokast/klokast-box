@@ -1,6 +1,7 @@
 """Qualification must preserve unknown data and refuse contradictory sources."""
 import copy
 import datetime as dt
+import hashlib
 import io
 import json
 import stat
@@ -182,6 +183,28 @@ class Qualification(unittest.TestCase):
         self.assertFalse(noapp.path_classification(entry)[2])
         for key, value in (('uid', 1000), ('gid', 1000), ('link_sha256', '0' * 64)):
             self.assertFalse(noapp.path_classification({**entry, key: value}, busybox_present=True)[2])
+
+    def test_generated_ca_links_require_the_package_chain_and_unchanged_target(self):
+        pem = '/etc/ssl/certs/ca-cert-Example_Root.pem'
+        hashed = '/etc/ssl/certs/1234abcd.0'
+        source = '/usr/share/ca-certificates/mozilla/Example_Root.crt'
+        def link(path, target):
+            return {'path': path, 'mode': stat.S_IFLNK | 0o777, 'uid': 0, 'gid': 0,
+                    'link_sha256': hashlib.sha256(target.encode()).hexdigest()}
+        entries = {pem: link(pem, source), hashed: link(hashed, pem.rsplit('/', 1)[1])}
+        packages = {'ca-certificates': {}, 'ca-certificates-bundle': {}}
+        audit = {'differences': []}
+        self.assertEqual(noapp.certificate_link_resolutions(entries, packages, audit), {pem, hashed})
+        for item in entries.values():
+            self.assertTrue(noapp.path_classification(
+                item, verified_ca_links={pem, hashed})[2])
+        self.assertEqual(noapp.certificate_link_resolutions(entries, {}, audit), set())
+        self.assertEqual(noapp.certificate_link_resolutions(entries, packages,
+                                                            {'differences': [{'path': source}]}), set())
+        self.assertEqual(noapp.certificate_link_resolutions({**entries, source: {'path': source}},
+                                                            packages, audit), set())
+        changed = {**entries, pem: link(pem, '/tmp/private.crt')}
+        self.assertEqual(noapp.certificate_link_resolutions(changed, packages, audit), set())
 
 
 class CLI(unittest.TestCase):

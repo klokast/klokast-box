@@ -197,7 +197,39 @@ def legacy_modloop_file(entry, kernel):
         re.fullmatch(r'/lib/firmware/qat_(?:402xx|4xxx)(?:_mmp)?\.bin\.zst', name))
 
 
-def path_classification(entry, *, legacy_kernel=None, busybox_present=False):
+def certificate_link_resolutions(entries, packages, package_audit):
+    """Validate the fixed two-link chain made by Alpine CA package hooks."""
+    if (not isinstance(packages, dict) or
+            not {'ca-certificates', 'ca-certificates-bundle'} <= set(packages) or
+            not isinstance(package_audit, dict) or
+            not isinstance(package_audit.get('differences'), list)):
+        return set()
+    changed = {row.get('path') for row in package_audit['differences'] if isinstance(row, dict)}
+    prefix = '/etc/ssl/certs/ca-cert-'
+    pem_links = {}
+    for name, entry in entries.items():
+        if not name.startswith(prefix) or not name.endswith('.pem'):
+            continue
+        stem = name[len(prefix):-4]
+        source = '/usr/share/ca-certificates/mozilla/' + stem + '.crt'
+        if (not stem or '/' in stem or len(stem.encode()) > 180 or
+                any(ord(character) < 32 for character in stem) or
+                not stat.S_ISLNK(entry['mode']) or entry.get('uid') != 0 or entry.get('gid') != 0 or
+                source in entries or source in changed or
+                entry.get('link_sha256') != hashlib.sha256(source.encode()).hexdigest()):
+            continue
+        pem_links[hashlib.sha256(name.rsplit('/', 1)[1].encode()).hexdigest()] = name
+    resolved = set(pem_links.values())
+    for name, entry in entries.items():
+        if (re.fullmatch(r'/etc/ssl/certs/[0-9a-f]{8}\.[0-9]+', name) and
+                stat.S_ISLNK(entry['mode']) and entry.get('uid') == 0 and entry.get('gid') == 0 and
+                entry.get('link_sha256') in pem_links):
+            resolved.add(name)
+    return resolved
+
+
+def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
+                        verified_ca_links=frozenset()):
     """Fixed reconstruction rules. Unknown paths never inherit a parent rule."""
     name, mode = entry['path'], entry['mode']
     category, rule, resolved = 'unknown', 'no fixed rule', False
@@ -236,12 +268,16 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False):
         else:
             category, rule = 'approved-package-content', 'verify generated applet link against signed package recipe'
     elif below(name, '/etc/ssl/certs') and stat.S_ISLNK(mode):
-        category, rule = 'approved-package-content', 'verify generated certificate link against signed package recipe'
+        if name in verified_ca_links:
+            category, rule, resolved = ('reconstructable-os-state',
+                                         'fixed CA link chain; regenerate from candidate package', True)
+        else:
+            category, rule = 'approved-package-content', 'verify generated certificate link against signed package recipe'
     elif re.fullmatch(r'/etc/runlevels/[^/]+/[^/]+', name):
         category, rule = 'generated-configuration', 'compare enabled service with fixed boot recipe'
     # A known path with the wrong type or unsafe ownership is not disposable.
     if category != 'unknown' and not stat.S_ISDIR(mode):
-        expected_link = rule.startswith(('verify generated', 'fixed BusyBox')) or name.startswith('/etc/runlevels/')
+        expected_link = rule.startswith(('verify generated', 'fixed BusyBox', 'fixed CA link')) or name.startswith('/etc/runlevels/')
         if (not (stat.S_ISLNK(mode) if expected_link else stat.S_ISREG(mode)) or
                 entry['uid'] not in (0, 1000) or (not expected_link and mode & 0o002)):
             category, rule, resolved = 'unknown', 'unexpected type, ownership, or writable metadata', False
@@ -318,9 +354,12 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     legacy_kernel = fact.get('kernel') if (fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER and
                                               fact.get('module_releases') == [fact.get('kernel')]) else None
     busybox_present = isinstance(fact.get('packages'), dict) and 'busybox' in fact['packages']
+    verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
+                                                     inventory.get('package_audit'))
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
-                                               busybox_present=busybox_present), entry)
+                                               busybox_present=busybox_present,
+                                               verified_ca_links=verified_ca_links), entry)
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
