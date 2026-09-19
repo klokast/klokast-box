@@ -912,3 +912,69 @@ def with_config_comparison(base, comparison):
     result['findings'] = [finding for finding in base['findings']
                           if finding['code'] != 'qualification.unresolved']
     return finish(result)
+
+
+def with_legacy_firewall(base, comparison, legacy):
+    """Record a bounded old firewall comparison without granting adoption."""
+    if (not isinstance(base, dict) or
+            base.get('kind') != 'klokast.vm-no-application-qualification.v2' or
+            base.get('report_sha256') != digest({k: v for k, v in base.items()
+                                                 if k != 'report_sha256'}) or
+            not isinstance(comparison, dict) or
+            comparison.get('kind') != 'klokast.vm-config-comparison.v1' or
+            comparison.get('host') != base.get('box', '') + '-' + base.get('role', '') or
+            comparison.get('source_commit') != base.get('implementation_commit') or
+            comparison.get('qualification_sha256') != base.get('base_report_sha256') or
+            comparison.get('authority') != 'comparison-only' or
+            comparison.get('report_sha256') != base.get('configuration_evidence_sha256') or
+            comparison.get('report_sha256') != digest({k: v for k, v in comparison.items()
+                                                       if k != 'report_sha256'})):
+        raise UpdateError('legacy firewall comparison lacks bound qualification evidence')
+    if not isinstance(comparison.get('rows'), list):
+        raise UpdateError('historical firewall lacks a fixed configuration comparison')
+    rows = [row for row in comparison['rows'] if isinstance(row, dict) and
+            row.get('path') == '/etc/nftables.nft']
+    fields = {'kind', 'host', 'source_commit', 'source_sha256', 'engine_commit',
+              'approved_engine', 'qualification_sha256', 'authority', 'match',
+              'missing_underlay_permit', 'observed_sha256', 'expected_sha256',
+              'normalized_observed_sha256', 'normalized_expected_sha256', 'report_sha256'}
+    if (len(rows) != 1 or not isinstance(legacy, dict) or set(legacy) != fields or
+            legacy['kind'] != 'klokast.vm-legacy-firewall-comparison.v1' or
+            legacy['host'] != base['box'] + '-' + base['role'] or
+            legacy['source_commit'] != vm_config_audit.LEGACY_FIREWALL_COMMIT or
+            legacy['source_sha256'] != vm_config_audit.LEGACY_FIREWALL_SHA256 or
+            legacy['engine_commit'] != base['implementation_commit'] or
+            legacy['qualification_sha256'] != base['report_sha256'] or
+            legacy['authority'] != 'comparison-only' or
+            type(legacy['approved_engine']) is not bool or
+            legacy['approved_engine'] != bool(base['intent'] and
+                                              base['intent']['engine_commit'] == base['implementation_commit']) or
+            type(legacy['match']) is not bool or
+            type(legacy['missing_underlay_permit']) is not bool or
+            (legacy['missing_underlay_permit'] and not legacy['match']) or
+            any(not isinstance(legacy[key], str) or not re.fullmatch('[0-9a-f]{64}', legacy[key])
+                for key in ('observed_sha256', 'expected_sha256',
+                            'normalized_observed_sha256', 'normalized_expected_sha256')) or
+            legacy['observed_sha256'] != rows[0].get('observed_sha256') or
+            legacy['report_sha256'] != digest({k: v for k, v in legacy.items()
+                                               if k != 'report_sha256'})):
+        raise UpdateError('historical firewall comparison conflicts with qualification')
+    result = {**base, 'kind': 'klokast.vm-no-application-qualification.v3',
+              'prior_report_sha256': base['report_sha256'],
+              'legacy_firewall_evidence_sha256': legacy['report_sha256']}
+    result.pop('report_sha256')
+    result['items'] = []
+    for item in base['items']:
+        value = dict(item)
+        if (item['area'] in {'file', 'package-difference'} and
+                item['key'] == '/etc/nftables.nft' and
+                item['classification'] == 'generated-configuration' and
+                legacy['match'] and legacy['approved_engine']):
+            value['resolved'] = True
+            value['rule'] = 'exact old checked firewall recipe with no extra permit; replace with current candidate'
+            value['evidence_sha256'] = digest({'item': item['evidence_sha256'],
+                                               'legacy': legacy['report_sha256']})
+        result['items'].append(value)
+    result['findings'] = [finding for finding in base['findings']
+                          if finding['code'] != 'qualification.unresolved']
+    return finish(result)

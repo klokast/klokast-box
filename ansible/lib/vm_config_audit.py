@@ -28,6 +28,9 @@ PATHS = (
     '/etc/init.d/klokast-podman-runroot-cleanup', '/etc/nftables.nft',
 )
 HASH = re.compile(r'[0-9a-f]{64}')
+LEGACY_FIREWALL_SOURCE = 'ansible/update-profiles/legacy-shared-vm-firewall-v1.j2'
+LEGACY_FIREWALL_COMMIT = '17cfd0ba7501a733873d3c4b5e8ef90280865c32'
+LEGACY_FIREWALL_SHA256 = 'a72cd510fa5b6958bbafcd2a491db4639393dd6f77204f948f7bdb263de23a8e'
 
 
 class ConfigAuditError(RuntimeError):
@@ -64,8 +67,8 @@ def task_content(repo, relative, name):
     return content, relative
 
 
-def render(repo, host, variables):
-    """Return exact file bytes and public source path for supported files."""
+def render_context(host, variables):
+    """Check one guest identity and resolve its fixed Ansible variables."""
     if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-(?:dmz|iot)', host) or
             variables.get('node_hostname') not in (host, '{{ node_name }}-' + host.rsplit('-', 1)[1]) or
             variables.get('node_domain_role') != host.rsplit('-', 1)[1]):
@@ -88,6 +91,12 @@ def render(repo, host, variables):
              for name, value in row.items()} if isinstance(row, dict) else row
             for row in rows
         ]
+    return env, context
+
+
+def render(repo, host, variables):
+    """Return exact file bytes and public source path for supported files."""
+    env, context = render_context(host, variables)
     result = {}
     def add(path, value, source):
         if path not in PATHS or path in result or not isinstance(value, str) or not value:
@@ -146,6 +155,96 @@ def render(repo, host, variables):
     if set(result) != set(PATHS):
         raise ConfigAuditError('fixed recipe coverage is incomplete')
     return result
+
+
+def legacy_firewall_match(repo, host, variables, observed):
+    """Compare one old firewall with the exact historical recipe.
+
+    Leading indentation has no nftables meaning. One missing, declared
+    Tailscale underlay permit is a narrower policy and is reported separately.
+    No extra permit, changed token, or other missing rule is accepted.
+    """
+    if not isinstance(observed, bytes) or not 0 < len(observed) <= 16384:
+        raise ConfigAuditError('legacy firewall bytes are absent or excessive')
+    source = (Path(repo) / LEGACY_FIREWALL_SOURCE).read_bytes()
+    if sha(source) != LEGACY_FIREWALL_SHA256:
+        raise ConfigAuditError('checked historical firewall source differs')
+    env, context = render_context(host, variables)
+    expected = env.from_string(source.decode('utf-8')).render(context).encode()
+    try:
+        actual_lines = [line.lstrip(' \t') for line in observed.decode('utf-8').splitlines()]
+    except UnicodeDecodeError as error:
+        raise ConfigAuditError('guest firewall is not UTF-8 text') from error
+    expected_lines = [line.lstrip(' \t') for line in expected.decode('utf-8').splitlines()]
+    full_match = actual_lines == expected_lines and observed.endswith(b'\n')
+    missing_permit = False
+    if not full_match and host.endswith('-dmz') and observed.endswith(b'\n'):
+        rules = [rule for rule in context['podman_vm_firewall_input_udp_rules']
+                 if isinstance(rule, dict) and
+                 rule.get('comment') == 'ops-dmz-tailscale-underlay-input' and
+                 str(rule.get('port')) == '41641']
+        if len(rules) == 1:
+            lines = [line for line in expected_lines
+                     if line.endswith('accept comment "ops-dmz-tailscale-underlay-input"') and
+                     ' udp dport 41641 ' in line]
+            if len(lines) == 1:
+                reduced = list(expected_lines)
+                reduced.remove(lines[0])
+                missing_permit = actual_lines == reduced
+    return {'match': full_match or missing_permit,
+            'missing_underlay_permit': missing_permit,
+            'observed_sha256': sha(observed), 'expected_sha256': sha(expected),
+            'normalized_observed_sha256': sha('\n'.join(actual_lines).encode()),
+            'normalized_expected_sha256': sha('\n'.join(expected_lines).encode())}
+
+
+def guest_firewall_bytes(host):
+    """Read one root-owned regular file without following a guest link."""
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-(?:dmz|iot)', host):
+        raise ConfigAuditError('selected guest name is invalid')
+    script = '''python3 - <<'PY'
+import os, stat, sys
+path = '/etc/nftables.nft'
+before = os.lstat(path)
+if before.st_mode != stat.S_IFREG | 0o644 or before.st_uid != 0 or before.st_gid != 0 or before.st_nlink != 1 or not 0 < before.st_size <= 16384:
+    raise SystemExit(1)
+fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid, opened.st_gid, opened.st_nlink, opened.st_size, opened.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid, before.st_nlink, before.st_size, before.st_mtime_ns):
+        raise SystemExit(1)
+    content = os.read(fd, 16385)
+    after = os.fstat(fd)
+    if len(content) != before.st_size or (after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_gid, after.st_nlink, after.st_size, after.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid, before.st_nlink, before.st_size, before.st_mtime_ns):
+        raise SystemExit(1)
+    sys.stdout.buffer.write(content)
+finally:
+    os.close(fd)
+PY
+'''
+    try:
+        response = subprocess.run(['tailscale', 'ssh', 'neo@' + host, 'sh', '-s'],
+                                  input=script.encode(), capture_output=True, timeout=45)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ConfigAuditError('selected guest firewall probe failed') from error
+    if response.returncode or not 0 < len(response.stdout) <= 16384:
+        raise ConfigAuditError('selected guest firewall probe failed or returned unsafe bytes')
+    return response.stdout
+
+
+def legacy_firewall_report(repo, host, variables, observed, qualification_sha256,
+                           engine_commit, approved_engine):
+    if not HASH.fullmatch(qualification_sha256) or not re.fullmatch(r'[0-9a-f]{40}', engine_commit):
+        raise ConfigAuditError('legacy firewall comparison source identity is invalid')
+    match = legacy_firewall_match(repo, host, variables, observed)
+    value = {'kind': 'klokast.vm-legacy-firewall-comparison.v1', 'host': host,
+             'source_commit': LEGACY_FIREWALL_COMMIT,
+             'source_sha256': LEGACY_FIREWALL_SHA256,
+             'engine_commit': engine_commit, 'approved_engine': approved_engine,
+             'qualification_sha256': qualification_sha256,
+             'authority': 'comparison-only', **match}
+    value['report_sha256'] = sha(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+    return value
 
 
 def parse_guest_hashes(output):

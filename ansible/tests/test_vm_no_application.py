@@ -501,6 +501,48 @@ class ConfigComparison(unittest.TestCase):
         with self.assertRaises(UpdateError):
             noapp.with_config_comparison(base, changed)
 
+    def test_historical_firewall_resolves_only_bound_generated_row_after_engine_approval(self):
+        base = self.base()
+        base['items'].append({'area': 'package-difference', 'key': '/etc/nftables.nft',
+                              'classification': 'generated-configuration', 'rule': 'compare recipe',
+                              'resolved': False, 'evidence_sha256': '4' * 64})
+        base['findings'] = [v for v in base['findings'] if v['code'] != 'qualification.unresolved']
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        comparison = self.comparison(base)
+        v2 = noapp.with_config_comparison(base, comparison)
+        legacy = {'kind': 'klokast.vm-legacy-firewall-comparison.v1',
+                  'host': 'boxa-dmz',
+                  'source_commit': config_audit.LEGACY_FIREWALL_COMMIT,
+                  'source_sha256': config_audit.LEGACY_FIREWALL_SHA256,
+                  'engine_commit': 'a' * 40, 'approved_engine': True,
+                  'qualification_sha256': v2['report_sha256'],
+                  'authority': 'comparison-only', 'match': True,
+                  'missing_underlay_permit': True, 'observed_sha256': 'd' * 64,
+                  'expected_sha256': 'b' * 64,
+                  'normalized_observed_sha256': 'e' * 64,
+                  'normalized_expected_sha256': 'f' * 64}
+        legacy['report_sha256'] = digest(legacy)
+        result = noapp.with_legacy_firewall(v2, comparison, legacy)
+        self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v3')
+        self.assertEqual(result['summary']['unresolved'], 1)
+        self.assertFalse(result['classification_complete'])
+        self.assertTrue(next(v for v in result['items'] if v['key'] == '/etc/nftables.nft')['resolved'])
+        changed = {**legacy, 'observed_sha256': '0' * 64}
+        changed['report_sha256'] = digest({k: v for k, v in changed.items()
+                                           if k != 'report_sha256'})
+        with self.assertRaises(UpdateError):
+            noapp.with_legacy_firewall(v2, comparison, changed)
+        base['intent']['engine_commit'] = '0' * 40
+        base['report_sha256'] = digest({k: v for k, v in base.items() if k != 'report_sha256'})
+        comparison = self.comparison(base, False)
+        v2 = noapp.with_config_comparison(base, comparison)
+        legacy.update(approved_engine=False, qualification_sha256=v2['report_sha256'])
+        legacy['report_sha256'] = digest({k: v for k, v in legacy.items()
+                                          if k != 'report_sha256'})
+        self.assertFalse(next(v for v in noapp.with_legacy_firewall(v2, comparison, legacy)['items']
+                              if v['key'] == '/etc/nftables.nft')['resolved'])
+
 
 class CLI(unittest.TestCase):
     def test_prepare_binds_stable_live_config_without_granting_adoption(self):
@@ -535,6 +577,68 @@ class CLI(unittest.TestCase):
             self.assertFalse(result['qualified'])
             self.assertEqual(json.loads(path.read_text()), result)
             self.assertEqual(len(list((root / 'config-audits').glob('*.json'))), 1)
+
+    def test_prepare_binds_historical_firewall_only_after_stable_guest_read(self):
+        cli = load_cli()
+        base = ConfigComparison().base()
+        base['items'].append({'area': 'package-difference', 'key': '/etc/nftables.nft',
+                              'classification': 'generated-configuration', 'rule': 'compare recipe',
+                              'resolved': False, 'evidence_sha256': '4' * 64})
+        base['intent'] = {'box': 'boxa', 'role': 'dmz', 'eligible': True,
+                          'engine_commit': 'a' * 40, 'workloads': [], 'datasets': []}
+        base['findings'] = [v for v in base['findings'] if v['code'] != 'qualification.unresolved']
+        base.pop('report_sha256')
+        base = noapp.finish(base)
+        expected = {path: {'sha256': 'b' * 64, 'source': 'ansible/roles/vm-base/tasks/main.yml',
+                           'source_sha256': 'c' * 64} for path in config_audit.PATHS}
+        observed = {path: 'b' * 64 for path in config_audit.PATHS}
+        observed['/etc/nftables.nft'] = config_audit.sha(b'old firewall\n')
+        def command(argv, **_kwargs):
+            if argv[0] == 'git':
+                return 'a' * 40 if argv[-1] == 'HEAD' else ''
+            return '{}'
+        def historical(_repo, host, _inventory, content, qualification, engine, approved):
+            value = {'kind': 'klokast.vm-legacy-firewall-comparison.v1', 'host': host,
+                     'source_commit': config_audit.LEGACY_FIREWALL_COMMIT,
+                     'source_sha256': config_audit.LEGACY_FIREWALL_SHA256,
+                     'engine_commit': engine, 'approved_engine': approved,
+                     'qualification_sha256': qualification, 'authority': 'comparison-only',
+                     'match': True, 'missing_underlay_permit': False,
+                     'observed_sha256': config_audit.sha(content),
+                     'expected_sha256': 'b' * 64,
+                     'normalized_observed_sha256': 'e' * 64,
+                     'normalized_expected_sha256': 'e' * 64}
+            value['report_sha256'] = digest(value)
+            return value
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'current.json').write_text(json.dumps({'implementation_commit': 'a' * 40}))
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'command', side_effect=command), \
+                    patch.object(cli.vm_no_application, 'source_intent', return_value=base['intent']), \
+                    patch.object(cli.vm_no_application, 'report', return_value=base), \
+                    patch.object(cli.vm_config_audit, 'render', return_value=expected), \
+                    patch.object(cli.vm_config_audit, 'guest_hashes', return_value=observed), \
+                    patch.object(cli.vm_config_audit, 'legacy_firewall_report', side_effect=historical), \
+                    patch.object(cli.vm_config_audit, 'guest_firewall_bytes',
+                                 side_effect=[b'old firewall\n', b'old firewall\n']) as guest:
+                result, path = cli.adoption_prepare('boxa', 'dmz')
+            self.assertEqual(guest.call_count, 2)
+            self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v3')
+            self.assertEqual(result['summary']['unresolved'], 1)
+            self.assertEqual(json.loads(path.read_text()), result)
+            self.assertEqual(len(list((root / 'config-audits').glob('*.json'))), 2)
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'command', side_effect=command), \
+                    patch.object(cli.vm_no_application, 'source_intent', return_value=base['intent']), \
+                    patch.object(cli.vm_no_application, 'report', return_value=base), \
+                    patch.object(cli.vm_config_audit, 'render', return_value=expected), \
+                    patch.object(cli.vm_config_audit, 'guest_hashes', return_value=observed), \
+                    patch.object(cli.vm_config_audit, 'legacy_firewall_report', side_effect=historical), \
+                    patch.object(cli.vm_config_audit, 'guest_firewall_bytes',
+                                 side_effect=[b'old firewall\n', b'changed firewall\n']):
+                with self.assertRaises(UpdateError):
+                    cli.adoption_prepare('boxa', 'dmz')
 
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
         cli = load_cli(); retained = source(); reg = registry(retained)

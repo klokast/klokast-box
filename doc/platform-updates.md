@@ -108,7 +108,8 @@ root registry and retention readers, verifies that both bind the same authority,
 engine, private commit, and input bytes, and rechecks sources before writing.
 When discovery and the checked source have the same commit, it compares 19
 fixed guest files with the checked recipes and repeats the guest hash probe
-before publication. A v2 qualification report binds the comparison receipt.
+before publication. A v2 qualification report binds the comparison receipt;
+a v3 report also binds a historical firewall comparison when needed.
 Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and
@@ -148,6 +149,14 @@ results under `/var/lib/klokast/updates/discovery/config-audits/`. Exit status
 1 means at least one file differs. This comparison is read-only review evidence.
 It does not approve inputs, resolve other qualification rows, or authorize
 adoption. Investigate each difference before assigning its source.
+When the current firewall recipe differs, `adopt prepare` also compares the
+guest file with the [old checked template](../ansible/update-profiles/legacy-shared-vm-firewall-v1.j2)
+from `17cfd0b`. It ignores leading indentation only. It can record one absent,
+declared DMZ Tailscale underlay UDP permit as a narrower historical policy.
+Any added or changed rule remains unresolved. The closed comparison receipt
+contains checksums only. It is review evidence; a matching old file resolves
+its own package-difference row only after the engine is approved. The candidate
+uses the current firewall recipe.
 
 The selected guests' first-contact OpenSSH cleanup has a separate fixed
 playbook, `74-platform-update-bootstrap-access-retire.yml`. It checks the
