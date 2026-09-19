@@ -59,6 +59,30 @@ def below(path, root):
     return path == root or path.startswith(root + '/')
 
 
+def checked_empty_store(value):
+    fields = {'kind', 'graph_root', 'complete', 'stable', 'empty', 'metadata', 'database_sha256',
+              'unresolved_paths', 'adoption_authorized', 'error', 'evidence_sha256'}
+    graph = '/home/neo/.local/share/containers/storage'
+    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-empty-store.v1' or
+            value['graph_root'] != graph or value['complete'] is not True or value['stable'] is not True or
+            type(value['empty']) is not bool or value['adoption_authorized'] is not False or value['error'] is not None or
+            not isinstance(value['database_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['database_sha256']) or
+            value['evidence_sha256'] != digest({k: v for k, v in value.items() if k != 'evidence_sha256'})):
+        raise UpdateError('complete stable empty-store evidence is unavailable')
+    metadata = value['metadata']
+    if not isinstance(metadata, dict) or set(metadata) != {'roots', 'entries', 'excluded'} or metadata['excluded'] != []:
+        raise UpdateError('empty-store file coverage is unavailable')
+    storage.checked_unowned_tree({**metadata, 'kind': 'klokast.vm-unowned-tree.v1', 'complete': True,
+                                  'stable': True, 'data_accounted': False, 'metadata_sha256': digest(metadata)},
+                                 [{'path': graph, 'reason': 'unclassified-directory'}])
+    unresolved = value['unresolved_paths']
+    paths = {row['path'] for row in metadata['entries']}
+    if (not isinstance(unresolved, list) or any(not isinstance(p, str) or p not in paths for p in unresolved) or
+            unresolved != sorted(set(unresolved)) or value['empty'] != (not unresolved)):
+        raise UpdateError('empty-store result conflicts with unresolved files')
+    return value
+
+
 def source_intent(retention, registry, catalogs, box, role):
     """Join two installed root readers; the registry alone omits retained data."""
     projection = vm_retention.validate_source(retention)
@@ -155,7 +179,7 @@ def path_classification(entry):
     if category != 'unknown' and not stat.S_ISDIR(mode):
         expected_link = rule.startswith('verify generated') or name.startswith('/etc/runlevels/')
         if (not (stat.S_ISLNK(mode) if expected_link else stat.S_ISREG(mode)) or
-                entry['uid'] not in (0, 1000) or mode & 0o002):
+                entry['uid'] not in (0, 1000) or (not expected_link and mode & 0o002)):
             category, rule, resolved = 'unknown', 'unexpected type, ownership, or writable metadata', False
     return category, rule, resolved
 
@@ -273,9 +297,19 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     if rootful:
         item('container-store', rootful['graph_root'], 'unknown' if rootful['present'] else 'reconstructable-os-state',
              'classify every store file and registration' if rootful['present'] else 'standard rootful store absent', not rootful['present'], rootful)
-    item('container-store', '/home/neo/.local/share/containers/storage', 'unknown',
-         'empty registrations do not account for cached images, unregistered layers, or other account stores', False,
-         fact.get('podman_storage'))
+    try:
+        empty_store = checked_empty_store(fact.get('host_inventory', {}).get('no_application_store'))
+        item('container-store', empty_store['graph_root'],
+             'reconstructable-os-state' if empty_store['empty'] else 'unknown',
+             'fixed empty rootless store layout' if empty_store['empty'] else 'unregistered rootless store files require classification',
+             empty_store['empty'], empty_store)
+        for entry in empty_store['metadata']['entries']:
+            resolved = entry['path'] not in empty_store['unresolved_paths']
+            item('store-file', entry['path'], 'reconstructable-os-state' if resolved else 'unknown',
+                 'fixed empty store metadata' if resolved else 'not part of the fixed empty store layout', resolved, entry)
+    except UpdateError:
+        item('container-store', '/home/neo/.local/share/containers/storage', 'unknown',
+             'empty registrations do not account for cached images or unregistered layers', False, fact.get('podman_storage'))
     add('qualification.machine-inputs', 'Approved machine configuration, complete store accounting, source disks, and independent management checks remain required.')
     return finish(result)
 

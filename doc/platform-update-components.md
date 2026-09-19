@@ -266,6 +266,18 @@ services. The report is retained on the controller at
 `/var/lib/klokast/updates/discovery/host-assessment-validation-3a8c9f4.json`.
 No application, VM, or update schedule changed during this inspection.
 
+### Fixed empty-store qualification
+
+For a running shared guest with empty container and volume lists, discovery
+also inspects the standard rootless store without invoking Podman. It reuses
+the bounded metadata walk and reads a stable database copy into SQLite memory.
+The fixed layout accepts only known empty directories, zero-length lock files,
+exact format markers, empty image/layer indexes, and one database whose only
+row is DBConfig. Unknown paths, nonempty indexes, registrations, symlinks,
+mounts, unsafe ownership, or changed evidence block empty-store qualification.
+The result has no adoption authority and does not qualify other account stores.
+No application image is downloaded, loaded, or run by this inspection.
+
 ### Declared retention report
 
 After approved engine promotion and controller wrapper convergence, run on

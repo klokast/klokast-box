@@ -1,0 +1,74 @@
+---
+# Correct an agent-created inspection side effect, not a production update.
+- name: Remove only the two empty rootful stores created by the recorded inspection
+  hosts: k002-dmz:k002-iot
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  pre_tasks:
+    - name: Verify active controller before the fixed inspection correction
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: probe_correction_controller
+
+    - name: Require the exact target set and active controller
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | sort == ['k002-dmz', 'k002-iot']
+          - (probe_correction_controller.stdout | from_json).active
+          - (probe_correction_controller.stdout | from_json).configured
+  tasks:
+    - name: Create isolated correction staging
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: klokast-probe-correction-
+      register: probe_correction_staging
+
+    - name: Stage and run the fixed correction
+      block:
+        - name: Copy reviewed collector and correction helper
+          ansible.builtin.copy:
+            src: '{{ item.source }}'
+            dest: '{{ probe_correction_staging.path }}/{{ item.name }}'
+            mode: '0600'
+          loop:
+            - source: ../roles/vm-update-inventory/files/collect-vm-update-facts
+              name: collect-vm-update-facts
+            - source: ../maintenance/cleanup-empty-podman-probe-20260919.py
+              name: cleanup-empty-podman-probe-20260919.py
+
+        - name: Calculate exact empty-store correction evidence
+          ansible.builtin.command:
+            argv: [python3, '{{ probe_correction_staging.path }}/cleanup-empty-podman-probe-20260919.py']
+          changed_when: false
+          register: probe_correction_plan
+          no_log: true
+
+        - name: Apply only the unchanged correction plan when selected
+          ansible.builtin.command:
+            argv:
+              - python3
+              - '{{ probe_correction_staging.path }}/cleanup-empty-podman-probe-20260919.py'
+              - --apply-plan-sha256
+              - '{{ (probe_correction_plan.stdout | from_json).plan_sha256 }}'
+          when: probe_correction_apply | default(false) | bool
+          register: probe_correction_result
+          changed_when: true
+          no_log: true
+
+        - name: Keep correction evidence on the controller
+          ansible.builtin.copy:
+            content: '{{ probe_correction_result.stdout | default(probe_correction_plan.stdout) }}'
+            dest: '{{ probe_correction_evidence_directory }}/{{ inventory_hostname }}.json'
+            mode: '0600'
+          delegate_to: localhost
+          become: false
+      always:
+        - name: Remove this invocation temporary correction helpers
+          ansible.builtin.file:
+            path: '{{ probe_correction_staging.path }}'
+            state: absent

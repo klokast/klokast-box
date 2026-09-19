@@ -463,38 +463,42 @@ ROOTFUL_TABLES = ('DBConfig', 'IDNamespace', 'ContainerConfig', 'ContainerState'
                   'ContainerExitCode', 'PodConfig', 'PodState', 'VolumeConfig', 'VolumeState')
 
 
-def rootful_metadata(root, mounts, deadline):
+def rootful_metadata(root, mounts, deadline, graph=ROOTFUL_GRAPH):
     if time.monotonic() >= deadline:
         raise HostInventoryError('rootful store metadata exceeded its time limit')
-    if any(m['path'] != '/' and (m['path'] == ROOTFUL_GRAPH or
-            m['path'].startswith(ROOTFUL_GRAPH + '/') or ROOTFUL_GRAPH.startswith(m['path'] + '/')) for m in mounts):
+    if graph not in (ROOTFUL_GRAPH, '/home/neo/.local/share/containers/storage'):
+        raise HostInventoryError('unsupported standard container store')
+    if any(m['path'] != '/' and (m['path'] == graph or
+            m['path'].startswith(graph + '/') or graph.startswith(m['path'] + '/')) for m in mounts):
         raise HostInventoryError('rootful store crosses a mounted filesystem')
     # Refuse linked ancestors even for an apparently absent standard store.
     with ExitStack() as stack:
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         stack.callback(os.close, descriptor)
-        for part in ROOTFUL_GRAPH[1:].split('/'):
+        for part in graph[1:].split('/'):
             try:
                 descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
             except FileNotFoundError:
-                return {'roots': [ROOTFUL_GRAPH], 'entries': [], 'excluded': []}
+                return {'roots': [graph], 'entries': [], 'excluded': []}
             stack.callback(os.close, descriptor)
-    return unowned_tree(root, [{'path': ROOTFUL_GRAPH, 'reason': 'unclassified-directory'}],
+    return unowned_tree(root, [{'path': graph, 'reason': 'unclassified-directory'}],
                         mounts, None, deadline)
 
 
-def rootful_database_bytes(root, relative):
+def rootful_database_bytes(root, relative, *, graph=ROOTFUL_GRAPH, owner=None):
+    if owner is None:
+        owner = os.geteuid()
     with ExitStack() as stack:
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         stack.callback(os.close, descriptor)
-        parts = (ROOTFUL_GRAPH[1:] + '/' + relative).split('/')
+        parts = (graph[1:] + '/' + relative).split('/')
         for part in parts[:-1]:
             descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
             stack.callback(os.close, descriptor)
         descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
         stack.callback(os.close, descriptor)
         before = os.fstat(descriptor)
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or before.st_nlink != 1 or
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner or before.st_nlink != 1 or
                 before.st_mode & 0o022 or not 0 < before.st_size <= 8 * 1024 * 1024):
             raise HostInventoryError('rootful Podman database has unsafe metadata or size')
         with os.fdopen(os.dup(descriptor), 'rb') as stream:
@@ -507,7 +511,7 @@ def rootful_database_bytes(root, relative):
         return content
 
 
-def rootful_table_counts(content, deadline):
+def rootful_table_counts(content, deadline, graph=ROOTFUL_GRAPH):
     # Never open the live database with SQLite or initialize Podman. Deserialize
     # a bounded in-memory copy; query fixed table counts, never container JSON.
     import sqlite3
@@ -526,7 +530,7 @@ def rootful_table_counts(content, deadline):
                 any(r[1] != 'table' or not isinstance(r[2], str) or not re.match(r'^CREATE TABLE\s', r[2], re.I) for r in schema)):
             raise HostInventoryError('rootful Podman database has an unsupported schema')
         config = connection.execute('SELECT SchemaVersion, GraphRoot FROM DBConfig').fetchall()
-        if config != [(1, ROOTFUL_GRAPH)]:
+        if config != [(1, graph)]:
             raise HostInventoryError('rootful Podman database version or graph root differs')
         counts = {table: connection.execute('SELECT count(*) FROM "' + table + '"').fetchone()[0]
                   for table in ROOTFUL_TABLES}
@@ -568,6 +572,78 @@ def collect_rootful_store(root, mounts):
     except (HostInventoryError, OSError, ValueError, ImportError, AttributeError) as error:
         result['error'] = (str(error) if isinstance(error, HostInventoryError) else
                            'rootful store metadata or the required SQLite capability is unavailable')
+    return result
+
+
+def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/share/containers/storage'):
+    """Account for empty rootless store files, including unregistered data.
+
+    This fixed probe is separate from general Podman discovery. It starts no
+    container process, opens SQLite only in memory, and emits no stored JSON.
+    Any file outside the exact empty-store layout remains unresolved.
+    """
+    result = {'kind': 'klokast.vm-empty-store.v1', 'graph_root': graph, 'complete': False,
+              'stable': False, 'empty': False, 'metadata': None, 'database_sha256': None,
+              'unresolved_paths': [], 'adoption_authorized': False, 'error': None}
+    directories = {'', 'libpod', 'overlay', 'overlay/l', 'overlay-containers', 'overlay-images',
+                   'overlay-layers', 'volumes', 'networks', 'tmp', 'mounts'}
+    # Zero-length lock files and bounded native format markers carry no app
+    # dataset. A nonempty image/layer index requires separate qualification.
+    empty_files = {'overlay-containers/containers.lock', 'overlay-images/images.lock',
+                   'overlay-layers/layers.lock', 'userns.lock', 'volumes/volumes.lock'}
+    markers = {'defaultNetworkBackend': {b'netavark', b'netavark\n'},
+               'overlay/.has-mount-program': {b'true', b'true\n', b'false', b'false\n'},
+               'overlay-images/images.json': {b'[]', b'[]\n'},
+               'overlay-layers/layers.json': {b'[]', b'[]\n'}}
+    try:
+        if (graph not in (ROOTFUL_GRAPH, '/home/neo/.local/share/containers/storage') or
+                not mounts or not isinstance(owner, dict) or set(owner) != {'uid', 'gid'} or
+                any(type(v) is not int or v < (0 if graph == ROOTFUL_GRAPH else 1000) for v in owner.values()) or
+                (graph == ROOTFUL_GRAPH and owner != {'uid': 0, 'gid': 0})):
+            raise HostInventoryError('rootless store requires observed numeric ownership and mounts')
+        deadline = time.monotonic() + 10
+        before = rootful_metadata(root, mounts, deadline, graph)
+        result['metadata'] = before
+        if not before['entries']:
+            raise HostInventoryError('the configured rootless store is absent')
+        contents = {}
+        databases = []
+        for row in before['entries']:
+            relative = row['path'][len(graph):].lstrip('/')
+            accepted = False
+            metadata_ok = row['uid'] == owner['uid'] and row['gid'] == owner['gid'] and not row['mode'] & 0o022
+            if metadata_ok and stat.S_ISDIR(row['mode']):
+                accepted = relative in directories
+            elif metadata_ok and stat.S_ISREG(row['mode']) and row['links'] == 1:
+                if relative in empty_files:
+                    accepted = row['bytes'] == 0
+                elif relative in ('db.sql', 'libpod/db.sql'):
+                    content = rootful_database_bytes(root, relative, graph=graph, owner=owner['uid'])
+                    counts = rootful_table_counts(content, min(deadline, time.monotonic() + 2), graph)
+                    accepted = all(count == (1 if key == 'DBConfig' else 0) for key, count in counts.items())
+                    contents[relative] = content
+                    databases.append(relative)
+                    result['database_sha256'] = hashlib.sha256(content).hexdigest()
+                elif relative in markers or relative == 'storage.lock':
+                    content = rootful_database_bytes(root, relative, graph=graph, owner=owner['uid'])
+                    contents[relative] = content
+                    # containers/storage writes a 64-byte lowercase hex lock ID.
+                    accepted = (bool(re.fullmatch(b'[0-9a-f]{64}', content)) if relative == 'storage.lock'
+                                else content in markers[relative])
+            if not accepted:
+                result['unresolved_paths'].append(row['path'])
+        if len(databases) != 1:
+            raise HostInventoryError('the rootless store must have one supported registration database')
+        for relative, content in contents.items():
+            if rootful_database_bytes(root, relative, graph=graph, owner=owner['uid']) != content:
+                raise HostInventoryError('rootless store content changed during inspection')
+        after = rootful_metadata(root, mounts, deadline, graph)
+        result.update(complete=True, stable=before == after,
+                      empty=before == after and not result['unresolved_paths'])
+    except (HostInventoryError, OSError, ValueError, ImportError, AttributeError) as error:
+        result['error'] = (str(error) if isinstance(error, HostInventoryError) else
+                           'rootless store metadata or native SQLite inspection is unavailable')
+    result['evidence_sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return result
 
 
@@ -613,8 +689,15 @@ def collect_host(storage, root=Path('/')):
         result['package_audit'] = collect_package_audit(result['package_database_sha256'], root)
         if result['stable']:
             result['rootful_store'] = collect_rootful_store(root, mounts)
+            if storage.get('containers') == [] and storage.get('volumes') == []:
+                result['no_application_store'] = collect_no_application_store(root, mounts, storage.get('runtime_owner'))
             if mounts != mount_inventory():
                 result['rootful_store']['stable'] = False
+                if 'no_application_store' in result:
+                    result['no_application_store'].update(stable=False, empty=False)
+                    result['no_application_store']['evidence_sha256'] = hashlib.sha256(json.dumps(
+                        {k: v for k, v in result['no_application_store'].items() if k != 'evidence_sha256'},
+                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     except HostInventoryError as error:
         result['error'] = str(error)
     except (OSError, ValueError, UnicodeError):
