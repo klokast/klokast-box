@@ -5,7 +5,8 @@
 This delivery implements discovery, the Instance policy contract, and signed
 policy activation with `pause` and `resume`, candidate template construction,
 offline base-image tests, a second cold boot through OpenRC, and an optional
-Static Site web component test. Host discovery includes native APK audit, live process identities,
+Static Site web component test. Host discovery includes native APK audit,
+read-only rootful Podman registration counts, live process identities,
 and detects native supervisors with missing OpenRC started markers.
 A dom0 disk-switch transaction and boot recovery helper are implemented but are not connected to a production executor.
 Offline retained-data copy, staging, and final-sync primitives are implemented
@@ -243,6 +244,17 @@ sidecars, unsafe paths, mounts, changed evidence, or exceeded limits produce
 `host.rootful-registrations`. An absent database or zero object counts do not
 prove that layers, volumes, custom stores, or other accounts contain no data.
 Those cases remain `host.rootful-store-unqualified`; adoption stays blocked.
+
+Native scan `8c18852` completed all 12 inventory entries on 2026-09-19. All
+five running shared VMs returned complete, stable rootful-store evidence.
+k001-dmz's standard store had one configuration row and zero registered
+containers, pods, volumes, or related state rows. The standard store was absent
+on k002-dmz and k002-iot. Both backend VMs remained outside mutation scope;
+k001-iot stayed stopped. The controller report is
+`discovery/rootful-store-validation-8c18852.json`, checksum
+`a57112bb44fbb7c5fc4f1ac0e04a0e25751af03027caa191ef86f80b5d5da348`.
+The local VM and CLI suites passed 261 and 24 tests respectively. No rootful
+store, database, layer, or volume was initialized, removed, or approved for disposal.
 
 The host inventory also correlates native init-script checksums, enabled
 runlevels, and OpenRC state markers. It includes disabled scripts, manually
