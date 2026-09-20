@@ -1,6 +1,8 @@
 """Daily update eligibility, manifest verification and Instance schedules."""
 import copy
+from contextlib import redirect_stdout
 import datetime as dt
+from io import StringIO
 import json
 from pathlib import Path
 import sys
@@ -125,6 +127,19 @@ class DailyUpdates(unittest.TestCase):
                 patch.object(cli, 'prepare_auto') as prepare:
             self.assertEqual(cli.daily()['status'], 'failed')
             prepare.assert_not_called()
+
+    def test_accepted_verification_does_not_depend_on_policy_schedule_reader(self):
+        cli = load_cli()
+        result = {'kind': 'klokast.vm-update-verification.v1', 'verified': True,
+                  'assignments': [{'host': 'k001-dmz', 'checks': {'packages': True}}],
+                  'findings': []}
+        output = StringIO()
+        with patch.object(cli, 'require_controller'), \
+                patch.object(cli, 'verify_accepted', return_value=result), \
+                patch.object(cli, 'schedule_source', side_effect=AssertionError('schedule reader used')), \
+                redirect_stdout(output):
+            self.assertEqual(cli.main(['verify', '--json']), 0)
+        self.assertEqual(json.loads(output.getvalue()), result)
 
 
 if __name__ == '__main__':

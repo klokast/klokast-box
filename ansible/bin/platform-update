@@ -1373,14 +1373,24 @@ def main(argv=None):
             report = scan(not args.existing_map)
         else:
             require_controller()
+            if args.command == "verify":
+                verification = verify_accepted()
+                if args.json:
+                    print(canonical(verification))
+                else:
+                    print('Accepted VM verification: ' +
+                          ('passed' if verification['verified'] else 'failed'))
+                    for item in verification['assignments']:
+                        print(item['host'] + ': ' +
+                              ('passed' if all(item.get('checks', {}).values()) and
+                               item.get('checks') else 'unverified'))
+                    for finding in verification['findings']:
+                        print(finding['code'] + ': ' + finding['message'])
+                return 0 if verification['verified'] else 1
             report = optional(STATE / "current.json")
             verification = optional(STATE / "verification.json")
             policy, policy_findings = policy_summary()
             assignments, assignment_findings = assignment_summary()
-            if args.command == "verify":
-                verification = verify_accepted()
-                verification['findings'].extend(policy_findings)
-                write(STATE / 'verification.json', verification)
             settings = schedule_source()['policy']
             current_findings = health(report, verification, now(),
                                       selected_hosts={box + '-' + role for box, role in AUTO_TARGETS},
