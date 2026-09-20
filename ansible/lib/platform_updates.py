@@ -235,7 +235,8 @@ def assess_host(host, fact, metadata, required_packages, compare, now):
     return result
 
 
-def health(report, verification, now):
+def health(report, verification, now, selected_hosts=None):
+    """Keep full discovery evidence while scoring only the selected release scope."""
     output = []
     if not report or report.get("kind") != REPORT_KIND or not fresh(report.get("generated_at"), now, DISCOVERY_AGE):
         output.append(findings("discovery.overdue", "Update discovery is missing or older than 30 hours.", "critical"))
@@ -246,7 +247,8 @@ def health(report, verification, now):
     if report:
         output.extend(report.get("findings", []))
         for host in report.get("hosts", []):
-            output.extend(host.get("findings", []))
+            if selected_hosts is None or host.get("host") in selected_hosts:
+                output.extend(host.get("findings", []))
     if verification:
         output.extend(verification.get("findings", []))
     return output

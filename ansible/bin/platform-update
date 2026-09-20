@@ -1083,11 +1083,20 @@ def main(argv=None):
                                 "findings": [findings("release.unverified", "Accepted release records and package verification are not installed.", "critical"),
                                              *assignment_findings]}
                 write(STATE / "verification.json", verification)
-            current_findings = health(report, verification, now())
+            current_findings = health(report, verification, now(),
+                                      selected_hosts={box + '-' + role for box, role in AUTO_TARGETS})
             if args.command == 'status':
                 current_findings.extend(assignment_findings)
+            inventory = []
+            if isinstance(report, dict):
+                for host in report.get('hosts', []):
+                    inventory.append({'host': host.get('host'), 'profile': host.get('profile'),
+                                      'branch': host.get('branch'),
+                                      'runtime': host.get('target', {}).get('runtime'),
+                                      'update_status': host.get('update_status')})
             report = {"kind": "klokast.vm-update-status.v1", "generated_at": timestamp(now()),
-                      "hosts": [], "assignments": assignments, "findings": current_findings}
+                      "hosts": [], "inventory": inventory,
+                      "assignments": assignments, "findings": current_findings}
         display(report, args.json)
         return 1 if any(v["severity"] == "critical" for v in report["findings"] + [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
     except (UpdateError, RuntimeError, OSError, ValueError, TypeError, KeyError) as error:

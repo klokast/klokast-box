@@ -374,6 +374,21 @@ class EvidenceTests(unittest.TestCase):
         report["complete"] = False
         self.assertIn("discovery.incomplete", [v["code"] for v in u.health(report, verification, NOW)])
 
+    def test_selected_release_health_keeps_excluded_vm_findings_in_inventory_only(self):
+        report = {"kind": u.REPORT_KIND, "generated_at": u.timestamp(NOW),
+                  "complete": True, "findings": [], "hosts": [
+                      {"host": "k001-dmz", "findings": []},
+                      {"host": "k001-bak", "findings": [
+                          u.findings("backend.storage-unqualified", "excluded workload", "critical", "k001-bak")]},
+                      {"host": "k001-iot", "findings": [
+                          u.findings("replacement.stopped", "excluded stopped VM", "critical", "k001-iot")]}]}
+        verification = {"generated_at": u.timestamp(NOW), "findings": []}
+        self.assertEqual(len(u.health(report, verification, NOW)), 2)
+        self.assertEqual(u.health(report, verification, NOW, selected_hosts={"k001-dmz"}), [])
+        report['findings'] = [u.findings('discovery.partial', 'inventory incomplete', 'critical')]
+        self.assertEqual([row['code'] for row in u.health(
+            report, verification, NOW, selected_hosts={"k001-dmz"})], ['discovery.partial'])
+
 
 class SafetyRulesTests(unittest.TestCase):
     def test_one_branch_at_a_time(self):
