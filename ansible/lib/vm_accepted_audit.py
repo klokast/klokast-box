@@ -53,11 +53,15 @@ def compare(base, source, discovery, now):
             not isinstance(observed['files'], dict)):
         raise UpdateError('accepted recipe file coverage is missing or unstable')
     matching = set()
+    private = {'etc/shadow', 'etc/doas.d/doas.conf', 'etc/klokast-personalization.json',
+               *('etc/ssh/ssh_host_' + key + '_key' for key in ('rsa', 'ecdsa', 'ed25519'))}
     for path, checksum in expected.items():
+        mode = 0o600 if path in private else 0o755 if path == 'etc/init.d/klokast-podman-runroot-cleanup' else 0o644
         record = observed['files'].get('/' + path)
         if (isinstance(record, dict) and set(record) == {'sha256', 'mode', 'uid', 'gid'} and
-                record['sha256'] == checksum and record['uid'] == 0 and record['gid'] == 0 and
-                type(record['mode']) is int and record['mode'] in {0o600, 0o644, 0o755}):
+                record['sha256'] == checksum and record['uid'] == 0 and
+                record['gid'] in ({0, 42} if path == 'etc/shadow' else {0}) and
+                type(record['mode']) is int and record['mode'] == mode):
             matching.add('/' + path)
     mounts = fact.get('accepted_mount_sources', {})
     devices = mounts.get('devices')

@@ -23,6 +23,7 @@ class AcceptedFiles(unittest.TestCase):
         work = tempfile.TemporaryDirectory(); self.addCleanup(work.cleanup)
         self.root = Path(work.name)
         self.names = frozenset({'etc/shadow', 'etc/hosts'})
+        self.shadow_group = 0
         (self.root / 'etc').mkdir()
         for path in self.names:
             (self.root / path).write_text('PRIVATE CONTENT\n')
@@ -30,12 +31,14 @@ class AcceptedFiles(unittest.TestCase):
 
     def collect(self):
         native_fstat, native_stat = os.fstat, os.stat
+        shadow = self.root / 'etc/shadow'
+        inode = shadow.lstat().st_ino if shadow.exists() else None
         def root_owner(info):
             # Preserve all metadata except fixture ownership on the non-root runner.
             from types import SimpleNamespace
             value = {k: getattr(info, k) for k in ('st_mode', 'st_dev', 'st_ino', 'st_uid', 'st_gid',
                         'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
-            value.update(st_uid=0, st_gid=0)
+            value.update(st_uid=0, st_gid=self.shadow_group if info.st_ino == inode else 0)
             return SimpleNamespace(**value)
         with patch.object(self.m, 'ACCEPTED_FILES', self.names), \
                 patch.object(self.m.os, 'fstat', side_effect=lambda *a, **kw: root_owner(native_fstat(*a, **kw))), \
@@ -48,6 +51,12 @@ class AcceptedFiles(unittest.TestCase):
         self.assertEqual(result['files']['/etc/shadow']['sha256'], hashlib.sha256(b'PRIVATE CONTENT\n').hexdigest())
         self.assertNotIn('PRIVATE', str(result))
         self.assertEqual(result['evidence_sha256'], digest({k: v for k, v in result.items() if k != 'evidence_sha256'}))
+
+    def test_package_shadow_group_is_scoped_to_the_shadow_file(self):
+        self.shadow_group = 42
+        self.assertTrue(self.collect()['complete'])
+        self.shadow_group = 104
+        self.assertFalse(self.collect()['complete'])
 
     def test_links_world_write_and_missing_files_refuse(self):
         path = self.root / 'etc/shadow'
@@ -104,6 +113,14 @@ class AcceptedAudit(unittest.TestCase):
         result = self.compare()
         self.assertFalse(result['generated_files_match'])
         self.assertEqual(result['summary']['unresolved'], 2)
+
+    def test_matching_hash_with_changed_mode_is_not_accepted(self):
+        self.fact['accepted_file_hashes']['files']['/etc/hostname']['mode'] = 0o755
+        value = self.fact['accepted_file_hashes']
+        value['evidence_sha256'] = digest({k: v for k, v in value.items() if k != 'evidence_sha256'})
+        self.base['discovery_sha256'] = digest(self.discovery)
+        self.base['report_sha256'] = digest({k: v for k, v in self.base.items() if k != 'report_sha256'})
+        self.assertFalse(self.compare()['generated_files_match'])
 
     def test_stale_or_spliced_sources_refuse(self):
         for field, value in (('observed_at', 1), ('dom0', 'boxb-dom0'), ('runtime', 'stopped'),
