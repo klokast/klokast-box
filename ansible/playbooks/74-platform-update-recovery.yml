@@ -4,5 +4,19 @@
   gather_facts: false
   become: true
   become_method: doas
+  pre_tasks:
+    - name: Verify active controller authority before changing dom0 recovery
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_recovery_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_recovery_controller.stdout | from_json).configured | bool
+          - (update_recovery_controller.stdout | from_json).active | bool
   roles:
     - role: vm-update-recovery
