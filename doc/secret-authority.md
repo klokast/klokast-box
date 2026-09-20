@@ -392,6 +392,10 @@ and operation records remain under
 `/var/lib/klokast/updates/executor/adoption-preflights/` and `adoptions/`.
 An interrupted operation requires its persistent record and current authority
 to reconcile; a standby copy cannot execute it.
+`ksa-apply vm-update-adoption reconcile --nonce NONCE` can write a missing
+controller receipt only after it verifies the archived signature, current
+policy, nonce, fresh qualification archive, and exact dom0 assignment. It
+cannot create the dom0 assignment.
 The detached controller recovery manifest includes protected update records,
 archived signatures and nonces, the authority bindings, and the exact
 qualification and build files referenced by those records. It does not

@@ -166,7 +166,14 @@ def generation_chain(t, backend, create_request, identities, allocated):
     started = time.monotonic()
     seed, seed_request = create_request('old', 'new', '0' * 64)
     t.atomic(t.XEN / 'bak.cfg', (seed / 'old.cfg').read_bytes())
-    (t.XEN / 'auto/bak.cfg').symlink_to('../bak.cfg')
+    auto = t.XEN / 'auto/bak.cfg'
+    if auto.is_symlink():
+        if os.readlink(auto) != '../bak.cfg':
+            raise RuntimeError('disposable autostart link changed before adoption')
+    elif auto.exists():
+        raise RuntimeError('disposable autostart path is not a link')
+    else:
+        auto.symlink_to('../bak.cfg')
     backend.start(seed / 'old.cfg')
     source = t.source_status('bak', backend)
     if (source['vm_uuid'] != identities['old'] or

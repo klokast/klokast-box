@@ -416,6 +416,15 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                     m.vm_update_adoption_execute(args, intent)
                     self.assertIn('already-adopted', output.getvalue())
                     refresh.assert_not_called()
+                # Simulate controller loss after dom0 publication but before
+                # the protected controller receipt was written.
+                (root / 'executor/adoptions' / (intent['nonce'] + '.json')).unlink()
+                with patch.object(m, 'vm_adoption_remote', return_value=assignment), \
+                        patch.object(m, 'vm_adoption_run_controller') as refresh, \
+                        redirect_stdout(io.StringIO()) as output:
+                    m.vm_update_adoption_reconcile(intent['nonce'])
+                    self.assertIn('"result":"reconciled"', output.getvalue())
+                    refresh.assert_not_called()
 
     def test_adoption_refuses_new_workload_before_remote_mutation(self):
         m = self.m

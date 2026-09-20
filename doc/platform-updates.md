@@ -107,6 +107,7 @@ ansible/bin/platform-update scan
 ansible/bin/platform-update adopt prepare --box BOX --role dmz
 ansible/bin/platform-update adopt prepare --box BOX --role iot --json
 ansible/bin/platform-update adopt apply --approval-intent INTENT --approval-signature SIGNATURE --signer-id human-platform-apply
+ansible/bin/platform-update adopt reconcile --nonce PREPARED_NONCE
 ansible/bin/platform-update-config-audit --box BOX --role dmz
 ansible/bin/platform-update retention --json
 ansible/bin/platform-update status --json
@@ -138,6 +139,10 @@ checks the signature, refreshes the VM inventory, repeats target qualification,
 and verifies the old disk and boot identities. Dom0 records only the running
 old generation; it does not stop the guest or select a candidate. The root
 controller stores the signed authority and resulting assignment separately.
+If the controller stops after dom0 publishes the old assignment,
+`adopt reconcile` verifies the archived signature, nonce, current policy, and exact
+dom0 pointer before it writes the missing controller receipt. It cannot create
+an assignment.
 This path still needs production testing after engine promotion and policy
 activation.
 Only exact matching rows from an approved engine resolve; identity, storage,

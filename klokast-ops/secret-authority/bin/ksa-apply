@@ -5601,6 +5601,21 @@ def vm_adoption_request(intent):
             "autostart": True}
 
 
+def vm_adoption_assignment_verified(intent):
+    request = vm_adoption_request(intent)
+    assignment = vm_adoption_remote(intent["box"], ["assignment-status", "--role", intent["role"]])
+    if (assignment.get("managed") is not True or assignment.get("operation_id") != intent["operation_id"] or
+            assignment.get("request_sha256") != inventory_digest(request) or
+            assignment.get("stage") != "adopted" or assignment.get("vm_uuid") != intent["old_uuid"] or
+            assignment.get("disks") != intent["old_disks"] or
+            assignment.get("artifacts") != intent["old_artifacts"] or
+            assignment.get("runtime") != "running" or
+            assignment.get("configuration_drift") is not False or
+            assignment.get("autostart_drift") is not False):
+        raise ApplyError("dom0 adopted assignment differs from signed old generation")
+    return assignment
+
+
 def vm_update_adoption_execute(args, intent):
     validate_vm_adoption_intent(intent)
     verify_signature(args, intent)
@@ -5632,9 +5647,8 @@ def vm_update_adoption_execute(args, intent):
             if (prior.get("kind") != "klokast.vm-adoption-operation.v1" or prior.get("intent") != intent or
                     prior.get("receipt_sha256") != inventory_digest({k: v for k, v in prior.items() if k != "receipt_sha256"})):
                 raise ApplyError("existing VM adoption operation receipt conflicts")
-            current = vm_adoption_remote(intent["box"], ["assignment-status", "--role", intent["role"]])
-            if (current != prior.get("assignment") or current.get("configuration_drift") is not False or
-                    current.get("autostart_drift") is not False or current.get("runtime") != "running"):
+            current = vm_adoption_assignment_verified(intent)
+            if current != prior.get("assignment"):
                 raise ApplyError("recorded old VM assignment changed after adoption")
             print(canonical({"result": "already-adopted", "box": intent["box"], "role": intent["role"],
                              "receipt_sha256": prior["receipt_sha256"],
@@ -5643,10 +5657,13 @@ def vm_update_adoption_execute(args, intent):
         authorization = directory / "authorization.json"
         if authorization.exists() or authorization.is_symlink():
             saved = load_json(authorization, canonical_stored=True)
-            if (set(saved) != {"kind", "intent_sha256", "signature_sha256", "authorized_at"} or
+            if (set(saved) != {"kind", "intent_sha256", "signature_sha256", "authorized_at",
+                               "fresh_qualification_sha256"} or
                     saved["kind"] != "klokast.vm-adoption-authorization.v1" or
                     saved["intent_sha256"] != inventory_digest(intent) or
                     saved["signature_sha256"] != sha256_bytes(signature) or
+                    not isinstance(saved["fresh_qualification_sha256"], str) or
+                    not DIGEST_RE.fullmatch(saved["fresh_qualification_sha256"]) or
                     sha256_bytes(read_regular(directory / "adoption.sig", 64 * 1024)) != saved["signature_sha256"]):
                 raise ApplyError("existing VM adoption authorization conflicts")
         else:
@@ -5671,6 +5688,7 @@ def vm_update_adoption_execute(args, intent):
             saved = {"kind": "klokast.vm-adoption-authorization.v1",
                      "intent_sha256": inventory_digest(intent),
                      "signature_sha256": sha256_bytes(signature),
+                     "fresh_qualification_sha256": fresh["report_sha256"],
                      "authorized_at": format_utc(now_utc())}
             vm_update_store(authorization, (canonical(saved) + "\n").encode())
         request = vm_adoption_request(intent)
@@ -5678,21 +5696,12 @@ def vm_update_adoption_execute(args, intent):
                                    input_text=canonical(request) + "\n")
         if state.get("stage") != "adopted" or state.get("request_sha256") != inventory_digest(request):
             raise ApplyError("dom0 did not persist the recorded old VM generation")
-        assignment = vm_adoption_remote(intent["box"], ["assignment-status", "--role", intent["role"]])
-        if (assignment.get("managed") is not True or assignment.get("operation_id") != intent["operation_id"] or
-                assignment.get("request_sha256") != inventory_digest(request) or
-                assignment.get("stage") != "adopted" or assignment.get("vm_uuid") != intent["old_uuid"] or
-                assignment.get("disks") != intent["old_disks"] or
-                assignment.get("artifacts") != intent["old_artifacts"] or
-                assignment.get("runtime") != "running" or
-                assignment.get("configuration_drift") is not False or
-                assignment.get("autostart_drift") is not False):
-            raise ApplyError("dom0 adopted assignment differs from signed old generation")
+        assignment = vm_adoption_assignment_verified(intent)
         receipt = {"kind": "klokast.vm-adoption-operation.v1", "intent": intent,
                    "authorization_sha256": inventory_digest(saved),
-                   "fresh_qualification_sha256": fresh["report_sha256"],
+                   "fresh_qualification_sha256": saved["fresh_qualification_sha256"],
                    "request_sha256": inventory_digest(request), "assignment": assignment,
-                   "adopted_at": format_utc(now_utc())}
+                   "recorded_at": format_utc(now_utc())}
         receipt["receipt_sha256"] = inventory_digest(receipt)
         root = VM_UPDATE_ROOT / "adoptions"
         ensure_protected_dir(root, 0o700, 0)
@@ -5700,6 +5709,68 @@ def vm_update_adoption_execute(args, intent):
         append_audit("vm-update-adoption.adopted", nonce=intent["nonce"], box=intent["box"],
                      role=intent["role"], receipt_sha256=receipt["receipt_sha256"])
         print(canonical({"result": "adopted", "box": intent["box"], "role": intent["role"],
+                         "receipt_sha256": receipt["receipt_sha256"],
+                         "request_sha256": receipt["request_sha256"]}))
+
+
+def vm_update_adoption_reconcile(nonce):
+    """Record an already-adopted dom0 pointer after controller interruption."""
+    require_root_active()
+    require_self_match()
+    if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
+        raise ApplyError("adoption reconciliation requires the exact prepared nonce")
+    with vm_update_lock():
+        policy = vm_update_policy_current()
+        directory = VM_UPDATE_ROOT / "adoption-preflights" / nonce
+        intent = load_json(directory / "intent.json", canonical_stored=True)
+        validate_vm_adoption_intent(intent, check_time=False)
+        if (intent["nonce"] != nonce or intent["policy_activation_sha256"] != policy["receipt_sha256"] or
+                intent["policy_sha256"] != policy["intent"]["policy_sha256"] or
+                intent["engine_commit"] != policy["intent"]["engine_commit"] or
+                not vm_update_target_allowed(policy["intent"]["policy"], intent["box"], intent["role"])):
+            raise ApplyError("adoption reconciliation authority or target changed")
+        saved = load_json(directory / "authorization.json", canonical_stored=True)
+        if (set(saved) != {"kind", "intent_sha256", "signature_sha256", "authorized_at",
+                           "fresh_qualification_sha256"} or
+                saved["kind"] != "klokast.vm-adoption-authorization.v1" or
+                saved["intent_sha256"] != inventory_digest(intent) or
+                not isinstance(saved["fresh_qualification_sha256"], str) or
+                not DIGEST_RE.fullmatch(saved["fresh_qualification_sha256"])):
+            raise ApplyError("adoption reconciliation has no valid signed authorization")
+        signature = directory / "adoption.sig"
+        if sha256_bytes(read_regular(signature, 64 * 1024)) != saved["signature_sha256"]:
+            raise ApplyError("adoption reconciliation signature archive differs")
+        verify_signature(argparse.Namespace(signer_id=SIGNER_ID, approval_signature=signature), intent)
+        if read_regular(NONCE_ROOT / nonce, 128) != (intent["qualification_sha256"] + "\n").encode():
+            raise ApplyError("adoption reconciliation nonce binding differs")
+        fresh_path = VM_UPDATE_DISCOVERY / "qualifications" / (saved["fresh_qualification_sha256"] + ".json")
+        fresh = load_json(fresh_path, canonical_stored=True)
+        if (fresh.get("report_sha256") != saved["fresh_qualification_sha256"] or
+                inventory_digest({k: v for k, v in fresh.items() if k != "report_sha256"}) != saved["fresh_qualification_sha256"]):
+            raise ApplyError("adoption reconciliation qualification archive differs")
+        assignment = vm_adoption_assignment_verified(intent)
+        root = VM_UPDATE_ROOT / "adoptions"
+        ensure_protected_dir(root, 0o700, 0)
+        path = root / (nonce + ".json")
+        if path.exists() or path.is_symlink():
+            receipt = load_json(path, canonical_stored=True)
+            if (receipt.get("kind") != "klokast.vm-adoption-operation.v1" or receipt.get("intent") != intent or
+                    receipt.get("assignment") != assignment or
+                    receipt.get("receipt_sha256") != inventory_digest({k: v for k, v in receipt.items() if k != "receipt_sha256"})):
+                raise ApplyError("existing adoption receipt differs from dom0 assignment")
+            result = "already-adopted"
+        else:
+            receipt = {"kind": "klokast.vm-adoption-operation.v1", "intent": intent,
+                       "authorization_sha256": inventory_digest(saved),
+                       "fresh_qualification_sha256": saved["fresh_qualification_sha256"],
+                       "request_sha256": inventory_digest(vm_adoption_request(intent)),
+                       "assignment": assignment, "recorded_at": format_utc(now_utc())}
+            receipt["receipt_sha256"] = inventory_digest(receipt)
+            vm_update_store(path, (canonical(receipt) + "\n").encode())
+            append_audit("vm-update-adoption.reconciled", nonce=nonce, box=intent["box"],
+                         role=intent["role"], receipt_sha256=receipt["receipt_sha256"])
+            result = "reconciled"
+        print(canonical({"result": result, "box": intent["box"], "role": intent["role"],
                          "receipt_sha256": receipt["receipt_sha256"],
                          "request_sha256": receipt["request_sha256"]}))
 
@@ -6318,8 +6389,9 @@ def parse_args(argv):
     update_release_parser.add_argument("action", choices=("import",))
     update_release_parser.add_argument("--operation-id", required=True)
     update_adoption_parser = commands.add_parser("vm-update-adoption")
-    update_adoption_parser.add_argument("action", choices=("prepare",))
-    update_adoption_parser.add_argument("--qualification", required=True)
+    update_adoption_parser.add_argument("action", choices=("prepare", "reconcile"))
+    update_adoption_parser.add_argument("--qualification")
+    update_adoption_parser.add_argument("--nonce")
     retirement_evidence_parser = commands.add_parser("retirement-evidence")
     retirement_evidence_parser.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
     retirement_evidence_parser.add_argument("--consumer-matrix", required=True)
@@ -6389,7 +6461,12 @@ def main(argv=None):
         elif args.operation == "vm-update-release":
             vm_update_release_import(args.operation_id)
         elif args.operation == "vm-update-adoption":
-            vm_update_adoption_prepare(args.qualification)
+            if args.action == "prepare" and args.qualification and not args.nonce:
+                vm_update_adoption_prepare(args.qualification)
+            elif args.action == "reconcile" and args.nonce and not args.qualification:
+                vm_update_adoption_reconcile(args.nonce)
+            else:
+                raise ApplyError("VM adoption action requires only its own exact selector")
         elif args.operation == "inventory-source-status":
             print(canonical(inventory_source_status()))
         elif args.operation == "vm-retention-status":
