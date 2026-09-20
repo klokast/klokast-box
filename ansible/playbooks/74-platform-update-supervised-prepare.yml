@@ -1,0 +1,82 @@
+---
+- name: Prepare distinct OS and retained disks for one supervised shared VM
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the selected guest and exact operation
+      ansible.builtin.assert:
+        that:
+          - (supervised_box, supervised_role) in [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+          - inventory_hostname == supervised_box ~ '-dom0'
+          - supervised_operation_id is match('^[0-9a-f]{24}$')
+          - supervised_candidate_id is match('^[0-9a-f]{24}$')
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: supervised_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (supervised_controller.stdout | from_json).configured | bool
+          - (supervised_controller.stdout | from_json).active | bool
+
+    - name: Verify persistent dom0 data storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create private candidate job directory
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/async-prepare"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Stage checked maintenance code beside the operation
+      ansible.builtin.copy:
+        src: "../{{ item.source }}"
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/{{ item.target }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - {source: roles/vm-retained-data/files/retained_data.py, target: retained_data.py}
+        - {source: roles/vm-retained-data/files/vm_disk_backup.py, target: vm_disk_backup.py}
+        - {source: roles/vm-retained-data/files/vm_backup_verify.py, target: vm_backup_verify.py}
+        - {source: roles/vm-template-builder/files/vm-template-build-dom0, target: vm-template-build-dom0}
+        - {source: lib/vm_app_compatibility.py, target: vm_app_compatibility.py}
+        - {source: roles/vm-retained-data/files/vm-supervised-maintenance, target: vm-supervised-maintenance}
+        - {source: roles/vm-retained-data/files/vm-supervised-maintenance-dom0, target: vm-supervised-maintenance-dom0}
+        - {source: roles/vm-retained-data/files/vm-supervised-prepare-dom0, target: vm-supervised-prepare-dom0}
+
+    - name: Allocate and verify candidate root and retained volumes
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '1800'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-prepare-dom0"
+          - --box
+          - "{{ supervised_box }}"
+          - --role
+          - "{{ supervised_role }}"
+          - --operation-id
+          - "{{ supervised_operation_id }}"
+          - --candidate-id
+          - "{{ supervised_candidate_id }}"
+      async: 1860
+      poll: 15
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/async-prepare"
+      register: supervised_prepared
+
+    - name: Show exact candidate disk identities
+      ansible.builtin.debug:
+        msg: "{{ supervised_prepared.stdout | from_json }}"

@@ -1,0 +1,208 @@
+#!/usr/bin/python3
+"""Allocate separate candidate OS and retained LVs for one supervised VM."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+import vm_disk_backup as backup
+
+BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
+CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+OP = re.compile(r'[0-9a-f]{24}')
+
+
+def read(path):
+    backup.secure(path)
+    return json.loads(path.read_text(), object_pairs_hook=backup.unique)
+
+
+def command(argv, timeout=120):
+    result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=timeout)
+    if result.returncode or len(result.stdout) > 16384:
+        raise backup.BackupError('candidate allocation command failed: ' + str(argv[0]))
+    return result.stdout.strip()
+
+
+def filesystem_uuid(path):
+    line = command(['/sbin/blkid', path])
+    match = re.search(r'\bUUID="([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})"', line)
+    if not line.startswith(path + ':') or not match or 'TYPE="ext4"' not in line:
+        raise backup.BackupError('candidate LV has no exact ext4 filesystem identity')
+    return match.group(1)
+
+
+def artifact(path, maximum):
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+            info.st_mode & 0o077 or info.st_nlink != 1 or
+            not 0 < info.st_size <= maximum):
+        raise backup.BackupError('candidate artifact has unsafe type, owner, mode, or size')
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        while chunk := stream.read(backup.MIB):
+            value.update(chunk)
+    after = path.stat()
+    fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid',
+              'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+    if any(getattr(after, key) != getattr(info, key) for key in fields):
+        raise backup.BackupError('candidate artifact changed while reading')
+    return {'bytes': info.st_size, 'sha256': value.hexdigest()}
+
+
+def source_status(role):
+    result = command(['/usr/local/sbin/vm-update-transaction', 'source-status', '--role', role], 180)
+    return json.loads(result, object_pairs_hook=backup.unique)
+
+
+def prepare(args):
+    if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            not OP.fullmatch(args.operation_id) or not OP.fullmatch(args.candidate_id)):
+        raise backup.BackupError('candidate preparation requires dom0 root and one fixed target')
+    root = BASE / args.operation_id
+    for path in (BASE, root, root / 'backup', root / 'verify', root / 'code'):
+        backup.secure(path, True)
+    if (root / 'prepared.json').exists() or (root / 'prepare-journal.json').exists():
+        raise backup.BackupError('candidate allocation already started; inspect its exact record')
+    copied = read(root / 'backup/result.json')
+    verified = read(root / 'verify/result.json')
+    if (copied.get('kind') != 'klokast.vm-disk-backup-result.v1' or
+            copied.get('box') != args.box or copied.get('operation_id') != args.operation_id or
+            verified.get('kind') != 'klokast.vm-verified-backup.v1' or
+            verified.get('operation_id') != args.operation_id or
+            verified.get('maintenance_candidate') != args.candidate_id or
+            verified.get('copy_receipt_sha256') != copied.get('receipt_sha256') or
+            verified.get('restore_verified') is not True or
+            verified.get('cleanup_verified') is not True):
+        raise backup.BackupError('candidate preparation needs the exact isolated restore receipt')
+    current = source_status(args.role)
+    source_path = '/dev/vg0/lv_podman_' + args.role
+    if (current.get('kind') != 'klokast.vm-unmanaged-source.v1' or
+            current.get('dom0') != args.box + '-dom0' or
+            current.get('runtime') != 'running' or current.get('autostart') is not True or
+            current.get('disks') != {source_path: {
+                'uuid': copied['source']['uuid'], 'bytes': copied['source']['bytes']}}):
+        raise backup.BackupError('running old guest differs from the verified backup source')
+    candidate = CANDIDATES / args.candidate_id
+    backup.secure(candidate, True)
+    manifest = read(candidate / 'candidate.json')
+    if (manifest.get('kind') != 'klokast.vm-template-candidate.v1' or
+            manifest.get('operation_id') != args.candidate_id or
+            manifest.get('validation') != 'base-boot-tested' or
+            manifest.get('accepted') is not False or
+            not isinstance(manifest.get('artifacts'), dict) or
+            set(manifest['artifacts']) != {'root', 'kernel', 'initramfs'}):
+        raise backup.BackupError('candidate is not the selected tested base template')
+    artifacts = manifest['artifacts']
+    for name, maximum in (('root', 4 * 1024**3), ('kernel', 32 * backup.MIB),
+                          ('initramfs', 128 * backup.MIB)):
+        path = candidate / name
+        if artifact(path, maximum) != artifacts[name]:
+            raise backup.BackupError('candidate artifact changed: ' + name)
+    if artifacts['root']['bytes'] != 4 * 1024**3:
+        raise backup.BackupError('candidate root must have the tested 4 GiB disk size')
+    native = backup.Native()
+    source = native.volume(source_path)
+    if any(source[k] != copied['source'][k] for k in ('path', 'uuid', 'bytes')):
+        raise backup.BackupError('old source LV changed before candidate allocation')
+    root_lv = '/dev/vg0/vmupd_' + args.operation_id + '_root'
+    data_lv = '/dev/vg0/vmupd_' + args.operation_id + '_data'
+    tags = {'root': 'klokast.vm-update.' + args.operation_id + '.root',
+            'data': 'klokast.vm-update.' + args.operation_id + '.data'}
+    if any(v['lv_path'] in {root_lv, data_lv} or any(t in v['lv_tags'].split(',') for t in tags.values())
+           for v in native.volumes()):
+        raise backup.BackupError('candidate LV names or tags already exist')
+    free, extent = native.capacity('vg0')
+    if free < 6 * 1024**3 or extent <= 0 or 4 * 1024**3 % extent or 1024**3 % extent:
+        raise backup.BackupError('candidate OS, retained data, and 1 GiB reserve need 6 GiB free')
+    journal = {'kind': 'klokast.vm-supervised-prepare-journal.v1',
+               'operation_id': args.operation_id, 'box': args.box, 'role': args.role,
+               'candidate_id': args.candidate_id, 'root_lv': root_lv,
+               'data_lv': data_lv, 'tags': tags, 'stage': 'prepared'}
+    def record(stage):
+        journal.update(stage=stage, updated_at=time.time())
+        backup.store(root / 'prepare-journal.json', journal)
+    record('prepared')
+    try:
+        for name, path, size in (('root', root_lv, 4 * 1024**3),
+                                 ('data', data_lv, 1024**3)):
+            record('allocating-' + name)
+            native.create(path, size, tags[name])
+            volume = native.volume(path)
+            backup.ordinary(volume)
+            native.unmounted([volume]); native.unattached([volume])
+            if volume['bytes'] != size or volume['tags'] != [tags[name]] or volume['uuid'] == source['uuid']:
+                raise backup.BackupError('new candidate LV differs from its recorded allocation')
+            journal[name] = {k: volume[k] for k in ('path', 'uuid', 'bytes')}
+            record('allocated-' + name)
+        root_volume = native.volume(root_lv)
+        root_volume['device_bytes'] = 4 * 1024**3
+        expected = artifacts['root']['sha256']
+        digest = hashlib.sha256()
+        with (candidate / 'root').open('rb') as original, native.open(root_volume, True) as target:
+            while chunk := original.read(backup.MIB):
+                if target.write(chunk) != len(chunk):
+                    raise backup.BackupError('candidate root copy was short')
+                digest.update(chunk)
+            os.fsync(target.fileno())
+        if digest.hexdigest() != expected:
+            raise backup.BackupError('candidate source changed while copying')
+        digest = hashlib.sha256()
+        with open(root_lv, 'rb', buffering=0) as stream:
+            remaining = 4 * 1024**3
+            while remaining:
+                block = stream.read(min(backup.MIB, remaining))
+                if not block:
+                    raise backup.BackupError('candidate root read-back was short')
+                digest.update(block); remaining -= len(block)
+        if digest.hexdigest() != expected:
+            raise backup.BackupError('candidate OS disk differs from the tested root')
+        record('root-copied')
+        command(['/sbin/mkfs.ext4', '-F', '-q', data_lv], 180)
+        root_uuid, data_uuid = filesystem_uuid(root_lv), filesystem_uuid(data_lv)
+        if root_uuid == data_uuid:
+            raise backup.BackupError('candidate OS and retained filesystems have the same UUID')
+        result = {'kind': 'klokast.vm-supervised-prepared.v1', 'operation_id': args.operation_id,
+                  'box': args.box, 'role': args.role, 'candidate_id': args.candidate_id,
+                  'old_source': copied['source'], 'root': journal['root'], 'data': journal['data'],
+                  'root_uuid': root_uuid, 'data_uuid': data_uuid,
+                  'root_artifact_sha256': expected,
+                  'verified_backup_sha256': verified['receipt_sha256']}
+        result['receipt_sha256'] = backup.digest(result)
+        backup.store(root / 'prepared.json', result)
+        record('complete')
+        return result
+    except BaseException:
+        record('failed')
+        raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    print(backup.canonical(prepare(args)).decode())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (backup.BackupError, OSError, ValueError, TypeError, KeyError,
+            subprocess.TimeoutExpired) as error:
+        print('vm-supervised-prepare-dom0: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

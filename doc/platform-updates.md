@@ -129,6 +129,11 @@ disk is not yet a verified restore or permission to stop the old guest.
 --operation-id OPERATION --candidate-id BUILD_ID` boots a disposable,
 networkless maintenance guest to restore and check that copy. It keeps the
 old guest and its disk unchanged.
+After a successful isolated restore, run
+`ansible/bin/platform-update-supervised-prepare --box BOX --role ROLE
+--operation-id OPERATION --candidate-id BUILD_ID` to allocate a distinct
+candidate OS LV and empty retained-data LV. This also leaves the old VM
+running. The later switch must use the exact recorded disk identities.
 
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
 root registry and retention readers, verifies that both bind the same authority,

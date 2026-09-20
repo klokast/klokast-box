@@ -1,0 +1,165 @@
+#!/usr/bin/python3
+"""PID 1 for one networkless, disposable supervised VM maintenance boot."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import time
+
+import retained_data as data
+import vm_personalize
+
+BLOCK = Path('/sys/class/block')
+SHA = re.compile(r'[0-9a-f]{64}')
+OP = re.compile(r'[0-9a-f]{24}')
+
+
+def assignments():
+    values = {}
+    for token in Path('/proc/cmdline').read_text().split():
+        key, separator, value = token.partition('=')
+        if separator and key.startswith('klokast_'):
+            if key in values:
+                raise data.CopyError('duplicate supervised maintenance boot assignment')
+            values[key] = value
+    if (set(values) != {'klokast_supervised', 'klokast_operation',
+                        'klokast_inputs', 'klokast_request_sha256'} or
+            values['klokast_supervised'] not in {'stage', 'finalize', 'personalize'} or
+            not OP.fullmatch(values['klokast_operation']) or
+            not SHA.fullmatch(values['klokast_inputs']) or
+            not SHA.fullmatch(values['klokast_request_sha256'])):
+        raise data.CopyError('supervised maintenance has no exact boot assignment')
+    return values
+
+
+def disk_request(args):
+    identities = set()
+    for name in ('xvda', 'xvdb', 'xvdc', 'xvdd', 'xvde'):
+        info = Path('/dev/' + name).lstat()
+        node = BLOCK / name
+        if (not stat.S_ISBLK(info.st_mode) or info.st_rdev in identities or
+                node.joinpath('dev').read_text().strip() !=
+                f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}' or
+                node.joinpath('ro').read_text().strip() !=
+                ('1' if name in ('xvdc', 'xvde') else '0')):
+            raise data.CopyError('supervised maintenance disk identity or access differs')
+        identities.add(info.st_rdev)
+        if name in ('xvdb', 'xvde') and node.joinpath('size').read_text().strip() != '2048':
+            raise data.CopyError('supervised request and result disks must each be 1 MiB')
+    with open('/dev/xvde', 'rb', buffering=0) as stream:
+        raw = stream.read(65537)
+    prefix, separator, unused = raw.partition(b'\0')
+    if (not separator or not 1 <= len(prefix) <= 65536 or
+            hashlib.sha256(prefix).hexdigest() != args['klokast_request_sha256']):
+        raise data.CopyError('supervised maintenance request disk is truncated or changed')
+    try:
+        value = json.loads(prefix, object_pairs_hook=data.unique_fields)
+    except (ValueError, UnicodeError) as error:
+        raise data.CopyError('supervised maintenance request has invalid JSON') from error
+    if (not isinstance(value, dict) or
+            set(value) != {'kind', 'mode', 'operation_id', 'inputs_sha256', 'request', 'stage_receipt_sha256'} or
+            value['kind'] != 'klokast.vm-supervised-maintenance.v1' or
+            value['mode'] != args['klokast_supervised'] or
+            value['operation_id'] != args['klokast_operation'] or
+            value['inputs_sha256'] != args['klokast_inputs'] or
+            not isinstance(value['request'], dict) or
+            value['request'].get('operation_id') != value['operation_id']):
+        raise data.CopyError('supervised maintenance request differs from its boot assignment')
+    marker = data.read_record(Path('/etc/klokast-template.json'), private=False)
+    if not isinstance(marker, dict) or marker.get('inputs_sha256') != value['inputs_sha256']:
+        raise data.CopyError('supervised maintenance OS differs from the tested template')
+    if value['mode'] in {'stage', 'finalize'}:
+        data.staged_request(value['request'])
+        if value['request']['kind'] != 'klokast.vm-retained-stage.v3' or value['request']['source_partition'] != 3:
+            raise data.CopyError('supervised data copy requires the fixed old root partition')
+        if (value['stage_receipt_sha256'] is not None and
+                (value['mode'] != 'finalize' or not isinstance(value['stage_receipt_sha256'], str) or
+                 not SHA.fullmatch(value['stage_receipt_sha256']))):
+            raise data.CopyError('supervised stage receipt selector is invalid')
+        if value['mode'] == 'stage' and value['stage_receipt_sha256'] is not None:
+            raise data.CopyError('initial stage cannot select a previous receipt')
+        if value['mode'] == 'finalize' and value['stage_receipt_sha256'] is None:
+            raise data.CopyError('final synchronization requires the exact stage receipt')
+    else:
+        vm_personalize.validate(value['request'])
+        if value['stage_receipt_sha256'] is not None:
+            raise data.CopyError('personalization cannot select a stage receipt')
+        if (marker.get('engine_commit') != value['request']['engine_commit'] or
+                marker.get('inputs_sha256') != value['request']['inputs_sha256']):
+            raise data.CopyError('personalization engine and package inputs differ')
+    return value
+
+
+def do_work(value, deadline):
+    paths = []
+    try:
+        if value['mode'] in {'stage', 'finalize'}:
+            source = data.source_device(value['request'])
+            devices = ((source, data.SOURCE, 'ro,noload,nodev,nosuid,noexec'),
+                       ('/dev/xvdd', data.TARGET, 'nodev,nosuid,noexec'))
+        else:
+            devices = (('/dev/xvdc', vm_personalize.RETAINED, 'ro,noload,nodev,nosuid,noexec'),
+                       ('/dev/xvdd', vm_personalize.ROOT, 'nodev,nosuid,noexec'))
+        for device, path, options in devices:
+            if path.exists() or path.is_symlink():
+                raise data.CopyError('supervised maintenance mountpoint is not empty')
+            path.mkdir(mode=0o700)
+            data.run(['mount', '-t', 'ext4', '-o', options, device, str(path)], deadline)
+            paths.append(path)
+        if value['mode'] == 'stage':
+            return data.stage(value['request'], deadline)
+        if value['mode'] == 'finalize':
+            return data.finalize(value['request'], value['stage_receipt_sha256'], deadline)
+        return vm_personalize.personalize(value['request'], deadline)
+    finally:
+        for path in reversed(paths):
+            data.run(['umount', str(path)], deadline)
+
+
+def main():
+    if os.getpid() != 1 or os.geteuid() != 0:
+        raise data.CopyError('supervised maintenance requires PID 1 in a disposable Xen guest')
+    deadline = time.monotonic() + 1800
+    result = None
+    safe = False
+    try:
+        for name, filesystem in (('proc', 'proc'), ('sys', 'sysfs'), ('dev', 'devtmpfs')):
+            if not os.path.ismount('/' + name):
+                data.run(['mount', '-t', filesystem, filesystem, '/' + name], deadline)
+        data.environment()
+        args = assignments()
+        value = disk_request(args)
+        data.backup_boot_filesystems(deadline)
+        safe = True
+        result = {'kind': 'klokast.vm-supervised-maintenance-result.v1',
+                  'mode': value['mode'], 'operation_id': value['operation_id'],
+                  'inputs_sha256': value['inputs_sha256'],
+                  'request_sha256': data.digest(value), 'success': False}
+        result['receipt'] = do_work(value, deadline)
+        result['success'] = True
+    except Exception as error:
+        print('supervised maintenance refused: ' + type(error).__name__, flush=True)
+        if safe:
+            result['error'] = type(error).__name__ + ': ' + str(error)[:512]
+    finally:
+        if safe:
+            output = data.canonical(result) + b'\n\0'
+            if len(output) > 65536:
+                raise data.CopyError('supervised maintenance result exceeds its fixed slot')
+            with open('/dev/xvdb', 'wb', buffering=0) as stream:
+                if stream.write(output) != len(output):
+                    raise data.CopyError('supervised maintenance result write was short')
+                os.fsync(stream.fileno())
+        os.sync()
+        subprocess.run(['poweroff', '-f'], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        while True:
+            time.sleep(1)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,250 @@
+#!/usr/bin/python3
+"""Run one fixed data-copy or personalization phase in a disposable Xen VM.
+
+Dom0 verifies block and template identities and transfers opaque bytes. It
+mounts only a disposable clone of the already tested template to install the
+checked maintenance entry; it never mounts an old or new production disk.
+"""
+
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import sys
+import time
+import uuid
+
+import retained_data as data
+import vm_disk_backup as backup
+
+BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
+CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+OP = re.compile(r'[0-9a-f]{24}')
+
+
+def load_builder(path):
+    loader = importlib.machinery.SourceFileLoader('vm_template_build_dom0', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def checked_candidate(candidate, host):
+    if candidate.parent != CANDIDATES or not OP.fullmatch(candidate.name):
+        raise backup.BackupError('maintenance candidate path is outside fixed storage')
+    host.safe_directory(candidate)
+    path = candidate / 'candidate.json'
+    host.safe_file(path, backup.MIB)
+    value = json.loads(path.read_text(), object_pairs_hook=backup.unique)
+    if (value.get('kind') != 'klokast.vm-template-candidate.v1' or
+            value.get('operation_id') != candidate.name or
+            value.get('validation') != 'base-boot-tested' or value.get('accepted') is not False or
+            value.get('boot_test', {}).get('personalized_test', {}).get('success') is not True or
+            not isinstance(value.get('inputs_sha256'), str) or
+            not backup.SHA.fullmatch(value['inputs_sha256'])):
+        raise backup.BackupError('candidate lacks complete isolated base and personalization tests')
+    artifacts = value.get('artifacts')
+    if not isinstance(artifacts, dict) or set(artifacts) != {'root', 'kernel', 'initramfs'}:
+        raise backup.BackupError('candidate boot artifacts are incomplete')
+    for name, maximum in (('root', 4 * 1024**3), ('kernel', 32 * backup.MIB),
+                          ('initramfs', 128 * backup.MIB)):
+        file = candidate / name
+        host.safe_file(file, maximum)
+        if (set(artifacts[name]) != {'bytes', 'sha256'} or
+                artifacts[name]['bytes'] != file.stat().st_size or
+                artifacts[name]['sha256'] != host.checksum(file)):
+            raise backup.BackupError('candidate artifact changed before maintenance: ' + name)
+    return value
+
+
+def identity(native, path, writable):
+    item = native.volume(path)
+    backup.ordinary(item, readonly=not writable)
+    native.unmounted([item])
+    native.unattached([item])
+    return item
+
+
+def execute(args):
+    if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            not OP.fullmatch(args.operation_id) or not OP.fullmatch(args.candidate_id)):
+        raise backup.BackupError('maintenance requires dom0 root and one fixed supervised target')
+    root = BASE / args.operation_id
+    for path in (BASE, root, root / 'code'):
+        backup.secure(path, True)
+    work = root / args.mode
+    backup.secure(work, True)
+    request_file = work / 'request.json'
+    backup.secure(request_file)
+    request = json.loads(request_file.read_text(), object_pairs_hook=backup.unique)
+    if (request.get('kind') != 'klokast.vm-supervised-maintenance.v1' or
+            request.get('operation_id') != args.operation_id or request.get('mode') != args.mode or
+            not isinstance(request.get('request'), dict)):
+        raise backup.BackupError('maintenance request differs from selected operation')
+    if (work / 'result.json').exists() or (work / 'lifecycle.json').exists():
+        raise backup.BackupError('maintenance phase was already used; inspect its exact records')
+    candidate = CANDIDATES / args.candidate_id
+    code = root / 'code/vm-supervised-maintenance'
+    backup.secure(code)
+    host = load_builder(root / 'code/vm-template-build-dom0')
+    manifest = checked_candidate(candidate, host)
+    if request.get('inputs_sha256') != manifest['inputs_sha256']:
+        raise backup.BackupError('maintenance request selects a different package template')
+    if args.mode in {'stage', 'finalize'}:
+        expected_source = ('/dev/vg0/vmbackup_' + args.operation_id + '_disk'
+                           if args.mode == 'stage' else '/dev/vg0/lv_podman_' + args.role)
+        if (args.source != expected_source or
+                args.destination != '/dev/vg0/vmupd_' + args.operation_id + '_data'):
+            raise backup.BackupError('data-copy disks differ from fixed old and retained assignments')
+    elif (args.mode != 'personalize' or
+          args.source != '/dev/vg0/vmupd_' + args.operation_id + '_data' or
+          args.destination != '/dev/vg0/vmupd_' + args.operation_id + '_root'):
+        raise backup.BackupError('personalization disks differ from fixed retained and root assignments')
+    native = backup.Native()
+    source = identity(native, args.source, writable=args.mode != 'stage')
+    destination = identity(native, args.destination, writable=True)
+    if source['device'] == destination['device'] or source['uuid'] == destination['uuid']:
+        raise backup.BackupError('maintenance disks overlap')
+    if args.mode == 'personalize' and not (root / 'finalize/result.json').is_file():
+        raise backup.BackupError('personalization requires a completed retained final sync')
+    if args.mode == 'finalize' and not (root / 'stage/result.json').is_file():
+        raise backup.BackupError('final sync requires a completed retained stage')
+    statvfs = os.statvfs(root)
+    if statvfs.f_bavail * statvfs.f_frsize < 5 * 1024**3:
+        raise backup.BackupError('maintenance needs 5 GiB free on persistent dom0 data storage')
+    from_name = root / 'code/vm-template-build-dom0'
+    backup.secure(from_name)
+    name = 'vm-supervised-' + args.mode + '-' + args.operation_id
+    if host.domain(name) is not None:
+        raise backup.BackupError('maintenance domain already exists')
+    root_copy = work / 'maintenance-root.slot'
+    result_slot = work / 'result.slot'
+    payload = work / 'request.slot'
+    config = work / 'maintenance.cfg'
+    mount = work / 'mounted-root'
+    loops = {}
+    backup.store(work / 'lifecycle.json', {'stage': 'copying-root', 'candidate': args.candidate_id,
+                                          'source': {k: source[k] for k in ('path', 'uuid', 'bytes')},
+                                          'destination': {k: destination[k] for k in ('path', 'uuid', 'bytes')}})
+    try:
+        with (candidate / 'root').open('rb') as original, root_copy.open('xb') as target:
+            os.posix_fallocate(target.fileno(), 0, manifest['artifacts']['root']['bytes'])
+            shutil.copyfileobj(original, target, backup.MIB)
+            target.flush(); os.fsync(target.fileno())
+        if host.checksum(root_copy) != manifest['artifacts']['root']['sha256']:
+            raise backup.BackupError('disposable maintenance root differs from tested template')
+        loop = host.attach_loop(root_copy)
+        loops[root_copy] = loop
+        mount.mkdir(mode=0o700)
+        host.run(['mount', '-t', 'ext4', '-o', 'nodev,nosuid,noexec', loop, str(mount)])
+        try:
+            destination_script = mount / 'usr/local/libexec/vm-supervised-maintenance'
+            if destination_script.exists() or destination_script.is_symlink():
+                raise backup.BackupError('tested template already has a supervised maintenance entry')
+            with code.open('rb') as stream, destination_script.open('xb') as target:
+                shutil.copyfileobj(stream, target)
+                target.flush(); os.fsync(target.fileno())
+            destination_script.chmod(0o700)
+            if hashlib.sha256(destination_script.read_bytes()).digest() != hashlib.sha256(code.read_bytes()).digest():
+                raise backup.BackupError('injected maintenance entry differs from checked source')
+        finally:
+            host.run(['umount', str(mount)])
+        mount.rmdir()
+        host.detach_loop(root_copy, loop)
+        del loops[root_copy]
+        with payload.open('xb') as stream:
+            stream.write(data.canonical(request) + b'\0')
+            stream.truncate(backup.MIB)
+            stream.flush(); os.fsync(stream.fileno())
+        with result_slot.open('xb') as stream:
+            stream.truncate(backup.MIB)
+            stream.flush(); os.fsync(stream.fileno())
+        for path in (root_copy, result_slot, payload):
+            loops[path] = host.attach_loop(path, readonly=path == payload)
+        identity = str(uuid.uuid4())
+        disks = [f'phy:{loops[root_copy]},xvda,w', f'phy:{loops[result_slot]},xvdb,w',
+                 f'phy:{source["path"]},xvdc,r', f'phy:{destination["path"]},xvdd,w',
+                 f'phy:{loops[payload]},xvde,r']
+        extra = ('root=/dev/xvda rootfstype=ext4 rw modules=ext4 console=hvc0 '
+                 'init=/usr/local/libexec/vm-supervised-maintenance '
+                 'klokast_supervised=' + args.mode + ' klokast_operation=' + args.operation_id +
+                 ' klokast_inputs=' + manifest['inputs_sha256'] +
+                 ' klokast_request_sha256=' + data.digest(request))
+        config.write_text(f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 4096\n'
+                          f'maxmem = 4096\nvcpus = 2\nkernel = {str(candidate / "kernel")!r}\n'
+                          f'ramdisk = {str(candidate / "initramfs")!r}\nextra = {extra!r}\n'
+                          f'disk = {disks!r}\nvif = []\non_poweroff = "destroy"\n'
+                          'on_reboot = "destroy"\non_crash = "destroy"\n')
+        backup.store(work / 'lifecycle.json', {'stage': 'booting', 'candidate': args.candidate_id,
+                                              'domain': name, 'uuid': identity})
+        host.boot_guest(work, name, identity, config,
+                        {'operation_id': args.operation_id, 'inputs_sha256': manifest['inputs_sha256']},
+                        slot=result_slot.name, kind='klokast.vm-supervised-maintenance-result.v1', timeout=1800)
+        result = host.read_slot(result_slot)
+        if (result.get('kind') != 'klokast.vm-supervised-maintenance-result.v1' or
+                result.get('mode') != args.mode or result.get('operation_id') != args.operation_id or
+                result.get('inputs_sha256') != manifest['inputs_sha256'] or
+                result.get('request_sha256') != data.digest(request) or result.get('success') is not True or
+                not isinstance(result.get('receipt'), dict)):
+            raise backup.BackupError('isolated maintenance guest failed or returned a different operation')
+        receipt = result['receipt']
+        expected_kind = {'stage': 'klokast.vm-retained-stage-result.v3',
+                         'finalize': 'klokast.vm-retained-final-result.v3',
+                         'personalize': 'klokast.vm-personalization-result.v2'}[args.mode]
+        if (receipt.get('kind') != expected_kind or
+                receipt.get('request_sha256') != data.digest(request['request']) or
+                receipt.get('adoption_accepted') is not False):
+            raise backup.BackupError('maintenance receipt differs from the exact data or machine request')
+        if args.mode in {'stage', 'finalize'}:
+            checksum = receipt.get('receipt_sha256')
+            if (not isinstance(checksum, str) or not backup.SHA.fullmatch(checksum) or
+                    checksum != data.digest({k: v for k, v in receipt.items() if k != 'receipt_sha256'})):
+                raise backup.BackupError('retained-data receipt checksum differs')
+        elif receipt.get('packages_unchanged') is not True:
+            raise backup.BackupError('personalization changed the frozen package set')
+        backup.store(work / 'result.json', result)
+        return result
+    finally:
+        if host.domain(name) is not None:
+            raise backup.BackupError('maintenance domain remains; retain operation resources')
+        if mount.is_mount():
+            host.run(['umount', str(mount)])
+        if mount.exists():
+            mount.rmdir()
+        for path, loop in list(loops.items()):
+            host.detach_loop(path, loop)
+        for path in (root_copy, result_slot, payload, config):
+            path.unlink(missing_ok=True)
+        backup.store(work / 'cleanup.json', {'complete': True, 'at': time.time()})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--mode', choices=('stage', 'finalize', 'personalize'), required=True)
+    parser.add_argument('--source', required=True)
+    parser.add_argument('--destination', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    print(backup.canonical(execute(args)).decode())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (backup.BackupError, data.CopyError, OSError, ValueError, TypeError,
+            KeyError, RuntimeError) as error:
+        print('vm-supervised-maintenance-dom0: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)
