@@ -378,6 +378,11 @@ stores one immutable record under
 `prepare --auto` invokes this action for a new or unchanged template. This
 record binds evidence; it is not an accepted VM assignment. The replacement
 executor must check the artifact bytes on dom0 again before use.
+`ksa-apply vm-update-release check --release-sha256 SHA256 --box BOX`
+revalidates current signed policy and the protected release, then reads only
+the fixed candidate manifest, root image, kernel, and initramfs on that dom0.
+It verifies each file's type, owner, size, and checksum. This read-only check
+does not select or start a guest.
 
 `ksa-apply vm-update-adoption prepare --qualification PATH` accepts only a
 complete v7 report for a selected no-application VM. It binds the current

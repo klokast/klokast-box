@@ -23,6 +23,8 @@ package manifest again. Artifact bytes must be checked again before use. A
 failed transfer leaves an exact staging directory for review; it cannot select
 a production disk. Signed old-generation adoption is implemented in the
 candidate engine, but has not been promoted or used on production VMs.
+The root authority also has a read-only release check that compares the fixed
+dom0 artifact bytes with the protected release before staging.
 Replacement and rollout remain unavailable. No production update schedule has
 been enabled.
 

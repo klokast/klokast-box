@@ -5364,6 +5364,104 @@ def vm_update_release_import(operation_id):
                          "build_operation_id": operation_id, "result": result}))
 
 
+def vm_update_release_dom0_files(box, operation_id):
+    """Hash fixed published template files through the selected dom0 root."""
+    if box not in {"k001", "k002"} or not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{24}", operation_id):
+        raise ApplyError("VM release artifact check has an invalid box or build identity")
+    script = '''set -eu
+mountpoint -q /mnt/dom0_data
+python3 - "$1" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+operation = sys.argv[1]
+base = pathlib.Path('/mnt/dom0_data/klokast-vm-templates/candidates') / operation
+for directory in (pathlib.Path('/mnt/dom0_data'), base.parent.parent, base.parent, base):
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise SystemExit('published candidate directory is unsafe')
+limits = {'candidate.json': 1048576, 'root': 4 * 1024**3,
+          'kernel': 32 * 1024**2, 'initramfs': 128 * 1024**2}
+files = {}
+for name, limit in limits.items():
+    path = base / name
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+                info.st_mode & 0o022 or info.st_nlink != 1 or
+                not 0 < info.st_size <= limit):
+            raise SystemExit('published candidate file is unsafe: ' + name)
+        checksum = hashlib.sha256()
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                checksum.update(block)
+        after = os.fstat(descriptor)
+        fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid',
+                  'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if any(getattr(after, field) != getattr(info, field) for field in fields):
+            raise SystemExit('published candidate file changed while reading: ' + name)
+        files[name] = {'sha256': checksum.hexdigest(), 'bytes': info.st_size}
+    finally:
+        os.close(descriptor)
+print(json.dumps({'kind': 'klokast.vm-dom0-release-files.v1',
+                  'operation_id': operation, 'files': files}, sort_keys=True, separators=(',', ':')))
+PY
+'''
+    try:
+        result = subprocess.run(["/usr/bin/tailscale", "ssh", "neo@" + box + "-dom0", "doas",
+                                 "sh", "-s", "--", operation_id], input=script,
+                                capture_output=True, text=True, timeout=900,
+                                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ApplyError("bounded dom0 VM release artifact check did not finish") from error
+    if result.returncode or len(result.stdout) > 4096:
+        raise ApplyError("dom0 VM release artifact check failed: " + result.stderr[-1024:].strip())
+    try:
+        value = json.loads(result.stdout, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise ApplyError("dom0 VM release artifact check returned invalid JSON") from error
+    if (not isinstance(value, dict) or set(value) != {"kind", "operation_id", "files"} or
+            value["kind"] != "klokast.vm-dom0-release-files.v1" or value["operation_id"] != operation_id):
+        raise ApplyError("dom0 VM release artifact check returned a different build")
+    return value["files"]
+
+
+def vm_update_release_check(release_sha256, box):
+    """Recheck protected release evidence and published bytes before staging."""
+    require_root_active()
+    require_self_match()
+    if not isinstance(release_sha256, str) or not DIGEST_RE.fullmatch(release_sha256) or box not in {"k001", "k002"}:
+        raise ApplyError("VM release check requires an exact release and selected box")
+    with vm_update_lock():
+        policy = vm_update_policy_current()
+        if vm_update_pause_state(policy["receipt_sha256"]):
+            raise ApplyError("paused VM update policy cannot check a release for execution")
+        path = VM_UPDATE_ROOT / "releases" / policy["receipt_sha256"] / (release_sha256 + ".json")
+        record = load_json(path, canonical_stored=True)
+        if (record.get("kind") != VM_UPDATE_RELEASE_KIND or
+                record.get("policy_activation_sha256") != policy["receipt_sha256"] or
+                record.get("release", {}).get("release_sha256") != release_sha256 or
+                record.get("record_sha256") != inventory_digest({key: value for key, value in record.items() if key != "record_sha256"})):
+            raise ApplyError("protected VM release record is invalid or outside current policy")
+        evidence = vm_update_release_evidence(record["build_operation_id"], policy)
+        if {key: value for key, value in record.items() if key not in {"kind", "policy_activation_sha256", "recorded_at", "record_sha256"}} != evidence:
+            raise ApplyError("protected VM release differs from current exact build evidence")
+        if box not in {host.rsplit("-", 1)[0] for host in evidence["selection"]["targets"]}:
+            raise ApplyError("VM release box is outside the selected targets")
+        candidate_path = VM_UPDATE_DISCOVERY / "builds" / record["build_operation_id"] / "candidate.json"
+        raw = read_regular(candidate_path, 1024 * 1024)
+        candidate = json.loads(raw, object_pairs_hook=unique_object)
+        if inventory_digest(candidate) != record["candidate_sha256"]:
+            raise ApplyError("protected VM release candidate manifest changed")
+        expected = {"candidate.json": {"sha256": sha256_bytes(raw), "bytes": len(raw)},
+                    **record["release"]["artifacts"]}
+        actual = vm_update_release_dom0_files(box, record["build_operation_id"])
+        if actual != expected:
+            raise ApplyError("published VM release artifact bytes differ from the protected record")
+        print(canonical({"kind": "klokast.vm-release-availability.v1", "box": box,
+                         "release_sha256": release_sha256, "record_sha256": record["record_sha256"],
+                         "artifacts_sha256": inventory_digest(actual), "available": True}))
+
+
 def vm_update_target_allowed(policy, box, role):
     return (box, role) in {("k001", "dmz"), ("k002", "dmz"), ("k002", "iot")} and \
         role in policy["targets"].get(box, []) and not any(
@@ -6386,8 +6484,10 @@ def parse_args(argv):
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
         update_policy_parser.add_argument("--" + name)
     update_release_parser = commands.add_parser("vm-update-release")
-    update_release_parser.add_argument("action", choices=("import",))
-    update_release_parser.add_argument("--operation-id", required=True)
+    update_release_parser.add_argument("action", choices=("import", "check"))
+    update_release_parser.add_argument("--operation-id")
+    update_release_parser.add_argument("--release-sha256")
+    update_release_parser.add_argument("--box")
     update_adoption_parser = commands.add_parser("vm-update-adoption")
     update_adoption_parser.add_argument("action", choices=("prepare", "reconcile"))
     update_adoption_parser.add_argument("--qualification")
@@ -6459,7 +6559,12 @@ def main(argv=None):
                     raise ApplyError("VM update policy control accepts no caller-selected inputs")
                 vm_update_policy_control(args.action)
         elif args.operation == "vm-update-release":
-            vm_update_release_import(args.operation_id)
+            if args.action == "import" and args.operation_id and not args.release_sha256 and not args.box:
+                vm_update_release_import(args.operation_id)
+            elif args.action == "check" and not args.operation_id and args.release_sha256 and args.box:
+                vm_update_release_check(args.release_sha256, args.box)
+            else:
+                raise ApplyError("VM release action requires only its own exact selectors")
         elif args.operation == "vm-update-adoption":
             if args.action == "prepare" and args.qualification and not args.nonce:
                 vm_update_adoption_prepare(args.qualification)

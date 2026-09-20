@@ -316,6 +316,38 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                 with self.assertRaisesRegex(m.ApplyError, 'transfer evidence is incomplete'):
                     m.vm_update_release_evidence(operation, policy)
 
+    def test_protected_release_check_rehashes_exact_dom0_files(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operation, policy, release = self.release_fixture(root / 'discovery')
+            candidate_path = root / 'discovery/builds' / operation / 'candidate.json'
+            raw = candidate_path.read_bytes()
+            expected = {'candidate.json': {'sha256': m.sha256_bytes(raw), 'bytes': len(raw)},
+                        **release['artifacts']}
+            with patch.object(m, 'VM_UPDATE_DISCOVERY', root / 'discovery'), \
+                    patch.object(m, 'VM_UPDATE_ROOT', root / 'executor'), \
+                    patch.object(m, 'vm_update_release_contract', return_value=release_contract), \
+                    patch.object(m, 'vm_update_policy_current', return_value=policy), \
+                    patch.object(m, 'vm_update_pause_state', return_value=False), \
+                    patch.object(m, 'require_root_active'), patch.object(m, 'require_self_match'), \
+                    patch.object(m, 'append_audit'), redirect_stdout(io.StringIO()) as output:
+                m.vm_update_release_import(operation)
+                with patch.object(m, 'vm_update_release_dom0_files', return_value=expected) as remote:
+                    m.vm_update_release_check(release['release_sha256'], 'k002')
+                    remote.assert_called_once_with('k002', operation)
+                    self.assertIn('"available":true', output.getvalue())
+                changed = copy.deepcopy(expected)
+                changed['root']['sha256'] = '0' * 64
+                with patch.object(m, 'vm_update_release_dom0_files', return_value=changed), \
+                        self.assertRaisesRegex(m.ApplyError, 'artifact bytes differ'):
+                    m.vm_update_release_check(release['release_sha256'], 'k002')
+                with patch.object(m, 'vm_update_release_dom0_files') as remote, \
+                        patch.object(m, 'vm_update_pause_state', return_value=True), \
+                        self.assertRaisesRegex(m.ApplyError, 'paused'):
+                    m.vm_update_release_check(release['release_sha256'], 'k002')
+                remote.assert_not_called()
+
     def adoption_fixture(self, root):
         m = self.m
         policy = {**self.policy, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']}}
