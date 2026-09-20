@@ -1,0 +1,54 @@
+---
+- name: Restore verified dom0 clock synchronization for VM update evidence
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require one selected dom0
+      ansible.builtin.assert:
+        that:
+          - update_time_box in ['k001', 'k002']
+          - inventory_hostname == update_time_box ~ '-dom0'
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_time_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_time_controller.stdout | from_json).configured | bool
+          - (update_time_controller.stdout | from_json).active | bool
+
+    - name: Enable the installed Alpine time service
+      ansible.builtin.service:
+        name: ntpd
+        enabled: true
+        state: started
+      register: update_time_service
+
+    - name: Persist the time service on diskless dom0
+      ansible.builtin.command:
+        argv: [/usr/sbin/lbu, commit, -d]
+      when: update_time_service.changed
+
+    - name: Wait for dom0 UTC to match the controller within 30 seconds
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      register: update_time_dom0_epoch
+      changed_when: false
+      until: >-
+        ((update_time_dom0_epoch.stdout | int) -
+         (lookup('pipe', 'date -u +%s') | int)) | abs <= 30
+      retries: 24
+      delay: 5
+
+    - name: Verify the installed time service remains running
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, ntpd, status]
+      changed_when: false
