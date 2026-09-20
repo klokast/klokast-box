@@ -132,6 +132,30 @@
         argv: [/usr/sbin/lbu, commit, -d]
       when: (update_time_clocksource | default('keep')) == 'xen'
 
+    - name: Verify the diskless archive contains the clocksource boot service
+      ansible.builtin.shell: |
+        set -eu
+        archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
+        count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
+        if [ "$count" -ne 1 ]; then
+          echo 'Expected one persisted dom0 archive' >&2
+          exit 1
+        fi
+        tar -tzf "$archives" >/dev/null
+        tar -tzf "$archives" | awk '
+          {sub(/^\.\//, "", $0)}
+          $0 == "etc/init.d/klokast-dom0-xen-clocksource" {service=1}
+          $0 == "etc/runlevels/boot/klokast-dom0-xen-clocksource" {runlevel=1}
+          END {
+            if (!service || !runlevel) {
+              print "Clocksource boot service is absent from the persisted archive" > "/dev/stderr"
+              exit 1
+            }
+          }
+        '
+      changed_when: false
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
     - name: Enable the installed Alpine time service
       ansible.builtin.service:
         name: ntpd
