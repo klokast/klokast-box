@@ -207,6 +207,67 @@
       retries: 24
       delay: 5
 
+    - name: Read k001 hardware clock as a UTC epoch
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        from datetime import datetime
+        from pathlib import Path
+
+        fields = {}
+        for line in Path('/proc/driver/rtc').read_text().splitlines():
+            key, _, value = line.partition(':')
+            fields[key.strip()] = value.strip()
+        print(int(datetime.fromisoformat(
+            fields['rtc_date'] + 'T' + fields['rtc_time'] + '+00:00').timestamp()))
+        PY
+      changed_when: false
+      register: update_time_rtc_before
+      when: update_time_box == 'k001'
+
+    - name: Require a bounded k001 hardware clock correction
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((update_time_rtc_before.stdout | int) -
+             (lookup('pipe', 'date -u +%s') | int)) | abs <= 600
+      when: update_time_box == 'k001'
+
+    - name: Copy verified dom0 UTC to the k001 hardware clock
+      ansible.builtin.command:
+        argv: [hwclock, -u, -w]
+      when: update_time_box == 'k001'
+
+    - name: Verify the k001 hardware clock after correction
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        from datetime import datetime
+        from pathlib import Path
+
+        fields = {}
+        for line in Path('/proc/driver/rtc').read_text().splitlines():
+            key, _, value = line.partition(':')
+            fields[key.strip()] = value.strip()
+        print(int(datetime.fromisoformat(
+            fields['rtc_date'] + 'T' + fields['rtc_time'] + '+00:00').timestamp()))
+        PY
+      changed_when: false
+      register: update_time_rtc_after
+      when: update_time_box == 'k001'
+
+    - name: Require k001 hardware clock within 30 seconds of the controller
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((update_time_rtc_after.stdout | int) -
+             (lookup('pipe', 'date -u +%s') | int)) | abs <= 30
+      when: update_time_box == 'k001'
+
+    - name: Restart k001 NTP after the bounded system and hardware correction
+      ansible.builtin.service:
+        name: ntpd
+        state: restarted
+      when: update_time_box == 'k001'
+
     - name: Verify the installed time service remains running
       ansible.builtin.command:
         argv: [/sbin/rc-service, ntpd, status]

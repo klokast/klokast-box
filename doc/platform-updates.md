@@ -157,8 +157,11 @@ reports an unsynchronized clock. The one-shot Xen clocksource boot service is
 installed and persisted, but it is not a demonstrated correction. A physical
 dom0 reboot has not tested it. `74-platform-update-dom0-clock-diagnostic.yml`
 reads the system clock, hardware clock, and NTP state. The time correction in
-`74-platform-update-dom0-time.yml` is bounded by the active controller. Keep
-the strict audit freshness check until clock synchronization is demonstrated.
+`74-platform-update-dom0-time.yml` is bounded by the active controller. On
+`k001`, it also checks that the hardware clock is within ten minutes of the
+controller before writing it from the corrected system clock, and it restarts
+NTP. Keep the strict audit freshness check until sustained clock
+synchronization is demonstrated.
 
 ## Current commands
 
