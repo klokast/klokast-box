@@ -41,7 +41,7 @@
         printf 'rtc_driver:\n'; cat /proc/driver/rtc
         printf 'hwclock_utc='; hwclock -u -r
         printf 'adjtimex:\n'; busybox adjtimex
-        printf 'ntpd_service:\n'; rc-service ntpd status
+        printf 'ntpd_service:\n'; rc-service ntpd status || true
         printf 'ntpd_config:\n'; cat /etc/conf.d/ntpd
         printf 'ntpd_process:\n'; ps -ef | grep '[n]tpd' || true
         printf 'ntp_dns:\n'; nslookup pool.ntp.org || true
