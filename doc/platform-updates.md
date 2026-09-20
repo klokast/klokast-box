@@ -222,12 +222,15 @@ receipts, and passed base tests. It records application tests as `not-run`.
 It is build evidence, not an accepted release or execution authority.
 `prepare --auto` has no caller-selected box or branch. It obtains the current
 signed policy through `ksa-apply`, requires the three selected running shared
-VMs to have fresh complete discovery, and selects only their common adjacent
-supported stable branch. It builds the template once on k001. A completed
-automatic build has one controller pointer. On a later run, current signed
-target-branch indexes and installed signing keys must match its frozen inputs;
-the controller then checks every published artifact on both boxes. Only that
-exact complete build returns `state: unchanged` without a new build or copy.
+VMs to have fresh complete discovery, and selects the branch adjacent to the
+oldest guest. Guests can differ by one branch only in canary and rollout order.
+It builds the template once on k001. A completed automatic build has one
+controller pointer. Before rollout, current signed target-branch indexes and
+installed signing keys must match its frozen inputs. After the canary advances,
+the pointer and exact artifacts must remain available; changed repository
+indexes cannot select a new template during that rollout. Changed signing keys
+block it. The controller checks every published artifact on both boxes. Only
+that exact complete build returns `state: unchanged` without a new build or copy.
 This command does not copy production data, assign a candidate, or replace a
 guest. `adopt apply` and `run` require the remaining integration. `status` and `verify` still report
 missing accepted-release verification as a critical finding.

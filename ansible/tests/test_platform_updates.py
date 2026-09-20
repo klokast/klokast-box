@@ -35,7 +35,9 @@ class EvidenceTests(unittest.TestCase):
                      'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
                      'engine_commit': commit}
         source = {'policy': 'checked'}
-        discovery, metadata = {'complete': True}, {'signed': True}
+        discovery = {'complete': True, 'hosts': [
+            {'host': host, 'branch': 'v3.23'} for host in selection['targets']]}
+        metadata = {'signed': True}
         candidate = {'artifacts': {'root': {'sha256': 'd' * 64, 'bytes': 1}}}
         release = {'kind': 'klokast.vm-release.v2', 'release_sha256': 'e' * 64,
                    'artifacts': candidate['artifacts'], 'engine_commit': commit,
@@ -72,6 +74,31 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(transfer.call_args.args[3], 'k002')
             self.assertTrue((root / 'transfer-k002.json').is_file())
             self.assertEqual(json.loads((root / 'automatic.json').read_text())['operation_id'], 'f' * 24)
+
+    def test_automatic_prepare_requires_frozen_build_after_canary(self):
+        cli = load_cli()
+        selection = {'branch': 'v3.24', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}
+        discovery = {'hosts': [
+            {'host': 'k001-dmz', 'branch': 'v3.24'},
+            {'host': 'k002-dmz', 'branch': 'v3.23'},
+            {'host': 'k002-iot', 'branch': 'v3.23'}]}
+        source, metadata = {'policy': 'checked'}, {'signed': True}
+        commit = 'c' * 40
+        def command(argv, **_kwargs):
+            if argv[:3] == ['git', '-C', cli.REPO] and argv[3] == 'rev-parse':
+                return commit + '\n'
+            return ''
+        with patch.object(cli, 'command', side_effect=command), \
+                patch.object(cli, 'read_policy_source', return_value=source), \
+                patch.object(cli, 'optional', side_effect=[discovery, metadata,
+                                                           discovery, metadata]), \
+                patch.object(cli, 'automatic_selection', return_value=selection), \
+                patch.object(cli, 'reuse_auto_candidate',
+                             return_value={'state': 'unchanged'}) as reuse, \
+                patch.object(cli, 'prepare') as build:
+            self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
+            reuse.assert_called_once_with(selection, frozen=True)
+            build.assert_not_called()
 
     def test_automatic_prepare_reuses_only_a_complete_build_with_current_signed_indexes(self):
         cli = load_cli()
@@ -126,6 +153,17 @@ class EvidenceTests(unittest.TestCase):
                 with patch.object(cli, 'collect_branch', return_value=changed):
                     self.assertIsNone(cli.reuse_auto_candidate(selection))
                 self.assertEqual(verify.call_count, 2)
+                with patch.object(cli, 'collect_branch', side_effect=AssertionError('frozen rollout fetched new indexes')):
+                    frozen = cli.reuse_auto_candidate(selection, frozen=True)
+                self.assertEqual(frozen['operation_id'], operation)
+                self.assertEqual(verify.call_count, 4)
+                with patch.object(cli, 'installed_apk_keys', return_value={'new.pub': '8' * 64}):
+                    with self.assertRaisesRegex(u.UpdateError, 'signing keys changed'):
+                        cli.reuse_auto_candidate(selection, frozen=True)
+            (root / 'automatic.json').unlink()
+            with patch.object(cli, 'STATE', root):
+                with self.assertRaisesRegex(u.UpdateError, 'pointer is absent'):
+                    cli.reuse_auto_candidate(selection, frozen=True)
 
     def test_adjacent_branch_selection_ignores_expired_source_and_skips_no_branch(self):
         releases = {'release_branches': [
@@ -179,12 +217,27 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(selected['branch'], 'v3.24')
         self.assertEqual(selected['build_box'], 'k001')
         self.assertEqual(selected['targets'], ['k001-dmz', 'k002-dmz', 'k002-iot'])
+        canary = copy.deepcopy(report); canary['hosts'][0]['branch'] = 'v3.24'
+        metadata['v3.24'] = copy.deepcopy(metadata['v3.23'])
+        self.assertEqual(cli.automatic_selection(canary, metadata, source, 'c' * 40, NOW), selected)
+        second = copy.deepcopy(canary); second['hosts'][1]['branch'] = 'v3.24'
+        self.assertEqual(cli.automatic_selection(second, metadata, source, 'c' * 40, NOW), selected)
+        out_of_order = copy.deepcopy(report); out_of_order['hosts'][1]['branch'] = 'v3.24'
+        with self.assertRaisesRegex(u.UpdateError, 'canary and rollout order'):
+            cli.automatic_selection(out_of_order, metadata, source, 'c' * 40, NOW)
+        too_far = copy.deepcopy(canary); too_far['hosts'][0]['branch'] = 'v3.25'
+        metadata['v3.25'] = copy.deepcopy(metadata['v3.23'])
+        with self.assertRaisesRegex(u.UpdateError, 'adjacent branch apart'):
+            cli.automatic_selection(too_far, metadata, source, 'c' * 40, NOW)
         paused = copy.deepcopy(source); paused['paused'] = True
         with self.assertRaises(u.UpdateError):
             cli.automatic_selection(report, metadata, paused, 'c' * 40, NOW)
         incomplete = copy.deepcopy(report); incomplete['hosts'].pop()
         with self.assertRaises(u.UpdateError):
             cli.automatic_selection(incomplete, metadata, source, 'c' * 40, NOW)
+        duplicate = copy.deepcopy(report); duplicate['hosts'].append(copy.deepcopy(duplicate['hosts'][0]))
+        with self.assertRaisesRegex(u.UpdateError, 'unique complete VM inventory'):
+            cli.automatic_selection(duplicate, metadata, source, 'c' * 40, NOW)
         divergent = copy.deepcopy(report); divergent['hosts'][2]['branch'] = 'v3.22'
         with self.assertRaises(u.UpdateError):
             cli.automatic_selection(divergent, metadata, source, 'c' * 40, NOW)
