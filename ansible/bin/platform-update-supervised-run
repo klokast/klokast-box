@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Run one staged supervised shared-VM switch with box-local recovery."""
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import platform_updates as updates
+import vm_supervised_probe as probe
+
+LOCK = Path('/var/lib/klokast/updates/operation.lock')
+OPERATIONS = Path('/var/lib/klokast/updates/discovery/supervised-operations')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+ACTIONS = {'arm', 'stop', 'start', 'status', 'heartbeat', 'tested',
+           'accept', 'complete', 'recover'}
+
+
+def checked(argv, *, input_text=None, timeout=30):
+    result = subprocess.run([str(v) for v in argv], input=input_text, capture_output=True,
+                            text=True, timeout=timeout)
+    if result.returncode or len(result.stdout) > 1024 * 1024:
+        raise RuntimeError('remote Platform command failed: ' + str(argv[0]))
+    return result.stdout.strip()
+
+
+def dom0(box, script, timeout=60):
+    return checked(['tailscale', 'ssh', 'neo@' + box + '-dom0', 'sh', '-s'],
+                   input_text=script, timeout=timeout)
+
+
+def transaction(box, operation, action, timeout=60):
+    if action not in ACTIONS or not re.fullmatch(r'[0-9a-f]{24}', operation):
+        raise RuntimeError('transaction action or operation is invalid')
+    script = ('set -eu\ndoas /usr/local/sbin/vm-update-transaction ' + action +
+              ' --operation-id ' + operation + '\n')
+    return json.loads(dom0(box, script, timeout))
+
+
+def helper(box, role, operation, candidate, name):
+    if name not in {'finalize', 'personalize'}:
+        raise RuntimeError('unsupported supervised maintenance phase')
+    path = ('/mnt/dom0_data/klokast-vm-supervised/' + operation +
+            '/code/vm-supervised-' + name + '-dom0')
+    script = ('set -eu\ndoas /usr/bin/python3 ' + path + ' --box ' + box +
+              ' --role ' + role + ' --operation-id ' + operation +
+              ' --candidate-id ' + candidate + '\n')
+    return json.loads(dom0(box, script, 1850))
+
+
+def write_checks(box, operation, request_hash, checks):
+    value = {'request_sha256': request_hash, 'checks': checks}
+    path = '/mnt/dom0_data/klokast-vm-updates/operations/' + operation + '/checks.json'
+    script = '''set -eu
+doas /usr/bin/python3 - <<'PY'
+import json, os
+from pathlib import Path
+path = Path(%s)
+value = json.loads(%s)
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+with os.fdopen(descriptor, 'w') as stream:
+    json.dump(value, stream, sort_keys=True, separators=(',', ':'))
+    stream.write('\\n')
+    stream.flush(); os.fsync(stream.fileno())
+parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+try: os.fsync(parent)
+finally: os.close(parent)
+PY
+''' % (repr(path), repr(json.dumps(value, sort_keys=True, separators=(',', ':'))))
+    dom0(box, script)
+
+
+def checks_for(before, after, release, input_record, operation):
+    expected_config = {path: hashlib.sha256(content.encode()).hexdigest()
+                       for path, content in input_record['files'].items()}
+    config_ok = all(after['config_sha256'].get(path) == expected_config[path]
+                    for path in expected_config if path != 'etc/resolv.conf')
+    no_apps = all(before[name] == [] and after[name] == []
+                  for name in ('containers', 'images', 'volumes'))
+    personalized = after['personalization'] or {}
+    return {
+        'boot': (after['hostname'] == input_record['box'] + '-' + input_record['role'] and
+                 after['xen_uuid'] != before['xen_uuid'] and
+                 personalized.get('operation_id') == operation and
+                 personalized.get('release_sha256') == release['release_sha256'] and
+                 personalized.get('hostname') == after['hostname']),
+        'kernel_modules': (after['kernel'] == release['kernel_release'] and
+                           after['modules_present'] is True and
+                           after['packages_sha256'] == updates.digest(release['packages'])),
+        'tailscale': (after['tailscale_online'] is True and
+                      after['tailscale_id'] == before['tailscale_id'] and
+                      after['tailscale_public_key'] == before['tailscale_public_key']),
+        'rootless_podman': after['rootless_podman'] is True,
+        'firewall': (after['firewall_valid'] is True and config_ok and
+                     after['nftables_sha256'] == expected_config['etc/nftables.nft']),
+        'no_application_qualification': no_apps,
+        'data': (after['retained_mounted'] is True and
+                 after['retained_state_private'] is True and
+                 after['retained_uuid'] == personalized.get('retained_uuid') and
+                 personalized.get('packages_unchanged') is True and
+                 after['runtime'] == before['runtime'] and
+                 after['ssh_host_sha256'] == before['ssh_host_sha256']),
+        'application_images_unchanged': no_apps,
+        'quarantine': no_apps and after['firewall_valid'] is True,
+    }
+
+
+def heartbeat(box, operation, stop, failures):
+    while not stop.is_set():
+        try:
+            transaction(box, operation, 'heartbeat', 45)
+        except Exception as error:
+            if not stop.is_set():
+                failures.append(str(error))
+            return
+        stop.wait(15)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    if ((args.box, args.role) not in TARGETS or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise RuntimeError('supervised switch requires one selected guest and exact operation')
+    if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
+        raise RuntimeError('run this command as smith on the active controller')
+    authority = json.loads(checked(['/usr/local/sbin/klokast-controller-guard',
+                                    '--status', '--json', '--require-active']))
+    if (authority.get('configured') is not True or authority.get('active') is not True or
+            authority.get('hostname') != socket.gethostname().split('.')[0]):
+        raise RuntimeError('this is not the configured active controller')
+    commit = checked(['git', '-C', str(REPO), 'rev-parse', 'HEAD'])
+    if (commit != checked(['git', '-C', str(REPO), 'rev-parse', '@{upstream}']) or
+            checked(['git', '-C', str(REPO), 'status', '--porcelain', '--untracked-files=all'])):
+        raise RuntimeError('the public checkout must be clean, committed, and pushed')
+    work = OPERATIONS / args.operation_id
+    release = json.loads((work / 'release.json').read_text(), object_pairs_hook=updates.unique_object)
+    input_record = json.loads((work / 'personalize-input.json').read_text(),
+                              object_pairs_hook=updates.unique_object)
+    if (input_record.get('box') != args.box or input_record.get('role') != args.role or
+            input_record.get('operation_id') != args.operation_id or
+            input_record.get('candidate_id') != args.candidate_id or
+            release.get('release_sha256') != updates.digest({k: v for k, v in release.items()
+                                                            if k != 'release_sha256'})):
+        raise RuntimeError('staged supervised operation differs from selected release')
+    with LOCK.open('r+b') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('another Platform mutation holds the installation lock') from error
+        host = args.box + '-' + args.role
+        before = probe.probe(host)
+        if (before['hostname'] != host or before['tailscale_online'] is not True or
+                before['rootless_podman'] is not True or before['firewall_valid'] is not True or
+                any(before[name] for name in ('containers', 'images', 'volumes'))):
+            raise RuntimeError('old guest has unhealthy management or application state')
+        # The staged dom0 request is validated before this command can arm it.
+        print(f'Arming local recovery: {host}; operation {args.operation_id}', flush=True)
+        arm_attempted = False
+        accepted = False
+        stop = threading.Event()
+        failures = []
+        thread = None
+        try:
+            arm_attempted = True
+            journal = transaction(args.box, args.operation_id, 'arm')
+            if journal.get('stage') != 'armed':
+                raise RuntimeError('box-local recovery did not arm')
+            thread = threading.Thread(target=heartbeat,
+                                      args=(args.box, args.operation_id, stop, failures), daemon=True)
+            thread.start()
+            journal = transaction(args.box, args.operation_id, 'stop', 180)
+            if journal.get('stage') != 'stopped':
+                raise RuntimeError('old VM did not stop under local recovery')
+            print(f'Old VM stopped; final identity sync: {host}', flush=True)
+            helper(args.box, args.role, args.operation_id, args.candidate_id, 'finalize')
+            if failures: raise RuntimeError('controller heartbeat failed during final sync')
+            print(f'Personalizing candidate OS: {host}', flush=True)
+            helper(args.box, args.role, args.operation_id, args.candidate_id, 'personalize')
+            if failures: raise RuntimeError('controller heartbeat failed during personalization')
+            journal = transaction(args.box, args.operation_id, 'start', 180)
+            if journal.get('stage') != 'booted':
+                raise RuntimeError('new VM did not boot under local recovery')
+            print(f'Checking new VM identity and services: {host}', flush=True)
+            deadline = time.monotonic() + 480
+            after = None
+            while time.monotonic() < deadline and not failures:
+                try:
+                    candidate = probe.probe(host, timeout=45)
+                    if candidate['xen_uuid'] != before['xen_uuid']:
+                        after = candidate
+                        break
+                except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+                    pass
+                time.sleep(10)
+            if after is None or failures:
+                raise RuntimeError('candidate management access or controller heartbeat did not recover')
+            checks = checks_for(before, after, release, input_record, args.operation_id)
+            if (set(checks) != {'boot', 'kernel_modules', 'tailscale', 'rootless_podman',
+                                'firewall', 'no_application_qualification', 'data',
+                                'application_images_unchanged', 'quarantine'} or
+                    any(value is not True for value in checks.values())):
+                raise RuntimeError('candidate failed one or more identity, data, or service checks: ' +
+                                   ','.join(key for key, value in checks.items() if not value))
+            write_checks(args.box, args.operation_id, journal['request_sha256'], checks)
+            journal = transaction(args.box, args.operation_id, 'tested')
+            if journal.get('stage') != 'tested' or failures:
+                raise RuntimeError('candidate tests did not become an exact recorded result')
+            stop.set()
+            thread.join(timeout=10)
+            journal = transaction(args.box, args.operation_id, 'accept')
+            if journal.get('stage') not in {'accepted', 'complete'}:
+                raise RuntimeError('box did not persist candidate acceptance')
+            accepted = True
+            journal = transaction(args.box, args.operation_id, 'complete')
+            if journal.get('stage') != 'complete':
+                raise RuntimeError('accepted VM did not complete its local assignment')
+            print(f'New VM accepted and running: {host}; release {release["release_sha256"]}',
+                  flush=True)
+        except BaseException:
+            stop.set()
+            if thread is not None:
+                thread.join(timeout=10)
+            if arm_attempted and not accepted:
+                try:
+                    state = transaction(args.box, args.operation_id, 'status')
+                    if state is None:
+                        print('Switch was not armed; old VM remains selected.', flush=True)
+                    elif state.get('stage') in {'accepted', 'complete'}:
+                        accepted = True
+                    else:
+                        recovered = transaction(args.box, args.operation_id, 'recover', 1900)
+                        print('Local recovery result: ' + str(recovered.get('stage')), flush=True)
+                except Exception as error:
+                    print('Local recovery needs inspection: ' + str(error), file=sys.stderr)
+            if accepted:
+                print('Accepted production data remains on the new VM; do not restore the old disk.',
+                      file=sys.stderr)
+            raise
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print('platform-update-supervised-run: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

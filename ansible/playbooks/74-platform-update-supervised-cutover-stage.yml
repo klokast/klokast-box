@@ -1,0 +1,79 @@
+---
+- name: Stage one supervised VM switch and its local recovery record
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate one selected supervised operation
+      ansible.builtin.assert:
+        that:
+          - (supervised_box, supervised_role) in [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+          - inventory_hostname == supervised_box ~ '-dom0'
+          - supervised_operation_id is match('^[0-9a-f]{24}$')
+          - supervised_candidate_id is match('^[0-9a-f]{24}$')
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: supervised_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (supervised_controller.stdout | from_json).configured | bool
+          - (supervised_controller.stdout | from_json).active | bool
+
+    - name: Verify persistent dom0 data storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Stage checked finalization and switch code
+      ansible.builtin.copy:
+        src: "../{{ item.source }}"
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/{{ item.target }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - {source: roles/vm-retained-data/files/vm-supervised-finalize-dom0, target: vm-supervised-finalize-dom0}
+        - {source: roles/vm-retained-data/files/vm-supervised-personalize-dom0, target: vm-supervised-personalize-dom0}
+        - {source: roles/vm-retained-data/files/vm-supervised-switch-stage-dom0, target: vm-supervised-switch-stage-dom0}
+        - {source: roles/vm-personalize/files/vm_personalize.py, target: vm_personalize.py}
+
+    - name: Transfer exact release, supervised choice, and machine configuration
+      ansible.builtin.copy:
+        src: "/var/lib/klokast/updates/discovery/supervised-operations/{{ supervised_operation_id }}/{{ item }}"
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - release.json
+        - supervision.json
+        - personalize-input.json
+      no_log: true
+
+    - name: Stage exact old and new Xen definitions under local recovery
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '300'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-switch-stage-dom0"
+          - --box
+          - "{{ supervised_box }}"
+          - --role
+          - "{{ supervised_role }}"
+          - --operation-id
+          - "{{ supervised_operation_id }}"
+          - --candidate-id
+          - "{{ supervised_candidate_id }}"
+      register: supervised_switch_staged
+
+    - name: Show staged recovery assignment
+      ansible.builtin.debug:
+        msg: "{{ supervised_switch_staged.stdout | from_json }}"

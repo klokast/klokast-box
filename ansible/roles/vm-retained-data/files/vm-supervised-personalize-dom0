@@ -1,0 +1,125 @@
+#!/usr/bin/python3
+"""Personalize one prepared OS disk after an isolated final identity sync."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+
+import retained_data as data
+import vm_disk_backup as backup
+import vm_personalize
+
+BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
+CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+
+
+def read(path):
+    backup.secure(path)
+    return json.loads(path.read_text(), object_pairs_hook=backup.unique)
+
+
+def personalize(args):
+    if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise backup.BackupError('personalization requires dom0 root and one fixed target')
+    root = BASE / args.operation_id
+    for path in (BASE, root, root / 'finalize', root / 'code'):
+        backup.secure(path, True)
+    prepared = read(root / 'prepared.json')
+    final = read(root / 'finalize/result.json')
+    input_record = read(root / 'personalize-input.json')
+    manifest = read(CANDIDATES / args.candidate_id / 'candidate.json')
+    release = read(root / 'release.json')
+    restore_request = read(root / 'verify/request.json')
+    receipt = final.get('receipt')
+    if (prepared.get('operation_id') != args.operation_id or
+            prepared.get('box') != args.box or prepared.get('role') != args.role or
+            prepared.get('candidate_id') != args.candidate_id or
+            final.get('success') is not True or not isinstance(receipt, dict) or
+            receipt.get('kind') != 'klokast.vm-retained-final-result.v3' or
+            receipt.get('copy_verified') is not True or
+            receipt.get('receipt_sha256') != data.digest({k: v for k, v in receipt.items()
+                                                            if k != 'receipt_sha256'}) or
+            input_record.get('kind') != 'klokast.vm-supervised-personalization-input.v1' or
+            set(input_record) != {'kind', 'operation_id', 'box', 'role', 'candidate_id',
+                                  'files', 'admin_password_hash'} or
+            input_record.get('operation_id') != args.operation_id or
+            input_record.get('box') != args.box or input_record.get('role') != args.role or
+            input_record.get('candidate_id') != args.candidate_id or
+            not isinstance(input_record.get('files'), dict) or
+            manifest.get('operation_id') != args.candidate_id or
+            release.get('kind') != 'klokast.vm-release.v2' or
+            release.get('inputs_sha256') != manifest.get('inputs_sha256') or
+            release.get('packages') != manifest.get('packages') or
+            restore_request.get('operation_id') != args.operation_id):
+        raise backup.BackupError('personalization lacks exact final data and candidate records')
+    request = {'kind': 'klokast.vm-personalize.v2', 'operation_id': args.operation_id,
+               'box': args.box, 'role': args.role,
+               'engine_commit': release['engine_commit'],
+               'release_sha256': release['release_sha256'],
+               'inputs_sha256': release['inputs_sha256'],
+               'root_uuid': prepared['root_uuid'], 'retained_uuid': prepared['data_uuid'],
+               'runtime': restore_request['runtime'], 'files': input_record['files'],
+               'packages': manifest['packages'],
+               'admin_password_hash': input_record['admin_password_hash'],
+               'retained_receipt_sha256': receipt['receipt_sha256']}
+    vm_personalize.validate(request)
+    if (request['operation_id'] != args.operation_id or request['box'] != args.box or
+            request['role'] != args.role or request['root_uuid'] != prepared['root_uuid'] or
+            request['retained_uuid'] != prepared['data_uuid'] or
+            request['packages'] != manifest.get('packages') or
+            request['inputs_sha256'] != manifest.get('inputs_sha256')):
+        raise backup.BackupError('personalization input differs from the prepared disks or frozen packages')
+    status = subprocess.run(['/usr/local/sbin/vm-update-transaction', 'status',
+                             '--operation-id', args.operation_id],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    if status.returncode or len(status.stdout) > 65536 or json.loads(
+            status.stdout, object_pairs_hook=backup.unique).get('stage') != 'stopped':
+        raise backup.BackupError('personalization requires a stopped old VM under local recovery')
+    wrapper = {'kind': 'klokast.vm-supervised-maintenance.v1', 'mode': 'personalize',
+               'operation_id': args.operation_id, 'inputs_sha256': request['inputs_sha256'],
+               'request': request, 'stage_receipt_sha256': None}
+    work = root / 'personalize'
+    work.mkdir(mode=0o700)
+    backup.secure(work, True)
+    if any(work.iterdir()):
+        raise backup.BackupError('personalization already started; inspect its exact result')
+    backup.store(work / 'request.json', wrapper)
+    command = ['/usr/bin/python3', str(root / 'code/vm-supervised-maintenance-dom0'),
+               '--box', args.box, '--role', args.role,
+               '--operation-id', args.operation_id, '--candidate-id', args.candidate_id,
+               '--mode', 'personalize', '--source', prepared['data']['path'],
+               '--destination', prepared['root']['path']]
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, timeout=1800)
+    if result.returncode:
+        raise backup.BackupError('isolated personalization failed; local recovery must restore the old VM')
+    return json.loads(result.stdout, object_pairs_hook=backup.unique)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    print(backup.canonical(personalize(args)).decode())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (backup.BackupError, data.CopyError, vm_personalize.PersonalizeError,
+            OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
+        print('vm-supervised-personalize-dom0: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

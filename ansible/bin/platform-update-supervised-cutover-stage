@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Stage one supervised switch, including machine inputs and local recovery."""
+
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import socket
+import subprocess
+import sys
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import platform_updates as updates
+import vm_config_audit as audit
+import vm_supervised_config as config
+
+LOCK = Path('/var/lib/klokast/updates/operation.lock')
+BUILDS = Path('/var/lib/klokast/updates/discovery/builds')
+OPERATIONS = Path('/var/lib/klokast/updates/discovery/supervised-operations')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+HASH = re.compile(r'\$6\$(?:rounds=[0-9]{1,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}|!')
+
+
+def checked(argv, *, input_text=None, timeout=60, allowed=(0,)):
+    result = subprocess.run([str(v) for v in argv], input=input_text, capture_output=True,
+                            text=True, timeout=timeout)
+    if result.returncode not in allowed or len(result.stdout) > 16 * 1024 * 1024:
+        raise RuntimeError('required active-controller or target inspection failed: ' + str(argv[0]))
+    return result.stdout
+
+
+def guest_values(host):
+    script = '''set -eu
+doas python3 - <<'PY'
+import json
+from pathlib import Path
+rows = [line.split(':') for line in Path('/etc/shadow').read_text().splitlines() if line]
+neo = [row[1] for row in rows if row[0] == 'neo' and len(row) == 9]
+if len(neo) != 1:
+    raise SystemExit(1)
+print(json.dumps({'resolv_conf': Path('/etc/resolv.conf').read_text(), 'admin_password_hash': neo[0]}))
+PY
+'''
+    value = json.loads(checked(['tailscale', 'ssh', 'neo@' + host, 'sh', '-s'],
+                               input_text=script, timeout=90))
+    if (set(value) != {'resolv_conf', 'admin_password_hash'} or
+            not isinstance(value['admin_password_hash'], str) or
+            not HASH.fullmatch(value['admin_password_hash'])):
+        raise RuntimeError('guest resolver or local console password hash is unsupported')
+    return value
+
+
+def store(path, value):
+    content = (updates.canonical(value) + '\n').encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    if ((args.box, args.role) not in TARGETS or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise RuntimeError('supervised switch staging requires one selected target and exact operation')
+    if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
+        raise RuntimeError('run this command as smith on the active controller')
+    authority = json.loads(checked(['/usr/local/sbin/klokast-controller-guard',
+                                    '--status', '--json', '--require-active']))
+    if (authority.get('configured') is not True or authority.get('active') is not True or
+            authority.get('hostname') != socket.gethostname().split('.')[0]):
+        raise RuntimeError('this is not the configured active controller')
+    commit = checked(['git', '-C', str(REPO), 'rev-parse', 'HEAD']).strip()
+    if (commit != checked(['git', '-C', str(REPO), 'rev-parse', '@{upstream}']).strip() or
+            checked(['git', '-C', str(REPO), 'status', '--porcelain', '--untracked-files=all']).strip()):
+        raise RuntimeError('the public checkout must be clean, committed, and pushed')
+    with LOCK.open('r+b') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('another Platform mutation holds the installation lock') from error
+        release_path = BUILDS / args.candidate_id / 'release-evidence.json'
+        if (release_path.is_symlink() or not release_path.is_file() or
+                release_path.stat().st_size > 1024 * 1024):
+            raise RuntimeError('selected tested release evidence is unavailable')
+        release = json.loads(release_path.read_text(), object_pairs_hook=updates.unique_object)
+        if (release.get('kind') != 'klokast.vm-release.v2' or
+                release.get('branch') != 'v3.24' or
+                release.get('profile') != 'shared-alpine-v1' or
+                release.get('release_sha256') != updates.digest({k: v for k, v in release.items()
+                                                                if k != 'release_sha256'}) or
+                release.get('application_tests') != {'executed': False, 'status': 'not-run'} or
+                not isinstance(release.get('tests'), dict) or
+                any(value is not True for value in release['tests'].values())):
+            raise RuntimeError('selected release is not the tested no-application Alpine 3.24 template')
+        host = args.box + '-' + args.role
+        qualification = json.loads(checked([REPO / 'ansible/bin/platform-update',
+                                            'adopt', 'prepare', '--box', args.box,
+                                            '--role', args.role, '--json'],
+                                           timeout=240, allowed=(0, 1)))
+        intent = qualification.get('intent') or {}
+        if (intent.get('box') != args.box or intent.get('role') != args.role or
+                intent.get('eligible') is not True or intent.get('workloads') != [] or
+                intent.get('datasets') != []):
+            raise RuntimeError('the selected guest has declared application work or retained datasets')
+        variables = json.loads(checked(['ansible-inventory', '-i',
+                                        REPO / 'ansible/execution-inventory/hosts', '--host', host],
+                                       timeout=90))
+        guest = guest_values(host)
+        files = config.render(REPO, host, variables, guest['resolv_conf'])
+        input_record = {'kind': 'klokast.vm-supervised-personalization-input.v1',
+                        'operation_id': args.operation_id, 'box': args.box,
+                        'role': args.role, 'candidate_id': args.candidate_id,
+                        'files': files, 'admin_password_hash': guest['admin_password_hash']}
+        supervision = {'kind': 'klokast.vm-supervised-choice.v1',
+                       'operation_id': args.operation_id, 'box': args.box,
+                       'role': args.role, 'candidate_id': args.candidate_id,
+                       'release_sha256': release['release_sha256']}
+        OPERATIONS.mkdir(mode=0o700, parents=True, exist_ok=True)
+        work = OPERATIONS / args.operation_id
+        work.mkdir(mode=0o700)
+        for name, value in (('release.json', release), ('supervision.json', supervision),
+                            ('personalize-input.json', input_record)):
+            store(work / name, value)
+        print(f'Staging supervised switch: {host}; operation {args.operation_id}', flush=True)
+        command = ['ansible-playbook', '-vv', '-i',
+                   str(REPO / 'ansible/execution-inventory/hosts'),
+                   str(REPO / 'ansible/playbooks/74-platform-update-supervised-cutover-stage.yml'),
+                   '--limit', args.box + '-dom0', '-e', json.dumps({
+                       'supervised_box': args.box, 'supervised_role': args.role,
+                       'supervised_operation_id': args.operation_id,
+                       'supervised_candidate_id': args.candidate_id,
+                   }, separators=(',', ':'))]
+        environment = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg'))
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, env=environment, timeout=600)
+        if result.returncode:
+            raise RuntimeError('switch staging failed; inspect protected records before any outage')
+        print(f'Supervised switch and local recovery staged: {host}; operation {args.operation_id}',
+              flush=True)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, KeyError, RuntimeError, audit.ConfigAuditError,
+            subprocess.TimeoutExpired) as error:
+        print('platform-update-supervised-cutover-stage: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

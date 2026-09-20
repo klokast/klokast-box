@@ -1,0 +1,153 @@
+#!/usr/bin/python3
+"""Stage one exact Xen switch under the existing box-local recovery helper."""
+
+import argparse
+import ast
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import uuid
+
+import vm_disk_backup as backup
+
+BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
+TRANSACTIONS = Path('/mnt/dom0_data/klokast-vm-updates/operations')
+CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+
+
+def load_transaction():
+    path = Path('/usr/local/sbin/vm-update-transaction')
+    loader = importlib.machinery.SourceFileLoader('vm_update_transaction', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def read(path):
+    backup.secure(path)
+    return json.loads(path.read_text(), object_pairs_hook=backup.unique)
+
+
+def checked(argv):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, timeout=180)
+    if result.returncode or len(result.stdout) > 65536:
+        raise backup.BackupError('running source VM inspection failed before switch staging')
+    return json.loads(result.stdout, object_pairs_hook=backup.unique)
+
+
+def stage(args):
+    if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise backup.BackupError('switch staging requires dom0 root and one fixed target')
+    root = BASE / args.operation_id
+    for path in (BASE, root, root / 'stage', root / 'backup'):
+        backup.secure(path, True)
+    source = read(root / 'source.json')
+    copied = read(root / 'backup/result.json')
+    prepared = read(root / 'prepared.json')
+    staged = read(root / 'stage/result.json')
+    manifest = read(CANDIDATES / args.candidate_id / 'candidate.json')
+    release = read(root / 'release.json')
+    supervision = read(root / 'supervision.json')
+    old_path = '/dev/vg0/lv_podman_' + args.role
+    if (source.get('kind') != 'klokast.vm-unmanaged-source.v1' or
+            source.get('role') != args.role or source.get('dom0') != args.box + '-dom0' or
+            source.get('runtime') != 'running' or source.get('autostart') is not True or
+            not isinstance(source.get('disks'), dict) or set(source['disks']) != {old_path} or
+            copied.get('source') != dict(source['disks'][old_path], path=old_path) or
+            prepared.get('old_source') != copied['source'] or
+            prepared.get('candidate_id') != args.candidate_id or
+            staged.get('success') is not True or
+            staged.get('mode') != 'stage' or
+            release.get('kind') != 'klokast.vm-release.v2' or
+            release.get('release_sha256') != backup.digest({k: v for k, v in release.items()
+                                                           if k != 'release_sha256'}) or
+            release.get('release_sha256') != supervision.get('release_sha256') or
+            release.get('engine_commit') != copied.get('engine_commit') or
+            release.get('inputs_sha256') != manifest.get('inputs_sha256') or
+            release.get('packages') != manifest.get('packages') or
+            release.get('artifacts') != manifest.get('artifacts') or
+            supervision != {'kind': 'klokast.vm-supervised-choice.v1',
+                            'operation_id': args.operation_id, 'box': args.box,
+                            'role': args.role, 'candidate_id': args.candidate_id,
+                            'release_sha256': release.get('release_sha256')}):
+        raise backup.BackupError('switch staging records do not name the exact tested source and release')
+    fresh = checked(['/usr/local/sbin/vm-update-transaction', 'source-status', '--role', args.role])
+    for key in ('kind', 'role', 'dom0', 'vm_uuid', 'configuration_sha256', 'disks',
+                'disk_mappings', 'artifacts', 'autostart', 'runtime'):
+        if fresh.get(key) != source.get(key):
+            raise backup.BackupError('running source VM changed after its independent backup')
+    tx = load_transaction()
+    original = Path('/etc/xen') / (args.role + '.cfg')
+    old_text = original.read_text()
+    if hashlib.sha256(old_text.encode()).hexdigest() != source['configuration_sha256']:
+        raise backup.BackupError('running Xen definition changed before switch staging')
+    old, _paths = tx.configuration(old_text, args.role, source['vm_uuid'])
+    candidate_uuid = str(uuid.uuid4())
+    new = dict(old)
+    new.update(uuid=candidate_uuid, kernel=str(CANDIDATES / args.candidate_id / 'kernel'),
+               ramdisk=str(CANDIDATES / args.candidate_id / 'initramfs'),
+               extra='console=hvc0 root=/dev/xvda rootfstype=ext4 rw modules=ext4',
+               disk=['phy:' + prepared['root']['path'] + ',xvda,w',
+                     'phy:' + prepared['data']['path'] + ',xvdb,w'])
+    order = ('name', 'uuid', 'type', 'memory', 'maxmem', 'vcpus', 'cpus', 'kernel',
+             'ramdisk', 'extra', 'disk', 'vif', 'on_crash', 'on_reboot', 'on_poweroff')
+    new_text = ''.join(key + ' = ' + repr(new[key]) + '\n' for key in order if key in new)
+    tx.configuration(new_text, args.role, candidate_uuid)
+    new_disks = {prepared[name]['path']: {key: prepared[name][key] for key in ('uuid', 'bytes')}
+                 for name in ('root', 'data')}
+    artifacts = {str(CANDIDATES / args.candidate_id / name): manifest['artifacts'][name]
+                 for name in ('kernel', 'initramfs')}
+    request = {'kind': 'klokast.vm-switch.v2', 'operation_id': args.operation_id,
+               'box': args.box, 'role': args.role, 'engine_commit': release['engine_commit'],
+               'policy_sha256': tx.digest(supervision),
+               'old_uuid': source['vm_uuid'], 'old_config_sha256': source['configuration_sha256'],
+               'old_disks': source['disks'], 'old_artifacts': source['artifacts'],
+               'new_uuid': candidate_uuid, 'new_config_sha256': hashlib.sha256(new_text.encode()).hexdigest(),
+               'new_disks': new_disks, 'new_artifacts': artifacts,
+               'release_sha256': release['release_sha256'], 'autostart': True,
+               'controller_timeout_seconds': 90}
+    work = TRANSACTIONS / args.operation_id
+    if work.exists() or work.is_symlink():
+        raise backup.BackupError('switch operation already exists; inspect its recovery journal')
+    work.mkdir(mode=0o700)
+    tx.atomic(work / 'old.cfg', old_text.encode())
+    tx.atomic(work / 'new.cfg', new_text.encode())
+    tx.store(work / 'request.json', request)
+    tx.Transaction(work)
+    return {'kind': 'klokast.vm-supervised-switch-staged.v1',
+            'operation_id': args.operation_id, 'box': args.box, 'role': args.role,
+            'request_sha256': tx.digest(request), 'new_uuid': candidate_uuid,
+            'release_sha256': release['release_sha256']}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    print(backup.canonical(stage(args)).decode())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (backup.BackupError, OSError, ValueError, TypeError, KeyError,
+            RuntimeError) as error:
+        print('vm-supervised-switch-stage-dom0: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

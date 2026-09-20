@@ -139,6 +139,15 @@ Run `ansible/bin/platform-update-supervised-stage --box BOX --role ROLE
 identity files from the verified backup into the new retained-data LV. It
 uses a networkless Xen guest and leaves the old VM running. A later final
 sync must read the stopped old disk before any candidate VM starts.
+Run `ansible/bin/platform-update-supervised-cutover-stage --box BOX --role
+ROLE --operation-id OPERATION --candidate-id BUILD_ID` to render the fixed
+machine configuration and stage the old and new Xen definitions under dom0
+recovery. Then run `ansible/bin/platform-update-supervised-run` with the same
+arguments. It arms local recovery, stops the old VM, completes the identity
+sync, personalizes the new OS, boots and checks the new VM, and accepts it.
+Before acceptance, failure restores the old VM. After acceptance, the old
+disk remains as recovery evidence and must not be started with the reused
+machine identity.
 
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
 root registry and retention readers, verifies that both bind the same authority,
