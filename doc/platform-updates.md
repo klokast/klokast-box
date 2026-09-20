@@ -418,7 +418,7 @@ serialization and must not run during an update operation.
 | --- | --- |
 | Complete target qualification and approved final machine inputs | Candidate audits have zero unresolved content; engine and standing authority remain pending |
 | Final tested engine/toolchain, protected enrollment, and signed standing policy | Enrollment complete; promotion and policy pending |
-| Controlled failed pilot replacement with automatic local recovery | Pending; native disposable controller-loss and generation-chain tests passed on both dom0 hosts, but watchdog expiry and a signed-policy pilot remain |
+| Controlled failed pilot replacement with automatic local recovery | Pending; native disposable controller-loss and generation-chain tests passed on both dom0 hosts, and watchdog expiry passed on k001. A signed-policy pilot remains |
 | Successful unattended replacement with changed base packages | Pending; the 2026-09-20 scan found zero newer package sets for the three targets |
 | Completed supervised cutover and clean live verification of all three targets | Complete; private controller and dom0 records hold exact evidence |
 | Identity and retained-state preservation; excluded workloads unchanged | Complete for the three selected no-application VMs |
