@@ -5380,7 +5380,7 @@ def vm_update_release_dom0_files(box, operation_id):
     script = '''set -eu
 mountpoint -q /mnt/dom0_data
 python3 - "$1" <<'PY'
-import hashlib, json, os, pathlib, stat, sys, tarfile
+import hashlib, json, os, pathlib, stat, sys
 operation = sys.argv[1]
 base = pathlib.Path('/mnt/dom0_data/klokast-vm-templates/candidates') / operation
 for directory in (pathlib.Path('/mnt/dom0_data'), base.parent.parent, base.parent, base):
@@ -6046,7 +6046,7 @@ def vm_update_recovery_evidence(box, operation_id):
         raise ApplyError('VM recovery readiness requires one fixed box and test operation')
     script = '''set -eu
 doas /usr/bin/python3 - "$1" <<'PY'
-import hashlib, json, os, pathlib, stat, sys
+import hashlib, json, os, pathlib, stat, sys, tarfile
 operation = sys.argv[1]
 base = pathlib.Path('/mnt/dom0_data/klokast-vm-recovery-tests') / operation
 result = base / 'result.json'
@@ -6115,7 +6115,8 @@ PY
         process = subprocess.run(['/usr/bin/tailscale', 'ssh', 'neo@' + box + '-dom0',
                                   'sh', '-s', '--', operation_id], input=script,
                                  capture_output=True, text=True, timeout=180,
-                                 env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'C', 'LC_ALL': 'C'})
+                                 env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'C',
+                                      'LC_ALL': 'C', 'HOME': '/root'})
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ApplyError('dom0 native recovery evidence did not finish') from error
     if process.returncode or len(process.stdout) > 2 * 1024 * 1024:
