@@ -31,7 +31,7 @@ OP = re.compile(r'[0-9a-f]{24}')
 HEX = re.compile(r'[0-9a-f]{64}')
 LV = re.compile(r'/dev/[A-Za-z0-9_+.-]+/[A-Za-z0-9_+.-]+')
 PRE_ACCEPT = {'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested', 'recovering'}
-TERMINAL = {'accepted', 'complete', 'recovered', 'recovery-failed'}
+TERMINAL = {'adopted', 'accepted', 'complete', 'recovered', 'recovery-failed'}
 HELPER = '/usr/local/sbin/vm-update-transaction'
 
 
@@ -465,7 +465,7 @@ class Transaction:
                 value['request_sha256'] != digest(self.request) or
                 not isinstance(value['intent_sha256'], str) or not HEX.fullmatch(value['intent_sha256']) or
                 value['runtime_state'] not in {'running', 'stopped'} or
-                not self.journal or self.journal['stage'] not in {'complete', 'recovered'}):
+                not self.journal or self.journal['stage'] not in {'adopted', 'complete', 'recovered'}):
             raise Refused('runtime intent differs from the completed assignment')
         return value
 
@@ -484,7 +484,7 @@ class Transaction:
             if (previous['request_sha256'] != digest(older.request) or
                     existing.name != older.request['role'] + '.json'):
                 raise Refused('active transaction pointer does not match its request')
-            if not older.journal or older.journal['stage'] not in {'complete', 'recovered'}:
+            if not older.journal or older.journal['stage'] not in {'adopted', 'complete', 'recovered'}:
                 raise Refused('another guest transaction is not complete')
             if older.request['role'] == self.request['role']:
                 side = 'new' if older.journal['stage'] == 'complete' else 'old'
@@ -510,6 +510,51 @@ class Transaction:
         store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
         watcher = self.native.watch(self.request['operation_id'], self.work)
         self.record('armed', watcher=watcher)
+
+    def adopt_old(self):
+        """Record a running old generation without changing its disks or guest.
+
+        The signed controller executor must validate authority before it stages
+        this request. There is no public command for this method until that
+        executor exists. An interrupted publication is repaired at boot.
+        """
+        if self.request['kind'] != 'klokast.vm-switch.v2' or not self.request['autostart']:
+            raise Refused('adoption requires a running guest and the current recovery contract')
+        if self.journal is not None:
+            raise Refused('adoption operation has already been recorded')
+        pointer = BASE / 'active' / (self.request['role'] + '.json')
+        if pointer.exists() or pointer.is_symlink():
+            raise Refused('guest already has an active disk assignment')
+        for existing in (BASE / 'active').iterdir():
+            if existing.name not in {'bak.json', 'dmz.json', 'iot.json'}:
+                raise Refused('unexpected active transaction pointer')
+            value = read(existing)
+            if (set(value) != {'operation_id', 'request_sha256'} or
+                    not isinstance(value['operation_id'], str) or
+                    not OP.fullmatch(value['operation_id'])):
+                raise Refused('another assignment pointer is invalid')
+            older = Transaction(BASE / 'operations' / value['operation_id'], self.native, self.clock)
+            if (value['request_sha256'] != digest(older.request) or
+                    existing.name != older.request['role'] + '.json' or
+                    not older.journal or older.journal['stage'] not in {'adopted', 'complete', 'recovered'}):
+                raise Refused('another guest transaction is not complete')
+        active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
+        if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
+            raise Refused('live Xen definition changed before adoption')
+        link = XEN / 'auto' / (self.request['role'] + '.cfg')
+        if not link.is_symlink() or os.readlink(link) not in {'../' + link.name, str(XEN / link.name)}:
+            raise Refused('running old guest lacks its recorded autostart link')
+        guest = self.guest(('old',))
+        if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+            raise Refused('adoption requires the exact running old guest')
+        self.artifacts('old')
+        observed = self.clock()
+        self.record('adopted', deadline=observed + 1800, recovery_seconds=1800,
+                    controller_seen_at=observed, controller_timeout_seconds=90,
+                    previous_assignment=None)
+        store(pointer, {'operation_id': self.request['operation_id'],
+                        'request_sha256': digest(self.request)})
+        self.assignment('old')
 
     def step(self, action):
         if not self.journal:
@@ -592,10 +637,10 @@ class Transaction:
             self.guest(('new',))
             self.assignment('new')
             return 'preserve-production-data'
-        if stage == 'recovered':
+        if stage in {'adopted', 'recovered'}:
             self.guest(('old',))
             self.assignment('old')
-            return 'recovered'
+            return stage
         if stage == 'recovery-failed':
             raise Refused('recovery previously failed; keep the VM fenced for inspection')
         started = self.journal.get('recovery_started_at', self.clock())
@@ -743,7 +788,7 @@ def current_assignment(role, native=None):
 def assignment_report(tx):
     stage = tx.journal['stage']
     role = tx.request['role']
-    side = 'new' if stage in {'accepted', 'complete'} else ('old' if stage == 'recovered' else None)
+    side = 'new' if stage in {'accepted', 'complete'} else ('old' if stage in {'adopted', 'recovered'} else None)
     release = tx.release_identity(side) if side else {'release_sha256': None, 'profile': None}
     result = {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': True,
               'operation_id': tx.work.name, 'request_sha256': digest(tx.request),
@@ -861,7 +906,7 @@ def reconcile_assignment(role, request_sha256, runtime_state, intent_sha256, nat
     with current_assignment(role, native) as tx:
         if tx is None or digest(tx.request) != request_sha256:
             raise Refused('runtime reconciliation assignment changed or is absent')
-        if tx.journal['stage'] not in {'complete', 'recovered'}:
+        if tx.journal['stage'] not in {'adopted', 'complete', 'recovered'}:
             raise Refused('runtime reconciliation requires a completed operation')
         before = assignment_report(tx)
         value = {'kind': 'klokast.vm-runtime-intent.v1', 'request_sha256': request_sha256,

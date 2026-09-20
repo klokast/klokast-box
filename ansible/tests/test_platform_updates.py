@@ -76,6 +76,10 @@ class EvidenceTests(unittest.TestCase):
                         autostart_drift=False)
         with patch.object(cli.subprocess, 'run', return_value=native(accepted)):
             self.assertEqual(cli.dom0_assignment_status('k001', 'dmz'), accepted)
+        adopted = dict(accepted, stage='adopted', selection='recorded-previous',
+                       release_sha256=None, profile=None)
+        with patch.object(cli.subprocess, 'run', return_value=native(adopted)):
+            self.assertEqual(cli.dom0_assignment_status('k001', 'dmz'), adopted)
         for changed in (
                 dict(accepted, stage='recovered'),
                 dict(accepted, release_sha256=None),

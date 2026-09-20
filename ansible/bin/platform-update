@@ -786,8 +786,8 @@ def dom0_assignment_status(box, role):
     if not isinstance(stage, str):
         raise UpdateError('protected dom0 assignment has an invalid stage')
     expected_choice = ('accepted' if stage in {'accepted', 'complete'} else
-                       'recorded-previous' if stage == 'recovered' else 'pending')
-    if (stage not in {'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested',
+                       'recorded-previous' if stage in {'adopted', 'recovered'} else 'pending')
+    if (stage not in {'adopted', 'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested',
                       'recovering', 'accepted', 'complete', 'recovered', 'recovery-failed'} or
             choice != expected_choice or
             set(result) != basic | common | (selected if choice != 'pending' else set()) or

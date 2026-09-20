@@ -832,6 +832,11 @@ refuses a current assignment pointer, a disk mounted on dom0, or another
 guest that holds a source disk. This receipt is source evidence only. The
 controller must still bind it to fresh guest boot and mount evidence, approved
 machine inputs, and a signed adoption operation.
+The helper has an internal `adopt_old` transition for the first assignment.
+It records the exact running old disks before it publishes the role pointer.
+Boot recovery can finish an interrupted publication without switching guests.
+No operator command exposes this transition yet. The signed controller executor
+must gate it before production adoption.
 The guest discovery probe accepts only `/dev/xvda3` for `/` and `/dev/xvda1`
 for `/boot`. It checks each block device against its mount identity, reads the
 mount inventory twice, and reports device names and numbers only. A v5 qualification compares these

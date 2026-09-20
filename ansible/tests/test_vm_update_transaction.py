@@ -237,6 +237,73 @@ class Transactions(unittest.TestCase):
         with self.assertRaisesRegex(t.Refused, 'unmanaged guest'):
             self.source_status()
 
+    def prepare_adoption(self):
+        self.liveness_request()
+        self.request['autostart'] = True
+        (self.work / 'request.json').write_text(json.dumps(self.request))
+        (self.xen / 'auto/bak.cfg').symlink_to('../bak.cfg')
+
+    def test_adoption_records_old_generation_without_switching_guest(self):
+        self.prepare_adoption()
+        before_uuid = self.backend.running
+        tx = self.tx()
+        tx.adopt_old()
+        self.assertEqual(self.backend.running, before_uuid)
+        self.assertFalse(any(call[0] in {'stop', 'start'} for call in self.backend.calls))
+        self.assertEqual(tx.journal['stage'], 'adopted')
+        status = self.assignment_status()
+        self.assertEqual(status['stage'], 'adopted')
+        self.assertEqual(status['selection'], 'recorded-previous')
+        self.assertEqual(status['disks'], self.request['old_disks'])
+        self.assertIsNone(status['release_sha256'])
+        self.assertFalse(status['configuration_drift'])
+        self.assertFalse(status['autostart_drift'])
+        with self.assertRaisesRegex(t.Refused, 'already been recorded'):
+            self.tx().adopt_old()
+
+    def test_adoption_publication_crash_repairs_old_boot_assignment(self):
+        self.prepare_adoption()
+        self.backend.crash = 'persist'
+        with self.assertRaises(InterruptedError):
+            self.tx().adopt_old()
+        self.assertEqual(self.tx().journal['stage'], 'adopted')
+        self.assertTrue((self.base / 'active/bak.json').is_file())
+        self.backend.crash = None
+        self.assertEqual(self.tx().recover(), 'adopted')
+        self.assertFalse(self.assignment_status()['configuration_drift'])
+        self.assertEqual(self.backend.running, 'old')
+
+    def test_adoption_refuses_missing_autostart_and_changed_source(self):
+        self.liveness_request()
+        self.request['autostart'] = True
+        (self.work / 'request.json').write_text(json.dumps(self.request))
+        with self.assertRaisesRegex(t.Refused, 'autostart link'):
+            self.tx().adopt_old()
+        (self.xen / 'auto/bak.cfg').symlink_to('../bak.cfg')
+        (self.xen / 'bak.cfg').write_text('changed')
+        with self.assertRaisesRegex(t.Refused, 'definition changed'):
+            self.tx().adopt_old()
+        self.assertFalse((self.base / 'active/bak.json').exists())
+
+    def test_adopted_generation_is_the_only_old_source_for_next_switch(self):
+        self.prepare_adoption()
+        adopted = self.tx()
+        adopted.adopt_old()
+        next_work = self.base / 'operations' / ('b' * 24)
+        next_work.mkdir()
+        next_request = dict(self.request, operation_id=next_work.name,
+                            old_config_sha256=hashlib.sha256(
+                                adopted.assignment_content('old')).hexdigest())
+        (next_work / 'old.cfg').write_bytes(adopted.assignment_content('old'))
+        (next_work / 'new.cfg').write_bytes((self.work / 'new.cfg').read_bytes())
+        (next_work / 'request.json').write_text(json.dumps(next_request))
+        next_tx = t.Transaction(next_work, self.backend, lambda: self.now)
+        next_tx.arm()
+        self.assertEqual(next_tx.journal['previous_assignment']['operation_id'], self.work.name)
+        self.assertIsNone(next_tx.journal['previous_assignment']['release_sha256'])
+        self.assertEqual(next_tx.recover(), 'recovered')
+        self.assertEqual(self.backend.running, 'old')
+
     def test_current_assignment_distinguishes_unmanaged_pending_and_accepted(self):
         self.assertFalse(self.assignment_status()['managed'])
         tx = self.boot()
