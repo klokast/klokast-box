@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import test_instance_verification as verification_fixture
+import platform_updates as release_contract
 
 
 class VMUpdateAuthorityTest(unittest.TestCase):
@@ -214,6 +215,102 @@ class VMUpdateAuthorityTest(unittest.TestCase):
         with patch.object(m,'vm_update_policy_control') as control, redirect_stdout(io.StringIO()):
             self.assertEqual(m.main(['vm-update-policy','status','--plan','fake']),1)
             control.assert_not_called()
+
+    def release_fixture(self, root):
+        m = self.m
+        operation = 'f' * 24
+        policy = {**self.policy, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']}}
+        selection = {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': 'v3.24',
+                     'build_box': 'k001', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot'],
+                     'policy_sha256': m.inventory_digest(policy),
+                     'activation_sha256': 'b' * 64, 'engine_commit': 'c' * 40}
+        manifest = [{'name': name, 'version': '1-r0', 'origin': name, 'architecture': 'x86_64',
+                     'file': 'packages/' + name + '-1-r0.apk', 'bytes': 100, 'sha256': 'd' * 64}
+                    for name in ('linux-virt', 'podman', 'tailscale')]
+        inputs = {'kind': 'klokast.vm-template-inputs.v1', 'engine_commit': 'c' * 40,
+                  'profile': 'shared-alpine-v1', 'branch': 'v3.24', 'architecture': 'x86_64',
+                  'packages': manifest}
+        inputs['inputs_sha256'] = release_contract.digest(inputs)
+        normal = {'success': True, 'tests': dict.fromkeys(release_contract.OPENRC_TESTS, True)}
+        personalized = {'success': True, 'tests': dict.fromkeys(release_contract.PERSONALIZED_TESTS, True)}
+        maintenance = {'success': True}
+        candidate = {'kind': 'klokast.vm-template-candidate.v1', 'operation_id': operation,
+                     'box': 'k001', 'success': True, 'accepted': False,
+                     'inputs_sha256': inputs['inputs_sha256'],
+                     'tests': dict.fromkeys(release_contract.BASE_BUILD_TESTS, True),
+                     'artifacts': {name: {'sha256': 'e' * 64, 'bytes': 100}
+                                   for name in ('root', 'kernel', 'initramfs')},
+                     'kernel_release': '6.18-virt', 'modules_release': '6.18-virt',
+                     'boot_test': {'success': True,
+                                   'tests': dict.fromkeys(release_contract.BASE_BOOT_TESTS, True),
+                                   'openrc_test': normal, 'personalized_test': personalized,
+                                   'maintenance_restore': maintenance}}
+        release = release_contract.no_application_release(inputs, candidate, normal,
+                                                          personalized, maintenance)
+        directory = root / 'builds' / operation
+        directory.mkdir(parents=True)
+        records = {'automatic.json': {'kind': 'klokast.vm-update-auto-build.v1',
+                                      'selection': selection, 'operation_id': operation,
+                                      'inputs_sha256': inputs['inputs_sha256'],
+                                      'release_sha256': release['release_sha256']}}
+        for name, value in records.items():
+            (root / name).write_text(m.canonical(value) + '\n')
+        for name, value in [('inputs.json', inputs), ('candidate.json', candidate),
+                            ('release-evidence.json', release),
+                            ('transfer-k002.json', {'kind': 'klokast.vm-template-transfer.v1',
+                                                    'operation_id': operation, 'source_box': 'k001',
+                                                    'target_box': 'k002', 'artifacts': candidate['artifacts'],
+                                                    'accepted': False})]:
+            (directory / name).write_text(m.canonical(value) + '\n')
+        policy_receipt = {'receipt_sha256': 'b' * 64,
+                          'intent': {'policy': policy, 'policy_sha256': selection['policy_sha256'],
+                                     'engine_commit': selection['engine_commit']}}
+        return operation, policy_receipt, release
+
+    def test_protected_release_import_binds_exact_build_and_is_idempotent(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operation, policy, release = self.release_fixture(root / 'discovery')
+            with patch.object(m, 'VM_UPDATE_DISCOVERY', root / 'discovery'), \
+                    patch.object(m, 'VM_UPDATE_ROOT', root / 'executor'), \
+                    patch.object(m, 'vm_update_release_contract', return_value=release_contract), \
+                    patch.object(m, 'vm_update_policy_current', return_value=policy), \
+                    patch.object(m, 'vm_update_pause_state', return_value=False), \
+                    patch.object(m, 'require_root_active'), patch.object(m, 'require_self_match'), \
+                    patch.object(m, 'append_audit'), redirect_stdout(io.StringIO()) as output:
+                m.vm_update_release_import(operation)
+                record_path = root / 'executor/releases' / policy['receipt_sha256'] / (release['release_sha256'] + '.json')
+                record = json.loads(record_path.read_text())
+                self.assertEqual(record['release']['package_manifest'], release['package_manifest'])
+                self.assertEqual(record['release']['application_tests'], {'status': 'not-run', 'executed': False})
+                self.assertEqual(record['record_sha256'], m.inventory_digest({k: v for k, v in record.items()
+                                                                              if k != 'record_sha256'}))
+                m.vm_update_release_import(operation)
+                self.assertIn('"result":"unchanged"', output.getvalue())
+                (root / 'discovery/builds' / operation / 'release-evidence.json').write_text(
+                    m.canonical({**release, 'package_manifest': []}) + '\n')
+                with self.assertRaisesRegex(m.ApplyError, 'release evidence is invalid'):
+                    m.vm_update_release_import(operation)
+                self.assertEqual(json.loads(record_path.read_text()), record)
+
+    def test_protected_release_rejects_wrong_policy_and_transfer(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operation, policy, _release = self.release_fixture(root)
+            with patch.object(m, 'VM_UPDATE_DISCOVERY', root), \
+                    patch.object(m, 'vm_update_release_contract', return_value=release_contract):
+                excluded = copy.deepcopy(policy)
+                excluded['intent']['policy']['exclusions'] = [{'box': 'k002', 'role': 'iot', 'reason': 'test'}]
+                with self.assertRaisesRegex(m.ApplyError, 'outside current standing policy'):
+                    m.vm_update_release_evidence(operation, excluded)
+                transfer = root / 'builds' / operation / 'transfer-k002.json'
+                value = json.loads(transfer.read_text())
+                value['accepted'] = True
+                transfer.write_text(m.canonical(value) + '\n')
+                with self.assertRaisesRegex(m.ApplyError, 'transfer evidence is incomplete'):
+                    m.vm_update_release_evidence(operation, policy)
 
 
 if __name__ == '__main__':unittest.main()

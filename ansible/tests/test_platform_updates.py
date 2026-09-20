@@ -146,12 +146,16 @@ class EvidenceTests(unittest.TestCase):
                     patch.object(cli, 'automatic_selection', return_value=selection), \
                     patch.object(cli, 'reuse_auto_candidate', return_value=None), \
                     patch.object(cli, 'prepare', return_value=built), \
+                    patch.object(cli, 'import_protected_release',
+                                 return_value={'result': 'imported'}) as protected, \
                     patch.object(cli.vm_artifact_transfer, 'transfer',
                                  return_value={'target_box': 'k002', 'accepted': False}) as transfer:
                 result = cli.prepare_auto()
             self.assertEqual(result['transfers'], [{'target_box': 'k002', 'accepted': False}])
             self.assertEqual(transfer.call_count, 1)
             self.assertEqual(transfer.call_args.args[3], 'k002')
+            protected.assert_called_once_with('f' * 24, 'e' * 64)
+            self.assertEqual(result['protected_release'], {'result': 'imported'})
             self.assertTrue((root / 'transfer-k002.json').is_file())
             self.assertEqual(json.loads((root / 'automatic.json').read_text())['operation_id'], 'f' * 24)
 
@@ -174,7 +178,9 @@ class EvidenceTests(unittest.TestCase):
                                                            discovery, metadata]), \
                 patch.object(cli, 'automatic_selection', return_value=selection), \
                 patch.object(cli, 'reuse_auto_candidate',
-                             return_value={'state': 'unchanged'}) as reuse, \
+                             return_value={'state': 'unchanged', 'operation_id': 'f' * 24,
+                                           'release_evidence_sha256': 'e' * 64}) as reuse, \
+                patch.object(cli, 'import_protected_release', return_value={'result': 'unchanged'}), \
                 patch.object(cli, 'prepare') as build:
             self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
             reuse.assert_called_once_with(selection, frozen=True)
@@ -186,7 +192,9 @@ class EvidenceTests(unittest.TestCase):
                                                            complete, metadata]), \
                 patch.object(cli, 'automatic_selection', return_value=selection), \
                 patch.object(cli, 'reuse_auto_candidate',
-                             return_value={'state': 'unchanged'}) as reuse:
+                             return_value={'state': 'unchanged', 'operation_id': 'f' * 24,
+                                           'release_evidence_sha256': 'e' * 64}) as reuse, \
+                patch.object(cli, 'import_protected_release', return_value={'result': 'unchanged'}):
             self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
             reuse.assert_called_once_with(selection, frozen=False)
 

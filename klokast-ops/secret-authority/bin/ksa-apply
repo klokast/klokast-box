@@ -6,6 +6,7 @@ import datetime as dt
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -44,6 +45,8 @@ KIND_VM_UPDATE_INTENT = "klokast.vm-update-policy-intent.v1"
 VM_UPDATE_EXECUTOR = "vm_update_policy_v1"
 VM_UPDATE_ROOT = Path("/var/lib/klokast/updates/executor")
 VM_UPDATE_LOCK = Path("/var/lib/klokast/updates/operation.lock")
+VM_UPDATE_DISCOVERY = Path("/var/lib/klokast/updates/discovery")
+VM_UPDATE_RELEASE_KIND = "klokast.vm-protected-release.v1"
 VERIFICATION_EXECUTOR = "instance_verification_v1"
 KIND_RETIREMENT_EVIDENCE = "klokast.legacy-retirement-evidence.v1"
 KIND_RETIREMENT_INTENT = "klokast.legacy-input-retirement-intent.v1"
@@ -5160,6 +5163,115 @@ def vm_update_store(path, content, *, replace=False):
         temporary.unlink(missing_ok=True)
 
 
+def vm_update_release_contract(engine_commit):
+    """Load only the approved, clean engine's release validator."""
+    source = REPO_ROOT / "ansible/lib/platform_updates.py"
+    head = run(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture=True).stdout.strip()
+    status = run(["git", "-C", REPO_ROOT, "status", "--porcelain", "--untracked-files=all"], capture=True).stdout
+    checked = run(["git", "-C", REPO_ROOT, "show", head + ":ansible/lib/platform_updates.py"], capture=True).stdout
+    if head != engine_commit or status or read_regular(source, 256 * 1024) != checked.encode():
+        raise ApplyError("approved VM release validator or engine checkout changed")
+    # The checked source is copied to root-owned temporary storage before
+    # loading so a concurrent checkout edit cannot substitute Python code.
+    with tempfile.TemporaryDirectory(prefix="vm-release-contract-", dir="/run") as temporary:
+        path = Path(temporary) / "platform_updates.py"
+        path.write_bytes(checked.encode())
+        spec = importlib.util.spec_from_file_location("approved_vm_release_contract", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
+def vm_update_release_evidence(operation_id, policy_receipt):
+    """Check one automatic build from fixed controller paths and policy."""
+    if not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{24}", operation_id):
+        raise ApplyError("VM release import requires an exact build operation ID")
+    intent = policy_receipt["intent"]
+    pointer = load_json(VM_UPDATE_DISCOVERY / "automatic.json", canonical_stored=True)
+    if set(pointer) != {"kind", "selection", "operation_id", "inputs_sha256", "release_sha256"} or pointer["kind"] != "klokast.vm-update-auto-build.v1" or pointer["operation_id"] != operation_id:
+        raise ApplyError("VM release is not the selected automatic build")
+    selection = pointer["selection"]
+    if (not isinstance(selection, dict) or set(selection) != {"kind", "branch", "build_box", "targets", "policy_sha256", "activation_sha256", "engine_commit"} or
+            selection["kind"] != "klokast.vm-update-auto-selection.v1" or
+            selection["targets"] != ["k001-dmz", "k002-dmz", "k002-iot"] or
+            selection["build_box"] != "k001" or
+            selection["policy_sha256"] != intent["policy_sha256"] or
+            selection["activation_sha256"] != policy_receipt["receipt_sha256"] or
+            selection["engine_commit"] != intent["engine_commit"]):
+        raise ApplyError("VM release selection differs from current signed policy")
+    targets = intent["policy"]["targets"]
+    excluded = {(row["box"], row["role"]) for row in intent["policy"]["exclusions"]}
+    if (any((box, role) not in {(name, item) for name, roles in targets.items() for item in roles}
+            or (box, role) in excluded for box, role in (("k001", "dmz"), ("k002", "dmz"), ("k002", "iot")))):
+        raise ApplyError("VM release selection is outside current standing policy")
+    directory = VM_UPDATE_DISCOVERY / "builds" / operation_id
+    inputs = load_json(directory / "inputs.json", canonical_stored=True)
+    candidate = load_json(directory / "candidate.json", canonical_stored=True)
+    release = load_json(directory / "release-evidence.json", canonical_stored=True)
+    boot = candidate.get("boot_test", {})
+    normal, personalized, maintenance = (boot.get(name, {}) for name in
+                                          ("openrc_test", "personalized_test", "maintenance_restore"))
+    contract = vm_update_release_contract(intent["engine_commit"])
+    try:
+        contract.validate_no_application_release(release, inputs, candidate, normal, personalized, maintenance)
+        if contract.no_application_release(inputs, candidate, normal, personalized, maintenance) != release:
+            raise ApplyError("VM release differs from its complete base test evidence")
+    except contract.UpdateError as error:
+        raise ApplyError("VM release evidence is invalid: " + str(error)) from error
+    if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or
+            candidate.get("operation_id") != operation_id or candidate.get("box") != "k001" or
+            inputs.get("engine_commit") != intent["engine_commit"] or
+            release["branch"] != selection["branch"] or
+            release["inputs_sha256"] != pointer["inputs_sha256"] or
+            release["release_sha256"] != pointer["release_sha256"]):
+        raise ApplyError("VM release differs from the automatic build pointer")
+    transfers = {}
+    for box in ("k002",):
+        value = load_json(directory / ("transfer-" + box + ".json"), canonical_stored=True)
+        if (set(value) != {"kind", "operation_id", "source_box", "target_box", "artifacts", "accepted"} or
+                value["kind"] != "klokast.vm-template-transfer.v1" or value["operation_id"] != operation_id or
+                value["source_box"] != "k001" or value["target_box"] != box or
+                value["artifacts"] != release["artifacts"] or value["accepted"] is not False):
+            raise ApplyError("VM release transfer evidence is incomplete")
+        transfers[box] = inventory_digest(value)
+    return {"selection": selection, "release": release, "build_operation_id": operation_id,
+            "candidate_sha256": inventory_digest(candidate),
+            "transfer_sha256": transfers}
+
+
+def vm_update_release_import(operation_id):
+    require_root_active()
+    require_self_match()
+    with vm_update_lock():
+        policy = vm_update_policy_current()
+        if vm_update_pause_state(policy["receipt_sha256"]):
+            raise ApplyError("paused VM update policy cannot import a release")
+        evidence = vm_update_release_evidence(operation_id, policy)
+        base = {"kind": VM_UPDATE_RELEASE_KIND, **evidence,
+                "policy_activation_sha256": policy["receipt_sha256"]}
+        root = VM_UPDATE_ROOT / "releases"
+        ensure_protected_dir(root, 0o700, 0)
+        activation = root / policy["receipt_sha256"]
+        ensure_protected_dir(activation, 0o700, 0)
+        path = activation / (evidence["release"]["release_sha256"] + ".json")
+        if path.exists() or path.is_symlink():
+            record = load_json(path, canonical_stored=True)
+            if ({key: value for key, value in record.items() if key not in {"recorded_at", "record_sha256"}} != base or
+                    record.get("record_sha256") != inventory_digest({key: value for key, value in record.items() if key != "record_sha256"})):
+                raise ApplyError("existing protected VM release conflicts with current evidence")
+            result = "unchanged"
+        else:
+            record = {**base, "recorded_at": format_utc(now_utc())}
+            record["record_sha256"] = inventory_digest(record)
+            vm_update_store(path, (canonical(record) + "\n").encode())
+            append_audit("vm-update-release.imported", release_sha256=record["release"]["release_sha256"],
+                         record_sha256=record["record_sha256"])
+            result = "imported"
+        print(canonical({"kind": VM_UPDATE_RELEASE_KIND, "record_sha256": record["record_sha256"],
+                         "release_sha256": record["release"]["release_sha256"],
+                         "build_operation_id": operation_id, "result": result}))
+
+
 def vm_update_policy_prepare(args):
     require_root_active()
     require_self_match()
@@ -5768,6 +5880,9 @@ def parse_args(argv):
     update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "source-status"))
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
         update_policy_parser.add_argument("--" + name)
+    update_release_parser = commands.add_parser("vm-update-release")
+    update_release_parser.add_argument("action", choices=("import",))
+    update_release_parser.add_argument("--operation-id", required=True)
     retirement_evidence_parser = commands.add_parser("retirement-evidence")
     retirement_evidence_parser.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
     retirement_evidence_parser.add_argument("--consumer-matrix", required=True)
@@ -5834,6 +5949,8 @@ def main(argv=None):
                 if any(getattr(args, name) for name in names):
                     raise ApplyError("VM update policy control accepts no caller-selected inputs")
                 vm_update_policy_control(args.action)
+        elif args.operation == "vm-update-release":
+            vm_update_release_import(args.operation_id)
         elif args.operation == "inventory-source-status":
             print(canonical(inventory_source_status()))
         elif args.operation == "vm-retention-status":

@@ -370,6 +370,15 @@ root executor has VM lifecycle and retained-data authority. It therefore needs
 fixed operations, root-protected records, exclusive execution, fencing, and
 independent local recovery before activation.
 
+For an automatic build, `ksa-apply vm-update-release import --operation-id ID`
+holds the installation lock, checks current signed policy, and revalidates the
+no-application release against the full package manifest and build tests. It
+stores one immutable record under
+`/var/lib/klokast/updates/executor/releases/ACTIVATION/RELEASE.json`.
+`prepare --auto` invokes this action for a new or unchanged template. This
+record binds evidence; it is not an accepted VM assignment. The replacement
+executor must check the artifact bytes on dom0 again before use.
+
 The offline retained-data copy library has only guest-local filesystem
 authority. A copy request and its receipt cannot authorize disk attachment,
 writer shutdown, or adoption. The future signed executor must derive and verify

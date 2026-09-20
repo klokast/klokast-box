@@ -44,6 +44,8 @@
       mode: "0700"
     - path: /var/lib/klokast/updates/executor/activations
       mode: "0700"
+    - path: /var/lib/klokast/updates/executor/releases
+      mode: "0700"
 
 - name: Create the installation-wide VM update lock without changing existing contents
   ansible.builtin.copy:

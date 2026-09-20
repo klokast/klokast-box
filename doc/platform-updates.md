@@ -16,8 +16,12 @@ not issue an adoption intent while qualification is incomplete. `prepare --auto`
 uses the active signed policy and fresh discovery to select the adjacent stable
 branch. It builds one shared template and transfers compressed, checked bytes
 to each other selected box. The destination checks the unpacked artifact
-hashes against the same build receipt. A failed transfer leaves an exact staging directory for
-review; it cannot select a production disk. Signed adoption, replacement, and
+hashes against the same build receipt. The root authority boundary now imports
+the complete no-application release and transfer evidence into an immutable
+record for the current policy activation. It checks the approved engine and
+package manifest again. Artifact bytes must be checked again before use. A
+failed transfer leaves an exact staging directory for review; it cannot select
+a production disk. Signed adoption, replacement, and
 rollout remain unavailable. No production update schedule has been enabled.
 
 The [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)

@@ -622,6 +622,32 @@ def prepare_auto():
         return prepare_auto_locked()
 
 
+def import_protected_release(operation_id, release_sha256):
+    """Ask the root authority boundary to freeze the exact automatic build."""
+    if (not isinstance(operation_id, str) or not re.fullmatch(r'[0-9a-f]{24}', operation_id) or
+            not isinstance(release_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', release_sha256)):
+        raise UpdateError('automatic release has an invalid identity')
+    result = subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                             'vm-update-release', 'import', '--operation-id', operation_id],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+    if result.returncode:
+        raise UpdateError('protected release import failed: ' + result.stderr[-2048:].strip())
+    try:
+        receipt = json.loads(result.stdout, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise UpdateError('protected release import returned invalid JSON') from error
+    if (not isinstance(receipt, dict) or set(receipt) !=
+            {'kind', 'record_sha256', 'release_sha256', 'build_operation_id', 'result'} or
+            receipt['kind'] != 'klokast.vm-protected-release.v1' or
+            receipt['build_operation_id'] != operation_id or
+            receipt['release_sha256'] != release_sha256 or
+            receipt['result'] not in {'imported', 'unchanged'} or
+            not isinstance(receipt['record_sha256'], str) or
+            not re.fullmatch(r'[0-9a-f]{64}', receipt['record_sha256'])):
+        raise UpdateError('protected release import did not bind the selected build')
+    return receipt
+
+
 def prepare_auto_locked():
     """Build once and stage identical checked bytes on selected boxes."""
     if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip():
@@ -639,7 +665,8 @@ def prepare_auto_locked():
                 command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
                 command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
             raise UpdateError('authority, discovery, or engine changed during unchanged-template check')
-        return unchanged
+        protected = import_protected_release(unchanged['operation_id'], unchanged['release_evidence_sha256'])
+        return {**unchanged, 'protected_release': protected}
     result = prepare(selection['build_box'], selection['branch'])
     if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
             optional(STATE / 'metadata.json') != metadata or
@@ -682,7 +709,9 @@ def prepare_auto_locked():
         'kind': 'klokast.vm-update-auto-build.v1', 'selection': selection,
         'operation_id': result['operation_id'], 'inputs_sha256': result['inputs_sha256'],
         'release_sha256': release['release_sha256']})
-    return {**result, 'automatic_selection': selection, 'transfers': transfers}
+    protected = import_protected_release(result['operation_id'], release['release_sha256'])
+    return {**result, 'automatic_selection': selection, 'transfers': transfers,
+            'protected_release': protected}
 
 
 def display(report, as_json):
