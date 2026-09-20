@@ -162,6 +162,11 @@ reads the system clock, hardware clock, and NTP state. The time correction in
 controller before writing it from the corrected system clock, and it restarts
 NTP. Keep the strict audit freshness check until sustained clock
 synchronization is demonstrated.
+The system clock jumped again immediately after NTP restarted, while the
+hardware clock stayed aligned. `74-platform-update-dom0-ntp-trial.yml` stops
+NTP only in the running k001 dom0 and makes one bounded controller-time
+correction. NTP remains enabled for the next boot. The trial distinguishes an
+NTP adjustment from a Xen clock fault; it is not a steady-state time policy.
 
 ## Current commands
 
