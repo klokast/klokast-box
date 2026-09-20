@@ -164,20 +164,47 @@ def generation_chain(t, backend, create_request, identities, allocated):
                 assignment['configuration_drift'] or assignment['autostart_drift']):
             raise RuntimeError('successive release selected a stale or conflicting assignment')
     started = time.monotonic()
-    first, first_request = create_request('old', 'new', '1' * 64)
-    t.atomic(t.XEN / 'bak.cfg', (first / 'old.cfg').read_bytes())
-    backend.start(first / 'old.cfg')
+    seed, seed_request = create_request('old', 'new', '0' * 64)
+    t.atomic(t.XEN / 'bak.cfg', (seed / 'old.cfg').read_bytes())
+    (t.XEN / 'auto/bak.cfg').symlink_to('../bak.cfg')
+    backend.start(seed / 'old.cfg')
     source = t.source_status('bak', backend)
     if (source['vm_uuid'] != identities['old'] or
-            source['configuration_sha256'] != first_request['old_config_sha256'] or
-            source['disks'] != first_request['old_disks'] or
-            source['artifacts'] != first_request['old_artifacts'] or
+            source['configuration_sha256'] != seed_request['old_config_sha256'] or
+            source['disks'] != seed_request['old_disks'] or
+            source['artifacts'] != seed_request['old_artifacts'] or
+            source['autostart'] is not True or
             source['disk_mappings'] != {path: 'xvd' + letter for path, letter in
-                                        zip(first_request['old_disks'], 'ab')}):
+                                        zip(seed_request['old_disks'], 'ab')}):
         raise RuntimeError('native unmanaged source receipt differs from disposable Xen state')
+    adoption = t.BASE / 'operations' / uuid.uuid4().hex[:24]
+    adoption.mkdir()
+    adoption_request = {'kind': 'klokast.vm-adoption.v1', 'operation_id': adoption.name,
+                        'box': seed_request['box'], 'role': 'bak',
+                        'engine_commit': seed_request['engine_commit'],
+                        'policy_sha256': seed_request['policy_sha256'],
+                        'qualification_sha256': 'e' * 64,
+                        'source_evidence_sha256': t.digest(source),
+                        'old_uuid': source['vm_uuid'],
+                        'old_config_sha256': source['configuration_sha256'],
+                        'old_disks': source['disks'], 'old_artifacts': source['artifacts'],
+                        'autostart': True}
+    t.atomic(adoption / 'old.cfg', (seed / 'old.cfg').read_bytes())
+    t.store(adoption / 'request.json', adoption_request)
+    t.invoke(adoption.name, 'adopt')
+    adopted = t.assignment_status('bak', backend)
+    if (adopted['stage'] != 'adopted' or adopted['vm_uuid'] != identities['old'] or
+            adopted['disks'] != source['disks'] or adopted['configuration_drift'] or
+            adopted['autostart_drift'] or adopted['runtime'] != 'running'):
+        raise RuntimeError('native old-only adoption did not preserve the running guest')
+    first, first_request = create_request('old', 'new', '1' * 64, continuing=True)
     for action in ('arm', 'stop', 'start'):
         t.invoke(first.name, action)
         if action == 'arm':
+            previous = t.read(first / 'journal.json')['previous_assignment']
+            if (previous['operation_id'] != adoption.name or
+                    previous['release_sha256'] is not None):
+                raise RuntimeError('first replacement lost the adopted old generation')
             try:
                 t.source_status('bak', backend)
             except t.Refused as error:
@@ -229,6 +256,7 @@ def generation_chain(t, backend, create_request, identities, allocated):
     selected('third', '2' * 64, 'accepted')
     unchanged('third', second_write)
     return {'stage': 'generation-chain', 'accepted_releases': 2, 'failed_attempt_recovered': True,
+            'old_only_adoption_tested': True,
             'retry_used_recovered_assignment': True, 'stale_generation_refused': True,
             'accepted_writes_preserved': True, 'assignment_verified': True,
             'source_inspection_tested': True,
