@@ -9,7 +9,6 @@ ROLES = ("bak", "dmz", "iot")
 BRANCH = re.compile(r"v([0-9]+)\.([0-9]+)")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REPORT_KIND = "klokast.vm-update-report.v1"
-DISCOVERY_AGE = dt.timedelta(hours=30)
 VERIFY_AGE = dt.timedelta(hours=2)
 METADATA_AGE = dt.timedelta(hours=24)
 

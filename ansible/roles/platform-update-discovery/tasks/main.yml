@@ -88,4 +88,4 @@
     name: crond
     enabled: true
     state: started
-  when: platform_update_schedule.policy and platform_update_schedule.policy.enabled
+  when: platform_update_schedule.policy is not none and platform_update_schedule.policy.enabled

@@ -105,6 +105,19 @@ class DailyUpdates(unittest.TestCase):
                     self.assertFalse(result['verified'])
                     self.assertIn('release.' + code, [row['code'] for row in result['findings']])
 
+    def test_interrupted_verification_invalidates_the_previous_report(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'verification.json').write_text('{"verified":true}')
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'assignment_summary', side_effect=RuntimeError('interrupted')):
+                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                    cli.verify_accepted()
+            report = json.loads((root / 'verification.json').read_text())
+            self.assertFalse(report['verified'])
+            self.assertEqual(report['findings'][0]['code'], 'release.incomplete')
+
     def test_daily_does_not_prepare_after_failed_verification(self):
         cli = load_cli()
         with patch.object(cli, 'schedule_source', return_value={'policy': {'enabled': True}, 'activated': True}), \

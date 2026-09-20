@@ -917,6 +917,10 @@ def accepted_release(assignment):
 def verify_accepted():
     """Read fresh boot assignments, packages, running kernel and required services."""
     require_controller()
+    write(STATE / 'verification.json', {
+        'kind': 'klokast.vm-update-verification.v1', 'generated_at': timestamp(now()),
+        'verified': False, 'assignments': [],
+        'findings': [findings('release.incomplete', 'Accepted release verification has not completed.', 'critical')]})
     entries, problems = assignment_summary()
     for item in entries:
         host = item['host']
@@ -943,7 +947,7 @@ def verify_accepted():
             for key, passed in checks.items():
                 if not passed:
                     problems.append(findings('release.' + key, 'Accepted VM failed ' + key + ' verification.', 'critical', host))
-        except (UpdateError, RuntimeError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+        except (UpdateError, RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
             problems.append(findings('release.unverified', str(error), 'critical', host))
     result = {'kind': 'klokast.vm-update-verification.v1', 'generated_at': timestamp(now()),
               'verified': not problems, 'assignments': entries, 'findings': problems}
