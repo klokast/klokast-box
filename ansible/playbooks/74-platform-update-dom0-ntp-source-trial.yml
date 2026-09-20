@@ -1,0 +1,83 @@
+---
+- name: Test a single documented NTP source on k001 dom0
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require only k001 dom0
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'k001-dom0'
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_ntp_source_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_ntp_source_controller.stdout | from_json).configured | bool
+          - (update_ntp_source_controller.stdout | from_json).active | bool
+
+    - name: Require NTP to be stopped before changing its source
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, ntpd, status]
+      changed_when: false
+      failed_when: >-
+        update_ntp_source_status.rc == 0 or
+        'stopped' not in update_ntp_source_status.stdout
+      register: update_ntp_source_status
+
+    - name: Read controller UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_ntp_source_controller_epoch
+
+    - name: Read dom0 UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      changed_when: false
+      register: update_ntp_source_dom0_epoch
+
+    - name: Require dom0 time within 30 seconds before the source trial
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((update_ntp_source_dom0_epoch.stdout | int) -
+             (update_ntp_source_controller_epoch.stdout | int)) | abs <= 30
+
+    - name: Select the documented Cloudflare NTP service for the live trial
+      ansible.builtin.copy:
+        dest: /etc/conf.d/ntpd
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Use one documented source during the bounded k001 clock trial.
+          NTPD_OPTS="-N -p time.cloudflare.com"
+
+    - name: Start the existing NTP service with the trial source
+      ansible.builtin.service:
+        name: ntpd
+        state: started
+
+    - name: Verify dom0 UTC immediately after NTP start
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      changed_when: false
+      register: update_ntp_source_dom0_after
+
+    - name: Require dom0 time within 30 seconds after NTP start
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((update_ntp_source_dom0_after.stdout | int) -
+             (lookup('pipe', 'date -u +%s') | int)) | abs <= 30

@@ -152,8 +152,8 @@ No successful unattended changed-package update has been established.
 
 Accepted-source audits require a dom0 timestamp within five minutes of the
 controller. `k001-dom0` jumped ahead again after the Xen clocksource was
-selected. Its hardware clock is about five minutes ahead and its NTP process
-reports an unsynchronized clock. The one-shot Xen clocksource boot service is
+selected. Its hardware clock was about five minutes ahead and its NTP process
+reported an unsynchronized clock. The one-shot Xen clocksource boot service is
 installed and persisted, but it is not a demonstrated correction. A physical
 dom0 reboot has not tested it. `74-platform-update-dom0-clock-diagnostic.yml`
 reads the system clock, hardware clock, and NTP state. The time correction in
@@ -167,6 +167,11 @@ hardware clock stayed aligned. `74-platform-update-dom0-ntp-trial.yml` stops
 NTP only in the running k001 dom0 and makes one bounded controller-time
 correction. NTP remains enabled for the next boot. The trial distinguishes an
 NTP adjustment from a Xen clock fault; it is not a steady-state time policy.
+After NTP-off stability is measured, `74-platform-update-dom0-ntp-source-trial.yml`
+can start the existing service against the documented
+[Cloudflare NTP source](https://developers.cloudflare.com/time-services/ntp/usage/).
+The source trial changes the live configuration but does not persist it to the
+diskless boot archive. A sustained, correct clock is required before adoption.
 
 ## Current commands
 
