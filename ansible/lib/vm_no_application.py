@@ -360,17 +360,21 @@ def source_intent(retention, registry, catalogs, box, role):
 def checked_boot_files(value, mounts):
     fields = {'kind', 'complete', 'stable', 'mount', 'metadata', 'artifacts',
               'adoption_authorized', 'error', 'evidence_sha256'}
-    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.vm-boot-files.v1' or
+    accepted = isinstance(value, dict) and value.get('kind') == 'klokast.vm-boot-files.v2'
+    mount_path = '/' if accepted else '/boot'
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] not in {'klokast.vm-boot-files.v1', 'klokast.vm-boot-files.v2'} or
             value['complete'] is not True or value['stable'] is not True or
             value['adoption_authorized'] is not False or value['error'] is not None or
             not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts) or
-            [m for m in mounts if m.get('path') == '/boot'] != [value['mount']] or
+            [m for m in mounts if m.get('path') == mount_path] != [value['mount']] or
+            (accepted and any(m.get('path') == '/boot' for m in mounts)) or
             any(str(m.get('path', '')).startswith('/boot/') for m in mounts) or
             value['evidence_sha256'] != digest({k: v for k, v in value.items() if k != 'evidence_sha256'})):
         raise UpdateError('complete stable boot filesystem coverage is unavailable')
     mount = value['mount']
     if (not isinstance(mount, dict) or set(mount) != {'path', 'root', 'type', 'device'} or
-            mount['path'] != '/boot' or mount['root'] != '/' or mount['type'] != 'ext4' or
+            mount['path'] != mount_path or mount['root'] != '/' or mount['type'] != 'ext4' or
             not isinstance(mount['device'], str) or not re.fullmatch(r'[0-9]+:[0-9]+', mount['device'])):
         raise UpdateError('boot filesystem identity is unsupported')
     metadata = value['metadata']

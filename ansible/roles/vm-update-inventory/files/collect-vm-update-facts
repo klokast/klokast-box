@@ -740,7 +740,7 @@ def collect_no_application_store(root, mounts, owner, graph='/home/neo/.local/sh
 
 
 def collect_boot_files(root, mounts):
-    """Inspect the separately mounted legacy boot filesystem on the guest.
+    """Inspect boot files on a separate legacy mount or the accepted OS root.
 
     Only fixed OS artifact names are hashed. Unknown files retain metadata and
     block qualification. No filesystem is mounted and no artifact is executed.
@@ -750,9 +750,12 @@ def collect_boot_files(root, mounts):
     allowed = {'vmlinuz-virt', 'initramfs-virt', 'config-virt', 'System.map-virt'}
     try:
         selected = [m for m in mounts if m['path'] == '/boot']
+        if not selected:
+            selected = [m for m in mounts if m['path'] == '/']
+            result['kind'] = 'klokast.vm-boot-files.v2'
         if (len(selected) != 1 or selected[0]['root'] != '/' or selected[0]['type'] != 'ext4' or
                 any(m['path'].startswith('/boot/') for m in mounts)):
-            raise HostInventoryError('boot requires one complete ext4 mount with no nested filesystems')
+            raise HostInventoryError('boot requires one complete ext4 filesystem with no nested mounts')
         result['mount'] = selected[0]
         boot = root / 'boot'
         deadline = time.monotonic() + 15
@@ -1351,13 +1354,12 @@ def mount_inventory():
         return None
 
 
-def legacy_mount_sources(read_mountinfo=None, stat_path=None):
-    """Bind the two old ext4 mounts to Xen xvda partitions without contents."""
+def source_mounts(expected, kind, read_mountinfo=None, stat_path=None):
+    """Bind exact ext4 mounts to fixed Xen block devices without contents."""
     read_mountinfo = read_mountinfo or (lambda: text('/proc/self/mountinfo', 1024 * 1024))
     stat_path = stat_path or os.lstat
-    result = {'kind': 'klokast.vm-legacy-mount-sources.v1', 'complete': False,
+    result = {'kind': kind, 'complete': False,
               'stable': False, 'devices': {}, 'error': None}
-    expected = {'/': '/dev/xvda3', '/boot': '/dev/xvda1'}
     try:
         before = read_mountinfo()
         if not before or len(before) > 1024 * 1024:
@@ -1377,16 +1379,27 @@ def legacy_mount_sources(read_mountinfo=None, stat_path=None):
                 if not stat.S_ISBLK(info.st_mode) or info.st_rdev != os.makedev(major, minor):
                     raise HostInventoryError('source mount and Xen device identity differ')
                 selected[mount] = {'source': expected[mount], 'device': fields[2]}
-            elif mount.startswith('/boot/'):
-                raise HostInventoryError('nested boot filesystem is unsupported')
-        if set(selected) != set(expected) or selected['/']['device'] == selected['/boot']['device']:
-            raise HostInventoryError('source root and boot mounts are incomplete')
+            elif mount == '/boot' or any(mount.startswith(path + '/') for path in expected if path != '/'):
+                raise HostInventoryError('unexpected boot or nested retained filesystem is unsupported')
+        if set(selected) != set(expected) or len({row['device'] for row in selected.values()}) != len(expected):
+            raise HostInventoryError('source filesystems are incomplete or overlap')
         result.update(complete=True, stable=before == read_mountinfo(), devices=selected)
     except (HostInventoryError, OSError, ValueError, IndexError) as error:
         result['error'] = str(error) if isinstance(error, HostInventoryError) else 'source mount inspection failed'
     result['evidence_sha256'] = hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return result
+
+
+
+def legacy_mount_sources(read_mountinfo=None, stat_path=None):
+    return source_mounts({'/': '/dev/xvda3', '/boot': '/dev/xvda1'},
+                         'klokast.vm-legacy-mount-sources.v1', read_mountinfo, stat_path)
+
+
+def accepted_mount_sources(read_mountinfo=None, stat_path=None):
+    return source_mounts({'/': '/dev/xvda', '/srv/retained': '/dev/xvdb'},
+                         'klokast.vm-accepted-mount-sources.v1', read_mountinfo, stat_path)
 
 
 def directory_verified(value, mounts):
@@ -1505,6 +1518,7 @@ def main():
         "legacy_account_files": {name: legacy_account_file(name) for name in ('passwd', 'group')},
         "legacy_shadow_file": legacy_shadow_file(),
         "legacy_mount_sources": legacy_mount_sources(),
+        "accepted_mount_sources": accepted_mount_sources(),
         "machine_identity_files": machine_identity_files(status),
         "template_marker": text("/etc/klokast/vm-release.json", 65536),
         "legacy_template_marker": text("/etc/klokast-podman-template-built", 16384),

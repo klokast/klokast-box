@@ -79,6 +79,30 @@ class MaintenanceSource(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertIn('replacement-source-status', run.call_args.args[0])
 
+    def test_small_retained_backup_bounds_snapshot_and_rechecks_source(self):
+        import contextlib
+        import io
+        module = load('maintenance_backup_test', ROOT / 'roles/vm-retained-data/files/vm-supervised-backup')
+        records = []
+        current = dict(self.value, observed_at=100)
+        current['dom0'] = 'k002-dom0'
+        argv = ['backup', '--box', 'k002', '--role', 'dmz', '--operation-id', 'f' * 24,
+                '--engine-commit', 'a' * 40, '--source-layout', 'retained-data']
+        with patch.object(sys, 'argv', argv), patch.object(module.os, 'geteuid', return_value=0), \
+                patch.object(module.socket, 'gethostname', return_value='k002-dom0'), \
+                patch('time.time', return_value=100), patch.object(backup, 'secure'), \
+                patch.object(backup, 'store'), patch.object(source, 'read', return_value=current) as read, \
+                patch.object(backup, 'make_backup', side_effect=lambda path, req: records.append(req) or {'copied': True}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            module.main()
+            self.assertEqual(read.call_count, 2)
+            request = records[0]
+            self.assertEqual(request['cow_bytes'], self.disks[self.data_path]['bytes'])
+            self.assertEqual(request['source']['path'], self.data_path)
+            backup.validate(request)
+            read.side_effect = [current, dict(current, request_sha256='a' * 64)]
+            with self.assertRaisesRegex(backup.BackupError, 'changed after backup'): module.main()
+
     def generation_records(self):
         prepared = {'operation_id': self.operation, 'box': 'boxa', 'role': 'dmz',
                     'root': dict(self.disks[self.os_path], path=self.os_path),

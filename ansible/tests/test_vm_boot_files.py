@@ -38,6 +38,20 @@ class BootFiles(unittest.TestCase):
         self.assertNotIn('SECRET', json.dumps(value))
         self.assertEqual(noapp.checked_boot_files(value, self.mounts), value)
 
+    def test_accepted_boot_directory_binds_the_os_filesystem(self):
+        self.mounts[0]['path'] = '/'
+        value = self.collect()
+        self.assertTrue(value['complete'] and value['stable'])
+        self.assertEqual(value['kind'], 'klokast.vm-boot-files.v2')
+        self.assertEqual(noapp.checked_boot_files(value, self.mounts), value)
+        changed = copy.deepcopy(value)
+        changed['kind'] = 'klokast.vm-boot-files.v1'
+        changed['evidence_sha256'] = digest({k: v for k, v in changed.items() if k != 'evidence_sha256'})
+        with self.assertRaises(UpdateError): noapp.checked_boot_files(changed, self.mounts)
+        self.mounts.append({**self.mounts[0], 'path': '/boot', 'device': '999:999'})
+        with self.assertRaises(UpdateError): noapp.checked_boot_files(value, self.mounts)
+        self.assertFalse(self.collect()['complete'])
+
     def test_missing_nested_or_wrong_filesystem_identity_refuses(self):
         for mounts in ([], [{**self.mounts[0], 'device': '999:999'}],
                        [{**self.mounts[0], 'type': 'nfs'}],

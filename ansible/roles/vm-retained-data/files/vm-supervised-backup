@@ -52,7 +52,7 @@ def main():
         'box': args.box, 'engine_commit': args.engine_commit,
         'source_evidence_sha256': backup.digest(source),
         'source': {'path': path, 'uuid': identity['uuid'], 'bytes': identity['bytes']},
-        'cow_bytes': 16 * 1024**3, 'requested_at': int(time.time()),
+        'cow_bytes': min(16 * 1024**3, identity['bytes']), 'requested_at': int(time.time()),
     }
     backup.store(root / 'source.json', source)
     result = backup.make_backup(work, request)

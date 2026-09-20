@@ -108,6 +108,25 @@ class HostInventory(unittest.TestCase):
         readings = iter((mountinfo, mountinfo.replace('202:1', '202:2')))
         self.assertFalse(self.m.legacy_mount_sources(lambda: next(readings), probe)['stable'])
 
+    def test_accepted_mount_sources_require_distinct_unpartitioned_devices(self):
+        mountinfo = ('1 0 202:0 / / rw - ext4 /dev/xvda rw\n'
+                     '2 1 202:16 / /srv/retained rw - ext4 /dev/xvdb rw\n')
+        devices = {'/dev/xvda': SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_rdev=os.makedev(202, 0)),
+                   '/dev/xvdb': SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_rdev=os.makedev(202, 16))}
+        probe = lambda value: devices[value]
+        value = self.m.accepted_mount_sources(lambda: mountinfo, probe)
+        self.assertTrue(value['complete'] and value['stable'])
+        self.assertEqual(value['kind'], 'klokast.vm-accepted-mount-sources.v1')
+        for changed in (mountinfo.replace('/dev/xvda rw', '/dev/xvda3 rw'),
+                        mountinfo.replace('202:16', '202:0'),
+                        mountinfo + '3 1 202:17 / /srv/retained/nested rw - ext4 /dev/xvdb1 rw\n',
+                        mountinfo + '3 1 202:1 / /boot rw - ext4 /dev/xvda1 rw\n',
+                        mountinfo.replace(' /srv/retained ', ' /different ')):
+            with self.subTest(changed=changed):
+                self.assertFalse(self.m.accepted_mount_sources(lambda: changed, probe)['complete'])
+        readings = iter((mountinfo, mountinfo.replace(' rw', ' ro')))
+        self.assertFalse(self.m.accepted_mount_sources(lambda: next(readings), probe)['stable'])
+
     def test_machine_identity_receipt_exports_hashes_only_and_requires_management(self):
         names = ('var/lib/tailscale/tailscaled.state',
                  'etc/ssh/ssh_host_rsa_key', 'etc/ssh/ssh_host_ecdsa_key',
