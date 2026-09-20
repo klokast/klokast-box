@@ -151,12 +151,14 @@ Daily results are `unchanged`, `waiting`, `updated`, `deferred`, or `failed`.
 No successful unattended changed-package update has been established.
 
 Accepted-source audits require a dom0 timestamp within five minutes of the
-controller. `k001-dom0` uses the Xen clocksource: its TSC clock was ahead after
-native recovery tests. `74-platform-update-dom0-time.yml` selects the Xen
-clocksource through a one-shot boot service, keeps Alpine NTP enabled, and
-checks the diskless boot archive. It permits only a bounded correction from
-the active controller. Do not increase audit freshness limits to hide clock
-drift. A physical dom0 reboot has not yet tested this new boot service.
+controller. `k001-dom0` jumped ahead again after the Xen clocksource was
+selected. Its hardware clock is about five minutes ahead and its NTP process
+reports an unsynchronized clock. The one-shot Xen clocksource boot service is
+installed and persisted, but it is not a demonstrated correction. A physical
+dom0 reboot has not tested it. `74-platform-update-dom0-clock-diagnostic.yml`
+reads the system clock, hardware clock, and NTP state. The time correction in
+`74-platform-update-dom0-time.yml` is bounded by the active controller. Keep
+the strict audit freshness check until clock synchronization is demonstrated.
 
 ## Current commands
 

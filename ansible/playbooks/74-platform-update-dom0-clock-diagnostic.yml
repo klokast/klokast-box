@@ -44,6 +44,10 @@
         printf 'ntpd_service:\n'; rc-service ntpd status
         printf 'ntpd_config:\n'; cat /etc/conf.d/ntpd
         printf 'ntpd_process:\n'; ps -ef | grep '[n]tpd' || true
+        printf 'ntp_dns:\n'; nslookup pool.ntp.org || true
+        printf 'udp_sockets:\n'; netstat -anu || true
+        printf 'routes:\n'; ip route show || true
+        printf 'xen_info:\n'; xl info | grep -iE 'xen_version|xen_commandline|virt_caps|host' || true
         printf 'xen_clock_messages:\n'; dmesg | grep -iE 'clocksource|xen.*clock|rtc|timekeeping' | tail -40 || true
       changed_when: false
       register: update_clock_dom0_evidence
