@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import secrets
 import socket
 import subprocess
@@ -18,6 +19,7 @@ import sys
 
 REPO = Path(__file__).resolve().parents[2]
 LOCK = Path('/var/lib/klokast/updates/operation.lock')
+BUILDS = Path('/var/lib/klokast/updates/discovery/builds')
 TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
 
 
@@ -33,10 +35,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--role', required=True)
+    parser.add_argument('--candidate-id', required=True)
     args = parser.parse_args()
     os.umask(0o077)
     if (args.box, args.role) not in TARGETS:
         raise RuntimeError('supervised backup supports only the three selected no-application guests')
+    if not re.fullmatch(r'[0-9a-f]{24}', args.candidate_id):
+        raise RuntimeError('candidate ID must be the exact tested template build')
     if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
         raise RuntimeError('run this command as smith on the active controller')
     authority = json.loads(checked(['/usr/local/sbin/klokast-controller-guard',
@@ -49,19 +54,33 @@ def main():
     if (commit != upstream or
             checked(['git', '-C', str(REPO), 'status', '--porcelain', '--untracked-files=all'])):
         raise RuntimeError('the public checkout must be clean, committed, and pushed')
+    evidence_path = BUILDS / args.candidate_id / 'release-evidence.json'
+    if (evidence_path.is_symlink() or not evidence_path.is_file() or
+            evidence_path.stat().st_size > 1024 * 1024):
+        raise RuntimeError('selected template has no bounded release evidence')
+    evidence = json.loads(evidence_path.read_text())
+    template_engine = evidence.get('engine_commit')
+    if (evidence.get('kind') != 'klokast.vm-release.v2' or
+            evidence.get('branch') != 'v3.24' or evidence.get('profile') != 'shared-alpine-v1' or
+            evidence.get('application_tests') != {'executed': False, 'status': 'not-run'} or
+            not isinstance(evidence.get('tests'), dict) or
+            not evidence['tests'] or any(value is not True for value in evidence['tests'].values()) or
+            not isinstance(template_engine, str) or not re.fullmatch(r'[0-9a-f]{40}', template_engine)):
+        raise RuntimeError('selected template evidence does not prove the tested v3.24 base')
     operation = secrets.token_hex(12)
     with LOCK.open('r+b') as stream:
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError('another Platform mutation holds the installation lock') from error
-        print(f'Supervised backup: {args.box}-{args.role}; operation {operation}', flush=True)
+        print(f'Supervised backup: {args.box}-{args.role}; operation {operation}; '
+              f'template {args.candidate_id}', flush=True)
         command = [
             'ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
             str(REPO / 'ansible/playbooks/74-platform-update-supervised-backup.yml'),
             '--limit', args.box + '-dom0', '-e', json.dumps({
                 'supervised_box': args.box, 'supervised_role': args.role,
-                'supervised_operation_id': operation, 'supervised_engine_commit': commit,
+                'supervised_operation_id': operation, 'supervised_engine_commit': template_engine,
             }, separators=(',', ':')),
         ]
         environment = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg'))
