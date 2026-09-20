@@ -163,10 +163,11 @@ Xen clocksource or the NTP service caused a time fault.
 `74-platform-update-controller-time.yml` checks active-controller authority,
 bounds the offset to the documented
 [Cloudflare NTP source](https://developers.cloudflare.com/time-services/ntp/usage/),
-and enables the controller's existing NTP service. After the controller is
-verified, `74-platform-update-dom0-time.yml` can correct each dom0 system and
-hardware clock and start NTP. Hardware-clock writes are bounded by controller
-time.
+and enables the controller's existing NTP service. The `ops-controller` role
+keeps this source and service enabled on converged controllers. After
+controller UTC is verified, `74-platform-update-dom0-time.yml` can correct
+each dom0 system and hardware clock and start NTP. Hardware-clock writes are
+bounded by controller time.
 `74-platform-update-dom0-clock-diagnostic.yml` reads system, hardware, and
 NTP state. The k001 one-shot Xen clocksource boot service is persisted, but a
 physical reboot has not tested it or shown that it is needed. Keep the strict

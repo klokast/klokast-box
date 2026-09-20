@@ -156,6 +156,22 @@
       Expected {{ ops_controller_packages | unique | sort | list }},
       got {{ ops_controller_apk_world_after_packages }}.
 
+- name: Configure the ops controller UTC source
+  ansible.builtin.copy:
+    dest: /etc/conf.d/ntpd
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Public UTC source for the Platform controller.
+      NTPD_OPTS="-N -p time.cloudflare.com"
+
+- name: Keep the existing ops controller NTP service enabled
+  ansible.builtin.service:
+    name: ntpd
+    enabled: true
+    state: started
+
 - name: Install the pinned controller Ansible collection
   ansible.builtin.import_tasks: ansible-toolchain.yml
   tags: ops-controller-ansible-toolchain
