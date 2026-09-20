@@ -8,9 +8,16 @@ selects targets and exclusions. Discovery continues to inventory every managed
 VM. Application adapters, application data migration, and replacement of other
 VM types are separate follow-up work.
 
-The release is **not complete**. The discovery, template builder, independent
-backup and isolated restore, retained-data, personalizer, and dom0 recovery
-components have native test evidence. Their production integration is unfinished.
+The current production path is a one-time supervised cutover of `k001-dmz`,
+`k002-dmz`, and `k002-iot`. It uses a tested Alpine v3.24 template, an
+independent backup with an isolated restore test, a separate retained-data
+disk, and dom0 recovery before old guest shutdown. The operator runs each
+guest in sequence. The signed standing policy, unattended executor, schedule,
+and 24-hour canary remain follow-up work for recurring updates.
+
+The unattended release is **not complete**. The discovery, template builder,
+independent backup and isolated restore, retained-data, personalizer, and
+dom0 recovery components have native test evidence.
 `adopt prepare` writes classification and exact cleanup reports. It issues a
 signed adoption intent only when qualification is complete. `prepare --auto`
 uses the active signed policy and fresh discovery to select the adjacent stable
@@ -25,8 +32,9 @@ a production disk. Signed old-generation adoption is implemented in the
 candidate engine, but has not been promoted or used on production VMs.
 The root authority also has a read-only release check that compares the fixed
 dom0 artifact bytes with the protected release before staging.
-Replacement and rollout remain unavailable. No production update schedule has
-been enabled.
+Unattended replacement and rollout remain unavailable. No production update
+schedule has been enabled. The supervised commands below do not activate the
+standing update policy.
 
 The [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
 owns desired state and assignment rules. [Secret Authority](secret-authority.md#standing-vm-update-authority)
@@ -35,7 +43,10 @@ evidence are kept once in [VM update components](platform-update-components.md).
 Generated records and secrets stay outside Git. The controller private checkout
 stays read-only. Standby recovery copies grant no execution authority.
 
-## Completion sequence
+## Unattended follow-up sequence
+
+The following work is for recurring unattended updates after the selected
+one-time cutovers. It does not gate the supervised commands below.
 
 1. **Qualify the three targets.** Account for every file, service, process,
    timer, account, container store, mount, and package difference. A report
@@ -88,8 +99,10 @@ stays read-only. Standby recovery copies grant no execution authority.
    below before declaring the reduced first release complete.
 
 Old and candidate writable disks stay separate. Keep the original adoption
-disk and verified backup through rollout acceptance. Dom0 must not mount guest
-filesystems. Send controller heartbeats every 15 seconds to the 90-second dom0
+disk and verified backup through rollout acceptance. Dom0 does not mount old
+guest or candidate production filesystems. The supervised runner mounts a
+disposable copy of the generic tested template only to install its maintenance
+entry. Send controller heartbeats every 15 seconds to the 90-second dom0
 watchdog. A failed executor stops heartbeats. A heartbeat never extends the
 replacement deadline.
 
