@@ -17,6 +17,14 @@
     mode: '0700'
   loop: ['', operations, active]
 
+- name: Create the dom0 local administrator command directory
+  ansible.builtin.file:
+    path: /usr/local/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install the closed shared VM transaction helper
   ansible.builtin.copy:
     src: vm-update-transaction
