@@ -28,6 +28,33 @@ def load_cli():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_policy_summary_exposes_pause_and_missing_executor(self):
+        cli = load_cli()
+        source = {'kind': 'klokast.vm-update-policy-source.v1',
+                  'policy': {'enabled': True}, 'policy_sha256': 'a' * 64,
+                  'activation_sha256': 'b' * 64, 'engine_commit': 'c' * 40,
+                  'private_commit': 'd' * 40, 'authority_state_sha256': 'e' * 64,
+                  'paused': False, 'replacement_executor_available': False}
+        with patch.object(cli, 'command', return_value=json.dumps(source)):
+            status, problems = cli.policy_summary()
+        self.assertEqual(status['state'], 'active')
+        self.assertEqual([item['code'] for item in problems], ['executor.unavailable'])
+        source['paused'] = True
+        with patch.object(cli, 'command', return_value=json.dumps(source)):
+            status, problems = cli.policy_summary()
+        self.assertEqual(status['state'], 'paused')
+        self.assertEqual([item['code'] for item in problems],
+                         ['policy.paused', 'executor.unavailable'])
+        source['paused'] = False
+        source['replacement_executor_available'] = True
+        with patch.object(cli, 'command', return_value=json.dumps(source)):
+            self.assertEqual(cli.policy_summary()[1], [])
+        source['command'] = 'xl destroy dmz'
+        with patch.object(cli, 'command', return_value=json.dumps(source)):
+            self.assertEqual(cli.policy_summary()[1][0]['code'], 'policy.invalid')
+        with patch.object(cli, 'command', side_effect=u.UpdateError('revoked')):
+            self.assertEqual(cli.policy_summary()[1][0]['code'], 'policy.unavailable')
+
     def test_selected_assignment_reader_rejects_unknown_or_conflicting_state(self):
         cli = load_cli()
         unmanaged = {'kind': 'klokast.vm-boot-assignment.v1', 'role': 'dmz',

@@ -322,8 +322,9 @@ as successful discovery.
 `status` reports discovery older than 30 hours and verification older than two
 hours. Both commands keep the full managed-VM inventory visible. They score
 release findings for the selected DMZ and IoT targets; excluded backend and
-stopped guest findings remain in discovery. Both commands read each selected
-target's protected dom0 boot assignment
+stopped guest findings remain in discovery. They read the current signed policy
+and report paused, revoked, or unavailable execution as critical. Both commands
+read each selected target's protected dom0 boot assignment
 through its installed validator. Missing readers, incomplete assignments, and
 boot drift are critical. `verify` also records a critical `release.unverified`
 finding because accepted controller release records and package verification

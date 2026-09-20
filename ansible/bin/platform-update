@@ -471,6 +471,43 @@ def read_policy_source():
         raise UpdateError('current VM update policy source returned invalid JSON') from error
 
 
+def policy_summary():
+    """Read current signed execution state without using an expired scan."""
+    try:
+        value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                                    'vm-update-policy', 'source-status'], timeout=30),
+                           object_pairs_hook=unique_object)
+    except (UpdateError, ValueError, TypeError):
+        return ({'state': 'unavailable'},
+                [findings('policy.unavailable', 'Current signed VM update policy is unavailable.', 'critical')])
+    fields = {'kind', 'policy', 'policy_sha256', 'activation_sha256',
+              'engine_commit', 'private_commit', 'authority_state_sha256',
+              'paused', 'replacement_executor_available'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.vm-update-policy-source.v1' or
+            type(value['paused']) is not bool or
+            type(value['replacement_executor_available']) is not bool or
+            not isinstance(value['policy'], dict) or value['policy'].get('enabled') is not True or
+            any(not isinstance(value[key], str) or not re.fullmatch(r'[0-9a-f]{64}', value[key])
+                for key in ('policy_sha256', 'activation_sha256', 'authority_state_sha256')) or
+            not isinstance(value['engine_commit'], str) or
+            not re.fullmatch(r'[0-9a-f]{40}', value['engine_commit'])):
+        return ({'state': 'invalid'},
+                [findings('policy.invalid', 'Signed VM update policy reader returned an invalid contract.', 'critical')])
+    summary = {'state': 'paused' if value['paused'] else 'active',
+               'policy_sha256': value['policy_sha256'],
+               'activation_sha256': value['activation_sha256'],
+               'engine_commit': value['engine_commit'],
+               'replacement_executor_available': value['replacement_executor_available']}
+    problems = []
+    if value['paused']:
+        problems.append(findings('policy.paused', 'VM update execution is paused.', 'critical'))
+    if not value['replacement_executor_available']:
+        problems.append(findings('executor.unavailable', 'The approved VM replacement executor is unavailable.',
+                                 'critical'))
+    return summary, problems
+
+
 def installed_apk_keys():
     hashes = {}
     for path in sorted(Path('/etc/apk/keys').glob('*.pub')):
@@ -721,7 +758,7 @@ def dom0_assignment_status(box, role):
     script = 'doas /usr/local/sbin/vm-update-transaction assignment-status --role ' + role + '\n'
     try:
         response = subprocess.run(['tailscale', 'ssh', 'neo@' + box + '-dom0', 'sh', '-s'],
-                                  input=script, text=True, capture_output=True, timeout=30)
+                                  input=script, text=True, capture_output=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError('protected dom0 assignment reader is unavailable') from error
     if response.returncode or not 0 < len(response.stdout) <= 65536:
@@ -1075,17 +1112,19 @@ def main(argv=None):
             require_controller()
             report = optional(STATE / "current.json")
             verification = optional(STATE / "verification.json")
+            policy, policy_findings = policy_summary()
             assignments, assignment_findings = assignment_summary()
             if args.command == "verify":
                 # Do not claim a successful release check from a recent scan.
                 verification = {"kind": "klokast.vm-update-verification.v1", "generated_at": timestamp(now()),
                                 "verified": False, "assignments": assignments,
                                 "findings": [findings("release.unverified", "Accepted release records and package verification are not installed.", "critical"),
-                                             *assignment_findings]}
+                                             *policy_findings, *assignment_findings]}
                 write(STATE / "verification.json", verification)
             current_findings = health(report, verification, now(),
                                       selected_hosts={box + '-' + role for box, role in AUTO_TARGETS})
             if args.command == 'status':
+                current_findings.extend(policy_findings)
                 current_findings.extend(assignment_findings)
             inventory = []
             if isinstance(report, dict):
@@ -1096,7 +1135,8 @@ def main(argv=None):
                                       'update_status': host.get('update_status')})
             report = {"kind": "klokast.vm-update-status.v1", "generated_at": timestamp(now()),
                       "hosts": [], "inventory": inventory,
-                      "assignments": assignments, "findings": current_findings}
+                      "policy": policy, "assignments": assignments,
+                      "findings": current_findings}
         display(report, args.json)
         return 1 if any(v["severity"] == "critical" for v in report["findings"] + [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
     except (UpdateError, RuntimeError, OSError, ValueError, TypeError, KeyError) as error:
