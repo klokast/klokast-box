@@ -68,6 +68,70 @@
           - update_time_selected_clocksource.stdout == 'xen'
       when: (update_time_clocksource | default('keep')) == 'xen'
 
+    - name: Install a one-shot boot selection for the tested Xen clocksource
+      ansible.builtin.copy:
+        dest: /etc/init.d/klokast-dom0-xen-clocksource
+        owner: root
+        group: root
+        mode: '0755'
+        content: |
+          #!/sbin/openrc-run
+          description="Select the Xen clocksource before k001 dom0 services"
+
+          depend() {
+              need sysfs
+              before ntpd xendomains
+          }
+
+          start() {
+              ebegin "Select k001 Xen clocksource"
+              if [ "$(hostname)" != "k001-dom0" ]; then
+                  eend 1 "Clocksource service is on the wrong dom0"
+                  return 1
+              fi
+              if ! grep -qw xen /sys/devices/system/clocksource/clocksource0/available_clocksource; then
+                  eend 1 "Xen clocksource is unavailable"
+                  return 1
+              fi
+              if ! printf '%s\n' xen > /sys/devices/system/clocksource/clocksource0/current_clocksource; then
+                  eend 1 "Cannot select Xen clocksource"
+                  return 1
+              fi
+              if [ "$(cat /sys/devices/system/clocksource/clocksource0/current_clocksource)" != xen ]; then
+                  eend 1 "Xen clocksource was not selected"
+                  return 1
+              fi
+              eend 0
+          }
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
+    - name: Enable the one-shot clocksource selection before default services
+      ansible.builtin.command:
+        argv: [/sbin/rc-update, add, klokast-dom0-xen-clocksource, boot]
+      changed_when: false
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
+    - name: Test the installed one-shot clocksource service
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, klokast-dom0-xen-clocksource, start]
+      changed_when: false
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
+    - name: Include the clocksource service in diskless persistence
+      ansible.builtin.command:
+        argv: [/usr/sbin/lbu, include, /etc/init.d/klokast-dom0-xen-clocksource]
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
+    - name: Include the clocksource boot link in diskless persistence
+      ansible.builtin.command:
+        argv: [/usr/sbin/lbu, include, /etc/runlevels/boot/klokast-dom0-xen-clocksource]
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
+    - name: Persist the tested clocksource boot selection
+      ansible.builtin.command:
+        argv: [/usr/sbin/lbu, commit, -d]
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
     - name: Enable the installed Alpine time service
       ansible.builtin.service:
         name: ntpd
