@@ -69,11 +69,17 @@ def main():
     parser.add_argument('--role', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--retained-source', action='store_true',
+                        help='qualify the current protected two-disk assignment')
+    parser.add_argument('--replacement-minutes', type=int, default=30)
+    parser.add_argument('--recovery-minutes', type=int, default=30)
     args = parser.parse_args()
     os.umask(0o077)
     if ((args.box, args.role) not in TARGETS or
             any(not re.fullmatch(r'[0-9a-f]{24}', value)
-                for value in (args.operation_id, args.candidate_id))):
+                for value in (args.operation_id, args.candidate_id)) or
+            any(not 1 <= value <= 1440 for value in
+                (args.replacement_minutes, args.recovery_minutes))):
         raise RuntimeError('supervised switch staging requires one selected target and exact operation')
     if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
         raise RuntimeError('run this command as smith on the active controller')
@@ -96,25 +102,37 @@ def main():
                 release_path.stat().st_size > 1024 * 1024):
             raise RuntimeError('selected tested release evidence is unavailable')
         release = json.loads(release_path.read_text(), object_pairs_hook=updates.unique_object)
+        try:
+            updates.branch_number(release.get('branch'))
+        except updates.UpdateError as error:
+            raise RuntimeError('selected release has no stable Alpine branch') from error
         if (release.get('kind') != 'klokast.vm-release.v2' or
-                release.get('branch') != 'v3.24' or
                 release.get('profile') != 'shared-alpine-v1' or
                 release.get('release_sha256') != updates.digest({k: v for k, v in release.items()
                                                                 if k != 'release_sha256'}) or
                 release.get('application_tests') != {'executed': False, 'status': 'not-run'} or
                 not isinstance(release.get('tests'), dict) or
                 any(value is not True for value in release['tests'].values())):
-            raise RuntimeError('selected release is not the tested no-application Alpine 3.24 template')
+            raise RuntimeError('selected release is not the tested no-application Alpine template')
         host = args.box + '-' + args.role
-        qualification = json.loads(checked([REPO / 'ansible/bin/platform-update',
-                                            'adopt', 'prepare', '--box', args.box,
-                                            '--role', args.role, '--json'],
-                                           timeout=240, allowed=(0, 1)))
+        qualification_command = ([REPO / 'ansible/bin/platform-update', 'audit-accepted',
+                                  '--box', args.box, '--role', args.role] if args.retained_source else
+                                 [REPO / 'ansible/bin/platform-update', 'adopt', 'prepare',
+                                  '--box', args.box, '--role', args.role, '--json'])
+        qualification = json.loads(checked(qualification_command, timeout=600, allowed=(0, 1)))
         intent = qualification.get('intent') or {}
         if (intent.get('box') != args.box or intent.get('role') != args.role or
                 intent.get('eligible') is not True or intent.get('workloads') != [] or
                 intent.get('datasets') != []):
             raise RuntimeError('the selected guest has declared application work or retained datasets')
+        if args.retained_source and (
+                qualification.get('summary', {}).get('unresolved') != 0 or
+                any(qualification.get(key) is not True for key in
+                    ('generated_files_match', 'template_files_match', 'boot_match',
+                     'mount_match', 'packages_match')) or
+                {item.get('code') for item in qualification.get('findings', [])} -
+                {'qualification.machine-inputs', 'qualification.engine-unapproved'}):
+            raise RuntimeError('accepted guest has unresolved machine or workload evidence')
         variables = json.loads(checked(['ansible-inventory', '-i',
                                         REPO / 'ansible/execution-inventory/hosts', '--host', host],
                                        timeout=90))
@@ -142,6 +160,8 @@ def main():
                        'supervised_box': args.box, 'supervised_role': args.role,
                        'supervised_operation_id': args.operation_id,
                        'supervised_candidate_id': args.candidate_id,
+                       'supervised_replacement_seconds': args.replacement_minutes * 60,
+                       'supervised_recovery_seconds': args.recovery_minutes * 60,
                    }, separators=(',', ':'))]
         environment = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg'))
         result = subprocess.run(command, stdin=subprocess.DEVNULL, env=environment, timeout=600)

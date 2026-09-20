@@ -50,7 +50,9 @@ def stage(args):
     if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
             any(not re.fullmatch(r'[0-9a-f]{24}', value)
-                for value in (args.operation_id, args.candidate_id))):
+                for value in (args.operation_id, args.candidate_id)) or
+            any(type(value) is not int or not 60 <= value <= 86400 or value % 60
+                for value in (args.replacement_seconds, args.recovery_seconds))):
         raise backup.BackupError('switch staging requires dom0 root and one fixed target')
     root = BASE / args.operation_id
     for path in (BASE, root, root / 'stage', root / 'backup'):
@@ -109,7 +111,7 @@ def stage(args):
                  for name in ('root', 'data')}
     artifacts = {str(CANDIDATES / args.candidate_id / name): manifest['artifacts'][name]
                  for name in ('kernel', 'initramfs')}
-    request = {'kind': 'klokast.vm-switch.v2', 'operation_id': args.operation_id,
+    request = {'kind': 'klokast.vm-switch.v3', 'operation_id': args.operation_id,
                'box': args.box, 'role': args.role, 'engine_commit': release['engine_commit'],
                'policy_sha256': tx.digest(supervision),
                'old_uuid': source['vm_uuid'], 'old_config_sha256': source['configuration_sha256'],
@@ -117,7 +119,9 @@ def stage(args):
                'new_uuid': candidate_uuid, 'new_config_sha256': hashlib.sha256(new_text.encode()).hexdigest(),
                'new_disks': new_disks, 'new_artifacts': artifacts,
                'release_sha256': release['release_sha256'], 'autostart': True,
-               'controller_timeout_seconds': 90}
+               'controller_timeout_seconds': 90,
+               'replacement_seconds': args.replacement_seconds,
+               'recovery_seconds': args.recovery_seconds}
     work = TRANSACTIONS / args.operation_id
     if work.exists() or work.is_symlink():
         raise backup.BackupError('switch operation already exists; inspect its recovery journal')
@@ -138,6 +142,8 @@ def main():
     parser.add_argument('--role', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--replacement-seconds', type=int, required=True)
+    parser.add_argument('--recovery-seconds', type=int, required=True)
     args = parser.parse_args()
     os.umask(0o077)
     print(backup.canonical(stage(args)).decode())

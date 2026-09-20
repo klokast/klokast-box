@@ -12,6 +12,10 @@
           - inventory_hostname == supervised_box ~ '-dom0'
           - supervised_operation_id is match('^[0-9a-f]{24}$')
           - supervised_candidate_id is match('^[0-9a-f]{24}$')
+          - supervised_replacement_seconds | int >= 60
+          - supervised_replacement_seconds | int <= 86400
+          - supervised_recovery_seconds | int >= 60
+          - supervised_recovery_seconds | int <= 86400
 
     - name: Verify active controller authority
       ansible.builtin.command:
@@ -73,6 +77,10 @@
           - "{{ supervised_operation_id }}"
           - --candidate-id
           - "{{ supervised_candidate_id }}"
+          - --replacement-seconds
+          - "{{ supervised_replacement_seconds }}"
+          - --recovery-seconds
+          - "{{ supervised_recovery_seconds }}"
       register: supervised_switch_staged
 
     - name: Show staged recovery assignment

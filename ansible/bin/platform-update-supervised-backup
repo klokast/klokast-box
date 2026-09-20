@@ -17,6 +17,9 @@ import socket
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'ansible/lib'))
+from platform_updates import branch_number, UpdateError
+
 REPO = Path(__file__).resolve().parents[2]
 LOCK = Path('/var/lib/klokast/updates/operation.lock')
 BUILDS = Path('/var/lib/klokast/updates/discovery/builds')
@@ -62,13 +65,17 @@ def main():
         raise RuntimeError('selected template has no bounded release evidence')
     evidence = json.loads(evidence_path.read_text())
     template_engine = evidence.get('engine_commit')
+    try:
+        branch_number(evidence.get('branch'))
+    except UpdateError as error:
+        raise RuntimeError('selected template has no supported stable Alpine branch') from error
     if (evidence.get('kind') != 'klokast.vm-release.v2' or
-            evidence.get('branch') != 'v3.24' or evidence.get('profile') != 'shared-alpine-v1' or
+            evidence.get('profile') != 'shared-alpine-v1' or
             evidence.get('application_tests') != {'executed': False, 'status': 'not-run'} or
             not isinstance(evidence.get('tests'), dict) or
             not evidence['tests'] or any(value is not True for value in evidence['tests'].values()) or
             not isinstance(template_engine, str) or not re.fullmatch(r'[0-9a-f]{40}', template_engine)):
-        raise RuntimeError('selected template evidence does not prove the tested v3.24 base')
+        raise RuntimeError('selected template evidence does not prove the tested Alpine base')
     operation = secrets.token_hex(12)
     with LOCK.open('r+b') as stream:
         try:

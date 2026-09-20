@@ -22,7 +22,7 @@ APPROVED_REPO = Path("/home/smith/src/klokast/klokast-box")
 sys.path.insert(0, str(REPO / "ansible/lib"))
 from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, digest,
                               no_application_release,
-                              findings, fresh, health, parse_apk_database, timestamp,
+                              findings, fresh, health, parse_apk_database, replacement_window, timestamp,
                               unique_object, VERIFY_AGE)
 from platform_update_metadata import adjacent_stable_branch, collect_branch, compare_versions, supported_stable_branch
 import vm_template_inputs
@@ -982,6 +982,178 @@ def daily():
     return {'status': 'unchanged' if accepted else 'waiting', 'preparation': result}
 
 
+def replacement_authority():
+    """Read current sealed policy and refuse changed or unready execution."""
+    source, schedule = read_policy_source(), schedule_source()
+    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if (source.get('engine_commit') != commit or source.get('paused') is not False or
+            source.get('replacement_executor_available') is not True or
+            schedule.get('activated') is not True or schedule.get('replacement_ready') is not True or
+            schedule.get('policy') != source.get('policy') or
+            source.get('policy', {}).get('enabled') is not True):
+        raise UpdateError('signed VM update authority or tested replacement executor is unavailable')
+    return source
+
+
+def checked_release_on_box(box, release_sha256):
+    result = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                                 'vm-update-release', 'check', '--release-sha256',
+                                 release_sha256, '--box', box], timeout=900),
+                        object_pairs_hook=unique_object)
+    if (result.get('kind') != 'klokast.vm-release-availability.v1' or
+            result.get('box') != box or result.get('release_sha256') != release_sha256 or
+            result.get('available') is not True):
+        raise UpdateError('protected release artifact check returned a different candidate')
+    return result
+
+
+def replacement_qualification(box, role, source):
+    """Reobserve the guest and its accepted source just before mutation."""
+    observed = scan()
+    if observed.get('implementation_commit') != source['engine_commit']:
+        raise UpdateError('replacement scan used another engine')
+    verified = verify_accepted()
+    if not verified['verified']:
+        raise UpdateError('accepted release verification failed before replacement')
+    audit = audit_accepted(box, role)
+    if (audit['summary']['unresolved'] or
+            any(audit.get(key) is not True for key in
+                ('generated_files_match', 'template_files_match', 'boot_match',
+                 'mount_match', 'packages_match')) or
+            {row['code'] for row in audit['findings']} - {'qualification.machine-inputs'} or
+            audit.get('intent', {}).get('eligible') is not True):
+        raise UpdateError('selected guest has changed machine or workload evidence')
+    if replacement_authority() != source:
+        raise UpdateError('signed VM update authority changed during qualification')
+    return audit
+
+
+def supervised_phase(name, box, role, candidate, operation=None):
+    """Run one checked existing adapter; preserve its private diagnostic log."""
+    if name not in {'backup', 'restore', 'prepare', 'stage', 'cutover-stage', 'run'}:
+        raise UpdateError('unsupported supervised replacement phase')
+    directory = STATE / 'replacement-logs'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    label = operation or secrets.token_hex(12)
+    path = directory / (label + '-' + name + '.log')
+    argv = [REPO / ('ansible/bin/platform-update-supervised-' + name),
+            '--box', box, '--role', role, '--candidate-id', candidate]
+    if operation is not None:
+        argv.extend(['--operation-id', operation])
+    if name in {'backup', 'restore', 'cutover-stage'}:
+        argv.append('--retained-source')
+    if name == 'cutover-stage':
+        policy = replacement_authority()['policy']
+        argv.extend(['--replacement-minutes', str(policy['replacement-minutes']),
+                     '--recovery-minutes', str(policy['recovery-minutes'])])
+    with path.open('x') as stream:
+        outcome = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                                 stdout=stream, stderr=subprocess.STDOUT, timeout=2400)
+    if outcome.returncode:
+        raise UpdateError('supervised ' + name + ' failed; reconcile its protected operation and log: ' + str(path))
+    if name == 'backup':
+        first = path.open().readline()
+        found = re.fullmatch(r'Supervised backup: ' + box + '-' + role +
+                             r'; operation ([0-9a-f]{24}); template ' + candidate + r'\n', first)
+        if not found:
+            raise UpdateError('supervised backup did not identify its protected operation')
+        return found.group(1)
+    return path
+
+
+def replace_due():
+    """Run serial replacements only after every current authority check."""
+    require_controller()
+    if not STATE.is_dir():
+        raise UpdateError('VM update discovery state is unavailable')
+    with (STATE / 'replacement.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise UpdateError('another replacement run holds the controller lock') from error
+        source = replacement_authority()
+        pointer = load(STATE / 'automatic.json')
+        selection = pointer.get('selection', {})
+        if (pointer.get('kind') != 'klokast.vm-update-auto-build.v1' or
+                selection.get('activation_sha256') != source['activation_sha256'] or
+                selection.get('engine_commit') != source['engine_commit'] or
+                selection.get('targets') != [box + '-' + role for box, role in AUTO_TARGETS] or
+                not re.fullmatch('[0-9a-f]{24}', pointer.get('operation_id', '')) or
+                not re.fullmatch('[0-9a-f]{64}', pointer.get('release_sha256', ''))):
+            raise UpdateError('automatic template pointer differs from signed rollout')
+        release, candidate = pointer['release_sha256'], pointer['operation_id']
+        record = STATE / 'replacement-operation.json'
+        previous = optional(record)
+        if previous and previous.get('stage') not in {'complete', 'cutoff-deferred'}:
+            raise UpdateError('recorded replacement requires reconciliation before further mutation')
+        if previous and previous.get('stage') == 'cutoff-deferred':
+            if (previous.get('release_sha256') != release or
+                    previous.get('host') not in [box + '-' + role for box, role in AUTO_TARGETS] or
+                    not re.fullmatch('[0-9a-f]{24}', previous.get('operation_id', '')) or
+                    not fresh(previous.get('started_at'), now(), dt.timedelta(hours=30))):
+                raise UpdateError('deferred replacement is stale or differs from the frozen release; reconcile it')
+        updated = []
+        for box, role in AUTO_TARGETS:
+            host = box + '-' + role
+            assignment = dom0_assignment_status(box, role)
+            if (assignment.get('stage') != 'complete' or assignment.get('runtime') != 'running' or
+                    assignment.get('configuration_drift') or assignment.get('autostart_drift')):
+                raise UpdateError('accepted assignment needs reconciliation: ' + host)
+            if assignment.get('release_sha256') == release:
+                if previous and previous.get('stage') == 'cutoff-deferred' and previous.get('host') == host:
+                    raise UpdateError('deferred operation changed outside the recorded replacement; reconcile it')
+                continue
+            if not replacement_window(now(), source['policy']):
+                return {'status': 'updated' if updated else 'deferred',
+                        'updated': updated, 'next': host, 'release_sha256': release}
+            if replacement_authority() != source:
+                raise UpdateError('signed VM update authority changed before replacement')
+            replacement_qualification(box, role, source)
+            checked_release_on_box(box, release)
+            resumed = previous and previous.get('stage') == 'cutoff-deferred'
+            if resumed and previous['host'] != host:
+                raise UpdateError('deferred replacement target changed; reconcile it')
+            state = dict(previous) if resumed else {
+                'kind': 'klokast.vm-replacement-run.v1', 'host': host,
+                'operation_id': None, 'release_sha256': release,
+                'stage': 'backup-started', 'started_at': timestamp(now())}
+            write(record, state)
+            try:
+                if not resumed:
+                    operation = supervised_phase('backup', box, role, candidate)
+                    state.update(operation_id=operation, stage='backed-up')
+                    write(record, state)
+                    for phase in ('restore', 'prepare', 'stage', 'cutover-stage'):
+                        supervised_phase(phase, box, role, candidate, operation)
+                        state['stage'] = phase
+                        write(record, state)
+                operation = state['operation_id']
+                if not replacement_window(now(), source['policy']):
+                    state['stage'] = 'cutoff-deferred'
+                    write(record, state)
+                    return {'status': 'updated' if updated else 'deferred',
+                            'updated': updated, 'next': host, 'release_sha256': release}
+                replacement_qualification(box, role, source)
+                checked_release_on_box(box, release)
+                state['stage'] = 'armed-pending'
+                write(record, state)
+                supervised_phase('run', box, role, candidate, operation)
+                accepted = dom0_assignment_status(box, role)
+                if (accepted.get('stage') != 'complete' or accepted.get('release_sha256') != release):
+                    raise UpdateError('replacement returned without the protected accepted assignment')
+                if not verify_accepted()['verified']:
+                    raise UpdateError('accepted VM verification failed after replacement')
+                state['stage'] = 'complete'
+                write(record, state)
+                updated.append(host)
+            except (UpdateError, RuntimeError, OSError, subprocess.TimeoutExpired):
+                state['stage'] = 'reconciliation-required'
+                write(record, state)
+                raise
+        return {'status': 'updated' if updated else 'unchanged',
+                'updated': updated, 'release_sha256': release}
+
+
 def adoption_prepare(box, role):
     """Account for one target before requesting destructive or signed approval."""
     controller_status = require_controller()
@@ -1199,7 +1371,7 @@ def main(argv=None):
     accepted_parser = sub.add_parser('audit-accepted', help='compare accepted files and mounts; unresolved qualification still blocks replacement')
     accepted_parser.add_argument('--box', required=True)
     accepted_parser.add_argument('--role', choices=('dmz', 'iot'), required=True)
-    sub.add_parser('replace', help='check the protected replacement execution gate')
+    sub.add_parser('replace', help='replace due VMs serially under the signed maintenance window')
     sub.add_parser('daily', help='scan, verify and prepare without waiting for the maintenance window')
     scan_parser = sub.add_parser("scan", help="collect all VM facts and official Alpine metadata")
     scan_parser.add_argument("--existing-map", action="store_true", help="use a fresh controller map; still collect new VM facts")
@@ -1248,9 +1420,15 @@ def main(argv=None):
             print(canonical(result))
             return 1 if result['summary']['unresolved'] or result['findings'] else 0
         if args.command == 'replace':
-            require_controller()
-            schedule_source()
-            raise UpdateError('unattended replacement is unavailable: accepted two-disk enrollment and executor qualification are required')
+            try:
+                result = replace_due()
+            except (UpdateError, RuntimeError, OSError, ValueError, KeyError,
+                    subprocess.TimeoutExpired) as error:
+                result = {'status': 'failed', 'reason': str(error)}
+            result.update(kind='klokast.vm-update-replacement.v1', generated_at=timestamp(now()))
+            write(STATE / 'replacement.json', result)
+            print(canonical(result))
+            return 1 if result['status'] == 'failed' else 0
         if args.command == 'daily':
             try:
                 result = daily()

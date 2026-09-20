@@ -141,6 +141,98 @@ class DailyUpdates(unittest.TestCase):
             self.assertEqual(cli.main(['verify', '--json']), 0)
         self.assertEqual(json.loads(output.getvalue()), result)
 
+    def test_replacement_is_serial_and_defers_targets_after_cutoff(self):
+        cli = load_cli()
+        source = {'engine_commit': 'a' * 40, 'activation_sha256': 'b' * 64,
+                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30}}
+        release = 'c' * 64
+        pointer = {'kind': 'klokast.vm-update-auto-build.v1', 'operation_id': 'd' * 24,
+                   'release_sha256': release,
+                   'selection': {'activation_sha256': source['activation_sha256'],
+                                 'engine_commit': source['engine_commit'],
+                                 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}}
+        old = {'stage': 'complete', 'runtime': 'running', 'release_sha256': 'e' * 64,
+               'configuration_drift': False, 'autostart_drift': False}
+        new = dict(old, release_sha256=release)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'automatic.json').write_text(json.dumps(pointer))
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'replacement_authority', return_value=source), \
+                    patch.object(cli, 'dom0_assignment_status', side_effect=[old, new, old]), \
+                    patch.object(cli, 'replacement_window', side_effect=[True, True, False]), \
+                    patch.object(cli, 'replacement_qualification'), \
+                    patch.object(cli, 'checked_release_on_box'), \
+                    patch.object(cli, 'verify_accepted', return_value={'verified': True}), \
+                    patch.object(cli, 'supervised_phase', side_effect=lambda name, *_args:
+                                 'f' * 24 if name == 'backup' else None) as phases:
+                result = cli.replace_due()
+            self.assertEqual(result['status'], 'updated')
+            self.assertEqual(result['updated'], ['k001-dmz'])
+            self.assertEqual(result['next'], 'k002-dmz')
+            self.assertEqual([call.args[0] for call in phases.call_args_list],
+                             ['backup', 'restore', 'prepare', 'stage', 'cutover-stage', 'run'])
+            self.assertEqual(json.loads((root / 'replacement-operation.json').read_text())['stage'], 'complete')
+
+    def test_failed_switch_blocks_any_following_mutation(self):
+        cli = load_cli()
+        source = {'engine_commit': 'a' * 40, 'activation_sha256': 'b' * 64,
+                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30}}
+        pointer = {'kind': 'klokast.vm-update-auto-build.v1', 'operation_id': 'd' * 24,
+                   'release_sha256': 'c' * 64,
+                   'selection': {'activation_sha256': source['activation_sha256'],
+                                 'engine_commit': source['engine_commit'],
+                                 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}}
+        old = {'stage': 'complete', 'runtime': 'running', 'release_sha256': 'e' * 64,
+               'configuration_drift': False, 'autostart_drift': False}
+        def phase(name, *_args):
+            if name == 'run':
+                raise updates.UpdateError('switch failed')
+            return 'f' * 24 if name == 'backup' else None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'automatic.json').write_text(json.dumps(pointer))
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'replacement_authority', return_value=source), \
+                    patch.object(cli, 'dom0_assignment_status', return_value=old), \
+                    patch.object(cli, 'replacement_window', return_value=True), \
+                    patch.object(cli, 'replacement_qualification'), \
+                    patch.object(cli, 'checked_release_on_box'), \
+                    patch.object(cli, 'supervised_phase', side_effect=phase) as phases:
+                with self.assertRaisesRegex(updates.UpdateError, 'switch failed'):
+                    cli.replace_due()
+                self.assertEqual(json.loads((root / 'replacement-operation.json').read_text())['stage'],
+                                 'reconciliation-required')
+                count = phases.call_count
+                with self.assertRaisesRegex(updates.UpdateError, 'reconciliation'):
+                    cli.replace_due()
+                self.assertEqual(phases.call_count, count)
+
+    def test_new_workload_refuses_before_backup(self):
+        cli = load_cli()
+        source = {'engine_commit': 'a' * 40, 'activation_sha256': 'b' * 64,
+                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30}}
+        pointer = {'kind': 'klokast.vm-update-auto-build.v1', 'operation_id': 'd' * 24,
+                   'release_sha256': 'c' * 64,
+                   'selection': {'activation_sha256': source['activation_sha256'],
+                                 'engine_commit': source['engine_commit'],
+                                 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}}
+        old = {'stage': 'complete', 'runtime': 'running', 'release_sha256': 'e' * 64,
+               'configuration_drift': False, 'autostart_drift': False}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'automatic.json').write_text(json.dumps(pointer))
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'replacement_authority', return_value=source), \
+                    patch.object(cli, 'dom0_assignment_status', return_value=old), \
+                    patch.object(cli, 'replacement_window', return_value=True), \
+                    patch.object(cli, 'replacement_qualification',
+                                 side_effect=updates.UpdateError('new workload')), \
+                    patch.object(cli, 'supervised_phase') as phases:
+                with self.assertRaisesRegex(updates.UpdateError, 'new workload'):
+                    cli.replace_due()
+                phases.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
