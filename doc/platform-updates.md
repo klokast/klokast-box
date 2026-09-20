@@ -150,6 +150,14 @@ enroll an assignment or grant replacement authority.
 Daily results are `unchanged`, `waiting`, `updated`, `deferred`, or `failed`.
 No successful unattended changed-package update has been established.
 
+Accepted-source audits require a dom0 timestamp within five minutes of the
+controller. `k001-dom0` uses the Xen clocksource: its TSC clock was ahead after
+native recovery tests. `74-platform-update-dom0-time.yml` selects the Xen
+clocksource through a one-shot boot service, keeps Alpine NTP enabled, and
+checks the diskless boot archive. It permits only a bounded correction from
+the active controller. Do not increase audit freshness limits to hide clock
+drift. A physical dom0 reboot has not yet tested this new boot service.
+
 ## Current commands
 
 Run as `smith` on the active controller from `~/src/klokast/klokast-box`.
