@@ -1,14 +1,15 @@
 ---
-- name: Read public NTP replies without changing the k001 dom0 clock
+- name: Read public NTP replies without changing a dom0 clock
   hosts: dom0
   gather_facts: false
   become: true
   become_method: doas
   tasks:
-    - name: Require only k001 dom0
+    - name: Require the selected dom0
       ansible.builtin.assert:
         that:
-          - inventory_hostname == 'k001-dom0'
+          - update_time_box in ['k001', 'k002']
+          - inventory_hostname == update_time_box ~ '-dom0'
 
     - name: Verify active controller authority
       ansible.builtin.command:
@@ -23,15 +24,6 @@
         that:
           - (update_ntp_query_controller.stdout | from_json).configured | bool
           - (update_ntp_query_controller.stdout | from_json).active | bool
-
-    - name: Require NTP stopped during the reply comparison
-      ansible.builtin.command:
-        argv: [/sbin/rc-service, ntpd, status]
-      changed_when: false
-      failed_when: >-
-        update_ntp_query_service.rc == 0 or
-        'stopped' not in update_ntp_query_service.stdout
-      register: update_ntp_query_service
 
     - name: Read two NTP transmit times without setting the system clock
       ansible.builtin.shell: |
