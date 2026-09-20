@@ -65,9 +65,9 @@
   changed_when: false
 
 - name: Include the recovery helper in diskless persistence
-  ansible.builtin.command: /sbin/lbu include /usr/local/sbin/vm-update-transaction
+  ansible.builtin.command: /usr/sbin/lbu include /usr/local/sbin/vm-update-transaction
   changed_when: false
 
 - name: Persist recovery configuration without including persistent data
-  ansible.builtin.command: /sbin/lbu commit -d
+  ansible.builtin.command: /usr/sbin/lbu commit -d
   changed_when: false
