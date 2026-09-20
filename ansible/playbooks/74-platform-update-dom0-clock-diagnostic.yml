@@ -1,0 +1,55 @@
+---
+- name: Read dom0 clock evidence before VM update qualification
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require the selected dom0
+      ansible.builtin.assert:
+        that:
+          - update_time_box in ['k001', 'k002']
+          - inventory_hostname == update_time_box ~ '-dom0'
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_clock_controller_guard
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_clock_controller_guard.stdout | from_json).configured | bool
+          - (update_clock_controller_guard.stdout | from_json).active | bool
+
+    - name: Read controller UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_clock_controller_epoch
+
+    - name: Read dom0 time, RTC, clocksource, and synchronization state
+      ansible.builtin.shell: |
+        set -eu
+        date -u '+system_utc=%Y-%m-%dT%H:%M:%SZ epoch=%s'
+        printf 'clocksource='; cat /sys/devices/system/clocksource/clocksource0/current_clocksource
+        printf 'rtc_driver:\n'; cat /proc/driver/rtc
+        printf 'hwclock_utc='; hwclock -u -r
+        printf 'adjtimex:\n'; busybox adjtimex
+        printf 'ntpd_service:\n'; rc-service ntpd status
+        printf 'ntpd_config:\n'; cat /etc/conf.d/ntpd
+        printf 'ntpd_process:\n'; ps -ef | grep '[n]tpd' || true
+        printf 'xen_clock_messages:\n'; dmesg | grep -iE 'clocksource|xen.*clock|rtc|timekeeping' | tail -40 || true
+      changed_when: false
+      register: update_clock_dom0_evidence
+
+    - name: Show clock evidence and the controller comparison epoch
+      ansible.builtin.debug:
+        msg:
+          controller_epoch: "{{ update_clock_controller_epoch.stdout }}"
+          dom0: "{{ update_clock_dom0_evidence.stdout_lines }}"

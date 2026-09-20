@@ -73,6 +73,16 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
                 changed = changed.replace(old, new)
             if changed != original:
                 path.write_text(changed)
+    # This relocated command matrix exercises dispatch, not installation.
+    # Never let a test checkout contend with the controller's production lock.
+    compiler = view / 'ansible/bin/platform-resources'
+    source = compiler.read_text()
+    lock_call = 'with vm_update_installation_lock():'
+    if source.count(lock_call) != 2:
+        raise ValueError('platform-resources installation-lock call sites changed')
+    compiler.write_text(source.replace('from contextlib import contextmanager',
+                                       'from contextlib import contextmanager, nullcontext')
+                              .replace(lock_call, 'with nullcontext():'))
     status = dict(schema_version=1, source='instance_specification_v1',
                   authority_state_sha256='a' * 64, engine_commit=registry['engine']['commit'])
     fixtures = {
