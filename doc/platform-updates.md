@@ -8,12 +8,18 @@ selects targets and exclusions. Discovery continues to inventory every managed
 VM. Application adapters, application data migration, and replacement of other
 VM types are separate follow-up work.
 
-The current production path is a one-time supervised cutover of `k001-dmz`,
-`k002-dmz`, and `k002-iot`. It uses a tested Alpine v3.24 template, an
+The one-time supervised cutover of `k001-dmz`, `k002-dmz`, and `k002-iot`
+completed on 2026-09-20. It used a tested Alpine v3.24 template, an
 independent backup with an isolated restore test, a separate retained-data
-disk, and dom0 recovery before old guest shutdown. The operator runs each
-guest in sequence. The signed standing policy, unattended executor, schedule,
-and 24-hour canary remain follow-up work for recurring updates.
+disk, and dom0 recovery before old guest shutdown. The operator ran each
+guest in sequence. All three accepted assignments now run Alpine 3.24.2,
+kernel 6.18.52-0-virt, Tailscale 1.98.10-r0, and Podman 5.8.6-r1. Live
+identity, retained mount, firewall, and rootless Podman checks passed. The
+selected guests had no application containers, images, or volumes to migrate.
+The old guest disks remain offline for recovery. Exact operation evidence is
+in the private controller journal and dom0 records. The signed standing
+policy, unattended executor, schedule, and 24-hour canary remain follow-up
+work for recurring updates.
 
 The unattended release is **not complete**. The discovery, template builder,
 independent backup and isolated restore, retained-data, personalizer, and
@@ -309,10 +315,11 @@ reported as critical.
 
 Read current qualification counts and cleanup candidates from the active
 controller's private reports. They are deployment observations, not upstream
-documentation or Instance inputs. The latest selected-target reports have no
-unknown files or cleanup items. Their 27 unresolved evidence rows per target
-remain until the candidate engine is approved. Signed production adoption and
-the production transaction are still pending. The rules are in
+documentation or Instance inputs. The last pre-cutover selected-target reports
+had no unknown files or cleanup items. Their 27 unresolved evidence rows per
+target remain for signed adoption and unattended execution. The supervised
+production transaction completed; it does not close those signed-policy rows.
+The rules are in
 [component evidence](platform-update-components.md#qualification-and-cleanup-evidence).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence
@@ -336,8 +343,8 @@ serialization and must not run during an update operation.
 | Controlled failed pilot replacement with automatic local recovery | Pending; synthetic transaction tests are component evidence only |
 | Successful unattended replacement with changed base packages | Pending |
 | Healthy 24-hour canary for the deployed template | Pending |
-| Completed rollout and clean verification of all three targets | Pending |
-| Identity and retained-state preservation; excluded workloads unchanged | Pending production proof |
+| Completed supervised cutover and clean live verification of all three targets | Complete; private controller and dom0 records hold exact evidence |
+| Identity and retained-state preservation; excluded workloads unchanged | Complete for the three selected no-application VMs |
 
 A same-release reinstall or a synthetic test does not satisfy the unattended
 update row. If no newer qualified package set exists after adoption, keep that
