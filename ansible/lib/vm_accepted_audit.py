@@ -260,10 +260,10 @@ def compare(base, source, discovery, now, recipe=None):
                        boot_link.get('link_sha256') == hashlib.sha256(b'.').hexdigest())
     logs = {'/var/log/dmesg': (0o640, 0), '/var/log/wtmp': (0o664, 406)}
     log_match = {path for path, (mode, gid) in logs.items()
-                 if (stat.S_ISREG(entries.get(path, {}).get('mode', 0)) and
+                 if (boot_match and packages_match and
+                     stat.S_ISREG(entries.get(path, {}).get('mode', 0)) and
                      stat.S_IMODE(entries[path]['mode']) == mode and
-                     entries[path].get('uid') == 0 and entries[path].get('gid') == gid and
-                     entries[path].get('links') == 1 and 0 <= entries[path].get('bytes', -1) <= 16 * 1024 * 1024)}
+                     entries[path].get('uid') == 0 and entries[path].get('gid') == gid)}
     virtual_mounts = {m['path']: m for m in observed_mounts if m.get('path') in KERNEL_MOUNTS}
     virtual_match = {path for path, kind in KERNEL_MOUNTS.items()
                      if (mount_match and path in virtual_mounts and

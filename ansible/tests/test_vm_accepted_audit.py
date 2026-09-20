@@ -122,6 +122,31 @@ class AcceptedAudit(unittest.TestCase):
         self.base['report_sha256'] = digest({k: v for k, v in self.base.items() if k != 'report_sha256'})
         self.assertFalse(self.compare()['generated_files_match'])
 
+    def test_exact_package_service_resolves_but_changed_script_and_workload_block(self):
+        package_files = {'/etc/init.d/' + name: '4' * 64 for name in audit.PACKAGE_BOOT_SERVICES}
+        package_files.update({'/boot/System.map-kernel': '5' * 64,
+                              '/boot/config-kernel': '6' * 64})
+        service = {'name': 'bootmisc', 'script': {'sha256': '4' * 64},
+                   'runlevels': ['boot'], 'markers': ['started']}
+        self.fact['host_inventory'] = {'unowned_paths': [], 'unowned_tree': {'entries': []},
+                                       'package_audit': {}, 'package_database_sha256': '7' * 64,
+                                       'native_services': {}, 'maintenance_files': []}
+        self.base['items'].append({'area': 'service', 'key': 'bootmisc', 'resolved': False,
+                                   'classification': 'unknown', 'rule': 'unresolved',
+                                   'evidence_sha256': digest(service)})
+        self.base['discovery_sha256'] = digest(self.discovery)
+        self.base['report_sha256'] = digest({k: v for k, v in self.base.items() if k != 'report_sha256'})
+        recipe = {'files': {'/etc/hostname': ('1' * 64, 0o644)}, 'package_files': package_files}
+        with patch.object(audit.noapp, 'checked_boot_files', return_value=self.boot), \
+                patch.object(audit.storage, 'checked_package_audit', return_value={'differences': []}), \
+                patch.object(audit.storage, 'checked_native_services', return_value={'services': [service]}):
+            result = audit.compare(self.base, self.source, self.discovery, self.now, recipe)
+            self.assertEqual(result['summary']['unresolved'], 1)
+            self.assertTrue(next(r for r in result['items'] if r['area'] == 'service')['resolved'])
+            service['script']['sha256'] = '8' * 64
+            result = audit.compare(self.base, self.source, self.discovery, self.now, recipe)
+            self.assertEqual(result['summary']['unresolved'], 2)
+
     def test_stale_or_spliced_sources_refuse(self):
         for field, value in (('observed_at', 1), ('dom0', 'boxb-dom0'), ('runtime', 'stopped'),
                              ('operation_id', 'b' * 24), ('files_sha256', {'etc/../private': 'a' * 64})):
