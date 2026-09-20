@@ -5410,7 +5410,8 @@ PY
         result = subprocess.run(["/usr/bin/tailscale", "ssh", "neo@" + box + "-dom0", "doas",
                                  "sh", "-s", "--", operation_id], input=script,
                                 capture_output=True, text=True, timeout=900,
-                                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"})
+                                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
+                                     "HOME": "/root" if os.geteuid() == 0 else os.environ.get("HOME", "/home/smith")})
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ApplyError("bounded dom0 VM release artifact check did not finish") from error
     if result.returncode or len(result.stdout) > 4096:
@@ -5674,7 +5675,8 @@ def vm_adoption_remote(box, arguments, *, input_text=None, timeout=180):
         result = subprocess.run(["/usr/bin/tailscale", "ssh", "neo@" + box + "-dom0", "doas",
                                  "/usr/local/sbin/vm-update-transaction", *arguments],
                                 input=input_text, capture_output=True, text=True, timeout=timeout,
-                                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"})
+                                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
+                                     "HOME": "/root" if os.geteuid() == 0 else os.environ.get("HOME", "/home/smith")})
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ApplyError("bounded dom0 adoption command did not finish") from error
     if result.returncode or len(result.stdout) > 65536:
