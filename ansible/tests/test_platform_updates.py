@@ -219,7 +219,7 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
             reuse.assert_called_once_with(selection, frozen=False)
 
-    def test_automatic_prepare_reuses_only_a_complete_build_with_current_signed_indexes(self):
+    def test_automatic_prepare_reuses_only_a_complete_build_with_same_resolved_packages(self):
         cli = load_cli()
         operation = 'f' * 24
         selection = {'branch': 'v3.24', 'build_box': 'k001',
@@ -275,7 +275,7 @@ class EvidenceTests(unittest.TestCase):
                 with patch.object(cli.vm_template_inputs, 'freeze', return_value=changed):
                     self.assertIsNone(cli.reuse_auto_candidate(selection))
                 self.assertEqual(verify.call_count, 4)
-                with patch.object(cli, 'collect_branch', side_effect=AssertionError('frozen rollout fetched new indexes')):
+                with patch.object(cli.vm_template_inputs, 'freeze', side_effect=AssertionError('frozen rollout resolved new inputs')):
                     frozen = cli.reuse_auto_candidate(selection, frozen=True)
                 self.assertEqual(frozen['operation_id'], operation)
                 self.assertEqual(verify.call_count, 6)
