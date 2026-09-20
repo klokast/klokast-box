@@ -12,6 +12,7 @@ import sys
 
 import retained_data as data
 import vm_disk_backup as backup
+import vm_maintenance_source as sources
 
 BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
 CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
@@ -35,7 +36,15 @@ def stage(args):
     prepared = read(root / 'prepared.json')
     copied = read(root / 'backup/result.json')
     verified = read(root / 'verify/result.json')
+    source = read(root / 'source.json')
+    selected = sources.verified_restore(source, copied, verified, args.box, args.role,
+                                        args.operation_id, args.candidate_id)
+    sources.same_generation(source, sources.read(args.role, retained=selected['layout'] == 'retained-data'))
     restore_request = read(root / 'verify/request.json')
+    data.validate_backup(restore_request)
+    if (restore_request['root_partition'] != selected['partition'] or
+            (restore_request['kind'] == 'klokast.vm-backup-restore.v2') != (selected['layout'] == 'retained-data')):
+        raise backup.BackupError('stage restore request has a different source layout')
     manifest = read(CANDIDATES / args.candidate_id / 'candidate.json')
     if (prepared.get('kind') != 'klokast.vm-supervised-prepared.v1' or
             prepared.get('operation_id') != args.operation_id or
@@ -45,7 +54,6 @@ def stage(args):
             prepared.get('old_source') != copied.get('source') or
             prepared.get('receipt_sha256') != backup.digest({k: v for k, v in prepared.items()
                                                                if k != 'receipt_sha256'}) or
-            verified.get('kind') != 'klokast.vm-verified-backup.v1' or
             verified.get('restore_verified') is not True or
             verified.get('cleanup_verified') is not True or
             verified.get('copy_receipt_sha256') != copied.get('receipt_sha256') or

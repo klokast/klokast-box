@@ -859,6 +859,8 @@ def replacement_source_status(role, native=None):
         work = root / operation
         prepared = read(work / 'prepared.json')
         personalized = read(work / 'personalize/request.json')
+        personal_result = read(work / 'personalize/result.json')
+        personal_receipt = personal_result.get('receipt', {})
         final = read(work / 'finalize/result.json')
         release = read(work / 'release.json')
         machine = personalized.get('request', {})
@@ -882,6 +884,37 @@ def replacement_source_status(role, native=None):
                 machine.get('packages') != release.get('packages') or
                 machine.get('inputs_sha256') != release.get('inputs_sha256')):
             raise Refused('accepted generation lacks matching protected data and personalization records')
+        def personal_digest(value):
+            return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+        # Use completed personalization evidence, including account and boot
+        # configuration hashes. Never return the request's password hash.
+        file_names = set(machine['files']) | {
+            'etc/passwd', 'etc/group', 'etc/shadow', 'etc/subuid', 'etc/subgid',
+            'etc/fstab', 'etc/conf.d/tailscale', 'etc/doas.d/doas.conf',
+            'etc/klokast/app-resources/vm-input.d/000-empty.nft',
+            *('etc/ssh/ssh_host_' + key + '_key' for key in ('rsa', 'ecdsa', 'ed25519'))}
+        measured = personal_receipt.get('files')
+        if (personal_result.get('success') is not True or personal_result.get('mode') != 'personalize' or
+                personal_result.get('operation_id') != operation or
+                personal_result.get('request_sha256') != personal_digest(personalized) or
+                personal_receipt.get('kind') != 'klokast.vm-personalization-result.v2' or
+                personal_receipt.get('request_sha256') != personal_digest(machine) or
+                personal_receipt.get('packages_unchanged') is not True or
+                any(personal_receipt.get(key) != machine[key] for key in
+                    ('operation_id', 'release_sha256', 'inputs_sha256', 'engine_commit',
+                     'root_uuid', 'retained_uuid', 'runtime', 'retained_receipt_sha256')) or
+                personal_receipt.get('hostname') != tx.request['box'] + '-' + role or
+                not isinstance(measured, dict) or set(measured) != file_names or
+                any(not isinstance(row, dict) or set(row) != {'sha256', 'mode'} or
+                    not isinstance(row['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', row['sha256']) or
+                    type(row['mode']) is not int or row['mode'] not in {0o600, 0o644, 0o755}
+                    for row in measured.values()) or
+                any(measured[path]['sha256'] != hashlib.sha256(content.encode()).hexdigest()
+                    for path, content in machine['files'].items())):
+            raise Refused('accepted generation lacks a matching completed personalization result')
+        generated_files = {path: row['sha256'] for path, row in measured.items()}
+        generated_files['etc/klokast-personalization.json'] = hashlib.sha256(
+            (json.dumps(personal_receipt, sort_keys=True, separators=(',', ':'), ensure_ascii=True) + '\n').encode()).hexdigest()
         expected_disks = {prepared[key]['path']: {field: prepared[key][field] for field in ('uuid', 'bytes')}
                           for key in ('root', 'data')}
         mappings = [dict(path=prepared[key]['path'], vdev=vdev, mode='w')
@@ -898,8 +931,7 @@ def replacement_source_status(role, native=None):
                 'artifacts': assignment['artifacts'], 'autostart': True, 'runtime': 'running',
                 'release': release, 'machine': {key: machine[key] for key in
                     ('root_uuid', 'retained_uuid', 'runtime', 'retained_receipt_sha256')},
-                'files_sha256': {path: hashlib.sha256(content.encode()).hexdigest()
-                                 for path, content in machine['files'].items()}}
+                'files_sha256': generated_files}
 
 
 def source_status(role, native=None):

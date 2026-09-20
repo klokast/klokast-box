@@ -30,6 +30,7 @@ import vm_app_compatibility
 import vm_storage_inventory
 import vm_retention
 import vm_no_application
+import vm_accepted_audit
 import vm_artifact_transfer
 import vm_config_audit
 import vm_supervised_probe
@@ -1143,9 +1144,50 @@ def adoption_prepare(box, role):
     return result, record
 
 
+
+def audit_accepted(box, role):
+    """Record the remaining qualification gaps against a protected generation."""
+    require_controller()
+    if (box, role) not in AUTO_TARGETS:
+        raise UpdateError('accepted audit supports only the three selected shared VMs')
+    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if (command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip() or
+            command(['git', '-C', REPO, 'rev-parse', '@{upstream}']).strip() != commit):
+        raise UpdateError('accepted audit requires clean, committed, pushed source')
+    discovery = load(STATE / 'current.json')
+    if discovery.get('implementation_commit') != commit:
+        raise UpdateError('run a fresh scan from this candidate before accepted audit')
+    authority = []
+    for name in ('vm-retention-status', 'registry-source-status'):
+        authority.append(json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', name], timeout=900),
+                                    object_pairs_hook=unique_object))
+    intent = vm_no_application.source_intent(*authority, [load(p) for p in RETENTION_CATALOGS], box, role)
+    base = vm_no_application.report(discovery, box, role, commit, now(), intent=intent)
+    command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+             REPO / 'ansible/playbooks/74-platform-update-source-inspection.yml', '--limit', box + '-dom0',
+             '-e', canonical({'update_inspect_box': box, 'update_inspect_role': role})], timeout=600)
+    source = load(STATE / 'source-audits' / ('replacement-' + box + '-' + role + '.json'))
+    result = vm_accepted_audit.compare(base, source, discovery, now())
+    if load(STATE / 'current.json') != discovery:
+        raise UpdateError('discovery changed during accepted audit; collect new evidence')
+    for name, previous in zip(('vm-retention-status', 'registry-source-status'), authority):
+        if json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', name], timeout=900),
+                      object_pairs_hook=unique_object) != previous:
+            raise UpdateError('checked application or retention intent changed during accepted audit')
+    directory = STATE / 'accepted-audits'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    path = directory / (result['report_sha256'] + '.json')
+    if path.exists() and load(path) != result:
+        raise UpdateError('accepted audit conflicts with its recorded evidence')
+    if not path.exists(): write(path, result)
+    return result
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    accepted_parser = sub.add_parser('audit-accepted', help='compare accepted files and mounts; unresolved qualification still blocks replacement')
+    accepted_parser.add_argument('--box', required=True)
+    accepted_parser.add_argument('--role', choices=('dmz', 'iot'), required=True)
     sub.add_parser('replace', help='check the protected replacement execution gate')
     sub.add_parser('daily', help='scan, verify and prepare without waiting for the maintenance window')
     scan_parser = sub.add_parser("scan", help="collect all VM facts and official Alpine metadata")
@@ -1190,6 +1232,10 @@ def main(argv=None):
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command == 'audit-accepted':
+            result = audit_accepted(args.box, args.role)
+            print(canonical(result))
+            return 1 if result['summary']['unresolved'] or result['findings'] else 0
         if args.command == 'replace':
             require_controller()
             schedule_source()

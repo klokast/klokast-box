@@ -73,17 +73,9 @@ def prepare(args):
         raise backup.BackupError('candidate allocation already started; inspect its exact record')
     copied = read(root / 'backup/result.json')
     verified = read(root / 'verify/result.json')
-    if (copied.get('kind') != 'klokast.vm-disk-backup-result.v1' or
-            copied.get('box') != args.box or copied.get('operation_id') != args.operation_id or
-            verified.get('kind') != 'klokast.vm-verified-backup.v1' or
-            verified.get('operation_id') != args.operation_id or
-            verified.get('maintenance_candidate') != args.candidate_id or
-            verified.get('copy_receipt_sha256') != copied.get('receipt_sha256') or
-            verified.get('restore_verified') is not True or
-            verified.get('cleanup_verified') is not True):
-        raise backup.BackupError('candidate preparation needs the exact isolated restore receipt')
     saved = read(root / 'source.json')
-    selected = sources.details(saved, args.box, args.role)
+    selected = sources.verified_restore(saved, copied, verified, args.box, args.role,
+                                        args.operation_id, args.candidate_id)
     current = sources.read(args.role, retained=selected['layout'] == 'retained-data')
     sources.same_generation(saved, current)
     if selected['source'] != copied['source']:

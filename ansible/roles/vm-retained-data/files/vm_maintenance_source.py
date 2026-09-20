@@ -73,3 +73,26 @@ def read(role, *, retained=False):
 def same_generation(old, current):
     if {k: v for k, v in old.items() if k != 'observed_at'} != {k: v for k, v in current.items() if k != 'observed_at'}:
         raise backup.BackupError('accepted generation changed after backup; reconcile before more maintenance')
+
+
+def verified_restore(source, copied, verified, box, role, operation, candidate):
+    selected = details(source, box, role)
+    retained = selected['layout'] == 'retained-data'
+    if (copied.get('kind') != 'klokast.vm-disk-backup-result.v1' or
+            copied.get('box') != box or copied.get('operation_id') != operation or
+            copied.get('source') != selected['source'] or
+            copied.get('receipt_sha256') != backup.digest({k: v for k, v in copied.items() if k != 'receipt_sha256'}) or
+            verified.get('kind') != 'klokast.vm-verified-backup.' + ('v2' if retained else 'v1') or
+            verified.get('box') != box or verified.get('operation_id') != operation or
+            verified.get('source') != selected['source'] or
+            verified.get('maintenance_candidate') != candidate or
+            verified.get('copy_receipt_sha256') != copied['receipt_sha256'] or
+            verified.get('receipt_sha256') != backup.digest({k: v for k, v in verified.items() if k != 'receipt_sha256'}) or
+            verified.get('restore_verified') is not True or verified.get('cleanup_verified') is not True):
+        raise backup.BackupError('candidate requires the exact verified backup and source layout')
+    if retained and (verified.get('source_layout') != 'retained-data' or
+                     verified.get('retained_receipt_sha256') != source['machine']['retained_receipt_sha256'] or
+                     verified.get('root_uuid') != source['machine']['retained_uuid'] or
+                     verified.get('runtime') != source['machine']['runtime']):
+        raise backup.BackupError('restored data differs from the accepted retained identity')
+    return selected

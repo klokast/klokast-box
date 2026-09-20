@@ -170,9 +170,14 @@ For an accepted assignment, add `--retained-source` to the backup and restore
 commands. The protected source reader binds the accepted release, disk UUIDs,
 personalization and retained-data receipt. Backup copies the retained-data disk;
 restore checks it in an isolated guest. Later steps recheck that assignment.
-These adapters do not grant unattended replacement authority. The candidate
+Preparation and staging require the matching verified-backup receipt version
+and recheck the source assignment. These adapters do not grant unattended replacement authority. The candidate
 source-inspection playbook can check this binding without installing recovery
-code or stopping the guest.
+code or stopping the guest. After a fresh scan, run `platform-update
+audit-accepted --box BOX --role ROLE` from the candidate checkout to compare
+protected personalization hashes and filesystem evidence. It records remaining
+qualification gaps and does not authorize enrollment or replacement. Unknown
+files and workloads remain unresolved.
 
 For the one-time supervised cutover, run
 `ansible/bin/platform-update-supervised-backup --box BOX --role ROLE

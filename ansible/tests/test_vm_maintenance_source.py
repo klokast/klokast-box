@@ -103,6 +103,27 @@ class MaintenanceSource(unittest.TestCase):
             read.side_effect = [current, dict(current, request_sha256='a' * 64)]
             with self.assertRaisesRegex(backup.BackupError, 'changed after backup'): module.main()
 
+    def test_verified_restore_cannot_mix_legacy_and_retained_receipts(self):
+        copied = {'kind': 'klokast.vm-disk-backup-result.v1', 'operation_id': 'f' * 24, 'box': 'boxa',
+                  'source': dict(self.disks[self.data_path], path=self.data_path)}
+        copied['receipt_sha256'] = backup.digest(copied)
+        verified = {'kind': 'klokast.vm-verified-backup.v2', 'operation_id': 'f' * 24, 'box': 'boxa',
+                    'source': copied['source'], 'copy_receipt_sha256': copied['receipt_sha256'],
+                    'maintenance_candidate': 'b' * 24, 'restore_verified': True, 'cleanup_verified': True,
+                    'source_layout': 'retained-data', 'root_uuid': 'data', 'runtime': {},
+                    'retained_receipt_sha256': 'e' * 64}
+        verified['receipt_sha256'] = backup.digest(verified)
+        args = (self.value, copied, verified, 'boxa', 'dmz', 'f' * 24, 'b' * 24)
+        self.assertEqual(source.verified_restore(*args)['partition'], 0)
+        for key, value in (('kind', 'klokast.vm-verified-backup.v1'), ('source_layout', 'legacy-root'),
+                           ('retained_receipt_sha256', 'f' * 64), ('root_uuid', 'other'),
+                           ('copy_receipt_sha256', 'b' * 64), ('cleanup_verified', False)):
+            previous = dict(verified)
+            verified[key] = value
+            verified['receipt_sha256'] = backup.digest({k: v for k, v in verified.items() if k != 'receipt_sha256'})
+            with self.subTest(key=key), self.assertRaises(backup.BackupError): source.verified_restore(*args)
+            verified.clear(); verified.update(previous)
+
     def generation_records(self):
         prepared = {'operation_id': self.operation, 'box': 'boxa', 'role': 'dmz',
                     'root': dict(self.disks[self.os_path], path=self.os_path),
@@ -112,13 +133,27 @@ class MaintenanceSource(unittest.TestCase):
         receipt = {'kind': 'klokast.vm-retained-final-result.v3', 'copy_verified': True}
         receipt['receipt_sha256'] = backup.digest(receipt)
         machine = {'kind': 'klokast.vm-personalize.v2', 'operation_id': self.operation,
-                   'box': 'boxa', 'role': 'dmz', 'root_uuid': 'root', 'retained_uuid': 'data',
+                   'box': 'boxa', 'role': 'dmz', 'engine_commit': 'f' * 40, 'root_uuid': 'root', 'retained_uuid': 'data',
                    'retained_receipt_sha256': receipt['receipt_sha256'], 'runtime': {'uid': 1000},
                    'release_sha256': self.release['release_sha256'], 'packages': self.release['packages'],
                    'inputs_sha256': self.release['inputs_sha256'], 'files': {'etc/hostname': 'boxa-dmz\n'},
                    'admin_password_hash': 'private-password-value'}
+        wrapper = {'mode': 'personalize', 'operation_id': self.operation, 'request': machine}
+        files = {path: {'sha256': backup.digest(path), 'mode': 0o600} for path in {
+            'etc/passwd', 'etc/group', 'etc/shadow', 'etc/subuid', 'etc/subgid', 'etc/fstab',
+            'etc/conf.d/tailscale', 'etc/doas.d/doas.conf', 'etc/klokast/app-resources/vm-input.d/000-empty.nft',
+            *('etc/ssh/ssh_host_' + key + '_key' for key in ('rsa', 'ecdsa', 'ed25519'))}}
+        import hashlib
+        files.update({path: {'sha256': hashlib.sha256(content.encode()).hexdigest(), 'mode': 0o644}
+                      for path, content in machine['files'].items()})
+        personal = {key: machine[key] for key in ('operation_id', 'release_sha256', 'inputs_sha256',
+                    'engine_commit', 'root_uuid', 'retained_uuid', 'runtime', 'retained_receipt_sha256')}
+        personal.update(kind='klokast.vm-personalization-result.v2', request_sha256=backup.digest(machine),
+                        packages_unchanged=True, hostname='boxa-dmz', files=files)
         return {'prepared.json': prepared,
-                'personalize/request.json': {'mode': 'personalize', 'operation_id': self.operation, 'request': machine},
+                'personalize/request.json': wrapper,
+                'personalize/result.json': {'mode': 'personalize', 'operation_id': self.operation,
+                    'success': True, 'request_sha256': backup.digest(wrapper), 'receipt': personal},
                 'finalize/result.json': {'mode': 'finalize', 'operation_id': self.operation, 'success': True, 'receipt': receipt},
                 'release.json': self.release}
 
@@ -140,6 +175,11 @@ class MaintenanceSource(unittest.TestCase):
                 patch.object(t.socket, 'gethostname', return_value='boxa-dom0'):
             result = t.replacement_source_status('dmz')
             self.assertNotIn('private-password-value', json.dumps(result))
+            self.assertIn('etc/shadow', result['files_sha256'])
+            self.assertIn('etc/klokast-personalization.json', result['files_sha256'])
+            records['personalize/result.json']['success'] = False
+            with self.assertRaises(t.Refused): t.replacement_source_status('dmz')
+            records['personalize/result.json']['success'] = True
             self.assertEqual(source.details(result, 'boxa', 'dmz')['source']['path'], self.data_path)
             records['personalize/request.json']['request']['retained_uuid'] = 'wrong'
             with self.assertRaises(t.Refused): t.replacement_source_status('dmz')
