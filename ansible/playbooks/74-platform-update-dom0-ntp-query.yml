@@ -1,0 +1,69 @@
+---
+- name: Read public NTP replies without changing the k001 dom0 clock
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Require only k001 dom0
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'k001-dom0'
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: update_ntp_query_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_ntp_query_controller.stdout | from_json).configured | bool
+          - (update_ntp_query_controller.stdout | from_json).active | bool
+
+    - name: Require NTP stopped during the reply comparison
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, ntpd, status]
+      changed_when: false
+      failed_when: >-
+        update_ntp_query_service.rc == 0 or
+        'stopped' not in update_ntp_query_service.stdout
+      register: update_ntp_query_service
+
+    - name: Read two NTP transmit times without setting the system clock
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import socket
+        import struct
+        import time
+
+        results = []
+        for host in ('time.cloudflare.com', 'pool.ntp.org'):
+            address = socket.getaddrinfo(host, 123, socket.AF_INET, socket.SOCK_DGRAM)[0][4]
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+                connection.settimeout(8)
+                connection.connect(address)
+                before = time.time()
+                connection.send(b'\x1b' + bytes(47))
+                response = connection.recv(512)
+                after = time.time()
+            if len(response) < 48 or response[0] & 7 != 4 or not 1 <= response[1] <= 15:
+                raise ValueError('NTP server returned an invalid response')
+            seconds, fraction = struct.unpack('!II', response[40:48])
+            transmit = seconds - 2208988800 + fraction / 2**32
+            results.append({'host': host, 'address': address[0],
+                            'stratum': response[1],
+                            'round_trip_ms': round((after - before) * 1000),
+                            'server_minus_system_seconds': round(transmit - (before + after) / 2, 3)})
+        print(json.dumps(results, sort_keys=True))
+        PY
+      changed_when: false
+      register: update_ntp_query_result
+
+    - name: Show the read-only NTP comparison
+      ansible.builtin.debug:
+        msg: "{{ update_ntp_query_result.stdout | from_json }}"

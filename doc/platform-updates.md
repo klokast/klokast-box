@@ -172,6 +172,10 @@ can start the existing service against the documented
 [Cloudflare NTP source](https://developers.cloudflare.com/time-services/ntp/usage/).
 The source trial changes the live configuration but does not persist it to the
 diskless boot archive. A sustained, correct clock is required before adoption.
+The system clock also jumped by about two minutes with the Cloudflare source.
+The service was stopped again. `74-platform-update-dom0-ntp-query.yml` reads
+NTP transmit times from the public sources without setting the dom0 clock.
+Its result is diagnostic evidence, not time authority.
 
 ## Current commands
 
