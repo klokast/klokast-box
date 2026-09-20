@@ -68,6 +68,35 @@
   ansible.builtin.command: /usr/sbin/lbu include /usr/local/sbin/vm-update-transaction
   changed_when: false
 
+- name: Include the recovery OpenRC service in diskless persistence
+  ansible.builtin.command: /usr/sbin/lbu include /etc/init.d/klokast-vm-update-recovery
+  changed_when: false
+
 - name: Persist recovery configuration without including persistent data
   ansible.builtin.command: /usr/sbin/lbu commit -d
+  changed_when: false
+
+- name: Verify the persisted recovery boot chain and data exclusion
+  ansible.builtin.shell: |
+    set -eu
+    archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
+    count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
+    if [ "$count" -ne 1 ]; then
+      echo 'Expected one persisted dom0 apkovl archive' >&2
+      exit 1
+    fi
+    tar -tzf "$archives" | awk '
+      {sub(/^\.\//, "", $0)}
+      $0 == "usr/local/sbin/vm-update-transaction" {helper=1}
+      $0 == "etc/init.d/klokast-vm-update-recovery" {service=1}
+      $0 == "etc/conf.d/xendomains" {config=1}
+      $0 == "etc/runlevels/default/klokast-vm-update-recovery" {runlevel=1}
+      /^mnt\/dom0_data(\/|$)/ {data=1}
+      END {
+        if (!helper || !service || !config || !runlevel || data) {
+          print "Incomplete dom0 recovery boot archive or included persistent data" > "/dev/stderr"
+          exit 1
+        }
+      }
+    '
   changed_when: false
