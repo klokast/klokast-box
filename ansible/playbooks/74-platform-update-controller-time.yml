@@ -1,0 +1,83 @@
+---
+- name: Synchronize the active controller before VM update evidence
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      become: false
+      changed_when: false
+      register: update_controller_time_guard
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_controller_time_guard.stdout | from_json).configured | bool
+          - (update_controller_time_guard.stdout | from_json).active | bool
+
+    - name: Read an independent UTC offset from the documented NTP source
+      ansible.builtin.shell: &update_controller_time_probe |
+        python3 - <<'PY'
+        import socket
+        import struct
+        import time
+
+        address = socket.getaddrinfo('time.cloudflare.com', 123, socket.AF_INET,
+                                     socket.SOCK_DGRAM)[0][4]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+            connection.settimeout(8)
+            connection.connect(address)
+            before = time.time()
+            connection.send(b'\x1b' + bytes(47))
+            reply = connection.recv(512)
+            after = time.time()
+        if len(reply) < 48 or reply[0] & 7 != 4 or not 1 <= reply[1] <= 15:
+            raise ValueError('NTP source returned an invalid time response')
+        seconds, fraction = struct.unpack('!II', reply[40:48])
+        transmit = seconds - 2208988800 + fraction / 2**32
+        print(round(transmit - (before + after) / 2))
+        PY
+      become: false
+      changed_when: false
+      register: update_controller_time_before
+
+    - name: Require a bounded correction from the public time source
+      ansible.builtin.assert:
+        that:
+          - (update_controller_time_before.stdout | int) | abs <= 600
+
+    - name: Configure the existing NTP service with the verified source
+      ansible.builtin.copy:
+        dest: /etc/conf.d/ntpd
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Public UTC source for the active Platform controller.
+          NTPD_OPTS="-N -p time.cloudflare.com"
+
+    - name: Enable and start controller NTP
+      ansible.builtin.service:
+        name: ntpd
+        enabled: true
+        state: started
+
+    - name: Wait for controller UTC to match the independent source
+      ansible.builtin.shell: *update_controller_time_probe
+      become: false
+      changed_when: false
+      register: update_controller_time_after
+      until: >-
+        update_controller_time_after.rc == 0 and
+        (update_controller_time_after.stdout | int) | abs <= 30
+      retries: 36
+      delay: 5
+
+    - name: Verify the controller NTP service remains running
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, ntpd, status]
+      changed_when: false

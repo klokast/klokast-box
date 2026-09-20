@@ -151,31 +151,25 @@ Daily results are `unchanged`, `waiting`, `updated`, `deferred`, or `failed`.
 No successful unattended changed-package update has been established.
 
 Accepted-source audits require a dom0 timestamp within five minutes of the
-controller. `k001-dom0` jumped ahead again after the Xen clocksource was
-selected. Its hardware clock was about five minutes ahead and its NTP process
-reported an unsynchronized clock. The one-shot Xen clocksource boot service is
-installed and persisted, but it is not a demonstrated correction. A physical
-dom0 reboot has not tested it. `74-platform-update-dom0-clock-diagnostic.yml`
-reads the system clock, hardware clock, and NTP state. The time correction in
-`74-platform-update-dom0-time.yml` is bounded by the active controller. On
-`k001`, it also checks that the hardware clock is within ten minutes of the
-controller before writing it from the corrected system clock, and it restarts
-NTP. Keep the strict audit freshness check until sustained clock
-synchronization is demonstrated.
-The system clock jumped again immediately after NTP restarted, while the
-hardware clock stayed aligned. `74-platform-update-dom0-ntp-trial.yml` stops
-NTP only in the running k001 dom0 and makes one bounded controller-time
-correction. NTP remains enabled for the next boot. The trial distinguishes an
-NTP adjustment from a Xen clock fault; it is not a steady-state time policy.
-After NTP-off stability is measured, `74-platform-update-dom0-ntp-source-trial.yml`
-can start the existing service against the documented
-[Cloudflare NTP source](https://developers.cloudflare.com/time-services/ntp/usage/).
-The source trial changes the live configuration but does not persist it to the
-diskless boot archive. A sustained, correct clock is required before adoption.
-The system clock also jumped by about two minutes with the Cloudflare source.
-The service was stopped again. `74-platform-update-dom0-ntp-query.yml` reads
-NTP transmit times from the public sources without setting the dom0 clock.
-Its result is diagnostic evidence, not time authority.
+controller. On 2026-09-20, the active controller was about 135 seconds behind
+two independent public NTP sources. Its NTP service was stopped and not
+enabled. The `k001-dom0` clock moved toward correct UTC when its NTP service
+ran, but appeared ahead of the slow controller. Earlier controller-time
+corrections made the dom0 system and hardware clocks slow. The read-only
+`74-platform-update-dom0-ntp-query.yml` compared both public NTP replies with
+the dom0 clock; the replies agreed. These observations do not prove that the
+Xen clocksource or the NTP service caused a time fault.
+
+`74-platform-update-controller-time.yml` checks active-controller authority,
+bounds the offset to the documented
+[Cloudflare NTP source](https://developers.cloudflare.com/time-services/ntp/usage/),
+and enables the controller's existing NTP service. After the controller is
+verified, `74-platform-update-dom0-time.yml` can correct the dom0 clocks and
+restart NTP. Its `k001` hardware-clock write is bounded by controller time.
+`74-platform-update-dom0-clock-diagnostic.yml` reads system, hardware, and
+NTP state. The k001 one-shot Xen clocksource boot service is persisted, but a
+physical reboot has not tested it or shown that it is needed. Keep the strict
+audit freshness check until sustained clock synchronization is demonstrated.
 
 ## Current commands
 
