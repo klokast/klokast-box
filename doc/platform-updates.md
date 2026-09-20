@@ -262,10 +262,11 @@ Accepted-release and package verification still remain unavailable and are
 reported as critical.
 
 Read current qualification counts and cleanup candidates from the active
-controller's protected reports. They are deployment observations, not upstream
-documentation or Instance inputs. The backup role removes new Static Site
-staging after verified transfer. Independent management qualification, signed
-adoption, and the production transaction remain incomplete. The rules are in
+controller's private reports. They are deployment observations, not upstream
+documentation or Instance inputs. The latest selected-target reports have no
+unknown files or cleanup items. Their 27 unresolved evidence rows per target
+remain until the candidate engine is approved. Signed production adoption and
+the production transaction are still pending. The rules are in
 [component evidence](platform-update-components.md#qualification-and-cleanup-evidence).
 
 Use `platform-update policy prepare` with the complete fresh Plan v8 evidence
@@ -284,7 +285,7 @@ serialization and must not run during an update operation.
 
 | Required evidence | Status |
 | --- | --- |
-| Complete target qualification and approved final machine inputs | Pending; classification reports identify unresolved items |
+| Complete target qualification and approved final machine inputs | Pending engine approval; latest reports have no unknown files or cleanup items |
 | Final tested engine/toolchain, signed adoption, and standing policy | Pending |
 | Controlled failed pilot replacement with automatic local recovery | Pending; synthetic transaction tests are component evidence only |
 | Successful unattended replacement with changed base packages | Pending |
