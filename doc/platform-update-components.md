@@ -810,16 +810,20 @@ dom0 cleanup record is
 `vm-update-transaction` helper and an OpenRC boot check. On diskless dom0 it
 includes both files in apkovl and verifies the persisted boot chain and the
 exclusion of mounted VM data before the role succeeds. Do not install it as
-proof that automatic replacement is ready. The signed controller executor,
-data adoption, configuration staging, network fencing, and profile checks
-must supply its inputs before production use. The no-application profile
-requires current no-application qualification. It does not record an omitted
+proof that unattended replacement is ready. The supervised controller path
+supplies an independent backup, isolated restore, retained identity stage,
+configuration, heartbeats, and live checks for one selected guest. Signed
+standing policy and automated rollout remain separate work. The no-application
+profile requires current no-application qualification. It does not record an omitted
 application compatibility test as successful.
 
 The helper accepts only `bak`, `dmz`, and `iot`. Its protected request records
 the policy and release hashes, distinct old and candidate Xen UUIDs, LV UUIDs
 and sizes, exact Xen definitions, and kernel/initramfs hashes. The candidate definition must include its recorded UUID. It checks live
-disk attachments, guest device names, and write modes before each switch. Dom0 never mounts a guest filesystem.
+disk attachments, guest device names, and write modes before each switch. Dom0
+does not mount old or selected production guest filesystems. The supervised
+maintenance runner mounts only a disposable copy of the generic tested root
+to install its fixed networkless entry.
 Old and candidate writable LVs must be separate ordinary volumes. Recovery
 selects the unchanged old volumes; it does not merge snapshots. This requires
 capacity for both generations and a verified data copy before candidate boot.
@@ -884,10 +888,12 @@ general Apply authority, not standing permission to select a release.
 
 Legacy shared-VM installers, clones, kernel extraction, and guest package
 roles now refuse a protected assignment before changing it. Runtime checks
-report incomplete assignments and configuration drift. Production
-personalization input generation, release qualification, controller recovery of update records,
-and installation-wide serialization with legacy provisioning remain required
-before adoption. The legacy guard is a preflight, not a lock for its later work.
+report incomplete assignments and configuration drift. The supervised path
+renders fixed no-application personalization inputs and holds the installation
+lock during each operation. Signed adoption, controller recovery of update
+records, and serialization with every legacy provisioning path remain work
+for unattended replacement. The legacy guard is a preflight, not a lock for
+its later work.
 
 Before old-guest shutdown, the helper starts a bounded local recovery process.
 The process identity includes its PID, start time, boot ID, and operation ID.
@@ -911,8 +917,9 @@ rollback authority: controller loss after acceptance cannot restore old data.
 Add `-e '{"recovery_controller_loss":true}'` to the disposable recovery test to
 exercise the detached watchdog's native 90-second expiry. The test supplies no
 heartbeat and makes no controller recovery request. It uses synthetic disks
-and does not install a production helper. Controller heartbeat delivery and
-production fencing remain executor integration work.
+and does not install a production helper. The supervised executor sends
+production heartbeats. Durable network fencing for unattended application
+workloads remains follow-up work.
 
 Add `-e '{"recovery_generation_chain":true}'` to test successive accepted
 releases. This allocates a third disposable OS/data pair and requires 14 GiB
@@ -931,6 +938,19 @@ critical error. Router and controller autostart remain available. Existing
 OpenRC dependencies are retained. See the upstream
 [OpenRC service guide](https://github.com/OpenRC/openrc/blob/master/service-script-guide.md)
 for dependency ordering.
+
+For a supervised switch, inspect its exact operation from the active
+controller through the dom0 Tailscale SSH path. Run
+`doas /usr/local/sbin/vm-update-transaction status --operation-id OPERATION`
+and `assignment-status --role ROLE` on dom0. Before acceptance, a failed
+controller run calls `recover`; controller loss starts the dom0 watchdog after
+90 seconds without a heartbeat. If the operation is still before acceptance
+and its disposable maintenance guest has stopped, the operator can run
+`doas /usr/local/sbin/vm-update-transaction recover --operation-id OPERATION`
+from dom0. Check that the old guest is running and the journal says
+`recovered` before making a new operation. After `accepted` or `complete`,
+keep the new disk assigned and investigate that generation. Never start the
+old disk with the reused Tailscale identity or write to the old retained data.
 
 The unit suite covers interrupted shutdown and start, interrupted acceptance,
 changed boot artifacts and disk identities, missing recovery processes,
