@@ -5,6 +5,7 @@ cannot supply the expected hashes. Unknown files, services, and data remain
 unresolved in the full no-application report.
 """
 import copy
+import gzip
 import hashlib
 import json
 import re
@@ -15,6 +16,22 @@ from pathlib import Path
 
 from platform_updates import UpdateError, digest, fresh, VERIFY_AGE
 import vm_no_application as noapp
+import vm_storage_inventory as storage
+
+PACKAGE_BOOT_SERVICES = frozenset('''
+bootmisc cgroups devfs dmesg hostname killprocs localmount mdev modules
+mount-ro procfs sysctl sysfs
+'''.split())
+TEMPLATE_RUNLEVELS = {
+    'sysinit': frozenset(('devfs', 'dmesg', 'mdev')),
+    'boot': frozenset(('hostname', 'modules', 'sysctl', 'bootmisc', 'cgroups', 'localmount')),
+    'shutdown': frozenset(('killprocs', 'mount-ro')),
+    'default': frozenset(('klokast-podman-runroot-cleanup',)),
+}
+KERNEL_MOUNTS = {'/dev/mqueue': 'mqueue', '/proc/sys/fs/binfmt_misc': 'binfmt_misc',
+                 '/sys/fs/bpf': 'bpf', '/sys/fs/pstore': 'pstore',
+                 '/sys/kernel/debug': 'debugfs', '/sys/kernel/security': 'securityfs',
+                 '/sys/kernel/tracing': 'tracefs'}
 
 
 def template_recipe(inputs, request, capsule_path, release):
@@ -67,7 +84,35 @@ def template_recipe(inputs, request, capsule_path, release):
     fixed('/etc/klokast-template.json', json.dumps({
         'kind': 'klokast.vm-template-marker.v1', 'engine_commit': inputs['engine_commit'],
         'profile': inputs['profile'], 'inputs_sha256': inputs['inputs_sha256']}, sort_keys=True) + '\n')
-    return result
+    kernel = release.get('kernel_release')
+    if not isinstance(kernel, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-virt', kernel):
+        raise UpdateError('accepted kernel has an unsupported package artifact name')
+    fixed('/lib/modules/' + kernel + '/initramfs-suffix', '-virt\n')
+    package_names = {'openrc', 'busybox-mdev-openrc', 'linux-virt'}
+    packages = {p['name']: p for p in inputs['packages'] if p['name'] in package_names}
+    if set(packages) != package_names:
+        raise UpdateError('accepted template lacks fixed boot packages')
+    wanted = {'etc/init.d/' + name for name in PACKAGE_BOOT_SERVICES}
+    wanted.update({'boot/System.map-' + kernel, 'boot/config-' + kernel})
+    package_files = {}
+    with tarfile.open(path, 'r:') as archive:
+        for name in sorted(packages):
+            member = archive.getmember(packages[name]['file'])
+            if not member.isfile() or member.size != packages[name]['bytes']:
+                raise UpdateError('accepted boot package differs from frozen input')
+            with gzip.GzipFile(fileobj=archive.extractfile(member)) as compressed, \
+                    tarfile.open(fileobj=compressed, mode='r|', ignore_zeros=True) as package:
+                for index, entry in enumerate(package):
+                    if index > 100000:
+                        raise UpdateError('accepted boot package has too many entries')
+                    if entry.name not in wanted:
+                        continue
+                    if entry.name in package_files or not entry.isfile() or not 0 < entry.size <= 128 * 1024 * 1024:
+                        raise UpdateError('accepted boot package artifact is unsafe')
+                    package_files['/' + entry.name] = hashlib.sha256(package.extractfile(entry).read()).hexdigest()
+    if set(package_files) != {'/' + name for name in wanted}:
+        raise UpdateError('accepted boot package artifacts are incomplete')
+    return {'files': result, 'package_files': package_files}
 
 
 def compare(base, source, discovery, now, recipe=None):
@@ -122,15 +167,23 @@ def compare(base, source, discovery, now, recipe=None):
                 type(record['mode']) is int and record['mode'] == mode):
             matching.add('/' + path)
     recipe_matching = set()
+    package_files = {}
     if recipe is not None:
-        if (not isinstance(recipe, dict) or any(
+        if (not isinstance(recipe, dict) or set(recipe) != {'files', 'package_files'} or
+                not isinstance(recipe['files'], dict) or not isinstance(recipe['package_files'], dict) or any(
                 not isinstance(path, str) or not path.startswith('/') or
                 not isinstance(value, tuple) or len(value) != 2 or
                 not isinstance(value[0], str) or not re.fullmatch('[0-9a-f]{64}', value[0]) or
                 value[1] not in (0o600, 0o644, 0o700)
-                for path, value in recipe.items())):
+                for path, value in recipe['files'].items())):
             raise UpdateError('accepted template recipe evidence is invalid')
-        for path, (checksum, mode) in recipe.items():
+        package_files = recipe['package_files']
+        if (set(package_files) != {'/etc/init.d/' + name for name in PACKAGE_BOOT_SERVICES} |
+                {'/boot/System.map-' + release['kernel_release'], '/boot/config-' + release['kernel_release']} or
+                any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v)
+                    for v in package_files.values())):
+            raise UpdateError('accepted boot package recipe is incomplete')
+        for path, (checksum, mode) in recipe['files'].items():
             record = observed['files'].get(path)
             if (isinstance(record, dict) and set(record) == {'sha256', 'mode', 'uid', 'gid'} and
                     record == {'sha256': checksum, 'mode': mode, 'uid': 0, 'gid': 0}):
@@ -160,17 +213,92 @@ def compare(base, source, discovery, now, recipe=None):
                       for guest in ('vmlinuz-virt', 'initramfs-virt')))
     packages_match = ({name: value.get('version') for name, value in fact.get('packages', {}).items()} == release.get('packages') and
                       fact.get('kernel') == release.get('kernel_release'))
+    inventory = fact.get('host_inventory', {})
+    entries = {entry['path']: entry for entry in inventory.get('unowned_paths', [])}
+    for entry in inventory.get('unowned_tree', {}).get('entries', []):
+        entries[entry['path']] = entry
+    try:
+        audit = storage.checked_package_audit(inventory.get('package_audit'),
+                                              inventory.get('package_database_sha256'))
+        native = storage.checked_native_services(inventory.get('native_services'),
+                                                 inventory.get('maintenance_files', []))
+        audited = True
+    except UpdateError:
+        audit, native, audited = {}, {}, False
+    changed = {item['path'] for item in audit.get('differences', [])}
+    services = {item['name']: item for item in native.get('services', [])}
+    service_match = set()
+    for name in PACKAGE_BOOT_SERVICES | {'klokast-podman-runroot-cleanup'}:
+        service = services.get(name, {})
+        levels = sorted(level for level, names in TEMPLATE_RUNLEVELS.items() if name in names)
+        markers = [] if name in {'killprocs', 'mount-ro'} else ['started']
+        script = '/etc/init.d/' + name
+        expected_script = (expected.get(script.removeprefix('/')) if
+                           name == 'klokast-podman-runroot-cleanup' else package_files.get(script))
+        if (audited and packages_match and expected_script and script not in changed and
+                service.get('script') == {'sha256': expected_script} and
+                service.get('runlevels') == levels and service.get('markers') == markers and
+                (name != 'klokast-podman-runroot-cleanup' or script in matching)):
+            service_match.add(name)
+    links_match = set()
+    for level, names in TEMPLATE_RUNLEVELS.items():
+        for name in names & service_match:
+            path = '/etc/runlevels/' + level + '/' + name
+            entry = entries.get(path, {})
+            if (stat.S_ISLNK(entry.get('mode', 0)) and entry.get('uid') == 0 and entry.get('gid') == 0 and
+                    entry.get('link_sha256') == hashlib.sha256(('/etc/init.d/' + name).encode()).hexdigest()):
+                links_match.add(path)
+    extra_boot = set()
+    if boot_match and packages_match and audited:
+        for path in ('/boot/System.map-' + release['kernel_release'],
+                     '/boot/config-' + release['kernel_release']):
+            if path not in changed and boot['artifacts'].get(path) == package_files.get(path):
+                extra_boot.add(path)
+    boot_link = entries.get('/boot/boot', {})
+    boot_link_match = (boot_match and stat.S_ISLNK(boot_link.get('mode', 0)) and
+                       boot_link.get('uid') == 0 and boot_link.get('gid') == 0 and
+                       boot_link.get('link_sha256') == hashlib.sha256(b'.').hexdigest())
+    logs = {'/var/log/dmesg': (0o640, 0), '/var/log/wtmp': (0o664, 406)}
+    log_match = {path for path, (mode, gid) in logs.items()
+                 if (stat.S_ISREG(entries.get(path, {}).get('mode', 0)) and
+                     stat.S_IMODE(entries[path]['mode']) == mode and
+                     entries[path].get('uid') == 0 and entries[path].get('gid') == gid and
+                     entries[path].get('links') == 1 and 0 <= entries[path].get('bytes', -1) <= 16 * 1024 * 1024)}
+    virtual_mounts = {m['path']: m for m in observed_mounts if m.get('path') in KERNEL_MOUNTS}
+    virtual_match = {path for path, kind in KERNEL_MOUNTS.items()
+                     if (mount_match and path in virtual_mounts and
+                         virtual_mounts[path].get('type') == kind and
+                         virtual_mounts[path].get('root') == '/' and
+                         re.fullmatch(r'0:[0-9]+', virtual_mounts[path].get('device', '')))}
+    runtime = inventory.get('runtime_directories', {})
+    lock_match = (audited and packages_match and runtime.get('kind') == 'klokast.vm-runtime-directories.v1' and
+                  runtime.get('complete') is True and runtime.get('stable') is True and
+                  runtime.get('evidence_sha256') == digest({k: v for k, v in runtime.items() if k != 'evidence_sha256'}) and
+                  any(item == {'path': '/run/lock', 'mode': stat.S_IFDIR | 0o775, 'uid': 0, 'gid': 14}
+                      for item in runtime.get('entries', [])) and
+                  {'code': 'm', 'path': '/run/lock'} in audit.get('differences', []) and
+                  'alpine-baselayout' in fact.get('packages', {}))
     result = copy.deepcopy(base)
     result.pop('report_sha256')
     result.update(kind='klokast.vm-accepted-audit.v1', prior_report_sha256=base['report_sha256'],
                   source_sha256=digest(source), generated_files_match=len(matching) == len(expected),
-                  template_files_match=recipe is not None and len(recipe_matching) == len(recipe),
+                  template_files_match=recipe is not None and len(recipe_matching) == len(recipe['files']),
                   mount_match=bool(mount_match), boot_match=bool(boot_match), packages_match=packages_match)
     for row in result['items']:
         proven = ((row['area'] in {'file', 'package-difference'} and row['key'] in matching | recipe_matching) or
                   (row['area'] == 'account' and '/etc/passwd' in matching and '/etc/group' in matching) or
                   (row['area'] == 'mount' and row['key'] in wanted and mount_match) or
-                  (row['area'] in {'file', 'boot-file'} and row['key'] in {'/boot/vmlinuz-virt', '/boot/initramfs-virt'} and boot_match))
+                  (row['area'] in {'file', 'boot-file'} and row['key'] in {'/boot/vmlinuz-virt', '/boot/initramfs-virt'} and boot_match) or
+                  (row['area'] in {'file', 'boot-file'} and row['key'] in extra_boot) or
+                  (row['area'] in {'file', 'boot-file'} and row['key'] == '/boot/boot' and boot_link_match) or
+                  (row['area'] == 'file' and row['key'] in links_match) or
+                  (row['area'] == 'file' and row['key'] in log_match) or
+                  (row['area'] == 'mount' and row['key'] in virtual_match) or
+                  (row['area'] == 'package-difference' and row['key'] == '/run/lock' and lock_match) or
+                  (row['area'] == 'service' and row['key'] in service_match))
+        if proven and row['area'] in {'file', 'service'} and row['key'] in entries | services:
+            evidence = entries.get(row['key'], services.get(row['key']))
+            proven = row['evidence_sha256'] == digest(evidence)
         if proven:
             row.update(resolved=True, classification='accepted-generation-content',
                        rule='matches the protected accepted generation and current guest observation',

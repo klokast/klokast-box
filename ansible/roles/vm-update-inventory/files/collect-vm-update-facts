@@ -748,6 +748,9 @@ def collect_boot_files(root, mounts):
     result = {'kind': 'klokast.vm-boot-files.v1', 'complete': False, 'stable': False,
               'mount': None, 'metadata': None, 'artifacts': {}, 'adoption_authorized': False, 'error': None}
     allowed = {'vmlinuz-virt', 'initramfs-virt', 'config-virt', 'System.map-virt'}
+    kernel = os.uname().release
+    if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-virt', kernel):
+        allowed.update({'config-' + kernel, 'System.map-' + kernel})
     try:
         selected = [m for m in mounts if m['path'] == '/boot']
         if not selected:
@@ -1427,7 +1430,11 @@ def accepted_file_hashes(root=Path('/')):
               'stable': False, 'files': {}, 'error': None}
     deadline = time.monotonic() + 15
     try:
-        for relative in sorted(ACCEPTED_FILES):
+        paths = set(ACCEPTED_FILES)
+        kernel = os.uname().release
+        if root == Path('/') and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-virt', kernel):
+            paths.add('lib/modules/' + kernel + '/initramfs-suffix')
+        for relative in sorted(paths):
             with ExitStack() as stack:
                 fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 stack.callback(os.close, fd)

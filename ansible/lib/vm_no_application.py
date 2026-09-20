@@ -385,6 +385,11 @@ def checked_boot_files(value, mounts):
                                   'stable': True, 'data_accounted': False, 'metadata_sha256': digest(metadata)},
                                  [{'path': '/boot', 'reason': 'unclassified-directory'}])
     names = {'/boot/' + name for name in ('vmlinuz-virt', 'initramfs-virt', 'config-virt', 'System.map-virt')}
+    # The accepted Alpine linux-virt package also installs versioned metadata.
+    # Hash it for comparison with the frozen signed package; this does not
+    # classify any versioned path on its own.
+    names.update(row['path'] for row in metadata['entries'] if re.fullmatch(
+        r'/boot/(?:config|System\.map)-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-virt', row['path']))
     present = {row['path'] for row in metadata['entries']}
     hashes = value['artifacts']
     if (not isinstance(hashes, dict) or set(hashes) != names & present or
