@@ -14,6 +14,7 @@ import sys
 import time
 
 import vm_disk_backup as backup
+import vm_maintenance_source as sources
 
 BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
 CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
@@ -60,11 +61,6 @@ def artifact(path, maximum):
     return {'bytes': info.st_size, 'sha256': value.hexdigest()}
 
 
-def source_status(role):
-    result = command(['/usr/local/sbin/vm-update-transaction', 'source-status', '--role', role], 180)
-    return json.loads(result, object_pairs_hook=backup.unique)
-
-
 def prepare(args):
     if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -86,14 +82,13 @@ def prepare(args):
             verified.get('restore_verified') is not True or
             verified.get('cleanup_verified') is not True):
         raise backup.BackupError('candidate preparation needs the exact isolated restore receipt')
-    current = source_status(args.role)
-    source_path = '/dev/vg0/lv_podman_' + args.role
-    if (current.get('kind') != 'klokast.vm-unmanaged-source.v1' or
-            current.get('dom0') != args.box + '-dom0' or
-            current.get('runtime') != 'running' or current.get('autostart') is not True or
-            current.get('disks') != {source_path: {
-                'uuid': copied['source']['uuid'], 'bytes': copied['source']['bytes']}}):
-        raise backup.BackupError('running old guest differs from the verified backup source')
+    saved = read(root / 'source.json')
+    selected = sources.details(saved, args.box, args.role)
+    current = sources.read(args.role, retained=selected['layout'] == 'retained-data')
+    sources.same_generation(saved, current)
+    if selected['source'] != copied['source']:
+        raise backup.BackupError('running old data disk differs from the verified backup source')
+    source_path = selected['source']['path']
     candidate = CANDIDATES / args.candidate_id
     backup.secure(candidate, True)
     manifest = read(candidate / 'candidate.json')

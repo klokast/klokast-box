@@ -39,6 +39,7 @@
         group: root
         mode: '0600'
       loop:
+        - {source: roles/vm-retained-data/files/vm_maintenance_source.py, target: vm_maintenance_source.py}
         - {source: roles/vm-retained-data/files/vm-supervised-finalize-dom0, target: vm-supervised-finalize-dom0}
         - {source: roles/vm-retained-data/files/vm-supervised-personalize-dom0, target: vm-supervised-personalize-dom0}
         - {source: roles/vm-retained-data/files/vm-supervised-switch-stage-dom0, target: vm-supervised-switch-stage-dom0}

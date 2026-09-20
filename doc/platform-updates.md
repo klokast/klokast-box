@@ -93,9 +93,9 @@ one-time cutovers. It does not gate the supervised commands below.
    patch releases have no delay. Compare the resolved package closure and build
    inputs; unrelated signed index changes do not require a rebuild. A partial
    rollout freezes its release identity, including updates within one branch.
-   Replacement remains unavailable: the supervised adapters accept only the
-   legacy single-disk source. Complete enrollment and recurring backup, restore,
-   qualification and execution for the accepted OS plus retained-data layout.
+   Replacement remains unavailable. The supervised adapters also accept the
+   protected OS plus retained-data assignment. Complete signed enrollment,
+   recurring qualification and protected execution for that layout.
    Replace one VM at a time within the Instance window. Initial values permit
    starts from 02:00 through 03:00 with 30 minutes for replacement and 30 minutes
    for recovery. Necessary recovery may continue past 04:00.
@@ -165,6 +165,14 @@ ansible/bin/platform-update verify
 ansible/bin/platform-update prepare --box BOX --branch v3.24
 ansible/bin/platform-update prepare --auto
 ```
+
+For an accepted assignment, add `--retained-source` to the backup and restore
+commands. The protected source reader binds the accepted release, disk UUIDs,
+personalization and retained-data receipt. Backup copies the retained-data disk;
+restore checks it in an isolated guest. Later steps recheck that assignment.
+These adapters do not grant unattended replacement authority. The candidate
+source-inspection playbook can check this binding without installing recovery
+code or stopping the guest.
 
 For the one-time supervised cutover, run
 `ansible/bin/platform-update-supervised-backup --box BOX --role ROLE

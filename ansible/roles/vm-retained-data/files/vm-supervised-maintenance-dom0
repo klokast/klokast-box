@@ -22,6 +22,7 @@ import uuid
 
 import retained_data as data
 import vm_disk_backup as backup
+import vm_maintenance_source as sources
 
 BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
 CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
@@ -100,8 +101,14 @@ def execute(args):
     if request.get('inputs_sha256') != manifest['inputs_sha256']:
         raise backup.BackupError('maintenance request selects a different package template')
     if args.mode in {'stage', 'finalize'}:
+        backup.secure(root / 'source.json')
+        saved_source = json.loads((root / 'source.json').read_text(), object_pairs_hook=backup.unique)
+        selected = sources.details(saved_source, args.box, args.role)
         expected_source = ('/dev/vg0/vmbackup_' + args.operation_id + '_disk'
-                           if args.mode == 'stage' else '/dev/vg0/lv_podman_' + args.role)
+                           if args.mode == 'stage' else selected['source']['path'])
+        if (request['request'].get('source_layout') != selected['layout'] or
+                request['request'].get('source_partition') != selected['partition']):
+            raise backup.BackupError('copy layout differs from its recorded source')
         if (args.source != expected_source or
                 args.destination != '/dev/vg0/vmupd_' + args.operation_id + '_data'):
             raise backup.BackupError('data-copy disks differ from fixed old and retained assignments')
@@ -112,6 +119,8 @@ def execute(args):
     native = backup.Native()
     source = identity(native, args.source, writable=args.mode != 'stage')
     destination = identity(native, args.destination, writable=True)
+    if args.mode == 'finalize' and any(source[key] != selected['source'][key] for key in ('path', 'uuid', 'bytes')):
+        raise backup.BackupError('final-sync source LV differs from the recorded accepted data disk')
     if source['device'] == destination['device'] or source['uuid'] == destination['uuid']:
         raise backup.BackupError('maintenance disks overlap')
     if args.mode == 'personalize' and not (root / 'finalize/result.json').is_file():

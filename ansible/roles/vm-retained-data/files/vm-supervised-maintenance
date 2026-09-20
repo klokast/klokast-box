@@ -74,8 +74,8 @@ def disk_request(args):
         raise data.CopyError('supervised maintenance OS differs from the tested template')
     if value['mode'] in {'stage', 'finalize'}:
         data.staged_request(value['request'])
-        if value['request']['kind'] != 'klokast.vm-retained-stage.v3' or value['request']['source_partition'] != 3:
-            raise data.CopyError('supervised data copy requires the fixed old root partition')
+        if value['request']['kind'] != 'klokast.vm-retained-stage.v3':
+            raise data.CopyError('data copy requires the recorded v3 source layout')
         if (value['stage_receipt_sha256'] is not None and
                 (value['mode'] != 'finalize' or not isinstance(value['stage_receipt_sha256'], str) or
                  not SHA.fullmatch(value['stage_receipt_sha256']))):

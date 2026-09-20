@@ -36,6 +36,8 @@ def main():
     parser.add_argument('--box', required=True)
     parser.add_argument('--role', required=True)
     parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--retained-source', action='store_true',
+                        help='back up the data disk of an accepted two-disk assignment')
     args = parser.parse_args()
     os.umask(0o077)
     if (args.box, args.role) not in TARGETS:
@@ -81,6 +83,7 @@ def main():
             '--limit', args.box + '-dom0', '-e', json.dumps({
                 'supervised_box': args.box, 'supervised_role': args.role,
                 'supervised_operation_id': operation, 'supervised_engine_commit': template_engine,
+                'supervised_retained_source': args.retained_source,
             }, separators=(',', ':')),
         ]
         environment = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg'))

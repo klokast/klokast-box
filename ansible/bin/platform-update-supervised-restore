@@ -21,7 +21,7 @@ UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
 def checked(argv, *, input_text=None, timeout=30):
     result = subprocess.run(argv, input=input_text, capture_output=True,
                             text=True, timeout=timeout)
-    if result.returncode or len(result.stdout) > 16384:
+    if result.returncode or len(result.stdout) > 256 * 1024:
         raise RuntimeError('required controller or guest identity check failed: ' + argv[0])
     return result.stdout.strip()
 
@@ -55,12 +55,23 @@ awk -F: '$1 == "neo" {print $2 ":" $3}' /etc/subgid
     return match.group(1), {'uid': uid, 'gid': gid, 'subuid': [subuid], 'subgid': [subgid]}
 
 
+def accepted_identity(box, role, operation):
+    reader = '/mnt/dom0_data/klokast-vm-supervised/' + operation + '/code/vm-update-source-reader'
+    script = ('set -eu\ndoas /usr/bin/python3 ' + reader + ' replacement-source-status --role ' + role + '\n')
+    value = json.loads(checked(['tailscale', 'ssh', 'neo@' + box + '-dom0', 'sh', '-s'], input_text=script, timeout=180))
+    if (value.get('kind') != 'klokast.vm-replacement-source.v1' or value.get('dom0') != box + '-dom0' or
+            value.get('role') != role or not isinstance(value.get('machine'), dict)):
+        raise RuntimeError('accepted source reader returned a different guest')
+    return value['machine']['retained_uuid'], value['machine']['runtime']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--role', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--retained-source', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     if ((args.box, args.role) not in TARGETS or
@@ -84,7 +95,7 @@ def main():
         except BlockingIOError as error:
             raise RuntimeError('another Platform mutation holds the installation lock') from error
         host = args.box + '-' + args.role
-        root_uuid, runtime = guest_identity(host)
+        root_uuid, runtime = accepted_identity(args.box, args.role, args.operation_id) if args.retained_source else guest_identity(host)
         print(f'Isolated restore: {host}; operation {args.operation_id}', flush=True)
         command = [
             'ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),

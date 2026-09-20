@@ -14,6 +14,7 @@ import sys
 import retained_data
 import vm_backup_verify
 import vm_disk_backup as backup
+import vm_maintenance_source as sources
 
 BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
 CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
@@ -55,7 +56,8 @@ def main():
     source = json.loads((root / 'source.json').read_text(), object_pairs_hook=backup.unique)
     request = json.loads((root / 'backup/request.json').read_text(), object_pairs_hook=backup.unique)
     receipt = json.loads((root / 'backup/result.json').read_text(), object_pairs_hook=backup.unique)
-    if (source.get('kind') != 'klokast.vm-unmanaged-source.v1' or
+    selected = sources.details(source, args.box, args.role)
+    if (selected['source'] != receipt.get('source') or
             source.get('dom0') != args.box + '-dom0' or source.get('role') != args.role or
             source.get('runtime') != 'running' or source.get('autostart') is not True or
             receipt.get('box') != args.box or receipt.get('operation_id') != args.operation_id or
@@ -67,8 +69,16 @@ def main():
         'engine_commit': receipt['engine_commit'],
         'backup_receipt_sha256': receipt['receipt_sha256'],
         'disk_bytes': receipt['source']['bytes'], 'disk_sha256': receipt['disk_sha256'],
-        'root_partition': 3, 'root_uuid': args.root_uuid, 'runtime': runtime,
+        'root_partition': selected['partition'], 'root_uuid': args.root_uuid, 'runtime': runtime,
     }
+    if selected['layout'] == 'retained-data':
+        machine = source['machine']
+        if machine['retained_uuid'] != args.root_uuid or machine['runtime'] != runtime:
+            raise backup.BackupError('restore identity differs from the accepted data generation')
+        restore.update(kind='klokast.vm-backup-restore.v2', source_layout='retained-data',
+                       retained_receipt_sha256=machine['retained_receipt_sha256'],
+                       entries=[{'key': key, 'source': key, 'type': 'identity-file'}
+                                for key in sorted(retained_data.IDENTITY_FILES)])
     retained_data.validate_backup(restore)
     host = load_builder(root / 'code/vm-template-build-dom0')
     result = vm_backup_verify.verify(work, restore, receipt,

@@ -56,14 +56,16 @@ def stage(args):
             manifest.get('operation_id') != args.candidate_id or
             not isinstance(manifest.get('inputs_sha256'), str)):
         raise backup.BackupError('identity stage lacks exact backup, restore, and prepared disk receipts')
-    entries = [{'key': key, 'source': source, 'type': 'identity-file'}
+    retained = restore_request['kind'] == 'klokast.vm-backup-restore.v2'
+    entries = [{'key': key, 'source': key if retained else source, 'type': 'identity-file'}
                for key, source in sorted(data.IDENTITY_FILES.items())]
     copy_request = {'kind': 'klokast.vm-retained-stage.v3',
                     'operation_id': args.operation_id,
                     'source_uuid': restore_request['root_uuid'],
                     'destination_uuid': prepared['data_uuid'],
                     'runtime': restore_request['runtime'], 'entries': entries,
-                    'source_layout': 'legacy-root', 'source_partition': 3}
+                    'source_layout': 'retained-data' if retained else 'legacy-root',
+                    'source_partition': 0 if retained else 3}
     data.staged_request(copy_request)
     request = {'kind': 'klokast.vm-supervised-maintenance.v1', 'mode': 'stage',
                'operation_id': args.operation_id, 'inputs_sha256': manifest['inputs_sha256'],

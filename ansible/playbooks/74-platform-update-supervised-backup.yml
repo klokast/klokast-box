@@ -47,7 +47,15 @@
         owner: root
         group: root
         mode: '0600'
-      loop: [vm_disk_backup.py, vm-supervised-backup]
+      loop: [vm_disk_backup.py, vm_maintenance_source.py, vm-supervised-backup]
+
+    - name: Stage the fixed read-only accepted-source entry beside backup code
+      ansible.builtin.copy:
+        src: ../roles/vm-update-recovery/files/vm-update-transaction
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-update-source-reader"
+        owner: root
+        group: root
+        mode: '0600'
 
     - name: Copy and verify the exact running source disk
       ansible.builtin.command:
@@ -64,6 +72,8 @@
           - "{{ supervised_operation_id }}"
           - --engine-commit
           - "{{ supervised_engine_commit }}"
+          - --source-layout
+          - "{{ 'retained-data' if supervised_retained_source | default(false) | bool else 'legacy-root' }}"
       async: 1920
       poll: 15
       vars:

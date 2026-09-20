@@ -1,0 +1,79 @@
+---
+- name: Inspect an accepted VM generation with candidate source without installing it
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate one exact shared-VM inspection target
+      ansible.builtin.assert:
+        that:
+          - (update_inspect_box, update_inspect_role) in [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+          - inventory_hostname == update_inspect_box ~ '-dom0'
+
+    - name: Verify the active controller before inspection
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: source_inspection_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (source_inspection_controller.stdout | from_json).configured | bool
+          - (source_inspection_controller.stdout | from_json).active | bool
+
+    - name: Create private temporary reader staging
+      ansible.builtin.tempfile:
+        state: directory
+        path: /mnt/dom0_data
+        prefix: vm-source-read-
+      register: source_inspection_staging
+
+    - name: Read the accepted generation with the checked candidate reader
+      block:
+        - name: Stage read-only candidate transaction code
+          ansible.builtin.copy:
+            src: ../roles/vm-update-recovery/files/vm-update-transaction
+            dest: "{{ source_inspection_staging.path }}/reader"
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Inspect protected assignment and personalization records
+          ansible.builtin.command:
+            argv: [/usr/bin/python3, "{{ source_inspection_staging.path }}/reader", replacement-source-status, --role, "{{ update_inspect_role }}"]
+          changed_when: false
+          register: source_inspection_result
+          no_log: true
+
+        - name: Create the controller evidence directory
+          ansible.builtin.file:
+            path: /var/lib/klokast/updates/discovery/source-audits
+            state: directory
+            mode: '0700'
+          delegate_to: localhost
+          become: false
+
+        - name: Record the exact non-authoritative source evidence on the controller
+          ansible.builtin.copy:
+            content: "{{ source_inspection_result.stdout }}\n"
+            dest: "/var/lib/klokast/updates/discovery/source-audits/replacement-{{ update_inspect_box }}-{{ update_inspect_role }}.json"
+            mode: '0600'
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Show the inspected accepted release identity
+          ansible.builtin.debug:
+            msg:
+              target: "{{ update_inspect_box }}-{{ update_inspect_role }}"
+              release: "{{ (source_inspection_result.stdout | from_json).release.release_sha256 }}"
+              source: "{{ (source_inspection_result.stdout | from_json).kind }}"
+      always:
+        - name: Remove only this inspection's temporary reader
+          ansible.builtin.file:
+            path: "{{ source_inspection_staging.path }}"
+            state: absent

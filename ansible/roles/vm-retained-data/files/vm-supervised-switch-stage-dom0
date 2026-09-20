@@ -16,6 +16,7 @@ import sys
 import uuid
 
 import vm_disk_backup as backup
+import vm_maintenance_source as sources
 
 BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
 TRANSACTIONS = Path('/mnt/dom0_data/klokast-vm-updates/operations')
@@ -61,11 +62,12 @@ def stage(args):
     manifest = read(CANDIDATES / args.candidate_id / 'candidate.json')
     release = read(root / 'release.json')
     supervision = read(root / 'supervision.json')
-    old_path = '/dev/vg0/lv_podman_' + args.role
-    if (source.get('kind') != 'klokast.vm-unmanaged-source.v1' or
+    selected = sources.details(source, args.box, args.role)
+    old_path = selected['source']['path']
+    if (source.get('kind') not in {'klokast.vm-unmanaged-source.v1', 'klokast.vm-replacement-source.v1'} or
             source.get('role') != args.role or source.get('dom0') != args.box + '-dom0' or
             source.get('runtime') != 'running' or source.get('autostart') is not True or
-            not isinstance(source.get('disks'), dict) or set(source['disks']) != {old_path} or
+            not isinstance(source.get('disks'), dict) or old_path not in source['disks'] or
             copied.get('source') != dict(source['disks'][old_path], path=old_path) or
             prepared.get('old_source') != copied['source'] or
             prepared.get('candidate_id') != args.candidate_id or
@@ -84,11 +86,8 @@ def stage(args):
                             'role': args.role, 'candidate_id': args.candidate_id,
                             'release_sha256': release.get('release_sha256')}):
         raise backup.BackupError('switch staging records do not name the exact tested source and release')
-    fresh = checked(['/usr/local/sbin/vm-update-transaction', 'source-status', '--role', args.role])
-    for key in ('kind', 'role', 'dom0', 'vm_uuid', 'configuration_sha256', 'disks',
-                'disk_mappings', 'artifacts', 'autostart', 'runtime'):
-        if fresh.get(key) != source.get(key):
-            raise backup.BackupError('running source VM changed after its independent backup')
+    fresh = sources.read(args.role, retained=selected['layout'] == 'retained-data')
+    sources.same_generation(source, fresh)
     tx = load_transaction()
     original = Path('/etc/xen') / (args.role + '.cfg')
     old_text = original.read_text()

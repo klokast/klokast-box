@@ -47,6 +47,7 @@
         group: root
         mode: '0600'
       loop:
+        - vm_maintenance_source.py
         - vm-supervised-stage-dom0
         - vm-supervised-maintenance-dom0
 
