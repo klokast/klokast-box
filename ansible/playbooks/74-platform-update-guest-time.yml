@@ -1,15 +1,15 @@
 ---
-- name: Restore verified dom0 clock synchronization for VM update evidence
-  hosts: dom0
+- name: Correct bounded UTC drift on one accepted shared VM
+  hosts: dmz
   gather_facts: false
   become: true
   become_method: doas
   tasks:
-    - name: Require one selected dom0
+    - name: Require the selected accepted guest
       ansible.builtin.assert:
         that:
-          - update_time_box in ['k001', 'k002']
-          - inventory_hostname == update_time_box ~ '-dom0'
+          - update_time_guest == 'k001-dmz'
+          - inventory_hostname == update_time_guest
 
     - name: Verify active controller authority
       ansible.builtin.command:
@@ -25,19 +25,19 @@
           - (update_time_controller.stdout | from_json).configured | bool
           - (update_time_controller.stdout | from_json).active | bool
 
-    - name: Enable the installed Alpine time service
-      ansible.builtin.service:
-        name: ntpd
-        enabled: true
-        state: started
-      register: update_time_service
-
-    - name: Persist the time service on diskless dom0
+    - name: Require no guest time daemon or new boot service
       ansible.builtin.command:
-        argv: [/usr/sbin/lbu, commit, -d]
-      when: update_time_service.changed
+        argv: [/sbin/rc-service, ntpd, status]
+      register: update_time_guest_daemon
+      changed_when: false
+      failed_when: false
 
-    - name: Read the controller UTC epoch for a bounded correction
+    - name: Confirm the accepted guest has no active time daemon
+      ansible.builtin.assert:
+        that:
+          - update_time_guest_daemon.rc != 0
+
+    - name: Read controller UTC epoch
       ansible.builtin.command:
         argv: [date, -u, +%s]
       delegate_to: localhost
@@ -45,38 +45,33 @@
       changed_when: false
       register: update_time_controller_epoch
 
-    - name: Read the dom0 UTC epoch before correction
+    - name: Read guest UTC epoch
       ansible.builtin.command:
         argv: [date, -u, +%s]
       changed_when: false
-      register: update_time_dom0_before
+      register: update_time_guest_epoch
 
     - name: Require a bounded clock correction
       ansible.builtin.assert:
         that:
           - >-
-            ((update_time_dom0_before.stdout | int) -
+            ((update_time_guest_epoch.stdout | int) -
              (update_time_controller_epoch.stdout | int)) | abs <= 600
 
-    - name: Set dom0 UTC from the active controller when needed
+    - name: Set guest UTC from the active controller when needed
       ansible.builtin.command:
         argv: [date, -u, -s, "@{{ update_time_controller_epoch.stdout }}"]
       when: >-
-        ((update_time_dom0_before.stdout | int) -
+        ((update_time_guest_epoch.stdout | int) -
          (update_time_controller_epoch.stdout | int)) | abs > 30
 
-    - name: Wait for dom0 UTC to match the controller within 30 seconds
+    - name: Verify guest UTC against the active controller
       ansible.builtin.command:
         argv: [date, -u, +%s]
-      register: update_time_dom0_epoch
+      register: update_time_guest_verified
       changed_when: false
       until: >-
-        ((update_time_dom0_epoch.stdout | int) -
+        ((update_time_guest_verified.stdout | int) -
          (lookup('pipe', 'date -u +%s') | int)) | abs <= 30
-      retries: 24
-      delay: 5
-
-    - name: Verify the installed time service remains running
-      ansible.builtin.command:
-        argv: [/sbin/rc-service, ntpd, status]
-      changed_when: false
+      retries: 3
+      delay: 2
