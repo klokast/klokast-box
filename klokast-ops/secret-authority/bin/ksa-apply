@@ -5380,7 +5380,7 @@ def vm_update_release_dom0_files(box, operation_id):
     script = '''set -eu
 mountpoint -q /mnt/dom0_data
 python3 - "$1" <<'PY'
-import hashlib, json, os, pathlib, stat, sys
+import hashlib, json, os, pathlib, stat, sys, tarfile
 operation = sys.argv[1]
 base = pathlib.Path('/mnt/dom0_data/klokast-vm-templates/candidates') / operation
 for directory in (pathlib.Path('/mnt/dom0_data'), base.parent.parent, base.parent, base):
@@ -6040,6 +6040,197 @@ def vm_update_pause_state(activation_sha256):
     return value['activation_sha256'] != activation_sha256
 
 
+def vm_update_recovery_evidence(box, operation_id):
+    """Read one root-owned native test and the installed boot recovery chain."""
+    if box not in {'k001', 'k002'} or not isinstance(operation_id, str) or not re.fullmatch(r'[0-9a-f]{24}', operation_id):
+        raise ApplyError('VM recovery readiness requires one fixed box and test operation')
+    script = '''set -eu
+doas /usr/bin/python3 - "$1" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+operation = sys.argv[1]
+base = pathlib.Path('/mnt/dom0_data/klokast-vm-recovery-tests') / operation
+result = base / 'result.json'
+for path in (base.parent, base, result):
+    info = path.lstat()
+    if info.st_uid != 0 or info.st_mode & 0o022 or (
+            not stat.S_ISREG(info.st_mode) if path == result else not stat.S_ISDIR(info.st_mode)):
+        raise SystemExit('native recovery evidence has unsafe metadata')
+if result.stat().st_size > 1048576:
+    raise SystemExit('native recovery evidence is too large')
+def checked(path, maximum, mode):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != mode or info.st_size > maximum:
+        raise SystemExit('installed recovery code has unsafe metadata')
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+helper = checked(pathlib.Path('/usr/local/sbin/vm-update-transaction'), 1048576, 0o700)
+service = checked(pathlib.Path('/etc/init.d/klokast-vm-update-recovery'), 1048576, 0o755)
+link = pathlib.Path('/etc/runlevels/default/klokast-vm-update-recovery')
+if not link.is_symlink() or os.readlink(link) != '/etc/init.d/klokast-vm-update-recovery':
+    raise SystemExit('dom0 boot recovery is not enabled')
+archives = [*pathlib.Path('/media').glob('*.apkovl.tar.gz'),
+            *pathlib.Path('/media').glob('*/*.apkovl.tar.gz')]
+if len(archives) != 1:
+    raise SystemExit('dom0 has no unique persisted recovery archive')
+archive = archives[0]
+info = archive.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 128 * 1024 * 1024:
+    raise SystemExit('dom0 persisted recovery archive has unsafe metadata')
+required = {'usr/local/sbin/vm-update-transaction',
+            'etc/init.d/klokast-vm-update-recovery',
+            'etc/runlevels/default/klokast-vm-update-recovery',
+            'etc/conf.d/xendomains'}
+entries = {}
+with tarfile.open(archive, 'r:gz') as saved:
+    for index, member in enumerate(saved):
+        if index >= 10000:
+            raise SystemExit('dom0 persisted recovery archive has too many entries')
+        name = member.name.removeprefix('./')
+        if name.startswith('mnt/dom0_data/') or name == 'mnt/dom0_data':
+            raise SystemExit('dom0 persisted recovery archive includes live data')
+        if name in required:
+            if name in entries:
+                raise SystemExit('dom0 persisted recovery archive duplicates recovery code')
+            if name.endswith('klokast-vm-update-recovery') and name.startswith('etc/runlevels/'):
+                if not member.issym() or member.linkname != '/etc/init.d/klokast-vm-update-recovery':
+                    raise SystemExit('dom0 persisted recovery runlevel differs')
+            else:
+                if not member.isfile() or member.size > 1048576:
+                    raise SystemExit('dom0 persisted recovery code is unsafe')
+                data = saved.extractfile(member).read()
+                if name.endswith('vm-update-transaction') and hashlib.sha256(data).hexdigest() != helper:
+                    raise SystemExit('dom0 persisted recovery helper differs')
+                if name.endswith('klokast-vm-update-recovery') and hashlib.sha256(data).hexdigest() != service:
+                    raise SystemExit('dom0 persisted recovery service differs')
+                if name == 'etc/conf.d/xendomains' and b'rc_need="${rc_need:-} localmount klokast-vm-update-recovery"' not in data:
+                    raise SystemExit('dom0 guest autostart has no recovery dependency')
+            entries[name] = True
+if set(entries) != required:
+    raise SystemExit('dom0 persisted recovery boot chain is incomplete')
+with result.open() as stream:
+    value = json.load(stream)
+print(json.dumps({'result': value, 'helper_sha256': helper, 'service_sha256': service}, sort_keys=True, separators=(',', ':')))
+PY
+'''
+    try:
+        process = subprocess.run(['/usr/bin/tailscale', 'ssh', 'neo@' + box + '-dom0',
+                                  'sh', '-s', '--', operation_id], input=script,
+                                 capture_output=True, text=True, timeout=180,
+                                 env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'C', 'LC_ALL': 'C'})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ApplyError('dom0 native recovery evidence did not finish') from error
+    if process.returncode or len(process.stdout) > 2 * 1024 * 1024:
+        raise ApplyError('dom0 native recovery evidence is unavailable')
+    try:
+        value = json.loads(process.stdout, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise ApplyError('dom0 native recovery evidence is invalid JSON') from error
+    if not isinstance(value, dict) or set(value) != {'result', 'helper_sha256', 'service_sha256'}:
+        raise ApplyError('dom0 native recovery evidence has an unknown contract')
+    return value
+
+
+def vm_update_replacement_readiness(receipt):
+    """Read a protected readiness record and recheck each dom0 recovery path."""
+    path = VM_UPDATE_ROOT / 'replacement-ready.json'
+    if not path.exists() and not path.is_symlink():
+        return False
+    value = load_json(path, canonical_stored=True)
+    fields = {'kind', 'activation_sha256', 'engine_commit', 'candidate_id',
+              'candidate_sha256', 'operations',
+              'evidence_sha256', 'helper_sha256', 'service_sha256', 'recorded_at', 'record_sha256'}
+    helper = sha256_bytes(read_regular(REPO_ROOT / 'ansible/roles/vm-update-recovery/files/vm-update-transaction'))
+    service = sha256_bytes(read_regular(REPO_ROOT / 'ansible/roles/vm-update-recovery/files/klokast-vm-update-recovery.openrc'))
+    if (set(value) != fields or value['kind'] != 'klokast.vm-replacement-readiness.v1' or
+            value['activation_sha256'] != receipt['receipt_sha256'] or
+            value['engine_commit'] != receipt['intent']['engine_commit'] or
+            value['helper_sha256'] != helper or value['service_sha256'] != service or
+            not isinstance(value['operations'], dict) or
+            not isinstance(value['evidence_sha256'], dict) or
+            set(value['operations']) != {'k001', 'k002'} or
+            set(value['evidence_sha256']) != {'k001', 'k002'} or
+            value['record_sha256'] != inventory_digest({k: v for k, v in value.items() if k != 'record_sha256'})):
+        return False
+    try:
+        pointer = load_json(VM_UPDATE_DISCOVERY / 'automatic.json', canonical_stored=True)
+        selection = pointer.get('selection')
+        if (pointer.get('kind') != 'klokast.vm-update-auto-build.v1' or
+                pointer.get('operation_id') != value['candidate_id'] or
+                not isinstance(selection, dict) or
+                selection.get('activation_sha256') != receipt['receipt_sha256'] or
+                selection.get('engine_commit') != receipt['intent']['engine_commit'] or
+                vm_update_release_evidence(value['candidate_id'], receipt)['candidate_sha256'] != value['candidate_sha256']):
+            return False
+        for box in ('k001', 'k002'):
+            current = vm_update_recovery_evidence(box, value['operations'][box])
+            if (inventory_digest(current) != value['evidence_sha256'][box] or
+                    current['result']['candidate_id'] != value['candidate_id'] or
+                    current['result']['candidate_sha256'] != value['candidate_sha256'] or
+                    current['helper_sha256'] != helper or current['service_sha256'] != service):
+                return False
+    except (ApplyError, OSError, ValueError, TypeError, KeyError):
+        return False
+    return True
+
+
+def vm_update_policy_ready(k001_operation, k002_operation):
+    """Enable replacement only after the signed policy and two native tests."""
+    require_root_active()
+    require_self_match()
+    with vm_update_lock():
+        receipt = vm_update_policy_current()
+        if vm_update_pause_state(receipt['receipt_sha256']):
+            raise ApplyError('paused VM update policy cannot enable replacement')
+        pointer = load_json(VM_UPDATE_DISCOVERY / 'automatic.json', canonical_stored=True)
+        candidate_id = pointer.get('operation_id')
+        selection = pointer.get('selection')
+        if (pointer.get('kind') != 'klokast.vm-update-auto-build.v1' or
+                not isinstance(selection, dict) or
+                selection.get('activation_sha256') != receipt['receipt_sha256'] or
+                selection.get('engine_commit') != receipt['intent']['engine_commit'] or
+                not isinstance(candidate_id, str) or not re.fullmatch(r'[0-9a-f]{24}', candidate_id)):
+            raise ApplyError('native recovery readiness requires the current signed automatic template')
+        release_evidence = vm_update_release_evidence(candidate_id, receipt)
+        expected_candidate = release_evidence['candidate_sha256']
+        helper = sha256_bytes(read_regular(REPO_ROOT / 'ansible/roles/vm-update-recovery/files/vm-update-transaction'))
+        service = sha256_bytes(read_regular(REPO_ROOT / 'ansible/roles/vm-update-recovery/files/klokast-vm-update-recovery.openrc'))
+        operations = {'k001': k001_operation, 'k002': k002_operation}
+        evidence = {}
+        for box, operation in operations.items():
+            observed = vm_update_recovery_evidence(box, operation)
+            result = observed['result']
+            if not isinstance(result, dict):
+                raise ApplyError('native recovery test returned an invalid result')
+            tests = result.get('tests') if isinstance(result, dict) else None
+            stages = {row['stage'] for row in tests} if isinstance(tests, list) and all(
+                isinstance(row, dict) and isinstance(row.get('stage'), str) for row in tests) else set()
+            if (result.get('kind') != 'klokast.vm-recovery-test.v1' or
+                    result.get('operation_id') != operation or result.get('candidate_id') != candidate_id or
+                    result.get('candidate_sha256') != expected_candidate or
+                    result.get('success') is not True or result.get('production_replacement') is not False or
+                    any(result.get(key) is not True for key in
+                        ('watchdog_tested', 'process_restart_tested', 'controller_loss_tested',
+                         'generation_chain_tested', 'runtime_reconciliation_tested')) or
+                    not {'watchdog-expiry', 'controller-loss', 'generation-chain'} <= stages or
+                    observed['helper_sha256'] != helper or observed['service_sha256'] != service or
+                    result.get('transaction_sha256') != helper or
+                    result.get('harness_sha256') != sha256_bytes(read_regular(
+                        REPO_ROOT / 'ansible/roles/vm-update-recovery/files/vm-update-recovery-test'))):
+                raise ApplyError('native VM recovery evidence does not prove the current tested engine')
+            evidence[box] = inventory_digest(observed)
+        value = {'kind': 'klokast.vm-replacement-readiness.v1',
+                 'activation_sha256': receipt['receipt_sha256'],
+                 'engine_commit': receipt['intent']['engine_commit'],
+                 'candidate_id': candidate_id, 'candidate_sha256': expected_candidate,
+                 'operations': operations, 'evidence_sha256': evidence,
+                 'helper_sha256': helper, 'service_sha256': service,
+                 'recorded_at': format_utc(now_utc())}
+        value['record_sha256'] = inventory_digest(value)
+        vm_update_store(VM_UPDATE_ROOT / 'replacement-ready.json', (canonical(value) + '\n').encode(), replace=True)
+        append_audit('vm-update-policy.replacement-ready', receipt_sha256=value['record_sha256'])
+        print(canonical({'kind': value['kind'], 'record_sha256': value['record_sha256'],
+                         'replacement_ready': True}))
+
+
 def vm_update_schedule_source():
     """Read timing from sealed Instance intent without granting mutation authority."""
     require_root_active()
@@ -6059,16 +6250,18 @@ def vm_update_schedule_source():
         checked['exclusions'] = sorted(checked['exclusions'], key=lambda row: (row['box'], row['role']))
         validate_vm_update_policy(checked, private['boxes'])
     activated = False
+    ready = False
     if policy and policy['enabled']:
         try:
             receipt = vm_update_policy_current()
             activated = not vm_update_pause_state(receipt['receipt_sha256'])
+            ready = activated and vm_update_replacement_readiness(receipt)
         except (ApplyError, OSError):
             pass
     if inventory_source_status() != source or read_regular(INSTANCE / 'klokast-instance.json') != raw:
         raise ApplyError('VM update schedule authority changed during inspection')
     return {'kind': 'klokast.vm-update-schedule.v1', 'policy': policy,
-            'activated': activated, 'replacement_ready': False}
+            'activated': activated, 'replacement_ready': ready}
 
 
 def vm_update_policy_source_status():
@@ -6084,7 +6277,7 @@ def vm_update_policy_source_status():
               'private_commit': intent['private_commit'],
               'authority_state_sha256': intent['evidence']['authority_state_sha256'],
               'paused': vm_update_pause_state(receipt['receipt_sha256']),
-              'replacement_executor_available': False}
+              'replacement_executor_available': vm_update_replacement_readiness(receipt)}
     return result
 
 
@@ -6522,7 +6715,9 @@ def parse_args(argv):
     commands.add_parser("inventory-source-status")
     commands.add_parser("vm-retention-status")
     update_policy_parser = commands.add_parser("vm-update-policy")
-    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "source-status", "schedule-source"))
+    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "ready", "source-status", "schedule-source"))
+    update_policy_parser.add_argument('--k001-test-operation-id')
+    update_policy_parser.add_argument('--k002-test-operation-id')
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
         update_policy_parser.add_argument("--" + name)
     update_release_parser = commands.add_parser("vm-update-release")
@@ -6589,15 +6784,23 @@ def main(argv=None):
         elif args.operation == "vm-update-policy":
             names = ("plan", "authority_state", "controller_toolchain_receipt", "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir")
             if args.action == "prepare":
-                if any(not getattr(args, name) for name in names):
+                if (any(not getattr(args, name) for name in names) or
+                        args.k001_test_operation_id or args.k002_test_operation_id):
                     raise ApplyError("VM update policy preparation requires complete fresh Plan v8 evidence")
                 vm_update_policy_prepare(args)
+            elif args.action == 'ready':
+                if (any(getattr(args, name) for name in names) or
+                        not args.k001_test_operation_id or not args.k002_test_operation_id):
+                    raise ApplyError('VM replacement readiness requires only two native test operation IDs')
+                vm_update_policy_ready(args.k001_test_operation_id, args.k002_test_operation_id)
             elif args.action in {"source-status", "schedule-source"}:
-                if any(getattr(args, name) for name in names):
+                if (any(getattr(args, name) for name in names) or
+                        args.k001_test_operation_id or args.k002_test_operation_id):
                     raise ApplyError("VM update policy source reader accepts no caller-selected inputs")
                 print(canonical(vm_update_policy_source_status() if args.action == "source-status" else vm_update_schedule_source()))
             else:
-                if any(getattr(args, name) for name in names):
+                if (any(getattr(args, name) for name in names) or
+                        args.k001_test_operation_id or args.k002_test_operation_id):
                     raise ApplyError("VM update policy control accepts no caller-selected inputs")
                 vm_update_policy_control(args.action)
         elif args.operation == "vm-update-release":

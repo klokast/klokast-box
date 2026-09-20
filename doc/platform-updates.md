@@ -18,8 +18,8 @@ identity, retained mount, firewall, and rootless Podman checks passed. The
 selected guests had no application containers, images, or volumes to migrate.
 The old guest disks remain offline for recovery. Exact operation evidence is
 in the private controller journal and dom0 records. The signed standing
-policy, unattended executor, and schedule remain follow-up work for recurring
-updates. Rollout does not require a canary waiting period.
+policy and schedule remain follow-up work for recurring updates. Rollout does
+not require a canary waiting period.
 
 The unattended release is **not complete**. The discovery, template builder,
 independent backup and isolated restore, retained-data, personalizer, and
@@ -35,12 +35,16 @@ record for the current policy activation. It checks the approved engine and
 package manifest again. Artifact bytes must be checked again before use. A
 failed transfer leaves an exact staging directory for review; it cannot select
 a production disk. Signed old-generation adoption is implemented in the
-candidate engine, but has not been promoted or used on production VMs.
+candidate engine. The three production guests instead have protected accepted
+assignments from the supervised cutovers. Candidate verification reads them.
 The root authority also has a read-only release check that compares the fixed
 dom0 artifact bytes with the protected release before staging.
-Unattended replacement and rollout remain unavailable. No production update
-schedule has been enabled. The supervised commands below do not activate the
-standing update policy.
+The candidate engine has a serial unattended executor. It rechecks each target
+before it starts, uses the supervised backup and recovery path, and stops after
+a failure until the recorded operation is reconciled. Replacement remains
+closed until the signed policy is active, a current exact template is selected,
+and native recovery tests on both boxes bind to that template and the installed
+dom0 recovery code. No production update schedule has been enabled.
 
 The [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
 owns desired state and assignment rules. [Secret Authority](secret-authority.md#standing-vm-update-authority)
@@ -93,9 +97,8 @@ one-time cutovers. It does not gate the supervised commands below.
    patch releases have no delay. Compare the resolved package closure and build
    inputs; unrelated signed index changes do not require a rebuild. A partial
    rollout freezes its release identity, including updates within one branch.
-   Replacement remains unavailable. The supervised adapters also accept the
-   protected OS plus retained-data assignment. Complete signed enrollment,
-   recurring qualification and protected execution for that layout.
+   The candidate serial executor accepts the protected OS plus retained-data
+   assignment. Promote the engine and activate the signed policy before use.
    Replace one VM at a time within the Instance window. Initial values permit
    starts from 02:00 through 03:00 with 30 minutes for replacement and 30 minutes
    for recovery. Necessary recovery may continue past 04:00.
@@ -130,7 +133,10 @@ cron time; there is no separate scheduling flag. Convergence removes the old
 scan and hourly verification entries. It installs daily scan, verification and
 preparation when Instance update intent is enabled. Replacement cron remains
 absent until the protected executor reports activation and recovery readiness.
-The current executor always reports replacement unavailable.
+The readiness record binds both native tests to the current automatic template.
+The root reader checks the selected build and both installed dom0 recovery
+helpers again whenever it reports readiness. A new build or changed helper
+closes replacement until the tests are repeated.
 
 `verify` reads each protected dom0 assignment and finds the exact release by
 its digest. It validates that release against its complete build evidence,
@@ -141,9 +147,8 @@ uses the Instance limit (initially 30 hours). Qualification and preparation
 continue to use the shorter execution freshness limit. Verification does not
 enroll an assignment or grant replacement authority.
 
-Daily results are `unchanged`, `waiting`, `deferred`, or `failed`. `updated`
-requires a completed unattended replacement and is not yet emitted. No
-successful unattended changed-package update has been established.
+Daily results are `unchanged`, `waiting`, `updated`, `deferred`, or `failed`.
+No successful unattended changed-package update has been established.
 
 ## Current commands
 
@@ -164,6 +169,7 @@ ansible/bin/platform-update status --json
 ansible/bin/platform-update verify
 ansible/bin/platform-update prepare --box BOX --branch v3.24
 ansible/bin/platform-update prepare --auto
+ansible/bin/platform-update policy ready --k001-test-operation-id K001_TEST_ID --k002-test-operation-id K002_TEST_ID
 ```
 
 For an accepted assignment, add `--retained-source` to the backup and restore
@@ -237,8 +243,8 @@ If the controller stops after dom0 publishes the old assignment,
 `adopt reconcile` verifies the archived signature, nonce, current policy, and exact
 dom0 pointer before it writes the missing controller receipt. It cannot create
 an assignment.
-This path still needs production testing after engine promotion and policy
-activation.
+Use this path only for a guest that does not have a protected accepted
+assignment. The three selected guests already have one.
 Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and
@@ -349,18 +355,22 @@ indexes cannot select a new template during that rollout. Changed signing keys
 block it. The controller checks every published artifact on both boxes. Only
 that exact complete build returns `state: unchanged` without a new build or copy.
 This command does not copy production data, assign a candidate, or replace a
-guest. `adopt apply` and `run` require the remaining integration. `status` and
-`verify` read protected dom0 assignments for the three selected targets. An
-absent reader, pending or missing assignment, or boot drift is critical.
-Accepted-release and package verification still remain unavailable and are
-reported as critical.
+guest. The candidate `replace` command uses the protected serial executor only
+when the signed policy and recovery readiness permit it. `status` and `verify`
+read protected dom0 assignments for the three selected targets. An absent
+reader, pending or missing assignment, or boot drift is critical. `verify`
+checks accepted release evidence, the installed package manifest, running
+kernel, boot assignment, and required services. It does not depend on schedule
+activation.
 
 Read current qualification counts and cleanup candidates from the active
 controller's private reports. They are deployment observations, not upstream
-documentation or Instance inputs. The last pre-cutover selected-target reports
-had no unknown files or cleanup items. Their 27 unresolved evidence rows per
-target remain for signed adoption and unattended execution. The supervised
-production transaction completed; it does not close those signed-policy rows.
+documentation or Instance inputs. The accepted-assignment audit of all three
+selected targets had no unresolved file, service, runtime, boot, or package
+rows in the candidate checkout. It still reported the unapproved engine and
+missing standing machine-input authority. These are authority findings; an
+exact content match cannot remove them. The supervised production transaction
+did not activate standing policy.
 The rules are in
 [component evidence](platform-update-components.md#qualification-and-cleanup-evidence).
 
@@ -380,15 +390,15 @@ serialization and must not run during an update operation.
 
 | Required evidence | Status |
 | --- | --- |
-| Complete target qualification and approved final machine inputs | Pending engine approval; latest reports have no unknown files or cleanup items |
-| Final tested engine/toolchain, signed adoption, and standing policy | Pending |
+| Complete target qualification and approved final machine inputs | Candidate audits have zero unresolved content; engine and standing authority remain pending |
+| Final tested engine/toolchain, protected enrollment, and signed standing policy | Enrollment complete; promotion and policy pending |
 | Controlled failed pilot replacement with automatic local recovery | Pending; synthetic transaction tests are component evidence only |
 | Successful unattended replacement with changed base packages | Pending |
 | Completed supervised cutover and clean live verification of all three targets | Complete; private controller and dom0 records hold exact evidence |
 | Identity and retained-state preservation; excluded workloads unchanged | Complete for the three selected no-application VMs |
 
 A same-release reinstall or a synthetic test does not satisfy the unattended
-update row. If no newer qualified package set exists after adoption, keep that
+update row. If no newer qualified package set exists after activation, keep that
 row pending.
 
 Physical dom0 reboot tests remain deferred. Keep routers and controllers

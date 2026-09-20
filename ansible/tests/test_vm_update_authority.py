@@ -330,6 +330,66 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                     m.vm_update_release_import(operation)
                 self.assertEqual(json.loads(record_path.read_text()), record)
 
+    def test_replacement_readiness_requires_two_complete_native_tests_and_current_candidate(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operation, policy, release = self.release_fixture(root / 'discovery')
+            (root / 'executor').mkdir()
+            repo = Path(__file__).resolve().parents[2]
+            candidate = json.loads((root / 'discovery/builds' / operation / 'candidate.json').read_text())
+            candidate_sha256 = m.inventory_digest(candidate)
+            helper = m.sha256_bytes(m.read_regular(repo / 'ansible/roles/vm-update-recovery/files/vm-update-transaction'))
+            service = m.sha256_bytes(m.read_regular(repo / 'ansible/roles/vm-update-recovery/files/klokast-vm-update-recovery.openrc'))
+            harness = m.sha256_bytes(m.read_regular(repo / 'ansible/roles/vm-update-recovery/files/vm-update-recovery-test'))
+            operations = {'k001': '1' * 24, 'k002': '2' * 24}
+            observed = {}
+            for box, test_operation in operations.items():
+                observed[box] = {
+                    'result': {'kind': 'klokast.vm-recovery-test.v1', 'operation_id': test_operation,
+                               'candidate_id': operation, 'candidate_sha256': candidate_sha256,
+                               'success': True, 'production_replacement': False,
+                               'watchdog_tested': True, 'process_restart_tested': True,
+                               'controller_loss_tested': True, 'generation_chain_tested': True,
+                               'runtime_reconciliation_tested': True, 'transaction_sha256': helper,
+                               'harness_sha256': harness,
+                               'tests': [{'stage': stage} for stage in
+                                         ('watchdog-expiry', 'controller-loss', 'generation-chain')]},
+                    'helper_sha256': helper, 'service_sha256': service}
+            def remote(box, test_operation):
+                self.assertEqual(test_operation, operations[box])
+                return observed[box]
+            with patch.object(m, 'VM_UPDATE_DISCOVERY', root / 'discovery'), \
+                    patch.object(m, 'VM_UPDATE_ROOT', root / 'executor'), \
+                    patch.object(m, 'REPO_ROOT', repo), \
+                    patch.object(m, 'vm_update_policy_current', return_value=policy), \
+                    patch.object(m, 'vm_update_pause_state', return_value=False), \
+                    patch.object(m, 'vm_update_release_evidence', return_value={'candidate_sha256': candidate_sha256}), \
+                    patch.object(m, 'vm_update_recovery_evidence', side_effect=remote), \
+                    patch.object(m, 'require_root_active'), patch.object(m, 'require_self_match'), \
+                    patch.object(m, 'append_audit'), redirect_stdout(io.StringIO()):
+                observed['k002']['result']['watchdog_tested'] = False
+                with self.assertRaisesRegex(m.ApplyError, 'does not prove'):
+                    m.vm_update_policy_ready(*operations.values())
+                self.assertFalse((root / 'executor/replacement-ready.json').exists())
+                observed['k002']['result']['watchdog_tested'] = True
+                m.vm_update_policy_ready(*operations.values())
+                self.assertTrue(m.vm_update_replacement_readiness(policy))
+                self.assertIn(root / 'executor/replacement-ready.json', m.vm_update_recovery_paths())
+                pointer = root / 'discovery/automatic.json'
+                value = json.loads(pointer.read_text())
+                value['operation_id'] = '3' * 24
+                pointer.write_text(m.canonical(value) + '\n')
+                self.assertFalse(m.vm_update_replacement_readiness(policy))
+
+    def test_replacement_readiness_cli_requires_exact_test_ids(self):
+        m = self.m
+        with patch.object(m, 'vm_update_policy_ready') as ready, redirect_stdout(io.StringIO()):
+            self.assertEqual(m.main(['vm-update-policy', 'ready', '--k001-test-operation-id', '1' * 24]), 1)
+            self.assertEqual(m.main(['vm-update-policy', 'ready', '--k001-test-operation-id', '1' * 24,
+                                     '--k002-test-operation-id', '2' * 24, '--plan', 'unexpected']), 1)
+            ready.assert_not_called()
+
     def test_protected_release_rejects_wrong_policy_and_transfer(self):
         m = self.m
         with tempfile.TemporaryDirectory() as temporary:

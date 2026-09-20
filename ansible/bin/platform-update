@@ -1396,10 +1396,12 @@ def main(argv=None):
     adopt_reconcile = adoption.add_parser('reconcile', help='record an already adopted dom0 generation after controller interruption')
     adopt_reconcile.add_argument('--nonce', required=True)
     policy_parser = sub.add_parser("policy", help="prepare, activate, or validate the signed standing policy")
-    policy_parser.add_argument("action", choices=("prepare", "activate", "status"))
+    policy_parser.add_argument("action", choices=("prepare", "activate", "ready", "status"))
     evidence_names = ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir")
     for name in (*evidence_names, "approval-intent", "approval-signature", "signer-id"):
         policy_parser.add_argument("--" + name)
+    for box in ('k001', 'k002'):
+        policy_parser.add_argument('--' + box + '-test-operation-id')
     sub.add_parser("pause", help="restrict scheduled VM mutations without expanding authority")
     sub.add_parser("resume", help="revalidate the standing policy before removing the local pause")
     prepare_parser = sub.add_parser("prepare", help="construct an isolated candidate; does not accept or deploy it")
@@ -1524,7 +1526,8 @@ def main(argv=None):
             if args.command in {"pause", "resume"}:
                 helper += ["vm-update-policy", args.command]
             elif args.action == "activate":
-                if any(getattr(args, name.replace("-", "_")) for name in evidence_names):
+                if (any(getattr(args, name.replace("-", "_")) for name in evidence_names) or
+                        args.k001_test_operation_id or args.k002_test_operation_id):
                     raise UpdateError("activation accepts only the prepared signed intent")
                 helper += ["execute"]
                 for name in ("approval-intent", "approval-signature", "signer-id"):
@@ -1532,8 +1535,18 @@ def main(argv=None):
                     if not value:
                         raise UpdateError("activation requires the intent, signature, and signer ID")
                     helper += ["--" + name, value]
+            elif args.action == 'ready':
+                if (any(getattr(args, name.replace('-', '_')) for name in evidence_names) or
+                        any(getattr(args, name.replace('-', '_')) for name in
+                            ('approval-intent', 'approval-signature', 'signer-id')) or
+                        not args.k001_test_operation_id or not args.k002_test_operation_id):
+                    raise UpdateError('replacement readiness requires only two native test operation IDs')
+                helper += ['vm-update-policy', 'ready', '--k001-test-operation-id',
+                           args.k001_test_operation_id, '--k002-test-operation-id',
+                           args.k002_test_operation_id]
             else:
-                if any(getattr(args, name) for name in ("approval_intent", "approval_signature", "signer_id")):
+                if (any(getattr(args, name) for name in ("approval_intent", "approval_signature", "signer_id")) or
+                        args.k001_test_operation_id or args.k002_test_operation_id):
                     raise UpdateError("policy preparation and status do not accept signature inputs")
                 helper += ["vm-update-policy", args.action]
                 for name in evidence_names:
