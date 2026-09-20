@@ -132,6 +132,30 @@ class Transactions(unittest.TestCase):
         self.request.update(kind='klokast.vm-switch.v2', controller_timeout_seconds=90)
         (self.work / 'request.json').write_text(json.dumps(self.request))
 
+    def test_instance_budgets_survive_restart_and_bound_recovery(self):
+        self.request.update(kind='klokast.vm-switch.v3', controller_timeout_seconds=90,
+                            replacement_seconds=600, recovery_seconds=120)
+        t.store(self.work / 'request.json', self.request)
+        tx = self.tx(); tx.arm()
+        self.assertEqual(tx.journal['deadline'], self.now + 600)
+        self.assertEqual(self.tx().journal['recovery_seconds'], 120)
+        self.now += 30
+        self.tx().step('heartbeat')
+        self.assertEqual(self.tx().journal['deadline'], 10600)
+        tx = self.tx()
+        tx.record('recovering', recovery_started_at=self.now - 120)
+        with self.assertRaisesRegex(t.Refused, 'recorded budget'):
+            self.tx().recover()
+        self.assertEqual(self.tx().journal['stage'], 'recovery-failed')
+
+    def test_budgets_are_closed_positive_whole_minutes(self):
+        for seconds in (0, -1, True, 61, 86460):
+            self.request.update(kind='klokast.vm-switch.v3', controller_timeout_seconds=90,
+                                replacement_seconds=seconds, recovery_seconds=60)
+            t.store(self.work / 'request.json', self.request)
+            with self.subTest(seconds=seconds), self.assertRaises(t.Refused):
+                self.tx()
+
     def test_controller_heartbeat_never_extends_the_replacement_deadline(self):
         self.liveness_request()
         tx = self.tx(); tx.arm()
@@ -647,7 +671,7 @@ class Transactions(unittest.TestCase):
         self.backend.alive = False
         with self.assertRaisesRegex(t.Refused, 'not running'): tx.step('stop')
         self.backend.alive = True; self.now += 1800
-        with self.assertRaisesRegex(t.Refused, '30 minutes'): self.tx().step('stop')
+        with self.assertRaisesRegex(t.Refused, 'recorded budget'): self.tx().step('stop')
         self.backend.bad_uuid = True
         with self.assertRaisesRegex(t.Refused, 'identity changed'): self.tx().recover()
         self.assertEqual(self.backend.running, 'old')
@@ -681,7 +705,7 @@ class Transactions(unittest.TestCase):
 
     def test_expired_recovery_fails_without_starting_another_guest(self):
         tx = self.boot(); tx.record('recovering', recovery_started_at=self.now - 1800)
-        with self.assertRaisesRegex(t.Refused, '30-minute budget'): self.tx().recover()
+        with self.assertRaisesRegex(t.Refused, 'recorded budget'): self.tx().recover()
         self.assertEqual(self.tx().journal['stage'], 'recovery-failed')
         self.assertNotIn(('start', 'old'), self.backend.calls)
 

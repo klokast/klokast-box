@@ -174,6 +174,12 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     return manifest
 
 
+def build_identity(manifest):
+    """Keep signed index evidence, but compare only inputs that affect output."""
+    return digest({key: value for key, value in manifest.items()
+                   if key not in {'indexes', 'inputs_sha256'}})
+
+
 def verify_inputs(directory, manifest):
     directory = Path(directory)
     fields = {"kind", "engine_commit", "profile", "profile_sha256", "branch", "architecture", "world",

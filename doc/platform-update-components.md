@@ -16,15 +16,15 @@ ansible/bin/platform-update verify
 ansible/bin/platform-check --box BOX --target updates
 ```
 
-The setup playbook creates the discovery directories. After this code is in
-the approved controller engine, use
-`-e '{"platform_update_discovery_scheduled":true}'` to enable two OS cron entries.
-The default leaves the schedules disabled. Discovery runs daily at 00:10 UTC.
-Evidence verification runs hourly at minute 20. Commands have time limits.
-Enabling these schedules also starts and enables the controller's OS `crond`
-service. Disabling them removes only these two jobs; it does not stop the
-shared OS cron service.
-There is no replacement schedule or new daemon.
+The setup playbook creates the discovery directories and reads the verified
+Instance schedule. It removes the previous scan and hourly verification jobs.
+The daily job scans, verifies and prepares at the Instance check time. The
+replacement job stays absent until activation and recovery qualification pass.
+The current replacement executor is unavailable. See the
+[daily schedule](platform-updates.md#daily-checks-and-schedule) for limits and
+status. Convergence starts the existing OS cron service when Instance intent
+is enabled; disabling update intent does not stop that shared service.
+There is no new daemon.
 Only the explicitly active controller can run discovery. The existing
 `platform-check-remote` dispatcher can request the `updates` health target.
 
@@ -287,8 +287,8 @@ missing datasets, stopped VMs, stale evidence, and unchanged discovery files.
 
 The controller retains the reports under
 `/var/lib/klokast/updates/discovery/scan-validation-5b2f4a8.json` and
-`retention-validation-5b2f4a8.json`. Daily discovery and hourly evidence checks
-are enabled. No production adoption, replacement, or standing-policy activation
+`retention-validation-5b2f4a8.json`. At that historical validation, daily discovery and hourly evidence checks
+were enabled. The Instance schedule now replaces those entries at convergence. No production adoption, replacement, or standing-policy activation
 occurred. Stopped guests and application containers stayed stopped.
 
 After a signed engine promotion, old installed wrappers can prevent the normal
@@ -905,6 +905,13 @@ A permanent daemon is not added. Recovery completes a pending graceful old-VM
 shutdown before restarting that VM. It never force-stops old writers or treats
 a guest with an outstanding shutdown request as recovered.
 
+The `klokast.vm-switch.v3` request adds positive whole-minute replacement and
+recovery budgets to the immutable request. Journal validation binds recovery
+time to that request. Lock waits, watchdog expiry and recovery use these
+budgets. Historical v1 and v2 records retain their 30-minute limits. The v3
+contract has unit tests; production request staging and native qualification
+remain part of the recurring executor work.
+
 The versioned `klokast.vm-switch.v2` request also requires a fixed 90-second
 controller-liveness limit. Its root-only `heartbeat` operation records dom0
 time. The controller executor must send heartbeats every 15 seconds during
@@ -1009,8 +1016,9 @@ installed Alpine signing keys, native index signature verification, and native
 signing keys. It does not change the controller package database. It reads
 bounded APK v2 index records without extracting archive paths. Multiple package
 versions use native APK comparison. Unknown package
-formats, conflicting identities, missing packages, failed signatures, failed
-security downloads, and old evidence produce unknown or blocked results.
+formats, conflicting identities, missing packages, failed signatures, and old evidence produce unknown or blocked results. Security download or
+parsing failures leave vulnerability information unavailable and do not block
+signed package selection.
 
 `packages-current` applies only to the package comparison. It does not prove
 application health, matching boot artifacts, approved configuration, adopted
@@ -1018,9 +1026,11 @@ storage, or permission to replace a VM. Guest template markers are evidence
 only; they cannot establish accepted release authority.
 
 Automatic branch selection considers only the adjacent stable Alpine branch
-from current release metadata. It requires a published x86_64 release and
-unexpired `main` and `community` support. An expired source branch does not
-block selection. The selected branch is an input hint: the template freezer
+from current release metadata. It requires a published x86_64 release,
+unexpired target `main` and `community` support, and the Instance delay after
+the first stable release. Missing or invalid first-release dates defer the
+branch. An expired source branch does not block current-branch package updates.
+The full delay remains in force during a support gap, which discovery reports. The selected branch is an input hint: the template freezer
 must still verify signed indexes and resolve the complete package set.
 
 ## Controlled DMZ app retirement

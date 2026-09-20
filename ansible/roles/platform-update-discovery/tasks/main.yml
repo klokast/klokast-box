@@ -36,31 +36,56 @@
     - /var/lib/klokast/updates/discovery/config-audits
     - /var/cache/klokast/updates
 
-- name: Schedule bounded daily VM discovery with the OS cron facility
-  ansible.builtin.cron:
-    state: "{{ 'present' if platform_update_discovery_scheduled | default(false) | bool else 'absent' }}"
-    name: klokast-vm-update-discovery
-    user: smith
-    minute: "10"
-    hour: "0"
-    job: >-
-      /usr/bin/timeout 1500 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update scan
-      > /var/lib/klokast/updates/discovery/cron-scan.log 2>&1
+- name: Read schedule from the verified Instance
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/ksa-apply, vm-update-policy, schedule-source]
+  register: platform_update_schedule_source
+  changed_when: false
+  no_log: true
 
-- name: Schedule bounded hourly update evidence verification
-  ansible.builtin.cron:
-    state: "{{ 'present' if platform_update_discovery_scheduled | default(false) | bool else 'absent' }}"
-    name: klokast-vm-update-verification
-    user: smith
-    minute: "20"
-    hour: "*"
-    job: >-
-      /usr/bin/timeout 120 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update verify
-      > /var/lib/klokast/updates/discovery/cron-verify.log 2>&1
+- name: Require the closed Instance schedule projection
+  ansible.builtin.assert:
+    that:
+      - (platform_update_schedule_source.stdout | from_json).kind == 'klokast.vm-update-schedule.v1'
+  no_log: true
 
-- name: Enable the controller OS cron service for scheduled evidence collection
+- name: Use only the verified Instance timing and activation state
+  ansible.builtin.set_fact:
+    platform_update_schedule: "{{ platform_update_schedule_source.stdout | from_json }}"
+  no_log: true
+
+- name: Remove the obsolete discovery and hourly verification entries
+  ansible.builtin.cron:
+    state: absent
+    name: "{{ item }}"
+    user: smith
+  loop: [klokast-vm-update-discovery, klokast-vm-update-verification]
+
+- name: Schedule daily scan, verification and preparation
+  ansible.builtin.cron:
+    state: "{{ 'present' if platform_update_schedule.policy and platform_update_schedule.policy.enabled else 'absent' }}"
+    name: klokast-vm-update-daily
+    user: smith
+    minute: "{{ (platform_update_schedule.policy['check-time'] if platform_update_schedule.policy else '00:10').split(':')[1] | int }}"
+    hour: "{{ (platform_update_schedule.policy['check-time'] if platform_update_schedule.policy else '00:10').split(':')[0] | int }}"
+    job: >-
+      /usr/bin/timeout 7200 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update daily
+      > /var/lib/klokast/updates/discovery/cron-daily.log 2>&1
+
+- name: Schedule replacement only after activation and recovery qualification
+  ansible.builtin.cron:
+    state: "{{ 'present' if platform_update_schedule.replacement_ready else 'absent' }}"
+    name: klokast-vm-update-replacement
+    user: smith
+    minute: "{{ (platform_update_schedule.policy['maintenance-window']['start'] if platform_update_schedule.policy else '02:00').split(':')[1] | int }}"
+    hour: "{{ (platform_update_schedule.policy['maintenance-window']['start'] if platform_update_schedule.policy else '02:00').split(':')[0] | int }}"
+    job: >-
+      /home/smith/src/klokast/klokast-box/ansible/bin/platform-update replace
+      > /var/lib/klokast/updates/discovery/cron-replace.log 2>&1
+
+- name: Enable the controller OS cron service for Instance update intent
   ansible.builtin.service:
     name: crond
     enabled: true
     state: started
-  when: platform_update_discovery_scheduled | default(false) | bool
+  when: platform_update_schedule.policy and platform_update_schedule.policy.enabled

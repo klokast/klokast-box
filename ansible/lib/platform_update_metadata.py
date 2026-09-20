@@ -17,15 +17,27 @@ from platform_updates import UpdateError, branch_number, parse_apk_database, tim
 MAX_DOWNLOAD = 32 * 1024 * 1024
 
 
-def adjacent_stable_branch(current, releases, now):
-    """Select only the next supported stable branch as a build candidate.
+def adjacent_stable_branch(current, releases, now, delay_days=21):
+    """Delay only the first stable release; patches never reset this clock.
 
-    This is a hint from release metadata. collect_branch() and freeze() must
-    still verify the target's signed APK indexes and complete package set.
-    An expired source branch is permitted because updating it is the goal.
+    Incomplete next-branch evidence defers the upgrade. It cannot block
+    signed package updates on the current branch, including during a support gap.
     """
     major, minor = branch_number(current)
-    return supported_stable_branch('v' + str(major) + '.' + str(minor + 1), releases, now)
+    selected = f'v{major}.{minor + 1}'
+    if type(delay_days) is not int or not 0 <= delay_days <= 365:
+        raise UpdateError('branch delay must be between zero and 365 days')
+    try:
+        if supported_stable_branch(selected, releases, now) is None:
+            return None
+        entry = next(row for row in releases['release_branches'] if row['rel_branch'] == selected)
+        first = [row for row in entry['releases'] if row.get('version') == selected[1:] + '.0']
+        if len(first) != 1 or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', first[0]['date']):
+            return None
+        released = dt.datetime.combine(dt.date.fromisoformat(first[0]['date']), dt.time(), dt.timezone.utc)
+        return selected if now >= released + dt.timedelta(days=delay_days) else None
+    except (UpdateError, KeyError, TypeError, ValueError, StopIteration):
+        return None
 
 
 def supported_stable_branch(selected, releases, now):
@@ -117,10 +129,11 @@ def collect_branch(branch, cache_root, profile, now):
     # A new empty cache prevents a network failure from reusing an old index.
     # This root is not a guest filesystem and no package scripts are executed.
     try:
-        output["releases"], output["inputs_sha256"]["releases"] = fetch_json(profile["release_metadata"])
-        branches = output["releases"].get("release_branches")
-        if not isinstance(branches, list) or not any(v.get("rel_branch") == branch for v in branches):
-            raise UpdateError("installed branch is absent from official release metadata")
+        try:
+            output["releases"], output["inputs_sha256"]["releases"] = fetch_json(profile["release_metadata"])
+        except (UpdateError, OSError, ValueError):
+            output["releases"] = {}
+            output["release_metadata_unavailable"] = True
         for repository in profile["repositories"]:
             with tempfile.TemporaryDirectory(prefix="index-", dir=cache_root) as temporary:
                 root = Path(temporary)
@@ -156,11 +169,14 @@ def collect_branch(branch, cache_root, profile, now):
                     # No archive paths are extracted to the controller filesystem.
                     output["indexes"][repository] = parse_apk_database(stream.extractfile(members[0]).read().decode(), compare_versions)
                 output["inputs_sha256"][repository + ":index"] = hashlib.sha256(archive.read_bytes()).hexdigest()
-            security, checksum = fetch_json(f"{profile['security_origin']}/{branch}/{repository}.json")
-            if security.get("distroversion") != branch or security.get("reponame") != repository or not isinstance(security.get("packages"), list) or profile["architecture"] not in security.get("archs", []):
-                raise UpdateError("security metadata identifies a different branch, repository, or architecture")
-            output["security"][repository] = security
-            output["inputs_sha256"][repository + ":security"] = checksum
+            try:
+                security, checksum = fetch_json(f"{profile['security_origin']}/{branch}/{repository}.json")
+                if security.get("distroversion") != branch or security.get("reponame") != repository or not isinstance(security.get("packages"), list) or profile["architecture"] not in security.get("archs", []):
+                    raise UpdateError("security metadata identifies a different branch, repository, or architecture")
+                output["security"][repository] = security
+                output["inputs_sha256"][repository + ":security"] = checksum
+            except (UpdateError, OSError, ValueError, TypeError):
+                output.setdefault("security_unavailable", []).append(repository)
         output["signature_verified"] = True
     except (UpdateError, OSError, ValueError, tarfile.TarError, UnicodeError) as error:
         output["error"] = str(error)

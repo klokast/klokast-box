@@ -85,14 +85,20 @@ one-time cutovers. It does not gate the supervised commands below.
    Verify management identity, ownership, storage, frozen packages, rootless
    Podman, generated firewall rules, and allowed and denied network paths.
    Persist acceptance on dom0 before removing the fence.
-4. **Add the unattended loop.** Select adjacent explicit stable Alpine branches
-   under current policy. Resolve complete signed package sets; never install
-   from `latest-stable`. Build exact inputs once and transfer identical verified
-   artifacts to each selected box. Skip unchanged inputs. Keep the template
-   fixed through rollout. Discover at 00:10 UTC, prepare at 00:40,
-   replace from 02:00, and verify hourly. Replace one VM at a time; permit no
-   new start after 03:00. Use a 30-minute replacement budget and a separate
-   30-minute recovery budget. Necessary recovery may continue past 04:00.
+4. **Complete the unattended loop.** The Instance now owns the daily check,
+   branch delay, report age, window, and budgets. `daily` scans, verifies accepted
+   packages, kernel, boot assignments and required services, then prepares and
+   returns without waiting for the window. The initial check is 00:10 UTC.
+   Adjacent branches wait 21 days from their first stable release. Packages and
+   patch releases have no delay. Compare the resolved package closure and build
+   inputs; unrelated signed index changes do not require a rebuild. A partial
+   rollout freezes its release identity, including updates within one branch.
+   Replacement remains unavailable: the supervised adapters accept only the
+   legacy single-disk source. Complete enrollment and recurring backup, restore,
+   qualification and execution for the accepted OS plus retained-data layout.
+   Replace one VM at a time within the Instance window. Initial values permit
+   starts from 02:00 through 03:00 with 30 minutes for replacement and 30 minutes
+   for recovery. Necessary recovery may continue past 04:00.
    Recheck no-app eligibility before every operation. A new workload blocks
    further updates.
    Failure stops rollout; resume requires journal reconciliation and current
@@ -116,6 +122,29 @@ acceptance, preserve production writes, stop rollout, and report a critical
 finding. Keep current and previous successful releases, previous disk
 generations, recovery backups, and audit evidence.
 
+## Daily checks and schedule
+
+Ansible reads `ksa-apply vm-update-policy schedule-source`. This reader checks
+Instance bytes against the sealed engine evidence. The Instance controls the
+cron time; there is no separate scheduling flag. Convergence removes the old
+scan and hourly verification entries. It installs daily scan, verification and
+preparation when Instance update intent is enabled. Replacement cron remains
+absent until the protected executor reports activation and recovery readiness.
+The current executor always reports replacement unavailable.
+
+`verify` reads each protected dom0 assignment and finds the exact release by
+its digest. It validates that release against its complete build evidence,
+then checks fresh guest packages, running kernel, Xen UUID, management,
+rootless Podman, firewall, retained mount and absence of application workloads.
+It reads the assignment again to detect a concurrent change. Report freshness
+uses the Instance limit (initially 30 hours). Qualification and preparation
+continue to use the shorter execution freshness limit. Verification does not
+enroll an assignment or grant replacement authority.
+
+Daily results are `unchanged`, `waiting`, `deferred`, or `failed`. `updated`
+requires a completed unattended replacement and is not yet emitted. No
+successful unattended changed-package update has been established.
+
 ## Current commands
 
 Run as `smith` on the active controller from `~/src/klokast/klokast-box`.
@@ -124,6 +153,7 @@ promotion. Do not change the approved checkout to bypass the private engine lock
 
 ```sh
 ansible/bin/platform-update scan
+ansible/bin/platform-update daily
 ansible/bin/platform-update adopt prepare --box BOX --role dmz
 ansible/bin/platform-update adopt prepare --box BOX --role iot --json
 ansible/bin/platform-update adopt apply --approval-intent INTENT --approval-signature SIGNATURE --signer-id human-platform-apply

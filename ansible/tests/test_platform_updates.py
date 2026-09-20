@@ -162,6 +162,7 @@ class EvidenceTests(unittest.TestCase):
                                                                discovery, metadata,
                                                                discovery, metadata]), \
                     patch.object(cli, 'automatic_selection', return_value=selection), \
+                    patch.object(cli, 'rollout_in_progress', return_value=False), \
                     patch.object(cli, 'reuse_auto_candidate', return_value=None), \
                     patch.object(cli, 'prepare', return_value=built), \
                     patch.object(cli, 'import_protected_release',
@@ -195,6 +196,7 @@ class EvidenceTests(unittest.TestCase):
                 patch.object(cli, 'optional', side_effect=[discovery, metadata,
                                                            discovery, metadata]), \
                 patch.object(cli, 'automatic_selection', return_value=selection), \
+                    patch.object(cli, 'rollout_in_progress', return_value=False), \
                 patch.object(cli, 'reuse_auto_candidate',
                              return_value={'state': 'unchanged', 'operation_id': 'f' * 24,
                                            'release_evidence_sha256': 'e' * 64}) as reuse, \
@@ -209,6 +211,7 @@ class EvidenceTests(unittest.TestCase):
                 patch.object(cli, 'optional', side_effect=[complete, metadata,
                                                            complete, metadata]), \
                 patch.object(cli, 'automatic_selection', return_value=selection), \
+                    patch.object(cli, 'rollout_in_progress', return_value=False), \
                 patch.object(cli, 'reuse_auto_candidate',
                              return_value={'state': 'unchanged', 'operation_id': 'f' * 24,
                                            'release_evidence_sha256': 'e' * 64}) as reuse, \
@@ -256,23 +259,26 @@ class EvidenceTests(unittest.TestCase):
                 path.write_text(json.dumps(value))
             metadata = {'signature_verified': True, 'observed_at': u.timestamp(dt.datetime.now(dt.timezone.utc)),
                         'inputs_sha256': {'main:index': '1' * 64, 'community:index': '2' * 64}}
-            with patch.object(cli, 'STATE', root), patch.object(cli, 'PROFILE', root / 'profile.json'), \
+            with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), patch.object(cli, 'PROFILE', root / 'profile.json'), \
                     patch.object(cli, 'installed_apk_keys', return_value=inputs['keys']), \
-                    patch.object(cli, 'collect_branch', return_value=metadata), \
+                    patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
                     patch.object(cli, 'no_application_release', return_value=release), \
                     patch.object(cli.vm_artifact_transfer, 'verify_published') as verify:
                 result = cli.reuse_auto_candidate(selection)
                 self.assertEqual(result['state'], 'unchanged')
                 self.assertEqual(verify.call_count, 2)
-                changed = copy.deepcopy(metadata)
-                changed['inputs_sha256']['main:index'] = '8' * 64
-                with patch.object(cli, 'collect_branch', return_value=changed):
+                changed = copy.deepcopy(inputs)
+                changed['indexes']['one'] = '8' * 64
+                with patch.object(cli.vm_template_inputs, 'freeze', return_value=changed):
+                    self.assertEqual(cli.reuse_auto_candidate(selection)['state'], 'unchanged')
+                changed['packages'] = [{'name': 'podman', 'version': 'new'}]
+                with patch.object(cli.vm_template_inputs, 'freeze', return_value=changed):
                     self.assertIsNone(cli.reuse_auto_candidate(selection))
-                self.assertEqual(verify.call_count, 2)
+                self.assertEqual(verify.call_count, 4)
                 with patch.object(cli, 'collect_branch', side_effect=AssertionError('frozen rollout fetched new indexes')):
                     frozen = cli.reuse_auto_candidate(selection, frozen=True)
                 self.assertEqual(frozen['operation_id'], operation)
-                self.assertEqual(verify.call_count, 4)
+                self.assertEqual(verify.call_count, 6)
                 with patch.object(cli, 'installed_apk_keys', return_value={'new.pub': '8' * 64}):
                     with self.assertRaisesRegex(u.UpdateError, 'signing keys changed'):
                         cli.reuse_auto_candidate(selection, frozen=True)
@@ -292,7 +298,7 @@ class EvidenceTests(unittest.TestCase):
              'branch_date': '2026-06-09', 'eol_date': '2028-06-01',
              'arches': ['x86_64'], 'repos': [{'name': 'main'},
                                               {'name': 'community', 'eol_date': '2026-11-01'}],
-             'releases': [{'version': '3.24.2', 'date': '2026-09-17'}]}]}
+             'releases': [{'version': '3.24.0', 'date': '2026-06-09'}, {'version': '3.24.2', 'date': '2026-09-17'}]}]}
         self.assertEqual(m.adjacent_stable_branch('v3.23', releases, NOW), 'v3.24')
         self.assertEqual(m.supported_stable_branch('v3.24', releases, NOW), 'v3.24')
         self.assertIsNone(m.adjacent_stable_branch('v3.21', releases, NOW))
@@ -302,12 +308,10 @@ class EvidenceTests(unittest.TestCase):
         self.assertIsNone(m.supported_stable_branch('v3.24', changed, NOW))
         changed = copy.deepcopy(releases)
         changed['release_branches'][1]['arches'] = ['aarch64']
-        with self.assertRaises(u.UpdateError):
-            m.adjacent_stable_branch('v3.23', changed, NOW)
+        self.assertIsNone(m.adjacent_stable_branch('v3.23', changed, NOW))
         changed = copy.deepcopy(releases)
         changed['release_branches'].append(changed['release_branches'][1])
-        with self.assertRaises(u.UpdateError):
-            m.adjacent_stable_branch('v3.23', changed, NOW)
+        self.assertIsNone(m.adjacent_stable_branch('v3.23', changed, NOW))
 
     def test_automatic_selection_uses_only_the_signed_selected_shared_targets(self):
         cli = load_cli()
@@ -315,7 +319,7 @@ class EvidenceTests(unittest.TestCase):
             {'rel_branch': 'v3.24', 'git_branch': '3.24-stable', 'branch_date': '2026-06-09',
              'eol_date': '2028-06-01', 'arches': ['x86_64'],
              'repos': [{'name': 'main'}, {'name': 'community', 'eol_date': '2026-11-01'}],
-             'releases': [{'version': '3.24.2', 'date': '2026-09-17'}]}]}
+             'releases': [{'version': '3.24.0', 'date': '2026-06-09'}, {'version': '3.24.2', 'date': '2026-09-17'}]}]}
         targets = [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
         report = {'complete': True, 'generated_at': u.timestamp(NOW), 'hosts': [
             {'host': box + '-' + role, 'profile': 'shared-alpine-v1', 'branch': 'v3.23',
@@ -325,7 +329,7 @@ class EvidenceTests(unittest.TestCase):
         policy = {'enabled': True, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']},
                   'exclusions': [], 'branch-policy': 'tested-stable',
                   'maintenance-window': {'start': '02:00', 'end': '04:00', 'last-start': '03:00'},
-                  'replacement-minutes': 30, 'recovery-minutes': 30}
+                  'replacement-minutes': 30, 'recovery-minutes': 30, 'branch-delay-days': 21}
         source = {'kind': 'klokast.vm-update-policy-source.v1', 'policy': policy,
                   'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
                   'engine_commit': 'c' * 40, 'private_commit': 'd' * 40,
@@ -344,8 +348,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(cli.automatic_selection(complete, metadata, source, 'c' * 40, NOW), selected)
         expired = copy.deepcopy(metadata)
         expired['v3.24']['releases']['release_branches'][0]['repos'][1]['eol_date'] = '2026-05-01'
-        with self.assertRaisesRegex(u.UpdateError, 'no supported Alpine branch'):
-            cli.automatic_selection(complete, expired, source, 'c' * 40, NOW)
+        self.assertEqual(cli.automatic_selection(complete, expired, source, 'c' * 40, NOW)['branch'], 'v3.24')
         out_of_order = copy.deepcopy(report); out_of_order['hosts'][1]['branch'] = 'v3.24'
         with self.assertRaisesRegex(u.UpdateError, 'rollout order'):
             cli.automatic_selection(out_of_order, metadata, source, 'c' * 40, NOW)
@@ -386,7 +389,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(result["updates"]), 1)
 
     def test_stale_unsigned_missing_and_future_metadata_are_unknown(self):
-        for change in ({"signature_verified":False}, {"observed_at":"2026-09-15T02:00:00Z"}, {"observed_at":"2026-09-18T02:00:00Z"}, {"error":"signature failure"}, {"security":{}}, {"indexes":{}}):
+        for change in ({"signature_verified":False}, {"observed_at":"2026-09-15T02:00:00Z"}, {"observed_at":"2026-09-18T02:00:00Z"}, {"error":"signature failure"}, {"indexes":{}}):
             with self.subTest(change=change):
                 metadata = self.metadata()
                 metadata["v3.23"].update(change)
@@ -406,7 +409,7 @@ class EvidenceTests(unittest.TestCase):
         metadata["v3.23"]["security"]["main"]["packages"] = [{"pkg":{"name":"linux-virt", "secfixes":{"2":["CVE-EXAMPLE"]}}}]
         result = self.assess(metadata=metadata)
         self.assertEqual(result["security_fixes"][0]["issues"], ["CVE-EXAMPLE"])
-        self.assertIn("security.blocked", [v["code"] for v in result["findings"]])
+        self.assertIn("security.available", [v["code"] for v in result["findings"]])
 
     def test_main_support_never_extends_community(self):
         metadata = self.metadata()
@@ -414,7 +417,7 @@ class EvidenceTests(unittest.TestCase):
         branch["repos"][1]["eol_date"] = "2026-06-01"
         result = self.assess(metadata=metadata)
         self.assertEqual(result["support"], {"main":"supported", "community":"unsupported"})
-        self.assertEqual(result["update_status"], "blocked")
+        self.assertEqual(result["update_status"], "updates-available")
         del branch["repos"][1]["eol_date"]
         self.assertEqual(self.assess(metadata=metadata)["support"]["community"], "unknown")
 
@@ -441,7 +444,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_health_thresholds_are_exact_and_do_not_mask_failure(self):
         report = {"kind":u.REPORT_KIND, "generated_at":u.timestamp(NOW - dt.timedelta(hours=30)), "findings":[], "hosts":[], "complete":True}
-        verification = {"generated_at":u.timestamp(NOW - dt.timedelta(hours=2)), "findings":[]}
+        verification = {"generated_at":u.timestamp(NOW - dt.timedelta(hours=30)), "findings":[]}
         self.assertEqual(u.health(report, verification, NOW), [])
         self.assertEqual(len(u.health(report, verification, NOW + dt.timedelta(seconds=1))), 2)
         verification["findings"] = [u.findings("replacement.failed", "failed", "critical")]

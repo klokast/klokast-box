@@ -32,6 +32,7 @@ import vm_retention
 import vm_no_application
 import vm_artifact_transfer
 import vm_config_audit
+import vm_supervised_probe
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -445,10 +446,10 @@ def automatic_selection(discovery, metadata, policy_source, engine_commit, obser
         branches.append(branch)
         release_metadata[branch] = evidence['releases']
     oldest = min(branches, key=vm_template_inputs.branch_number)
-    candidate = adjacent_stable_branch(oldest, release_metadata[oldest], observed_at)
+    candidate = adjacent_stable_branch(oldest, release_metadata[oldest], observed_at, policy["branch-delay-days"])
     if candidate is None:
-        if len(set(branches)) != 1 or supported_stable_branch(oldest, release_metadata[oldest], observed_at) is None:
-            raise UpdateError('no supported Alpine branch is available for the selected guests')
+        if len(set(branches)) != 1:
+            raise UpdateError('branch upgrade is deferred; reconcile the frozen rollout before preparation')
         candidate = oldest
     if any(branch not in {oldest, candidate} for branch in branches):
         raise UpdateError('selected shared VMs are more than one adjacent branch apart')
@@ -574,17 +575,12 @@ def reuse_auto_candidate(selection, *, frozen=False):
             raise UpdateError('rollout signing keys changed; the frozen template is blocked')
         return None
     if not frozen:
-        metadata = collect_branch(selection['branch'], CACHE, profile, now())
-        if (not isinstance(metadata, dict) or metadata.get('signature_verified') is not True or
-                not fresh(metadata.get('observed_at'), now(), VERIFY_AGE)):
-            raise UpdateError('unchanged-template check needs current signed target-branch metadata')
-        index_hashes = metadata.get('inputs_sha256')
-        if (not isinstance(index_hashes, dict) or
-                any(not isinstance(index_hashes.get(repository + ':index'), str)
-                    for repository in profile['repositories'])):
-            raise UpdateError('unchanged-template check lacks signed repository indexes')
-        if sorted(inputs.get('indexes', {}).values()) != sorted(
-                index_hashes[repository + ':index'] for repository in profile['repositories']):
+        # Solve and verify the full package closure. Unrelated index changes
+        # are evidence changes, not a reason to replace every guest.
+        with tempfile.TemporaryDirectory(prefix='resolve-', dir=CACHE) as temporary:
+            resolved = vm_template_inputs.freeze(Path(temporary) / 'inputs', profile,
+                                                   selection['branch'], selection['engine_commit'])
+        if vm_template_inputs.build_identity(inputs) != vm_template_inputs.build_identity(resolved):
             return None
     targets = sorted({host.rsplit('-', 1)[0] for host in selection['targets']})
     transfers = []
@@ -648,6 +644,23 @@ def import_protected_release(operation_id, release_sha256):
     return receipt
 
 
+def rollout_in_progress(selection):
+    """Check release identities, including partial rollouts within one branch."""
+    pointer = optional(STATE / 'automatic.json')
+    if pointer is None:
+        return False
+    accepted = []
+    for host in selection['targets']:
+        box, role = host.rsplit('-', 1)
+        assignment = dom0_assignment_status(box, role)
+        if not assignment.get('managed') or assignment.get('stage') != 'complete':
+            raise UpdateError('reconcile the incomplete assignment before preparing another release: ' + host)
+        if assignment.get('configuration_drift') or assignment.get('autostart_drift'):
+            raise UpdateError('assignment drift blocks automatic preparation: ' + host)
+        accepted.append(assignment.get('release_sha256') == pointer.get('release_sha256'))
+    return any(accepted) and not all(accepted)
+
+
 def prepare_auto_locked():
     """Build once and stage identical checked bytes on selected boxes."""
     if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip():
@@ -657,7 +670,13 @@ def prepare_auto_locked():
     discovery, metadata = optional(STATE / 'current.json'), optional(STATE / 'metadata.json')
     selection = automatic_selection(discovery, metadata, source, commit, now())
     hosts = {item['host']: item for item in discovery['hosts']}
-    frozen = len({hosts[host]['branch'] for host in selection['targets']}) > 1
+    partial = rollout_in_progress(selection)
+    frozen = len({hosts[host]['branch'] for host in selection['targets']}) > 1 or partial
+    if partial:
+        previous = load(STATE / 'automatic.json')['selection']
+        if {k: v for k, v in previous.items() if k != 'branch'} != {k: v for k, v in selection.items() if k != 'branch'}:
+            raise UpdateError('policy or engine changed during rollout; reconciliation is required')
+        selection = previous
     unchanged = reuse_auto_candidate(selection, frozen=frozen)
     if unchanged is not None:
         if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
@@ -873,6 +892,91 @@ def assignment_summary():
     return entries, problems
 
 
+def accepted_release(assignment):
+    """A protected dom0 assignment supplies the digest, never discovery state."""
+    wanted = assignment['release_sha256']
+    if not isinstance(wanted, str) or not re.fullmatch(r'[0-9a-f]{64}', wanted):
+        raise UpdateError('accepted assignment has no release identity')
+    for path in sorted((STATE / 'builds').glob('*/release-evidence.json')):
+        release = load(path)
+        if release.get('release_sha256') != wanted:
+            continue
+        if digest({k: v for k, v in release.items() if k != 'release_sha256'}) != wanted:
+            raise UpdateError('accepted release evidence checksum differs')
+        inputs = load(path.with_name('inputs.json'))
+        candidate = load(path.with_name('candidate.json'))
+        boot = candidate.get('boot_test', {})
+        if release != no_application_release(inputs, candidate, boot.get('openrc_test', {}),
+                                               boot.get('personalized_test', {}),
+                                               boot.get('maintenance_restore', {})):
+            raise UpdateError('accepted release differs from its package and test evidence')
+        return release
+    raise UpdateError('accepted release evidence is missing from the controller')
+
+
+def verify_accepted():
+    """Read fresh boot assignments, packages, running kernel and required services."""
+    require_controller()
+    entries, problems = assignment_summary()
+    for item in entries:
+        host = item['host']
+        assignment = item.get('assignment', {})
+        if (assignment.get('stage') != 'complete' or assignment.get('runtime') != 'running' or
+                assignment.get('configuration_drift') or assignment.get('autostart_drift')):
+            continue
+        try:
+            release = accepted_release(assignment)
+            actual = vm_supervised_probe.probe(host)
+            checks = {
+                'packages': actual['packages_sha256'] == digest(release['packages']),
+                'kernel': actual['kernel'] == release['kernel_release'] and actual['modules_present'] is True,
+                'boot_assignment': actual['xen_uuid'] == assignment['vm_uuid'],
+                'management': actual['hostname'] == host and actual['tailscale_online'] is True,
+                'services': actual['rootless_podman'] is True and actual['firewall_valid'] is True,
+                'retained_data': actual['retained_mounted'] is True and actual['retained_state_private'] is True,
+                'no_application': all(actual[key] == [] for key in ('containers', 'images', 'volumes')),
+            }
+            box, role = host.rsplit('-', 1)
+            if dom0_assignment_status(box, role) != assignment:
+                raise UpdateError('boot assignment changed during verification')
+            item['checks'] = checks
+            for key, passed in checks.items():
+                if not passed:
+                    problems.append(findings('release.' + key, 'Accepted VM failed ' + key + ' verification.', 'critical', host))
+        except (UpdateError, RuntimeError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+            problems.append(findings('release.unverified', str(error), 'critical', host))
+    result = {'kind': 'klokast.vm-update-verification.v1', 'generated_at': timestamp(now()),
+              'verified': not problems, 'assignments': entries, 'findings': problems}
+    write(STATE / 'verification.json', result)
+    return result
+
+
+def schedule_source():
+    value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                                'vm-update-policy', 'schedule-source'], timeout=900),
+                       object_pairs_hook=unique_object)
+    if value.get('kind') != 'klokast.vm-update-schedule.v1':
+        raise UpdateError('schedule reader returned an unsupported contract')
+    return value
+
+
+def daily():
+    """Finish preparation in this invocation; never wait for the window."""
+    source = schedule_source()
+    if not source['policy'] or not source['policy']['enabled']:
+        return {'status': 'deferred', 'reason': 'Instance update policy is disabled'}
+    scan()
+    verification = verify_accepted()
+    if not verification['verified']:
+        return {'status': 'failed', 'reason': 'accepted release verification failed'}
+    if not source['activated']:
+        return {'status': 'deferred', 'reason': 'standing policy requires signed activation'}
+    result = prepare_auto()
+    accepted = all(dom0_assignment_status(box, role).get('release_sha256') == result['release_evidence_sha256']
+                   for box, role in AUTO_TARGETS)
+    return {'status': 'unchanged' if accepted else 'waiting', 'preparation': result}
+
+
 def adoption_prepare(box, role):
     """Account for one target before requesting destructive or signed approval."""
     controller_status = require_controller()
@@ -1038,10 +1142,12 @@ def adoption_prepare(box, role):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser('replace', help='check the protected replacement execution gate')
+    sub.add_parser('daily', help='scan, verify and prepare without waiting for the maintenance window')
     scan_parser = sub.add_parser("scan", help="collect all VM facts and official Alpine metadata")
     scan_parser.add_argument("--existing-map", action="store_true", help="use a fresh controller map; still collect new VM facts")
     for name in ("status", "verify"):
-        sub.add_parser(name, help="report current evidence and overdue work" if name == "status" else "check discovery coverage; accepted-release verification is not installed")
+        sub.add_parser(name, help="report current evidence and overdue work" if name == "status" else "verify accepted packages, kernel, boot assignment and VM services")
     for command_parser in (scan_parser, *[sub.choices[n] for n in ("status", "verify")]):
         command_parser.add_argument("--json", action="store_true")
     retention_parser = sub.add_parser('retention', help='compare checked Instance retention with recent storage discovery; no adoption')
@@ -1080,6 +1186,19 @@ def main(argv=None):
     try:
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
+        if args.command == 'replace':
+            require_controller()
+            schedule_source()
+            raise UpdateError('unattended replacement is unavailable: accepted two-disk enrollment and executor qualification are required')
+        if args.command == 'daily':
+            try:
+                result = daily()
+            except (UpdateError, RuntimeError, OSError, ValueError, KeyError) as error:
+                result = {'status': 'failed', 'reason': str(error)}
+            result.update(kind='klokast.vm-update-daily.v1', generated_at=timestamp(now()))
+            write(STATE / 'daily.json', result)
+            print(canonical(result))
+            return 1 if result['status'] == 'failed' else 0
         if args.command == 'adopt':
             if args.action == 'reconcile':
                 require_controller()
@@ -1198,14 +1317,13 @@ def main(argv=None):
             policy, policy_findings = policy_summary()
             assignments, assignment_findings = assignment_summary()
             if args.command == "verify":
-                # Do not claim a successful release check from a recent scan.
-                verification = {"kind": "klokast.vm-update-verification.v1", "generated_at": timestamp(now()),
-                                "verified": False, "assignments": assignments,
-                                "findings": [findings("release.unverified", "Accepted release records and package verification are not installed.", "critical"),
-                                             *policy_findings, *assignment_findings]}
-                write(STATE / "verification.json", verification)
+                verification = verify_accepted()
+                verification['findings'].extend(policy_findings)
+                write(STATE / 'verification.json', verification)
+            settings = schedule_source()['policy']
             current_findings = health(report, verification, now(),
-                                      selected_hosts={box + '-' + role for box, role in AUTO_TARGETS})
+                                      selected_hosts={box + '-' + role for box, role in AUTO_TARGETS},
+                                      report_max_age_hours=settings['report-max-age-hours'] if settings else 30)
             if args.command == 'status':
                 current_findings.extend(policy_findings)
                 current_findings.extend(assignment_findings)

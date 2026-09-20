@@ -48,7 +48,39 @@ class VMUpdateAuthorityTest(unittest.TestCase):
         self.collected["declared_boxes"] = ["boxa", "boxb", "boxc"]
         self.policy = {"enabled": True, "targets": {"boxa": ["bak", "dmz"], "boxc": ["iot"]}, "exclusions": [],
                        "branch-policy": "tested-stable", "maintenance-window": {"start":"02:00", "end":"04:00", "last-start":"03:00"},
+                       "check-frequency": "daily", "check-time": "00:10", "branch-delay-days": 21, "report-max-age-hours": 30,
                        "replacement-minutes": 30, "recovery-minutes": 30}
+
+    def test_instance_schedule_and_positive_budgets_are_validated(self):
+        valid = dict(self.policy, **{'check-time': '01:20', 'replacement-minutes': 15,
+                                    'recovery-minutes': 45, 'branch-delay-days': 7,
+                                    'report-max-age-hours': 48})
+        self.m.validate_vm_update_policy(valid, self.collected['declared_boxes'])
+        for key, value in (('check-frequency', 'hourly'), ('check-time', '02:00'),
+                           ('check-time', '24:00'), ('replacement-minutes', 0),
+                           ('recovery-minutes', -1), ('report-max-age-hours', True),
+                           ('branch-delay-days', -1), ('replacement-minutes', 31)):
+            with self.subTest(key=key, value=value), self.assertRaises(self.m.ApplyError):
+                self.m.validate_vm_update_policy(dict(self.policy, **{key: value}), self.collected['declared_boxes'])
+
+    def test_schedule_uses_sealed_instance_and_never_implies_activation(self):
+        m = self.m
+        private = {'boxes': {box: {} for box in self.collected['declared_boxes']},
+                   'vm-updates': self.policy}
+        raw = json.dumps(private).encode()
+        source = {'source': 'instance_specification_v1', 'rendered': {
+            'inputs': [{'path': 'klokast-instance.json', 'sha256': m.sha256_bytes(raw)}]}}
+        with patch.object(m, 'require_root_active'), patch.object(m, 'require_self_match'), \
+                patch.object(m, 'inventory_source_status', return_value=source), \
+                patch.object(m, 'read_regular', return_value=raw), \
+                patch.object(m, 'vm_update_policy_current', side_effect=m.ApplyError('not activated')):
+            result = m.vm_update_schedule_source()
+            self.assertEqual(result['policy'], self.policy)
+            self.assertFalse(result['activated'])
+            self.assertFalse(result['replacement_ready'])
+            source['rendered']['inputs'][0]['sha256'] = '0' * 64
+            with self.assertRaisesRegex(m.ApplyError, 'sealed Instance evidence'):
+                m.vm_update_schedule_source()
 
     def intent(self):
         return self.m.vm_update_intent(self.collected, self.policy, "vm-update-test-nonce", self.m.now_utc())

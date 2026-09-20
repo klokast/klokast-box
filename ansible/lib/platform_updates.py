@@ -130,8 +130,8 @@ def findings(code, message, severity="warning", scope="installation"):
 
 def compare_packages(installed, indexes, secdb, compare):
     """compare must call native apk version -t; no custom version algorithm."""
-    if set(indexes) != {"main", "community"} or set(secdb) != {"main", "community"}:
-        raise UpdateError("both repository indexes and security databases are required")
+    if set(indexes) != {"main", "community"}:
+        raise UpdateError("both signed repository indexes are required")
     available = {}
     for repository in ("main", "community"):
         for name, package in indexes[repository].items():
@@ -144,12 +144,20 @@ def compare_packages(installed, indexes, secdb, compare):
             available[name] = {**package, "repository": repository}
     updates, missing, security = [], [], []
     fixes = {}
-    for repository, document in secdb.items():
-        for entry in document["packages"]:
-            package = entry["pkg"]
-            if not isinstance(package.get("secfixes"), dict):
-                raise UpdateError("security metadata has an invalid fix map")
-            fixes[(repository, package["name"])] = package["secfixes"]
+    # Vulnerability data is advisory and cannot control package eligibility.
+    try:
+        for repository, document in secdb.items():
+            for entry in document["packages"]:
+                package = entry["pkg"]
+                if not isinstance(package["secfixes"], dict):
+                    raise ValueError()
+                for version, issues in package["secfixes"].items():
+                    if (not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.~-]*", version) or
+                            not isinstance(issues, list) or any(not isinstance(issue, str) for issue in issues)):
+                        raise ValueError()
+                fixes[(repository, package["name"])] = package["secfixes"]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        fixes = {}
     for name, old in sorted(installed.items()):
         new = available.get(name)
         if new is None:
@@ -161,11 +169,13 @@ def compare_packages(installed, indexes, secdb, compare):
         if order == "<":
             updates.append({"name": name, "installed": old["version"], "available": new["version"], "repository": new["repository"]})
         for version, issues in fixes.get((new["repository"], old["origin"]), {}).items():
-            if compare(old["version"], version) == "<":
-                if not isinstance(issues, list) or any(not isinstance(issue, str) for issue in issues):
-                    raise UpdateError("security metadata has an invalid issue list")
-                security.append({"name": name, "fixed_version": version, "issues": sorted(issues),
-                                 "available": compare(new["version"], version) in ("=", ">")})
+            try:
+                if compare(old["version"], version) == "<":
+                    security.append({"name": name, "fixed_version": version, "issues": sorted(issues),
+                                     "available": compare(new["version"], version) in ("=", ">")})
+            except UpdateError:
+                # A bad advisory version cannot suppress signed package updates.
+                continue
     return updates, missing, security
 
 
@@ -213,7 +223,7 @@ def assess_host(host, fact, metadata, required_packages, compare, now):
         installed = fact["packages"]
         if not installed:
             raise UpdateError("installed package inventory is empty")
-        updates, missing, security = compare_packages(installed, evidence["indexes"], evidence["security"], compare)
+        updates, missing, security = compare_packages(installed, evidence["indexes"], evidence.get("security", {}), compare)
         result.update(updates=updates, missing_packages=missing, security_fixes=security)
         missing_required = sorted(set(required_packages) - set(installed))
         if missing_required:
@@ -221,11 +231,11 @@ def assess_host(host, fact, metadata, required_packages, compare, now):
         if missing:
             add("packages.missing", "Installed packages are absent from the approved repositories.", "critical")
         if security:
-            add("security.blocked", "Security fixes require a tested template and an authorized replacement.", "critical")
-        if support != {"main": "supported", "community": "supported"} or missing or missing_required:
+            add("security.available", "Vulnerability fixes are reported as advisory package information.", "warning")
+        if missing or missing_required:
             result["update_status"] = "blocked"
         else:
-            result["update_status"] = "updates-available" if updates or security else "packages-current"
+            result["update_status"] = "updates-available" if updates else "packages-current"
         result["next_branch"] = next_branch(branch, [entry.get("rel_branch") for entry in evidence["releases"].get("release_branches", [])])
         if result["next_branch"] != branch:
             add("branch.advance", "The next stable branch requires a complete build and compatibility tests.")
@@ -235,15 +245,16 @@ def assess_host(host, fact, metadata, required_packages, compare, now):
     return result
 
 
-def health(report, verification, now, selected_hosts=None):
+def health(report, verification, now, selected_hosts=None, report_max_age_hours=30):
     """Keep full discovery evidence while scoring only the selected release scope."""
     output = []
-    if not report or report.get("kind") != REPORT_KIND or not fresh(report.get("generated_at"), now, DISCOVERY_AGE):
-        output.append(findings("discovery.overdue", "Update discovery is missing or older than 30 hours.", "critical"))
+    limit = dt.timedelta(hours=report_max_age_hours)
+    if not report or report.get("kind") != REPORT_KIND or not fresh(report.get("generated_at"), now, limit):
+        output.append(findings("discovery.overdue", "Update discovery exceeds the Instance report age limit.", "critical"))
     if report and report.get("complete") is not True:
         output.append(findings("discovery.incomplete", "The latest discovery did not complete.", "critical"))
-    if not verification or not fresh(verification.get("generated_at"), now, VERIFY_AGE):
-        output.append(findings("verification.overdue", "Release verification is missing or older than two hours.", "critical"))
+    if not verification or not fresh(verification.get("generated_at"), now, limit):
+        output.append(findings("verification.overdue", "Release verification exceeds the Instance report age limit.", "critical"))
     if report:
         output.extend(report.get("findings", []))
         for host in report.get("hosts", []):
@@ -469,7 +480,7 @@ def transition(journal, stage, now):
     if current not in STAGES or stage not in STAGES or STAGES.index(stage) != STAGES.index(current) + 1:
         raise UpdateError("operation stage cannot be skipped, repeated, or reversed")
     if utc(journal["deadline"]) <= now and STAGES.index(current) < STAGES.index("accepted"):
-        raise UpdateError("replacement exceeded 30 minutes; recover the recorded old release")
+        raise UpdateError("replacement exceeded its recorded deadline; recover the recorded old release")
     if stage == "accepted" and (journal.get("checks_passed") is not True or journal.get("checkpoint_healthy") is not True):
         raise UpdateError("acceptance requires healthy services and a usable retained-data checkpoint")
     return {**journal, "stage": stage, "updated_at": timestamp(now)}

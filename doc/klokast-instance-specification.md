@@ -258,6 +258,10 @@ disables automatic replacement. This is a closed input contract:
   "targets": {"boxa": ["bak", "dmz", "iot"]},
   "exclusions": [],
   "branch-policy": "tested-stable",
+  "check-frequency": "daily",
+  "check-time": "00:10",
+  "branch-delay-days": 21,
+  "report-max-age-hours": 30,
   "maintenance-window": {"start": "02:00", "end": "04:00", "last-start": "03:00"},
   "replacement-minutes": 30,
   "recovery-minutes": 30
@@ -268,9 +272,20 @@ Each target must name a declared box and one or more shared roles. Router,
 controller, dedicated app VM, Debian, and Ubuntu replacement are outside this
 contract. A durable exclusion has `box`, `role`, and a non-empty `reason`.
 It must refer to a declared target. Each target can have only one exclusion.
-The timing values are fixed in this release. All times are UTC. One
-installation can replace only one VM at a time. Necessary recovery can continue
-after the maintenance window closes.
+The Instance owns all timing values. All times are UTC. Checks run daily before
+the same-day maintenance window. Times use `HH:MM`. Replacement and recovery
+budgets must each be positive whole minutes, at most 1440. The last start must
+leave both budgets before the window ends. The branch delay is 0–365 days;
+the maximum scheduled report age is 24–168 hours. The initial values above use
+21 days and 30 hours. Execution still requires fresh qualification and authority.
+One installation can replace only one VM at a time. Necessary recovery can
+continue after the maintenance window closes.
+
+The branch delay starts at the official first stable release, such as 3.24.0.
+A later patch does not restart it. Missing or invalid first-release dates defer
+the next branch. Current-branch packages and patches have no delay, including
+when repository support ends during the wait. Reports show that support gap.
+Security information is advisory and cannot decide update eligibility.
 
 The policy changes the desired-state projection hash. Target and exclusion
 ordering does not change that hash. It does not change the engine lock.

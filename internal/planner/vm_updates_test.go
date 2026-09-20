@@ -24,6 +24,15 @@ func TestUpdateIntentChangesProjectionWithoutChangingEngineLock(t *testing.T) {
 	if ha != hb || ha == old || a.Engine != before.Engine {
 		t.Fatal("policy must change only its deterministic desired-state projection")
 	}
+	p.BranchDelayDays = 21
+	p.CheckTime = "00:10"
+	p.CheckFrequency = "daily"
+	p.ReportMaxAgeHours = 30
+	configured := Resolve(snapshot)
+	configuredHash, _ := ProjectionHash(configured)
+	if configuredHash == ha || configured.VMUpdates.BranchDelayDays != 21 || configured.VMUpdates.CheckTime != "00:10" {
+		t.Fatal("Instance schedule must bind the projection")
+	}
 	p.Enabled = false
 	c := Resolve(snapshot)
 	hc, _ := ProjectionHash(c)

@@ -5128,14 +5128,24 @@ def verification_execute(args, intent):
 
 def validate_vm_update_policy(policy, boxes):
     fields = {"enabled", "targets", "exclusions", "branch-policy", "maintenance-window",
-              "replacement-minutes", "recovery-minutes"}
+              "replacement-minutes", "recovery-minutes", "check-frequency", "check-time",
+              "branch-delay-days", "report-max-age-hours"}
     if not isinstance(policy, dict) or set(policy) != fields or policy["enabled"] is not True:
         raise ApplyError("VM update activation requires one enabled closed Instance policy")
-    if (policy["branch-policy"] != "tested-stable" or
-            policy["maintenance-window"] != {"start": "02:00", "end": "04:00", "last-start": "03:00"} or
-            type(policy["replacement-minutes"]) is not int or policy["replacement-minutes"] != 30 or
-            type(policy["recovery-minutes"]) is not int or policy["recovery-minutes"] != 30):
+    if (policy["branch-policy"] != "tested-stable" or policy["check-frequency"] != "daily" or
+            any(type(policy[key]) is not int or not low <= policy[key] <= high
+                for key, low, high in (("replacement-minutes", 1, 1440), ("recovery-minutes", 1, 1440),
+                                       ("branch-delay-days", 0, 365), ("report-max-age-hours", 24, 168)))):
         raise ApplyError("VM update policy timing or branch selection exceeds supported authority")
+    window = policy["maintenance-window"]
+    if not isinstance(window, dict) or set(window) != {"start", "end", "last-start"}:
+        raise ApplyError("VM update maintenance window is invalid")
+    times = [policy["check-time"], window["start"], window["last-start"], window["end"]]
+    if any(not isinstance(value, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) for value in times):
+        raise ApplyError("VM update times must use UTC HH:MM")
+    check, start, cutoff, end = [int(v[:2]) * 60 + int(v[3:]) for v in times]
+    if not (check < start <= cutoff < end and cutoff + policy["replacement-minutes"] + policy["recovery-minutes"] <= end):
+        raise ApplyError("VM update window must contain replacement and recovery after the last start")
     targets = policy["targets"]
     if not isinstance(targets, dict) or not targets or any(box not in boxes for box in targets):
         raise ApplyError("VM update targets must name declared boxes")
@@ -6030,6 +6040,37 @@ def vm_update_pause_state(activation_sha256):
     return value['activation_sha256'] != activation_sha256
 
 
+def vm_update_schedule_source():
+    """Read timing from sealed Instance intent without granting mutation authority."""
+    require_root_active()
+    require_self_match()
+    source = inventory_source_status()
+    if source.get('source') != 'instance_specification_v1':
+        raise ApplyError('VM update scheduling requires adopted Instance authority')
+    raw = read_regular(INSTANCE / 'klokast-instance.json')
+    if not any(row.get('path') == 'klokast-instance.json' and row.get('sha256') == sha256_bytes(raw)
+               for row in source.get('rendered', {}).get('inputs', [])):
+        raise ApplyError('VM update schedule differs from sealed Instance evidence')
+    private = controller_input_object(raw, 'VM update schedule')
+    policy = private.get('vm-updates')
+    if policy is not None:
+        checked = dict(policy, enabled=True)
+        checked['targets'] = {box: sorted(roles) for box, roles in checked['targets'].items()}
+        checked['exclusions'] = sorted(checked['exclusions'], key=lambda row: (row['box'], row['role']))
+        validate_vm_update_policy(checked, private['boxes'])
+    activated = False
+    if policy and policy['enabled']:
+        try:
+            receipt = vm_update_policy_current()
+            activated = not vm_update_pause_state(receipt['receipt_sha256'])
+        except (ApplyError, OSError):
+            pass
+    if inventory_source_status() != source or read_regular(INSTANCE / 'klokast-instance.json') != raw:
+        raise ApplyError('VM update schedule authority changed during inspection')
+    return {'kind': 'klokast.vm-update-schedule.v1', 'policy': policy,
+            'activated': activated, 'replacement_ready': False}
+
+
 def vm_update_policy_source_status():
     """Expose only the current signed policy projection to the active controller."""
     require_root_active()
@@ -6481,7 +6522,7 @@ def parse_args(argv):
     commands.add_parser("inventory-source-status")
     commands.add_parser("vm-retention-status")
     update_policy_parser = commands.add_parser("vm-update-policy")
-    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "source-status"))
+    update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "source-status", "schedule-source"))
     for name in ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir"):
         update_policy_parser.add_argument("--" + name)
     update_release_parser = commands.add_parser("vm-update-release")
@@ -6551,10 +6592,10 @@ def main(argv=None):
                 if any(not getattr(args, name) for name in names):
                     raise ApplyError("VM update policy preparation requires complete fresh Plan v8 evidence")
                 vm_update_policy_prepare(args)
-            elif args.action == "source-status":
+            elif args.action in {"source-status", "schedule-source"}:
                 if any(getattr(args, name) for name in names):
                     raise ApplyError("VM update policy source reader accepts no caller-selected inputs")
-                print(canonical(vm_update_policy_source_status()))
+                print(canonical(vm_update_policy_source_status() if args.action == "source-status" else vm_update_schedule_source()))
             else:
                 if any(getattr(args, name) for name in names):
                     raise ApplyError("VM update policy control accepts no caller-selected inputs")

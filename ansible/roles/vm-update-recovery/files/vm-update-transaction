@@ -281,12 +281,19 @@ class Transaction:
             fields.update({'qualification_sha256', 'source_evidence_sha256'})
         else:
             fields.update({'new_uuid', 'new_config_sha256', 'new_disks', 'new_artifacts', 'release_sha256'})
-        if isinstance(r, dict) and r.get('kind') == 'klokast.vm-switch.v2':
+        if isinstance(r, dict) and r.get('kind') in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'}:
             fields.add('controller_timeout_seconds')
             if type(r.get('controller_timeout_seconds')) is not int or r['controller_timeout_seconds'] != 90:
                 raise Refused('controller liveness requires the fixed 90-second timeout')
+        if isinstance(r, dict) and r.get('kind') == 'klokast.vm-switch.v3':
+            fields.update({'replacement_seconds', 'recovery_seconds'})
+            if any(type(r.get(key)) is not int or not 60 <= r[key] <= 86400 or r[key] % 60
+                   for key in ('replacement_seconds', 'recovery_seconds')):
+                raise Refused('transaction budgets must be positive whole minutes within one day')
+        self.replacement_seconds = r.get('replacement_seconds', 1800) if isinstance(r, dict) else 1800
+        self.recovery_seconds = r.get('recovery_seconds', 1800) if isinstance(r, dict) else 1800
         if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in
-                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-adoption.v1'} or
+                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-adoption.v1'} or
                 r['operation_id'] != work.name or not OP.fullmatch(work.name) or
                 not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
                 r['role'] not in {'bak', 'dmz', 'iot'} or type(r['autostart']) is not bool or
@@ -333,9 +340,9 @@ class Transaction:
                              self.journal.get('stage') not in PRE_ACCEPT | TERMINAL or
                              type(self.journal.get('deadline')) not in {int, float} or
                              not math.isfinite(self.journal['deadline']) or
-                             self.journal.get('recovery_seconds') != 1800):
+                             self.journal.get('recovery_seconds') != self.recovery_seconds):
             raise Refused('transaction journal differs from its immutable request')
-        if self.journal and r['kind'] == 'klokast.vm-switch.v2':
+        if self.journal and r['kind'] in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'}:
             if (self.journal.get('controller_timeout_seconds') != 90 or
                     type(self.journal.get('controller_seen_at')) not in {int, float} or
                     not math.isfinite(self.journal['controller_seen_at'])):
@@ -515,8 +522,8 @@ class Transaction:
         self.artifacts('old'); self.artifacts('new')
         # The recovery record is durable before autostart or guest state changes.
         observed = self.clock()
-        liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] == 'klokast.vm-switch.v2' else {}
-        self.record('armed', deadline=observed + 1800, recovery_seconds=1800,
+        liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} else {}
+        self.record('armed', deadline=observed + self.replacement_seconds, recovery_seconds=self.recovery_seconds,
                     previous_assignment=previous_assignment, **liveness)
         store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
         watcher = self.native.watch(self.request['operation_id'], self.work)
@@ -559,9 +566,9 @@ class Transaction:
             raise Refused('adoption requires the exact running old guest')
         self.artifacts('old')
         observed = self.clock()
-        fields = {'deadline': observed + 1800, 'recovery_seconds': 1800,
+        fields = {'deadline': observed + self.replacement_seconds, 'recovery_seconds': self.recovery_seconds,
                   'previous_assignment': None}
-        if self.request['kind'] == 'klokast.vm-switch.v2':
+        if self.request['kind'] in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'}:
             fields.update(controller_seen_at=observed, controller_timeout_seconds=90)
         self.record('adopted', **fields)
         store(pointer, {'operation_id': self.request['operation_id'],
@@ -574,11 +581,11 @@ class Transaction:
         if action in {'recover', 'boot-recover'}:
             return self.recover()
         if self.journal['stage'] in PRE_ACCEPT and self.clock() >= self.journal['deadline']:
-            raise Refused('replacement exceeded 30 minutes; local recovery is required')
+            raise Refused('replacement exceeded its recorded budget; local recovery is required')
         if controller_lost(self.journal, self.clock()):
             raise Refused('controller liveness expired; local recovery is required')
         if action == 'heartbeat':
-            if (self.request['kind'] != 'klokast.vm-switch.v2' or
+            if (self.request['kind'] not in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} or
                     self.journal['stage'] not in PRE_ACCEPT - {'recovering'}):
                 raise Refused('heartbeat requires a live pre-acceptance v2 transaction')
             self.record(self.journal['stage'], controller_seen_at=self.clock())
@@ -659,8 +666,8 @@ class Transaction:
         pending_shutdown = self.journal.get('old_shutdown_pending', stage == 'stopping')
         self.record('recovering', recovery_started_at=started, old_shutdown_pending=pending_shutdown)
         try:
-            if self.clock() >= started + 1800:
-                raise Refused('local recovery exceeded its 30-minute budget')
+            if self.clock() >= started + self.recovery_seconds:
+                raise Refused('local recovery exceeded its recorded budget')
             guest = self.guest()
             if guest and guest['config']['c_info']['uuid'] == self.request['new_uuid']:
                 self.native.stop(guest, False)
@@ -685,8 +692,8 @@ class Transaction:
             guest = self.guest()
             if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
                 raise Refused('old guest did not restart with the recorded identity')
-            if self.clock() >= started + 1800:
-                raise Refused('local recovery exceeded its 30-minute budget')
+            if self.clock() >= started + self.recovery_seconds:
+                raise Refused('local recovery exceeded its recorded budget')
             self.record('recovered')
             return 'recovered'
         except Exception:
@@ -985,7 +992,9 @@ def invoke(operation, action):
     if not OP.fullmatch(operation):
         raise Refused('invalid operation ID')
     work = secure(BASE / 'operations' / operation, True)
-    with budget(1800 if action in {'recover', 'boot-recover'} else 180), operation_lock(work):
+    # Read immutable request limits before waiting, then revalidate under lock.
+    limit = Transaction(work).recovery_seconds if action in {'recover', 'boot-recover'} else 180
+    with budget(limit), operation_lock(work):
         tx = Transaction(work)
         if socket.gethostname().split('.')[0] != tx.request['box'] + '-dom0':
             raise Refused('operation belongs to another box')
@@ -1003,7 +1012,7 @@ def invoke(operation, action):
                 raise Refused('transaction is not armed')
             seconds = 180
             if action in {'recover', 'boot-recover'} and tx.journal['stage'] in PRE_ACCEPT:
-                seconds = max(0, tx.journal.get('recovery_started_at', time.time()) + 1800 - time.time())
+                seconds = max(0, tx.journal.get('recovery_started_at', time.time()) + tx.recovery_seconds - time.time())
             elif tx.journal['stage'] in PRE_ACCEPT:
                 seconds = min(seconds, max(0, tx.journal['deadline'] - time.time()))
             with budget(seconds):
@@ -1085,7 +1094,8 @@ def main(argv=None):
     if not args.operation_id:
         raise Refused('operation ID is required')
     if args.action == 'watch':
-        deadline = time.monotonic() + 1800
+        request = Transaction(secure(BASE / 'operations' / args.operation_id, True))
+        deadline = time.monotonic() + request.replacement_seconds
         while True:
             state = invoke(args.operation_id, 'status')
             if not state or state['stage'] in TERMINAL:
