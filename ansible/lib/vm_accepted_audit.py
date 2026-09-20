@@ -5,14 +5,72 @@ cannot supply the expected hashes. Unknown files, services, and data remain
 unresolved in the full no-application report.
 """
 import copy
+import hashlib
+import json
 import re
+import stat
+import tarfile
 import uuid
+from pathlib import Path
 
 from platform_updates import UpdateError, digest, fresh, VERIFY_AGE
 import vm_no_application as noapp
 
 
-def compare(base, source, discovery, now):
+def template_recipe(inputs, request, capsule_path, release):
+    """Reconstruct bounded template files from the accepted, frozen build input."""
+    if (inputs.get('kind') != 'klokast.vm-template-inputs.v1' or
+            inputs.get('inputs_sha256') != digest({k: v for k, v in inputs.items() if k != 'inputs_sha256'}) or
+            inputs.get('inputs_sha256') != release.get('inputs_sha256') or
+            inputs.get('engine_commit') != release.get('engine_commit') or
+            inputs.get('profile') != 'shared-alpine-v1' or
+            request.get('inputs_sha256') != inputs['inputs_sha256']):
+        raise UpdateError('accepted build inputs differ from the protected release')
+    capsule = request.get('capsule', {})
+    path = Path(capsule_path)
+    if (path.is_symlink() or not path.is_file() or
+            path.stat().st_size != capsule.get('bytes') or
+            not 0 < path.stat().st_size <= 2 * 1024 * 1024 * 1024):
+        raise UpdateError('accepted build capsule is absent or changed')
+    checksum = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            checksum.update(chunk)
+    if checksum.hexdigest() != capsule.get('sha256'):
+        raise UpdateError('accepted build capsule checksum differs')
+    names = {'smoke.py': ('/usr/local/libexec/klokast-template-test', 0o700),
+             'retained_data.py': ('/usr/local/libexec/retained_data.py', 0o700)}
+    for name in ('retained_data_test.py', 'vm_app_compatibility.py', 'static_site_test.py',
+                 'vm_personalize.py', 'vm_personalize_test.py', 'personalization-config.json'):
+        names[name] = ('/usr/local/libexec/' + name, 0o600)
+    result = {}
+    with tarfile.open(path, 'r:') as archive:
+        members = archive.getmembers()
+        if len(members) > 600 or len({m.name for m in members}) != len(members):
+            raise UpdateError('accepted build capsule has unsafe member coverage')
+        for name, (target, mode) in names.items():
+            member = archive.getmember(name)
+            if not member.isfile() or not 0 < member.size <= 1024 * 1024:
+                raise UpdateError('accepted build helper is unsafe: ' + name)
+            result[target] = (hashlib.sha256(archive.extractfile(member).read()).hexdigest(), mode)
+        manifest = archive.getmember('inputs.json')
+        if not manifest.isfile() or manifest.size > 1024 * 1024 or json.loads(archive.extractfile(manifest).read()) != inputs:
+            raise UpdateError('accepted capsule and build manifest differ')
+    def fixed(path, content, mode=0o644):
+        result[path] = (hashlib.sha256(content.encode()).hexdigest(), mode)
+    versions = {p['name']: p['version'] for p in inputs['packages']}
+    fixed('/etc/apk/arch', inputs['architecture'] + '\n')
+    fixed('/etc/apk/repositories', '\n'.join(inputs['repositories']) + '\n')
+    fixed('/etc/apk/world', '\n'.join(name + '=' + versions[name] for name in inputs['world']) + '\n')
+    fixed('/etc/conf.d/clock', 'clock="UTC"\ntimezone="UTC"\n')
+    fixed('/etc/mkinitfs/mkinitfs.conf', 'features="base ext4 virtio xen"\n')
+    fixed('/etc/klokast-template.json', json.dumps({
+        'kind': 'klokast.vm-template-marker.v1', 'engine_commit': inputs['engine_commit'],
+        'profile': inputs['profile'], 'inputs_sha256': inputs['inputs_sha256']}, sort_keys=True) + '\n')
+    return result
+
+
+def compare(base, source, discovery, now, recipe=None):
     if (base.get('kind') != 'klokast.vm-no-application-qualification.v1' or
             base.get('report_sha256') != digest({k: v for k, v in base.items() if k != 'report_sha256'}) or
             base.get('discovery_sha256') != digest(discovery)):
@@ -63,6 +121,20 @@ def compare(base, source, discovery, now):
                 record['gid'] in ({0, 42} if path == 'etc/shadow' else {0}) and
                 type(record['mode']) is int and record['mode'] == mode):
             matching.add('/' + path)
+    recipe_matching = set()
+    if recipe is not None:
+        if (not isinstance(recipe, dict) or any(
+                not isinstance(path, str) or not path.startswith('/') or
+                not isinstance(value, tuple) or len(value) != 2 or
+                not isinstance(value[0], str) or not re.fullmatch('[0-9a-f]{64}', value[0]) or
+                value[1] not in (0o600, 0o644, 0o700)
+                for path, value in recipe.items())):
+            raise UpdateError('accepted template recipe evidence is invalid')
+        for path, (checksum, mode) in recipe.items():
+            record = observed['files'].get(path)
+            if (isinstance(record, dict) and set(record) == {'sha256', 'mode', 'uid', 'gid'} and
+                    record == {'sha256': checksum, 'mode': mode, 'uid': 0, 'gid': 0}):
+                recipe_matching.add(path)
     mounts = fact.get('accepted_mount_sources', {})
     devices = mounts.get('devices')
     observed_mounts = fact.get('storage', {}).get('mounts', [])
@@ -92,9 +164,10 @@ def compare(base, source, discovery, now):
     result.pop('report_sha256')
     result.update(kind='klokast.vm-accepted-audit.v1', prior_report_sha256=base['report_sha256'],
                   source_sha256=digest(source), generated_files_match=len(matching) == len(expected),
+                  template_files_match=recipe is not None and len(recipe_matching) == len(recipe),
                   mount_match=bool(mount_match), boot_match=bool(boot_match), packages_match=packages_match)
     for row in result['items']:
-        proven = ((row['area'] in {'file', 'package-difference'} and row['key'] in matching) or
+        proven = ((row['area'] in {'file', 'package-difference'} and row['key'] in matching | recipe_matching) or
                   (row['area'] == 'account' and '/etc/passwd' in matching and '/etc/group' in matching) or
                   (row['area'] == 'mount' and row['key'] in wanted and mount_match) or
                   (row['area'] in {'file', 'boot-file'} and row['key'] in {'/boot/vmlinuz-virt', '/boot/initramfs-virt'} and boot_match))

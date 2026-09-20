@@ -1167,7 +1167,18 @@ def audit_accepted(box, role):
              REPO / 'ansible/playbooks/74-platform-update-source-inspection.yml', '--limit', box + '-dom0',
              '-e', canonical({'update_inspect_box': box, 'update_inspect_role': role})], timeout=600)
     source = load(STATE / 'source-audits' / ('replacement-' + box + '-' + role + '.json'))
-    result = vm_accepted_audit.compare(base, source, discovery, now())
+    release = accepted_release({'release_sha256': source['release']['release_sha256']})
+    if release != source['release']:
+        raise UpdateError('protected accepted source differs from tested build release')
+    builds = [path.parent for path in sorted((STATE / 'builds').glob('*/release-evidence.json'))
+              if load(path).get('release_sha256') == release['release_sha256']]
+    if len(builds) != 1 or not re.fullmatch('[0-9a-f]{24}', builds[0].name):
+        raise UpdateError('accepted build identity is missing or ambiguous')
+    build = builds[0]
+    recipe = vm_accepted_audit.template_recipe(
+        load(build / 'inputs.json'), load(build / 'request.json'),
+        CACHE / ('build-' + build.name) / 'capsule.tar', release)
+    result = vm_accepted_audit.compare(base, source, discovery, now(), recipe)
     if load(STATE / 'current.json') != discovery:
         raise UpdateError('discovery changed during accepted audit; collect new evidence')
     for name, previous in zip(('vm-retention-status', 'registry-source-status'), authority):
