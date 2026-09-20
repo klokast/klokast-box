@@ -326,9 +326,9 @@ path, or private JSON.
 ## Standing VM update authority
 
 The [Instance contract](klokast-instance-specification.md#shared-vm-update-intent)
-defines the narrow update policy. Policy schema validation and signed policy
-activation are implemented. The VM replacement executor is not yet implemented.
-Discovery output cannot authorize VM replacement.
+defines the narrow update policy. Policy schema validation, signed activation,
+and the candidate serial replacement executor are implemented. Discovery
+output alone cannot authorize VM replacement.
 
 The `ksa-apply vm-update-policy prepare` action uses fresh Plan v8 verification
 evidence and current Controller Toolchain v8. It prepares a separate closed
@@ -351,7 +351,7 @@ revocation, or authority changes require new activation. Local pause is a
 root-owned restriction and can still be set when policy validation fails.
 One fixed installation lock at `/var/lib/klokast/updates/operation.lock`
 serializes activation, pause, resume, box provisioning, Platform resource Apply,
-and future replacements. Root owns the file and its parent directory; the
+and replacements. Root owns the file and its parent directory; the
 `smith` group can lock the file but cannot replace it. The lock grants no
 execution authority. Acceptance of a standing policy is not a successful VM update.
 The root-only `ksa-apply vm-update-policy source-status` action returns the
@@ -365,8 +365,8 @@ The discovery collector has inspection authority and writes non-authoritative
 evidence as `smith`. Package indexes and VM facts are untrusted input. Native
 APK verifies repository signatures; index parsing never extracts archive paths
 or runs package scripts. The isolated build VM contains package-script
-execution and has no production identities, secrets, or data. The future
-root executor has VM lifecycle and retained-data authority. It therefore needs
+execution and has no production identities, secrets, or data. The candidate
+replacement executor has VM lifecycle and retained-data authority. It therefore needs
 fixed operations, root-protected records, exclusive execution, fencing, and
 independent local recovery before activation.
 
@@ -383,6 +383,17 @@ revalidates current signed policy and the protected release, then reads only
 the fixed candidate manifest, root image, kernel, and initramfs on that dom0.
 It verifies each file's type, owner, size, and checksum. This read-only check
 does not select or start a guest.
+
+`ksa-apply vm-update-policy ready` accepts the two fixed-box native recovery
+test operation IDs only after signed activation and selection of one tested
+automatic template. Each root-owned test result must prove watchdog expiry,
+controller loss, process restart, generation continuity, and runtime recovery
+with disposable disks. The root action checks the installed helper, OpenRC
+service, and persisted dom0 boot archive against the approved code. It records
+the activation, template, helper hashes, and both test results in protected
+readiness evidence. The schedule and policy readers recheck the current
+template and both dom0 recovery chains before they report replacement ready.
+A changed template or recovery helper closes replacement until new tests pass.
 
 `ksa-apply vm-update-adoption prepare --qualification PATH` accepts only a
 complete v7 report for a selected no-application VM. It binds the current
@@ -408,7 +419,7 @@ activate a policy or an assignment on a standby controller.
 
 The offline retained-data copy library has only guest-local filesystem
 authority. A copy request and its receipt cannot authorize disk attachment,
-writer shutdown, or adoption. The future signed executor must derive and verify
+writer shutdown, or adoption. The signed executor must derive and verify
 its mappings, backup evidence, fencing, and disk identities before it exposes
 data to the disposable networkless guest. Treat filesystem contents as
 untrusted input. Keep that parser and copy boundary out of dom0.
