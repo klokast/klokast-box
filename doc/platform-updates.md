@@ -118,6 +118,13 @@ ansible/bin/platform-update prepare --box BOX --branch v3.24
 ansible/bin/platform-update prepare --auto
 ```
 
+For the one-time supervised cutover, run
+`ansible/bin/platform-update-supervised-backup --box BOX --role ROLE` from a
+clean, pushed candidate checkout on the active controller. It holds the
+installation lock and copies the exact running source disk into an independent
+LVM volume. Its operation ID identifies the private dom0 receipt. A copied
+disk is not yet a verified restore or permission to stop the old guest.
+
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
 root registry and retention readers, verifies that both bind the same authority,
 engine, private commit, and input bytes, and rechecks sources before writing.

@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Make one protected source-disk backup from the active controller.
+
+This one-time operation does not stop or replace the guest. It holds the
+installation lock until the independent copy and read-back finish.
+"""
+
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import pwd
+import secrets
+import socket
+import subprocess
+import sys
+
+REPO = Path(__file__).resolve().parents[2]
+LOCK = Path('/var/lib/klokast/updates/operation.lock')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+
+
+def checked(argv, timeout=30):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, timeout=timeout)
+    if result.returncode:
+        raise RuntimeError('required active-controller or source check failed: ' + argv[0])
+    return result.stdout.strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    if (args.box, args.role) not in TARGETS:
+        raise RuntimeError('supervised backup supports only the three selected no-application guests')
+    if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
+        raise RuntimeError('run this command as smith on the active controller')
+    authority = json.loads(checked(['/usr/local/sbin/klokast-controller-guard',
+                                    '--status', '--json', '--require-active']))
+    if (authority.get('configured') is not True or authority.get('active') is not True or
+            authority.get('hostname') != socket.gethostname().split('.')[0]):
+        raise RuntimeError('this is not the configured active controller')
+    commit = checked(['git', '-C', str(REPO), 'rev-parse', 'HEAD'])
+    upstream = checked(['git', '-C', str(REPO), 'rev-parse', '@{upstream}'])
+    if (commit != upstream or
+            checked(['git', '-C', str(REPO), 'status', '--porcelain', '--untracked-files=all'])):
+        raise RuntimeError('the public checkout must be clean, committed, and pushed')
+    operation = secrets.token_hex(12)
+    with LOCK.open('r+b') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('another Platform mutation holds the installation lock') from error
+        print(f'Supervised backup: {args.box}-{args.role}; operation {operation}', flush=True)
+        command = [
+            'ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
+            str(REPO / 'ansible/playbooks/74-platform-update-supervised-backup.yml'),
+            '--limit', args.box + '-dom0', '-e', json.dumps({
+                'supervised_box': args.box, 'supervised_role': args.role,
+                'supervised_operation_id': operation, 'supervised_engine_commit': commit,
+            }, separators=(',', ':')),
+        ]
+        environment = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg'))
+        result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                env=environment, timeout=2100)
+        if result.returncode:
+            raise RuntimeError('supervised backup failed; inspect its exact operation record before retrying')
+        print(f'Independent backup copied: {args.box}-{args.role}; operation {operation}', flush=True)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print('platform-update-supervised-backup: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

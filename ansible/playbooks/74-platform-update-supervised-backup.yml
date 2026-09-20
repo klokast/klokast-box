@@ -1,0 +1,75 @@
+---
+- name: Make an independent backup of one running shared VM before supervised cutover
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the selected target and operation
+      ansible.builtin.assert:
+        that:
+          - (supervised_box, supervised_role) in [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+          - inventory_hostname == supervised_box ~ '-dom0'
+          - supervised_operation_id is match('^[0-9a-f]{24}$')
+          - supervised_engine_commit is match('^[0-9a-f]{40}$')
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: supervised_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (supervised_controller.stdout | from_json).configured | bool
+          - (supervised_controller.stdout | from_json).active | bool
+
+    - name: Verify persistent dom0 storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create private operation and backup directories
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-supervised/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', "{{ supervised_operation_id }}", "{{ supervised_operation_id }}/code", "{{ supervised_operation_id }}/backup", "{{ supervised_operation_id }}/async"]
+
+    - name: Stage checked backup code outside the diskless archive
+      ansible.builtin.copy:
+        src: "../roles/vm-retained-data/files/{{ item }}"
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [vm_disk_backup.py, vm-supervised-backup]
+
+    - name: Copy and verify the exact running source disk
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '1860'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-backup"
+          - --box
+          - "{{ supervised_box }}"
+          - --role
+          - "{{ supervised_role }}"
+          - --operation-id
+          - "{{ supervised_operation_id }}"
+          - --engine-commit
+          - "{{ supervised_engine_commit }}"
+      async: 1920
+      poll: 15
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/async"
+      register: supervised_backup
+
+    - name: Show the bounded backup receipt
+      ansible.builtin.debug:
+        msg: "{{ supervised_backup.stdout | from_json }}"
