@@ -30,7 +30,8 @@
 
     - name: Read the controller operator crontab after cleanup
       ansible.builtin.command:
-        argv: [crontab, -l, -u, smith]
+        argv: [crontab, -l]
+      become: false
       changed_when: false
       failed_when: update_cron_retire_result.rc not in [0, 1]
       register: update_cron_retire_result
