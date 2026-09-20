@@ -133,6 +133,9 @@ cron time; there is no separate scheduling flag. Convergence removes the old
 scan and hourly verification entries. It installs daily scan, verification and
 preparation when Instance update intent is enabled. Replacement cron remains
 absent until the protected executor reports activation and recovery readiness.
+Before that schedule source is active, the checked
+`74-platform-update-retire-legacy-cron.yml` playbook can remove only the two
+obsolete jobs. It does not create a new schedule.
 The readiness record binds both native tests to the current automatic template.
 The root reader checks the selected build and both installed dom0 recovery
 helpers again whenever it reports readiness. A new build or changed helper

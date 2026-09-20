@@ -1,0 +1,42 @@
+---
+- name: Retire obsolete VM update cron entries before signed daily scheduling
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      become: false
+      changed_when: false
+      register: update_cron_retire_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (update_cron_retire_controller.stdout | from_json).configured | bool
+          - (update_cron_retire_controller.stdout | from_json).active | bool
+
+    - name: Remove the two obsolete VM update jobs
+      ansible.builtin.cron:
+        state: absent
+        name: "{{ item }}"
+        user: smith
+      loop:
+        - klokast-vm-update-discovery
+        - klokast-vm-update-verification
+
+    - name: Read the controller operator crontab after cleanup
+      ansible.builtin.command:
+        argv: [crontab, -l, -u, smith]
+      changed_when: false
+      failed_when: update_cron_retire_result.rc not in [0, 1]
+      register: update_cron_retire_result
+
+    - name: Require both obsolete entries absent
+      ansible.builtin.assert:
+        that:
+          - "'klokast-vm-update-discovery' not in update_cron_retire_result.stdout"
+          - "'klokast-vm-update-verification' not in update_cron_retire_result.stdout"
