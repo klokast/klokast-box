@@ -714,6 +714,97 @@ def unmanaged_source_status(box, role):
         raise UpdateError('installed dom0 source reader returned invalid JSON') from error
 
 
+def dom0_assignment_status(box, role):
+    """Read the protected dom0 selection through its installed validator."""
+    if (box, role) not in AUTO_TARGETS:
+        raise UpdateError('assignment inspection is limited to selected shared VMs')
+    script = 'doas /usr/local/sbin/vm-update-transaction assignment-status --role ' + role + '\n'
+    try:
+        response = subprocess.run(['tailscale', 'ssh', 'neo@' + box + '-dom0', 'sh', '-s'],
+                                  input=script, text=True, capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise UpdateError('protected dom0 assignment reader is unavailable') from error
+    if response.returncode or not 0 < len(response.stdout) <= 65536:
+        raise UpdateError('protected dom0 assignment reader is unavailable or returned unsafe output')
+    try:
+        result = json.loads(response.stdout, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise UpdateError('protected dom0 assignment reader returned invalid JSON') from error
+    basic = {'kind', 'role', 'managed'}
+    common = {'operation_id', 'request_sha256', 'stage', 'selection',
+              'release_sha256', 'engine_commit', 'profile'}
+    selected = {'vm_uuid', 'boot_configuration', 'disks', 'artifacts', 'autostart',
+                'runtime', 'configuration_sha256', 'configuration_drift',
+                'autostart_drift'}
+    if (not isinstance(result, dict) or result.get('kind') != 'klokast.vm-boot-assignment.v1' or
+            result.get('role') != role or type(result.get('managed')) is not bool):
+        raise UpdateError('protected dom0 assignment has an invalid contract')
+    if result['managed'] is False:
+        if set(result) != basic:
+            raise UpdateError('unmanaged dom0 assignment contains unexpected fields')
+        return result
+    stage, choice = result.get('stage'), result.get('selection')
+    if not isinstance(stage, str):
+        raise UpdateError('protected dom0 assignment has an invalid stage')
+    expected_choice = ('accepted' if stage in {'accepted', 'complete'} else
+                       'recorded-previous' if stage == 'recovered' else 'pending')
+    if (stage not in {'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested',
+                      'recovering', 'accepted', 'complete', 'recovered', 'recovery-failed'} or
+            choice != expected_choice or
+            set(result) != basic | common | (selected if choice != 'pending' else set()) or
+            not isinstance(result.get('operation_id'), str) or
+            not re.fullmatch(r'[0-9a-f]{24}', result['operation_id']) or
+            not isinstance(result.get('request_sha256'), str) or
+            not re.fullmatch(r'[0-9a-f]{64}', result['request_sha256']) or
+            not isinstance(result.get('engine_commit'), str) or
+            not re.fullmatch(r'[0-9a-f]{40}', result['engine_commit']) or
+            (result.get('release_sha256') is not None and
+             (not isinstance(result['release_sha256'], str) or
+              not re.fullmatch(r'[0-9a-f]{64}', result['release_sha256']))) or
+            (result.get('profile') is None) != (result.get('release_sha256') is None) or
+            (result.get('profile') is not None and result.get('profile') != 'shared-alpine-v1')):
+        raise UpdateError('protected dom0 assignment has an invalid contract')
+    if choice != 'pending':
+        if (type(result['autostart']) is not bool or
+                (not isinstance(result['runtime'], str) or
+                 result['runtime'] not in {'running', 'stopped'}) or
+                type(result['configuration_drift']) is not bool or
+                type(result['autostart_drift']) is not bool or
+                not isinstance(result['configuration_sha256'], str) or
+                not re.fullmatch(r'[0-9a-f]{64}', result['configuration_sha256']) or
+                not isinstance(result['disks'], dict) or
+                not isinstance(result['artifacts'], dict) or
+                not isinstance(result['boot_configuration'], dict)):
+            raise UpdateError('protected dom0 assignment has incomplete selected disk evidence')
+    return result
+
+
+def assignment_summary():
+    """Report only selected targets; absent and drifting assignments stay critical."""
+    entries, problems = [], []
+    for box, role in AUTO_TARGETS:
+        host = box + '-' + role
+        try:
+            entry = dom0_assignment_status(box, role)
+        except UpdateError as error:
+            entries.append({'host': host, 'status': 'reader-unavailable'})
+            problems.append(findings('assignment.reader-unavailable', str(error), 'critical', host))
+            continue
+        entries.append({'host': host, 'status': 'managed' if entry['managed'] else 'unmanaged',
+                        'assignment': entry})
+        if not entry['managed']:
+            problems.append(findings('assignment.unmanaged', 'Selected VM has no accepted disk assignment.',
+                                     'critical', host))
+        elif entry['stage'] != 'complete' or entry['release_sha256'] is None:
+            problems.append(findings('assignment.incomplete', 'Selected VM has no completed accepted release.',
+                                     'critical', host))
+        elif (entry['configuration_drift'] or entry['autostart_drift'] or
+              entry['runtime'] != 'running'):
+            problems.append(findings('assignment.drift', 'Selected VM differs from its accepted boot assignment.',
+                                     'critical', host))
+    return entries, problems
+
+
 def adoption_prepare(box, role):
     """Account for one target before requesting destructive or signed approval."""
     controller_status = require_controller()
@@ -984,14 +1075,19 @@ def main(argv=None):
             require_controller()
             report = optional(STATE / "current.json")
             verification = optional(STATE / "verification.json")
+            assignments, assignment_findings = assignment_summary()
             if args.command == "verify":
                 # Do not claim a successful release check from a recent scan.
                 verification = {"kind": "klokast.vm-update-verification.v1", "generated_at": timestamp(now()),
-                                "verified": False, "findings": [findings("release.unverified", "Accepted release assignments and a replacement verifier are not installed.", "critical")]}
+                                "verified": False, "assignments": assignments,
+                                "findings": [findings("release.unverified", "Accepted release records and package verification are not installed.", "critical"),
+                                             *assignment_findings]}
                 write(STATE / "verification.json", verification)
             current_findings = health(report, verification, now())
+            if args.command == 'status':
+                current_findings.extend(assignment_findings)
             report = {"kind": "klokast.vm-update-status.v1", "generated_at": timestamp(now()),
-                      "hosts": [], "findings": current_findings}
+                      "hosts": [], "assignments": assignments, "findings": current_findings}
         display(report, args.json)
         return 1 if any(v["severity"] == "critical" for v in report["findings"] + [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
     except (UpdateError, RuntimeError, OSError, ValueError, TypeError, KeyError) as error:

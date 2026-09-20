@@ -5,6 +5,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,54 @@ def load_cli():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_selected_assignment_reader_rejects_unknown_or_conflicting_state(self):
+        cli = load_cli()
+        unmanaged = {'kind': 'klokast.vm-boot-assignment.v1', 'role': 'dmz',
+                     'managed': False}
+        def native(value):
+            return subprocess.CompletedProcess([], 0, json.dumps(value), '')
+        with patch.object(cli.subprocess, 'run', return_value=native(unmanaged)) as command:
+            self.assertEqual(cli.dom0_assignment_status('k001', 'dmz'), unmanaged)
+            self.assertEqual(command.call_args.args[0],
+                             ['tailscale', 'ssh', 'neo@k001-dom0', 'sh', '-s'])
+            self.assertIn('assignment-status --role dmz', command.call_args.kwargs['input'])
+        accepted = dict(unmanaged, managed=True, operation_id='a' * 24,
+                        request_sha256='b' * 64, stage='complete', selection='accepted',
+                        release_sha256='c' * 64, engine_commit='d' * 40,
+                        profile='shared-alpine-v1', vm_uuid='11111111-1111-4111-8111-111111111111',
+                        boot_configuration={'name': 'dmz'}, disks={'root': {}},
+                        artifacts={'kernel': {}}, autostart=True, runtime='running',
+                        configuration_sha256='e' * 64, configuration_drift=False,
+                        autostart_drift=False)
+        with patch.object(cli.subprocess, 'run', return_value=native(accepted)):
+            self.assertEqual(cli.dom0_assignment_status('k001', 'dmz'), accepted)
+        for changed in (
+                dict(accepted, stage='recovered'),
+                dict(accepted, release_sha256=None),
+                dict(accepted, configuration_drift='false'),
+                dict(accepted, command='xl destroy dmz'),
+                dict(unmanaged, release_sha256='c' * 64)):
+            with self.subTest(changed=changed), patch.object(cli.subprocess, 'run',
+                                                            return_value=native(changed)):
+                with self.assertRaises(u.UpdateError):
+                    cli.dom0_assignment_status('k001', 'dmz')
+        with self.assertRaises(u.UpdateError):
+            cli.dom0_assignment_status('k001', 'bak')
+
+    def test_assignment_summary_keeps_missing_and_drifting_targets_critical(self):
+        cli = load_cli()
+        complete = {'managed': True, 'stage': 'complete', 'release_sha256': 'a' * 64,
+                    'configuration_drift': False, 'autostart_drift': False,
+                    'runtime': 'running'}
+        with patch.object(cli, 'dom0_assignment_status', side_effect=[
+                complete, dict(complete, configuration_drift=True), u.UpdateError('reader absent')]):
+            entries, problems = cli.assignment_summary()
+        self.assertEqual([entry['host'] for entry in entries],
+                         ['k001-dmz', 'k002-dmz', 'k002-iot'])
+        self.assertEqual([item['code'] for item in problems],
+                         ['assignment.drift', 'assignment.reader-unavailable'])
+        self.assertTrue(all(item['severity'] == 'critical' for item in problems))
+
     def test_automatic_prepare_transfers_one_exact_candidate_to_other_box(self):
         cli = load_cli()
         commit = 'c' * 40

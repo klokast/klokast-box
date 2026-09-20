@@ -232,8 +232,11 @@ indexes cannot select a new template during that rollout. Changed signing keys
 block it. The controller checks every published artifact on both boxes. Only
 that exact complete build returns `state: unchanged` without a new build or copy.
 This command does not copy production data, assign a candidate, or replace a
-guest. `adopt apply` and `run` require the remaining integration. `status` and `verify` still report
-missing accepted-release verification as a critical finding.
+guest. `adopt apply` and `run` require the remaining integration. `status` and
+`verify` read protected dom0 assignments for the three selected targets. An
+absent reader, pending or missing assignment, or boot drift is critical.
+Accepted-release and package verification still remain unavailable and are
+reported as critical.
 
 Read current qualification counts and cleanup candidates from the active
 controller's protected reports. They are deployment observations, not upstream
