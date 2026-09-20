@@ -48,7 +48,7 @@ class VMUpdateAuthorityTest(unittest.TestCase):
         self.collected["declared_boxes"] = ["boxa", "boxb", "boxc"]
         self.policy = {"enabled": True, "targets": {"boxa": ["bak", "dmz"], "boxc": ["iot"]}, "exclusions": [],
                        "branch-policy": "tested-stable", "maintenance-window": {"start":"02:00", "end":"04:00", "last-start":"03:00"},
-                       "canary-hours": 24, "replacement-minutes": 30, "recovery-minutes": 30}
+                       "replacement-minutes": 30, "recovery-minutes": 30}
 
     def intent(self):
         return self.m.vm_update_intent(self.collected, self.policy, "vm-update-test-nonce", self.m.now_utc())
@@ -62,7 +62,7 @@ class VMUpdateAuthorityTest(unittest.TestCase):
             lambda v: v.update(command="xl destroy bak"),
             lambda v: v.update(executor="shell"),
             lambda v: v["policy"].update(enabled=False),
-            lambda v: v["policy"].update(**{"canary-hours":23}),
+            lambda v: v["policy"].update(**{"canary-hours":24}),
             lambda v: v["policy"].update(**{"replacement-minutes":True}),
             lambda v: v["policy"]["targets"].update(boxa=["ops"]),
             lambda v: v["policy"]["targets"].update(boxa=["router"]),

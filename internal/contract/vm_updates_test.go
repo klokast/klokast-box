@@ -8,7 +8,7 @@ func updateExample() map[string]any {
 		"targets":    map[string]any{"boxa": []string{"bak", "dmz", "iot"}},
 		"exclusions": []any{}, "branch-policy": "tested-stable",
 		"maintenance-window": map[string]any{"start": "02:00", "end": "04:00", "last-start": "03:00"},
-		"canary-hours":       24, "replacement-minutes": 30, "recovery-minutes": 30,
+		"replacement-minutes": 30, "recovery-minutes": 30,
 	}
 }
 
@@ -31,7 +31,7 @@ func TestVMUpdatePolicyRejectsExpandedAuthority(t *testing.T) {
 		{"router", "schema.invalid", func(p map[string]any) { p["targets"] = map[string]any{"boxa": []string{"router"}} }},
 		{"controller", "schema.invalid", func(p map[string]any) { p["targets"] = map[string]any{"boxa": []string{"ops"}} }},
 		{"duplicate-role", "schema.invalid", func(p map[string]any) { p["targets"] = map[string]any{"boxa": []string{"bak", "bak"}} }},
-		{"short-canary", "schema.invalid", func(p map[string]any) { p["canary-hours"] = 23 }},
+		{"obsolete-canary-field", "schema.invalid", func(p map[string]any) { p["canary-hours"] = 24 }},
 		{"moving-branch", "schema.invalid", func(p map[string]any) { p["branch-policy"] = "latest-stable" }},
 		{"late-start", "schema.invalid", func(p map[string]any) { p["maintenance-window"].(map[string]any)["last-start"] = "03:30" }},
 		{"long-replacement", "schema.invalid", func(p map[string]any) { p["replacement-minutes"] = 60 }},

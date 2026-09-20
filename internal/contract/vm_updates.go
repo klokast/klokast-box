@@ -10,7 +10,6 @@ type VMUpdatePolicy struct {
 	Exclusions      []VMUpdateExclusion `json:"exclusions"`
 	BranchPolicy    string              `json:"branch-policy"`
 	Window          VMUpdateWindow      `json:"maintenance-window"`
-	CanaryHours     int                 `json:"canary-hours"`
 	ReplaceMinutes  int                 `json:"replacement-minutes"`
 	RecoveryMinutes int                 `json:"recovery-minutes"`
 }

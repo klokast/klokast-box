@@ -5128,12 +5128,11 @@ def verification_execute(args, intent):
 
 def validate_vm_update_policy(policy, boxes):
     fields = {"enabled", "targets", "exclusions", "branch-policy", "maintenance-window",
-              "canary-hours", "replacement-minutes", "recovery-minutes"}
+              "replacement-minutes", "recovery-minutes"}
     if not isinstance(policy, dict) or set(policy) != fields or policy["enabled"] is not True:
         raise ApplyError("VM update activation requires one enabled closed Instance policy")
     if (policy["branch-policy"] != "tested-stable" or
             policy["maintenance-window"] != {"start": "02:00", "end": "04:00", "last-start": "03:00"} or
-            type(policy["canary-hours"]) is not int or not 24 <= policy["canary-hours"] <= 168 or
             type(policy["replacement-minutes"]) is not int or policy["replacement-minutes"] != 30 or
             type(policy["recovery-minutes"]) is not int or policy["recovery-minutes"] != 30):
         raise ApplyError("VM update policy timing or branch selection exceeds supported authority")

@@ -259,7 +259,6 @@ disables automatic replacement. This is a closed input contract:
   "exclusions": [],
   "branch-policy": "tested-stable",
   "maintenance-window": {"start": "02:00", "end": "04:00", "last-start": "03:00"},
-  "canary-hours": 24,
   "replacement-minutes": 30,
   "recovery-minutes": 30
 }
@@ -269,9 +268,9 @@ Each target must name a declared box and one or more shared roles. Router,
 controller, dedicated app VM, Debian, and Ubuntu replacement are outside this
 contract. A durable exclusion has `box`, `role`, and a non-empty `reason`.
 It must refer to a declared target. Each target can have only one exclusion.
-The canary period can be 24 to 168 hours. Other timing values are fixed in
-this release. All times are UTC. One installation can replace only one VM at
-a time. Necessary recovery can continue after the maintenance window closes.
+The timing values are fixed in this release. All times are UTC. One
+installation can replace only one VM at a time. Necessary recovery can continue
+after the maintenance window closes.
 
 The policy changes the desired-state projection hash. Target and exclusion
 ordering does not change that hash. It does not change the engine lock.

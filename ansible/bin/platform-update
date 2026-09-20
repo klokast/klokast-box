@@ -454,7 +454,7 @@ def automatic_selection(discovery, metadata, policy_source, engine_commit, obser
         raise UpdateError('selected shared VMs are more than one adjacent branch apart')
     advanced = [branch == candidate for branch in branches]
     if advanced != sorted(advanced, reverse=True):
-        raise UpdateError('selected shared VMs advanced outside canary and rollout order')
+        raise UpdateError('selected shared VMs advanced outside rollout order')
     return {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': candidate,
             'build_box': selected[0][0], 'targets': [box + '-' + role for box, role in selected],
             'policy_sha256': policy_source['policy_sha256'],

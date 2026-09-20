@@ -143,7 +143,7 @@ tailscale_persist_paths:
 
 # Keep a running Alpine system on its declared release branch. Using
 # `latest-stable` can move an existing host to a new Alpine release without a
-# reviewed release-upgrade canary.
+# reviewed release upgrade.
 alpine_release_branch: v3.23
 alpine_repositories:
   - "http://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/main"

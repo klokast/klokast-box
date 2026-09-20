@@ -177,7 +177,7 @@ class EvidenceTests(unittest.TestCase):
             self.assertTrue((root / 'transfer-k002.json').is_file())
             self.assertEqual(json.loads((root / 'automatic.json').read_text())['operation_id'], 'f' * 24)
 
-    def test_automatic_prepare_requires_frozen_build_after_canary(self):
+    def test_automatic_prepare_requires_frozen_build_after_rollout_starts(self):
         cli = load_cli()
         selection = {'branch': 'v3.24', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}
         discovery = {'hosts': [
@@ -325,7 +325,7 @@ class EvidenceTests(unittest.TestCase):
         policy = {'enabled': True, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']},
                   'exclusions': [], 'branch-policy': 'tested-stable',
                   'maintenance-window': {'start': '02:00', 'end': '04:00', 'last-start': '03:00'},
-                  'canary-hours': 24, 'replacement-minutes': 30, 'recovery-minutes': 30}
+                  'replacement-minutes': 30, 'recovery-minutes': 30}
         source = {'kind': 'klokast.vm-update-policy-source.v1', 'policy': policy,
                   'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
                   'engine_commit': 'c' * 40, 'private_commit': 'd' * 40,
@@ -335,10 +335,10 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(selected['branch'], 'v3.24')
         self.assertEqual(selected['build_box'], 'k001')
         self.assertEqual(selected['targets'], ['k001-dmz', 'k002-dmz', 'k002-iot'])
-        canary = copy.deepcopy(report); canary['hosts'][0]['branch'] = 'v3.24'
+        first = copy.deepcopy(report); first['hosts'][0]['branch'] = 'v3.24'
         metadata['v3.24'] = copy.deepcopy(metadata['v3.23'])
-        self.assertEqual(cli.automatic_selection(canary, metadata, source, 'c' * 40, NOW), selected)
-        second = copy.deepcopy(canary); second['hosts'][1]['branch'] = 'v3.24'
+        self.assertEqual(cli.automatic_selection(first, metadata, source, 'c' * 40, NOW), selected)
+        second = copy.deepcopy(first); second['hosts'][1]['branch'] = 'v3.24'
         self.assertEqual(cli.automatic_selection(second, metadata, source, 'c' * 40, NOW), selected)
         complete = copy.deepcopy(second); complete['hosts'][2]['branch'] = 'v3.24'
         self.assertEqual(cli.automatic_selection(complete, metadata, source, 'c' * 40, NOW), selected)
@@ -347,9 +347,9 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(u.UpdateError, 'no supported Alpine branch'):
             cli.automatic_selection(complete, expired, source, 'c' * 40, NOW)
         out_of_order = copy.deepcopy(report); out_of_order['hosts'][1]['branch'] = 'v3.24'
-        with self.assertRaisesRegex(u.UpdateError, 'canary and rollout order'):
+        with self.assertRaisesRegex(u.UpdateError, 'rollout order'):
             cli.automatic_selection(out_of_order, metadata, source, 'c' * 40, NOW)
-        too_far = copy.deepcopy(canary); too_far['hosts'][0]['branch'] = 'v3.25'
+        too_far = copy.deepcopy(first); too_far['hosts'][0]['branch'] = 'v3.25'
         metadata['v3.25'] = copy.deepcopy(metadata['v3.23'])
         with self.assertRaisesRegex(u.UpdateError, 'adjacent branch apart'):
             cli.automatic_selection(too_far, metadata, source, 'c' * 40, NOW)

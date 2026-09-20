@@ -13,7 +13,7 @@ func TestUpdateIntentChangesProjectionWithoutChangingEngineLock(t *testing.T) {
 		t.Fatalf("%v %#v", err, report)
 	}
 	before := Resolve(snapshot)
-	p := &contract.VMUpdatePolicy{Enabled: true, Targets: map[string][]string{"boxa": {"iot", "bak"}}, Exclusions: []contract.VMUpdateExclusion{}, CanaryHours: 24}
+	p := &contract.VMUpdatePolicy{Enabled: true, Targets: map[string][]string{"boxa": {"iot", "bak"}}, Exclusions: []contract.VMUpdateExclusion{}}
 	snapshot.Instance.VMUpdates = p
 	a := Resolve(snapshot)
 	p.Targets["boxa"] = []string{"bak", "iot"}

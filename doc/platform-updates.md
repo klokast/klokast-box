@@ -18,8 +18,8 @@ identity, retained mount, firewall, and rootless Podman checks passed. The
 selected guests had no application containers, images, or volumes to migrate.
 The old guest disks remain offline for recovery. Exact operation evidence is
 in the private controller journal and dom0 records. The signed standing
-policy, unattended executor, schedule, and 24-hour canary remain follow-up
-work for recurring updates.
+policy, unattended executor, and schedule remain follow-up work for recurring
+updates. Rollout does not require a canary waiting period.
 
 The unattended release is **not complete**. The discovery, template builder,
 independent backup and isolated restore, retained-data, personalizer, and
@@ -89,13 +89,12 @@ one-time cutovers. It does not gate the supervised commands below.
    under current policy. Resolve complete signed package sets; never install
    from `latest-stable`. Build exact inputs once and transfer identical verified
    artifacts to each selected box. Skip unchanged inputs. Keep the template
-   fixed through canary and rollout. Discover at 00:10 UTC, prepare at 00:40,
+   fixed through rollout. Discover at 00:10 UTC, prepare at 00:40,
    replace from 02:00, and verify hourly. Replace one VM at a time; permit no
    new start after 03:00. Use a 30-minute replacement budget and a separate
    30-minute recovery budget. Necessary recovery may continue past 04:00.
-   Use one qualified canary per distinct template. Require 24 healthy hours
-   before wider deployment. Recheck no-app
-   eligibility before every operation. A new workload blocks further updates.
+   Recheck no-app eligibility before every operation. A new workload blocks
+   further updates.
    Failure stops rollout; resume requires journal reconciliation and current
    authority. Cleanup removes only proven temporary or unreferenced resources.
 5. **Promote and prove production operation.** Commit and push each milestone.
@@ -298,10 +297,10 @@ signed policy through `ksa-apply`, requires the three selected running shared
 VMs to have fresh complete discovery, and selects the supported branch adjacent
 to the oldest guest. When all guests share one supported branch and no adjacent
 branch is available, it checks that branch for signed package changes. Guests
-can differ by one branch only in canary and rollout order.
+can differ by one branch only in rollout order.
 It builds the template once on k001. A completed automatic build has one
 controller pointer. Before rollout, current signed target-branch indexes and
-installed signing keys must match its frozen inputs. After the canary advances,
+installed signing keys must match its frozen inputs. After the first guest advances,
 the pointer and exact artifacts must remain available; changed repository
 indexes cannot select a new template during that rollout. Changed signing keys
 block it. The controller checks every published artifact on both boxes. Only
@@ -342,14 +341,12 @@ serialization and must not run during an update operation.
 | Final tested engine/toolchain, signed adoption, and standing policy | Pending |
 | Controlled failed pilot replacement with automatic local recovery | Pending; synthetic transaction tests are component evidence only |
 | Successful unattended replacement with changed base packages | Pending |
-| Healthy 24-hour canary for the deployed template | Pending |
 | Completed supervised cutover and clean live verification of all three targets | Complete; private controller and dom0 records hold exact evidence |
 | Identity and retained-state preservation; excluded workloads unchanged | Complete for the three selected no-application VMs |
 
 A same-release reinstall or a synthetic test does not satisfy the unattended
 update row. If no newer qualified package set exists after adoption, keep that
-row pending. Do not shorten the canary or replace elapsed healthy time with a
-timestamp in a fixture.
+row pending.
 
 Physical dom0 reboot tests remain deferred. Keep routers and controllers
 running. Test process restart and recovery from persistent journals; report
