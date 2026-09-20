@@ -124,6 +124,24 @@ class MaintenanceSource(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(backup.BackupError): source.verified_restore(*args)
             verified.clear(); verified.update(previous)
 
+    def test_stage_refuses_spliced_restore_identity_before_copy(self):
+        module = load('maintenance_stage_test', ROOT / 'roles/vm-retained-data/files/vm-supervised-stage-dom0')
+        args = SimpleNamespace(box='k002', role='dmz', operation_id='f' * 24, candidate_id='b' * 24)
+        records = {'prepared.json': {}, 'source.json': {}, 'backup/result.json': {'source': {'bytes': 1024}},
+                   'verify/result.json': {'root_uuid': 'verified-root', 'runtime': {'uid': 1000}, 'disk_sha256': 'a' * 64},
+                   'verify/request.json': {'kind': 'klokast.vm-backup-restore.v2', 'root_partition': 0,
+                       'root_uuid': 'different-root', 'runtime': {'uid': 1000}, 'disk_sha256': 'a' * 64, 'disk_bytes': 1024}}
+        def read(path):
+            return records[str(path).split(args.operation_id + '/', 1)[1]]
+        with patch.object(module.os, 'geteuid', return_value=0), \
+                patch.object(module.socket, 'gethostname', return_value='k002-dom0'), \
+                patch.object(backup, 'secure'), patch.object(module, 'read', side_effect=read), \
+                patch.object(source, 'verified_restore', return_value={'partition': 0, 'layout': 'retained-data'}), \
+                patch.object(source, 'read', return_value={}), patch.object(source, 'same_generation'), \
+                patch.object(module.data, 'validate_backup'), patch.object(module.subprocess, 'run') as run:
+            with self.assertRaisesRegex(backup.BackupError, 'verified identity'): module.stage(args)
+            run.assert_not_called()
+
     def generation_records(self):
         prepared = {'operation_id': self.operation, 'box': 'boxa', 'role': 'dmz',
                     'root': dict(self.disks[self.os_path], path=self.os_path),
