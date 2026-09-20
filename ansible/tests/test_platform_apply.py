@@ -467,12 +467,12 @@ class PlatformApplyTest(unittest.TestCase):
             self.assertIn(f"name: {name}_source", OPS_VERIFY)
             self.assertIn(f"name: {name}_installed", OPS_VERIFY)
 
-    def test_root_apply_does_not_load_checkout_python(self):
+    def test_root_apply_does_not_load_unchecked_checkout_python(self):
         source = KSA_APPLY.read_text(encoding="utf-8")
         self.assertNotIn("SourceFileLoader", source)
-        self.assertNotIn("importlib", source)
         self.assertNotIn("PLATFORM_PLAN", source)
         self.assertNotIn("load_plan_module", source)
+        self.assertIn("approved VM release validator or engine checkout changed", source)
         self.assertIn("def verify_build_directory", source)
         self.assertIn("rerun = run_plan_as_controller(command)", source)
 

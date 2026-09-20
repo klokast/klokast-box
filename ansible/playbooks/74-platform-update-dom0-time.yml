@@ -25,6 +25,49 @@
           - (update_time_controller.stdout | from_json).configured | bool
           - (update_time_controller.stdout | from_json).active | bool
 
+    - name: Limit the optional live clocksource trial to k001
+      ansible.builtin.assert:
+        that:
+          - (update_time_clocksource | default('keep')) in ['keep', 'xen']
+          - (update_time_clocksource | default('keep')) != 'xen' or update_time_box == 'k001'
+
+    - name: Read available dom0 clocksources
+      ansible.builtin.command:
+        argv: [cat, /sys/devices/system/clocksource/clocksource0/available_clocksource]
+      changed_when: false
+      register: update_time_available_clocksources
+
+    - name: Require the Xen clocksource for the live trial
+      ansible.builtin.assert:
+        that:
+          - "'xen' in update_time_available_clocksources.stdout.split()"
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
+    - name: Read the current dom0 clocksource
+      ansible.builtin.command:
+        argv: [cat, /sys/devices/system/clocksource/clocksource0/current_clocksource]
+      changed_when: false
+      register: update_time_current_clocksource
+
+    - name: Select the Xen clocksource for a reversible live trial
+      ansible.builtin.shell: >-
+        printf '%s\n' xen > /sys/devices/system/clocksource/clocksource0/current_clocksource
+      when:
+        - (update_time_clocksource | default('keep')) == 'xen'
+        - update_time_current_clocksource.stdout != 'xen'
+
+    - name: Verify the selected dom0 clocksource
+      ansible.builtin.command:
+        argv: [cat, /sys/devices/system/clocksource/clocksource0/current_clocksource]
+      changed_when: false
+      register: update_time_selected_clocksource
+
+    - name: Require the requested clocksource to be active
+      ansible.builtin.assert:
+        that:
+          - update_time_selected_clocksource.stdout == 'xen'
+      when: (update_time_clocksource | default('keep')) == 'xen'
+
     - name: Enable the installed Alpine time service
       ansible.builtin.service:
         name: ntpd

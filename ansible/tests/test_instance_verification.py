@@ -152,7 +152,7 @@ class InstanceVerificationTest(unittest.TestCase):
         m=self.m
         with tempfile.TemporaryDirectory() as tmp,ExitStack() as stack:
             root=Path(tmp)
-            for name in ('INSTANCE','REPO_ROOT','ROLLBACK_ROOT','SOURCE_ROOT','RECOVERY_ROOT','RECOVERY_MANIFEST_ROOT'):
+            for name in ('INSTANCE','REPO_ROOT','ROLLBACK_ROOT','SOURCE_ROOT','RECOVERY_ROOT','RECOVERY_MANIFEST_ROOT','VM_UPDATE_ROOT'):
                 path=root/name;path.mkdir();stack.enter_context(patch.object(m,name,path))
             for name in ('DEPLOYMENT','REGISTRY','CONTROLLER_HA'):
                 path=root/(name+'.yml');path.write_text('{}\n');stack.enter_context(patch.object(m,name,path))
