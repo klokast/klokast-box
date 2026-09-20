@@ -803,7 +803,9 @@ dom0 cleanup record is
 ## Dom0 transaction and recovery
 
 `74-platform-update-recovery.yml` installs the root-only
-`vm-update-transaction` helper and an OpenRC boot check. Do not install it as
+`vm-update-transaction` helper and an OpenRC boot check. On diskless dom0 it
+includes both files in apkovl and verifies the persisted boot chain and the
+exclusion of mounted VM data before the role succeeds. Do not install it as
 proof that automatic replacement is ready. The signed controller executor,
 data adoption, configuration staging, network fencing, and profile checks
 must supply its inputs before production use. The no-application profile
