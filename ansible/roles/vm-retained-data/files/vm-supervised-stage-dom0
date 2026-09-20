@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+"""Stage the four fixed machine identities from a verified source backup."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+
+import retained_data as data
+import vm_disk_backup as backup
+
+BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
+CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+
+
+def read(path):
+    backup.secure(path)
+    return json.loads(path.read_text(), object_pairs_hook=backup.unique)
+
+
+def stage(args):
+    if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise backup.BackupError('identity stage requires dom0 root and one fixed target')
+    root = BASE / args.operation_id
+    for path in (BASE, root, root / 'backup', root / 'verify', root / 'code'):
+        backup.secure(path, True)
+    prepared = read(root / 'prepared.json')
+    copied = read(root / 'backup/result.json')
+    verified = read(root / 'verify/result.json')
+    restore_request = read(root / 'verify/request.json')
+    manifest = read(CANDIDATES / args.candidate_id / 'candidate.json')
+    if (prepared.get('kind') != 'klokast.vm-supervised-prepared.v1' or
+            prepared.get('operation_id') != args.operation_id or
+            prepared.get('box') != args.box or prepared.get('role') != args.role or
+            prepared.get('candidate_id') != args.candidate_id or
+            prepared.get('verified_backup_sha256') != verified.get('receipt_sha256') or
+            prepared.get('old_source') != copied.get('source') or
+            prepared.get('receipt_sha256') != backup.digest({k: v for k, v in prepared.items()
+                                                               if k != 'receipt_sha256'}) or
+            verified.get('kind') != 'klokast.vm-verified-backup.v1' or
+            verified.get('restore_verified') is not True or
+            verified.get('cleanup_verified') is not True or
+            verified.get('copy_receipt_sha256') != copied.get('receipt_sha256') or
+            verified.get('maintenance_candidate') != args.candidate_id or
+            restore_request.get('operation_id') != args.operation_id or
+            restore_request.get('backup_receipt_sha256') != copied.get('receipt_sha256') or
+            manifest.get('validation') != 'base-boot-tested' or
+            manifest.get('operation_id') != args.candidate_id or
+            not isinstance(manifest.get('inputs_sha256'), str)):
+        raise backup.BackupError('identity stage lacks exact backup, restore, and prepared disk receipts')
+    entries = [{'key': key, 'source': source, 'type': 'identity-file'}
+               for key, source in sorted(data.IDENTITY_FILES.items())]
+    copy_request = {'kind': 'klokast.vm-retained-stage.v3',
+                    'operation_id': args.operation_id,
+                    'source_uuid': restore_request['root_uuid'],
+                    'destination_uuid': prepared['data_uuid'],
+                    'runtime': restore_request['runtime'], 'entries': entries,
+                    'source_layout': 'legacy-root', 'source_partition': 3}
+    data.staged_request(copy_request)
+    request = {'kind': 'klokast.vm-supervised-maintenance.v1', 'mode': 'stage',
+               'operation_id': args.operation_id, 'inputs_sha256': manifest['inputs_sha256'],
+               'request': copy_request, 'stage_receipt_sha256': None}
+    work = root / 'stage'
+    work.mkdir(mode=0o700)
+    backup.secure(work, True)
+    if any(work.iterdir()):
+        raise backup.BackupError('identity stage already started; inspect its exact result')
+    backup.store(work / 'request.json', request)
+    command = ['/usr/bin/python3', str(root / 'code/vm-supervised-maintenance-dom0'),
+               '--box', args.box, '--role', args.role,
+               '--operation-id', args.operation_id, '--candidate-id', args.candidate_id,
+               '--mode', 'stage', '--source', copied['backup']['path'],
+               '--destination', prepared['data']['path']]
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, timeout=2100)
+    if result.returncode:
+        raise backup.BackupError('isolated identity stage failed; inspect its private lifecycle and console')
+    return json.loads(result.stdout, object_pairs_hook=backup.unique)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    print(backup.canonical(stage(args)).decode())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (backup.BackupError, data.CopyError, OSError, ValueError, TypeError,
+            KeyError, subprocess.TimeoutExpired) as error:
+        print('vm-supervised-stage-dom0: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

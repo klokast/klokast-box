@@ -134,6 +134,11 @@ After a successful isolated restore, run
 --operation-id OPERATION --candidate-id BUILD_ID` to allocate a distinct
 candidate OS LV and empty retained-data LV. This also leaves the old VM
 running. The later switch must use the exact recorded disk identities.
+Run `ansible/bin/platform-update-supervised-stage --box BOX --role ROLE
+--operation-id OPERATION --candidate-id BUILD_ID` to copy the four machine
+identity files from the verified backup into the new retained-data LV. It
+uses a networkless Xen guest and leaves the old VM running. A later final
+sync must read the stopped old disk before any candidate VM starts.
 
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
 root registry and retention readers, verifies that both bind the same authority,

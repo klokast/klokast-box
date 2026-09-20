@@ -1,0 +1,73 @@
+---
+- name: Stage exact machine identity into a supervised candidate data volume
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the selected guest and exact operation
+      ansible.builtin.assert:
+        that:
+          - (supervised_box, supervised_role) in [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+          - inventory_hostname == supervised_box ~ '-dom0'
+          - supervised_operation_id is match('^[0-9a-f]{24}$')
+          - supervised_candidate_id is match('^[0-9a-f]{24}$')
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: supervised_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (supervised_controller.stdout | from_json).configured | bool
+          - (supervised_controller.stdout | from_json).active | bool
+
+    - name: Verify persistent dom0 data storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create private stage job directory
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/async-stage"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Stage checked identity-copy entry
+      ansible.builtin.copy:
+        src: ../roles/vm-retained-data/files/vm-supervised-stage-dom0
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-stage-dom0"
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Copy exact identity files in a networkless maintenance guest
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '2100'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-stage-dom0"
+          - --box
+          - "{{ supervised_box }}"
+          - --role
+          - "{{ supervised_role }}"
+          - --operation-id
+          - "{{ supervised_operation_id }}"
+          - --candidate-id
+          - "{{ supervised_candidate_id }}"
+      async: 2160
+      poll: 15
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/async-stage"
+      register: supervised_staged
+
+    - name: Show verified identity-copy receipt
+      ansible.builtin.debug:
+        msg: "{{ supervised_staged.stdout | from_json }}"
