@@ -28,6 +28,24 @@ def load_cli():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_adopt_apply_only_routes_the_closed_signed_intent(self):
+        cli = load_cli()
+        argv = ['adopt', 'apply', '--approval-intent', '/protected/adoption.json',
+                '--approval-signature', '/protected/adoption.sig',
+                '--signer-id', 'human-platform-apply']
+        with patch.object(cli, 'require_controller'), \
+                patch.object(cli, 'load', return_value={'kind': 'klokast.vm-adoption-intent.v1'}), \
+                patch.object(cli.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 0, '', '')) as apply:
+            self.assertEqual(cli.main(argv), 0)
+            self.assertEqual(apply.call_args.args[0][:3],
+                             ['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'execute'])
+        with patch.object(cli, 'require_controller'), \
+                patch.object(cli, 'load', return_value={'kind': 'klokast.vm-update-policy-intent.v1'}), \
+                patch.object(cli.subprocess, 'run') as apply:
+            self.assertEqual(cli.main(argv), 2)
+            apply.assert_not_called()
+
     def test_policy_summary_exposes_pause_and_missing_executor(self):
         cli = load_cli()
         source = {'kind': 'klokast.vm-update-policy-source.v1',

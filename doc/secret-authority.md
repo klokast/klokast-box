@@ -379,6 +379,24 @@ stores one immutable record under
 record binds evidence; it is not an accepted VM assignment. The replacement
 executor must check the artifact bytes on dom0 again before use.
 
+`ksa-apply vm-update-adoption prepare --qualification PATH` accepts only a
+complete v7 report for a selected no-application VM. It binds the current
+policy activation, classified report, independent management receipt, and
+exact old Xen source in a closed one-hour intent. The trusted-workstation
+signer approves that intent through the existing `execute` signature path.
+Execution consumes the nonce, refreshes all VM inventory, repeats
+qualification, and compares the current old disk and boot identities. The
+root controller sends a fixed old-only request to dom0. Dom0 publishes the
+recorded old assignment without stopping the guest. Root-owned authorization
+and operation records remain under
+`/var/lib/klokast/updates/executor/adoption-preflights/` and `adoptions/`.
+An interrupted operation requires its persistent record and current authority
+to reconcile; a standby copy cannot execute it.
+The detached controller recovery manifest includes protected update records,
+archived signatures and nonces, the authority bindings, and the exact
+qualification and build files referenced by those records. It does not
+activate a policy or an assignment on a standby controller.
+
 The offline retained-data copy library has only guest-local filesystem
 authority. A copy request and its receipt cannot authorize disk attachment,
 writer shutdown, or adoption. The future signed executor must derive and verify

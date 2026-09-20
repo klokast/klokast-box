@@ -2,6 +2,7 @@
 """Root boundary for closed, signed Platform source and recovery actions."""
 
 import argparse
+from collections import Counter
 import datetime as dt
 import errno
 import fcntl
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -43,6 +45,8 @@ KIND_PLAN_V9 = "klokast.plan.v9"
 KIND_VERIFICATION_INTENT = "klokast.instance-verification-intent.v1"
 KIND_VM_UPDATE_INTENT = "klokast.vm-update-policy-intent.v1"
 VM_UPDATE_EXECUTOR = "vm_update_policy_v1"
+KIND_VM_ADOPTION_INTENT = "klokast.vm-adoption-intent.v1"
+VM_ADOPTION_EXECUTOR = "vm_no_application_adoption_v1"
 VM_UPDATE_ROOT = Path("/var/lib/klokast/updates/executor")
 VM_UPDATE_LOCK = Path("/var/lib/klokast/updates/operation.lock")
 VM_UPDATE_DISCOVERY = Path("/var/lib/klokast/updates/discovery")
@@ -1714,6 +1718,8 @@ def consume_nonce(intent):
         binding_sha256 = intent["authority_state_sha256"]
     elif intent.get("kind") in {KIND_INTENT, KIND_BOX_INTENT, KIND_CONTROLLER_BOX_INTENT, KIND_OVERLAY_INTENT, KIND_IDENTITY_INTENT, KIND_REGISTRY_INTENT, KIND_INVENTORY_INTENT, KIND_VERIFICATION_INTENT, KIND_RETIREMENT_INTENT, KIND_VM_UPDATE_INTENT}:
         binding_sha256 = intent["plan_sha256"]
+    elif intent.get("kind") == KIND_VM_ADOPTION_INTENT:
+        binding_sha256 = intent["qualification_sha256"]
     else:
         raise ApplyError("Apply intent kind has no nonce evidence binding")
     ensure_dir(NONCE_ROOT)
@@ -4933,6 +4939,91 @@ def retirement_evidence_prepare(args):
                      "evidence_sha256": evidence["evidence_sha256"], "path": str(path), "recovery_archive": str(archive)}))
 
 
+def vm_update_recovery_paths():
+    """Select protected update records and their exact authority inputs."""
+    root = VM_UPDATE_ROOT
+    if not root.exists() and not root.is_symlink():
+        return set()
+    if root.is_symlink() or not root.is_dir():
+        raise ApplyError("protected VM update recovery root is unsafe")
+    paths = set()
+    for path in root.rglob("*"):
+        if path.is_symlink() or path.name.startswith("."):
+            raise ApplyError("protected VM update recovery contains an unsafe path")
+        if path.is_file():
+            paths.add(path)
+        elif not path.is_dir():
+            raise ApplyError("protected VM update recovery contains an unsupported object")
+    def qualification_chain(digest_value):
+        seen = set()
+        while digest_value:
+            if not isinstance(digest_value, str) or not DIGEST_RE.fullmatch(digest_value) or digest_value in seen or len(seen) >= 10:
+                raise ApplyError("VM adoption qualification recovery chain is invalid")
+            seen.add(digest_value)
+            path = VM_UPDATE_DISCOVERY / "qualifications" / (digest_value + ".json")
+            report = load_json(path, canonical_stored=True)
+            if report.get("report_sha256") != digest_value or inventory_digest({k: v for k, v in report.items() if k != "report_sha256"}) != digest_value:
+                raise ApplyError("VM adoption qualification recovery checksum differs")
+            paths.add(path)
+            for field in ("configuration_evidence_sha256", "legacy_firewall_evidence_sha256",
+                          "shadow_input_evidence_sha256"):
+                value = report.get(field)
+                if value:
+                    if not isinstance(value, str) or not DIGEST_RE.fullmatch(value):
+                        raise ApplyError("VM adoption configuration recovery identity is invalid")
+                    paths.add(VM_UPDATE_DISCOVERY / "config-audits" / (value + ".json"))
+            for field, folder in (("source_evidence_sha256", "source-audits"),
+                                  ("management_evidence_sha256", "management-audits")):
+                value = report.get(field)
+                if value:
+                    if not isinstance(value, str) or not DIGEST_RE.fullmatch(value):
+                        raise ApplyError("VM adoption source recovery identity is invalid")
+                    paths.add(VM_UPDATE_DISCOVERY / folder / (value + ".json"))
+            digest_value = report.get("prior_report_sha256")
+    for path in sorted((root / "activations").glob("*.json")) if (root / "activations").is_dir() else []:
+        activation = load_json(path, canonical_stored=True)
+        if activation.get("receipt_sha256") != path.stem:
+            raise ApplyError("VM update activation recovery identity differs")
+        binding = activation.get("binding")
+        vm_update_evidence_args(binding)
+        paths.update(Path(value) for key, value in binding.items() if key != "build_dir")
+        build = Path(binding["build_dir"])
+        paths.update((build / "klokast", build / "receipt.json"))
+        nonce = activation.get("intent", {}).get("nonce")
+        if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
+            raise ApplyError("VM update activation nonce is invalid")
+        paths.add(NONCE_ROOT / nonce)
+    for path in sorted((root / "releases").glob("*/*.json")) if (root / "releases").is_dir() else []:
+        record = load_json(path, canonical_stored=True)
+        operation = record.get("build_operation_id")
+        if (record.get("kind") != VM_UPDATE_RELEASE_KIND or
+                record.get("record_sha256") != inventory_digest({k: v for k, v in record.items() if k != "record_sha256"}) or
+                path.name != record.get("release", {}).get("release_sha256", "") + ".json" or
+                path.parent.name != record.get("policy_activation_sha256") or
+                not isinstance(operation, str) or not re.fullmatch(r"[0-9a-f]{24}", operation)):
+            raise ApplyError("protected VM release recovery record is invalid")
+        build = VM_UPDATE_DISCOVERY / "builds" / operation
+        paths.update(build / name for name in ("inputs.json", "candidate.json", "release-evidence.json",
+                                                "transfer-k002.json"))
+    for path in sorted((root / "adoption-preflights").glob("*/intent.json")) if (root / "adoption-preflights").is_dir() else []:
+        intent = load_json(path, canonical_stored=True)
+        validate_vm_adoption_intent(intent, check_time=False)
+        if path.parent.name != intent["nonce"]:
+            raise ApplyError("VM adoption preflight recovery nonce differs")
+        nonce_path = NONCE_ROOT / intent["nonce"]
+        if nonce_path.exists() or nonce_path.is_symlink():
+            paths.add(nonce_path)
+        qualification_chain(intent["qualification_sha256"])
+    for path in sorted((root / "adoptions").glob("*.json")) if (root / "adoptions").is_dir() else []:
+        receipt = load_json(path, canonical_stored=True)
+        if (receipt.get("kind") != "klokast.vm-adoption-operation.v1" or
+                receipt.get("receipt_sha256") != inventory_digest({k: v for k, v in receipt.items() if k != "receipt_sha256"}) or
+                path.stem != receipt.get("intent", {}).get("nonce")):
+            raise ApplyError("VM adoption operation recovery receipt is invalid")
+        qualification_chain(receipt.get("fresh_qualification_sha256"))
+    return paths
+
+
 def verification_recovery_manifest(args):
     binding = validate_inputs_v3(args)
     if binding["plan"]["kind"] != KIND_PLAN_V8:
@@ -4944,6 +5035,7 @@ def verification_recovery_manifest(args):
     paths.update(Path(binding[k]) for k in VERIFICATION_BINDING_FIELDS if k != "build_dir")
     for root in (REPO_ROOT / "ansible/inventory", REPO_ROOT / "ansible/inventory-policy", ROLLBACK_ROOT, SOURCE_ROOT, RECOVERY_ROOT):
         paths.update(p for p in root.rglob("*") if p.is_file())
+    paths.update(vm_update_recovery_paths())
     entries = []
     for path in sorted(paths):
         # Only checked compatibility links to the new generic policy are allowed.
@@ -5270,6 +5362,346 @@ def vm_update_release_import(operation_id):
         print(canonical({"kind": VM_UPDATE_RELEASE_KIND, "record_sha256": record["record_sha256"],
                          "release_sha256": record["release"]["release_sha256"],
                          "build_operation_id": operation_id, "result": result}))
+
+
+def vm_update_target_allowed(policy, box, role):
+    return (box, role) in {("k001", "dmz"), ("k002", "dmz"), ("k002", "iot")} and \
+        role in policy["targets"].get(box, []) and not any(
+            row["box"] == box and row["role"] == role for row in policy["exclusions"])
+
+
+def vm_adoption_evidence(path, policy_receipt):
+    """Resolve a fresh v7 report and its exact independently observed source."""
+    supplied = Path(path)
+    root = VM_UPDATE_DISCOVERY / "qualifications"
+    try:
+        resolved = supplied.resolve(strict=True)
+        if supplied != resolved or resolved.parent != root.resolve(strict=True):
+            raise ApplyError("adoption report path is outside the fixed qualification store")
+    except OSError as error:
+        raise ApplyError("adoption qualification report is absent") from error
+    report = load_json(resolved, canonical_stored=True)
+    box, role = report.get("box"), report.get("role")
+    if (not isinstance(box, str) or not isinstance(role, str) or
+            not isinstance(report.get("summary"), dict) or
+            not isinstance(report.get("items"), list) or
+            not isinstance(report.get("intent"), dict)):
+        raise ApplyError("adoption qualification has an invalid target or item list")
+    classes = {"approved-package-content", "generated-configuration",
+               "retained-machine-identity", "reconstructable-os-state"}
+    if not report["items"] or any(not isinstance(item, dict) or
+                                  item.get("classification") not in classes or
+                                  item.get("resolved") is not True
+                                  for item in report["items"]):
+        raise ApplyError("adoption qualification contains unresolved or unknown items")
+    report_sha = report.get("report_sha256")
+    if (not isinstance(report_sha, str) or not DIGEST_RE.fullmatch(report_sha) or
+            resolved.name != report_sha + ".json" or
+            inventory_digest({k: v for k, v in report.items() if k != "report_sha256"}) != report_sha or
+            report.get("kind") != "klokast.vm-no-application-qualification.v7" or
+            report.get("profile") != "shared-alpine-no-application-v1" or
+            report.get("classification_complete") is not True or
+            report.get("machine_inputs_approved") is not True or
+            report.get("source_match") is not True or
+            report.get("qualified") is not False or report.get("adoption_authorized") is not False or
+            report.get("adoption_intent") is not None or
+            report.get("application_tests") != {"status": "not-run", "executed": False} or
+            report.get("cleanup_items") != [] or
+            report.get("summary", {}).get("unresolved") != 0 or
+            report.get("summary", {}).get("cleanup_items") != 0 or
+            report.get("summary", {}).get("items") != len(report.get("items", [])) or
+            report.get("summary", {}).get("classes") != dict(sorted(Counter(
+                item["classification"] for item in report["items"]).items())) or
+            report.get("findings") != [{"code": "qualification.adoption-unavailable",
+                                         "message": "Classification is complete; signed adoption and backup qualification remain required.",
+                                         "severity": "critical", "scope": report.get("box", "") + "-" + report.get("role", "")}]):
+        raise ApplyError("adoption requires a complete, unchanged no-application qualification")
+    policy = policy_receipt["intent"]
+    if (not vm_update_target_allowed(policy["policy"], box, role) or
+            report.get("implementation_commit") != policy["engine_commit"] or
+            report.get("intent", {}).get("eligible") is not True or
+            report["intent"].get("workloads") != [] or report["intent"].get("datasets") != [] or
+            report["intent"].get("engine_commit") != policy["engine_commit"] or
+            not 0 <= (now_utc() - parse_utc(report["generated_at"], "qualification time")).total_seconds() <= 7200):
+        raise ApplyError("adoption target, authority, workload, or report freshness differs")
+    source_sha = report.get("source_evidence_sha256")
+    management_sha = report.get("management_evidence_sha256")
+    if any(not isinstance(v, str) or not DIGEST_RE.fullmatch(v) for v in (source_sha, management_sha)):
+        raise ApplyError("adoption lacks source or independent management evidence")
+    source = load_json(VM_UPDATE_DISCOVERY / "source-audits" / (source_sha + ".json"), canonical_stored=True)
+    management = load_json(VM_UPDATE_DISCOVERY / "management-audits" / (management_sha + ".json"), canonical_stored=True)
+    if (inventory_digest(source) != source_sha or
+            set(source) != {"kind", "role", "dom0", "observed_at", "vm_uuid", "configuration_sha256",
+                            "disks", "disk_mappings", "artifacts", "autostart", "runtime"} or
+            source.get("kind") != "klokast.vm-unmanaged-source.v1" or
+            source.get("role") != role or source.get("dom0") != box + "-dom0" or
+            source.get("runtime") != "running" or source.get("autostart") is not True or
+            type(source.get("observed_at")) not in {int, float} or
+            not 0 <= now_utc().timestamp() - source["observed_at"] <= 7200 or
+            not isinstance(source.get("disks"), dict) or not source["disks"] or
+            not isinstance(source.get("artifacts"), dict) or len(source["artifacts"]) != 2 or
+            set(management) != {"kind", "host", "dom0", "controller", "guest_transport",
+                                "dom0_transport", "configuration_evidence_sha256", "source_evidence_sha256",
+                                "observed_at", "authority", "report_sha256"} or
+            management.get("kind") != "klokast.vm-independent-management.v1" or
+            management.get("host") != box + "-" + role or
+            management.get("dom0") != box + "-dom0" or
+            management.get("guest_transport") != "controller-tailnet-ssh" or
+            management.get("dom0_transport") != "controller-tailnet-ssh" or
+            management.get("authority") != "comparison-only" or
+            not 0 <= (now_utc() - parse_utc(management["observed_at"], "management time")).total_seconds() <= 7200 or
+            management.get("source_evidence_sha256") != source_sha or
+            management.get("configuration_evidence_sha256") != report.get("configuration_evidence_sha256") or
+            management.get("report_sha256") != management_sha or
+            inventory_digest({k: v for k, v in management.items() if k != "report_sha256"}) != management_sha):
+        raise ApplyError("adoption source or independent management evidence differs")
+    return report, source, management
+
+
+def vm_adoption_intent(report, source, policy_receipt, nonce, operation_id, issued):
+    policy = policy_receipt["intent"]
+    return {"kind": KIND_VM_ADOPTION_INTENT, "action": "adopt_old_vm_generation",
+            "executor": VM_ADOPTION_EXECUTOR, "rollback_type": "recorded_old_generation",
+            "box": report["box"], "role": report["role"],
+            "engine_commit": policy["engine_commit"], "policy_sha256": policy["policy_sha256"],
+            "policy_activation_sha256": policy_receipt["receipt_sha256"],
+            "qualification_sha256": report["report_sha256"],
+            "source_evidence_sha256": report["source_evidence_sha256"],
+            "management_evidence_sha256": report["management_evidence_sha256"],
+            "old_uuid": source["vm_uuid"], "old_config_sha256": source["configuration_sha256"],
+            "old_disks": source["disks"], "old_artifacts": source["artifacts"],
+            "operation_id": operation_id, "nonce": nonce,
+            "issued_at": format_utc(issued), "expires_at": format_utc(issued + INTENT_LIFETIME)}
+
+
+def vm_adoption_uuid_valid(value):
+    try:
+        return isinstance(value, str) and str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def validate_vm_adoption_intent(intent, *, check_time=True):
+    fields = {"kind", "action", "executor", "rollback_type", "box", "role", "engine_commit",
+              "policy_sha256", "policy_activation_sha256", "qualification_sha256",
+              "source_evidence_sha256", "management_evidence_sha256", "old_uuid", "old_config_sha256",
+              "old_disks", "old_artifacts", "operation_id", "nonce", "issued_at", "expires_at"}
+    if (not isinstance(intent, dict) or set(intent) != fields or
+            intent["kind"] != KIND_VM_ADOPTION_INTENT or intent["action"] != "adopt_old_vm_generation" or
+            intent["executor"] != VM_ADOPTION_EXECUTOR or intent["rollback_type"] != "recorded_old_generation" or
+            (intent["box"], intent["role"]) not in {("k001", "dmz"), ("k002", "dmz"), ("k002", "iot")} or
+            not isinstance(intent["engine_commit"], str) or not COMMIT_RE.fullmatch(intent["engine_commit"]) or
+            not isinstance(intent["operation_id"], str) or not re.fullmatch(r"[0-9a-f]{24}", intent["operation_id"]) or
+            not isinstance(intent["nonce"], str) or not NONCE_RE.fullmatch(intent["nonce"]) or
+            any(not isinstance(intent[key], str) or not DIGEST_RE.fullmatch(intent[key]) for key in
+                ("policy_sha256", "policy_activation_sha256", "qualification_sha256",
+                 "source_evidence_sha256", "management_evidence_sha256", "old_config_sha256")) or
+            not vm_adoption_uuid_valid(intent["old_uuid"]) or
+            not isinstance(intent["old_disks"], dict) or not intent["old_disks"] or
+            any(not isinstance(path, str) or not re.fullmatch(r"/dev/[A-Za-z0-9_+.-]+/[A-Za-z0-9_+.-]+", path) or
+                any(part in {".", ".."} for part in Path(path).parts) or
+                not isinstance(value, dict) or set(value) != {"uuid", "bytes"} or
+                not isinstance(value["uuid"], str) or not re.fullmatch(r"[A-Za-z0-9-]{6,128}", value["uuid"]) or
+                type(value["bytes"]) is not int or value["bytes"] <= 0 for path, value in intent["old_disks"].items()) or
+            not isinstance(intent["old_artifacts"], dict) or len(intent["old_artifacts"]) != 2 or
+            any(not isinstance(path, str) or not path.startswith("/mnt/dom0_data/") or
+                any(part in {".", ".."} for part in Path(path).parts) or
+                not isinstance(value, dict) or set(value) != {"sha256", "bytes"} or
+                not isinstance(value["sha256"], str) or not DIGEST_RE.fullmatch(value["sha256"]) or
+                type(value["bytes"]) is not int or not 0 < value["bytes"] <= 512 * 1024 * 1024
+                for path, value in intent["old_artifacts"].items())):
+        raise ApplyError("signed VM adoption intent has an unknown or invalid contract")
+    issued, expires = parse_utc(intent["issued_at"], "issued_at"), parse_utc(intent["expires_at"], "expires_at")
+    if expires - issued != INTENT_LIFETIME or (check_time and
+            (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
+        raise ApplyError("signed VM adoption intent is expired or has an invalid lifetime")
+
+
+def vm_adoption_run_controller(*arguments, timeout=1500):
+    started = now_utc()
+    try:
+        result = subprocess.run([str(DOAS), "-u", CONTROLLER_USER,
+                                 str(REPO_ROOT / "ansible/bin/platform-update"), *arguments],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                timeout=timeout, env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                                                      "LANG": "C", "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ApplyError("bounded VM adoption requalification did not finish") from error
+    if arguments[0] == "scan":
+        if result.returncode not in {0, 1}:
+            raise ApplyError("fresh VM discovery failed before adoption")
+        discovery = load_json(VM_UPDATE_DISCOVERY / "current.json", canonical_stored=True)
+        if (discovery.get("complete") is not True or
+                parse_utc(discovery.get("generated_at"), "discovery time") < started - dt.timedelta(seconds=1) or
+                any(finding.get("code") == "discovery.failed" for finding in discovery.get("findings", []))):
+            raise ApplyError("fresh VM discovery is incomplete before adoption")
+        return discovery
+    if arguments[:2] == ("adopt", "prepare"):
+        try:
+            report = json.loads(result.stdout, object_pairs_hook=unique_object)
+        except (ValueError, TypeError) as error:
+            raise ApplyError("fresh VM qualification did not return a report") from error
+        if not isinstance(report, dict) or report.get("kind") != "klokast.vm-no-application-qualification.v7":
+            raise ApplyError("fresh VM qualification is incomplete or blocked")
+        return report
+
+
+def vm_update_adoption_prepare(path):
+    require_root_active()
+    require_self_match()
+    with vm_update_lock():
+        policy = vm_update_policy_current()
+        if vm_update_pause_state(policy["receipt_sha256"]):
+            raise ApplyError("paused VM update policy cannot prepare adoption")
+        report, source, management = vm_adoption_evidence(path, policy)
+        nonce, operation_id = secrets.token_urlsafe(18), secrets.token_hex(12)
+        intent = vm_adoption_intent(report, source, policy, nonce, operation_id, now_utc())
+        validate_vm_adoption_intent(intent)
+        root = VM_UPDATE_ROOT / "adoption-preflights"
+        ensure_protected_dir(root, 0o700, 0)
+        directory = root / nonce
+        directory.mkdir(mode=0o700)
+        for name, value in (("intent", intent), ("qualification", report),
+                            ("source", source), ("management", management)):
+            vm_update_store(directory / (name + ".json"), (canonical(value) + "\n").encode())
+        append_audit("vm-update-adoption.preflight", nonce=nonce, box=intent["box"], role=intent["role"],
+                     qualification_sha256=intent["qualification_sha256"])
+        print(canonical(intent))
+
+
+def vm_adoption_remote(box, arguments, *, input_text=None, timeout=180):
+    if box not in {"k001", "k002"}:
+        raise ApplyError("adoption remote target is outside the selected boxes")
+    try:
+        result = subprocess.run(["/usr/bin/tailscale", "ssh", "neo@" + box + "-dom0", "doas",
+                                 "/usr/local/sbin/vm-update-transaction", *arguments],
+                                input=input_text, capture_output=True, text=True, timeout=timeout,
+                                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ApplyError("bounded dom0 adoption command did not finish") from error
+    if result.returncode or len(result.stdout) > 65536:
+        raise ApplyError("dom0 adoption command failed: " + result.stderr[-1024:].strip())
+    try:
+        value = json.loads(result.stdout, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise ApplyError("dom0 adoption command returned invalid JSON") from error
+    if not isinstance(value, dict):
+        raise ApplyError("dom0 adoption command returned no record")
+    return value
+
+
+def vm_adoption_request(intent):
+    return {"kind": "klokast.vm-adoption.v1", "operation_id": intent["operation_id"],
+            "box": intent["box"], "role": intent["role"],
+            "engine_commit": intent["engine_commit"], "policy_sha256": intent["policy_sha256"],
+            "qualification_sha256": intent["qualification_sha256"],
+            "source_evidence_sha256": intent["source_evidence_sha256"],
+            "old_uuid": intent["old_uuid"], "old_config_sha256": intent["old_config_sha256"],
+            "old_disks": intent["old_disks"], "old_artifacts": intent["old_artifacts"],
+            "autostart": True}
+
+
+def vm_update_adoption_execute(args, intent):
+    validate_vm_adoption_intent(intent)
+    verify_signature(args, intent)
+    directory = VM_UPDATE_ROOT / "adoption-preflights" / intent["nonce"]
+    if load_json(directory / "intent.json", canonical_stored=True) != intent:
+        raise ApplyError("signed VM adoption differs from protected preparation")
+    archived = load_json(directory / "qualification.json", canonical_stored=True)
+    source = load_json(directory / "source.json", canonical_stored=True)
+    signature = read_regular(args.approval_signature, 64 * 1024)
+    with vm_update_lock():
+        policy = vm_update_policy_current()
+        if vm_update_pause_state(policy["receipt_sha256"]):
+            raise ApplyError("VM update policy is paused")
+        if (intent["policy_activation_sha256"] != policy["receipt_sha256"] or
+                intent["policy_sha256"] != policy["intent"]["policy_sha256"] or
+                intent["engine_commit"] != policy["intent"]["engine_commit"] or
+                not vm_update_target_allowed(policy["intent"]["policy"], intent["box"], intent["role"])):
+            raise ApplyError("signed adoption policy, engine, or target changed")
+        checked, checked_source, management = vm_adoption_evidence(
+            VM_UPDATE_DISCOVERY / "qualifications" / (intent["qualification_sha256"] + ".json"), policy)
+        if (checked != archived or checked_source != source or
+                management != load_json(directory / "management.json", canonical_stored=True) or
+                vm_adoption_intent(checked, checked_source, policy, intent["nonce"],
+                                   intent["operation_id"], parse_utc(intent["issued_at"], "issued_at")) != intent):
+            raise ApplyError("signed adoption evidence changed before execution")
+        completed = VM_UPDATE_ROOT / "adoptions" / (intent["nonce"] + ".json")
+        if completed.exists() or completed.is_symlink():
+            prior = load_json(completed, canonical_stored=True)
+            if (prior.get("kind") != "klokast.vm-adoption-operation.v1" or prior.get("intent") != intent or
+                    prior.get("receipt_sha256") != inventory_digest({k: v for k, v in prior.items() if k != "receipt_sha256"})):
+                raise ApplyError("existing VM adoption operation receipt conflicts")
+            current = vm_adoption_remote(intent["box"], ["assignment-status", "--role", intent["role"]])
+            if (current != prior.get("assignment") or current.get("configuration_drift") is not False or
+                    current.get("autostart_drift") is not False or current.get("runtime") != "running"):
+                raise ApplyError("recorded old VM assignment changed after adoption")
+            print(canonical({"result": "already-adopted", "box": intent["box"], "role": intent["role"],
+                             "receipt_sha256": prior["receipt_sha256"],
+                             "request_sha256": prior["request_sha256"]}))
+            return
+        authorization = directory / "authorization.json"
+        if authorization.exists() or authorization.is_symlink():
+            saved = load_json(authorization, canonical_stored=True)
+            if (set(saved) != {"kind", "intent_sha256", "signature_sha256", "authorized_at"} or
+                    saved["kind"] != "klokast.vm-adoption-authorization.v1" or
+                    saved["intent_sha256"] != inventory_digest(intent) or
+                    saved["signature_sha256"] != sha256_bytes(signature) or
+                    sha256_bytes(read_regular(directory / "adoption.sig", 64 * 1024)) != saved["signature_sha256"]):
+                raise ApplyError("existing VM adoption authorization conflicts")
+        else:
+            consume_nonce(intent)
+        # A new inventory pass closes the interval since the human signature.
+        # It inventories every VM but cannot start a stopped guest.
+        vm_adoption_run_controller("scan")
+        fresh = vm_adoption_run_controller("adopt", "prepare", "--box", intent["box"],
+                                           "--role", intent["role"], "--json", "--qualification-only")
+        if fresh.get("report_sha256") != inventory_digest({k: v for k, v in fresh.items() if k != "report_sha256"}):
+            raise ApplyError("fresh adoption qualification checksum differs")
+        fresh_report, fresh_source, _fresh_management = vm_adoption_evidence(
+            VM_UPDATE_DISCOVERY / "qualifications" / (fresh["report_sha256"] + ".json"), policy)
+        compared = ("kind", "role", "dom0", "vm_uuid", "configuration_sha256", "disks",
+                    "disk_mappings", "artifacts", "autostart", "runtime")
+        if (fresh_report != fresh or
+                any(fresh_source.get(key) != source.get(key) for key in compared)):
+            raise ApplyError("adoption source or no-application qualification changed")
+        validate_vm_adoption_intent(intent)
+        if not (authorization.exists() or authorization.is_symlink()):
+            vm_update_store(directory / "adoption.sig", signature)
+            saved = {"kind": "klokast.vm-adoption-authorization.v1",
+                     "intent_sha256": inventory_digest(intent),
+                     "signature_sha256": sha256_bytes(signature),
+                     "authorized_at": format_utc(now_utc())}
+            vm_update_store(authorization, (canonical(saved) + "\n").encode())
+        request = vm_adoption_request(intent)
+        state = vm_adoption_remote(intent["box"], ["adopt-source", "--operation-id", intent["operation_id"]],
+                                   input_text=canonical(request) + "\n")
+        if state.get("stage") != "adopted" or state.get("request_sha256") != inventory_digest(request):
+            raise ApplyError("dom0 did not persist the recorded old VM generation")
+        assignment = vm_adoption_remote(intent["box"], ["assignment-status", "--role", intent["role"]])
+        if (assignment.get("managed") is not True or assignment.get("operation_id") != intent["operation_id"] or
+                assignment.get("request_sha256") != inventory_digest(request) or
+                assignment.get("stage") != "adopted" or assignment.get("vm_uuid") != intent["old_uuid"] or
+                assignment.get("disks") != intent["old_disks"] or
+                assignment.get("artifacts") != intent["old_artifacts"] or
+                assignment.get("runtime") != "running" or
+                assignment.get("configuration_drift") is not False or
+                assignment.get("autostart_drift") is not False):
+            raise ApplyError("dom0 adopted assignment differs from signed old generation")
+        receipt = {"kind": "klokast.vm-adoption-operation.v1", "intent": intent,
+                   "authorization_sha256": inventory_digest(saved),
+                   "fresh_qualification_sha256": fresh["report_sha256"],
+                   "request_sha256": inventory_digest(request), "assignment": assignment,
+                   "adopted_at": format_utc(now_utc())}
+        receipt["receipt_sha256"] = inventory_digest(receipt)
+        root = VM_UPDATE_ROOT / "adoptions"
+        ensure_protected_dir(root, 0o700, 0)
+        vm_update_store(root / (intent["nonce"] + ".json"), (canonical(receipt) + "\n").encode())
+        append_audit("vm-update-adoption.adopted", nonce=intent["nonce"], box=intent["box"],
+                     role=intent["role"], receipt_sha256=receipt["receipt_sha256"])
+        print(canonical({"result": "adopted", "box": intent["box"], "role": intent["role"],
+                         "receipt_sha256": receipt["receipt_sha256"],
+                         "request_sha256": receipt["request_sha256"]}))
 
 
 def vm_update_policy_prepare(args):
@@ -5847,6 +6279,8 @@ def execute(args):
         authority_conversion_execute(args, intent)
     elif intent.get("kind") == KIND_VM_UPDATE_INTENT:
         vm_update_policy_execute(args, intent)
+    elif intent.get("kind") == KIND_VM_ADOPTION_INTENT:
+        vm_update_adoption_execute(args, intent)
     elif intent.get("kind") == KIND_RETIREMENT_INTENT:
         retirement_execute(args, intent)
     elif intent.get("kind") == KIND_VERIFICATION_INTENT:
@@ -5883,6 +6317,9 @@ def parse_args(argv):
     update_release_parser = commands.add_parser("vm-update-release")
     update_release_parser.add_argument("action", choices=("import",))
     update_release_parser.add_argument("--operation-id", required=True)
+    update_adoption_parser = commands.add_parser("vm-update-adoption")
+    update_adoption_parser.add_argument("action", choices=("prepare",))
+    update_adoption_parser.add_argument("--qualification", required=True)
     retirement_evidence_parser = commands.add_parser("retirement-evidence")
     retirement_evidence_parser.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
     retirement_evidence_parser.add_argument("--consumer-matrix", required=True)
@@ -5951,6 +6388,8 @@ def main(argv=None):
                 vm_update_policy_control(args.action)
         elif args.operation == "vm-update-release":
             vm_update_release_import(args.operation_id)
+        elif args.operation == "vm-update-adoption":
+            vm_update_adoption_prepare(args.qualification)
         elif args.operation == "inventory-source-status":
             print(canonical(inventory_source_status()))
         elif args.operation == "vm-retention-status":

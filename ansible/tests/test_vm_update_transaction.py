@@ -62,7 +62,8 @@ class Xen:
             raise InterruptedError('crash after Xen shutdown')
 
     def start(self, path):
-        self.running = 'new' if self.request['new_uuid'] in path.read_text() else 'old'
+        new_uuid = self.request.get('new_uuid')
+        self.running = 'new' if new_uuid and new_uuid in path.read_text() else 'old'
         self.calls.append(('start', self.running))
         if self.crash == 'start':
             raise InterruptedError('crash after Xen create')
@@ -242,6 +243,72 @@ class Transactions(unittest.TestCase):
         self.request['autostart'] = True
         (self.work / 'request.json').write_text(json.dumps(self.request))
         (self.xen / 'auto/bak.cfg').symlink_to('../bak.cfg')
+
+    def prepare_old_only_adoption(self):
+        self.request = {key: value for key, value in self.request.items()
+                        if not key.startswith('new_') and key != 'release_sha256'}
+        self.request.update(kind='klokast.vm-adoption.v1',
+                            qualification_sha256='e' * 64,
+                            source_evidence_sha256='f' * 64)
+        self.backend.request = self.request
+        t.store(self.work / 'request.json', self.request)
+        (self.xen / 'auto/bak.cfg').symlink_to('../bak.cfg')
+
+    def test_old_only_adoption_is_durable_without_a_candidate(self):
+        self.prepare_old_only_adoption()
+        (self.work / 'new.cfg').unlink()
+        with self.assertRaisesRegex(t.Refused, 'cannot arm'):
+            self.tx().arm()
+        tx = self.tx()
+        tx.adopt_old()
+        status = self.assignment_status()
+        self.assertEqual(status['stage'], 'adopted')
+        self.assertEqual(status['disks'], self.request['old_disks'])
+        self.assertIsNone(status['release_sha256'])
+        self.assertFalse(status['configuration_drift'])
+        self.assertFalse(status['autostart_drift'])
+        self.assertEqual(tx.recover(), 'adopted')
+        self.assertFalse(any(call[0] in {'stop', 'start'} for call in self.backend.calls))
+        with self.assertRaisesRegex(t.Refused, 'already been recorded'):
+            self.tx().adopt_old()
+
+    def test_old_only_adoption_recovers_interrupted_publication(self):
+        self.prepare_old_only_adoption()
+        self.backend.crash = 'persist'
+        with self.assertRaises(InterruptedError):
+            self.tx().adopt_old()
+        self.backend.crash = None
+        self.assertEqual(self.tx().recover(), 'adopted')
+        self.assertFalse(self.assignment_status()['configuration_drift'])
+
+    def test_stage_adoption_requires_exact_live_source_before_recording(self):
+        self.prepare_old_only_adoption()
+        request = dict(self.request, box='k001', role='dmz')
+        self.request = request
+        old = (self.work / 'old.cfg').read_text().replace('name = "bak"', 'name = "dmz"')
+        (self.xen / 'dmz.cfg').write_text(old)
+        (self.work / 'old.cfg').write_text(old)
+        request['old_config_sha256'] = hashlib.sha256(old.encode()).hexdigest()
+        request['operation_id'] = 'b' * 24
+        source = {'dom0': 'k001-dom0', 'runtime': 'running', 'autostart': True,
+                  'vm_uuid': request['old_uuid'], 'configuration_sha256': request['old_config_sha256'],
+                  'disks': request['old_disks'], 'artifacts': request['old_artifacts']}
+        with patch.object(t, 'source_status', return_value={**source, 'disks': {}}), \
+                patch.object(t, 'invoke') as invoke:
+            with self.assertRaisesRegex(t.Refused, 'source changed'):
+                t.stage_adoption(request)
+            invoke.assert_not_called()
+            self.assertFalse((self.base / 'operations' / request['operation_id']).exists())
+        with patch.object(t, 'source_status', return_value=source), \
+                patch.object(t, 'invoke', return_value={'stage': 'adopted'}) as invoke:
+            self.assertEqual(t.stage_adoption(request), {'stage': 'adopted'})
+            invoke.assert_called_once_with(request['operation_id'], 'adopt')
+        staged = self.base / 'operations' / request['operation_id']
+        self.assertEqual(t.read(staged / 'request.json'), request)
+        self.assertEqual((staged / 'old.cfg').read_text(), old)
+        for bad in (dict(request, box='k003'), dict(request, role='bak')):
+            with self.assertRaisesRegex(t.Refused, 'approved no-application target'):
+                t.stage_adoption(bad)
 
     def test_adoption_records_old_generation_without_switching_guest(self):
         self.prepare_adoption()

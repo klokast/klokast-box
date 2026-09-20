@@ -275,28 +275,34 @@ class Transaction:
         self.request = read(work / 'request.json')
         r = self.request
         fields = {'kind', 'operation_id', 'box', 'role', 'engine_commit', 'policy_sha256',
-                  'old_uuid', 'new_uuid', 'old_config_sha256', 'new_config_sha256',
-                  'old_disks', 'new_disks', 'old_artifacts', 'new_artifacts', 'autostart', 'release_sha256'}
+                  'old_uuid', 'old_config_sha256', 'old_disks', 'old_artifacts', 'autostart'}
+        adoption = isinstance(r, dict) and r.get('kind') == 'klokast.vm-adoption.v1'
+        if adoption:
+            fields.update({'qualification_sha256', 'source_evidence_sha256'})
+        else:
+            fields.update({'new_uuid', 'new_config_sha256', 'new_disks', 'new_artifacts', 'release_sha256'})
         if isinstance(r, dict) and r.get('kind') == 'klokast.vm-switch.v2':
             fields.add('controller_timeout_seconds')
             if type(r.get('controller_timeout_seconds')) is not int or r['controller_timeout_seconds'] != 90:
                 raise Refused('controller liveness requires the fixed 90-second timeout')
-        if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in {'klokast.vm-switch.v1', 'klokast.vm-switch.v2'} or
+        if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in
+                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-adoption.v1'} or
                 r['operation_id'] != work.name or not OP.fullmatch(work.name) or
                 not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
                 r['role'] not in {'bak', 'dmz', 'iot'} or type(r['autostart']) is not bool or
                 not isinstance(r['engine_commit'], str) or not re.fullmatch(r'[0-9a-f]{40}', r['engine_commit'])):
             raise Refused('invalid or unsupported transaction request')
-        for key in ('policy_sha256', 'old_config_sha256', 'new_config_sha256', 'release_sha256'):
+        for key in (('policy_sha256', 'old_config_sha256', 'qualification_sha256', 'source_evidence_sha256')
+                    if adoption else ('policy_sha256', 'old_config_sha256', 'new_config_sha256', 'release_sha256')):
             if not isinstance(r[key], str) or not HEX.fullmatch(r[key]):
                 raise Refused('transaction has an invalid checksum')
-        for key in ('old_uuid', 'new_uuid'):
+        for key in (('old_uuid',) if adoption else ('old_uuid', 'new_uuid')):
             if not isinstance(r[key], str) or str(uuid.UUID(r[key])) != r[key]:
                 raise Refused('transaction has an invalid domain UUID')
-        if r['old_uuid'] == r['new_uuid']:
+        if not adoption and r['old_uuid'] == r['new_uuid']:
             raise Refused('old and candidate Xen UUIDs must differ')
         self.configs = {}
-        for side in ('old', 'new'):
+        for side in (('old',) if adoption else ('old', 'new')):
             content = secure(work / (side + '.cfg')).read_bytes()
             if hashlib.sha256(content).hexdigest() != r[side + '_config_sha256']:
                 raise Refused('staged Xen configuration checksum differs')
@@ -320,7 +326,7 @@ class Transaction:
                         not isinstance(item['sha256'], str) or not HEX.fullmatch(item['sha256']) or
                         type(item['bytes']) is not int or not 0 < item['bytes'] <= 512 * 1024 * 1024):
                     raise Refused('boot artifact identity is incomplete')
-        if set(r['old_disks']) & set(r['new_disks']):
+        if not adoption and set(r['old_disks']) & set(r['new_disks']):
             raise Refused('old and candidate writable disks must be disjoint')
         self.journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
         if self.journal and (self.journal.get('request_sha256') != digest(r) or
@@ -395,7 +401,10 @@ class Transaction:
                 devices.add(self.native.device(path))
             overlaps = devices & {v['device'] for v in actual.values()}
             if info['name'] == self.request['role']:
-                if found or info['uuid'] not in {self.request['old_uuid'], self.request['new_uuid']}:
+                allowed_uuids = {self.request['old_uuid']}
+                if 'new_uuid' in self.request:
+                    allowed_uuids.add(self.request['new_uuid'])
+                if found or info['uuid'] not in allowed_uuids:
                     raise Refused('target domain identity changed')
                 side = 'old' if info['uuid'] == self.request['old_uuid'] else 'new'
                 if side not in sides:
@@ -470,6 +479,8 @@ class Transaction:
         return value
 
     def arm(self):
+        if self.request['kind'] == 'klokast.vm-adoption.v1':
+            raise Refused('adoption record cannot arm a replacement')
         if self.journal is not None:
             raise Refused('operation has already been armed; do not replay it')
         pointer = BASE / 'active' / (self.request['role'] + '.json')
@@ -514,11 +525,10 @@ class Transaction:
     def adopt_old(self):
         """Record a running old generation without changing its disks or guest.
 
-        The signed controller executor must validate authority before it stages
-        this request. There is no public command for this method until that
-        executor exists. An interrupted publication is repaired at boot.
+        The signed controller executor validates authority before staging the
+        request. An interrupted publication is repaired at boot.
         """
-        if self.request['kind'] != 'klokast.vm-switch.v2' or not self.request['autostart']:
+        if self.request['kind'] not in {'klokast.vm-adoption.v1', 'klokast.vm-switch.v2'} or not self.request['autostart']:
             raise Refused('adoption requires a running guest and the current recovery contract')
         if self.journal is not None:
             raise Refused('adoption operation has already been recorded')
@@ -549,9 +559,11 @@ class Transaction:
             raise Refused('adoption requires the exact running old guest')
         self.artifacts('old')
         observed = self.clock()
-        self.record('adopted', deadline=observed + 1800, recovery_seconds=1800,
-                    controller_seen_at=observed, controller_timeout_seconds=90,
-                    previous_assignment=None)
+        fields = {'deadline': observed + 1800, 'recovery_seconds': 1800,
+                  'previous_assignment': None}
+        if self.request['kind'] == 'klokast.vm-switch.v2':
+            fields.update(controller_seen_at=observed, controller_timeout_seconds=90)
+        self.record('adopted', **fields)
         store(pointer, {'operation_id': self.request['operation_id'],
                         'request_sha256': digest(self.request)})
         self.assignment('old')
@@ -893,6 +905,43 @@ def source_status(role, native=None):
                 'artifacts': artifacts, 'autostart': autostart, 'runtime': 'running'}
 
 
+def stage_adoption(request):
+    """Stage only the exact running old source, then publish its assignment."""
+    if (not isinstance(request, dict) or request.get('kind') != 'klokast.vm-adoption.v1' or
+            not isinstance(request.get('operation_id'), str) or not OP.fullmatch(request['operation_id']) or
+            request.get('role') not in {'dmz', 'iot'} or request.get('box') not in {'k001', 'k002'} or
+            (request['box'], request['role']) not in {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}):
+        raise Refused('adoption request must select one approved no-application target')
+    work = BASE / 'operations' / request['operation_id']
+    if work.exists() or work.is_symlink():
+        with current_assignment(request['role']) as existing:
+            if (existing is None or existing.work != work or existing.request != request or
+                    existing.journal['stage'] != 'adopted'):
+                raise Refused('adoption operation ID exists without the same durable assignment')
+            report = assignment_report(existing)
+            if report['configuration_drift'] or report['autostart_drift'] or report['runtime'] != 'running':
+                raise Refused('recorded old VM generation has drifted')
+            return existing.journal
+    source = source_status(request['role'])
+    if (source['dom0'] != request['box'] + '-dom0' or source['runtime'] != 'running' or
+            source['autostart'] is not True or request.get('autostart') is not True or
+            request.get('old_uuid') != source['vm_uuid'] or
+            request.get('old_config_sha256') != source['configuration_sha256'] or
+            request.get('old_disks') != source['disks'] or
+            request.get('old_artifacts') != source['artifacts']):
+        raise Refused('adoption source changed from the signed controller request')
+    work.mkdir(mode=0o700)
+    syncdir(work.parent)
+    content = secure(XEN / (request['role'] + '.cfg')).read_bytes()
+    if hashlib.sha256(content).hexdigest() != request['old_config_sha256']:
+        raise Refused('Xen definition changed while staging adoption')
+    atomic(work / 'old.cfg', content)
+    store(work / 'request.json', request)
+    # Validate the closed request before it can publish a role pointer.
+    Transaction(work)
+    return invoke(request['operation_id'], 'adopt')
+
+
 def reconcile_assignment(role, request_sha256, runtime_state, intent_sha256, native=None):
     """Root-only primitive for the existing approved runtime Apply workflow.
 
@@ -940,7 +989,11 @@ def invoke(operation, action):
         tx = Transaction(work)
         if socket.gethostname().split('.')[0] != tx.request['box'] + '-dom0':
             raise Refused('operation belongs to another box')
-        if action == 'arm':
+        if action == 'adopt':
+            if tx.request['kind'] != 'klokast.vm-adoption.v1':
+                raise Refused('public adoption requires the old-only v1 request')
+            tx.adopt_old()
+        elif action == 'arm':
             tx.arm()
         elif action != 'status':
             if read(BASE / 'active' / (tx.request['role'] + '.json')) != {
@@ -960,7 +1013,7 @@ def invoke(operation, action):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover', 'heartbeat',
+    parser.add_argument('action', choices=('adopt-source', 'adopt', 'arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover', 'heartbeat',
                                            'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage',
                                            'assignment-status', 'source-status', 'reconcile-assignment'))
     parser.add_argument('--operation-id')
@@ -980,6 +1033,17 @@ def main(argv=None):
         fence_autostart()
         return 0
     require_dom0()
+    if args.action == 'adopt-source':
+        if not args.operation_id or args.role:
+            raise Refused('adoption source requires only the operation ID')
+        content = sys.stdin.buffer.read(65537)
+        if len(content) > 65536:
+            raise Refused('adoption request exceeds the fixed input limit')
+        request = json.loads(content, object_pairs_hook=unique)
+        if not isinstance(request, dict) or request.get('operation_id') != args.operation_id:
+            raise Refused('adoption request differs from the selected operation')
+        print(canonical(stage_adoption(request)))
+        return 0
     if args.action == 'reconcile-assignment':
         if args.operation_id or not args.role:
             raise Refused('runtime reconciliation requires the current role assignment')

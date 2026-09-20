@@ -21,8 +21,10 @@ the complete no-application release and transfer evidence into an immutable
 record for the current policy activation. It checks the approved engine and
 package manifest again. Artifact bytes must be checked again before use. A
 failed transfer leaves an exact staging directory for review; it cannot select
-a production disk. Signed adoption, replacement, and
-rollout remain unavailable. No production update schedule has been enabled.
+a production disk. Signed old-generation adoption is implemented in the
+candidate engine, but has not been promoted or used on production VMs.
+Replacement and rollout remain unavailable. No production update schedule has
+been enabled.
 
 The [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
 owns desired state and assignment rules. [Secret Authority](secret-authority.md#standing-vm-update-authority)
@@ -104,6 +106,7 @@ promotion. Do not change the approved checkout to bypass the private engine lock
 ansible/bin/platform-update scan
 ansible/bin/platform-update adopt prepare --box BOX --role dmz
 ansible/bin/platform-update adopt prepare --box BOX --role iot --json
+ansible/bin/platform-update adopt apply --approval-intent INTENT --approval-signature SIGNATURE --signer-id human-platform-apply
 ansible/bin/platform-update-config-audit --box BOX --role dmz
 ansible/bin/platform-update retention --json
 ansible/bin/platform-update status --json
@@ -128,6 +131,15 @@ adapter. It records hashes and metadata only. A v7 report marks classification
 complete only after both the guest and dom0 answer separate controller Tailnet
 checks and every item is resolved. It still grants no adoption authority or
 application compatibility result.
+For a complete v7 report, `adopt prepare` writes a one-hour signed adoption
+intent under `/var/lib/klokast/updates/discovery/adoption-intents/`. Sign its
+canonical bytes through the existing trusted-workstation path. `adopt apply`
+checks the signature, refreshes the VM inventory, repeats target qualification,
+and verifies the old disk and boot identities. Dom0 records only the running
+old generation; it does not stop the guest or select a candidate. The root
+controller stores the signed authority and resulting assignment separately.
+This path still needs production testing after engine promotion and policy
+activation.
 Only exact matching rows from an approved engine resolve; identity, storage,
 boot, and other machine-input checks remain separate.
 The fixed no-application rules also recognize the `neo` numeric account and

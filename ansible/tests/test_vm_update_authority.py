@@ -284,6 +284,10 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                 record = json.loads(record_path.read_text())
                 self.assertEqual(record['release']['package_manifest'], release['package_manifest'])
                 self.assertEqual(record['release']['application_tests'], {'status': 'not-run', 'executed': False})
+                recovery_inputs = m.vm_update_recovery_paths()
+                self.assertIn(record_path, recovery_inputs)
+                self.assertIn(root / 'discovery/builds' / operation / 'release-evidence.json',
+                              recovery_inputs)
                 self.assertEqual(record['record_sha256'], m.inventory_digest({k: v for k, v in record.items()
                                                                               if k != 'record_sha256'}))
                 m.vm_update_release_import(operation)
@@ -311,6 +315,149 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                 transfer.write_text(m.canonical(value) + '\n')
                 with self.assertRaisesRegex(m.ApplyError, 'transfer evidence is incomplete'):
                     m.vm_update_release_evidence(operation, policy)
+
+    def adoption_fixture(self, root):
+        m = self.m
+        policy = {**self.policy, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']}}
+        receipt = {'receipt_sha256': 'b' * 64,
+                   'intent': {'policy': policy, 'policy_sha256': m.inventory_digest(policy),
+                              'engine_commit': 'c' * 40}}
+        source = {'kind': 'klokast.vm-unmanaged-source.v1', 'role': 'dmz', 'dom0': 'k001-dom0',
+                  'observed_at': m.now_utc().timestamp(), 'vm_uuid': '11111111-1111-4111-8111-111111111111',
+                  'configuration_sha256': '1' * 64,
+                  'disks': {'/dev/vg0/old-os': {'uuid': 'old-disk-identity', 'bytes': 4096}},
+                  'disk_mappings': {'/dev/vg0/old-os': 'xvda'},
+                  'artifacts': {'/mnt/dom0_data/old-kernel': {'sha256': '2' * 64, 'bytes': 100},
+                                '/mnt/dom0_data/old-initramfs': {'sha256': '3' * 64, 'bytes': 100}},
+                  'autostart': True, 'runtime': 'running'}
+        source_sha = m.inventory_digest(source)
+        management = {'kind': 'klokast.vm-independent-management.v1', 'host': 'k001-dmz',
+                      'dom0': 'k001-dom0', 'controller': 'k002-ops',
+                      'guest_transport': 'controller-tailnet-ssh',
+                      'dom0_transport': 'controller-tailnet-ssh',
+                      'observed_at': m.format_utc(m.now_utc()), 'authority': 'comparison-only',
+                      'source_evidence_sha256': source_sha,
+                      'configuration_evidence_sha256': '4' * 64}
+        management['report_sha256'] = m.inventory_digest(management)
+        report = {'kind': 'klokast.vm-no-application-qualification.v7',
+                  'profile': 'shared-alpine-no-application-v1', 'box': 'k001', 'role': 'dmz',
+                  'generated_at': m.format_utc(m.now_utc()), 'implementation_commit': 'c' * 40,
+                  'classification_complete': True, 'machine_inputs_approved': True,
+                  'source_match': True, 'qualified': False, 'adoption_authorized': False,
+                  'adoption_intent': None, 'application_tests': {'status': 'not-run', 'executed': False},
+                  'cleanup_items': [], 'summary': {'items': 1, 'unresolved': 0, 'cleanup_items': 0,
+                                                   'classes': {'approved-package-content': 1}},
+                  'items': [{'key': 'test', 'classification': 'approved-package-content', 'resolved': True}],
+                  'intent': {'eligible': True, 'workloads': [], 'datasets': [], 'engine_commit': 'c' * 40},
+                  'source_evidence_sha256': source_sha,
+                  'management_evidence_sha256': management['report_sha256'],
+                  'configuration_evidence_sha256': '4' * 64,
+                  'findings': [{'code': 'qualification.adoption-unavailable',
+                                'message': 'Classification is complete; signed adoption and backup qualification remain required.',
+                                'severity': 'critical', 'scope': 'k001-dmz'}]}
+        report['report_sha256'] = m.inventory_digest(report)
+        for name, digest_value, value in (
+                ('qualifications', report['report_sha256'], report),
+                ('source-audits', source_sha, source),
+                ('management-audits', management['report_sha256'], management)):
+            directory = root / name
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / (digest_value + '.json')).write_text(m.canonical(value) + '\n')
+        return receipt, report, source
+
+    def test_signed_adoption_rechecks_workload_and_publishes_only_old_assignment(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy, report, source = self.adoption_fixture(root / 'discovery')
+            path = root / 'discovery/qualifications' / (report['report_sha256'] + '.json')
+            with patch.object(m, 'VM_UPDATE_ROOT', root / 'executor'), \
+                    patch.object(m, 'VM_UPDATE_DISCOVERY', root / 'discovery'), \
+                    patch.object(m, 'NONCE_ROOT', root / 'nonces'), \
+                    patch.object(m, 'vm_update_policy_current', return_value=policy), \
+                    patch.object(m, 'vm_update_pause_state', return_value=False), \
+                    patch.object(m, 'require_root_active'), patch.object(m, 'require_self_match'), \
+                    patch.object(m, 'verify_signature'), patch.object(m, 'append_audit'), \
+                    redirect_stdout(io.StringIO()):
+                m.vm_update_adoption_prepare(path)
+                preflights = root / 'executor/adoption-preflights'
+                intent = json.loads(next(preflights.iterdir()).joinpath('intent.json').read_text())
+                recovery_inputs = m.vm_update_recovery_paths()
+                self.assertIn(path, recovery_inputs)
+                self.assertIn(root / 'discovery/source-audits' /
+                              (report['source_evidence_sha256'] + '.json'), recovery_inputs)
+                m.validate_vm_adoption_intent(intent)
+                for change in ({'executor': 'shell'}, {'role': 'bak'},
+                               {'old_disks': {}}, {'old_config_sha256': '0'}):
+                    with self.subTest(change=change), self.assertRaises(m.ApplyError):
+                        m.validate_vm_adoption_intent({**intent, **change})
+                signature = root / 'signature.sig'
+                signature.write_text('test-signature')
+                request = m.vm_adoption_request(intent)
+                assignment = {'managed': True, 'operation_id': intent['operation_id'],
+                              'request_sha256': m.inventory_digest(request), 'stage': 'adopted',
+                              'vm_uuid': intent['old_uuid'], 'disks': intent['old_disks'],
+                              'artifacts': intent['old_artifacts'], 'runtime': 'running',
+                              'configuration_drift': False, 'autostart_drift': False}
+                remote = [dict(stage='adopted', request_sha256=m.inventory_digest(request)), assignment]
+                args = SimpleNamespace(signer_id=m.SIGNER_ID, approval_signature=signature)
+                with patch.object(m, 'vm_adoption_run_controller', side_effect=[None, report]) as refresh, \
+                        patch.object(m, 'vm_adoption_remote', side_effect=remote) as dom0:
+                    m.vm_update_adoption_execute(args, intent)
+                self.assertEqual(refresh.call_count, 2)
+                self.assertEqual(dom0.call_args_list[0].args[1][:2], ['adopt-source', '--operation-id'])
+                self.assertEqual(json.loads(dom0.call_args_list[0].kwargs['input_text']), request)
+                adopted = json.loads((root / 'executor/adoptions' / (intent['nonce'] + '.json')).read_text())
+                self.assertEqual(adopted['assignment'], assignment)
+                self.assertTrue((root / 'nonces' / intent['nonce']).is_file())
+                with patch.object(m, 'vm_adoption_run_controller', return_value={}) as refresh, \
+                        patch.object(m, 'vm_adoption_remote', return_value=assignment), \
+                        redirect_stdout(io.StringIO()) as output:
+                    m.vm_update_adoption_execute(args, intent)
+                    self.assertIn('already-adopted', output.getvalue())
+                    refresh.assert_not_called()
+
+    def test_adoption_refuses_new_workload_before_remote_mutation(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy, report, source = self.adoption_fixture(root / 'discovery')
+            path = root / 'discovery/qualifications' / (report['report_sha256'] + '.json')
+            with patch.object(m, 'VM_UPDATE_ROOT', root / 'executor'), \
+                    patch.object(m, 'VM_UPDATE_DISCOVERY', root / 'discovery'), \
+                    patch.object(m, 'NONCE_ROOT', root / 'nonces'), \
+                    patch.object(m, 'vm_update_policy_current', return_value=policy), \
+                    patch.object(m, 'vm_update_pause_state', return_value=False), \
+                    patch.object(m, 'require_root_active'), patch.object(m, 'require_self_match'), \
+                    patch.object(m, 'verify_signature'), patch.object(m, 'append_audit'), \
+                    redirect_stdout(io.StringIO()):
+                m.vm_update_adoption_prepare(path)
+                intent = json.loads(next((root / 'executor/adoption-preflights').iterdir()).joinpath('intent.json').read_text())
+                signature = root / 'signature.sig'; signature.write_text('test-signature')
+                changed = copy.deepcopy(report)
+                changed['intent']['workloads'] = ['new-workload']
+                with patch.object(m, 'vm_adoption_run_controller', side_effect=[None, changed]), \
+                        patch.object(m, 'vm_adoption_remote') as dom0:
+                    with self.assertRaises(m.ApplyError):
+                        m.vm_update_adoption_execute(SimpleNamespace(signer_id=m.SIGNER_ID,
+                                                                      approval_signature=signature), intent)
+                    dom0.assert_not_called()
+
+    def test_adoption_scan_accepts_old_branch_findings_only_with_complete_fresh_inventory(self):
+        m = self.m
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = {'complete': True, 'generated_at': m.format_utc(m.now_utc()),
+                      'findings': [{'code': 'source.support-expired'}]}
+            (root / 'current.json').write_text(m.canonical(report) + '\n')
+            result = SimpleNamespace(returncode=1, stdout='', stderr='')
+            with patch.object(m, 'VM_UPDATE_DISCOVERY', root), \
+                    patch.object(m.subprocess, 'run', return_value=result):
+                self.assertEqual(m.vm_adoption_run_controller('scan'), report)
+                report['complete'] = False
+                (root / 'current.json').write_text(m.canonical(report) + '\n')
+                with self.assertRaisesRegex(m.ApplyError, 'incomplete'):
+                    m.vm_adoption_run_controller('scan')
 
 
 if __name__ == '__main__':unittest.main()

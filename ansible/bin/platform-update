@@ -1052,6 +1052,12 @@ def main(argv=None):
     adopt_prepare.add_argument('--box', required=True)
     adopt_prepare.add_argument('--role', choices=vm_no_application.ROLES, required=True)
     adopt_prepare.add_argument('--json', action='store_true')
+    adopt_prepare.add_argument('--qualification-only', action='store_true',
+                               help='write only the fresh qualification for the root adoption executor')
+    adopt_apply = adoption.add_parser('apply', help='execute the exact signed old-generation adoption intent')
+    adopt_apply.add_argument('--approval-intent', required=True)
+    adopt_apply.add_argument('--approval-signature', required=True)
+    adopt_apply.add_argument('--signer-id', required=True)
     policy_parser = sub.add_parser("policy", help="prepare, activate, or validate the signed standing policy")
     policy_parser.add_argument("action", choices=("prepare", "activate", "status"))
     evidence_names = ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir")
@@ -1073,19 +1079,58 @@ def main(argv=None):
         os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
         os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
         if args.command == 'adopt':
+            if args.action == 'apply':
+                require_controller()
+                supplied = load(Path(args.approval_intent))
+                if supplied.get('kind') != 'klokast.vm-adoption-intent.v1':
+                    raise UpdateError('adopt apply accepts only a signed VM adoption intent')
+                return subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'execute',
+                                       '--approval-intent', args.approval_intent,
+                                       '--approval-signature', args.approval_signature,
+                                       '--signer-id', args.signer_id],
+                                      stdin=subprocess.DEVNULL, timeout=2100).returncode
             result, record = adoption_prepare(args.box, args.role)
+            intent = None
+            intent_path = None
+            if result['kind'] == 'klokast.vm-no-application-qualification.v7' and not args.qualification_only:
+                prepared = subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                                           'vm-update-adoption', 'prepare', '--qualification', str(record)],
+                                          stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+                if prepared.returncode:
+                    raise UpdateError('signed adoption preparation failed: ' + prepared.stderr[-2048:].strip())
+                intent = json.loads(prepared.stdout, object_pairs_hook=unique_object)
+                if (not isinstance(intent, dict) or intent.get('kind') != 'klokast.vm-adoption-intent.v1' or
+                        intent.get('qualification_sha256') != result['report_sha256'] or
+                        intent.get('box') != args.box or intent.get('role') != args.role or
+                        not isinstance(intent.get('nonce'), str) or
+                        not re.fullmatch(r'[A-Za-z0-9_-]{12,128}', intent['nonce'])):
+                    raise UpdateError('root adoption preflight did not bind the selected qualification')
+                destination = STATE / 'adoption-intents'
+                destination.mkdir(mode=0o700, exist_ok=True)
+                intent_path = destination / (intent['nonce'] + '.json')
+                if intent_path.exists():
+                    if load(intent_path) != intent:
+                        raise UpdateError('existing adoption intent conflicts with root preflight')
+                else:
+                    write(intent_path, intent)
             if args.json:
-                print(canonical(result))
+                print(canonical(result if args.qualification_only or intent is None else
+                                {'qualification': result, 'adoption_intent': intent,
+                                 'intent_path': str(intent_path)}))
             else:
-                state = ('classification complete; signed adoption intent unavailable'
+                state = ('classification complete; signed adoption intent prepared'
+                         if intent is not None else
+                         'classification complete; signed adoption intent unavailable'
                          if result['classification_complete'] else
                          'no-application qualification blocked; adoption intent unavailable')
                 print(f"{args.box}-{args.role}: {state}")
                 print(f"Classification: {result['summary']['items']} items; {result['summary']['unresolved']} unresolved; {result['summary']['cleanup_items']} cleanup items")
                 print('Report: ' + str(record))
+                if intent_path:
+                    print('Intent: ' + str(intent_path))
                 for finding in result['findings']:
                     print(finding['code'] + ': ' + finding['message'])
-            return 1 if not result['qualified'] else 0
+            return 0 if intent is not None else (1 if not result['qualified'] else 0)
         if args.command == 'retention':
             report = retention_report()
             if args.json:
