@@ -175,6 +175,16 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
             reuse.assert_called_once_with(selection, frozen=True)
             build.assert_not_called()
+        complete = {'hosts': [{**row, 'branch': 'v3.24'} for row in discovery['hosts']]}
+        with patch.object(cli, 'command', side_effect=command), \
+                patch.object(cli, 'read_policy_source', return_value=source), \
+                patch.object(cli, 'optional', side_effect=[complete, metadata,
+                                                           complete, metadata]), \
+                patch.object(cli, 'automatic_selection', return_value=selection), \
+                patch.object(cli, 'reuse_auto_candidate',
+                             return_value={'state': 'unchanged'}) as reuse:
+            self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
+            reuse.assert_called_once_with(selection, frozen=False)
 
     def test_automatic_prepare_reuses_only_a_complete_build_with_current_signed_indexes(self):
         cli = load_cli()
@@ -254,10 +264,12 @@ class EvidenceTests(unittest.TestCase):
                                               {'name': 'community', 'eol_date': '2026-11-01'}],
              'releases': [{'version': '3.24.2', 'date': '2026-09-17'}]}]}
         self.assertEqual(m.adjacent_stable_branch('v3.23', releases, NOW), 'v3.24')
+        self.assertEqual(m.supported_stable_branch('v3.24', releases, NOW), 'v3.24')
         self.assertIsNone(m.adjacent_stable_branch('v3.21', releases, NOW))
         changed = copy.deepcopy(releases)
         changed['release_branches'][1]['repos'][1]['eol_date'] = '2026-05-01'
         self.assertIsNone(m.adjacent_stable_branch('v3.23', changed, NOW))
+        self.assertIsNone(m.supported_stable_branch('v3.24', changed, NOW))
         changed = copy.deepcopy(releases)
         changed['release_branches'][1]['arches'] = ['aarch64']
         with self.assertRaises(u.UpdateError):
@@ -298,6 +310,12 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(cli.automatic_selection(canary, metadata, source, 'c' * 40, NOW), selected)
         second = copy.deepcopy(canary); second['hosts'][1]['branch'] = 'v3.24'
         self.assertEqual(cli.automatic_selection(second, metadata, source, 'c' * 40, NOW), selected)
+        complete = copy.deepcopy(second); complete['hosts'][2]['branch'] = 'v3.24'
+        self.assertEqual(cli.automatic_selection(complete, metadata, source, 'c' * 40, NOW), selected)
+        expired = copy.deepcopy(metadata)
+        expired['v3.24']['releases']['release_branches'][0]['repos'][1]['eol_date'] = '2026-05-01'
+        with self.assertRaisesRegex(u.UpdateError, 'no supported Alpine branch'):
+            cli.automatic_selection(complete, expired, source, 'c' * 40, NOW)
         out_of_order = copy.deepcopy(report); out_of_order['hosts'][1]['branch'] = 'v3.24'
         with self.assertRaisesRegex(u.UpdateError, 'canary and rollout order'):
             cli.automatic_selection(out_of_order, metadata, source, 'c' * 40, NOW)

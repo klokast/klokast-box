@@ -25,11 +25,16 @@ def adjacent_stable_branch(current, releases, now):
     An expired source branch is permitted because updating it is the goal.
     """
     major, minor = branch_number(current)
+    return supported_stable_branch('v' + str(major) + '.' + str(minor + 1), releases, now)
+
+
+def supported_stable_branch(selected, releases, now):
+    """Return a supported explicit branch or None from official release data."""
+    branch_number(selected)
     if (not isinstance(releases, dict) or not isinstance(releases.get('release_branches'), list) or
             not isinstance(now, dt.datetime) or now.tzinfo is None or
             now.utcoffset() != dt.timedelta(0)):
-        raise UpdateError('adjacent branch selection requires current release metadata and UTC time')
-    selected = 'v' + str(major) + '.' + str(minor + 1)
+        raise UpdateError('stable branch selection requires release metadata and UTC time')
     matches = [item for item in releases['release_branches']
                if isinstance(item, dict) and item.get('rel_branch') == selected]
     if not matches:

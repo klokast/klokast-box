@@ -222,8 +222,10 @@ receipts, and passed base tests. It records application tests as `not-run`.
 It is build evidence, not an accepted release or execution authority.
 `prepare --auto` has no caller-selected box or branch. It obtains the current
 signed policy through `ksa-apply`, requires the three selected running shared
-VMs to have fresh complete discovery, and selects the branch adjacent to the
-oldest guest. Guests can differ by one branch only in canary and rollout order.
+VMs to have fresh complete discovery, and selects the supported branch adjacent
+to the oldest guest. When all guests share one supported branch and no adjacent
+branch is available, it checks that branch for signed package changes. Guests
+can differ by one branch only in canary and rollout order.
 It builds the template once on k001. A completed automatic build has one
 controller pointer. Before rollout, current signed target-branch indexes and
 installed signing keys must match its frozen inputs. After the canary advances,
