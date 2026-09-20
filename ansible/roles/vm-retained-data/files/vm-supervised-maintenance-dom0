@@ -170,7 +170,7 @@ def execute(args):
             stream.flush(); os.fsync(stream.fileno())
         for path in (root_copy, result_slot, payload):
             loops[path] = host.attach_loop(path, readonly=path == payload)
-        identity = str(uuid.uuid4())
+        domain_uuid = str(uuid.uuid4())
         disks = [f'phy:{loops[root_copy]},xvda,w', f'phy:{loops[result_slot]},xvdb,w',
                  f'phy:{source["path"]},xvdc,r', f'phy:{destination["path"]},xvdd,w',
                  f'phy:{loops[payload]},xvde,r']
@@ -179,14 +179,14 @@ def execute(args):
                  'klokast_supervised=' + args.mode + ' klokast_operation=' + args.operation_id +
                  ' klokast_inputs=' + manifest['inputs_sha256'] +
                  ' klokast_request_sha256=' + data.digest(request))
-        config.write_text(f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 4096\n'
+        config.write_text(f'name = {name!r}\nuuid = {domain_uuid!r}\ntype = "pvh"\nmemory = 4096\n'
                           f'maxmem = 4096\nvcpus = 2\nkernel = {str(candidate / "kernel")!r}\n'
                           f'ramdisk = {str(candidate / "initramfs")!r}\nextra = {extra!r}\n'
                           f'disk = {disks!r}\nvif = []\non_poweroff = "destroy"\n'
                           'on_reboot = "destroy"\non_crash = "destroy"\n')
         backup.store(work / 'lifecycle.json', {'stage': 'booting', 'candidate': args.candidate_id,
-                                              'domain': name, 'uuid': identity})
-        host.boot_guest(work, name, identity, config,
+                                              'domain': name, 'uuid': domain_uuid})
+        host.boot_guest(work, name, domain_uuid, config,
                         {'operation_id': args.operation_id, 'inputs_sha256': manifest['inputs_sha256']},
                         slot=result_slot.name, kind='klokast.vm-supervised-maintenance-result.v1', timeout=1800)
         result = host.read_slot(result_slot)

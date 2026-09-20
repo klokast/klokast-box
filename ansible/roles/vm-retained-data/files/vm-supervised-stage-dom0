@@ -69,11 +69,15 @@ def stage(args):
                'operation_id': args.operation_id, 'inputs_sha256': manifest['inputs_sha256'],
                'request': copy_request, 'stage_receipt_sha256': None}
     work = root / 'stage'
-    work.mkdir(mode=0o700)
+    if not work.exists() and not work.is_symlink():
+        work.mkdir(mode=0o700)
     backup.secure(work, True)
-    if any(work.iterdir()):
-        raise backup.BackupError('identity stage already started; inspect its exact result')
-    backup.store(work / 'request.json', request)
+    existing = {path.name for path in work.iterdir()}
+    if existing:
+        if existing != {'request.json'} or read(work / 'request.json') != request:
+            raise backup.BackupError('identity stage already started; inspect its exact result')
+    else:
+        backup.store(work / 'request.json', request)
     command = ['/usr/bin/python3', str(root / 'code/vm-supervised-maintenance-dom0'),
                '--box', args.box, '--role', args.role,
                '--operation-id', args.operation_id, '--candidate-id', args.candidate_id,

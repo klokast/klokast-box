@@ -39,13 +39,16 @@
         group: root
         mode: '0700'
 
-    - name: Stage checked identity-copy entry
+    - name: Stage checked identity-copy and isolated maintenance entries
       ansible.builtin.copy:
-        src: ../roles/vm-retained-data/files/vm-supervised-stage-dom0
-        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-stage-dom0"
+        src: "../roles/vm-retained-data/files/{{ item }}"
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/{{ item }}"
         owner: root
         group: root
         mode: '0600'
+      loop:
+        - vm-supervised-stage-dom0
+        - vm-supervised-maintenance-dom0
 
     - name: Copy exact identity files in a networkless maintenance guest
       ansible.builtin.command:
