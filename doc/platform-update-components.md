@@ -835,8 +835,10 @@ machine inputs, and a signed adoption operation.
 The helper has an internal `adopt_old` transition for the first assignment.
 It records the exact running old disks before it publishes the role pointer.
 Boot recovery can finish an interrupted publication without switching guests.
-No operator command exposes this transition yet. The signed controller executor
-must gate it before production adoption.
+The root-only `adopt-source` command accepts only the closed old-generation
+request from signed controller adoption. It does not stop the guest or select
+a candidate. The public `adopt` transaction step remains limited to recovery
+and native test use.
 The guest discovery probe accepts only `/dev/xvda3` for `/` and `/dev/xvda1`
 for `/boot`. It checks each block device against its mount identity, reads the
 mount inventory twice, and reports device names and numbers only. A v5 qualification compares these

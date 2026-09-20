@@ -11,8 +11,8 @@ VM types are separate follow-up work.
 The release is **not complete**. The discovery, template builder, independent
 backup and isolated restore, retained-data, personalizer, and dom0 recovery
 components have native test evidence. Their production integration is unfinished.
-`adopt prepare` now writes classification and exact cleanup reports. It does
-not issue an adoption intent while qualification is incomplete. `prepare --auto`
+`adopt prepare` writes classification and exact cleanup reports. It issues a
+signed adoption intent only when qualification is complete. `prepare --auto`
 uses the active signed policy and fresh discovery to select the adjacent stable
 branch. It builds one shared template and transfers compressed, checked bytes
 to each other selected box. The destination checks the unpacked artifact
