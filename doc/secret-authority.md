@@ -310,6 +310,13 @@ After activation, converge the fixed deployment checkout and installed wrappers
 to the exact activated engine before normal Platform operations resume. Do not
 pull the candidate into the fixed checkout to make preflight pass.
 
+Private Instance publication checks each candidate with both the active engine
+and its immediately previous sealed engine. A new optional setting cannot be
+published while that previous engine lacks the setting. Promote a reviewed
+successor of the first capable engine before enabling the setting. This keeps
+the immediate rollback path valid; removing the setting through signed private
+publication is required before any later rollback to an engine that lacks it.
+
 Use this command for a forward rollback:
 
 ```sh

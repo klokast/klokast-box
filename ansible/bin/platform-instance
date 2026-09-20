@@ -1126,7 +1126,13 @@ def check_candidate(args):
                 capture=True,
                 check=False,
             )
-            parse_checker_result(rollback_completed)
+            try:
+                parse_checker_result(rollback_completed)
+            except InstanceError as error:
+                raise InstanceError(
+                    "candidate cannot be restored with the immediately previous "
+                    "sealed engine; rollback compatibility failed:\n" + str(error)
+                ) from error
             instance_path.write_bytes(content)
             rollback_lock_path.write_bytes(active_lock_content)
             run(["git", "-C", candidate, "add", "--", "klokast-instance.json", "klokast.lock.json"])
