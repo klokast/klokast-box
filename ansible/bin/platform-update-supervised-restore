@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Verify a recorded supervised source backup in a disposable Xen guest."""
+
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import socket
+import subprocess
+import sys
+
+REPO = Path(__file__).resolve().parents[2]
+LOCK = Path('/var/lib/klokast/updates/operation.lock')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+
+
+def checked(argv, *, input_text=None, timeout=30):
+    result = subprocess.run(argv, input=input_text, capture_output=True,
+                            text=True, timeout=timeout)
+    if result.returncode or len(result.stdout) > 16384:
+        raise RuntimeError('required controller or guest identity check failed: ' + argv[0])
+    return result.stdout.strip()
+
+
+def guest_identity(host):
+    script = '''set -eu
+hostname
+doas /bin/busybox blkid /dev/xvda3
+id -u neo
+id -g neo
+awk -F: '$1 == "neo" {print $2 ":" $3}' /etc/subuid
+awk -F: '$1 == "neo" {print $2 ":" $3}' /etc/subgid
+'''
+    lines = checked(['tailscale', 'ssh', 'neo@' + host, 'sh', '-s'],
+                    input_text=script, timeout=90).splitlines()
+    if len(lines) != 6 or lines[0] != host or not lines[1].startswith('/dev/xvda3:') or 'TYPE="ext4"' not in lines[1]:
+        raise RuntimeError('guest did not return one exact legacy root filesystem')
+    match = re.search(r'\bUUID="(' + UUID.pattern + r')"', lines[1])
+    if not match:
+        raise RuntimeError('guest root filesystem has no supported UUID')
+    try:
+        uid, gid = int(lines[2]), int(lines[3])
+        subuid = [int(v) for v in lines[4].split(':')]
+        subgid = [int(v) for v in lines[5].split(':')]
+    except ValueError as error:
+        raise RuntimeError('guest numeric identity is incomplete') from error
+    if (not 1000 <= uid <= 65535 or not 1000 <= gid <= 65535 or
+            len(subuid) != 2 or len(subgid) != 2 or
+            any(v < 1 for v in (*subuid, *subgid))):
+        raise RuntimeError('guest numeric runtime or subordinate ranges are invalid')
+    return match.group(1), {'uid': uid, 'gid': gid, 'subuid': [subuid], 'subgid': [subgid]}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    if ((args.box, args.role) not in TARGETS or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise RuntimeError('restore verification requires one selected target and exact operation')
+    if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
+        raise RuntimeError('run this command as smith on the active controller')
+    authority = json.loads(checked(['/usr/local/sbin/klokast-controller-guard',
+                                    '--status', '--json', '--require-active']))
+    if (authority.get('configured') is not True or authority.get('active') is not True or
+            authority.get('hostname') != socket.gethostname().split('.')[0]):
+        raise RuntimeError('this is not the configured active controller')
+    commit = checked(['git', '-C', str(REPO), 'rev-parse', 'HEAD'])
+    if (commit != checked(['git', '-C', str(REPO), 'rev-parse', '@{upstream}']) or
+            checked(['git', '-C', str(REPO), 'status', '--porcelain', '--untracked-files=all'])):
+        raise RuntimeError('the public checkout must be clean, committed, and pushed')
+    with LOCK.open('r+b') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('another Platform mutation holds the installation lock') from error
+        host = args.box + '-' + args.role
+        root_uuid, runtime = guest_identity(host)
+        print(f'Isolated restore: {host}; operation {args.operation_id}', flush=True)
+        command = [
+            'ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
+            str(REPO / 'ansible/playbooks/74-platform-update-supervised-restore.yml'),
+            '--limit', args.box + '-dom0', '-e', json.dumps({
+                'supervised_box': args.box, 'supervised_role': args.role,
+                'supervised_operation_id': args.operation_id,
+                'supervised_candidate_id': args.candidate_id,
+                'supervised_root_uuid': root_uuid, 'supervised_runtime': runtime,
+            }, separators=(',', ':')),
+        ]
+        environment = dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg'))
+        result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                env=environment, timeout=3900)
+        if result.returncode:
+            raise RuntimeError('isolated restore failed; inspect its exact record before retrying')
+        print(f'Independent backup restored and verified: {host}; operation {args.operation_id}', flush=True)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print('platform-update-supervised-restore: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,86 @@
+---
+- name: Restore and test one supervised VM source backup in an isolated Xen guest
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  tasks:
+    - name: Validate the selected restore target and recorded operation
+      ansible.builtin.assert:
+        that:
+          - (supervised_box, supervised_role) in [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
+          - inventory_hostname == supervised_box ~ '-dom0'
+          - supervised_operation_id is match('^[0-9a-f]{24}$')
+          - supervised_candidate_id is match('^[0-9a-f]{24}$')
+          - supervised_root_uuid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+          - supervised_runtime is mapping
+
+    - name: Verify active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: supervised_controller
+
+    - name: Require the configured active controller
+      ansible.builtin.assert:
+        that:
+          - (supervised_controller.stdout | from_json).configured | bool
+          - (supervised_controller.stdout | from_json).active | bool
+
+    - name: Verify persistent dom0 storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create private isolated restore records
+      ansible.builtin.file:
+        path: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: [verify, async-verify]
+
+    - name: Stage checked maintenance code beside the operation
+      ansible.builtin.copy:
+        src: "../{{ item.source }}"
+        dest: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/{{ item.target }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - {source: roles/vm-retained-data/files/retained_data.py, target: retained_data.py}
+        - {source: roles/vm-retained-data/files/vm_backup_verify.py, target: vm_backup_verify.py}
+        - {source: roles/vm-template-builder/files/vm-template-build-dom0, target: vm-template-build-dom0}
+        - {source: lib/vm_app_compatibility.py, target: vm_app_compatibility.py}
+        - {source: roles/vm-retained-data/files/vm-supervised-restore, target: vm-supervised-restore}
+
+    - name: Restore the backup into a disposable disk and verify identity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - '3600'
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/code/vm-supervised-restore"
+          - --box
+          - "{{ supervised_box }}"
+          - --role
+          - "{{ supervised_role }}"
+          - --operation-id
+          - "{{ supervised_operation_id }}"
+          - --candidate-id
+          - "{{ supervised_candidate_id }}"
+          - --root-uuid
+          - "{{ supervised_root_uuid }}"
+          - --runtime-json
+          - "{{ supervised_runtime | to_json }}"
+      async: 3660
+      poll: 15
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-vm-supervised/{{ supervised_operation_id }}/async-verify"
+      register: supervised_restore
+
+    - name: Show the bounded isolated restore receipt
+      ansible.builtin.debug:
+        msg: "{{ supervised_restore.stdout | from_json }}"

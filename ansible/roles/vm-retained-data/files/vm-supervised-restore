@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Verify one independent source backup in an isolated Xen maintenance VM."""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import sys
+
+import retained_data
+import vm_backup_verify
+import vm_disk_backup as backup
+
+BASE = Path('/mnt/dom0_data/klokast-vm-supervised')
+CANDIDATES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+TARGETS = {('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')}
+
+
+def load_builder(path):
+    loader = importlib.machinery.SourceFileLoader('vm_template_build_dom0', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--candidate-id', required=True)
+    parser.add_argument('--root-uuid', required=True)
+    parser.add_argument('--runtime-json', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    if (os.geteuid() != 0 or (args.box, args.role) not in TARGETS or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            any(not re.fullmatch(r'[0-9a-f]{24}', value)
+                for value in (args.operation_id, args.candidate_id))):
+        raise backup.BackupError('restore test requires dom0 root and one fixed target')
+    root = BASE / args.operation_id
+    backup.secure(BASE, True)
+    backup.secure(root, True)
+    backup.secure(root / 'code', True)
+    work = root / 'verify'
+    backup.secure(work, True)
+    for path in (root / 'source.json', root / 'backup/request.json',
+                 root / 'backup/result.json'):
+        backup.secure(path)
+    source = json.loads((root / 'source.json').read_text(), object_pairs_hook=backup.unique)
+    request = json.loads((root / 'backup/request.json').read_text(), object_pairs_hook=backup.unique)
+    receipt = json.loads((root / 'backup/result.json').read_text(), object_pairs_hook=backup.unique)
+    if (source.get('kind') != 'klokast.vm-unmanaged-source.v1' or
+            source.get('dom0') != args.box + '-dom0' or source.get('role') != args.role or
+            source.get('runtime') != 'running' or source.get('autostart') is not True or
+            receipt.get('box') != args.box or receipt.get('operation_id') != args.operation_id or
+            request.get('source_evidence_sha256') != backup.digest(source)):
+        raise backup.BackupError('backup source or operation differs from its saved running guest')
+    runtime = json.loads(args.runtime_json, object_pairs_hook=backup.unique)
+    restore = {
+        'kind': 'klokast.vm-backup-restore.v1', 'operation_id': args.operation_id,
+        'engine_commit': receipt['engine_commit'],
+        'backup_receipt_sha256': receipt['receipt_sha256'],
+        'disk_bytes': receipt['source']['bytes'], 'disk_sha256': receipt['disk_sha256'],
+        'root_partition': 3, 'root_uuid': args.root_uuid, 'runtime': runtime,
+    }
+    retained_data.validate_backup(restore)
+    host = load_builder(root / 'code/vm-template-build-dom0')
+    result = vm_backup_verify.verify(work, restore, receipt,
+                                     CANDIDATES / args.candidate_id, host)
+    if result.get('restore_verified') is not True or result.get('cleanup_verified') is not True:
+        raise backup.BackupError('isolated restore did not complete and clean up')
+    print(backup.canonical(result).decode())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (backup.BackupError, retained_data.CopyError, OSError, ValueError,
+            KeyError, TypeError, RuntimeError) as error:
+        print('vm-supervised-restore: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

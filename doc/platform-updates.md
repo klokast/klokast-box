@@ -125,6 +125,10 @@ clean, pushed candidate checkout on the active controller. It holds the
 installation lock and copies the exact running source disk into an independent
 LVM volume. Its operation ID identifies the private dom0 receipt. A copied
 disk is not yet a verified restore or permission to stop the old guest.
+`ansible/bin/platform-update-supervised-restore --box BOX --role ROLE
+--operation-id OPERATION --candidate-id BUILD_ID` boots a disposable,
+networkless maintenance guest to restore and check that copy. It keeps the
+old guest and its disk unchanged.
 
 `adopt prepare` requires one running DMZ or IoT target. It combines the installed
 root registry and retention readers, verifies that both bind the same authority,
