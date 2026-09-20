@@ -207,7 +207,7 @@
       retries: 24
       delay: 5
 
-    - name: Read k001 hardware clock as a UTC epoch
+    - name: Read the selected dom0 hardware clock as a UTC epoch
       ansible.builtin.shell: |
         python3 - <<'PY'
         from datetime import datetime
@@ -222,22 +222,19 @@
         PY
       changed_when: false
       register: update_time_rtc_before
-      when: update_time_box == 'k001'
 
-    - name: Require a bounded k001 hardware clock correction
+    - name: Require a bounded hardware clock correction
       ansible.builtin.assert:
         that:
           - >-
             ((update_time_rtc_before.stdout | int) -
              (lookup('pipe', 'date -u +%s') | int)) | abs <= 600
-      when: update_time_box == 'k001'
 
-    - name: Copy verified dom0 UTC to the k001 hardware clock
+    - name: Copy verified dom0 UTC to its hardware clock
       ansible.builtin.command:
         argv: [hwclock, -u, -w]
-      when: update_time_box == 'k001'
 
-    - name: Verify the k001 hardware clock after correction
+    - name: Verify the hardware clock after correction
       ansible.builtin.shell: |
         python3 - <<'PY'
         from datetime import datetime
@@ -252,15 +249,13 @@
         PY
       changed_when: false
       register: update_time_rtc_after
-      when: update_time_box == 'k001'
 
-    - name: Require k001 hardware clock within 30 seconds of the controller
+    - name: Require hardware clock within 30 seconds of the controller
       ansible.builtin.assert:
         that:
           - >-
             ((update_time_rtc_after.stdout | int) -
              (lookup('pipe', 'date -u +%s') | int)) | abs <= 30
-      when: update_time_box == 'k001'
 
     - name: Restart k001 NTP after the bounded system and hardware correction
       ansible.builtin.service:
