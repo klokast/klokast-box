@@ -84,6 +84,76 @@ label and a fixed mount point. Configure these service paths explicitly:
 Do not put generated configuration, package state, SSH bootstrap keys, SSH host
 keys, logs, caches, or application data on this volume.
 
+## Bootstrap compatibility
+
+Initial installation and replacement must use one router template, package
+profile, configuration renderer, and verifier. Keep the existing
+`provision-box` phase order: playbook 30 prepares the router, playbook 31 brings
+it into service, then the shared VM playbooks run. Refactor
+`30-vm-router-alpine-build.yml` and `31-vm-router.yml` to call the common roles.
+Do not maintain a separate router OS recipe for bootstrap.
+
+The common build and personalization roles have two lifecycle modes:
+
+- **Initial installation:** select and freeze an approved initial release,
+  clone its generic template, create an empty state LV, render the box inputs,
+  and enroll a new Tailscale identity through the existing broker. Store the
+  identity on the state LV from the start. Verify the router and record its
+  first accepted release before proceeding to dependent guests. No previous
+  generation, `update-required` result, or standing replacement policy exists
+  yet; the operation uses the existing approved bootstrap authority.
+- **Replacement:** use the upstream check and standing replacement authority,
+  prepare a candidate from the same recipe, preserve the existing state LV and
+  identity, and perform the bounded switch with rollback.
+
+An existing legacy router uses the supervised one-time migration below.
+Missing accepted-release records alone must never select initial installation
+or authorize formatting existing disks. Interrupted installation must resume
+from its recorded disk and enrollment identities, without resetting the state
+LV or minting a duplicate Tailscale identity.
+
+Bootstrap must work before the local router, shared service VMs, and
+`<box>-ops` exist. Build on the available dom0 using its existing WAN access
+and the approved bootstrap controller path. Preserve the documented initial
+cloud-controller workflow when that machine holds bootstrap authority. This
+does not permit a retained cloud airunner to act as a controller. The common
+builder must not require the router being installed, a local artifact service,
+or an already active in-box update scheduler.
+
+### Safe provisioning reruns
+
+Make playbooks 30 and 31 read the accepted router assignment before changing
+disks, boot artifacts, packages, or Xen configuration. After a replacement,
+normal convergence must preserve that assignment, including its state LV,
+package versions, kernel, and initramfs. It must not restore the legacy
+`lv_router` paths, reset repositories to an older branch, re-enroll the router,
+or invoke the destructive `router_alpine_rebuild` path on an accepted disk.
+
+Apply this protection to the router calls into `xen-guest`, `vm-base`, and
+`tailscale-client`, and to the router role itself. Their existing shared-VM
+assignment protection does not cover routers. Use the router assignment
+contract; keep the shared VM executor's role restriction intact.
+
+`provision-ops-vm` also invokes playbook 31. Keep this workflow usable: it must
+converge approved router configuration against the accepted OS release, or
+refuse an unsupported change before mutation. All router provisioning and
+replacement entry points must use the same installation lock. Nested calls
+must reuse the held lock without trying to acquire it again.
+
+### Alpine inputs shared with other bootstrap playbooks
+
+Both router bootstrap and `40-vm-golden-image.yml` use `alpine-virt-assets`.
+Give the router build explicit paths for its selected release, architecture,
+ISO, extracted APK repository, modloop, kernel, and initramfs. Version these
+inputs by their recorded identity and validate them before reuse.
+
+A router build must not overwrite another profile's shared asset paths or
+change its release selection through global defaults. Keep the other bootstrap
+playbooks functional when adding these parameters. For one release and profile,
+initial installation and replacement must produce the same package manifest
+and use the same matching kernel and modules. Personalization must not select
+additional packages from a moving repository.
+
 ## Authority and scheduling
 
 Reuse the existing Instance-owned update schedule, maintenance window,
@@ -200,7 +270,10 @@ destinations.
 
 ## Candidate preparation
 
-For one box at a time:
+For ordinary replacements, run these steps for one box at a time. Initial
+installation uses the bootstrap mode above. The supervised legacy migration
+must validate and record its source separately before using the common
+candidate build and test steps.
 
 1. Acquire the installation lock and verify the active-controller guard.
 2. Read the current signed policy and exact Instance-derived router inputs.
@@ -231,8 +304,9 @@ health or collision check only.
 
 ## One-time state migration
 
-The first release needs one supervised migration from state inside the old OS
-disk to the router-state LV.
+Existing routers with state inside the old OS disk need one supervised
+migration to the router-state LV. New routers installed through the common
+bootstrap mode already have this layout and do not need this migration.
 
 1. Inventory the exact live service paths and metadata on the router through an
    approved controller playbook.
@@ -286,7 +360,9 @@ a disk from an LVM name pattern.
 
 ## Post-boot verification
 
-Before acceptance, run the existing router verification and add these checks:
+Before acceptance, run the existing router verification and add these checks.
+For initial installation, verify the newly enrolled identity against the
+recorded bootstrap result; identity continuity applies to replacements.
 
 - the Tailscale stable machine ID is unchanged, not only the hostname;
 - the expected tag and Tailscale SSH state are present;
@@ -319,6 +395,9 @@ not use wildcards or infer ownership from names.
 ### Milestone 1: contracts and tests
 
 - Add the router release profile and receipt schema.
+- Define initial-install and replacement modes and their authority checks as
+  specified under Bootstrap compatibility. Reject unknown existing disks as
+  initial-install targets and test interrupted-install resumption.
 - Add the read-only upstream check, package resolution, and decision report
   defined above. Test unchanged inputs, a package-only update, a dependency-only
   update, a kernel update, a patch release, an eligible branch, a held branch,
@@ -337,6 +416,9 @@ not use wildcards or infer ownership from names.
 - Add the restricted candidate boot and synthetic-state tests.
 - Change first-install Tailscale discovery so it cannot be reused as candidate
   proof.
+- Connect playbooks 30 and 31 to the common recipe. Add router assignment checks
+  to provisioning and convergence, including `provision-ops-vm` and shared-role
+  calls. Parameterize Alpine asset paths without changing other VM profiles.
 
 ### Milestone 3: persistent state
 
@@ -344,6 +426,8 @@ not use wildcards or infer ownership from names.
   approved controller inspection path.
 - Add the router-state LV, mount contract, service configuration, and private
   metadata checks.
+- Create this layout directly during bootstrap; record the first accepted
+  generation after verification, without requiring replacement policy.
 - Add the networkless one-time migration helper and synthetic native tests.
 - Make enabled overlay IPv6 repair a clear blocking finding.
 
@@ -363,6 +447,13 @@ not use wildcards or infer ownership from names.
 - Verify service continuity, identity retention, state retention, and exact
   cleanup behavior.
 - Repeat the supervised proof for any materially different site topology.
+- On a disposable test target, prove the bootstrap compatibility sequence:
+  fresh installation before local service VMs or ops exist; interrupted-install
+  resumption; router update; then rerun the router provisioning phases and the
+  controller provisioning workflow. Confirm the updated assignment and identity
+  remain intact. Do not rerun destructive bare-metal phases on a live box.
+- Build a newer router release, then run the shared VM template and clone
+  workflow on the test target. Verify it still uses its own selected inputs.
 
 ### Milestone 6: unattended operation
 
@@ -381,6 +472,13 @@ not use wildcards or infer ownership from names.
 
 The work is complete only when all these statements are true:
 
+- Bootstrap and replacement use the same router recipe and verification rules,
+  and pass the bootstrap compatibility sequence above.
+- Fresh bootstrap records the initial accepted release and state LV without
+  depending on the local router, local ops, or standing replacement policy.
+- A provisioning rerun preserves the updated router's accepted disk, boot
+  artifacts, package versions, and identity. Other VM builds retain their
+  selected Alpine inputs.
 - The tool detects eligible Alpine branch, patch, package, dependency, and
   kernel updates, and explains the difference from each accepted router.
 - Unchanged effective inputs cause no build or cutover. Missing or invalid

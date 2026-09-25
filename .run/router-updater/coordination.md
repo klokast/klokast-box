@@ -5,6 +5,7 @@
 - Date: 2026-09-25 UTC
 - Phase: repository investigation and design plan complete
 - Plan refinement: explicit upstream release and package detection added.
+- Plan refinement: bootstrap compatibility requirements and acceptance added.
 - Implementation: not started
 - Live Platform changes: none
 - Live Platform state inspection: none
@@ -19,6 +20,9 @@
 - Check upstream Alpine releases and the full router package set daily and on
   demand. Build only when an eligible change affects the accepted router.
 - Report update availability, eligibility, and verification failures separately.
+- Use the same router recipe for initial installation and replacement, with
+  separate lifecycle and authority checks. See Bootstrap compatibility in the
+  plan for rerun protection, first-install state, and shared asset rules.
 - Create a generic, versioned router template.
 - Build the template locally on each dom0.
 - Keep identity and lease data on one small per-box router-state LV.
@@ -58,6 +62,9 @@
 - The current router rootfs contains per-box hostname, network, and bootstrap
   key data.
 - Production boot artifacts and the Xen definition have fixed names.
+- Router provisioning lacks accepted-generation protection. Controller
+  provisioning also calls the router convergence playbook.
+- Router and shared VM bootstrap use Alpine asset paths that are not versioned.
 - The current Tailscale precheck can see the old canonical peer and mistake
   that result for candidate readiness.
 - The Instance update schema rejects `router` targets.
@@ -72,15 +79,19 @@
 2. Implement the upstream check and decision report from the plan as part of
     milestone 1. Test package-only and dependency-only changes, unchanged inputs,
     branch delays, and missing or invalid metadata before connecting the schedule.
-3. Parameterize the router rootfs builder and version all output paths.
+3. Parameterize the router rootfs builder and Alpine asset paths. Connect
+   bootstrap and replacement to the same recipe, with separate lifecycle modes.
 4. Add generic-template absence tests.
 5. Split router configuration into render, activate, and verify phases.
 6. Add a restricted candidate Xen definition and local management path.
-7. Add the state LV contract and synthetic migration tests.
+7. Add the state LV contract and synthetic migration tests. Create the state LV
+   directly on fresh installation and record the first accepted release.
 8. Add supervised one-time migration from the current router OS disk.
 9. Add the bounded dom0 cutover, rollback, and reboot recovery transaction.
 10. Extend router verification and Platform Map generation reporting.
-11. Run a supervised update and forced rollback on one box.
+11. Run a supervised update and forced rollback on one box. Complete the plan's
+    bootstrap compatibility tests, including safe provisioning reruns and shared
+    VM builds after a router update.
 12. Enable the signed schedule only after production acceptance evidence exists.
 
 ## Coordination rules
