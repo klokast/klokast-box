@@ -5267,16 +5267,20 @@ def vm_update_store(path, content, *, replace=False):
 def vm_update_release_contract(engine_commit):
     """Load only the approved, clean engine's release validator."""
     source = REPO_ROOT / "ansible/lib/platform_updates.py"
-    head = run(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture=True).stdout.strip()
-    status = run(["git", "-C", REPO_ROOT, "status", "--porcelain", "--untracked-files=all"], capture=True).stdout
-    checked = run(["git", "-C", REPO_ROOT, "show", head + ":ansible/lib/platform_updates.py"], capture=True).stdout
-    if head != engine_commit or status or read_regular(source, 256 * 1024) != checked.encode():
+    # The public checkout belongs to smith. Root Git rejects that ownership,
+    # and must not be made to trust a smith-controlled repository globally.
+    head = run_plan_as_controller(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"])
+    status = run_plan_as_controller(["git", "-C", REPO_ROOT, "status", "--porcelain", "--untracked-files=all"])
+    checked = run_plan_as_controller(["git", "-C", REPO_ROOT, "show", engine_commit + ":ansible/lib/platform_updates.py"])
+    if (any(result.returncode != 0 for result in (head, status, checked)) or
+            head.stdout.strip() != engine_commit or status.stdout or
+            read_regular(source, 256 * 1024) != checked.stdout.encode()):
         raise ApplyError("approved VM release validator or engine checkout changed")
     # The checked source is copied to root-owned temporary storage before
     # loading so a concurrent checkout edit cannot substitute Python code.
     with tempfile.TemporaryDirectory(prefix="vm-release-contract-", dir="/run") as temporary:
         path = Path(temporary) / "platform_updates.py"
-        path.write_bytes(checked.encode())
+        path.write_bytes(checked.stdout.encode())
         spec = importlib.util.spec_from_file_location("approved_vm_release_contract", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

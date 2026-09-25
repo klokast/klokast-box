@@ -5,7 +5,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -329,6 +329,29 @@ class VMUpdateAuthorityTest(unittest.TestCase):
                 with self.assertRaisesRegex(m.ApplyError, 'release evidence is invalid'):
                     m.vm_update_release_import(operation)
                 self.assertEqual(json.loads(record_path.read_text()), record)
+
+    def test_release_contract_reads_public_git_as_controller_user(self):
+        m = self.m
+        repo = Path(__file__).resolve().parents[2]
+        commit = 'a' * 40
+        source = (repo / 'ansible/lib/platform_updates.py').read_text()
+        replies = [SimpleNamespace(returncode=0, stdout=commit + '\n'),
+                   SimpleNamespace(returncode=0, stdout=''),
+                   SimpleNamespace(returncode=0, stdout=source)]
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(m, 'REPO_ROOT', repo), \
+                patch.object(m, 'run', side_effect=AssertionError('root must not run Git')), \
+                patch.object(m, 'run_plan_as_controller', side_effect=replies) as git, \
+                patch.object(m.tempfile, 'TemporaryDirectory', return_value=nullcontext(temporary)):
+            contract = m.vm_update_release_contract(commit)
+            self.assertTrue(callable(contract.validate_no_application_release))
+            self.assertEqual([call.args[0][-2:] for call in git.call_args_list],
+                             [['rev-parse', 'HEAD'], ['--porcelain', '--untracked-files=all'],
+                              ['show', commit + ':ansible/lib/platform_updates.py']])
+            replies[1] = SimpleNamespace(returncode=1, stdout='')
+            with patch.object(m, 'run_plan_as_controller', side_effect=replies), \
+                    self.assertRaisesRegex(m.ApplyError, 'approved VM release validator'):
+                m.vm_update_release_contract(commit)
 
     def test_replacement_readiness_requires_two_complete_native_tests_and_current_candidate(self):
         m = self.m
