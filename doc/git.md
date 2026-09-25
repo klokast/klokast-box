@@ -4,6 +4,7 @@
 
 - For any task that changes files, the task is not complete until every
   agent-authored change is committed and pushed to the upstream remote.
+  Ignored files are exempt from this requirement and must remain untracked.
 - "Committed" is not enough. The final state must not leave the current branch
   ahead of its upstream.
 - Push immediately after each commit, then verify the branch is synchronized
@@ -24,6 +25,9 @@
 
 ## Safety rules
 
+- Force-adding files excluded by `.gitignore` is forbidden. Do not use
+  `git add -f`, `git add --force`, or any other method to bypass ignore rules.
+  Keep ignored files, including `.run/`, untracked.
 - Delete unused or obsolete files when your changes make them irrelevant, for example after refactors or feature removals.
 - Moving, renaming and restoring files is allowed.
 - Revert files only when the change is yours or explicitly requested.

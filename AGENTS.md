@@ -50,8 +50,6 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - Git workflow is mandatory for every file-changing task. Read `doc/git.md` before editing files. A task that changes files is not complete until the agent-authored changes are committed and pushed to the upstream remote.
 
-- Force-adding files excluded by `.gitignore` is forbidden. Do not use `git add -f`, `git add --force`, or any other method to bypass ignore rules. Keep ignored files, including `.run/`, untracked. Ignored files are exempt from the commit-and-push requirement.
-
 - Before you answer questions about current Platform state, box inventory, Tailscale enrollment, NanoKVM status, storage, RAM pressure, Xen guests, or Podman workloads: read `doc/platform-map.md`.
 
 - Before installing or updating an application, read `apps/README.md`: it is
