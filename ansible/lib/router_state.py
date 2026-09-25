@@ -225,7 +225,7 @@ def generic_absence(root):
     }
     for relative, lines in permitted.items():
         path = root / relative
-        if path.is_symlink():
+        if any(p.is_symlink() for p in [path, *path.parents] if p != root.parent):
             raise StateError('generic router network file is a symlink')
         if path.exists():
             if not path.is_file() or path.stat().st_size > 65536:

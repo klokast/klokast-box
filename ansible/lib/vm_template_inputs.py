@@ -174,8 +174,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                 "world": sorted(world), "repositories": repositories, "keys": key_hashes,
                 "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
     manifest["inputs_sha256"] = digest(manifest)
-    (directory / "inputs.json").write_text(canonical(manifest) + "\n")
     verify_inputs(directory, manifest, expected_profile=expected_profile)
+    (directory / "inputs.json").write_text(canonical(manifest) + "\n")
     return manifest
 
 

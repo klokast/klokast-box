@@ -181,6 +181,14 @@ class CopyTests(unittest.TestCase):
         with self.assertRaisesRegex(r.StateError, 'network personalization'):
             r.generic_absence(self.target)
 
+    def test_generic_template_refuses_network_directory_escape(self):
+        outside = Path(self.temporary.name) / 'outside'
+        outside.mkdir()
+        (outside / 'interfaces').write_text('auto lo\niface lo inet loopback\n')
+        (self.target / 'etc/network').symlink_to(outside)
+        with self.assertRaisesRegex(r.StateError, 'symlink'):
+            r.generic_absence(self.target)
+
 
 if __name__ == '__main__':
     unittest.main()
