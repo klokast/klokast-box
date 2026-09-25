@@ -3,9 +3,10 @@
 ## Goal
 
 Add an unattended and fail-closed update path for each `<box>-router` VM.
-The path must build a new Alpine OS disk from a generic template, test it,
-switch to it, verify the complete router service, and roll back automatically
-if a check fails.
+The path must first check for new upstream Alpine releases and router package
+updates. When an eligible update is required, it must build a new Alpine OS
+disk from a generic template, test it, switch to it, verify the complete router
+service, and roll back automatically if a check fails.
 
 The updater must not upgrade a running router in place. It must not accept
 configuration drift. Ansible and the compiled Instance state remain the source
@@ -102,6 +103,74 @@ The first production state migration and the first complete replacement must be
 supervised. Recurring replacements can become unattended only after the same
 code passes rollback fault tests and a complete production verification.
 
+## Check whether an update is required
+
+Run a bounded daily check on the active controller at the Instance-owned check
+time. Also expose the same check as an on-demand CLI action. Checking must not
+build a VM, change the production router, or install packages on it.
+
+Use two upstream inputs:
+
+- Alpine release metadata at `https://alpinelinux.org/releases.json` for stable
+  branches, patch releases, first-release dates, and support status. Report
+  support separately for the selected repositories; `main` and `community`
+  have different support periods. See [Alpine release branches](https://alpinelinux.org/releases/).
+- Fresh, signature-verified APK indexes for the selected branch, architecture,
+  and `main`/`community` repositories. Resolve the complete router profile,
+  including dependencies, with native APK in an isolated scratch root. The
+  package set must include the kernel package and all router services. APK
+  handles package requests and their dependencies; see the
+  [Alpine package handbook](https://docs.alpinelinux.org/user-handbook/0.1a/Working/apk.html).
+
+Reuse the narrow metadata and native version-comparison helpers in
+`ansible/lib/platform_update_metadata.py` where their contracts fit. Use
+`apk version -t` for package versions, including Alpine package revisions.
+Do not inherit the shared updater's fixed production target list.
+
+For each router, compare the resolved candidate inputs with its protected
+accepted release manifest. Read-only verification must first confirm that the
+installed package set, running kernel, and boot assignment still match that
+accepted release. Report a mismatch as drift and block replacement; do not
+silently use the changed live state as the baseline.
+
+The decision rules are:
+
+1. Detect new stable branches and patch releases. Select only the next stable
+   branch allowed by the existing `tested-stable` policy and its Instance-owned
+   delay. Exclude `edge`, testing, and prereleases. Report later branches even
+   when they are not yet eligible.
+2. Independently check packages in the current branch. A package or dependency
+   update can require replacement even when the Alpine release number is
+   unchanged. Current-branch package and patch updates have no branch delay.
+   Continue these checks while a newer branch waits for eligibility.
+3. Require an update when the eligible branch, resolved package set, or selected
+   OS/boot input identity changes. For a new patch release, compare the actual
+   selected inputs: if the accepted VM already has all relevant updated bytes,
+   the announcement alone does not require a rebuild. Unrelated APK index
+   changes also do not require a rebuild.
+4. If all relevant inputs match, report `unchanged` and skip build and cutover.
+   If inputs differ, report `update-required`, with old and new release and
+   package versions, including dependency additions or removals.
+5. Record availability separately from eligibility. Report a held branch,
+   disabled policy, or unavailable/stale upstream metadata as `deferred`, with
+   a reason and any known available update. Failed signature checks, an
+   unsatisfied package set, unexplained downgrades, or live drift report
+   `failed`. Missing evidence must never become an `unchanged` result.
+   A held future branch must not defer an otherwise eligible current-branch
+   update; report both findings and prepare the eligible update.
+
+Persist the check time, source identities, accepted release identity, candidate
+input hashes, package difference, eligibility decision, and reason in protected
+controller state. Downloads and cached indexes stay in the existing cache
+location. Do not put these reports in the Instance repository or this folder.
+
+An eligible result feeds automatic preparation outside the maintenance window.
+Freeze the exact selected inputs for the build and subsequent cutover; do not
+resolve newer packages during personalization. Reuse an already tested candidate
+with those inputs. After acceptance, repeated checks against the same inputs
+must return `unchanged`. New releases and package revisions within the activated
+policy do not require a separate human approval for each update.
+
 ## Release and template contract
 
 Create a `router-alpine-v1` profile with these properties:
@@ -135,6 +204,8 @@ For one box at a time:
 
 1. Acquire the installation lock and verify the active-controller guard.
 2. Read the current signed policy and exact Instance-derived router inputs.
+   Require a fresh `update-required` decision bound to the accepted generation
+   and the frozen candidate inputs before allocating or building a candidate.
 3. Verify that the target is healthy, is the accepted generation, and has no
    unsupported overlay IPv6 state.
 4. Verify free LVM space for the template, candidate, state LV, and one previous
@@ -248,6 +319,10 @@ not use wildcards or infer ownership from names.
 ### Milestone 1: contracts and tests
 
 - Add the router release profile and receipt schema.
+- Add the read-only upstream check, package resolution, and decision report
+  defined above. Test unchanged inputs, a package-only update, a dependency-only
+  update, a kernel update, a patch release, an eligible branch, a held branch,
+  unrelated index changes, unavailable metadata, and invalid signatures.
 - Add native tests for generic-template absence rules and exact package inputs.
 - Extend the Instance update target contract and dispatch rules without letting
   the shared executor accept routers.
@@ -293,6 +368,8 @@ not use wildcards or infer ownership from names.
 
 - Activate the exact signed standing policy for selected router targets.
 - Install the Instance-owned schedule on the active controller.
+- Connect the daily check to automatic preparation only when an eligible update
+  is required. Verify that repeated unchanged checks allocate no candidate.
 - Prepare outside the maintenance window; cut over one router at a time inside
   the window.
 - Stop the rollout after one failure until the recorded operation is
@@ -304,6 +381,10 @@ not use wildcards or infer ownership from names.
 
 The work is complete only when all these statements are true:
 
+- The tool detects eligible Alpine branch, patch, package, dependency, and
+  kernel updates, and explains the difference from each accepted router.
+- Unchanged effective inputs cause no build or cutover. Missing or invalid
+  upstream evidence cannot produce a false "up to date" result.
 - A router update creates a new OS generation and never modifies the running OS
   generation in place.
 - The candidate is built from authenticated, recorded inputs and a generic

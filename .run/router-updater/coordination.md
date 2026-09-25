@@ -4,6 +4,7 @@
 
 - Date: 2026-09-25 UTC
 - Phase: repository investigation and design plan complete
+- Plan refinement: explicit upstream release and package detection added.
 - Implementation: not started
 - Live Platform changes: none
 - Live Platform state inspection: none
@@ -15,6 +16,9 @@
 ## Decisions
 
 - Use replacement, not in-place package upgrades.
+- Check upstream Alpine releases and the full router package set daily and on
+  demand. Build only when an eligible change affects the accepted router.
+- Report update availability, eligibility, and verification failures separately.
 - Create a generic, versioned router template.
 - Build the template locally on each dom0.
 - Keep identity and lease data on one small per-box router-state LV.
@@ -65,16 +69,19 @@
 ## Todo
 
 1. Add the router release/profile contract and negative role-dispatch tests.
-2. Parameterize the router rootfs builder and version all output paths.
-3. Add generic-template absence tests.
-4. Split router configuration into render, activate, and verify phases.
-5. Add a restricted candidate Xen definition and local management path.
-6. Add the state LV contract and synthetic migration tests.
-7. Add supervised one-time migration from the current router OS disk.
-8. Add the bounded dom0 cutover, rollback, and reboot recovery transaction.
-9. Extend router verification and Platform Map generation reporting.
-10. Run a supervised update and forced rollback on one box.
-11. Enable the signed schedule only after production acceptance evidence exists.
+2. Implement the upstream check and decision report from the plan as part of
+    milestone 1. Test package-only and dependency-only changes, unchanged inputs,
+    branch delays, and missing or invalid metadata before connecting the schedule.
+3. Parameterize the router rootfs builder and version all output paths.
+4. Add generic-template absence tests.
+5. Split router configuration into render, activate, and verify phases.
+6. Add a restricted candidate Xen definition and local management path.
+7. Add the state LV contract and synthetic migration tests.
+8. Add supervised one-time migration from the current router OS disk.
+9. Add the bounded dom0 cutover, rollback, and reboot recovery transaction.
+10. Extend router verification and Platform Map generation reporting.
+11. Run a supervised update and forced rollback on one box.
+12. Enable the signed schedule only after production acceptance evidence exists.
 
 ## Coordination rules
 
