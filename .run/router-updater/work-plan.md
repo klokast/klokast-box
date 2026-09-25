@@ -38,12 +38,10 @@ daemon. It does not discover desired configuration from the Tailscale API.
 4. The router configuration is mostly reconstructable. Ansible and the
    resource compiler own the interfaces, DHCP and DNS configuration, firewall,
    policy routes, users, packages, services, and sysctls.
-5. The expected non-reconstructable state is small:
-   - the Tailscale machine state;
-   - the dhcpcd DUID and lease data;
-   - the dnsmasq DHCP lease database.
-   The implementation must confirm the exact installed paths before it moves
-   production data.
+5. The expected retained state is small. It includes Tailscale identity, the
+   effective SSH host keys, dhcpcd identity and lease files, and the dnsmasq
+   lease database. The State contract below defines the list. Installed paths
+   and enabled features still require controller-side confirmation.
 6. The generated app firewall includes must be rendered again from approved
    inputs. They must not be copied from the old OS disk as desired state.
 7. The signed ops-only IPv6 repair can leave state in
@@ -60,29 +58,78 @@ daemon. It does not discover desired configuration from the Tailscale API.
 
 ## Recommended design
 
-Use three assets for each box:
+Use explicit file copying, not a separate state LV, for the first version.
+Keep these assets for each box:
 
 - a generic, local, versioned router template;
-- one immutable candidate OS generation cloned from that template;
-- one small persistent router-state LV that is attached to exactly one router
-  generation at a time.
+- the current router OS generation and one prepared candidate cloned from the
+  template; after acceptance, retain the previous generation for rollback.
 
 Keep the current production OS generation unchanged during preparation. At
-cutover, stop the old router, move the state LV to the candidate, and boot the
-candidate with the production MAC addresses. Rollback performs the reverse
-operation.
+cutover, stop the old router, copy the fixed state allowlist into the stopped
+candidate, and boot the candidate with the production MAC addresses. Keep
+service state at explicit, normal paths on each OS disk. Packages and generated
+configuration remain bound to the accepted release and approved inputs; service
+state is writable.
 
-The state LV is simpler than copying private files during every update. It also
-keeps dom0 from mounting the router OS filesystem. Use a stable filesystem
-label and a fixed mount point. Configure these service paths explicitly:
+This keeps the existing single-disk layout. It avoids a new filesystem, mount
+dependencies, service-path redirection, and a one-time storage migration. The
+tradeoff is an offline copy during cutover and, if needed, rollback. Stage the
+copy guest and all inputs first, then measure the complete outage in tests.
 
-- Tailscale uses a state file on the state LV;
-- dnsmasq uses a lease file on the state LV;
-- dhcpcd uses a state directory on the state LV, with the exact method selected
-  after the installed package behavior is verified.
+A state LV would avoid repeated copying, but it would still require state-format
+compatibility with the previous service versions. It would not preserve an
+unchanged rollback state once the candidate writes to it. Reconsider that choice
+only if measured copy time or a changed state requirement justifies it. Do not
+implement both storage modes.
 
-Do not put generated configuration, package state, SSH bootstrap keys, SSH host
-keys, logs, caches, or application data on this volume.
+## State contract
+
+This is a code-based inventory, not a report of inspected production files.
+Confirm paths, enabled features, ownership, permissions, and effective SSH keys
+on a test VM and through the approved controller before production use.
+
+| Retained item | Expected path or selection | Reason |
+| --- | --- | --- |
+| Tailscale identity and preferences | `/var/lib/tailscale/tailscaled.state` | Continue the same enrolled machine without a new auth key. |
+| Effective Tailscale SSH host private keys | For each used key type, `/etc/ssh/ssh_host_<type>_key` or `/var/lib/tailscale/ssh/ssh_host_<type>_key` | Keep the SSH identity known to management clients. Confirm the actual Tailscale state root. |
+| WAN DHCP client identity | `/var/lib/dhcpcd/duid` | Keep the client DUID. The managed dhcpcd configuration enables `duid`. |
+| Stable IPv6 address secret | `/var/lib/dhcpcd/secret` | Keep the secret used by the managed `slaac private` configuration. |
+| LAN DHCP assignments | The effective dnsmasq lease file | Keep unexpired client assignments. Set `dhcp-leasefile=` explicitly in the template. |
+| WAN DHCP lease history, when present | Exact interface-specific dhcpcd `.lease` and `.lease6` paths | Help reacquire the WAN lease. Preserve timestamps and respect expiry; the upstream server can assign a different lease. |
+
+Tailscale state includes private keys and preferences; the Tailnet API cannot
+reconstruct those private keys. Do not preserve enrollment auth keys or call
+`logout`, force reauthentication, or enroll a second production identity during
+replacement. If encrypted state or Tailnet Lock needs additional persistence,
+support and test that exact profile before enabling its unattended updates.
+See [Tailscale state storage](https://tailscale.com/blog/encrypting-data-at-rest).
+
+Removing OpenSSH does not remove the need to keep SSH host identity. Tailscale
+SSH can prefer system host keys and otherwise use keys in its own state root.
+Resolve the effective source per key type, and prevent candidate bootstrap keys
+from taking precedence. Public key files can be regenerated from the retained
+private keys. See the [Tailscale SSH host-key implementation](https://github.com/tailscale/tailscale/blob/v1.98.10/ssh/tailssh/hostkeys.go);
+verify the same behavior for the exact selected package versions.
+
+The dhcpcd lease file modification time is part of lease age, not incidental
+metadata. Do not reset it during copying. Keeping the secret, DUID, interface
+names, and MAC addresses does not guarantee that the ISP keeps the same address
+or prefix. See the [dhcpcd persistent-file contract](https://github.com/NetworkConfiguration/dhcpcd/blob/master/src/dhcpcd.8.in).
+The [dnsmasq lease-file option](https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html)
+also stores the server DUID when DHCPv6 is used; retain the complete database,
+not selected lease lines.
+
+Render hostnames, MAC addresses, static addresses, routes, firewall rules, DNS
+configuration, DHCP reservations, users, and service settings from approved
+inputs. Do not copy `/etc` or `/var/lib` as a whole. Exclude bootstrap access
+keys, package databases, logs, caches, PID files, and sockets. DNS caches, ARP
+and neighbor tables, conntrack entries, and established connections are not
+retained. Expect a short network outage and some client reconnections.
+
+Keep this list fixed and versioned with the router profile. Missing required
+identity files or an enabled stateful feature outside that profile must block
+replacement. Do not treat an unknown file as authority to expand the copy list.
 
 ## Bootstrap compatibility
 
@@ -96,21 +143,21 @@ Do not maintain a separate router OS recipe for bootstrap.
 The common build and personalization roles have two lifecycle modes:
 
 - **Initial installation:** select and freeze an approved initial release,
-  clone its generic template, create an empty state LV, render the box inputs,
-  and enroll a new Tailscale identity through the existing broker. Store the
-  identity on the state LV from the start. Verify the router and record its
+  clone its generic template, render the box inputs, and enroll a new Tailscale
+  identity through the existing broker. Create service state at the profile's
+  normal paths on the OS disk. Verify the router and record its
   first accepted release before proceeding to dependent guests. No previous
   generation, `update-required` result, or standing replacement policy exists
   yet; the operation uses the existing approved bootstrap authority.
 - **Replacement:** use the upstream check and standing replacement authority,
-  prepare a candidate from the same recipe, preserve the existing state LV and
-  identity, and perform the bounded switch with rollback.
+  prepare a candidate from the same recipe, copy the state allowlist after
+  stopping the old router, and perform the bounded switch with rollback.
 
-An existing legacy router uses the supervised one-time migration below.
+An existing legacy router uses the supervised baseline adoption below.
 Missing accepted-release records alone must never select initial installation
 or authorize formatting existing disks. Interrupted installation must resume
-from its recorded disk and enrollment identities, without resetting the state
-LV or minting a duplicate Tailscale identity.
+from its recorded disk and enrollment identities, without resetting service
+state or minting a duplicate Tailscale identity.
 
 Bootstrap must work before the local router, shared service VMs, and
 `<box>-ops` exist. Build on the available dom0 using its existing WAN access
@@ -124,7 +171,7 @@ or an already active in-box update scheduler.
 
 Make playbooks 30 and 31 read the accepted router assignment before changing
 disks, boot artifacts, packages, or Xen configuration. After a replacement,
-normal convergence must preserve that assignment, including its state LV,
+normal convergence must preserve that assignment, including its service state,
 package versions, kernel, and initramfs. It must not restore the legacy
 `lv_router` paths, reset repositories to an older branch, re-enroll the router,
 or invoke the destructive `router_alpine_rebuild` path on an accepted disk.
@@ -169,7 +216,7 @@ One signed standing policy can then authorize later exact router replacements
 without a human for each update. A source change, policy change, target change,
 or branch-policy change still requires the normal Instance and signature path.
 
-The first production state migration and the first complete replacement must be
+The first production baseline adoption and complete replacement must be
 supervised. Recurring replacements can become unattended only after the same
 code passes rollback fault tests and a complete production verification.
 
@@ -259,9 +306,9 @@ system. Each build must use the same approved inputs and produce a receipt that
 binds its local output hashes.
 
 The generic template must contain no box name, topology address, controller
-key, Tailscale state, SSH host key, machine ID, DHCP lease, or generated
-firewall include. A native test must mount or boot a disposable copy and prove
-these absences.
+key, Tailscale state, SSH host key, machine ID, dhcpcd DUID or secret, DHCP
+lease, or generated firewall include. A native test must mount or boot a
+disposable copy and prove these absences.
 
 Parameterize the current rootfs role instead of creating a second unrelated
 builder. The role must accept an output LV and versioned boot-artifact paths.
@@ -271,7 +318,7 @@ destinations.
 ## Candidate preparation
 
 For ordinary replacements, run these steps for one box at a time. Initial
-installation uses the bootstrap mode above. The supervised legacy migration
+installation uses the bootstrap mode above. The supervised legacy adoption
 must validate and record its source separately before using the common
 candidate build and test steps.
 
@@ -281,8 +328,10 @@ candidate build and test steps.
    and the frozen candidate inputs before allocating or building a candidate.
 3. Verify that the target is healthy, is the accepted generation, and has no
    unsupported overlay IPv6 state.
-4. Verify free LVM space for the template, candidate, state LV, and one previous
-   generation.
+4. Verify free LVM space for the template, candidate, current and retained
+   generations, the disposable copy guest, and bounded recovery scratch space.
+   Stage and test the copy guest before the outage; cutover must need no
+   downloads or controller connection.
 5. Build or select the exact local template and verify its receipt.
 6. Clone a new release-named OS LV. Do not overwrite `lv_router`.
 7. Render per-box configuration from approved inputs. Split the router role
@@ -290,9 +339,10 @@ candidate build and test steps.
    addresses or start DHCP, DNS, routing, or firewall service.
 8. Boot the candidate with a non-production Xen name and a restricted local
    management VIF. Use the existing dom0 bootstrap path and a candidate-only
-   address. Do not attach the production state LV. Do not enroll the candidate
-   in Tailscale.
-9. Use synthetic state to test mount behavior. Validate the package manifest,
+   address. Do not copy production state yet. Do not enroll the candidate in
+   Tailscale.
+9. Use synthetic state to test the fixed copy contract in both directions and
+   service-version compatibility. Validate the package manifest,
    kernel, initramfs, OpenRC links, sysctls, `dnsmasq --test`, and
    `nft -c -f`. Check that all rendered files match the approved inputs.
 10. Stop the candidate and record the exact disk, boot artifacts, Xen UUID,
@@ -302,28 +352,68 @@ The preparation path must never query Tailscale to obtain the hostname, tags,
 addresses, or desired configuration. A Tailscale query can be a read-only
 health or collision check only.
 
-## One-time state migration
+## State copy and legacy adoption
 
-Existing routers with state inside the old OS disk need one supervised
-migration to the router-state LV. New routers installed through the common
-bootstrap mode already have this layout and do not need this migration.
+Use one small router-specific copy helper with the fixed allowlist above. Do
+not add a general discovery, archive, data-classification, or migration engine.
+In line with the [filesystem isolation rule](../../doc/architecture.md#guest-construction-and-runtime-state),
+run the helper inside a disposable networkless Xen guest. Dom0 handles block
+devices and transaction records; it must not mount production filesystems.
 
-1. Inventory the exact live service paths and metadata on the router through an
-   approved controller playbook.
-2. Create and format the small state LV with a stable label.
-3. Test the migration with synthetic files in a disposable, networkless Xen
-   guest.
-4. Stop the old router inside the bounded cutover transaction.
-5. Use the disposable networkless guest to copy only the approved state paths
-   from a read-only old OS disk to the new state LV.
-6. Record hashes and metadata before either production generation starts.
-7. Boot the new generation with the state LV. Verify the same Tailscale machine
-   identity, the expected WAN client identity, and valid DHCP lease storage.
-8. On failure, stop the candidate, attach the state LV to the old generation,
-   and start the old generation.
+The source router and destination router must both be stopped. Attach the source
+disk read-only and the destination disk read-write to the copy guest only.
+Require a consistent source filesystem. After an unclean stop, use a disposable
+block clone for native journal recovery inside the helper, then read the
+recovered clone. Never repair or replay a journal on the original source. Do not
+execute programs or hooks from either router disk.
+Validate fixed paths, file types, size limits, and parent directories. Reject
+symlink escapes and unexpected links or device files. Preserve file bytes,
+required timestamps, and approved ownership and permissions. Resolve service
+accounts against the profile, not by copying account databases.
 
-After this migration, every later update moves the state LV. It does not copy
-state between OS disks.
+Stage the complete file set, verify it, flush it, and record copy completion
+before the destination can boot. Recovery must resume an interrupted copy from
+the recorded source, not boot a partly written destination. Distinguish an
+allowed absent WAN lease from a missing required identity file. Remove only
+recorded synthetic test state and temporary bootstrap credentials before the
+production copy. Keep secrets on the box disks; never send file contents through
+the controller, airunner, logs, or repository.
+
+Legacy routers need a supervised baseline record, not a new storage layout.
+Inspect the live paths, effective SSH key fingerprints, package versions, and
+exact disk and boot identities through the approved controller. Verify the
+configuration against approved inputs and record the old generation as the
+rollback source. Do not claim a template build receipt for a legacy disk without
+evidence. The first replacement then uses the same copy and cutover procedure as
+later replacements. Fresh bootstrap already records this baseline.
+
+### Rollback state is not an old snapshot
+
+Once the candidate runs on production networks, it can renew WAN leases, grant
+LAN leases, or update Tailscale keys. Booting the untouched old disk can therefore
+restore stale state. A state LV would retain these writes, but an older daemon
+would still need to read them correctly.
+
+Before cutover, require tests for the exact old/new service pair and enabled
+features: old state read by new services, then new-written state read by old
+services. Include DHCP grants and renewals, lease expiry, Tailscale key changes,
+SSH fingerprints, and interrupted writes. Use synthetic fixtures and disposable
+test identities, not production identity on parallel test VMs. Missing or failed
+compatibility evidence must defer unattended cutover. Do not add custom state
+format converters to make an incompatible release pass.
+
+If the production candidate has started, rollback stops it and uses the same
+helper to copy its latest valid allowlisted state back into the stopped old OS
+generation. Only service state changes on that disk; its packages, configuration,
+and boot artifacts stay unchanged. If the candidate never started, the original
+state on the old disk remains the rollback source. Record that distinction
+durably before starting the candidate.
+
+If the latest state is unreadable or incompatible, do not silently restore old
+keys or leases and claim successful recovery. Keep the router generations
+fenced, record a recovery failure, and use the existing console recovery path.
+Tests must cover this failure as well as normal automatic rollback. An OS
+rollback is not a remedy for arbitrary state corruption.
 
 ## Cutover and rollback transaction
 
@@ -340,23 +430,28 @@ The transaction must:
 1. Verify the recorded old and candidate disk identities and boot-artifact
    hashes.
 2. Write a pending generation record and arm boot recovery.
-3. Stop the old router.
-4. Attach the router-state LV only to the candidate.
+3. Stop the old router cleanly and confirm that it cannot restart automatically.
+4. Copy and verify the state using the staged networkless guest. Stop that guest
+   and detach both disks before a router can start.
 5. Select a versioned candidate Xen definition with the canonical router name,
    production MAC addresses, and production VIF set.
-6. Start the candidate.
+6. Persist the production-start marker, then start the candidate. At most one
+   generation can use the production identity, MAC addresses, and VIFs.
 7. From dom0, verify the backend gateway address, expected interfaces, a WAN
    route, DNS forwarding, and the local router health endpoint or fixed probe.
 8. Wait for the controller to verify Tailscale management and send an explicit
    acceptance signal. Use a fixed deadline. A heartbeat must not extend it.
-9. If the deadline or any check fails, stop the candidate, restore the old Xen
-   definition, reattach the same state LV, and start the old generation.
+9. If the deadline or any check fails, fence and stop the candidate. Apply the
+   rollback state procedure above, restore the old Xen definition, start the old
+   generation, and verify local service recovery.
 10. If acceptance succeeds, atomically record the candidate as accepted, keep
     its autostart definition, persist dom0 state, and disarm recovery.
 
 The transaction must also recover after a dom0 reboot at each pending stage.
 It must select only a recorded old or candidate generation. It must never infer
-a disk from an LVM name pattern.
+a disk from an LVM name pattern. Reserve a separate bounded recovery interval
+for stop, reverse copy, and old-router boot; candidate checks must not consume
+it. Keep both generations out of ordinary autostart until recovery selects one.
 
 ## Post-boot verification
 
@@ -366,25 +461,32 @@ recorded bootstrap result; identity continuity applies to replacements.
 
 - the Tailscale stable machine ID is unchanged, not only the hostname;
 - the expected tag and Tailscale SSH state are present;
+- the effective SSH host-key fingerprints are unchanged;
+- the DUID and stable IPv6 secret match the recorded bootstrap or copy evidence,
+  without logging them;
 - the exact release package manifest and running kernel match the receipt;
 - all production VIFs and MAC addresses match the Instance-derived topology;
 - DHCP, DNS, IPv4 forwarding, policy routing, and nftables are active;
 - the compiled router resource files match the current compiler output;
 - allowed network paths work and representative denied paths stay denied;
-- the WAN lease mechanism and persistent lease stores are usable;
+- the WAN lease mechanism and persistent lease stores are usable, retained LAN
+  leases are respected, and new grants and renewals work;
 - controller-to-router Tailscale is direct when the current policy requires it;
 - no first-contact root SSH access or candidate key remains.
 
 Run `platform-check` for router, dom0, resources, and updates after acceptance.
 Update `platform-map` so it reports the accepted router generation, previous
-generation, state LV identity, and pending transaction state without exposing
+generation, state-copy completion, and pending transaction state without exposing
 private contents.
 
 ## Cleanup and retention
 
 Keep exactly one previous accepted router OS generation for rollback. Delete a
 generation only in a later cleanup pass after the new generation is accepted
-and a fresh verification passes. Never delete the router-state LV.
+and a fresh verification passes. Each retained OS disk now contains private
+identity state. Keep it offline and access-controlled; never boot two copies.
+Any later rollback must also use the latest-state procedure above, not simply
+boot the retained disk.
 
 Keep the current and previous template inputs and boot artifacts while a router
 generation refers to them. Cleanup must use exact recorded identities. It must
@@ -420,15 +522,20 @@ not use wildcards or infer ownership from names.
   to provisioning and convergence, including `provision-ops-vm` and shared-role
   calls. Parameterize Alpine asset paths without changing other VM profiles.
 
-### Milestone 3: persistent state
+### Milestone 3: state retention
 
-- Confirm exact dhcpcd and dnsmasq state paths on a test VM and then through the
-  approved controller inspection path.
-- Add the router-state LV, mount contract, service configuration, and private
-  metadata checks.
-- Create this layout directly during bootstrap; record the first accepted
+- Confirm all State contract paths and effective SSH keys on a test VM and then
+  through the approved controller inspection path. Set the dnsmasq lease path
+  explicitly; keep the same normal service paths in both lifecycle modes.
+- Add the fixed networkless copy helper and private copy receipts. Test file
+  validation, permissions, lease timestamps, missing required files, allowed
+  absent leases, synthetic-state removal, and interrupted-copy recovery.
+- Test state compatibility in both directions for the exact service versions.
+  A passing forward boot alone is not rollback evidence.
+- During bootstrap, create identity state once and record the first accepted
   generation after verification, without requiring replacement policy.
-- Add the networkless one-time migration helper and synthetic native tests.
+- Add supervised adoption of the legacy generation's baseline. No state LV or
+  one-time storage migration is needed.
 - Make enabled overlay IPv6 repair a clear blocking finding.
 
 ### Milestone 4: transaction and recovery
@@ -436,13 +543,16 @@ not use wildcards or infer ownership from names.
 - Add the small dom0 router cutover command and pending/accepted records.
 - Add fixed deadline, rollback, boot recovery, and exact generation selection.
 - Test failures before stop, after stop, during candidate boot, during
-  controller disconnect, after acceptance, and during dom0 reboot.
+  controller disconnect, after acceptance, and during dom0 reboot. Include
+  forward and reverse copy interruptions and state changes before rollback.
+- Measure the outage and recovery time, including copy-guest startup. Verify
+  that all recovery inputs remain available without the router or controller.
 
 ### Milestone 5: supervised production proof
 
 - Read the current platform map and relevant private operations journal on the
   active controller.
-- Run the one-time state migration on one box under supervision.
+- Adopt the legacy baseline on one box under supervision.
 - Run one complete update and one forced rollback.
 - Verify service continuity, identity retention, state retention, and exact
   cleanup behavior.
@@ -474,7 +584,7 @@ The work is complete only when all these statements are true:
 
 - Bootstrap and replacement use the same router recipe and verification rules,
   and pass the bootstrap compatibility sequence above.
-- Fresh bootstrap records the initial accepted release and state LV without
+- Fresh bootstrap records the initial accepted release and service state without
   depending on the local router, local ops, or standing replacement policy.
 - A provisioning rerun preserves the updated router's accepted disk, boot
   artifacts, package versions, and identity. Other VM builds retain their
@@ -488,9 +598,15 @@ The work is complete only when all these statements are true:
 - The candidate is built from authenticated, recorded inputs and a generic
   template with no box identity.
 - The old router stays online during build and candidate qualification.
-- Cutover needs no human action and has a bounded automatic rollback on dom0.
+- For qualified state-compatible releases, cutover needs no human action and
+  has a bounded automatic rollback on dom0. Unsupported transitions are deferred
+  before the old router stops; corrupt state produces an explicit recovery
+  failure, not a false rollback success.
 - The controller can disconnect during cutover without preventing rollback.
-- The Tailscale machine identity and required lease data survive replacement.
+- Tailscale identity, effective SSH host keys, the dhcpcd DUID and IPv6 secret,
+  and required lease data survive replacement and rollback.
+- Rollback after a candidate state change retains the latest valid state. No
+  router boots with a partial copy, and no two routers use the same identity.
 - All other router state is reconstructed from approved automation.
 - An enabled state that is not reconstructable causes refusal before cutover.
 - The shared DMZ/IoT updater cannot select or mutate a router.
@@ -503,7 +619,8 @@ The work is complete only when all these statements are true:
 ## Deliberate simplifications
 
 - Build the small template on each dom0. Do not add cross-site transfer.
-- Keep one persistent state LV. Do not implement general retained-data maps.
+- Keep state on the OS disk and copy only the fixed allowlist. Do not add a
+  state LV, custom state converters, or general retained-data maps.
 - Use the dom0 bootstrap path for candidates. Do not mint candidate Tailscale
   identities.
 - Preserve a fixed state allowlist. Do not classify every file on the old OS

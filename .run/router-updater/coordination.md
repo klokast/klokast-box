@@ -6,6 +6,8 @@
 - Phase: repository investigation and design plan complete
 - Plan refinement: explicit upstream release and package detection added.
 - Plan refinement: bootstrap compatibility requirements and acceptance added.
+- Plan refinement: state list corrected; explicit file copy replaces the earlier
+  state-LV proposal. Forward and rollback copies use the same fixed contract.
 - Implementation: not started
 - Live Platform changes: none
 - Live Platform state inspection: none
@@ -25,7 +27,17 @@
   plan for rerun protection, first-install state, and shared asset rules.
 - Create a generic, versioned router template.
 - Build the template locally on each dom0.
-- Keep identity and lease data on one small per-box router-state LV.
+- Keep identity and lease data on the OS disk. Use a fixed allowlist copy inside
+  a staged networkless Xen guest while both routers are stopped. See State
+  contract in the plan for the only authoritative list.
+- Preserve effective SSH host keys and the dhcpcd IPv6 secret as well as
+  Tailscale state, the DUID, and leases. These were missing from the earlier
+  explicit list; removing OpenSSH does not remove Tailscale SSH host identity.
+- Qualify state compatibility in both directions. After a production candidate
+  starts, rollback copies its latest valid state back before booting the old OS.
+  Never assume that the old disk's keys and leases are still current.
+- Do not add a state LV or a general migration framework. Legacy adoption only
+  records a verified baseline; it does not change the storage layout.
 - Do not enroll a candidate in Tailscale.
 - Use a restricted dom0 bootstrap path for candidate tests.
 - Use a separate router release profile and executor.
@@ -38,11 +50,18 @@
 
 ### Required before implementation
 
-- Confirm the exact dhcpcd DUID and lease paths for the installed Alpine
-  package.
+- Confirm the exact Tailscale state root and effective SSH host-key source for
+  each key type. Detect unsupported encryption or Tailnet Lock state needs.
+- Confirm the dhcpcd DUID, IPv6 secret, and interface-specific lease paths for
+  the installed package and enabled WAN client. Preserve lease timestamps.
 - Confirm the exact dnsmasq lease path, then set it explicitly in the managed
   configuration.
-- Select the state LV size, filesystem label, mount point, and filesystem.
+- Define fixed file metadata and size limits, missing-file rules, and the
+  copy-completion record. Block bootstrap keys from shadowing retained SSH keys.
+- Prove old/new state compatibility, including keys and leases changed during
+  the candidate run. Defer incompatible releases instead of adding converters.
+- Measure the outage and rollback budgets with the staged copy guest. Verify
+  recovery after an interrupted copy without controller connectivity.
 - Define the authenticated Alpine release input. The current ISO and checksum
   download from one HTTP origin is not sufficient for unattended use.
 - Define the candidate-only management address and bridge behavior without
@@ -69,7 +88,7 @@
   that result for candidate readiness.
 - The Instance update schema rejects `router` targets.
 - The shared Alpine update profile accepts only `bak`, `dmz`, and `iot`.
-- `platform-map` does not report router OS generations or a router-state LV.
+- `platform-map` does not report router OS generations or state-copy progress.
 - The normal router role preserves an existing enabled overlay IPv6 repair but
   cannot reconstruct it on a fresh OS disk.
 
@@ -84,9 +103,10 @@
 4. Add generic-template absence tests.
 5. Split router configuration into render, activate, and verify phases.
 6. Add a restricted candidate Xen definition and local management path.
-7. Add the state LV contract and synthetic migration tests. Create the state LV
-   directly on fresh installation and record the first accepted release.
-8. Add supervised one-time migration from the current router OS disk.
+7. Add the fixed state-copy contract, native forward/reverse compatibility tests,
+   and interrupted-copy tests. Create service state once on fresh installation
+   and record the first accepted release.
+8. Add supervised baseline adoption of the current router OS disk.
 9. Add the bounded dom0 cutover, rollback, and reboot recovery transaction.
 10. Extend router verification and Platform Map generation reporting.
 11. Run a supervised update and forced rollback on one box. Complete the plan's
@@ -112,6 +132,19 @@
 ## Active work claims
 
 None.
+
+## Latest handoff
+
+- Date: 2026-09-25 UTC
+- Status: state-retention plan refinement complete; implementation not started.
+- Files: `work-plan.md` and `coordination.md`.
+- Completed: fixed state list, single-disk file-copy design, current-state
+  rollback, and matching bootstrap and recovery tests.
+- Checks: documentation diff and remaining state-LV references reviewed. No
+  Platform commands or runtime tests were run for this edit.
+- Next action: milestone 1. Confirm the open path and compatibility questions
+  on test targets before production adoption.
+- Commit: use the Git history for these files; no separate execution authority.
 
 ## Handoff template
 
