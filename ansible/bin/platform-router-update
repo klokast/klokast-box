@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Read-only router inspection and authenticated package input resolution."""
+import argparse
+import datetime as dt
+import os
+from pathlib import Path
+import secrets
+import sys
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import router_updates
+import vm_template_inputs
+from platform_updates import UpdateError, canonical, timestamp
+
+import router_update_controller as transport
+
+PROFILE = REPO / 'ansible/update-profiles/router-alpine-v1.json'
+STATE = Path('/var/lib/klokast/updates/discovery/router')
+CACHE = Path('/var/cache/klokast/updates/router')
+
+
+def inspect(box):
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router inspection requires a valid box ID')
+    transport.require_controller()
+    if not STATE.is_dir() or STATE.is_symlink():
+        raise UpdateError('install platform-update-discovery before router inspection')
+    operation = secrets.token_hex(12)
+    directory = STATE / operation
+    directory.mkdir(mode=0o700)
+    args = directory / 'arguments.json'
+    transport.write(args, {'router_update_box': box, 'router_update_result_dir': str(directory)})
+    with (directory / 'inspection.log').open('x') as log:
+        transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                           REPO / 'ansible/playbooks/74-router-update-inspect.yml', '-e', '@' + str(args)],
+                          timeout=600, log=log)
+    for target in ('dom0', 'router'):
+        result = transport.load(directory / (box + '-' + target + '.json'))
+        if result.get('box') != box or result.get('target') != target:
+            raise UpdateError('router inspection did not return both exact target identities')
+    return {'kind': 'klokast.router-inspection-result.v1', 'box': box,
+            'operation': operation, 'evidence_directory': str(directory),
+            'status': 'inspected', 'adoption_authorized': False}
+
+
+def resolve(branch):
+    transport.require_controller()
+    if not CACHE.is_dir() or CACHE.is_symlink():
+        raise UpdateError('install platform-update-discovery before router resolution')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
+        raise UpdateError('router input resolution requires a clean public implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    profile = transport.load(PROFILE)
+    router_updates.validate_profile(profile)
+    directory = CACHE / secrets.token_hex(12)
+    value = vm_template_inputs.freeze(directory, profile, branch, engine,
+                                     expected_profile=router_updates.PROFILE)
+    router_updates.validate_inputs(value, profile, engine)
+    return {'kind': 'klokast.router-resolved-inputs.v1', 'observed_at': timestamp(dt.datetime.now(dt.timezone.utc)),
+            'inputs_directory': str(directory), 'inputs_sha256': value['inputs_sha256'],
+            'effective_inputs_sha256': router_updates.effective_inputs(value),
+            'branch': branch, 'packages': {p['name']: p['version'] for p in value['packages']},
+            'replacement_authorized': False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
+    sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    try:
+        value = inspect(args.box) if args.command == 'inspect' else resolve(args.branch)
+        print(canonical(value))
+        return 0
+    except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
+        print('platform-router-update: ' + str(error), file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

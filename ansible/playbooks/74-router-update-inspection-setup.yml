@@ -1,0 +1,28 @@
+---
+- name: Prepare private controller directories for read-only router evidence
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require active-controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      changed_when: false
+      register: router_update_controller
+
+    - name: Verify this controller is active and configured
+      ansible.builtin.assert:
+        that:
+          - (router_update_controller.stdout | from_json).active | bool
+          - (router_update_controller.stdout | from_json).configured | bool
+          - lookup('env', 'USER') == 'smith'
+
+    - name: Create private router inspection and input directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: smith
+        group: smith
+        mode: '0700'
+      loop:
+        - /var/lib/klokast/updates/discovery/router
+        - /var/cache/klokast/updates/router

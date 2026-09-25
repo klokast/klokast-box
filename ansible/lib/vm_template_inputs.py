@@ -107,20 +107,25 @@ def read_package(path):
             "file": "packages/" + filename, "bytes": path.stat().st_size, "sha256": sha256(path)}
 
 
-def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys")):
+def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys"),
+           expected_profile="shared-alpine-v1"):
     """Use a new empty resolver root and native solver; never reuse stale indexes."""
     branch_number(branch)
     if not re.fullmatch(r"[0-9a-f]{40}", engine_commit or ""):
         raise UpdateError("template inputs require the exact engine commit")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
-            profile.get("profile") != "shared-alpine-v1" or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v1"} or
+            profile.get("profile") != expected_profile or
             profile.get("architecture") != "x86_64" or profile.get("repository_origin") != ORIGIN or
             profile.get("repositories") != ["main", "community"]):
         raise UpdateError("template profile has unsupported repositories or architecture")
     world = profile.get("packages")
+    required = {"linux-virt", "tailscale", "python3", "e2fsprogs", "mkinitfs"}
+    required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2"}
+                 if expected_profile == "router-alpine-v1" else {"podman"})
     if (not isinstance(world, list) or not world or
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
-            not {"linux-virt", "tailscale", "podman", "python3", "e2fsprogs", "mkinitfs"} <= set(world)):
+            not required <= set(world)):
         raise UpdateError("template profile package set is incomplete or invalid")
     directory = Path(directory)
     # A caller must allocate a fresh directory. Failed work is never published.
@@ -170,7 +175,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                 "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
     manifest["inputs_sha256"] = digest(manifest)
     (directory / "inputs.json").write_text(canonical(manifest) + "\n")
-    verify_inputs(directory, manifest)
+    verify_inputs(directory, manifest, expected_profile=expected_profile)
     return manifest
 
 
@@ -180,7 +185,7 @@ def build_identity(manifest):
                    if key not in {'indexes', 'inputs_sha256'}})
 
 
-def verify_inputs(directory, manifest):
+def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     directory = Path(directory)
     fields = {"kind", "engine_commit", "profile", "profile_sha256", "branch", "architecture", "world",
               "repositories", "keys", "indexes", "packages", "inputs_sha256"}
@@ -190,7 +195,8 @@ def verify_inputs(directory, manifest):
     if (not isinstance(manifest["branch"], str) or
             not isinstance(manifest["engine_commit"], str) or
             not re.fullmatch(r"[0-9a-f]{40}", manifest["engine_commit"]) or
-            manifest["profile"] != "shared-alpine-v1" or not matches(HASH, manifest["profile_sha256"])):
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v1"} or
+            manifest["profile"] != expected_profile or not matches(HASH, manifest["profile_sha256"])):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])
     if (manifest["architecture"] != "x86_64" or

@@ -1,0 +1,16 @@
+{
+  "kind": "klokast.vm-template-profile.v1",
+  "profile": "router-alpine-v1",
+  "architecture": "x86_64",
+  "roles": ["router"],
+  "branch_policy": "tested-stable",
+  "state_contract": "klokast.router-state.v1",
+  "packages": [
+    "alpine-base", "ca-certificates", "dhcpcd", "dnsmasq", "doas",
+    "e2fsprogs", "iproute2", "linux-virt", "mkinitfs", "nftables",
+    "openssh-keygen", "python3", "tailscale", "tailscale-openrc", "tzdata"
+  ],
+  "repositories": ["main", "community"],
+  "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",
+  "release_metadata": "https://alpinelinux.org/releases.json"
+}

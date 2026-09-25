@@ -1,0 +1,26 @@
+---
+- name: Require an exact router inspection target and private controller result directory
+  ansible.builtin.assert:
+    that:
+      - router_update_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      - inventory_hostname in [router_update_box ~ '-dom0', router_update_box ~ '-router']
+      - router_update_result_dir is match('^/var/lib/klokast/updates/discovery/router/[a-zA-Z0-9_-]+$')
+
+- name: Inspect router packages, effective identity paths and boot identities without reading state contents
+  ansible.builtin.script:
+    cmd: "inspect-router-update --box {{ router_update_box }} --target {{ 'dom0' if inventory_hostname == router_update_box ~ '-dom0' else 'router' }}"
+    executable: /usr/bin/python3
+  become: true
+  become_method: doas
+  register: router_update_inspection
+  changed_when: false
+  no_log: true
+
+- name: Store private router inspection evidence on the active controller
+  ansible.builtin.copy:
+    content: "{{ router_update_inspection.stdout | from_json | to_nice_json }}\n"
+    dest: "{{ router_update_result_dir }}/{{ inventory_hostname }}.json"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  no_log: true

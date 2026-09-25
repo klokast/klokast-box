@@ -1,0 +1,19 @@
+---
+- name: Inspect exact router and dom0 identities before baseline adoption
+  hosts: "{{ router_update_box }}-router:{{ router_update_box }}-dom0"
+  gather_facts: false
+  pre_tasks:
+    - name: Require the active controller before collecting private router evidence
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_update_controller
+    - name: Verify active-controller status
+      ansible.builtin.assert:
+        that:
+          - (router_update_controller.stdout | from_json).active | bool
+          - (router_update_controller.stdout | from_json).configured | bool
+  roles:
+    - router-update-inspection

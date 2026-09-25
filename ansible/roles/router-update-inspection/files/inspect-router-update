@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Read-only router baseline evidence. Never emit state bytes or secret hashes."""
+import argparse
+import ast
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+
+
+def run(argv):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise RuntimeError('router inspection command failed: ' + argv[0])
+    return result.stdout.strip()
+
+
+def info(path):
+    path = Path(path)
+    try:
+        value = path.lstat()
+    except FileNotFoundError:
+        return {'present': False}
+    return {'present': True, 'regular': stat.S_ISREG(value.st_mode), 'links': value.st_nlink,
+            'uid': value.st_uid, 'gid': value.st_gid, 'mode': oct(stat.S_IMODE(value.st_mode)),
+            'bytes': value.st_size}
+
+
+def file_hash(path):
+    path = Path(path)
+    metadata = info(path)
+    if not metadata.get('regular') or not 0 < metadata['bytes'] <= 512 * 1024 * 1024:
+        raise RuntimeError('router boot artifact is absent or unsafe')
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(block)
+    return value.hexdigest()
+
+
+def inspect_guest(box):
+    packages = {}
+    for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
+        fields = dict(line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:')))
+        if 'P' in fields and 'V' in fields:
+            if fields['P'] in packages:
+                raise RuntimeError('installed APK database has duplicate packages')
+            packages[fields['P']] = fields['V']
+    status = json.loads(run(['tailscale', 'status', '--json']))
+    if status.get('Self', {}).get('HostName') != box + '-router':
+        raise RuntimeError('router inspection reached a different machine')
+    prefs = json.loads(run(['tailscale', 'debug', 'prefs']))
+    state_paths = ['/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/duid', '/var/lib/dhcpcd/secret',
+                   '/var/lib/dhcpcd/eth0.lease', '/var/lib/dhcpcd/eth0.lease6', '/var/lib/misc/dnsmasq.leases']
+    keys = {}
+    for kind in ('rsa', 'ecdsa', 'ed25519'):
+        candidates = [Path('/etc/ssh/ssh_host_' + kind + '_key'),
+                      Path('/var/lib/tailscale/ssh/ssh_host_' + kind + '_key')]
+        selected = next((path for path in candidates if path.exists()), None)
+        if selected is not None:
+            metadata = info(selected)
+            if not metadata.get('regular') or metadata['links'] != 1:
+                raise RuntimeError('effective router SSH key is unsafe')
+            fingerprint = run(['ssh-keygen', '-lf', str(selected)]).split()
+            keys[kind] = {'path': str(selected), 'fingerprint': fingerprint[1], 'metadata': metadata}
+    config = Path('/etc/dnsmasq.conf').read_text()
+    lease_paths = re.findall(r'^\s*dhcp-leasefile\s*=\s*(\S+)\s*$', config, re.M)
+    overlay = Path('/etc/klokast/overlay-ipv6.nft')
+    overlay_enabled = (Path('/etc/sysctl.d/91-klokast-ops-ipv6.conf').exists() or
+                       (overlay.exists() and any(line.strip() and not line.lstrip().startswith('#')
+                                                 for line in overlay.read_text().splitlines())))
+    return {'packages': packages, 'kernel_release': os.uname().release,
+            'machine_id': status.get('Self', {}).get('ID'), 'tags': status.get('Self', {}).get('Tags'),
+            'tailscale_running': status.get('BackendState') == 'Running', 'tailscale_ssh': prefs.get('RunSSH'),
+            'state_paths': {path: info(path) for path in state_paths}, 'ssh_keys': keys,
+            'dnsmasq_lease_paths': lease_paths, 'overlay_ipv6_enabled': overlay_enabled,
+            'unsupported_state': {path: Path(path).exists() for path in
+                                  ('/var/lib/tailscale/tka', '/var/lib/tailscale/tpm-sealed')},
+            'first_contact_key': info('/root/.ssh/authorized_keys')}
+
+
+def inspect_dom0(box):
+    if os.uname().nodename.split('.')[0] != box + '-dom0':
+        raise RuntimeError('router inspection reached a different dom0')
+    config = Path('/etc/xen/router.cfg')
+    values = {}
+    for item in ast.parse(config.read_text()).body:
+        if isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name):
+            if item.targets[0].id in ('name', 'uuid', 'kernel', 'ramdisk', 'disk', 'vif'):
+                values[item.targets[0].id] = ast.literal_eval(item.value)
+    if values.get('name') != 'router':
+        raise RuntimeError('canonical router configuration has a different Xen name')
+    artifacts = {}
+    for field in ('kernel', 'ramdisk'):
+        path = values.get(field)
+        if not isinstance(path, str) or not path.startswith('/mnt/dom0_data/') or '..' in Path(path).parts:
+            raise RuntimeError('router boot path is outside persistent storage')
+        artifacts[field] = {'path': path, 'sha256': file_hash(path)}
+    return {'configuration_sha256': file_hash(config), 'xen': values, 'boot_artifacts': artifacts,
+            'logical_volumes': json.loads(run(['/sbin/lvs', '--reportformat', 'json', '--units', 'b',
+                                               '--nosuffix', '-o', 'lv_path,lv_uuid,lv_size,origin'])),
+            'accepted_record_present': Path('/mnt/dom0_data/klokast-router-updates/accepted.json').exists(),
+            'pending_record_present': Path('/mnt/dom0_data/klokast-router-updates/pending.json').exists()}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--target', choices=('router', 'dom0'), required=True)
+    args = parser.parse_args()
+    if os.geteuid() != 0 or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', args.box):
+        raise RuntimeError('inspection requires root and an exact box selector on the managed host')
+    result = inspect_guest(args.box) if args.target == 'router' else inspect_dom0(args.box)
+    print(json.dumps({'kind': 'klokast.router-inspection.v1', 'box': args.box, 'target': args.target,
+                      'observed_at': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                      **result}, sort_keys=True))
+
+
+if __name__ == '__main__':
+    main()

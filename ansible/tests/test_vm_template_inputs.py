@@ -74,6 +74,20 @@ class InputsTests(unittest.TestCase):
         self.seal(root, manifest)
         return manifest
 
+    def test_router_inputs_require_explicit_profile_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            manifest['profile'] = 'router-alpine-v1'
+            self.seal(root, manifest)
+            with self.assertRaises(UpdateError):
+                v.verify_inputs(root, manifest)
+            v.verify_inputs(root, manifest, expected_profile='router-alpine-v1')
+            manifest['profile'] = 'shared-alpine-v1'
+            self.seal(root, manifest)
+            with self.assertRaises(UpdateError):
+                v.verify_inputs(root, manifest, expected_profile='router-alpine-v1')
+
     def seal(self, root, manifest):
         manifest.pop("inputs_sha256", None)
         manifest["inputs_sha256"] = digest(manifest)

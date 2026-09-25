@@ -34,7 +34,9 @@
     - /var/lib/klokast/updates/discovery
     - /var/lib/klokast/updates/discovery/qualifications
     - /var/lib/klokast/updates/discovery/config-audits
+    - /var/lib/klokast/updates/discovery/router
     - /var/cache/klokast/updates
+    - /var/cache/klokast/updates/router
 
 - name: Read schedule from the verified Instance
   ansible.builtin.command:
