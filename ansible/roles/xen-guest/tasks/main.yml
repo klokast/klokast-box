@@ -3,6 +3,11 @@
 # - Renders the Xen guest definition for the requested boot stage and verifies the expected disks, interfaces, and autostart state.
 #
 ---
+- name: Protect router assignments before legacy mutation
+  ansible.builtin.include_role:
+    name: router-boot-assignment
+  when: xen_guest_spec.guest_name == 'router'
+
 - name: Protect accepted shared VM state from legacy infrastructure changes
   ansible.builtin.include_role:
     name: vm-boot-assignment

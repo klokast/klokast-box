@@ -226,6 +226,7 @@ See [shared guest provisioning](../ansible/overview-playbooks/playbooks-4x-podma
 ### `<box>-router`
 - Site router and firewall VM. It enforces firewall accesses for the application containers of the Platform and the other VMs.
 - runs Alpine Linux, `nftables` firewall rules, native routing tables, `dnsmasq`, and `dhcpcd`.
+- [Router release inspection](router-updates.md) defines the separate replacement profile, state-copy boundary, and current provisioning protections.
 - default inter-zone choke point for LAN, DMZ, backend, IoT, user workloads, and WAN
 - public application ingress is expected to come through Cloudflare Tunnel from the DMZ, not router DNAT to service VMs
 

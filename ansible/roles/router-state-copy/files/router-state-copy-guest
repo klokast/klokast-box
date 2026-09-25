@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Bounded state copying inside the router's disposable networkless Xen guest.
+
+Only the original source is attached read-only. Journal recovery uses the
+separate scratch device. Dom0 must fence both router generations and validate
+all VBD identities before booting this guest. The private result stays on box.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, '/usr/local/lib/klokast')
+from router_state import copy_state
+
+REQUEST = Path('/router-copy-request.json')
+SOURCE = Path('/dev/xvda3')
+TARGET = Path('/dev/xvdb3')
+SCRATCH = Path('/dev/xvdc')
+RESULT = Path('/dev/xvdd')
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError('router copy request contains duplicate fields')
+        result[key] = value
+    return result
+
+
+def run(argv, deadline, allowed=(0,)):
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        raise RuntimeError('router state-copy deadline expired')
+    result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=remaining)
+    if result.returncode not in allowed:
+        # Source data, filesystem diagnostics and keys never enter console logs.
+        raise RuntimeError('router state-copy native command failed: ' + str(argv[0]))
+    return result.returncode
+
+
+def guard():
+    if (os.geteuid() != 0 or Path('/sys/hypervisor/type').read_text().strip() != 'xen' or
+            Path('/sys/hypervisor/uuid').read_text().strip() == '00000000-0000-0000-0000-000000000000' or
+            {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}):
+        raise RuntimeError('router state copy requires a root process in a networkless Xen guest')
+    if REQUEST.is_symlink() or not REQUEST.is_file() or REQUEST.stat().st_size > 16384:
+        raise RuntimeError('router copy request is absent or unsafe')
+    request = json.loads(REQUEST.read_text(), object_pairs_hook=unique)
+    fields = {'kind', 'operation', 'source_id', 'destination_id', 'source_accounts',
+              'destination_accounts', 'seconds', 'request_sha256', 'box', 'role'}
+    if (set(request) != fields or request['kind'] != 'klokast.router-copy-request.v1' or
+            request['role'] != 'router' or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', request['box']) or
+            not re.fullmatch(r'[0-9a-f]{24}', request['operation']) or
+            type(request['seconds']) is not int or not 30 <= request['seconds'] <= 900 or
+            request['source_id'] == request['destination_id'] or
+            any(not isinstance(request[k], str) or not re.fullmatch(r'[A-Za-z0-9-]{1,128}', request[k])
+                for k in ('source_id', 'destination_id'))):
+        raise RuntimeError('router state-copy request has an invalid contract')
+    for key in ('source_accounts', 'destination_accounts'):
+        accounts = request[key]
+        if (not isinstance(accounts, dict) or set(accounts) != {'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'} or
+                any(type(v) is not int or not 1 <= v <= 65535 for v in accounts.values())):
+            raise RuntimeError('router copy requires exact service account IDs from the qualified profile')
+    raw = json.dumps({k: v for k, v in request.items() if k != 'request_sha256'}, sort_keys=True, separators=(',', ':')).encode()
+    if hashlib.sha256(raw).hexdigest() != request['request_sha256']:
+        raise RuntimeError('router copy request checksum differs')
+    devices = [SOURCE, TARGET, SCRATCH, RESULT]
+    for path in devices:
+        if path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode):
+            raise RuntimeError('router copy guest has an invalid block-device assignment')
+    if len({p.stat().st_rdev for p in devices}) != len(devices):
+        raise RuntimeError('router copy guest block-device assignments overlap')
+    if Path('/sys/class/block/xvda/ro').read_text().strip() != '1':
+        raise RuntimeError('original router source must be attached read-only')
+    for name in ('xvdb', 'xvdc', 'xvdd'):
+        if Path('/sys/class/block/' + name + '/ro').read_text().strip() != '0':
+            raise RuntimeError('router destination, scratch, and receipt devices must be writable')
+    source_size = int(Path('/sys/class/block/xvda3/size').read_text()) * 512
+    scratch_size = int(Path('/sys/class/block/xvdc/size').read_text()) * 512
+    if not 1 <= source_size <= scratch_size <= 4 * 1024 * 1024 * 1024:
+        raise RuntimeError('router recovery scratch space is insufficient or exceeds its bound')
+    return request
+
+
+def execute(request):
+    deadline = time.monotonic() + request['seconds']
+    with RESULT.open('r+b', buffering=0) as stream:
+        stream.write(b'\0' * 65536)
+        os.fsync(stream.fileno())
+    source = SOURCE
+    recovered = False
+    # The original source never receives journal replay or filesystem repair.
+    result = run(['/sbin/e2fsck', '-fn', SOURCE], deadline, allowed=(0, 4))
+    if result == 4:
+        run(['/bin/dd', 'if=' + str(SOURCE), 'of=' + str(SCRATCH), 'bs=4M', 'conv=fsync'], deadline)
+        run(['/sbin/e2fsck', '-p', SCRATCH], deadline, allowed=(0, 1))
+        run(['/sbin/e2fsck', '-fn', SCRATCH], deadline)
+        source, recovered = SCRATCH, True
+    source_root, target_root = Path('/source'), Path('/destination')
+    source_root.mkdir(mode=0o700)
+    target_root.mkdir(mode=0o700)
+    mounted = []
+    try:
+        run(['/bin/mount', '-t', 'ext4', '-o', 'ro,noload,nodev,nosuid,noexec', source, source_root], deadline)
+        mounted.append(source_root)
+        run(['/bin/mount', '-t', 'ext4', '-o', 'rw,nodev,nosuid,noexec', TARGET, target_root], deadline)
+        mounted.append(target_root)
+        for root in (source_root, target_root):
+            path = root / 'etc/hostname'
+            if ((root / 'etc').is_symlink() or path.is_symlink() or not path.is_file() or
+                    path.stat().st_size > 64 or path.read_text().strip() != request['box'] + '-router'):
+                raise RuntimeError('router state copy reached a different box or role')
+        # Reject unsupported identity stores before touching the destination.
+        for path in ('var/lib/tailscale/tka', 'var/lib/tailscale/tpm-sealed',
+                     'etc/sysctl.d/91-klokast-ops-ipv6.conf'):
+            if (source_root / path).exists() or (source_root / path).is_symlink():
+                raise RuntimeError('router source has an unsupported stateful feature')
+        overlay = source_root / 'etc/klokast/overlay-ipv6.nft'
+        if overlay.is_symlink() or (overlay.exists() and
+                (overlay.stat().st_size > 65536 or any(line.strip() and not line.lstrip().startswith('#')
+                                                     for line in overlay.read_text().splitlines()))):
+            raise RuntimeError('router source has unsupported overlay IPv6 rules')
+        def checkpoint(stage):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('router state-copy deadline expired')
+        record = copy_state(source_root, target_root, source_id=request['source_id'],
+                            destination_id=request['destination_id'], **request['source_accounts'],
+                            **{'destination_' + k: v for k, v in request['destination_accounts'].items()},
+                            checkpoint=checkpoint)
+    finally:
+        # Reserve cleanup outside the copy budget. Dom0 still must confirm the
+        # helper stopped and its disks detached before it can start a router.
+        cleanup_deadline = time.monotonic() + 30
+        for root in reversed(mounted):
+            run(['/bin/umount', root], cleanup_deadline)
+    record.update(operation=request['operation'], request_sha256=request['request_sha256'],
+                  recovered_clone=recovered)
+    record.pop('receipt_sha256')
+    record['receipt_sha256'] = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    raw = (json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    if len(raw) > 65536:
+        raise RuntimeError('router private copy receipt exceeds its bound')
+    with RESULT.open('r+b', buffering=0) as stream:
+        stream.write(raw + b'\0' * (65536 - len(raw)))
+        os.fsync(stream.fileno())
+
+
+if __name__ == '__main__':
+    try:
+        execute(guard())
+        print('Router state copy completed; private receipt is on the assigned result disk.')
+    except Exception:
+        # Do not serialize an exception that could include filesystem contents.
+        print('Router state copy failed; keep both router generations fenced.', file=sys.stderr)
+        raise SystemExit(1)

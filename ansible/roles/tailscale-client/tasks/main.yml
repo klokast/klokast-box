@@ -3,6 +3,11 @@
 # - Converges Tailscale client state on managed guests, including service enablement, hostname alignment, and optional Tailscale SSH.
 #
 ---
+- name: Protect router assignments before legacy mutation
+  ansible.builtin.include_role:
+    name: router-boot-assignment
+  when: node_hostname | default('') == node_name ~ '-router'
+
 - name: Protect accepted shared VM packages and configuration from legacy convergence
   ansible.builtin.include_role:
     name: vm-boot-assignment

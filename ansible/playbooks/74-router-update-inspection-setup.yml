@@ -1,6 +1,7 @@
 ---
 - name: Prepare private controller directories for read-only router evidence
   hosts: localhost
+  connection: local
   gather_facts: false
   tasks:
     - name: Require active-controller authority

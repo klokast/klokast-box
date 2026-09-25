@@ -214,6 +214,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
+. "$ANSIBLE_DIR/lib/platform-installation-lock.sh"
+platform_installation_lock || die "cannot acquire the Platform installation lock"
+
 run_playbook "playbooks/31-vm-router.yml" "$ROUTER_LOG_FILE"
 run_playbook "playbooks/65-vm-ops.yml" "$OPS_LOG_FILE"
 

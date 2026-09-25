@@ -51,3 +51,47 @@ python3 -m unittest discover -s ansible/tests -p 'test_vm_template_inputs.py'
 
 For authority and scheduling, see [VM updates](platform-updates.md). For the
 filesystem isolation rule, see [guest construction](architecture.md#guest-construction-and-runtime-state).
+
+## Provisioning protections
+
+Router provisioning checks the protected `accepted.json` and `pending.json`
+paths under `/mnt/dom0_data/klokast-router-updates` before its first mutation.
+An existing record blocks legacy convergence. This applies to playbooks 30 and
+31, the rootfs builder, Xen rendering, VM base configuration, Tailscale client
+configuration, and enrollment. A missing record does not constitute a baseline
+adoption receipt.
+
+`provision-box` and `provision-ops-vm` use the same installation lock. Nested
+shell calls reuse its inherited descriptor. Another process must wait until the
+holder exits. These wrappers refuse an absent or unsafe lock file.
+
+The router role has `converge`, `render`, `activate`, and `verify` phases.
+`render` writes configuration without package installation, live sysctl changes,
+interface changes, service starts, or restart notifications. The explicit
+normal dnsmasq lease path is `/var/lib/misc/dnsmasq.leases`. These phases do not
+supply candidate authority or bypass assignment checks.
+
+The Alpine asset role accepts separate output paths and an approved ISO digest.
+Its defaults preserve the existing shared VM paths. Its extraction receipt
+binds the ISO, output paths, kernel, initramfs, modloop, and APK index. Missing or
+changed cache evidence causes extraction from the selected ISO. Supplying a
+digest does not establish its authority: the router build must obtain that
+digest from authenticated and approved input evidence.
+
+## Copy guest boundary
+
+`router-state-copy-guest` refuses execution outside a networkless Xen guest.
+It uses fixed source, destination, scratch, and result VBDs. It checks the box
+and router hostname on both filesystems. It checks the source filesystem with
+native `e2fsck -fn`. If journal recovery is necessary, it copies the source
+partition to the scratch VBD and repairs only that copy. It mounts the source
+read-only with journal replay disabled. A failed copy has no complete result
+receipt. The operation must keep both routers fenced until the guest has
+stopped and all VBDs are detached.
+
+The source staging playbook is
+`ansible/playbooks/74-router-state-copy-source.yml`. It writes the two public
+source files to the controller cache for an exact `router_copy_operation`.
+It does not create, attach, or boot a VM. Dom0 dispatch, real VM interruption
+tests, and service-version compatibility proof remain required before this
+helper can be used with production state.

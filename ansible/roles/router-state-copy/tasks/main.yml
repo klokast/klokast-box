@@ -1,0 +1,38 @@
+---
+# Stage source for the disposable guest build. Never install this helper on
+# dom0 or use a production router as its execution host.
+- name: Validate the controller-local copy-helper source operation
+  ansible.builtin.assert:
+    that:
+      - router_copy_operation is match('^[0-9a-f]{24}$')
+      - lookup('env', 'USER') == 'smith'
+
+- name: Require the active controller before staging the copy-helper source
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+  changed_when: false
+  register: router_copy_controller
+
+- name: Verify active-controller status
+  ansible.builtin.assert:
+    that:
+      - (router_copy_controller.stdout | from_json).active | bool
+      - (router_copy_controller.stdout | from_json).configured | bool
+
+- name: Create the private copy-helper source directory
+  ansible.builtin.file:
+    path: "/var/cache/klokast/updates/router/{{ router_copy_operation }}/copy-source"
+    state: directory
+    mode: '0700'
+
+- name: Stage the fixed guest entry point
+  ansible.builtin.copy:
+    src: router-state-copy-guest
+    dest: "/var/cache/klokast/updates/router/{{ router_copy_operation }}/copy-source/router-state-copy-guest"
+    mode: '0600'
+
+- name: Stage the fixed copy implementation for the guest capsule
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../lib/router_state.py"
+    dest: "/var/cache/klokast/updates/router/{{ router_copy_operation }}/copy-source/router_state.py"
+    mode: '0600'

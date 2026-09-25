@@ -5,6 +5,11 @@
 #   SSH state.
 #
 ---
+- name: Protect router assignments before legacy mutation
+  ansible.builtin.include_role:
+    name: router-boot-assignment
+  when: node_hostname | default('') == node_name ~ '-router'
+
 - name: Collect current VM Tailscale runtime status
   ansible.builtin.command: tailscale status --json
   register: vm_tailscale_enrollment_status_json

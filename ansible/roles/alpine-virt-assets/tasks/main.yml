@@ -4,9 +4,17 @@
 #   and initramfs used by managed Xen guests.
 #
 ---
+- name: Validate explicit Alpine asset paths and optional approved checksum
+  ansible.builtin.assert:
+    that:
+      - alpine_virt_expected_sha256 == '' or alpine_virt_expected_sha256 is match('^[0-9a-f]{64}$')
+      - alpine_virt_iso_download_path | dirname == alpine_virt_asset_directory
+      - alpine_virt_checksum_path | dirname == alpine_virt_asset_directory
+      - alpine_virt_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+
 - name: Ensure the dom0 Xen image directory exists
   ansible.builtin.file:
-    path: "{{ dom0_xen_images_path }}"
+    path: "{{ alpine_virt_asset_directory }}"
     state: directory
     mode: "0755"
 
@@ -18,7 +26,7 @@
 - name: Check whether the cached Alpine VIRT ISO already matches its local checksum
   ansible.builtin.command: "sha256sum -c {{ alpine_virt_checksum_path | basename }}"
   args:
-    chdir: "{{ dom0_xen_images_path }}"
+    chdir: "{{ alpine_virt_asset_directory }}"
   register: alpine_virt_cached_iso_checksum
   failed_when: false
   changed_when: false
@@ -59,7 +67,7 @@
 - name: Check whether the existing Alpine VIRT ISO already matches its checksum
   ansible.builtin.command: "sha256sum -c {{ alpine_virt_checksum_path | basename }}"
   args:
-    chdir: "{{ dom0_xen_images_path }}"
+    chdir: "{{ alpine_virt_asset_directory }}"
   register: alpine_virt_existing_iso_checksum
   failed_when: false
   changed_when: false
@@ -91,32 +99,85 @@
 - name: Verify the Alpine VIRT ISO checksum
   ansible.builtin.command: "sha256sum -c {{ alpine_virt_checksum_path | basename }}"
   args:
-    chdir: "{{ dom0_xen_images_path }}"
+    chdir: "{{ alpine_virt_asset_directory }}"
   changed_when: false
+
+- name: Hash the downloaded ISO before reusing extracted assets
+  ansible.builtin.stat:
+    path: "{{ alpine_virt_iso_download_path }}"
+    checksum_algorithm: sha256
+    get_checksum: true
+  register: alpine_virt_approved_iso
+
+- name: Require the exact approved ISO bytes before extracting or linking artifacts
+  ansible.builtin.assert:
+    that:
+      - alpine_virt_approved_iso.stat.checksum == alpine_virt_expected_sha256
+    fail_msg: Alpine ISO differs from the approved input digest; extracted assets were not changed.
+  when: alpine_virt_expected_sha256 != ''
 
 - name: Link the shared Alpine VIRT ISO path
   ansible.builtin.file:
     src: "{{ alpine_virt_iso_download_path }}"
-    dest: "{{ xen_shared_installer_iso_path }}"
+    dest: "{{ alpine_virt_iso_link_path }}"
     state: link
 
 - name: Check current shared Alpine VIRT boot artifacts
   ansible.builtin.stat:
     path: "{{ item }}"
+    checksum_algorithm: sha256
   loop:
-    - "{{ xen_shared_installer_kernel_path }}"
-    - "{{ xen_shared_installer_initramfs_path }}"
+    - "{{ alpine_virt_kernel_path }}"
+    - "{{ alpine_virt_initramfs_path }}"
   register: alpine_virt_shared_artifacts
 
 - name: Check current extracted Alpine VIRT package repository
   ansible.builtin.stat:
     path: "{{ alpine_virt_package_repo_path }}/{{ alpine_virt_arch }}/APKINDEX.tar.gz"
+    checksum_algorithm: sha256
   register: alpine_virt_package_repo_index
 
 - name: Check current extracted Alpine VIRT modloop
   ansible.builtin.stat:
     path: "{{ alpine_virt_modloop_path }}"
+    checksum_algorithm: sha256
   register: alpine_virt_modloop
+
+- name: Inspect the recorded Alpine extraction identity
+  ansible.builtin.stat:
+    path: "{{ alpine_virt_asset_receipt_path }}"
+    follow: false
+  register: alpine_virt_asset_receipt
+
+- name: Refuse an unsafe extraction receipt
+  ansible.builtin.assert:
+    that:
+      - alpine_virt_asset_receipt.stat.isreg | default(false)
+      - alpine_virt_asset_receipt.stat.uid == 0
+      - alpine_virt_asset_receipt.stat.nlink == 1
+  when: alpine_virt_asset_receipt.stat.exists
+
+- name: Read the previous Alpine extraction receipt
+  ansible.builtin.slurp:
+    src: "{{ alpine_virt_asset_receipt_path }}"
+  register: alpine_virt_previous_receipt
+  when: alpine_virt_asset_receipt.stat.exists
+
+- name: Identify the current extracted Alpine bytes and selected paths
+  ansible.builtin.set_fact:
+    alpine_virt_current_identity:
+      iso: "{{ alpine_virt_approved_iso.stat.checksum }}"
+      paths: ["{{ alpine_virt_kernel_path }}", "{{ alpine_virt_initramfs_path }}", "{{ alpine_virt_modloop_path }}", "{{ alpine_virt_package_repo_path }}"]
+      kernel: "{{ alpine_virt_shared_artifacts.results[0].stat.checksum | default('') }}"
+      initramfs: "{{ alpine_virt_shared_artifacts.results[1].stat.checksum | default('') }}"
+      modloop: "{{ alpine_virt_modloop.stat.checksum | default('') }}"
+      index: "{{ alpine_virt_package_repo_index.stat.checksum | default('') }}"
+
+- name: Re-extract absent or changed Alpine inputs instead of adopting cached bytes
+  ansible.builtin.set_fact:
+    alpine_virt_assets_need_extract: >-
+      {{ not alpine_virt_asset_receipt.stat.exists or
+         (alpine_virt_previous_receipt.content | default('e30=') | b64decode | from_json) != alpine_virt_current_identity }}
 
 - name: Extract the shared Alpine VIRT kernel
   ansible.builtin.command:
@@ -130,10 +191,11 @@
       - "{{ alpine_virt_iso_download_path }}"
       - -extract
       - /boot/vmlinuz-virt
-      - "{{ xen_shared_installer_kernel_path }}"
+      - "{{ alpine_virt_kernel_path }}"
   when: >-
     (not (alpine_virt_shared_artifacts.results[0].stat.exists | default(false)))
     or alpine_virt_iso_download.changed
+    or alpine_virt_assets_need_extract
 
 - name: Extract the shared Alpine VIRT initramfs
   ansible.builtin.command:
@@ -147,10 +209,11 @@
       - "{{ alpine_virt_iso_download_path }}"
       - -extract
       - /boot/initramfs-virt
-      - "{{ xen_shared_installer_initramfs_path }}"
+      - "{{ alpine_virt_initramfs_path }}"
   when: >-
     (not (alpine_virt_shared_artifacts.results[1].stat.exists | default(false)))
     or alpine_virt_iso_download.changed
+    or alpine_virt_assets_need_extract
 
 - name: Extract the shared Alpine VIRT modloop
   ansible.builtin.command:
@@ -168,6 +231,7 @@
   when: >-
     (not (alpine_virt_modloop.stat.exists | default(false)))
     or alpine_virt_iso_download.changed
+    or alpine_virt_assets_need_extract
 
 - name: Extract the Alpine VIRT package repository
   ansible.builtin.command:
@@ -185,14 +249,16 @@
   when: >-
     (not (alpine_virt_package_repo_index.stat.exists | default(false)))
     or alpine_virt_iso_download.changed
+    or alpine_virt_assets_need_extract
 
 - name: Verify shared Alpine VIRT assets exist
   ansible.builtin.stat:
     path: "{{ item }}"
+    checksum_algorithm: sha256
   loop:
-    - "{{ xen_shared_installer_iso_path }}"
-    - "{{ xen_shared_installer_kernel_path }}"
-    - "{{ xen_shared_installer_initramfs_path }}"
+    - "{{ alpine_virt_iso_link_path }}"
+    - "{{ alpine_virt_kernel_path }}"
+    - "{{ alpine_virt_initramfs_path }}"
     - "{{ alpine_virt_modloop_path }}"
     - "{{ alpine_virt_package_repo_path }}/{{ alpine_virt_arch }}/APKINDEX.tar.gz"
   register: alpine_virt_assets_verify
@@ -202,4 +268,18 @@
     that:
       - (alpine_virt_assets_verify.results | map(attribute='stat.exists') | list | min)
     fail_msg: >-
-      Alpine VIRT assets were not prepared under {{ dom0_xen_images_path }}.
+      Alpine VIRT assets were not prepared under {{ alpine_virt_asset_directory }}.
+
+- name: Record the extracted Alpine artifact identities
+  ansible.builtin.copy:
+    dest: "{{ alpine_virt_asset_receipt_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+    content: >-
+      {{ {'iso': alpine_virt_approved_iso.stat.checksum,
+          'paths': [alpine_virt_kernel_path, alpine_virt_initramfs_path, alpine_virt_modloop_path, alpine_virt_package_repo_path],
+          'kernel': alpine_virt_assets_verify.results[1].stat.checksum,
+          'initramfs': alpine_virt_assets_verify.results[2].stat.checksum,
+          'modloop': alpine_virt_assets_verify.results[3].stat.checksum,
+          'index': alpine_virt_assets_verify.results[4].stat.checksum} | to_nice_json }}

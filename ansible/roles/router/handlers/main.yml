@@ -12,12 +12,16 @@
   listen: Restart router dhcpcd
   changed_when: true
 
+  when: router_configuration_phase | default('converge') in ['converge', 'activate']
+
 - name: Wait for router reconnection after dhcpcd restart
   ansible.builtin.wait_for_connection:
     delay: 3
     sleep: 2
     timeout: 120
   listen: Restart router dhcpcd
+
+  when: router_configuration_phase | default('converge') in ['converge', 'activate']
 
 - name: Remove stale IPv6 PD reject routes after dhcpcd restart
   ansible.builtin.shell: |
@@ -34,12 +38,18 @@
   listen: Restart router dhcpcd
   changed_when: false
 
+  when: router_configuration_phase | default('converge') in ['converge', 'activate']
+
 - name: Restart router dnsmasq
   ansible.builtin.service:
     name: dnsmasq
     state: restarted
 
+  when: router_configuration_phase | default('converge') in ['converge', 'activate']
+
 - name: Restart router nftables
   ansible.builtin.service:
     name: nftables
     state: restarted
+
+  when: router_configuration_phase | default('converge') in ['converge', 'activate']

@@ -67,7 +67,7 @@ def read(root, relative, *, missing=False):
                     not (0 if empty else 1) <= info.st_size <= maximum or
                     stat.S_IMODE(info.st_mode) & 0o7022):
                 raise StateError('router state has unsafe type, links, size, or mode: ' + relative)
-            if relative not in OPTIONAL and relative != 'var/lib/misc/dnsmasq.leases' and info.st_mode & 0o077:
+            if relative in {*SSH, 'var/lib/tailscale/tailscaled.state', 'var/lib/dhcpcd/secret'} and info.st_mode & 0o077:
                 raise StateError('router identity state must be private: ' + relative)
             data = stream.read(maximum + 1)
             after = os.fstat(stream.fileno())
@@ -80,7 +80,7 @@ def read(root, relative, *, missing=False):
         os.close(directory)
 
 
-def snapshot(root, *, dnsmasq_uid=0, dnsmasq_gid=0):
+def snapshot(root, *, dnsmasq_uid=0, dnsmasq_gid=0, tailscale_gid=0):
     result = {}
     for relative in ALLOWLIST:
         item = read(root, relative, missing=relative not in REQUIRED)
@@ -90,6 +90,8 @@ def snapshot(root, *, dnsmasq_uid=0, dnsmasq_gid=0):
         owners = {(0, 0)}
         if relative == 'var/lib/misc/dnsmasq.leases':
             owners.add((dnsmasq_uid, dnsmasq_gid))
+        if relative.startswith('var/lib/tailscale/'):
+            owners.add((0, tailscale_gid))
         if (info.st_uid, info.st_gid) not in owners:
             raise StateError('router state ownership is outside the approved service profile')
         result[relative] = item
@@ -114,7 +116,8 @@ def evidence(files):
 
 
 def copy_state(source, destination, *, source_id, destination_id, dnsmasq_uid=0, dnsmasq_gid=0,
-               destination_dnsmasq_uid=0, destination_dnsmasq_gid=0, checkpoint=lambda stage: None):
+               destination_dnsmasq_uid=0, destination_dnsmasq_gid=0, tailscale_gid=0,
+               destination_tailscale_gid=0, checkpoint=lambda stage: None):
     """Stage all bytes before replacement; restart with the same stopped source.
 
     Partial output is never bootable evidence. The caller retains its pending
@@ -124,7 +127,7 @@ def copy_state(source, destination, *, source_id, destination_id, dnsmasq_uid=0,
     """
     if not source_id or not destination_id or source_id == destination_id or os.path.samefile(source, destination):
         raise StateError('state copy requires two distinct recorded disk identities')
-    source_files = snapshot(source, dnsmasq_uid=dnsmasq_uid, dnsmasq_gid=dnsmasq_gid)
+    source_files = snapshot(source, dnsmasq_uid=dnsmasq_uid, dnsmasq_gid=dnsmasq_gid, tailscale_gid=tailscale_gid)
     staged, parents = {}, {}
     try:
         # Validate all destination parents and all existing fixed paths before
@@ -138,16 +141,26 @@ def copy_state(source, destination, *, source_id, destination_id, dnsmasq_uid=0,
         checkpoint('validated')
         for relative, (data, info) in source_files.items():
             directory = parents[relative]
-            temporary = '.router-state-' + os.urandom(12).hex()
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            # The source and destination record fixes each temporary name.
+            # An interrupted process leaves only these exact resumable files.
+            temporary = '.router-state-' + hashlib.sha256(
+                json.dumps([source_id, destination_id, relative]).encode()).hexdigest()
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
                                  0o600, dir_fd=directory)
+            staged_info = os.fstat(descriptor)
+            if not stat.S_ISREG(staged_info.st_mode) or staged_info.st_nlink != 1:
+                os.close(descriptor)
+                raise StateError('recorded router staging path is unsafe')
             staged[relative] = temporary
             with os.fdopen(descriptor, 'wb') as stream:
+                os.ftruncate(stream.fileno(), 0)
                 stream.write(data)
                 stream.flush()
                 uid, gid = info.st_uid, info.st_gid
                 if relative == 'var/lib/misc/dnsmasq.leases' and (uid, gid) != (0, 0):
                     uid, gid = destination_dnsmasq_uid, destination_dnsmasq_gid
+                if relative.startswith('var/lib/tailscale/') and gid != 0:
+                    gid = destination_tailscale_gid
                 os.fchown(stream.fileno(), uid, gid)
                 os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
                 os.utime(stream.fileno(), ns=(info.st_atime_ns, info.st_mtime_ns))
@@ -160,11 +173,14 @@ def copy_state(source, destination, *, source_id, destination_id, dnsmasq_uid=0,
             staged.pop(relative)
             os.fsync(parents[relative])
             checkpoint('installed:' + relative)
-        copied = snapshot(destination, dnsmasq_uid=destination_dnsmasq_uid, dnsmasq_gid=destination_dnsmasq_gid)
+        copied = snapshot(destination, dnsmasq_uid=destination_dnsmasq_uid, dnsmasq_gid=destination_dnsmasq_gid,
+                          tailscale_gid=destination_tailscale_gid)
         expected = evidence(source_files)
         for path, item in expected.items():
             if path == 'var/lib/misc/dnsmasq.leases' and (item['uid'], item['gid']) != (0, 0):
                 item.update(uid=destination_dnsmasq_uid, gid=destination_dnsmasq_gid)
+            if path.startswith('var/lib/tailscale/') and item['gid'] != 0:
+                item['gid'] = destination_tailscale_gid
         if evidence(copied) != expected:
             raise StateError('router state copy failed final byte and metadata verification')
         checkpoint('verified')
@@ -202,4 +218,19 @@ def generic_absence(root):
                 if directory == 'etc/ssh' and not child.name.startswith('ssh_host_'):
                     continue
                 raise StateError('generic router template contains service identity or lease state')
+    permitted = {
+        'etc/network/interfaces': {'auto lo', 'iface lo inet loopback'},
+        'etc/hosts': {'127.0.0.1 localhost', '::1 localhost'},
+        'etc/resolv.conf': set(),
+    }
+    for relative, lines in permitted.items():
+        path = root / relative
+        if path.is_symlink():
+            raise StateError('generic router network file is a symlink')
+        if path.exists():
+            if not path.is_file() or path.stat().st_size > 65536:
+                raise StateError('generic router network file is unsafe')
+            actual = {line.split('#', 1)[0].strip() for line in path.read_text().splitlines()}
+            if not (actual - {''}) <= lines:
+                raise StateError('generic router template contains network personalization')
     return True

@@ -562,16 +562,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-VM_UPDATE_INSTALL_LOCK=/var/lib/klokast/updates/operation.lock
-command -v flock >/dev/null 2>&1 || die "flock is required for installation serialization"
-[ ! -L /var/lib/klokast/updates ] &&
-  [ "$(stat -c '%u:%a' /var/lib/klokast/updates 2>/dev/null)" = "0:755" ] ||
-  die "VM update lock directory is absent or unsafe; install platform-update-authority"
-[ ! -L "$VM_UPDATE_INSTALL_LOCK" ] &&
-  [ "$(stat -c '%u:%g:%a:%h' "$VM_UPDATE_INSTALL_LOCK" 2>/dev/null)" = "0:$(id -g):660:1" ] ||
-  die "VM update installation lock is absent or unsafe; install platform-update-authority"
-exec {VM_UPDATE_LOCK_FD}<>"$VM_UPDATE_INSTALL_LOCK"
-flock -n "$VM_UPDATE_LOCK_FD" || die "another VM update or provisioning operation holds the installation lock"
+. "$ANSIBLE_DIR/lib/platform-installation-lock.sh"
+platform_installation_lock || die "cannot acquire the Platform installation lock"
 
 for ((i = FROM_INDEX; i <= TO_INDEX; i++)); do
   case "${PHASES[$i]}" in

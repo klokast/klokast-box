@@ -1,0 +1,7 @@
+---
+- name: Stage router state-copy source for a disposable guest build
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - router-state-copy

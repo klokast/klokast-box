@@ -2,6 +2,11 @@
 - name: Build the Alpine VIRT router guest disk for the selected node
   hosts: vm_dom0
   gather_facts: false
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Protect the accepted router before changing dom0 prerequisites
+      ansible.builtin.import_role:
+        name: router-boot-assignment
   tasks:
     - name: Unlock reviewed router image maintenance packages in RAM
       ansible.builtin.import_role:

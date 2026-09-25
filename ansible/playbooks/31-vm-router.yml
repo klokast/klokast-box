@@ -2,6 +2,11 @@
 - name: Converge the dom0-side router prerequisites for the selected node
   hosts: vm_dom0
   gather_facts: false
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Protect the accepted router before changing dom0 prerequisites
+      ansible.builtin.import_role:
+        name: router-boot-assignment
   tasks:
     - name: Persist the dom0 bridge configuration
       ansible.builtin.import_role:

@@ -3,6 +3,11 @@
 # - Converges the common Alpine VM baseline: hostname, packages, admin user, SSH policy, doas, and package removals.
 #
 ---
+- name: Protect router assignments before legacy mutation
+  ansible.builtin.include_role:
+    name: router-boot-assignment
+  when: node_hostname | default('') == node_name ~ '-router'
+
 - name: Protect accepted shared VM packages and configuration from legacy convergence
   ansible.builtin.include_role:
     name: vm-boot-assignment

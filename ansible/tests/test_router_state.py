@@ -77,6 +77,28 @@ class CopyTests(unittest.TestCase):
         self.put('var/lib/misc/dnsmasq.leases', b'')
         self.assertTrue(self.copy()['complete'])
 
+    def test_native_duid_mode_and_tailscale_service_group(self):
+        (self.source / 'var/lib/dhcpcd/duid').chmod(0o640)
+        (self.source / 'var/lib/dhcpcd/secret').chmod(0o400)
+        previous = r.os.fstat.side_effect
+        def service_group(fd):
+            value = previous(fd)
+            if os.readlink('/proc/self/fd/' + str(fd)) == str(self.source / 'var/lib/tailscale/tailscaled.state'):
+                value.st_gid = 103
+            return value
+        r.os.fstat.side_effect = service_group
+        with self.assertRaisesRegex(r.StateError, 'ownership'):
+            self.copy()
+        self.assertTrue(self.copy(tailscale_gid=103)['complete'])
+        self.assertEqual((self.target / 'var/lib/dhcpcd/duid').stat().st_mode & 0o777, 0o640)
+        self.assertEqual((self.target / 'var/lib/dhcpcd/secret').stat().st_mode & 0o777, 0o400)
+
+    def test_world_readable_secret_is_rejected_before_target_changes(self):
+        (self.source / 'var/lib/dhcpcd/secret').chmod(0o644)
+        with self.assertRaisesRegex(r.StateError, 'must be private'):
+            self.copy()
+        self.assertFalse((self.target / 'var/lib/tailscale/tailscaled.state').exists())
+
     def test_symlink_hardlink_fifo_and_oversized_source(self):
         relative = 'var/lib/dhcpcd/duid'
         path = self.source / relative
@@ -148,6 +170,15 @@ class CopyTests(unittest.TestCase):
         key.unlink()
         key.symlink_to('/does-not-exist')
         with self.assertRaises(r.StateError):
+            r.generic_absence(self.target)
+
+    def test_generic_template_refuses_network_personalization(self):
+        path = self.target / 'etc/network/interfaces'
+        path.parent.mkdir()
+        path.write_text('auto lo\niface lo inet loopback\n')
+        self.assertTrue(r.generic_absence(self.target))
+        path.write_text('auto eth3\niface eth3 inet static\n address 192.0.2.1/24\n')
+        with self.assertRaisesRegex(r.StateError, 'network personalization'):
             r.generic_absence(self.target)
 
 

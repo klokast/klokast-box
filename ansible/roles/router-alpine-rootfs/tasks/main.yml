@@ -4,6 +4,10 @@
 #   pure Xen PVH guest. No QEMU/HVM installer path is used.
 #
 ---
+- name: Protect router assignments before legacy mutation
+  ansible.builtin.include_role:
+    name: router-boot-assignment
+
 - name: Assert the router LV path is supported
   ansible.builtin.assert:
     that:

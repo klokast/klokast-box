@@ -1,0 +1,3 @@
+---
+# A candidate uses render. Only the cutover path may activate its interfaces.
+router_configuration_phase: converge

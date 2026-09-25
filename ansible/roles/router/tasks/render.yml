@@ -1,0 +1,108 @@
+---
+- name: Ensure router interfaces configuration is present
+  # Keep the file managed, but do not bounce all interfaces here. The live
+  # router already uses these addresses, and the first safe convergence only
+  # needs the service restarts below.
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+    mode: "0644"
+
+- name: Ensure router dhcpcd configuration is present
+  ansible.builtin.template:
+    src: dhcpcd.conf.j2
+    dest: /etc/dhcpcd.conf
+    mode: "0644"
+  notify: "{{ ['Restart router dhcpcd'] if router_configuration_phase == 'converge' else [] }}"
+
+- name: Ensure router dnsmasq configuration is present
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.conf
+    mode: "0644"
+    validate: "dnsmasq --test --conf-file=%s"
+  notify: "{{ ['Restart router dnsmasq'] if router_configuration_phase == 'converge' else [] }}"
+
+- name: Ensure router dnsmasq include directory exists
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure router app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure router keyed app-resource include directory exists
+  ansible.builtin.file:
+    path: /etc/klokast/app-resources/router-forward.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure router keyed app-resource include sentinel exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/app-resources/router-forward.d/000-empty.nft
+    content: "# Empty placeholder so nft include globs always match.\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure router app-resource include file exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/app-resources/router-forward.nft
+    content: |
+      # Managed by Klokast platform-resources. Empty until deployment policy is applied.
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Ensure the disabled overlay IPv6 include exists
+  ansible.builtin.copy:
+    dest: /etc/klokast/overlay-ipv6.nft
+    content: "# Ops IPv6 downstream is disabled.\n"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+
+- name: Ensure router nftables configuration is present
+  ansible.builtin.template:
+    src: nftables.nft.j2
+    dest: /etc/nftables.nft
+    mode: "0644"
+    validate: "/usr/sbin/nft -c -f %s"
+  notify: "{{ ['Restart router nftables'] if router_configuration_phase == 'converge' else [] }}"
+
+- name: Ensure IPv4 forwarding is enabled
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_file: /etc/sysctl.conf
+    state: present
+    reload: "{{ router_configuration_phase == 'converge' }}"
+
+- name: Inspect the signed ops IPv6 downstream marker
+  ansible.builtin.stat:
+    path: /etc/sysctl.d/91-klokast-ops-ipv6.conf
+  register: router_ops_ipv6_downstream_marker
+
+- name: Ensure IPv6 forwarding is disabled when the ops-only mode is absent
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "0"
+    sysctl_file: /etc/sysctl.conf
+    state: present
+    reload: "{{ router_configuration_phase == 'converge' }}"
+  when:
+    - not router_enable_ipv6_downstream
+    - not (router_ops_ipv6_downstream_marker.stat.exists | default(false))
+

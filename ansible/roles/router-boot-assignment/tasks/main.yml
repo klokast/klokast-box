@@ -1,0 +1,53 @@
+---
+# This guard does not infer an assignment from a disk name or guest marker.
+# Legacy entry points must stop before their first mutation when a router
+# transaction or accepted assignment exists.
+- name: Validate the router assignment selector
+  ansible.builtin.assert:
+    that:
+      - node_name is match('^[a-z0-9][a-z0-9-]{0,30}$')
+
+- name: Verify persistent box storage before inspecting router assignment state
+  ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  changed_when: false
+
+- name: Inspect the router record directory without following links
+  ansible.builtin.stat:
+    path: /mnt/dom0_data/klokast-router-updates
+    follow: false
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  register: router_boot_assignment_directory
+
+- name: Refuse an unsafe router record directory
+  ansible.builtin.assert:
+    that:
+      - router_boot_assignment_directory.stat.isdir | default(false)
+      - not (router_boot_assignment_directory.stat.islnk | default(false))
+      - router_boot_assignment_directory.stat.uid == 0
+      - router_boot_assignment_directory.stat.mode == '0700'
+  when: router_boot_assignment_directory.stat.exists
+
+- name: Inspect protected router assignment and pending transaction paths
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-router-updates/{{ item }}.json"
+    follow: false
+  loop: [accepted, pending]
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  register: router_boot_assignment_records
+
+- name: Refuse legacy changes to an accepted or pending router generation
+  ansible.builtin.assert:
+    that:
+      - not (router_boot_assignment_records.results | map(attribute='stat.exists') | select('equalto', true) | list | length)
+    fail_msg: >-
+      {{ node_name }}-router has a protected assignment or pending replacement.
+      This legacy workflow cannot change its disk, boot artifacts, packages,
+      service configuration, or enrolled identity. Reconcile the recorded router
+      operation through the approved router release workflow before retrying.
