@@ -24,6 +24,7 @@ def inspect(box):
     if not router_updates.match(router_updates.BOX, box):
         raise UpdateError('router inspection requires a valid box ID')
     transport.require_controller()
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     if not STATE.is_dir() or STATE.is_symlink():
         raise UpdateError('install platform-update-discovery before router inspection')
     operation = secrets.token_hex(12)
