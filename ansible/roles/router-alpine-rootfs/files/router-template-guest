@@ -319,6 +319,7 @@ def test_boot(args):
     run(['nft', '-c', '-f', nft])
     tests.update(kernel_modules=True, service_syntax=True)
     if args.get('klokast_router_openrc') != '1':
+        run(['mount', '-o', 'remount,rw', '/'])
         put(root, 'etc/init.d/router-template-qualification',
             '#!/sbin/openrc-run\n'
             'depend() { need localmount bootmisc; }\n'
