@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import socket
 import subprocess
+import time
 import uuid
 
 from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
@@ -16,7 +17,7 @@ from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
 
 BASE = Path('/mnt/dom0_data/klokast-router-copy-tests')
 MIB = 1024 * 1024
-PHASES = ('seed', 'forward', 'mutate', 'reverse', 'verify')
+PHASES = ('seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify')
 SLOTS = {'original': 64 * MIB, 'candidate': 64 * MIB, 'scratch': 64 * MIB,
          'copy': MIB, 'result': MIB}
 
@@ -99,6 +100,7 @@ def execute(work, value):
     write(work / 'lifecycle.json', lifecycle)
     loops = {}
     records = []
+    durations = {}
     try:
         for name, size in SLOTS.items():
             with (work / (name + '.slot')).open('xb') as stream:
@@ -111,6 +113,7 @@ def execute(work, value):
             if result.returncode:
                 raise RuntimeError('synthetic disk partitioning failed')
         for phase in PHASES:
+            phase_started = time.monotonic()
             source = 'candidate' if phase == 'reverse' else 'original'
             unchanged = checksum(work / (source + '.slot')) if phase in ('forward', 'reverse') else None
             with (work / 'result.slot').open('r+b') as stream:
@@ -135,10 +138,12 @@ def execute(work, value):
             if unchanged is not None and checksum(work / (source + '.slot')) != unchanged:
                 raise RuntimeError('copy guest changed its read-only source disk')
             records.append(phase)
+            durations[phase] = round(time.monotonic() - phase_started, 3)
         result = {'kind': 'klokast.router-copy-qualification.v1', 'box': value['box'], 'role': 'router',
                   'operation_id': operation, 'inputs_sha256': value['inputs_sha256'],
                   'engine_commit': value['engine_commit'],
                   'phases': records, 'success': True, 'synthetic_only': True,
+                  'phase_seconds': durations,
                   'service_compatibility_verified': False, 'replacement_authorized': False}
         write(work / 'result.json', result)
     finally:

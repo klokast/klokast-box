@@ -163,7 +163,7 @@ It does not create, attach, or boot a VM.
 
 The synthetic qualification command uses frozen authenticated router packages
 to assemble a disposable boot environment. It takes the installation lock and
-runs five networkless Xen boots on new, fixed test disks:
+runs six networkless Xen boots on new, fixed test disks:
 
 ```sh
 ansible/bin/platform-router-update test-state-copy --box boxa \
@@ -171,9 +171,11 @@ ansible/bin/platform-router-update test-state-copy --box boxa \
 ```
 
 The test creates synthetic state, interrupts and resumes a forward copy, changes
-the candidate state, copies it back, and verifies both disks. It checks file
+the candidate state, stops with an open unlinked file, recovers a scratch clone,
+copies the latest state back, and verifies both disks. It checks file
 bytes, service ownership, permissions, lease timestamps, absent optional leases,
-and that each read-only source disk stays unchanged. The result binds the frozen
+and that each read-only source disk stays unchanged. It records each boot's
+duration. The result binds the frozen
 package inputs and the test engine commit. It is copy evidence only; synthetic
 state does not prove that old and new service versions can read each other's
 formats. Production dispatch and service compatibility remain required.

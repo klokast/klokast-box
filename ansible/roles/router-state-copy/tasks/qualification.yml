@@ -99,7 +99,7 @@
           - '{{ router_copy_test_box }}'
           - --operation-id
           - '{{ router_copy_test_operation }}'
-      async: 1500
+      async: 1700
       poll: 10
       vars:
         ansible_async_dir: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/async'
@@ -116,7 +116,7 @@
     path: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item }}'
     follow: false
     get_checksum: false
-  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, reverse.json, verify.json]
+  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, unclean.json, reverse.json, verify.json]
   register: router_copy_test_evidence
 
 - name: Fetch bounded copy qualification records

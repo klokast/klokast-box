@@ -149,13 +149,13 @@ def test_state_copy(box, source):
         with (result / 'copy-test.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                                REPO / 'ansible/playbooks/74-router-state-copy-test.yml', '--limit', box + '-dom0',
-                               '-e', '@' + str(args)], timeout=1800, log=log)
+                               '-e', '@' + str(args)], timeout=2200, log=log)
         evidence = transport.load(result / 'result.json')
         if (evidence.get('kind') != 'klokast.router-copy-qualification.v1' or evidence.get('box') != box or
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('synthetic_only') is not True or
-                evidence.get('phases') != ['seed', 'forward', 'mutate', 'reverse', 'verify'] or
+                evidence.get('phases') != ['seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify'] or
                 evidence.get('service_compatibility_verified') is not False or evidence.get('replacement_authorized') is not False):
             raise UpdateError('router copy qualification returned incomplete or different evidence')
         return {**evidence, 'evidence_directory': str(result)}

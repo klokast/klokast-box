@@ -12,6 +12,7 @@ import re
 import runpy
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, '/usr/local/lib/klokast')
 import router_state
@@ -20,7 +21,7 @@ MIB = 1024 * 1024
 STAMP = 1700000000123456789
 ACCOUNTS = {'dnsmasq_uid': 103, 'dnsmasq_gid': 104, 'tailscale_gid': 105}
 RESULT = Path('/dev/xvde')
-PHASES = ('seed', 'forward', 'mutate', 'reverse', 'verify')
+PHASES = ('seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify')
 
 
 def run(argv):
@@ -155,10 +156,45 @@ def copy(args, reverse=False):
         receipt = json.loads(stream.read(65536).rstrip(b'\0'))
     checksum = receipt.pop('receipt_sha256')
     if (receipt.get('complete') is not True or receipt.get('request_sha256') != value['request_sha256'] or
+            receipt.get('recovered_clone') is not reverse or
             checksum != hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode()).hexdigest()):
         raise RuntimeError('copy guest did not publish a matching complete receipt')
     with mounted('/dev/xvdb3', 'copied') as root:
         verify(root, latest=reverse)
+
+
+def unclean():
+    """Leave a synced, open unlinked inode for the bounded guest power-off.
+
+    Native ext4 journal recovery must occur on the scratch clone at the next
+    boot. The original synthetic source remains unchanged by that recovery.
+    """
+    root = Path('/run/unclean-source')
+    root.mkdir(mode=0o700)
+    run(['/bin/mount', '-t', 'ext4', '-o', 'rw,nodev,nosuid,noexec', '/dev/xvdb3', root])
+    verify(root, latest=True)
+    ready = Path('/run/orphan-ready')
+    child = os.fork()
+    if child == 0:
+        try:
+            path = root / 'synthetic-orphan'
+            with path.open('xb') as stream:
+                stream.write(b'x' * MIB)
+                stream.flush()
+                os.fsync(stream.fileno())
+                path.unlink()
+                os.sync()
+                ready.write_text('ready\n')
+                time.sleep(120)
+        finally:
+            os._exit(0)
+    deadline = time.monotonic() + 10
+    while not ready.exists():
+        if time.monotonic() > deadline or os.waitpid(child, os.WNOHANG)[0]:
+            raise RuntimeError('unclean filesystem fixture did not become ready')
+        time.sleep(0.1)
+    # No unmount: the dispatcher stops this exact disposable guest after its
+    # result is durable. The child keeps the orphan open until the VM stops.
 
 
 def execute(args):
@@ -173,6 +209,8 @@ def execute(args):
             for relative, data in payloads(True).items():
                 put(root, relative, data)
             verify(root, latest=True)
+    elif phase == 'unclean':
+        unclean()
     else:
         for device, name in (('/dev/xvda3', 'original'), ('/dev/xvdb3', 'candidate')):
             with mounted(device, name) as root:
@@ -183,11 +221,13 @@ def main():
     args = arguments()
     result = {'kind': 'klokast.router-copy-test.v1', 'operation_id': args['klokast_operation'],
               'inputs_sha256': args['klokast_inputs'], 'phase': args['klokast_phase'], 'success': False}
+    started = time.monotonic()
     try:
         execute(args)
         result['success'] = True
     except Exception as error:
         result['error'] = type(error).__name__ + ': ' + str(error)[:256]
+    result['elapsed_seconds'] = round(time.monotonic() - started, 3)
     os.sync()
     with RESULT.open('r+b', buffering=0) as stream:
         stream.write((json.dumps(result, sort_keys=True) + '\n').encode() + b'\0')

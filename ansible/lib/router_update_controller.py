@@ -71,6 +71,7 @@ def write(path, value):
 
 
 def command(argv, *, timeout=120, log=None):
+    evidence = str(log.name) if log is not None and hasattr(log, 'name') else 'the controller operation log'
     with subprocess.Popen([str(v) for v in argv], stdin=subprocess.DEVNULL,
                           stdout=log or subprocess.PIPE, stderr=log or subprocess.PIPE,
                           text=True, start_new_session=True) as process:
@@ -83,9 +84,9 @@ def command(argv, *, timeout=120, log=None):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
-            raise UpdateError('router inspection timed out; inspect the controller operation log') from error
+            raise UpdateError('router operation timed out; inspect ' + evidence) from error
         if process.returncode:
-            raise UpdateError('router inspection command failed: ' + str(argv[0]) + '; inspect the controller operation log')
+            raise UpdateError('router operation command failed: ' + str(argv[0]) + '; inspect ' + evidence)
         return output or ''
 
 

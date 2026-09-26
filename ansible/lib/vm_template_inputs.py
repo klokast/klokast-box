@@ -323,7 +323,7 @@ poweroff -f
 def stage_job_files(root, job_files):
     # Public helper modules can accompany the fixed job. They must not
     # replace package files or escape the newly extracted boot root.
-    extra = job_files or {}
+    extra = {} if job_files is None else job_files
     if not isinstance(extra, dict) or len(extra) > 16:
         raise UpdateError("bootstrap job file set exceeds its bound")
     for relative, source in extra.items():
