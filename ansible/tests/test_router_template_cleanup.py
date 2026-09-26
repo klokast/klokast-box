@@ -90,6 +90,49 @@ class CleanupTests(unittest.TestCase):
             self.module.reclaim(self.work, self.operation)
         self.assertTrue((self.work / 'test.slot').exists())
 
+    def qualify(self):
+        candidate = {'kind': 'klokast.router-template-candidate.v1',
+                     'role': 'router', 'operation_id': self.operation,
+                     'inputs_sha256': 'b' * 64, 'replacement_authorized': False,
+                     'generic_tests': {'identity_absent': True, 'exact_packages': True,
+                                       'kernel_modules': True, 'openrc': True}}
+        (self.work / 'candidate.json').write_text(json.dumps(candidate))
+        for mode, tests in (('test', {'identity_absent': True, 'exact_packages': True,
+                                     'kernel_modules': True, 'service_syntax': True}),
+                            ('openrc', {'kernel_modules': True, 'openrc': True,
+                                        'service_syntax': True})):
+            (self.work / (mode + '.json')).write_text(json.dumps({
+                'kind': 'klokast.router-template-test.v1', 'success': True,
+                'operation_id': self.operation, 'inputs_sha256': 'b' * 64,
+                'tests': tests}))
+
+    def test_qualified_cleanup_keeps_generic_os_and_evidence(self):
+        self.qualify()
+        result = self.module.reclaim(self.work, self.operation, 'scratch')
+        self.assertEqual(result['bytes_reclaimed'], 6 * 3)
+        self.assertEqual(result['removed'], ['test.slot', 'kernel.slot', 'result.slot'])
+        self.assertTrue((self.work / 'os.slot').exists())
+        self.assertTrue((self.work / 'candidate.json').exists())
+        self.assertEqual(json.loads((self.work / 'lifecycle.json').read_text())['stage'], 'scratch-reclaimed')
+        self.assertEqual(self.module.reclaim(self.work, self.operation, 'scratch')['removed'], [])
+        with self.assertRaisesRegex(RuntimeError, 'detached operation'):
+            self.module.reclaim(self.work, self.operation, 'failed')
+
+    def test_scratch_cleanup_refuses_failed_boot_or_attached_os(self):
+        self.qualify()
+        test = self.work / 'openrc.json'
+        value = json.loads(test.read_text())
+        value['success'] = False
+        test.write_text(json.dumps(value))
+        with self.assertRaisesRegex(RuntimeError, 'boot evidence'):
+            self.module.reclaim(self.work, self.operation, 'scratch')
+        value['success'] = True
+        test.write_text(json.dumps(value))
+        with patch.object(self.module, 'attached', side_effect=lambda path: ['/dev/loop1'] if path.name == 'os.slot' else []):
+            with self.assertRaisesRegex(RuntimeError, 'remains attached'):
+                self.module.reclaim(self.work, self.operation, 'scratch')
+        self.assertTrue((self.work / 'test.slot').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

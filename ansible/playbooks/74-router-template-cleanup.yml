@@ -21,12 +21,13 @@
           - (router_cleanup_controller.stdout | from_json).active | bool
           - router_cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
           - router_cleanup_operation is match('^[0-9a-f]{24}$')
+          - router_cleanup_kind | default('failed') in ['failed', 'scratch']
           - inventory_hostname == router_cleanup_box ~ '-dom0'
 
   tasks:
     - name: Reclaim the exact detached operation's temporary disks
       ansible.builtin.script:
-        cmd: "{{ playbook_dir }}/../roles/router-alpine-rootfs/files/router-template-cleanup-dom0 --box {{ router_cleanup_box }} --operation-id {{ router_cleanup_operation }}"
+        cmd: "{{ playbook_dir }}/../roles/router-alpine-rootfs/files/router-template-cleanup-dom0 --box {{ router_cleanup_box }} --operation-id {{ router_cleanup_operation }} --kind {{ router_cleanup_kind | default('failed') }}"
         executable: /usr/bin/python3
       register: router_cleanup_result
       changed_when: (router_cleanup_result.stdout | from_json).bytes_reclaimed | int > 0

@@ -82,6 +82,13 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
   -e router_cleanup_box=boxa -e router_cleanup_operation=OPERATION_ID
 ```
 
+After a successful build, the build role uses the same guarded helper with
+`--kind scratch`. It removes only the disposable test disk and temporary block
+slots after it fetches all qualification records. The generic OS disk and its
+kernel and initramfs stay available for controlled release use. For an older
+qualified operation that still has scratch storage, run the cleanup playbook
+with `-e router_cleanup_kind=scratch`.
+
 Run the repository tests without contacting the Platform:
 
 ```sh

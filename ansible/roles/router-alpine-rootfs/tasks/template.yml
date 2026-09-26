@@ -144,3 +144,10 @@
       Router template qualification failed. Inspect the controller operation log
       and exact dom0 operation directory. This operation has not accepted or
       replaced a router.
+
+- name: Reclaim the disposable test copy after its evidence is fetched
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/router-template-cleanup-dom0 --box {{ router_template_box }} --operation-id {{ router_template_operation }} --kind scratch"
+    executable: /usr/bin/python3
+  register: router_template_scratch_cleanup
+  changed_when: (router_template_scratch_cleanup.stdout | from_json).bytes_reclaimed | int > 0

@@ -15,7 +15,8 @@ import stat
 import subprocess
 
 BASE = Path('/mnt/dom0_data/klokast-router-templates')
-DISKS = ('os.slot', 'test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
+FAILED_DISKS = ('os.slot', 'test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
+SCRATCH_DISKS = ('test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
 UUID = re.compile(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}')
 
 
@@ -77,27 +78,58 @@ def attached(path):
                   if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
 
 
-def reclaim(work, operation):
+def reclaim(work, operation, kind='failed'):
     safe_dir(BASE)
     safe_dir(work)
     record = read(work / 'lifecycle.json')
     if (set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
-            record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed') or
+            record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed', 'scratch-reclaimed') or
             not isinstance(record['domains'], dict) or set(record['domains']) != {'build', 'test', 'openrc'} or
             not isinstance(record['uuids'], dict) or set(record['uuids']) != set(record['domains'])):
         raise RuntimeError('router template cleanup requires its exact detached operation record')
     for mode, name in record['domains'].items():
         if name != 'router-' + mode + '-' + operation or not UUID.fullmatch(record['uuids'][mode]):
             raise RuntimeError('router template cleanup has an invalid domain identity')
-    if (work / 'candidate.json').exists() or (work / 'candidate.json').is_symlink():
-        raise RuntimeError('qualified router template cannot be reclaimed as failed build')
+    if kind == 'failed':
+        if record['stage'] not in ('detached', 'storage-reclaimed'):
+            raise RuntimeError('failed router cleanup requires a detached operation')
+        if (work / 'candidate.json').exists() or (work / 'candidate.json').is_symlink():
+            raise RuntimeError('qualified router template cannot be reclaimed as failed build')
+        disks, next_stage = FAILED_DISKS, 'storage-reclaimed'
+    elif kind == 'scratch':
+        if record['stage'] not in ('detached', 'scratch-reclaimed'):
+            raise RuntimeError('qualified router cleanup requires a detached operation')
+        candidate = read(work / 'candidate.json')
+        if (candidate.get('kind') != 'klokast.router-template-candidate.v1' or
+                candidate.get('role') != 'router' or candidate.get('operation_id') != operation or
+                candidate.get('generic_tests') != {
+                    'identity_absent': True, 'exact_packages': True,
+                    'kernel_modules': True, 'openrc': True} or
+                candidate.get('replacement_authorized') is not False):
+            raise RuntimeError('qualified router cleanup lacks exact candidate evidence')
+        for mode, required in (('test', {'identity_absent': True, 'exact_packages': True,
+                                        'kernel_modules': True, 'service_syntax': True}),
+                               ('openrc', {'kernel_modules': True, 'openrc': True,
+                                           'service_syntax': True})):
+            result = read(work / (mode + '.json'))
+            if (result.get('kind') != 'klokast.router-template-test.v1' or result.get('success') is not True or
+                    result.get('operation_id') != operation or result.get('tests') != required or
+                    result.get('inputs_sha256') != candidate.get('inputs_sha256')):
+                raise RuntimeError('qualified router cleanup lacks matching boot evidence')
+        os_disk = work / 'os.slot'
+        safe_file(os_disk)
+        if attached(os_disk):
+            raise RuntimeError('qualified router OS template remains attached')
+        disks, next_stage = SCRATCH_DISKS, 'scratch-reclaimed'
+    else:
+        raise RuntimeError('router template cleanup kind is unsupported')
     live = domains()
     if any((record['domains'][mode], record['uuids'][mode]) in live or
            any(name == record['domains'][mode] for name, _ in live)
            for mode in record['domains']):
         raise RuntimeError('router template domain still exists')
     present = []
-    for name in DISKS:
+    for name in disks:
         path = work / name
         if not path.exists() and not path.is_symlink():
             continue
@@ -112,10 +144,10 @@ def reclaim(work, operation):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    if record['stage'] != 'storage-reclaimed':
+    if record['stage'] != next_stage:
         temporary = work / 'lifecycle.cleanup'
         with temporary.open('x') as stream:
-            json.dump({**record, 'stage': 'storage-reclaimed'}, stream, sort_keys=True, separators=(',', ':'))
+            json.dump({**record, 'stage': next_stage}, stream, sort_keys=True, separators=(',', ':'))
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
@@ -126,6 +158,7 @@ def reclaim(work, operation):
         finally:
             os.close(descriptor)
     return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
+            'cleanup_kind': kind,
             'removed': [path.name for path, _ in present],
             'bytes_reclaimed': sum(size for _, size in present)}
 
@@ -134,6 +167,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--kind', choices=('failed', 'scratch'), default='failed')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
@@ -143,7 +177,7 @@ def main():
     work = BASE / args.operation_id
     with (BASE / 'build.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        print(json.dumps(reclaim(work, args.operation_id), sort_keys=True))
+        print(json.dumps(reclaim(work, args.operation_id, args.kind), sort_keys=True))
 
 
 if __name__ == '__main__':
