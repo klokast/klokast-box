@@ -128,6 +128,53 @@ def dispatch(role):
     raise UpdateError('unsupported VM update role')
 
 
+def legacy_baseline_findings(guest, dom0, box):
+    """Report missing legacy evidence without granting adoption authority."""
+    findings = []
+    for target, value in (('router', guest), ('dom0', dom0)):
+        if (not isinstance(value, dict) or value.get('kind') != 'klokast.router-inspection.v1' or
+                value.get('box') != box or value.get('target') != target):
+            raise UpdateError('router baseline inspection belongs to another box or target')
+    if guest.get('tailscale_running') is not True or guest.get('tailscale_ssh') is not True or not guest.get('machine_id'):
+        findings.append('router management identity is not fully active')
+    unsupported = guest.get('unsupported_state')
+    if (guest.get('overlay_ipv6_enabled') is not False or not isinstance(unsupported, dict) or
+            any(value is not False for value in unsupported.values())):
+        findings.append('router has state that the replacement recipe cannot reconstruct')
+    paths = guest.get('state_paths')
+    required = ('/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/duid',
+                '/var/lib/dhcpcd/secret', '/var/lib/misc/dnsmasq.leases')
+    if (not isinstance(paths, dict) or any(not isinstance(paths.get(path), dict) or
+            paths[path].get('present') is not True or paths[path].get('regular') is not True or
+            paths[path].get('links') != 1 for path in required)):
+        findings.append('a required router identity or lease file is absent or unsafe')
+    if guest.get('dnsmasq_lease_paths') != ['/var/lib/misc/dnsmasq.leases']:
+        findings.append('dnsmasq does not declare the fixed retained lease file')
+    keys = guest.get('ssh_keys')
+    if (not isinstance(keys, dict) or not keys or any(
+            not isinstance(item, dict) or not isinstance(item.get('fingerprint'), str) or
+            not item['fingerprint'] or not isinstance(item.get('metadata'), dict) or
+            item['metadata'].get('regular') is not True or item['metadata'].get('links') != 1
+            for item in keys.values())):
+        findings.append('effective router SSH host-key evidence is incomplete')
+    first_contact = guest.get('first_contact_key')
+    if not isinstance(first_contact, dict) or first_contact.get('present') is not False:
+        findings.append('first-contact root SSH access is still present or unknown')
+    if (not isinstance(guest.get('packages'), dict) or not guest['packages'] or
+            not isinstance(guest.get('kernel_release'), str) or not guest['kernel_release']):
+        findings.append('installed router package or kernel evidence is missing')
+    if dom0.get('accepted_record_present') is not False or dom0.get('pending_record_present') is not False:
+        findings.append('router assignment or transaction already exists')
+    xen = dom0.get('xen')
+    if (not isinstance(xen, dict) or xen.get('name') != 'router' or
+            not isinstance(xen.get('disk'), list) or not xen['disk'] or
+            not isinstance(xen.get('uuid'), str) or not xen['uuid'] or
+            not isinstance(dom0.get('configuration_sha256'), str) or
+            not match(HASH, dom0['configuration_sha256'])):
+        findings.append('dom0 router boot assignment evidence is incomplete')
+    return findings
+
+
 def lifecycle(mode, *, box, role, existing_disk, installation, accepted, bootstrap_authorized,
               replacement_authorized):
     """A missing assignment never makes an existing disk a blank target."""

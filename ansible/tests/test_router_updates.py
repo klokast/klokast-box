@@ -215,5 +215,52 @@ class LifecycleTests(unittest.TestCase):
             r.dispatch('ops')
 
 
+class LegacyBaselineTests(unittest.TestCase):
+    def fixture(self):
+        guest = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'router',
+                 'tailscale_running': True, 'tailscale_ssh': True, 'machine_id': 'node-1',
+                 'overlay_ipv6_enabled': False, 'unsupported_state': {'tka': False},
+                 'dnsmasq_lease_paths': ['/var/lib/misc/dnsmasq.leases'],
+                 'ssh_keys': {'ed25519': {'fingerprint': 'SHA256:synthetic',
+                                         'metadata': {'regular': True, 'links': 1}}},
+                 'first_contact_key': {'present': False},
+                 'packages': {'tailscale': '1-r0'}, 'kernel_release': '6.12.1-virt',
+                 'state_paths': {path: {'present': True, 'regular': True, 'links': 1}
+                                 for path in ('/var/lib/tailscale/tailscaled.state',
+                                              '/var/lib/dhcpcd/duid', '/var/lib/dhcpcd/secret',
+                                              '/var/lib/misc/dnsmasq.leases')}}
+        dom0 = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'dom0',
+                'accepted_record_present': False, 'pending_record_present': False,
+                'configuration_sha256': 'a' * 64,
+                'xen': {'name': 'router', 'uuid': 'synthetic-uuid', 'disk': ['phy:/dev/vg0/lv_router,xvda,w']}}
+        return guest, dom0
+
+    def test_complete_inspection_only_reports_readiness(self):
+        guest, dom0 = self.fixture()
+        self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'), [])
+
+    def test_missing_lease_path_and_first_contact_key_block_adoption(self):
+        guest, dom0 = self.fixture()
+        guest['dnsmasq_lease_paths'] = []
+        guest['first_contact_key']['present'] = True
+        findings = r.legacy_baseline_findings(guest, dom0, 'boxa')
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(any('lease file' in finding for finding in findings))
+        self.assertTrue(any('root SSH' in finding for finding in findings))
+
+    def test_unknown_state_and_existing_assignment_block_adoption(self):
+        guest, dom0 = self.fixture()
+        guest['state_paths']['/var/lib/dhcpcd/duid']['regular'] = False
+        guest['unsupported_state']['tka'] = True
+        dom0['pending_record_present'] = True
+        self.assertEqual(len(r.legacy_baseline_findings(guest, dom0, 'boxa')), 3)
+
+    def test_wrong_target_cannot_be_used_as_baseline(self):
+        guest, dom0 = self.fixture()
+        dom0['box'] = 'boxb'
+        with self.assertRaises(UpdateError):
+            r.legacy_baseline_findings(guest, dom0, 'boxa')
+
+
 if __name__ == '__main__':
     unittest.main()

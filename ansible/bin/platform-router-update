@@ -38,13 +38,17 @@ def inspect(box):
         transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                            REPO / 'ansible/playbooks/74-router-update-inspect.yml', '-e', '@' + str(args)],
                           timeout=600, log=log)
+    records = {}
     for target in ('dom0', 'router'):
         result = transport.load(directory / (box + '-' + target + '.json'))
         if result.get('box') != box or result.get('target') != target:
             raise UpdateError('router inspection did not return both exact target identities')
+        records[target] = result
+    findings = router_updates.legacy_baseline_findings(records['router'], records['dom0'], box)
     return {'kind': 'klokast.router-inspection-result.v1', 'box': box,
             'operation': operation, 'evidence_directory': str(directory),
-            'status': 'inspected', 'adoption_authorized': False}
+            'status': 'inspected', 'adoption_ready': not findings,
+            'adoption_findings': findings, 'adoption_authorized': False}
 
 
 def resolve(branch):

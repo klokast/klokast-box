@@ -9,6 +9,10 @@ uses the verified execution inventory and Ansible. It records package versions,
 boot identities, effective SSH key fingerprints, and state-file metadata in
 `/var/lib/klokast/updates/discovery/router`. It does not copy private state
 contents. The command does not adopt a baseline or change a router.
+It reports missing legacy baseline evidence as `adoption_findings`. A clear
+inspection is still not an adoption receipt. In particular, the current router
+must declare `/var/lib/misc/dnsmasq.leases` as its dnsmasq lease file, have no
+first-contact root key, and have complete identity and boot evidence.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
