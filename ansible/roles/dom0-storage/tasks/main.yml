@@ -53,6 +53,11 @@
   ansible.builtin.set_fact:
     dom0_existing_lvs: "{{ lv_list.stdout_lines | map('trim') | reject('equalto', '') | list }}"
 
+- name: Require an exact dom0 data size in GiB
+  ansible.builtin.assert:
+    that:
+      - dom0_data_lv_size is match('^[1-9][0-9]*G$')
+
 - name: Create dom0 data logical volume
   # Reused bootstrap disks can leave stale filesystem signatures in the future
   # LV region even after the LV itself is gone. Wipe them non-interactively so
@@ -95,6 +100,24 @@
     opts: rw,relatime
     state: mounted
   notify: Commit lbu changes
+
+- name: Grow the dom0 data volume to its declared size without shrinking
+  community.general.lvol:
+    vg: "{{ volume_group_name }}"
+    lv: "{{ dom0_data_lv_name }}"
+    size: "{{ dom0_data_lv_size }}"
+    state: present
+    shrink: false
+
+- name: Grow the mounted ext4 filesystem after the logical volume
+  # Run on every convergence. This also resumes an interrupted operation in
+  # which the LV grew but the filesystem did not.
+  ansible.builtin.command:
+    argv:
+      - resize2fs
+      - "/dev/{{ volume_group_name }}/{{ dom0_data_lv_name }}"
+  register: dom0_data_resize_result
+  changed_when: "'Nothing to do!' not in (dom0_data_resize_result.stdout ~ dom0_data_resize_result.stderr)"
 
 - name: Remove the legacy dom0 data lbu include
   ansible.builtin.lineinfile:

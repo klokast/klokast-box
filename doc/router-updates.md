@@ -84,6 +84,10 @@ stopped also retains its attachments. Do not remove these resources until the
 recorded Xen UUIDs and attachments are reconciled. Successful qualification does
 not install an autostart entry or modify the production router.
 
+Template qualification requires at least 5 GiB free on `/mnt/dom0_data` before
+allocation. The declared dom0 data LV size is 32 GiB; the storage role grows an
+existing smaller LV and its mounted ext4 filesystem without shrinking it.
+
 After diagnosis, the controller can reclaim only the large temporary disks of
 one failed operation. Cleanup checks its lifecycle record, exact Xen names and
 UUIDs, candidate absence, and loop attachments. It keeps logs and the lifecycle

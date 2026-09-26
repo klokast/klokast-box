@@ -129,7 +129,9 @@ diskless_required_paths:
   - "{{ apk_boot_repository_index }}"
 
 dom0_data_lv_name: lv_dom0_data
-dom0_data_lv_size: 20G
+# Router template qualification needs two independent 2 GiB disks and room
+# for its package capsule, results, and retained generations.
+dom0_data_lv_size: 32G
 dom0_data_mount_path: /mnt/dom0_data
 dom0_logs_path: "{{ dom0_data_mount_path }}/logs"
 dom0_xen_images_path: "{{ dom0_data_mount_path }}/xen_images"
