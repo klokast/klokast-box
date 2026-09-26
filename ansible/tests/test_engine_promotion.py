@@ -167,8 +167,7 @@ class EnginePromotionTest(unittest.TestCase):
         source = PROMOTION_HELPER.read_text()
         start = source.index('python3 - "$PRIVATE_WORKTREE" "$CANDIDATE" "$ENVELOPE"')
         program = source[start:].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
-        output = self.root / "workstation"
-        output.mkdir(mode=0o700)
+        output = Path(tempfile.mkdtemp(prefix="workstation-", dir=self.root))
         result = subprocess.run([
             sys.executable, "-c", program, str(self.checkout),
             str(output / "candidate"), str(output / "envelope.json"),
@@ -223,6 +222,50 @@ class EnginePromotionTest(unittest.TestCase):
         envelope = json.loads((output / "envelope.json").read_text())
         self.assertEqual(envelope["schema_transition"], self.mod.SCHEMA_TRANSITION_LEGACY_TO_CURRENT)
         self.mod.validate_candidate_tree(self.args, envelope, self.old_build, self.new_build)
+
+    def test_workstation_optional_update_settings_survive_metadata_promotion(self):
+        instance = self.use_current_registry_instance()
+        inactive = instance.pop("inactive-apps")
+        updates = {
+            "enabled": True,
+            "targets": {"boxa": ["dmz"], "boxb": ["dmz", "iot"]},
+            "exclusions": [], "branch-policy": "tested-stable",
+            "check-frequency": "daily", "check-time": "00:10",
+            "branch-delay-days": 21, "report-max-age-hours": 30,
+            "maintenance-window": {"start": "02:00", "end": "04:00", "last-start": "03:00"},
+            "replacement-minutes": 30, "recovery-minutes": 30,
+        }
+        for has_updates, has_inactive in ((False, False), (True, False), (True, True)):
+            with self.subTest(updates=has_updates, inactive=has_inactive):
+                value = dict(instance)
+                if has_updates:
+                    value["vm-updates"] = updates
+                if has_inactive:
+                    value["inactive-apps"] = inactive
+                path = self.checkout / "klokast-instance.json"
+                path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+                self.git(self.checkout, "add", "klokast-instance.json")
+                self.git(self.checkout, "commit", "-qm", "publish optional settings")
+                original = path.read_bytes()
+                result, output = self.run_workstation_candidate()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                envelope = json.loads((output / "envelope.json").read_text())
+                self.assertEqual(envelope["schema_transition"], "metadata-only")
+                self.assertEqual(envelope["candidate_instance_json"].encode(),
+                                 original.replace(OLD_COMMIT.encode(), NEW_COMMIT.encode()))
+                self.mod.validate_candidate_tree(self.args, envelope, self.old_build, self.new_build)
+                candidate = json.loads(envelope["candidate_instance_json"])
+                self.assertEqual(self.mod.transition_instance_v1(candidate, "metadata-only", OLD_COMMIT), value)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(self.git(self.checkout, "status", "--porcelain"), "")
+                if has_updates:
+                    lossy, _ = self.run_workstation_candidate(self.mod.SCHEMA_TRANSITION_CURRENT_TO_LEGACY)
+                    self.assertNotEqual(lossy.returncode, 0)
+                    self.assertIn("cannot be converted to the legacy shape", lossy.stderr)
+                    candidate["vm-updates"]["branch-delay-days"] = 0
+                    envelope["candidate_instance_json"] = json.dumps(candidate)
+                    with self.assertRaisesRegex(self.mod.InstanceAuthorityError, "exact deterministic"):
+                        self.mod.validate_candidate_tree(self.args, envelope, self.old_build, self.new_build)
 
     def test_workstation_registry_shape_rejects_unknown_fields(self):
         instance = self.use_current_registry_instance()
