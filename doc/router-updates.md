@@ -12,7 +12,10 @@ contents. The command does not adopt a baseline or change a router.
 It reports missing legacy baseline evidence as `adoption_findings`. A clear
 inspection is still not an adoption receipt. In particular, the current router
 must declare `/var/lib/misc/dnsmasq.leases` as its dnsmasq lease file, have no
-first-contact root key, and have complete identity and boot evidence.
+first-contact root key, and have complete identity and boot evidence. The
+readiness check also requires the production Tailnet tag, all three effective
+SSH host keys, and file metadata that the fixed state-copy guest can read.
+Symlinked state paths and unsafe parent directories fail inspection.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \

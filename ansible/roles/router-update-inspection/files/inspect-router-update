@@ -21,6 +21,8 @@ def run(argv):
 
 def info(path):
     path = Path(path)
+    if any(parent.is_symlink() for parent in path.parents):
+        return {'present': True, 'regular': False, 'unsafe_parent': True}
     try:
         value = path.lstat()
     except FileNotFoundError:
@@ -60,7 +62,7 @@ def inspect_guest(box):
     for kind in ('rsa', 'ecdsa', 'ed25519'):
         candidates = [Path('/etc/ssh/ssh_host_' + kind + '_key'),
                       Path('/var/lib/tailscale/ssh/ssh_host_' + kind + '_key')]
-        selected = next((path for path in candidates if path.exists()), None)
+        selected = next((path for path in candidates if path.exists() or path.is_symlink()), None)
         if selected is not None:
             metadata = info(selected)
             if not metadata.get('regular') or metadata['links'] != 1:

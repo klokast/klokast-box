@@ -217,22 +217,34 @@ class LifecycleTests(unittest.TestCase):
 
 class LegacyBaselineTests(unittest.TestCase):
     def fixture(self):
+        def state(size, mode, uid=0, gid=0):
+            return {'present': True, 'regular': True, 'links': 1, 'bytes': size,
+                    'mode': oct(mode), 'uid': uid, 'gid': gid}
+
         guest = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'router',
                  'tailscale_running': True, 'tailscale_ssh': True, 'machine_id': 'node-1',
-                 'overlay_ipv6_enabled': False, 'unsupported_state': {'tka': False},
+                 'tags': ['tag:vm'],
+                 'overlay_ipv6_enabled': False,
+                 'unsupported_state': {'/var/lib/tailscale/tka': False,
+                                       '/var/lib/tailscale/tpm-sealed': False},
                  'dnsmasq_lease_paths': ['/var/lib/misc/dnsmasq.leases'],
-                 'ssh_keys': {'ed25519': {'fingerprint': 'SHA256:synthetic',
-                                         'metadata': {'regular': True, 'links': 1}}},
+                 'ssh_keys': {kind: {'path': '/etc/ssh/ssh_host_' + kind + '_key',
+                                    'fingerprint': 'SHA256:' + 'A' * 43,
+                                    'metadata': state(411, 0o600)}
+                              for kind in ('rsa', 'ecdsa', 'ed25519')},
                  'first_contact_key': {'present': False},
                  'packages': {'tailscale': '1-r0'}, 'kernel_release': '6.12.1-virt',
-                 'state_paths': {path: {'present': True, 'regular': True, 'links': 1}
-                                 for path in ('/var/lib/tailscale/tailscaled.state',
-                                              '/var/lib/dhcpcd/duid', '/var/lib/dhcpcd/secret',
-                                              '/var/lib/misc/dnsmasq.leases')}}
+                 'state_paths': {'/var/lib/tailscale/tailscaled.state': state(2410, 0o600, gid=103),
+                                 '/var/lib/dhcpcd/duid': state(42, 0o640),
+                                 '/var/lib/dhcpcd/secret': state(192, 0o400),
+                                 '/var/lib/misc/dnsmasq.leases': state(0, 0o644, 103, 104),
+                                 '/var/lib/dhcpcd/eth0.lease': state(548, 0o640),
+                                 '/var/lib/dhcpcd/eth0.lease6': {'present': False}}}
         dom0 = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'dom0',
                 'accepted_record_present': False, 'pending_record_present': False,
                 'configuration_sha256': 'a' * 64,
-                'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w']},
+                'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w'],
+                        'kernel': '/mnt/dom0_data/kernel', 'ramdisk': '/mnt/dom0_data/ramdisk'},
                 'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router', 'lv_uuid': 'synthetic-uuid'}]}]},
                 'boot_artifacts': {name: {'path': '/mnt/dom0_data/' + name, 'sha256': 'a' * 64}
                                    for name in ('kernel', 'ramdisk')}}
@@ -254,7 +266,7 @@ class LegacyBaselineTests(unittest.TestCase):
     def test_unknown_state_and_existing_assignment_block_adoption(self):
         guest, dom0 = self.fixture()
         guest['state_paths']['/var/lib/dhcpcd/duid']['regular'] = False
-        guest['unsupported_state']['tka'] = True
+        guest['unsupported_state']['/var/lib/tailscale/tka'] = True
         dom0['pending_record_present'] = True
         self.assertEqual(len(r.legacy_baseline_findings(guest, dom0, 'boxa')), 3)
 
@@ -264,6 +276,40 @@ class LegacyBaselineTests(unittest.TestCase):
         dom0['boot_artifacts']['kernel']['sha256'] = 'invalid'
         findings = r.legacy_baseline_findings(guest, dom0, 'boxa')
         self.assertEqual(len(findings), 2)
+
+    def test_inspection_rejects_state_that_copy_guest_cannot_read(self):
+        for path, field, value in (
+                ('/var/lib/tailscale/tailscaled.state', 'mode', '0o644'),
+                ('/var/lib/dhcpcd/duid', 'uid', 100),
+                ('/var/lib/dhcpcd/secret', 'bytes', 0),
+                ('/var/lib/misc/dnsmasq.leases', 'bytes', 5 * 1024 * 1024),
+                ('/var/lib/dhcpcd/eth0.lease', 'regular', False)):
+            with self.subTest(path=path, field=field):
+                guest, dom0 = self.fixture()
+                guest['state_paths'].setdefault(path, {'present': True, 'regular': True,
+                    'links': 1, 'bytes': 100, 'mode': '0o640', 'uid': 0, 'gid': 0})[field] = value
+                self.assertTrue(any('identity or lease' in finding for finding in
+                                    r.legacy_baseline_findings(guest, dom0, 'boxa')))
+
+    def test_effective_key_path_and_production_tag_are_required(self):
+        guest, dom0 = self.fixture()
+        guest['ssh_keys']['ed25519']['path'] = '/tmp/ssh_host_ed25519_key'
+        guest['tags'] = ['tag:bootstrap']
+        findings = r.legacy_baseline_findings(guest, dom0, 'boxa')
+        self.assertEqual(len(findings), 2)
+
+    def test_partial_inspection_cannot_claim_state_is_absent(self):
+        guest, dom0 = self.fixture()
+        del guest['state_paths']['/var/lib/dhcpcd/eth0.lease6']
+        del guest['unsupported_state']['/var/lib/tailscale/tka']
+        findings = r.legacy_baseline_findings(guest, dom0, 'boxa')
+        self.assertEqual(len(findings), 2)
+
+    def test_boot_hash_must_describe_selected_xen_path(self):
+        guest, dom0 = self.fixture()
+        dom0['boot_artifacts']['kernel']['path'] = '/mnt/dom0_data/another-kernel'
+        self.assertTrue(any('kernel or initramfs' in finding for finding in
+                            r.legacy_baseline_findings(guest, dom0, 'boxa')))
 
     def test_wrong_target_cannot_be_used_as_baseline(self):
         guest, dom0 = self.fixture()

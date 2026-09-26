@@ -7,6 +7,7 @@ initial installation, adoption, or replacement.
 import datetime as dt
 import re
 
+import router_state
 from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
 from platform_update_metadata import adjacent_stable_branch
 
@@ -135,27 +136,37 @@ def legacy_baseline_findings(guest, dom0, box):
         if (not isinstance(value, dict) or value.get('kind') != 'klokast.router-inspection.v1' or
                 value.get('box') != box or value.get('target') != target):
             raise UpdateError('router baseline inspection belongs to another box or target')
-    if guest.get('tailscale_running') is not True or guest.get('tailscale_ssh') is not True or not guest.get('machine_id'):
+    if (guest.get('tailscale_running') is not True or guest.get('tailscale_ssh') is not True or
+            not guest.get('machine_id') or guest.get('tags') != ['tag:vm']):
         findings.append('router management identity is not fully active')
     unsupported = guest.get('unsupported_state')
     if (guest.get('overlay_ipv6_enabled') is not False or not isinstance(unsupported, dict) or
+            set(unsupported) != {'/var/lib/tailscale/tka', '/var/lib/tailscale/tpm-sealed'} or
             any(value is not False for value in unsupported.values())):
         findings.append('router has state that the replacement recipe cannot reconstruct')
     paths = guest.get('state_paths')
-    required = ('/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/duid',
-                '/var/lib/dhcpcd/secret', '/var/lib/misc/dnsmasq.leases')
-    if (not isinstance(paths, dict) or any(not isinstance(paths.get(path), dict) or
-            paths[path].get('present') is not True or paths[path].get('regular') is not True or
-            paths[path].get('links') != 1 for path in required)):
+    required = {'/' + path: limit for path, limit in router_state.REQUIRED.items()}
+    optional = {'/' + path: limit for path, limit in router_state.OPTIONAL.items()}
+    if (not isinstance(paths, dict) or set(paths) != set(required) | set(optional) or
+            any(not _copyable_metadata(paths.get(path), limit, private=path in (
+                '/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/secret'),
+                root_owner=path != '/var/lib/misc/dnsmasq.leases')
+                for path, limit in required.items()) or
+            any(not _copyable_metadata(paths[path], limit, root_owner=True)
+                for path, limit in optional.items() if path in paths and
+                (not isinstance(paths[path], dict) or paths[path].get('present') is not False))):
         findings.append('a required router identity or lease file is absent or unsafe')
     if guest.get('dnsmasq_lease_paths') != ['/var/lib/misc/dnsmasq.leases']:
         findings.append('dnsmasq does not declare the fixed retained lease file')
     keys = guest.get('ssh_keys')
-    if (not isinstance(keys, dict) or not keys or any(
-            not isinstance(item, dict) or not isinstance(item.get('fingerprint'), str) or
-            not item['fingerprint'] or not isinstance(item.get('metadata'), dict) or
-            item['metadata'].get('regular') is not True or item['metadata'].get('links') != 1
-            for item in keys.values())):
+    if (not isinstance(keys, dict) or set(keys) != set(router_state.KEY_TYPES) or any(
+            not isinstance(item, dict) or item.get('path') not in (
+                '/etc/ssh/ssh_host_' + kind + '_key',
+                '/var/lib/tailscale/ssh/ssh_host_' + kind + '_key') or
+            not isinstance(item.get('fingerprint'), str) or
+            not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', item['fingerprint']) or
+            not _copyable_metadata(item.get('metadata'), (16384, False), private=True, root_owner=True)
+            for kind, item in keys.items())):
         findings.append('effective router SSH host-key evidence is incomplete')
     first_contact = guest.get('first_contact_key')
     if not isinstance(first_contact, dict) or first_contact.get('present') is not False:
@@ -186,10 +197,28 @@ def legacy_baseline_findings(guest, dom0, box):
     boot = dom0.get('boot_artifacts')
     if (not isinstance(boot, dict) or set(boot) != {'kernel', 'ramdisk'} or any(
             not isinstance(item, dict) or not isinstance(item.get('path'), str) or
-            not item['path'].startswith('/mnt/dom0_data/') or not match(HASH, item.get('sha256'))
-            for item in boot.values())):
+            not item['path'].startswith('/mnt/dom0_data/') or
+            item['path'] != (xen.get(name) if isinstance(xen, dict) else None) or
+            not match(HASH, item.get('sha256'))
+            for name, item in boot.items())):
         findings.append('router kernel or initramfs identity is missing')
     return findings
+
+
+def _copyable_metadata(value, limit, *, private=False, root_owner=False):
+    """Use the fixed copy contract to reject state that the helper cannot read."""
+    maximum, empty = limit
+    if not isinstance(value, dict) or value.get('present') is not True or value.get('regular') is not True or value.get('links') != 1:
+        return False
+    try:
+        mode = int(value['mode'], 8)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (type(value.get('bytes')) is int and (0 if empty else 1) <= value['bytes'] <= maximum and
+            type(value.get('uid')) is int and value['uid'] >= 0 and
+            type(value.get('gid')) is int and value['gid'] >= 0 and
+            0 <= mode <= 0o7777 and not mode & 0o7022 and
+            (not private or not mode & 0o077) and (not root_owner or value['uid'] == 0))
 
 
 def lifecycle(mode, *, box, role, existing_disk, installation, accepted, bootstrap_authorized,
