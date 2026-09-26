@@ -232,7 +232,7 @@ class LegacyBaselineTests(unittest.TestCase):
         dom0 = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'dom0',
                 'accepted_record_present': False, 'pending_record_present': False,
                 'configuration_sha256': 'a' * 64,
-                'xen': {'name': 'router', 'uuid': 'synthetic-uuid', 'disk': ['phy:/dev/vg0/lv_router,xvda,w']}}
+                'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w']}}
         return guest, dom0
 
     def test_complete_inspection_only_reports_readiness(self):

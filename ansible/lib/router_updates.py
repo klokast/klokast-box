@@ -168,7 +168,6 @@ def legacy_baseline_findings(guest, dom0, box):
     xen = dom0.get('xen')
     if (not isinstance(xen, dict) or xen.get('name') != 'router' or
             not isinstance(xen.get('disk'), list) or not xen['disk'] or
-            not isinstance(xen.get('uuid'), str) or not xen['uuid'] or
             not isinstance(dom0.get('configuration_sha256'), str) or
             not match(HASH, dom0['configuration_sha256'])):
         findings.append('dom0 router boot assignment evidence is incomplete')
