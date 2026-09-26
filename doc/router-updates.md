@@ -130,6 +130,14 @@ interface changes, service starts, or restart notifications. The explicit
 normal dnsmasq lease path is `/var/lib/misc/dnsmasq.leases`. These phases do not
 supply candidate authority or bypass assignment checks.
 
+Legacy playbook 31 removes the first-contact root authorized key after it
+verifies router service, a direct controller path, and Tailscale SSH as `neo`.
+It requires the key to match the approved controller public key and OpenSSH to
+be absent. An unexpected key or remaining OpenSSH path stops the playbook for
+review. A legacy router whose root key differs from the current approved
+bootstrap key needs a separate supervised reconciliation. This cleanup does not
+adopt a router release.
+
 The Alpine asset role accepts separate output paths and an approved ISO digest.
 Its defaults preserve the existing shared VM paths. Its extraction receipt
 binds the ISO, output paths, kernel, initramfs, modloop, and APK index. Missing or

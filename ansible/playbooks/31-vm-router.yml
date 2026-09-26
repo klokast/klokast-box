@@ -337,6 +337,86 @@
           Review WAN IPv6, Tailscale path selection, and downstream route cleanup
           before moving on to new VM provisioning.
 
+    - name: Prove router Tailscale SSH before retiring first-contact root access
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ inventory_hostname }}', sh, -s]
+        stdin: "hostname\n"
+        stdin_add_newline: false
+      delegate_to: localhost
+      become: false
+      register: router_management_ssh_probe
+      changed_when: false
+
+    - name: Require the exact router management identity
+      ansible.builtin.assert:
+        that:
+          - router_management_ssh_probe.stdout | trim == inventory_hostname
+
+    - name: Inspect the first-contact root key parent
+      ansible.builtin.stat:
+        path: /root/.ssh
+        follow: false
+      register: router_root_ssh_directory
+
+    - name: Inspect the first-contact root key
+      ansible.builtin.stat:
+        path: /root/.ssh/authorized_keys
+        follow: false
+        checksum_algorithm: sha256
+      register: router_root_first_contact_key
+
+    - name: Inspect retired OpenSSH paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /usr/sbin/sshd
+        - /etc/init.d/sshd
+        - /etc/runlevels/default/sshd
+      register: router_openssh_paths
+
+    - name: Require exact first-contact state before removing the root key
+      ansible.builtin.assert:
+        that:
+          - router_root_ssh_directory.stat.isdir | default(false)
+          - not (router_root_ssh_directory.stat.islnk | default(false))
+          - router_root_ssh_directory.stat.uid == 0
+          - router_root_ssh_directory.stat.gid == 0
+          - router_root_ssh_directory.stat.mode == '0700'
+          - router_openssh_paths.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 0
+          - >-
+            (not (router_root_first_contact_key.stat.exists | default(false)))
+            or (
+              router_root_first_contact_key.stat.isreg | default(false)
+              and not (router_root_first_contact_key.stat.islnk | default(false))
+              and router_root_first_contact_key.stat.uid == 0
+              and router_root_first_contact_key.stat.gid == 0
+              and router_root_first_contact_key.stat.mode == '0600'
+              and router_root_first_contact_key.stat.nlink == 1
+              and router_root_first_contact_key.stat.checksum ==
+                (((lookup('file', vm_admin_authorized_key_file) | trim) ~ '\n') | hash('sha256'))
+            )
+        fail_msg: >-
+          Router first-contact access differs from the approved bootstrap key
+          or OpenSSH is still installed. Reconcile it before baseline adoption.
+
+    - name: Retire the exact first-contact root key
+      ansible.builtin.file:
+        path: /root/.ssh/authorized_keys
+        state: absent
+      when: router_root_first_contact_key.stat.exists | default(false)
+
+    - name: Confirm that first-contact root access is absent
+      ansible.builtin.stat:
+        path: /root/.ssh/authorized_keys
+        follow: false
+      register: router_root_first_contact_retired
+
+    - name: Require completed first-contact root access retirement
+      ansible.builtin.assert:
+        that:
+          - not (router_root_first_contact_retired.stat.exists | default(false))
+
     - name: Show verified controller-to-router Tailscale path
       ansible.builtin.debug:
         msg: "{{ verify_router_controller_tailscale_ping.stdout }}"
