@@ -1,0 +1,36 @@
+---
+- name: Reclaim only one failed, detached router template operation
+  hosts: "{{ router_cleanup_box }}-dom0"
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require the active controller before failed-template cleanup
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cleanup_controller
+
+    - name: Require configured active controller and exact selector
+      ansible.builtin.assert:
+        that:
+          - (router_cleanup_controller.stdout | from_json).configured | bool
+          - (router_cleanup_controller.stdout | from_json).active | bool
+          - router_cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - router_cleanup_operation is match('^[0-9a-f]{24}$')
+          - inventory_hostname == router_cleanup_box ~ '-dom0'
+
+  tasks:
+    - name: Reclaim the exact detached operation's temporary disks
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/../roles/router-alpine-rootfs/files/router-template-cleanup-dom0 --box {{ router_cleanup_box }} --operation-id {{ router_cleanup_operation }}"
+        executable: /usr/bin/python3
+      register: router_cleanup_result
+      changed_when: (router_cleanup_result.stdout | from_json).bytes_reclaimed | int > 0
+
+    - name: Report exact reclaimed bytes and files
+      ansible.builtin.debug:
+        msg: "{{ router_cleanup_result.stdout | from_json }}"

@@ -70,6 +70,18 @@ stopped also retains its attachments. Do not remove these resources until the
 recorded Xen UUIDs and attachments are reconciled. Successful qualification does
 not install an autostart entry or modify the production router.
 
+After diagnosis, the controller can reclaim only the large temporary disks of
+one failed operation. Cleanup checks its lifecycle record, exact Xen names and
+UUIDs, candidate absence, and loop attachments. It keeps logs and the lifecycle
+record:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
+  -i ansible/execution-inventory/hosts \
+  ansible/playbooks/74-router-template-cleanup.yml \
+  -e router_cleanup_box=boxa -e router_cleanup_operation=OPERATION_ID
+```
+
 Run the repository tests without contacting the Platform:
 
 ```sh

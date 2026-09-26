@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Reclaim only the large disks of one failed, detached router template build.
+
+Small lifecycle and console evidence stays in place. No production LV, accepted
+release, candidate, or other operation path is a cleanup target.
+"""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import subprocess
+
+BASE = Path('/mnt/dom0_data/klokast-router-templates')
+DISKS = ('os.slot', 'test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
+UUID = re.compile(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}')
+
+
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise RuntimeError('duplicate router cleanup record field')
+        value[key] = item
+    return value
+
+
+def safe_dir(path):
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or
+            stat.S_IMODE(metadata.st_mode) != 0o700):
+        raise RuntimeError('router template cleanup directory is unsafe')
+
+
+def safe_file(path):
+    metadata = path.lstat()
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+            metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) & 0o022):
+        raise RuntimeError('router template cleanup file is unsafe: ' + path.name)
+    return metadata
+
+
+def read(path):
+    metadata = safe_file(path)
+    if not 0 < metadata.st_size <= 65536:
+        raise RuntimeError('router template cleanup record is missing or too large')
+    return json.loads(path.read_text(), object_pairs_hook=unique)
+
+
+def domains():
+    result = subprocess.run(['xl', 'list', '-l'], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, timeout=30)
+    if result.returncode:
+        raise RuntimeError('Xen domain inventory is unavailable')
+    records = json.loads(result.stdout, object_pairs_hook=unique)
+    if not isinstance(records, list) or not records:
+        raise RuntimeError('Xen domain inventory is incomplete')
+    identities = set()
+    for record in records:
+        info = record.get('config', {}).get('c_info', {})
+        name = info.get('name')
+        identity = info.get('uuid')
+        if (type(record.get('domid')) is not int or not isinstance(name, str) or
+                (record['domid'] == 0 and name != 'Domain-0') or
+                (record['domid'] != 0 and (not isinstance(identity, str) or not UUID.fullmatch(identity)))):
+            raise RuntimeError('Xen domain inventory has an unsupported format')
+        identities.add((name, identity))
+    return identities
+
+
+def attached(path):
+    return sorted('/dev/' + item.parents[1].name
+                  for item in Path('/sys/block').glob('loop*/loop/backing_file')
+                  if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
+
+
+def reclaim(work, operation):
+    safe_dir(BASE)
+    safe_dir(work)
+    record = read(work / 'lifecycle.json')
+    if (set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
+            record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed') or
+            not isinstance(record['domains'], dict) or set(record['domains']) != {'build', 'test', 'openrc'} or
+            not isinstance(record['uuids'], dict) or set(record['uuids']) != set(record['domains'])):
+        raise RuntimeError('router template cleanup requires its exact detached operation record')
+    for mode, name in record['domains'].items():
+        if name != 'router-' + mode + '-' + operation or not UUID.fullmatch(record['uuids'][mode]):
+            raise RuntimeError('router template cleanup has an invalid domain identity')
+    if (work / 'candidate.json').exists() or (work / 'candidate.json').is_symlink():
+        raise RuntimeError('qualified router template cannot be reclaimed as failed build')
+    live = domains()
+    if any((record['domains'][mode], record['uuids'][mode]) in live or
+           any(name == record['domains'][mode] for name, _ in live)
+           for mode in record['domains']):
+        raise RuntimeError('router template domain still exists')
+    present = []
+    for name in DISKS:
+        path = work / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        metadata = safe_file(path)
+        if attached(path):
+            raise RuntimeError('router template disk still has a loop attachment: ' + name)
+        present.append((path, metadata.st_size))
+    for path, _ in present:
+        path.unlink()
+    descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    if record['stage'] != 'storage-reclaimed':
+        temporary = work / 'lifecycle.cleanup'
+        with temporary.open('x') as stream:
+            json.dump({**record, 'stage': 'storage-reclaimed'}, stream, sort_keys=True, separators=(',', ':'))
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(work / 'lifecycle.json')
+        descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
+            'removed': [path.name for path, _ in present],
+            'bytes_reclaimed': sum(size for _, size in present)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('router template cleanup requires root on the exact dom0')
+    work = BASE / args.operation_id
+    with (BASE / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print(json.dumps(reclaim(work, args.operation_id), sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        raise SystemExit('router-template-cleanup-dom0: ' + str(error))
