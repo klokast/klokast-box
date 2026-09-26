@@ -15,7 +15,9 @@ must declare `/var/lib/misc/dnsmasq.leases` as its dnsmasq lease file, have no
 first-contact root key, and have complete identity and boot evidence. The
 readiness check also requires the production Tailnet tag, all three effective
 SSH host keys, and file metadata that the fixed state-copy guest can read.
-Symlinked state paths and unsafe parent directories fail inspection.
+Inspection records the service account IDs and checks each retained file against
+its allowed owners. Symlinked state paths and unsafe parent directories fail
+inspection.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \

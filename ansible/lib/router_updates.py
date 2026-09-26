@@ -145,14 +145,30 @@ def legacy_baseline_findings(guest, dom0, box):
             any(value is not False for value in unsupported.values())):
         findings.append('router has state that the replacement recipe cannot reconstruct')
     paths = guest.get('state_paths')
+    accounts = guest.get('service_accounts')
+    account_fields = {'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'}
+    if (not isinstance(accounts, dict) or set(accounts) != account_fields or
+            any(type(value) is not int or not 1 <= value <= 65535 for value in accounts.values())):
+        findings.append('router service-account evidence is incomplete')
+        accounts = {}
+
+    def owners(path):
+        result = {(0, 0)}
+        if accounts:
+            if path == '/var/lib/misc/dnsmasq.leases':
+                result.add((accounts['dnsmasq_uid'], accounts['dnsmasq_gid']))
+            if path.startswith('/var/lib/tailscale/'):
+                result.add((0, accounts['tailscale_gid']))
+        return result
+
     required = {'/' + path: limit for path, limit in router_state.REQUIRED.items()}
     optional = {'/' + path: limit for path, limit in router_state.OPTIONAL.items()}
     if (not isinstance(paths, dict) or set(paths) != set(required) | set(optional) or
             any(not _copyable_metadata(paths.get(path), limit, private=path in (
                 '/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/secret'),
-                root_owner=path != '/var/lib/misc/dnsmasq.leases')
+                owners=owners(path))
                 for path, limit in required.items()) or
-            any(not _copyable_metadata(paths[path], limit, root_owner=True)
+            any(not _copyable_metadata(paths[path], limit, owners=owners(path))
                 for path, limit in optional.items() if path in paths and
                 (not isinstance(paths[path], dict) or paths[path].get('present') is not False))):
         findings.append('a required router identity or lease file is absent or unsafe')
@@ -165,7 +181,7 @@ def legacy_baseline_findings(guest, dom0, box):
                 '/var/lib/tailscale/ssh/ssh_host_' + kind + '_key') or
             not isinstance(item.get('fingerprint'), str) or
             not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', item['fingerprint']) or
-            not _copyable_metadata(item.get('metadata'), (16384, False), private=True, root_owner=True)
+            not _copyable_metadata(item.get('metadata'), (16384, False), private=True, owners=owners(item['path']))
             for kind, item in keys.items())):
         findings.append('effective router SSH host-key evidence is incomplete')
     first_contact = guest.get('first_contact_key')
@@ -205,7 +221,7 @@ def legacy_baseline_findings(guest, dom0, box):
     return findings
 
 
-def _copyable_metadata(value, limit, *, private=False, root_owner=False):
+def _copyable_metadata(value, limit, *, private=False, owners):
     """Use the fixed copy contract to reject state that the helper cannot read."""
     maximum, empty = limit
     if not isinstance(value, dict) or value.get('present') is not True or value.get('regular') is not True or value.get('links') != 1:
@@ -218,7 +234,7 @@ def _copyable_metadata(value, limit, *, private=False, root_owner=False):
             type(value.get('uid')) is int and value['uid'] >= 0 and
             type(value.get('gid')) is int and value['gid'] >= 0 and
             0 <= mode <= 0o7777 and not mode & 0o7022 and
-            (not private or not mode & 0o077) and (not root_owner or value['uid'] == 0))
+            (not private or not mode & 0o077) and (value['uid'], value['gid']) in owners)
 
 
 def lifecycle(mode, *, box, role, existing_disk, installation, accepted, bootstrap_authorized,

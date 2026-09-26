@@ -224,6 +224,7 @@ class LegacyBaselineTests(unittest.TestCase):
         guest = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'router',
                  'tailscale_running': True, 'tailscale_ssh': True, 'machine_id': 'node-1',
                  'tags': ['tag:vm'],
+                 'service_accounts': {'dnsmasq_uid': 103, 'dnsmasq_gid': 104, 'tailscale_gid': 103},
                  'overlay_ipv6_enabled': False,
                  'unsupported_state': {'/var/lib/tailscale/tka': False,
                                        '/var/lib/tailscale/tpm-sealed': False},
@@ -281,6 +282,8 @@ class LegacyBaselineTests(unittest.TestCase):
         for path, field, value in (
                 ('/var/lib/tailscale/tailscaled.state', 'mode', '0o644'),
                 ('/var/lib/dhcpcd/duid', 'uid', 100),
+                ('/var/lib/dhcpcd/duid', 'gid', 100),
+                ('/var/lib/misc/dnsmasq.leases', 'uid', 999),
                 ('/var/lib/dhcpcd/secret', 'bytes', 0),
                 ('/var/lib/misc/dnsmasq.leases', 'bytes', 5 * 1024 * 1024),
                 ('/var/lib/dhcpcd/eth0.lease', 'regular', False)):

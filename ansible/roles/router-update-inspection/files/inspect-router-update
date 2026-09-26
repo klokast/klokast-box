@@ -6,6 +6,8 @@ import datetime as dt
 import hashlib
 import json
 import os
+import grp
+import pwd
 from pathlib import Path
 import re
 import stat
@@ -56,6 +58,12 @@ def inspect_guest(box):
     if status.get('Self', {}).get('HostName') != box + '-router':
         raise RuntimeError('router inspection reached a different machine')
     prefs = json.loads(run(['tailscale', 'debug', 'prefs']))
+    try:
+        dnsmasq = pwd.getpwnam('dnsmasq')
+        service_accounts = {'dnsmasq_uid': dnsmasq.pw_uid, 'dnsmasq_gid': dnsmasq.pw_gid,
+                            'tailscale_gid': grp.getgrnam('tailscale').gr_gid}
+    except KeyError as error:
+        raise RuntimeError('router inspection requires the dnsmasq account and tailscale group') from error
     state_paths = ['/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/duid', '/var/lib/dhcpcd/secret',
                    '/var/lib/dhcpcd/eth0.lease', '/var/lib/dhcpcd/eth0.lease6', '/var/lib/misc/dnsmasq.leases']
     keys = {}
@@ -76,6 +84,7 @@ def inspect_guest(box):
                        (overlay.exists() and any(line.strip() and not line.lstrip().startswith('#')
                                                  for line in overlay.read_text().splitlines())))
     return {'packages': packages, 'kernel_release': os.uname().release,
+            'service_accounts': service_accounts,
             'machine_id': status.get('Self', {}).get('ID'), 'tags': status.get('Self', {}).get('Tags'),
             'tailscale_running': status.get('BackendState') == 'Running', 'tailscale_ssh': prefs.get('RunSSH'),
             'state_paths': {path: info(path) for path in state_paths}, 'ssh_keys': keys,
