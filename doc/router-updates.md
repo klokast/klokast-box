@@ -48,7 +48,10 @@ not use an ISO or the shared Alpine asset paths.
 The template must have the exact resolved package closure and no machine or
 service identity. A disposable copy then boots with its own kernel and initramfs
 to test modules and service syntax, followed by a normal OpenRC boot. The CLI
-writes a release receipt only after these tests succeed. The receipt is build
+writes a release receipt only after these tests succeed and the engine commit
+matches the controller's signed policy source. When the public implementation
+is ahead of the approved engine, the CLI reports a qualified template with
+`engine_approved: false` and no release receipt. A release receipt is build
 evidence, not an accepted router assignment or replacement authority.
 
 The rootfs role now has separate `legacy` and `template` modes. Provisioning

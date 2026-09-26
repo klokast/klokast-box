@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import signal
 import socket
 import subprocess
@@ -99,3 +100,18 @@ def require_controller():
             not local.endswith('-ops') or local.startswith(('vultr-', 'hetzner-'))):
         raise UpdateError('router inspection requires the active box controller')
     return status
+
+
+def approved_engine():
+    """Return only the signed policy reader's approved engine, if available."""
+    try:
+        value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+                                    'vm-update-policy', 'source-status'], timeout=30),
+                           object_pairs_hook=unique_object)
+    except (UpdateError, OSError, ValueError, TypeError):
+        return None
+    if (not isinstance(value, dict) or value.get('kind') != 'klokast.vm-update-policy-source.v1' or
+            not isinstance(value.get('engine_commit'), str) or
+            not re.fullmatch('[0-9a-f]{40}', value['engine_commit'])):
+        return None
+    return value['engine_commit']

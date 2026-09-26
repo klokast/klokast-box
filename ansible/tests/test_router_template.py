@@ -199,12 +199,17 @@ class TransportTests(unittest.TestCase):
                      'kernel_release': '6.18.1-virt', 'replacement_authorized': False,
                      'generic_tests': dict.fromkeys(('identity_absent', 'exact_packages', 'kernel_modules', 'openrc'), True),
                      'artifacts': {n: {'sha256': 'd' * 64, 'bytes': 4096} for n in ('os', 'kernel', 'initramfs')}}
-        receipt = router_template_inputs.release(candidate, inputs(), PROFILE, ENGINE, 'boxa', 'a' * 24)
+        receipt = router_template_inputs.release(candidate, inputs(), PROFILE, ENGINE, 'boxa', 'a' * 24,
+                                                approved_engine=ENGINE)
         router_updates.validate_release(receipt, PROFILE, ENGINE)
+        with self.assertRaisesRegex(UpdateError, 'controller-approved'):
+            router_template_inputs.release(candidate, inputs(), PROFILE, ENGINE, 'boxa', 'a' * 24,
+                                           approved_engine='f' * 40)
         for field, value in (('box', 'boxb'), ('role', 'dmz'), ('operation_id', 'e' * 24),
                              ('replacement_authorized', True), ('generic_tests', {})):
             with self.subTest(field=field), self.assertRaises(UpdateError):
-                router_template_inputs.release({**candidate, field: value}, inputs(), PROFILE, ENGINE, 'boxa', 'a' * 24)
+                router_template_inputs.release({**candidate, field: value}, inputs(), PROFILE, ENGINE,
+                                               'boxa', 'a' * 24, approved_engine=ENGINE)
 
 
 if __name__ == '__main__':

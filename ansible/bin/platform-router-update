@@ -98,10 +98,15 @@ def build_template(box, source):
                                REPO / 'ansible/playbooks/74-router-template.yml', '--limit', box + '-dom0',
                                '-e', '@' + str(args)], timeout=2400, log=log)
         candidate = transport.load(result / 'candidate.json')
-        receipt = router_template_inputs.release(candidate, manifest, profile, engine, box, operation)
-        transport.write(result / 'release.json', receipt)
+        approved = transport.approved_engine()
+        receipt = None
+        if approved == engine:
+            receipt = router_template_inputs.release(candidate, manifest, profile, engine,
+                                                     box, operation, approved_engine=approved)
+            transport.write(result / 'release.json', receipt)
         return {'kind': 'klokast.router-template-result.v1', 'box': box, 'operation': operation,
-                'release_sha256': receipt['receipt_sha256'], 'evidence_directory': str(result),
+                'release_sha256': receipt['receipt_sha256'] if receipt else None,
+                'evidence_directory': str(result), 'engine_approved': approved == engine,
                 'status': 'generic-template-qualified', 'replacement_authorized': False}
 
 

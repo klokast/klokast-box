@@ -28,7 +28,9 @@ def stage(source, work, profile, engine, guest):
     return manifest, {'sha256': vm_template_inputs.sha256(capsule), 'bytes': capsule.stat().st_size}, boot
 
 
-def release(candidate, manifest, profile, engine, box, operation):
+def release(candidate, manifest, profile, engine, box, operation, *, approved_engine):
+    if approved_engine != engine:
+        raise UpdateError('router release requires the exact controller-approved engine commit')
     if (not isinstance(candidate, dict) or
             candidate.get('kind') != 'klokast.router-template-candidate.v1' or
             candidate.get('box') != box or candidate.get('role') != 'router' or
