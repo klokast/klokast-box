@@ -232,7 +232,10 @@ class LegacyBaselineTests(unittest.TestCase):
         dom0 = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'dom0',
                 'accepted_record_present': False, 'pending_record_present': False,
                 'configuration_sha256': 'a' * 64,
-                'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w']}}
+                'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w']},
+                'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router', 'lv_uuid': 'synthetic-uuid'}]}]},
+                'boot_artifacts': {name: {'path': '/mnt/dom0_data/' + name, 'sha256': 'a' * 64}
+                                   for name in ('kernel', 'ramdisk')}}
         return guest, dom0
 
     def test_complete_inspection_only_reports_readiness(self):
@@ -254,6 +257,13 @@ class LegacyBaselineTests(unittest.TestCase):
         guest['unsupported_state']['tka'] = True
         dom0['pending_record_present'] = True
         self.assertEqual(len(r.legacy_baseline_findings(guest, dom0, 'boxa')), 3)
+
+    def test_boot_disk_identity_must_be_complete(self):
+        guest, dom0 = self.fixture()
+        dom0['logical_volumes']['report'][0]['lv'][0]['lv_uuid'] = ''
+        dom0['boot_artifacts']['kernel']['sha256'] = 'invalid'
+        findings = r.legacy_baseline_findings(guest, dom0, 'boxa')
+        self.assertEqual(len(findings), 2)
 
     def test_wrong_target_cannot_be_used_as_baseline(self):
         guest, dom0 = self.fixture()

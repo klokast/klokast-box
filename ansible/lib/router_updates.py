@@ -167,10 +167,28 @@ def legacy_baseline_findings(guest, dom0, box):
         findings.append('router assignment or transaction already exists')
     xen = dom0.get('xen')
     if (not isinstance(xen, dict) or xen.get('name') != 'router' or
-            not isinstance(xen.get('disk'), list) or not xen['disk'] or
+            not isinstance(xen.get('disk'), list) or len(xen['disk']) != 1 or
             not isinstance(dom0.get('configuration_sha256'), str) or
             not match(HASH, dom0['configuration_sha256'])):
         findings.append('dom0 router boot assignment evidence is incomplete')
+    else:
+        disk = xen['disk'][0]
+        selected = re.fullmatch(r'phy:(/dev/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+),xvda,w', disk) if isinstance(disk, str) else None
+        volumes = dom0.get('logical_volumes')
+        try:
+            rows = volumes['report'][0]['lv']
+        except (KeyError, IndexError, TypeError):
+            rows = None
+        if (selected is None or not isinstance(rows, list) or
+                len([row for row in rows if isinstance(row, dict) and row.get('lv_path') == selected[1] and
+                     isinstance(row.get('lv_uuid'), str) and row['lv_uuid']]) != 1):
+            findings.append('router OS disk has no unique recorded LVM identity')
+    boot = dom0.get('boot_artifacts')
+    if (not isinstance(boot, dict) or set(boot) != {'kernel', 'ramdisk'} or any(
+            not isinstance(item, dict) or not isinstance(item.get('path'), str) or
+            not item['path'].startswith('/mnt/dom0_data/') or not match(HASH, item.get('sha256'))
+            for item in boot.values())):
+        findings.append('router kernel or initramfs identity is missing')
     return findings
 
 
