@@ -63,6 +63,9 @@ the router cutover executor, boot recovery, signed policy dispatch, and the
 unattended schedule must pass their qualification gates before replacement is
 enabled. No router target has been added to the Instance policy contract. The
 template test does not prove old/new service-state compatibility or rollback.
+The legacy rootfs role now refuses `router_alpine_rebuild` and a caller-selected
+LV. It creates the declared LV only if absent; an existing disk is not resized
+or formatted by this role.
 
 Each template operation uses an exact directory under
 `/mnt/dom0_data/klokast-router-templates` on dom0. The controller stores bounded

@@ -16,6 +16,15 @@ ROLES = REPO / 'ansible/roles'
 
 
 class PreparationTests(unittest.TestCase):
+    def test_legacy_router_builder_cannot_rebuild_or_resize_an_existing_disk(self):
+        tasks = yaml.safe_load((ROLES / 'router-alpine-rootfs/tasks/legacy.yml').read_text())
+        guard = tasks[0]['ansible.builtin.assert']['that']
+        self.assertIn('router_alpine_rebuild is sameas false', guard)
+        self.assertIn('router_alpine_lv_path == (node_xen_guest_specs.router.required_lvs | first)', guard)
+        self.assertNotIn('state: absent', (ROLES / 'router-alpine-rootfs/tasks/legacy.yml').read_text())
+        create = next(task for task in tasks if task.get('community.general.lvol'))
+        self.assertIn('router_alpine_lv_stat.stat.exists', create['when'])
+
     @unittest.skipIf(Environment is None, 'Jinja is supplied by the controller Ansible toolchain')
     def test_render_does_not_queue_handlers_or_change_live_sysctls(self):
         tasks = yaml.safe_load((ROLES / 'router/tasks/render.yml').read_text())

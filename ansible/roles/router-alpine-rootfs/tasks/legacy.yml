@@ -3,9 +3,11 @@
   ansible.builtin.assert:
     that:
       - router_alpine_lv_path is match('^/dev/[^/]+/[^/]+$')
+      - router_alpine_lv_path == (node_xen_guest_specs.router.required_lvs | first)
+      - router_alpine_rebuild is sameas false
     fail_msg: >-
-      Router LV path {{ router_alpine_lv_path | default('undefined') }} is not
-      a supported /dev/<vg>/<lv> path.
+      The legacy router builder accepts only the declared router LV and never
+      formats an existing disk. Use a recorded replacement generation instead.
 
 - name: Derive router LV and mapper names
   ansible.builtin.set_fact:
@@ -20,27 +22,18 @@
     path: "{{ router_alpine_lv_path }}"
   register: router_alpine_lv_stat
 
-- name: Remove the existing router LV when an explicit rebuild is requested
-  community.general.lvol:
-    vg: "{{ router_alpine_vg_name }}"
-    lv: "{{ router_alpine_lv_name }}"
-    state: absent
-    force: true
-  when:
-    - router_alpine_rebuild | bool
-    - router_alpine_lv_stat.stat.exists | default(false)
-
-- name: Ensure the router LV exists
+- name: Create the router LV only when it does not exist
   community.general.lvol:
     vg: "{{ router_alpine_vg_name }}"
     lv: "{{ router_alpine_lv_name }}"
     size: "{{ router_alpine_lv_size }}"
     state: present
+  when: not (router_alpine_lv_stat.stat.exists | default(false))
   register: router_alpine_lv_create
 
 - name: Decide whether the router root disk must be built
   ansible.builtin.set_fact:
-    router_alpine_needs_build: "{{ (router_alpine_lv_create.changed | default(false)) or (router_alpine_rebuild | bool) }}"
+    router_alpine_needs_build: "{{ router_alpine_lv_create.changed | default(false) }}"
 
 - name: Build the router Alpine disk
   when: router_alpine_needs_build | bool
