@@ -44,6 +44,8 @@ disk in a disposable networkless Xen guest. Dom0 partitions new opaque storage;
 package scripts, filesystem creation, and filesystem inspection run inside Xen.
 The kernel and modules come from the signed `linux-virt` package. This path does
 not use an ISO or the shared Alpine asset paths.
+The frozen router world also includes `openssh`, which the existing first-contact
+bootstrap role needs. It does not add packages while it personalizes a clone.
 
 The template must have the exact resolved package closure and no machine or
 service identity. A disposable copy then boots with its own kernel and initramfs

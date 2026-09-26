@@ -198,6 +198,9 @@ def baseline(root, manifest):
 
 
 def verify_generic(root, manifest):
+    sshd = root / 'usr/sbin/sshd'
+    if sshd.is_symlink() or not sshd.is_file():
+        raise RuntimeError('router package closure lacks first-contact sshd')
     for relative in ABSENT:
         path = root / relative
         if path.exists() or path.is_symlink():

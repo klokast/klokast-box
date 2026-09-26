@@ -8,7 +8,7 @@
   "packages": [
     "alpine-base", "ca-certificates", "dhcpcd", "dnsmasq", "doas",
     "e2fsprogs", "iproute2", "linux-virt", "mkinitfs", "nftables",
-    "openssh-keygen", "python3", "tailscale", "tailscale-openrc", "tzdata"
+    "openssh", "openssh-keygen", "python3", "tailscale", "tailscale-openrc", "tzdata"
   ],
   "repositories": ["main", "community"],
   "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",

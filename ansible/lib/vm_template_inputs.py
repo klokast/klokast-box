@@ -121,7 +121,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         raise UpdateError("template profile has unsupported repositories or architecture")
     world = profile.get("packages")
     required = {"linux-virt", "tailscale", "python3", "e2fsprogs", "mkinitfs"}
-    required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2"}
+    required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh"}
                  if expected_profile == "router-alpine-v1" else {"podman"})
     if (not isinstance(world, list) or not world or
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or

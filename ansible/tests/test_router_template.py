@@ -36,6 +36,7 @@ class GenericTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.manifest = inputs()
         self.put('etc/shadow', 'root::0:0:99999:7:::\n')
+        self.put('usr/sbin/sshd', 'synthetic sshd')
         self.put('lib/apk/db/installed', '\n\n'.join('P:' + p['name'] + '\nV:' + p['version']
                                                   for p in self.manifest['packages']))
         for services in self.guest.RUNLEVELS.values():
@@ -84,6 +85,11 @@ class GenericTests(unittest.TestCase):
         self.put('etc/network/interfaces', 'auto lo\niface lo inet loopback\n')
         (self.root / 'etc/runlevels/default/dnsmasq').symlink_to('/etc/init.d/dnsmasq')
         with self.assertRaisesRegex(RuntimeError, 'unexpected boot service'):
+            self.guest.verify_generic(self.root, self.manifest)
+
+    def test_missing_first_contact_server_fails_qualification(self):
+        (self.root / 'usr/sbin/sshd').unlink()
+        with self.assertRaisesRegex(RuntimeError, 'first-contact sshd'):
             self.guest.verify_generic(self.root, self.manifest)
 
     def test_missing_extra_changed_and_duplicate_installed_packages_fail(self):

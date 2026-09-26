@@ -54,7 +54,7 @@ def validate_profile(profile):
     packages = profile['packages']
     if (not isinstance(packages, list) or not packages or
             any(not match(NAME, p) for p in packages) or len(set(packages)) != len(packages) or
-            not {'alpine-base', 'linux-virt', 'mkinitfs', 'tailscale', 'tailscale-openrc',
+            not {'alpine-base', 'linux-virt', 'mkinitfs', 'tailscale', 'tailscale-openrc', 'openssh',
                  'dhcpcd', 'dnsmasq', 'iproute2', 'nftables', 'python3', 'e2fsprogs'} <= set(packages)):
         raise UpdateError('router profile has an incomplete package request set')
 
