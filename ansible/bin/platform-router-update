@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only router inspection and authenticated package input resolution."""
+"""Inspect routers, freeze signed APK inputs, and qualify isolated templates."""
 import argparse
 import datetime as dt
 import os
+import re
 from pathlib import Path
 import secrets
 import sys
@@ -11,6 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import router_updates
 import vm_template_inputs
+import router_template_inputs
 from platform_updates import UpdateError, canonical, timestamp
 
 import router_update_controller as transport
@@ -65,15 +67,61 @@ def resolve(branch):
             'replacement_authorized': False}
 
 
+def build_template(box, source):
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router template requires an exact box ID')
+    transport.require_controller()
+    source = Path(source)
+    if source.parent != CACHE or not router_updates.match(re.compile('[0-9a-f]{24}'), source.name):
+        raise UpdateError('router template inputs must select one frozen controller cache directory')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
+        raise UpdateError('router template requires a clean public implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    profile = transport.load(PROFILE)
+    with transport.installation_lock():
+        operation = secrets.token_hex(12)
+        work = CACHE / ('build-' + operation)
+        result = STATE / operation
+        work.mkdir(mode=0o700)
+        result.mkdir(mode=0o700)
+        manifest, capsule, boot = router_template_inputs.stage(source, work, profile, engine,
+            REPO / 'ansible/roles/router-alpine-rootfs/files/router-template-guest')
+        transport.write(work / 'request.json', {'kind': 'klokast.router-template-request.v1',
+            'box': box, 'role': 'router', 'operation_id': operation,
+            'inputs_sha256': manifest['inputs_sha256'], 'capsule': capsule, 'bootstrap': boot})
+        args = result / 'arguments.json'
+        transport.write(args, {'router_template_box': box, 'router_template_operation': operation,
+                              'router_template_input_dir': str(work), 'router_template_result_dir': str(result)})
+        with (result / 'build.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                               REPO / 'ansible/playbooks/74-router-template.yml', '--limit', box + '-dom0',
+                               '-e', '@' + str(args)], timeout=2400, log=log)
+        candidate = transport.load(result / 'candidate.json')
+        receipt = router_template_inputs.release(candidate, manifest, profile, engine, box, operation)
+        transport.write(result / 'release.json', receipt)
+        return {'kind': 'klokast.router-template-result.v1', 'box': box, 'operation': operation,
+                'release_sha256': receipt['receipt_sha256'], 'evidence_directory': str(result),
+                'status': 'generic-template-qualified', 'replacement_authorized': False}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
+    builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
+    builder.add_argument('--box', required=True)
+    builder.add_argument('--inputs-directory', required=True)
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        value = inspect(args.box) if args.command == 'inspect' else resolve(args.branch)
+        if args.command == 'inspect':
+            value = inspect(args.box)
+        elif args.command == 'resolve':
+            value = resolve(args.branch)
+        else:
+            value = build_template(args.box, args.inputs_directory)
         print(canonical(value))
         return 0
     except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:

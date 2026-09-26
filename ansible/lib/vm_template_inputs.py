@@ -320,7 +320,7 @@ poweroff -f
 """
 
 
-def bootstrap(directory, output, guest_job):
+def bootstrap(directory, output, guest_job, *, expected_profile="shared-alpine-v1"):
     """Assemble an initramfs as smith. Native extract never executes scripts.
 
     This is a one-operation boot environment, not a persistent builder VM.
@@ -330,7 +330,7 @@ def bootstrap(directory, output, guest_job):
     if os.geteuid() == 0:
         raise UpdateError("assemble the disposable boot environment as unprivileged smith")
     manifest = json.loads((directory / "inputs.json").read_text(), object_pairs_hook=unique_object)
-    verify_inputs(directory, manifest)
+    verify_inputs(directory, manifest, expected_profile=expected_profile)
     if output.exists() or output.is_symlink():
         raise UpdateError("bootstrap output already exists")
     output.mkdir(mode=0o700)

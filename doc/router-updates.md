@@ -15,6 +15,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
   ansible/playbooks/74-router-update-inspection-setup.yml
 ansible/bin/platform-router-update inspect --box boxa
 ansible/bin/platform-router-update resolve --branch v3.23
+ansible/bin/platform-router-update build-template --box boxa \
+  --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION
 ```
 
 `resolve` uses native APK in a fresh scratch root. It verifies repository and
@@ -36,11 +38,34 @@ preserves bytes, permissions, ownership, and lease timestamps. The caller must
 keep both routers fenced during an interrupted copy. The receipt stays on box
 storage. The primitive has no authority to attach disks or start a router.
 
-The current command exposes inspection and input resolution only. Bootstrap
-integration, protected baseline adoption, native compatibility qualification,
+`build-template` uses a clean public checkout and inputs frozen at that exact
+commit. It takes the installation lock and builds a generic partitioned router
+disk in a disposable networkless Xen guest. Dom0 partitions new opaque storage;
+package scripts, filesystem creation, and filesystem inspection run inside Xen.
+The kernel and modules come from the signed `linux-virt` package. This path does
+not use an ISO or the shared Alpine asset paths.
+
+The template must have the exact resolved package closure and no machine or
+service identity. A disposable copy then boots with its own kernel and initramfs
+to test modules and service syntax, followed by a normal OpenRC boot. The CLI
+writes a release receipt only after these tests succeed. The receipt is build
+evidence, not an accepted router assignment or replacement authority.
+
+The rootfs role now has separate `legacy` and `template` modes. Provisioning
+still uses the legacy mode until the common personalization and accepted-release
+path is complete. Bootstrap integration, protected baseline adoption, native compatibility qualification,
 the router cutover executor, boot recovery, signed policy dispatch, and the
 unattended schedule must pass their qualification gates before replacement is
-enabled. No router target has been added to the Instance policy contract.
+enabled. No router target has been added to the Instance policy contract. The
+template test does not prove old/new service-state compatibility or rollback.
+
+Each template operation uses an exact directory under
+`/mnt/dom0_data/klokast-router-templates` on dom0. The controller stores bounded
+evidence under `/var/lib/klokast/updates/discovery/router`. Failed operations
+retain their recorded disks for diagnosis. A guest that cannot be confirmed
+stopped also retains its attachments. Do not remove these resources until the
+recorded Xen UUIDs and attachments are reconciled. Successful qualification does
+not install an autostart entry or modify the production router.
 
 Run the repository tests without contacting the Platform:
 

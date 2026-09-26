@@ -7,8 +7,41 @@ import signal
 import socket
 import subprocess
 import tempfile
+import contextlib
+import fcntl
+import stat
 
 from platform_updates import UpdateError, canonical, unique_object
+
+
+@contextlib.contextmanager
+def installation_lock():
+    directory = Path('/var/lib/klokast/updates')
+    path = directory / 'operation.lock'
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o755:
+        raise UpdateError('Platform installation lock directory is absent or unsafe')
+    descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != os.getegid() or
+                stat.S_IMODE(info.st_mode) != 0o660 or info.st_nlink != 1):
+            raise UpdateError('Platform installation lock file is unsafe')
+        inherited = os.environ.get('KLOKAST_INSTALLATION_LOCK_FD')
+        if inherited is not None:
+            if inherited != '9' or (os.fstat(9).st_dev, os.fstat(9).st_ino) != (info.st_dev, info.st_ino):
+                raise UpdateError('inherited installation lock descriptor differs')
+            # Reuse the same open file description. Never unlock a parent lock.
+            reused = os.dup(9)
+            os.close(descriptor)
+            descriptor = reused
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise UpdateError('another update or provisioning operation holds the installation lock') from error
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def load(path):

@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Build or test a generic router disk inside one networkless Xen guest.
+
+The build disk is new, partitioned storage. No production disk or identity is
+accepted. The test boot uses a disposable copy and never changes the template.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import tarfile
+import time
+
+ROOT = Path('/target')
+INPUT = Path('/inputs')
+MIB = 1024 * 1024
+RESULT = Path('/dev/xvde')
+RUNLEVELS = {'sysinit': ('devfs', 'dmesg', 'mdev'),
+             'boot': ('hostname', 'modules', 'sysctl', 'bootmisc', 'localmount'),
+             'shutdown': ('killprocs', 'mount-ro')}
+ABSENT = ('etc/machine-id', 'var/lib/dbus/machine-id', 'root/.ssh',
+          'etc/klokast/app-resources', 'etc/klokast/overlay-ipv6.nft',
+          'etc/sysctl.d/91-klokast-ops-ipv6.conf', 'var/lib/misc/dnsmasq.leases')
+EMPTY = ('var/lib/tailscale', 'var/lib/dhcpcd')
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError('duplicate router template field')
+        result[key] = value
+    return result
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                    separators=(',', ':')).encode()).hexdigest()
+
+
+def checksum(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(MIB), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def run(argv, timeout=180):
+    result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        print(result.stdout[-4096:], result.stderr[-4096:], flush=True)
+        raise RuntimeError('router template command failed: ' + str(argv[0]))
+    return result.stdout.strip()
+
+
+def guard():
+    if (os.geteuid() != 0 or Path('/sys/hypervisor/type').read_text().strip() != 'xen' or
+            Path('/sys/hypervisor/uuid').read_text().strip() == '00000000-0000-0000-0000-000000000000' or
+            {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}):
+        raise RuntimeError('router template requires a networkless Xen guest, never dom0')
+    args = {}
+    for item in Path('/proc/cmdline').read_text().split():
+        key, sep, value = item.partition('=')
+        if sep and key.startswith('klokast_'):
+            if key in args:
+                raise RuntimeError('duplicate router boot parameter')
+            args[key] = value
+    for key, pattern in (('klokast_inputs', '[0-9a-f]{64}'), ('klokast_operation', '[0-9a-f]{24}')):
+        if not re.fullmatch(pattern, args.get(key, '')):
+            raise RuntimeError('router template boot identity is missing')
+    if args.get('klokast_router_test') not in (None, '1'):
+        raise RuntimeError('unsupported router test mode')
+    return args
+
+
+def block(path, readonly):
+    if path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode):
+        raise RuntimeError('router template VBD is not a block device')
+    if Path('/sys/class/block', path.name, 'ro').read_text().strip() != str(int(readonly)):
+        raise RuntimeError('router template VBD has the wrong access mode')
+
+
+def unpack(args):
+    block(Path('/dev/xvda'), True)
+    size = int(args.get('klokast_capsule_bytes', '0'))
+    if not 0 < size <= 2049 * MIB or not re.fullmatch('[0-9a-f]{64}', args.get('klokast_capsule', '')):
+        raise RuntimeError('router capsule identity is missing or too large')
+    capsule = Path('/run/router-input.tar')
+    with Path('/dev/xvda').open('rb') as source, capsule.open('xb') as target:
+        remaining = size
+        while remaining:
+            data = source.read(min(remaining, MIB))
+            if not data:
+                raise RuntimeError('router capsule is truncated')
+            target.write(data)
+            remaining -= len(data)
+    if checksum(capsule) != args['klokast_capsule']:
+        raise RuntimeError('router capsule hash differs')
+    INPUT.mkdir(mode=0o700)
+    with tarfile.open(capsule, 'r:') as archive:
+        members = []
+        total = 0
+        for member in archive:
+            total += member.size
+            if (len(members) >= 600 or total > 2049 * MIB or not member.isfile() or
+                    not re.fullmatch(r'(inputs\.json|guest\.py|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk)', member.name) or
+                    member.name in {m.name for m in members}):
+                raise RuntimeError('router capsule contains unsafe or duplicate members')
+            members.append(member)
+        archive.extractall(INPUT, members=members, filter='data')
+    capsule.unlink()
+    manifest = json.loads((INPUT / 'inputs.json').read_text(), object_pairs_hook=unique)
+    if (manifest.get('kind') != 'klokast.vm-template-inputs.v1' or
+            manifest.get('profile') != 'router-alpine-v1' or manifest.get('architecture') != 'x86_64' or
+            manifest.get('inputs_sha256') != args['klokast_inputs'] or
+            digest({k: v for k, v in manifest.items() if k != 'inputs_sha256'}) != args['klokast_inputs']):
+        raise RuntimeError('router inputs differ from the build assignment')
+    expected = {'inputs.json', 'guest.py'}
+    for p in manifest['packages']:
+        if (not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.-]*', p['name']) or
+                not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.~-]*', p['version']) or
+                p['file'] != 'packages/' + p['name'] + '-' + p['version'] + '.apk'):
+            raise RuntimeError('invalid router package identity')
+        path = INPUT / p['file']
+        if path.stat().st_size != p['bytes'] or checksum(path) != p['sha256']:
+            raise RuntimeError('router package bytes changed')
+        expected.add(p['file'])
+    for name, value in manifest['keys'].items():
+        if not re.fullmatch('[A-Za-z0-9@+_.-]+\\.pub', name) or checksum(INPUT / 'keys' / name) != value:
+            raise RuntimeError('router signing key changed')
+        expected.add('keys/' + name)
+    if expected != {m.name for m in members}:
+        raise RuntimeError('router capsule file set differs from its manifest')
+    return manifest
+
+
+def put(root, relative, content, mode=0o644):
+    path = root / relative
+    for parent in path.relative_to(root).parents:
+        if (root / parent).is_symlink():
+            raise RuntimeError('router recipe parent is a symlink')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise RuntimeError('router recipe file is a symlink')
+    path.write_text(content)
+    path.chmod(mode)
+
+
+def baseline(root, manifest):
+    versions = {p['name']: p['version'] for p in manifest['packages']}
+    for path, value in {
+        'etc/hostname': 'klokast-router-template\n',
+        'etc/hosts': '127.0.0.1 localhost\n::1 localhost\n',
+        'etc/network/interfaces': 'auto lo\niface lo inet loopback\n',
+        'etc/resolv.conf': '# Set by approved router personalization.\n',
+        'etc/fstab': '/dev/xvda3 / ext4 defaults 0 1\n/dev/xvda1 /boot ext4 defaults 0 2\n',
+        'etc/apk/repositories': '\n'.join(manifest['repositories']) + '\n',
+        'etc/apk/world': '\n'.join(n + '=' + versions[n] for n in manifest['world']) + '\n',
+        'etc/conf.d/clock': 'clock="UTC"\ntimezone="UTC"\n',
+        'etc/mkinitfs/mkinitfs.conf': 'features="base ext4 virtio xen"\n',
+    }.items():
+        put(root, path, value)
+    lines = []
+    for line in (root / 'etc/shadow').read_text().splitlines():
+        fields = line.split(':')
+        if fields[0] == 'root':
+            fields[1] = '!'
+        lines.append(':'.join(fields))
+    put(root, 'etc/shadow', '\n'.join(lines) + '\n', 0o600)
+    for directory in (root / 'etc/runlevels').iterdir():
+        if directory.is_symlink() or not directory.is_dir():
+            raise RuntimeError('unsafe generic router runlevel')
+        for path in directory.iterdir():
+            if not path.is_symlink():
+                raise RuntimeError('unexpected generic router runlevel file')
+            path.unlink()
+    for level, services in RUNLEVELS.items():
+        for service in services:
+            if not (root / 'etc/init.d' / service).is_file():
+                raise RuntimeError('required generic router boot service is missing: ' + service)
+            path = root / 'etc/runlevels' / level / service
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to('/etc/init.d/' + service)
+    # APK install scripts may create transient host identity. Remove only these
+    # known files; all other unexpected identity state fails qualification.
+    for name in ('etc/machine-id', 'var/lib/dbus/machine-id'):
+        (root / name).unlink(missing_ok=True)
+    for path in (root / 'etc/ssh').glob('ssh_host_*'):
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError('unexpected SSH key file type')
+        path.unlink()
+
+
+def verify_generic(root, manifest):
+    for relative in ABSENT:
+        path = root / relative
+        if path.exists() or path.is_symlink():
+            raise RuntimeError('generic router contains identity or generated state: ' + relative)
+    for relative in EMPTY:
+        path = root / relative
+        if path.is_symlink() or (path.exists() and (not path.is_dir() or any(path.iterdir()))):
+            raise RuntimeError('generic router contains service identity: ' + relative)
+    if list((root / 'etc/ssh').glob('ssh_host_*')):
+        raise RuntimeError('generic router contains SSH host keys')
+    expected = {level + '/' + service: '/etc/init.d/' + service
+                for level, services in RUNLEVELS.items() for service in services}
+    actual = {}
+    for directory in (root / 'etc/runlevels').iterdir():
+        if directory.is_symlink() or not directory.is_dir():
+            raise RuntimeError('generic router runlevel directory is unsafe')
+        for path in directory.iterdir():
+            if not path.is_symlink():
+                raise RuntimeError('generic router runlevel is not a link')
+            actual[directory.name + '/' + path.name] = os.readlink(path)
+    if actual != expected:
+        raise RuntimeError('generic router has an unexpected boot service')
+    for path, value in (('etc/hostname', 'klokast-router-template\n'),
+                        ('etc/network/interfaces', 'auto lo\niface lo inet loopback\n')):
+        if (root / path).read_text() != value:
+            raise RuntimeError('generic router has box-specific network configuration')
+    installed = {}
+    for record in (root / 'lib/apk/db/installed').read_text().strip().split('\n\n'):
+        fields = dict(line.split(':', 1) for line in record.splitlines() if line.startswith(('P:', 'V:')))
+        if 'P' in fields:
+            if fields['P'] in installed:
+                raise RuntimeError('router package database has duplicate names')
+            installed[fields['P']] = fields['V']
+    if installed != {p['name']: p['version'] for p in manifest['packages']}:
+        raise RuntimeError('router installed package closure differs from frozen inputs')
+    return {'identity_absent': True, 'exact_packages': True}
+
+
+def export(path, device, maximum):
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= maximum:
+        raise RuntimeError('router boot artifact exceeds its slot')
+    with path.open('rb') as source, device.open('r+b', buffering=0) as target:
+        shutil.copyfileobj(source, target)
+        os.fsync(target.fileno())
+    return {'sha256': checksum(path), 'bytes': path.stat().st_size}
+
+
+def build(args):
+    manifest = unpack(args)
+    for name in ('xvdb', 'xvdb1', 'xvdb3', 'xvdc', 'xvdd', 'xvde'):
+        block(Path('/dev', name), False)
+    run(['mkfs.ext4', '-F', '/dev/xvdb1'])
+    run(['mkfs.ext4', '-F', '/dev/xvdb3'])
+    ROOT.mkdir(mode=0o700)
+    mounted = []
+    try:
+        run(['mount', '/dev/xvdb3', ROOT]); mounted.append(ROOT)
+        for name in ('boot', 'proc', 'sys', 'dev'):
+            (ROOT / name).mkdir()
+            run(['mount', '/dev/xvdb1', ROOT / name] if name == 'boot' else
+                ['mount', '--bind', '/' + name, ROOT / name])
+            mounted.append(ROOT / name)
+        keys = ROOT / 'etc/apk/keys'
+        keys.mkdir(parents=True)
+        for path in (INPUT / 'keys').iterdir():
+            shutil.copyfile(path, keys / path.name)
+        repositories = INPUT / 'repositories'
+        repositories.write_text('')
+        packages = [INPUT / p['file'] for p in manifest['packages']]
+        run(['apk', '--keys-dir', keys, 'verify', *packages])
+        run(['apk', '--root', ROOT, '--no-network', '--keys-dir', keys,
+             '--repositories-file', repositories, 'add', '--initdb', *packages], timeout=600)
+        baseline(ROOT, manifest)
+        tests = verify_generic(ROOT, manifest)
+        modules = list((ROOT / 'lib/modules').iterdir())
+        if len(modules) != 1 or not modules[0].is_dir() or not re.fullmatch('[A-Za-z0-9_.+-]+', modules[0].name):
+            raise RuntimeError('router has no unique kernel module release')
+        kernel = modules[0].name
+        run(['chroot', ROOT, 'mkinitfs', '-o', '/boot/initramfs-virt', kernel])
+        # This hook is inert unless the dom0 qualification boot explicitly uses
+        # it as init. It is removed during future candidate personalization.
+        put(ROOT, 'usr/local/libexec/router-template-test', (INPUT / 'guest.py').read_text(), 0o700)
+        put(ROOT, 'etc/klokast-router-inputs.json', json.dumps(manifest, sort_keys=True) + '\n', 0o600)
+        artifacts = {name: export(ROOT / 'boot' / source, Path('/dev', device), maximum)
+                     for name, source, device, maximum in (
+                         ('kernel', 'vmlinuz-virt', 'xvdc', 32 * MIB),
+                         ('initramfs', 'initramfs-virt', 'xvdd', 128 * MIB))}
+        return {'tests': tests, 'kernel_release': kernel, 'artifacts': artifacts}
+    finally:
+        for path in reversed(mounted):
+            run(['umount', path], timeout=30)
+
+
+def test_boot(args):
+    block(Path('/dev/xvda'), False)
+    root = Path('/')
+    manifest = json.loads(Path('/etc/klokast-router-inputs.json').read_text(), object_pairs_hook=unique)
+    if manifest['inputs_sha256'] != args['klokast_inputs']:
+        raise RuntimeError('test disk has a different input identity')
+    if args.get('klokast_router_openrc') == '1':
+        if Path('/proc/1/comm').read_text().strip() != 'init':
+            raise RuntimeError('router OpenRC test did not use the normal init process')
+        run(['rc-service', 'localmount', 'status'])
+        tests = {'openrc': True}
+    else:
+        tests = verify_generic(root, manifest)
+    kernel = os.uname().release
+    if not Path('/lib/modules', kernel).is_dir():
+        raise RuntimeError('router kernel has no matching modules')
+    for name in ('xen-netfront', 'nf_tables'):
+        run(['modprobe', name])
+    run(['dnsmasq', '--test', '--conf-file=/dev/null'])
+    nft = Path('/run/router-test.nft')
+    nft.write_text('table inet router_test { chain input { type filter hook input priority 0; policy drop; } }\n')
+    run(['nft', '-c', '-f', nft])
+    tests.update(kernel_modules=True, service_syntax=True)
+    if args.get('klokast_router_openrc') != '1':
+        put(root, 'etc/init.d/router-template-qualification',
+            '#!/sbin/openrc-run\n'
+            'depend() { need localmount bootmisc; }\n'
+            'start() { /usr/local/libexec/router-template-test; }\n', 0o700)
+        Path('/etc/runlevels/default').mkdir(exist_ok=True)
+        Path('/etc/runlevels/default/router-template-qualification').symlink_to('/etc/init.d/router-template-qualification')
+    return {'tests': tests, 'kernel_release': kernel}
+
+
+def main():
+    # The build initramfs has mounted these. Custom init on a disposable test
+    # disk needs them before the guard can inspect the Xen and network boundary.
+    if os.getpid() == 1:
+        for fs, target in (('proc', '/proc'), ('sysfs', '/sys'), ('devtmpfs', '/dev')):
+            if not os.path.ismount(target):
+                run(['mount', '-t', fs, fs, target])
+        Path('/run').mkdir(exist_ok=True)
+        if not os.path.ismount('/run'):
+            run(['mount', '-t', 'tmpfs', 'tmpfs', '/run'])
+    args = guard()
+    block(RESULT, False)
+    result = {'kind': 'klokast.router-template-test.v1' if args.get('klokast_router_test') else
+              'klokast.router-template-build.v1', 'success': False,
+              'operation_id': args['klokast_operation'], 'inputs_sha256': args['klokast_inputs']}
+    try:
+        result.update(test_boot(args) if args.get('klokast_router_test') else build(args), success=True)
+    except Exception as error:
+        result['error'] = str(error)[:1000]
+        print('Router template qualification failed: ' + result['error'], flush=True)
+    data = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    if len(data) > MIB - 1:
+        raise RuntimeError('router result exceeds slot')
+    os.sync()
+    with RESULT.open('r+b', buffering=0) as stream:
+        stream.write(data + b'\0')
+        os.fsync(stream.fileno())
+    if os.getpid() == 1:
+        run(['poweroff', '-f'])
+        while True:
+            time.sleep(1)
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

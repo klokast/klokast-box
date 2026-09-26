@@ -55,6 +55,7 @@
         - {source: roles/vm-retained-data/files/vm_backup_verify.py, target: vm_backup_verify.py}
         - {source: roles/vm-template-builder/files/vm-template-build-dom0, target: vm-template-build-dom0}
         - {source: lib/vm_app_compatibility.py, target: vm_app_compatibility.py}
+        - {source: lib/xen_build_runtime.py, target: xen_build_runtime.py}
         - {source: roles/vm-retained-data/files/vm-supervised-restore, target: vm-supervised-restore}
 
     - name: Restore the backup into a disposable disk and verify identity

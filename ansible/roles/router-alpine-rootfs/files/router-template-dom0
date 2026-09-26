@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Build router template evidence using only fresh opaque operation disks.
+
+No production LV, autostart path, Tailscale identity, or accepted assignment is
+an input. This helper cannot perform a replacement or adopt its output.
+"""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import uuid
+
+from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
+                               duplicate_fields, domain, attach_loop, detach_loop,
+                               boot_guest, read_slot)
+
+BASE = Path('/mnt/dom0_data/klokast-router-templates')
+MIB = 1024 * 1024
+SLOTS = {'os': 2048 * MIB, 'kernel': 32 * MIB, 'initramfs': 128 * MIB, 'result': MIB}
+
+
+def request(work, box, operation):
+    safe_file(work / 'request.json', MIB)
+    value = json.loads((work / 'request.json').read_text(), object_pairs_hook=duplicate_fields)
+    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'capsule', 'bootstrap'} or
+            value['kind'] != 'klokast.router-template-request.v1' or value['box'] != box or
+            value['role'] != 'router' or value['operation_id'] != operation or
+            not isinstance(value['inputs_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256']) or
+            not isinstance(value['bootstrap'], dict) or set(value['bootstrap']) != {'kernel', 'initramfs'}):
+        raise RuntimeError('router template request has the wrong target or contract')
+    for name, entry, maximum in [('capsule.tar', value['capsule'], 2049 * MIB),
+                                 ('bootstrap-kernel', value['bootstrap']['kernel'], 32 * MIB),
+                                 ('bootstrap-initramfs', value['bootstrap']['initramfs'], 1024 * MIB)]:
+        if (not isinstance(entry, dict) or set(entry) != {'bytes', 'sha256'} or
+                type(entry['bytes']) is not int or not 0 < entry['bytes'] <= maximum or
+                not isinstance(entry['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', entry['sha256'])):
+            raise RuntimeError('router template input identity is invalid')
+        path = work / name
+        safe_file(path, maximum)
+        if path.stat().st_size != entry['bytes'] or checksum(path) != entry['sha256']:
+            raise RuntimeError('router template input bytes differ')
+    return value
+
+
+def configuration(work, value, name, identity, disks, mode):
+    extra = ('console=hvc0 panic=1 klokast_operation=' + value['operation_id'] +
+             ' klokast_inputs=' + value['inputs_sha256'])
+    if mode == 'build':
+        kernel, initramfs = 'bootstrap-kernel', 'bootstrap-initramfs'
+        extra += (' klokast_capsule=' + value['capsule']['sha256'] +
+                  ' klokast_capsule_bytes=' + str(value['capsule']['bytes']))
+    else:
+        kernel, initramfs = 'kernel', 'initramfs'
+        extra += ' root=/dev/xvda3 rootfstype=ext4 modules=ext4 rw klokast_router_test=1'
+        extra += (' init=/sbin/init klokast_router_openrc=1' if mode == 'openrc' else
+                  ' init=/usr/local/libexec/router-template-test')
+    return (f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 2048\nmaxmem = 2048\nvcpus = 2\n'
+            f'kernel = {str(work / kernel)!r}\nramdisk = {str(work / initramfs)!r}\nextra = {extra!r}\n'
+            f'disk = {disks!r}\nvif = []\non_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
+
+
+def result(work, value, kind, tests):
+    record = read_slot(work / 'result.slot')
+    if (record.get('kind') != kind or record.get('success') is not True or
+            record.get('operation_id') != value['operation_id'] or
+            record.get('inputs_sha256') != value['inputs_sha256'] or record.get('tests') != tests or
+            not isinstance(record.get('kernel_release'), str) or
+            not re.fullmatch('[A-Za-z0-9_.+-]+', record['kernel_release'])):
+        raise RuntimeError('router build or boot qualification did not return complete matching evidence')
+    return record
+
+
+def reserve(path, size):
+    with path.open('xb') as stream:
+        os.posix_fallocate(stream.fileno(), 0, size)
+        os.fsync(stream.fileno())
+
+
+def execute(work, value):
+    operation = value['operation_id']
+    names = {mode: 'router-' + mode + '-' + operation for mode in ('build', 'test', 'openrc')}
+    if any(domain(name) is not None for name in names.values()):
+        raise RuntimeError('router build operation already has a Xen domain')
+    capacity = os.statvfs(work)
+    if capacity.f_bavail * capacity.f_frsize < 2 * SLOTS['os'] + 512 * MIB:
+        raise RuntimeError('router template build and test need five GiB of free storage')
+    info = run(['xl', 'info']).stdout
+    memory = re.search(r'^free_memory\s*:\s*(\d+)\s*$', info, re.M)
+    if not memory or int(memory.group(1)) < 2304:
+        raise RuntimeError('router template build needs 2304 MiB of free Xen memory')
+    identities = {mode: str(uuid.uuid4()) for mode in names}
+    write(work / 'lifecycle.json', {'stage': 'allocated', 'domains': names, 'uuids': identities,
+                                   'operation_id': operation})
+    loops = {}
+    try:
+        for name, size in SLOTS.items():
+            reserve(work / (name + '.slot'), size)
+        # Native partitioning of a new opaque file. Dom0 never mounts it or
+        # runs package scripts. The layout stays compatible with router state copy.
+        completed = subprocess.run(['sfdisk', '--wipe', 'always', str(work / 'os.slot')],
+                                   input='label: dos\n,256M,83,*\n,1M,83\n,,83\n',
+                                   text=True, capture_output=True, timeout=30)
+        if completed.returncode:
+            raise RuntimeError('router blank disk partitioning failed')
+        loops['input'] = attach_loop(work / 'capsule.tar', readonly=True)
+        for name in SLOTS:
+            loops[name] = attach_loop(work / (name + '.slot'))
+        disks = ['phy:' + loops['input'] + ',xvda,r']
+        disks += ['phy:' + loops[name] + ',xvd' + letter + ',w' for name, letter in zip(SLOTS, 'bcde')]
+        config = work / 'build.cfg'
+        config.write_text(configuration(work, value, names['build'], identities['build'], disks, 'build'))
+        boot_guest(work, names['build'], identities['build'], config, value,
+                   kind='klokast.router-template-build.v1', timeout=1200)
+        built = result(work, value, 'klokast.router-template-build.v1',
+                       {'identity_absent': True, 'exact_packages': True})
+        for name in ('kernel', 'initramfs'):
+            item = built['artifacts'][name]
+            if (set(item) != {'bytes', 'sha256'} or type(item['bytes']) is not int or
+                    not 0 < item['bytes'] <= SLOTS[name] or
+                    checksum(work / (name + '.slot'), item['bytes']) != item['sha256']):
+                raise RuntimeError('router boot artifact identity differs')
+            with (work / (name + '.slot')).open('rb') as source, (work / name).open('xb') as target:
+                target.write(source.read(item['bytes']))
+                target.flush(); os.fsync(target.fileno())
+        for name, device in list(loops.items()):
+            path = work / ('capsule.tar' if name == 'input' else name + '.slot')
+            detach_loop(path, device); del loops[name]
+        os_hash = checksum(work / 'os.slot')
+        reserve(work / 'test.slot', SLOTS['os'])
+        with (work / 'os.slot').open('rb') as source, (work / 'test.slot').open('r+b') as target:
+            shutil.copyfileobj(source, target)
+            target.flush(); os.fsync(target.fileno())
+        if checksum(work / 'test.slot') != os_hash:
+            raise RuntimeError('router test copy differs from the generic template')
+        loops['test'] = attach_loop(work / 'test.slot')
+        loops['result'] = attach_loop(work / 'result.slot')
+        tests = {'identity_absent': True, 'exact_packages': True, 'kernel_modules': True, 'service_syntax': True}
+        for mode in ('test', 'openrc'):
+            with (work / 'result.slot').open('r+b') as stream:
+                stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+            config = work / (mode + '.cfg')
+            config.write_text(configuration(work, value, names[mode], identities[mode],
+                ['phy:' + loops['test'] + ',xvda,w', 'phy:' + loops['result'] + ',xvde,w'], mode))
+            boot_guest(work, names[mode], identities[mode], config, value,
+                       kind='klokast.router-template-test.v1', timeout=180)
+            tested = result(work, value, 'klokast.router-template-test.v1', tests if mode == 'test' else
+                            {'openrc': True, 'kernel_modules': True, 'service_syntax': True})
+            if tested['kernel_release'] != built['kernel_release']:
+                raise RuntimeError('router test boot ran a different kernel')
+            write(work / (mode + '.json'), tested)
+        if checksum(work / 'os.slot') != os_hash:
+            raise RuntimeError('router generic template changed during qualification')
+        record = {'kind': 'klokast.router-template-candidate.v1', 'box': value['box'], 'role': 'router',
+                  'operation_id': operation, 'inputs_sha256': value['inputs_sha256'],
+                  'kernel_release': built['kernel_release'], 'replacement_authorized': False,
+                  'artifacts': {'os': {'sha256': os_hash, 'bytes': SLOTS['os']}, **built['artifacts']},
+                  'generic_tests': dict.fromkeys(('identity_absent', 'exact_packages', 'kernel_modules', 'openrc'), True)}
+        write(work / 'candidate.json', record)
+        return record
+    finally:
+        # Failure to list or stop any exact domain prevents detachment and
+        # cleanup. Its durable lifecycle file is the reconciliation input.
+        if any(domain(name) is not None for name in names.values()):
+            raise RuntimeError('router qualification guest remains; retain all operation disks')
+        for name, device in loops.items():
+            detach_loop(work / ('capsule.tar' if name == 'input' else name + '.slot'), device)
+        write(work / 'lifecycle.json', {'stage': 'detached', 'domains': names, 'uuids': identities,
+                                       'operation_id': operation})
+        # Failed builds stay intact for diagnosis. A later exact cleanup can
+        # retire them. No wildcard deletion or production assignment is used.
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('router template command requires root on the exact dom0')
+    os.umask(0o077)
+    run(['mountpoint', '-q', '/mnt/dom0_data'])
+    work = BASE / args.operation_id
+    safe_directory(BASE); safe_directory(work)
+    with (BASE / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        execute(work, request(work, args.box, args.operation_id))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        raise SystemExit('router-template-dom0: ' + str(error))

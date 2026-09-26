@@ -1,4 +1,5 @@
 ---
+router_alpine_mode: legacy
 router_alpine_lv_path: "{{ node_xen_guest_specs.router.required_lvs | first }}"
 router_alpine_lv_size: 2G
 router_alpine_boot_size: 256M

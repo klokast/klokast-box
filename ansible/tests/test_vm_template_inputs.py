@@ -334,13 +334,13 @@ class HostBoundaryTests(unittest.TestCase):
             self.host.require_identity({"config": {"c_info": {"uuid": "other"}}}, "expected")
 
     def test_failed_xen_inventory_cannot_be_mistaken_for_shutdown(self):
-        with patch.object(self.host, "run", side_effect=RuntimeError("xl failed")):
+        with patch("xen_build_runtime.run", side_effect=RuntimeError("xl failed")):
             with self.assertRaisesRegex(RuntimeError, "xl failed"):
                 self.host.domain("vm-build-example")
 
     def test_unknown_xen_format_cannot_be_mistaken_for_shutdown(self):
         for records in ([], [{"domid": 7, "name": "vm-build-example"}], {"domains": []}):
-            with self.subTest(records=records), patch.object(self.host, "run", return_value=SimpleNamespace(stdout=json.dumps(records))):
+            with self.subTest(records=records), patch("xen_build_runtime.run", return_value=SimpleNamespace(stdout=json.dumps(records))):
                 with self.assertRaises(RuntimeError): self.host.domain("vm-build-example")
 
     def test_dom0_is_never_a_cleanup_target_even_with_a_matching_uuid(self):
@@ -349,11 +349,11 @@ class HostBoundaryTests(unittest.TestCase):
 
     def test_native_dom0_record_has_no_uuid(self):
         records = [{"domid": 0, "config": {"c_info": {"type": "pv", "name": "Domain-0"}}}]
-        with patch.object(self.host, "run", return_value=SimpleNamespace(stdout=json.dumps(records))):
+        with patch("xen_build_runtime.run", return_value=SimpleNamespace(stdout=json.dumps(records))):
             self.assertIsNone(self.host.domain("vm-build-example"))
 
     def test_reassigned_loop_is_never_detached(self):
-        with patch.object(self.host, "loop_devices", return_value=["/dev/loop2"]), patch.object(self.host, "run") as run:
+        with patch("xen_build_runtime.loop_devices", return_value=["/dev/loop2"]), patch("xen_build_runtime.run") as run:
             with self.assertRaisesRegex(RuntimeError, "loop identity changed"):
                 self.host.detach_loop(Path("/operation/root.slot"), "/dev/loop1")
             run.assert_not_called()

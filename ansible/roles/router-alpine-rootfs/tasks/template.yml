@@ -1,0 +1,146 @@
+---
+- name: Require an exact isolated router template operation
+  ansible.builtin.assert:
+    that:
+      - router_template_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      - router_template_operation is match('^[0-9a-f]{24}$')
+      - inventory_hostname == router_template_box ~ '-dom0'
+      - router_template_input_dir == '/var/cache/klokast/updates/router/build-' ~ router_template_operation
+      - router_template_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_template_operation
+
+- name: Require the active controller before allocating template resources
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+  delegate_to: localhost
+  become: false
+  register: router_template_controller
+  changed_when: false
+
+- name: Verify active-controller status
+  ansible.builtin.assert:
+    that:
+      - (router_template_controller.stdout | from_json).configured | bool
+      - (router_template_controller.stdout | from_json).active | bool
+
+- name: Require persistent dom0 storage
+  ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+  changed_when: false
+
+- name: Create private router template storage
+  ansible.builtin.file:
+    path: /mnt/dom0_data/klokast-router-templates
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Inspect the unique router template operation path
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}"
+    follow: false
+  register: router_template_existing
+
+- name: Refuse reuse of a router build operation
+  ansible.builtin.assert:
+    that: [not router_template_existing.stat.exists]
+
+- name: Allocate private template operation storage
+  ansible.builtin.file:
+    path: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', async]
+
+- name: Stage exact router build inputs
+  ansible.builtin.copy:
+    src: "{{ router_template_input_dir }}/{{ item.source }}"
+    dest: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/{{ item.target }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - {source: request.json, target: request.json}
+    - {source: capsule.tar, target: capsule.tar}
+    - {source: boot/kernel, target: bootstrap-kernel}
+    - {source: boot/initramfs, target: bootstrap-initramfs}
+
+- name: Stage the router-only dom0 helper
+  ansible.builtin.copy:
+    src: router-template-dom0
+    dest: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/router-template-dom0.py"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Stage the fixed Xen build transport
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../lib/xen_build_runtime.py"
+    dest: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/xen_build_runtime.py"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Unlock native blank-disk partitioning in RAM
+  ansible.builtin.include_role:
+    name: dom0-apk-policy
+    tasks_from: maintenance-unlock.yml
+  vars:
+    dom0_maintenance_packages: [sfdisk]
+
+- name: Qualify the router template and restore dom0 package policy
+  block:
+    - name: Build and boot the generic router disk without a network interface
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/router-template-dom0.py"
+          - --box
+          - "{{ router_template_box }}"
+          - --operation-id
+          - "{{ router_template_operation }}"
+      async: 1800
+      poll: 10
+      vars:
+        ansible_async_dir: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/async"
+      register: router_template_build
+      failed_when: false
+  always:
+    - name: Restore the exact dom0 package allowlist and lock APK
+      ansible.builtin.include_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-lock.yml
+
+- name: Inspect bounded router template evidence
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/{{ item }}"
+    get_checksum: false
+  loop:
+    - candidate.json
+    - lifecycle.json
+    - test.json
+    - openrc.json
+    - "router-build-{{ router_template_operation }}.log"
+    - "router-test-{{ router_template_operation }}.log"
+    - "router-openrc-{{ router_template_operation }}.log"
+  register: router_template_evidence
+
+- name: Fetch available bounded qualification records
+  ansible.builtin.fetch:
+    src: "{{ item.stat.path }}"
+    dest: "{{ router_template_result_dir }}/{{ item.item }}"
+    flat: true
+  loop: "{{ router_template_evidence.results }}"
+  when:
+    - item.stat.isreg | default(false)
+    - not (item.stat.islnk | default(false))
+    - item.stat.size | default(1048577) <= 1048576
+
+- name: Require complete router template qualification
+  ansible.builtin.assert:
+    that: [router_template_build.rc | default(1) == 0]
+    fail_msg: >-
+      Router template qualification failed. Inspect the controller operation log
+      and exact dom0 operation directory. This operation has not accepted or
+      replaced a router.

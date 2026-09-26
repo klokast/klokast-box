@@ -77,6 +77,14 @@
     group: root
     mode: '0600'
 
+- name: Stage the fixed Xen build transport
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../lib/xen_build_runtime.py"
+    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/xen_build_runtime.py"
+    owner: root
+    group: root
+    mode: '0600'
+
 - name: Stage the unchanged catalog application image as opaque input
   ansible.builtin.copy:
     src: "{{ template_input_dir }}/app-test.tar"

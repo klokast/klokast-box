@@ -1,0 +1,10 @@
+---
+- name: Build and qualify a router template in isolated Xen guests
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  roles:
+    - role: router-alpine-rootfs
+      router_alpine_mode: template

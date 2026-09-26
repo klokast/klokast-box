@@ -64,6 +64,7 @@
         - {source: roles/vm-retained-data/files/vm_backup_verify.py, target: vm_backup_verify.py}
         - {source: roles/vm-template-builder/files/vm-template-build-dom0, target: vm-template-build-dom0}
         - {source: lib/vm_app_compatibility.py, target: vm_app_compatibility.py}
+        - {source: lib/xen_build_runtime.py, target: xen_build_runtime.py}
       when: backup_test_candidate_id is defined
 
     - name: Test snapshot copy and source-write preservation independently of SSH
