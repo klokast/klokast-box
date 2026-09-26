@@ -109,15 +109,31 @@
     state: present
     shrink: false
 
-- name: Grow the mounted ext4 filesystem after the logical volume
+- name: Grow the mounted ext4 filesystem with reviewed temporary tools
   # Run on every convergence. This also resumes an interrupted operation in
-  # which the LV grew but the filesystem did not.
-  ansible.builtin.command:
-    argv:
-      - resize2fs
-      - "/dev/{{ volume_group_name }}/{{ dom0_data_lv_name }}"
-  register: dom0_data_resize_result
-  changed_when: "'Nothing to do!' not in (dom0_data_resize_result.stdout ~ dom0_data_resize_result.stderr)"
+  # which the LV grew but the filesystem did not. Alpine keeps resize2fs in a
+  # maintenance-only package, so restore the exact APK policy even on failure.
+  block:
+    - name: Install the reviewed ext4 resize tool in RAM
+      ansible.builtin.include_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-unlock.yml
+      vars:
+        dom0_maintenance_packages:
+          - e2fsprogs-extra
+
+    - name: Expand ext4 to the logical volume boundary
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/resize2fs
+          - "/dev/{{ volume_group_name }}/{{ dom0_data_lv_name }}"
+      register: dom0_data_resize_result
+      changed_when: "'Nothing to do!' not in (dom0_data_resize_result.stdout ~ dom0_data_resize_result.stderr)"
+  always:
+    - name: Restore the exact dom0 APK policy after resizing
+      ansible.builtin.include_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-lock.yml
 
 - name: Remove the legacy dom0 data lbu include
   ansible.builtin.lineinfile:

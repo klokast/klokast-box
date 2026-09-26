@@ -30,7 +30,7 @@ Verify dom0 base state from the steady-state identity and finalize persisted Tai
 
 # 23-dom0-xen-host.yml
 Prepare dom0 storage and boot media for the first Xen reboot.
-- `dom0-storage`: enable the `lvm` service, create `{{ dom0_data_lv_name }}` if missing with stale signatures wiped, format it as `ext4`, mount it on `{{ dom0_data_mount_path }}`, grow the volume and filesystem when the declared size increases, keep that mounted persistent volume outside `lbu`, create the persistent dom0 directories under it, and remove the obsolete `+var/log` `lbu` include.
+- `dom0-storage`: enable the `lvm` service, create `{{ dom0_data_lv_name }}` if missing with stale signatures wiped, format it as `ext4`, mount it on `{{ dom0_data_mount_path }}`, grow the volume and filesystem when the declared size increases using the reviewed temporary ext4 tool and restore the exact dom0 APK policy, keep that mounted persistent volume outside `lbu`, create the persistent dom0 directories under it, and remove the obsolete `+var/log` `lbu` include.
 - `xen-host`: detect the live EFI mountpoint, mount the EFI partition, copy `/boot/xen.gz` to `{{ xen_binary_target_path }}`, render the Xen `grub.cfg`, and enable `xenstored`, `xenconsoled`, and `xendomains`. Phase 20 already installed the Xen packages.
 - `efi-grub-loader`: refresh the node-specific and fallback EFI GRUB loader configs after the Xen menu is rendered.
 - `xen-host-verification`: assert `{{ dom0_data_mount_path }}` is mounted as `ext4`, the `apks/` boot repository still contains its marker, index, and packages, `{{ xen_binary_target_path }}` exists, the managed EFI GRUB loader configs are present, and the rendered GRUB contains both the Xen and rescue entries.
