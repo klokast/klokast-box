@@ -229,7 +229,8 @@ class EvidenceTests(unittest.TestCase):
         indexes = {'one': '1' * 64, 'two': '2' * 64}
         inputs = {'engine_commit': selection['engine_commit'], 'branch': 'v3.24',
                   'profile_sha256': u.digest(profile), 'world': ['linux-virt'],
-                  'keys': {'alpine.pub': '3' * 64}, 'indexes': indexes}
+                  'keys': {'alpine-devel@lists.alpinelinux.org-4a6a0840.rsa.pub': '3' * 64},
+                  'indexes': indexes}
         inputs['inputs_sha256'] = u.digest(inputs)
         candidate = {'kind': 'klokast.vm-template-candidate.v1',
                      'operation_id': operation, 'box': 'k001', 'success': True,

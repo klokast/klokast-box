@@ -567,7 +567,7 @@ def reuse_auto_candidate(selection, *, frozen=False):
     if release != expected_release:
         raise UpdateError('automatic template release differs from its complete base tests')
     for name, entry in inputs.get('keys', {}).items():
-        if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+\.pub', name) or
+        if (not isinstance(name, str) or not vm_template_inputs.KEY.fullmatch(name) or
                 not isinstance(entry, str) or not re.fullmatch(r'[0-9a-f]{64}', entry)):
             raise UpdateError('automatic template has invalid APK signing key evidence')
     current_keys = installed_apk_keys()
