@@ -26,6 +26,21 @@
   ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
   changed_when: false
 
+- name: Measure free dom0 data storage before staging router inputs
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "import os; value = os.statvfs('/mnt/dom0_data'); print(value.f_bavail * value.f_frsize)"
+  register: router_template_available_bytes
+  changed_when: false
+
+- name: Require five GiB free before allocating router template resources
+  ansible.builtin.assert:
+    that:
+      - router_template_available_bytes.stdout | int >= 5 * 1024 * 1024 * 1024
+    fail_msg: Router template build and test need at least five GiB free on mounted dom0 data storage.
+
 - name: Create private router template storage
   ansible.builtin.file:
     path: /mnt/dom0_data/klokast-router-templates
