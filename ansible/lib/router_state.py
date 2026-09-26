@@ -198,7 +198,7 @@ def copy_state(source, destination, *, source_id, destination_id, dnsmasq_uid=0,
 def generic_absence(root):
     """Native filesystem check on a disposable template inside the test guest."""
     root = Path(root)
-    forbidden = list(ALLOWLIST) + ['etc/hostname', 'etc/machine-id', 'var/lib/dbus/machine-id',
+    forbidden = list(ALLOWLIST) + ['etc/machine-id', 'var/lib/dbus/machine-id',
                                   'root/.ssh/authorized_keys', 'etc/klokast/app-resources',
                                   'etc/klokast/platform-resources', 'var/lib/tailscale/tpm-sealed',
                                   'var/lib/tailscale/tka']
@@ -218,6 +218,12 @@ def generic_absence(root):
                 if directory == 'etc/ssh' and not child.name.startswith('ssh_host_'):
                     continue
                 raise StateError('generic router template contains service identity or lease state')
+    hostname = root / 'etc/hostname'
+    if any(p.is_symlink() for p in [hostname, *hostname.parents] if p != root.parent):
+        raise StateError('generic router hostname is a symlink')
+    if (not hostname.is_file() or hostname.stat().st_size != len('klokast-router-template\n') or
+            hostname.read_text() != 'klokast-router-template\n'):
+        raise StateError('generic router template has a machine-specific hostname')
     permitted = {
         'etc/network/interfaces': {'auto lo', 'iface lo inet loopback'},
         'etc/hosts': {'127.0.0.1 localhost', '::1 localhost'},

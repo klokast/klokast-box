@@ -162,6 +162,7 @@ class CopyTests(unittest.TestCase):
         self.assertEqual((self.source / path).read_bytes(), b'new-key-state')
 
     def test_generic_template_refuses_identity_and_links(self):
+        (self.target / 'etc/hostname').write_text('klokast-router-template\n')
         self.assertTrue(r.generic_absence(self.target))
         key = self.target / 'etc/ssh/ssh_host_ecdsa_key'
         key.write_bytes(b'synthetic')
@@ -173,6 +174,7 @@ class CopyTests(unittest.TestCase):
             r.generic_absence(self.target)
 
     def test_generic_template_refuses_network_personalization(self):
+        (self.target / 'etc/hostname').write_text('klokast-router-template\n')
         path = self.target / 'etc/network/interfaces'
         path.parent.mkdir()
         path.write_text('auto lo\niface lo inet loopback\n')
@@ -182,12 +184,28 @@ class CopyTests(unittest.TestCase):
             r.generic_absence(self.target)
 
     def test_generic_template_refuses_network_directory_escape(self):
+        (self.target / 'etc/hostname').write_text('klokast-router-template\n')
         outside = Path(self.temporary.name) / 'outside'
         outside.mkdir()
         (outside / 'interfaces').write_text('auto lo\niface lo inet loopback\n')
         (self.target / 'etc/network').symlink_to(outside)
         with self.assertRaisesRegex(r.StateError, 'symlink'):
             r.generic_absence(self.target)
+
+    def test_generic_template_requires_only_the_neutral_hostname(self):
+        with self.assertRaisesRegex(r.StateError, 'hostname'):
+            r.generic_absence(self.target)
+        hostname = self.target / 'etc/hostname'
+        hostname.write_text('k002-router\n')
+        with self.assertRaisesRegex(r.StateError, 'hostname'):
+            r.generic_absence(self.target)
+        hostname.unlink()
+        hostname.symlink_to('/etc/hostname')
+        with self.assertRaisesRegex(r.StateError, 'symlink'):
+            r.generic_absence(self.target)
+        hostname.unlink()
+        hostname.write_text('klokast-router-template\n')
+        self.assertTrue(r.generic_absence(self.target))
 
 
 if __name__ == '__main__':
