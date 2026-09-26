@@ -311,7 +311,11 @@ def test_boot(args):
         run(['modprobe', name])
     run(['dnsmasq', '--test', '--conf-file=/dev/null'])
     nft = Path('/run/router-test.nft')
-    nft.write_text('table inet router_test { chain input { type filter hook input priority 0; policy drop; } }\n')
+    nft.write_text('table inet router_test {\n'
+                   '  chain input {\n'
+                   '    type filter hook input priority 0; policy drop;\n'
+                   '  }\n'
+                   '}\n')
     run(['nft', '-c', '-f', nft])
     tests.update(kernel_modules=True, service_syntax=True)
     if args.get('klokast_router_openrc') != '1':
