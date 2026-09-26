@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Exercise the real copy helper on synthetic disks in a networkless Xen VM.
+
+This proves copy mechanics only. It does not prove service-format compatibility.
+"""
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import subprocess
+import sys
+
+sys.path.insert(0, '/usr/local/lib/klokast')
+import router_state
+
+MIB = 1024 * 1024
+STAMP = 1700000000123456789
+ACCOUNTS = {'dnsmasq_uid': 103, 'dnsmasq_gid': 104, 'tailscale_gid': 105}
+RESULT = Path('/dev/xvde')
+PHASES = ('seed', 'forward', 'mutate', 'reverse', 'verify')
+
+
+def run(argv):
+    result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=60)
+    if result.returncode:
+        raise RuntimeError('synthetic copy test command failed: ' + str(argv[0]))
+
+
+def arguments():
+    if (os.geteuid() != 0 or Path('/sys/hypervisor/type').read_text().strip() != 'xen' or
+            Path('/sys/hypervisor/uuid').read_text().strip() == '00000000-0000-0000-0000-000000000000' or
+            {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}):
+        raise RuntimeError('synthetic copy test requires a networkless Xen guest')
+    args = {}
+    for field in Path('/proc/cmdline').read_text().split():
+        name, sep, value = field.partition('=')
+        if sep and name.startswith('klokast_'):
+            if name in args:
+                raise RuntimeError('duplicate synthetic test parameter')
+            args[name] = value
+    if (not re.fullmatch('[0-9a-f]{24}', args.get('klokast_operation', '')) or
+            not re.fullmatch('[0-9a-f]{64}', args.get('klokast_inputs', '')) or
+            args.get('klokast_phase') not in PHASES):
+        raise RuntimeError('synthetic copy test identity is invalid')
+    return args
+
+
+@contextlib.contextmanager
+def mounted(device, name, writable=False):
+    root = Path('/run') / name
+    root.mkdir(mode=0o700)
+    options = 'rw,nodev,nosuid,noexec' if writable else 'ro,noload,nodev,nosuid,noexec'
+    run(['/bin/mount', '-t', 'ext4', '-o', options, device, root])
+    try:
+        yield root
+    finally:
+        run(['/bin/umount', root])
+        root.rmdir()
+
+
+def payloads(latest=False):
+    result = {path: ('synthetic:' + path + '\n').encode() for path in router_state.REQUIRED}
+    result.update({f'etc/ssh/ssh_host_{kind}_key': ('synthetic-key:' + kind + '\n').encode()
+                   for kind in router_state.KEY_TYPES})
+    result['var/lib/dhcpcd/eth0.lease'] = b'synthetic WAN lease\n'
+    if latest:
+        result['var/lib/tailscale/tailscaled.state'] = b'synthetic rotated identity\n'
+        result['var/lib/misc/dnsmasq.leases'] = b'synthetic new LAN lease\n'
+    return result
+
+
+def put(root, relative, data):
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o600)
+    if relative == 'var/lib/misc/dnsmasq.leases':
+        os.chown(path, ACCOUNTS['dnsmasq_uid'], ACCOUNTS['dnsmasq_gid'])
+    elif relative.startswith('var/lib/tailscale/'):
+        os.chown(path, 0, ACCOUNTS['tailscale_gid'])
+    os.utime(path, ns=(STAMP, STAMP))
+
+
+def verify(root, latest=False):
+    actual = router_state.snapshot(root, **ACCOUNTS)
+    expected = payloads(latest)
+    if set(actual) != set(expected):
+        raise RuntimeError('synthetic copy has an unexpected file set')
+    for path, (data, metadata) in actual.items():
+        owner = (ACCOUNTS['dnsmasq_uid'], ACCOUNTS['dnsmasq_gid']) if path == 'var/lib/misc/dnsmasq.leases' else (
+            (0, ACCOUNTS['tailscale_gid']) if path.startswith('var/lib/tailscale/') else (0, 0))
+        if (data != expected[path] or metadata.st_mtime_ns != STAMP or
+                metadata.st_mode & 0o7777 != 0o600 or (metadata.st_uid, metadata.st_gid) != owner):
+            raise RuntimeError('synthetic copy changed bytes, ownership, mode, or lease timestamp')
+
+
+def seed():
+    for device, name in (('/dev/xvda3', 'original'), ('/dev/xvdb3', 'candidate')):
+        run(['/sbin/mkfs.ext4', '-F', device])
+        with mounted(device, name, writable=True) as root:
+            put(root, 'etc/hostname', b'fixture-router\n')
+            for relative in router_state.ALLOWLIST:
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            if name == 'original':
+                for relative, data in payloads().items():
+                    put(root, relative, data)
+                verify(root)
+
+
+def copy(args, reverse=False):
+    value = {'kind': 'klokast.router-copy-request.v1', 'role': 'router', 'box': 'fixture',
+             'operation': args['klokast_operation'], 'seconds': 120,
+             'source_id': 'synthetic-candidate' if reverse else 'synthetic-original',
+             'destination_id': 'synthetic-original' if reverse else 'synthetic-candidate',
+             'source_accounts': ACCOUNTS, 'destination_accounts': ACCOUNTS}
+    value['request_sha256'] = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    Path('/router-copy-request.json').write_text(json.dumps(value))
+    helper = runpy.run_path('/usr/local/libexec/router-state-copy-guest')
+    request = helper['guard']()
+    execute = helper['execute']
+    if not reverse:
+        original = execute.__globals__['copy_state']
+
+        class Interruption(Exception):
+            pass
+
+        def interrupted(*positional, **keyword):
+            previous = keyword['checkpoint']
+
+            def checkpoint(stage):
+                previous(stage)
+                if stage == 'installed:var/lib/tailscale/tailscaled.state':
+                    raise Interruption()
+            return original(*positional, **{**keyword, 'checkpoint': checkpoint})
+
+        execute.__globals__['copy_state'] = interrupted
+        try:
+            execute(request)
+        except Interruption:
+            with Path('/dev/xvdd').open('rb') as stream:
+                if stream.read(65536) != b'\0' * 65536:
+                    raise RuntimeError('interrupted copy published a completion receipt')
+        else:
+            raise RuntimeError('copy interruption fault did not run')
+        finally:
+            execute.__globals__['copy_state'] = original
+        Path('/source').rmdir()
+        Path('/destination').rmdir()
+    execute(request)
+    with Path('/dev/xvdd').open('rb') as stream:
+        receipt = json.loads(stream.read(65536).rstrip(b'\0'))
+    checksum = receipt.pop('receipt_sha256')
+    if (receipt.get('complete') is not True or receipt.get('request_sha256') != value['request_sha256'] or
+            checksum != hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode()).hexdigest()):
+        raise RuntimeError('copy guest did not publish a matching complete receipt')
+    with mounted('/dev/xvdb3', 'copied') as root:
+        verify(root, latest=reverse)
+
+
+def execute(args):
+    phase = args['klokast_phase']
+    if phase == 'seed':
+        seed()
+    elif phase in ('forward', 'reverse'):
+        copy(args, reverse=phase == 'reverse')
+    elif phase == 'mutate':
+        with mounted('/dev/xvdb3', 'candidate', writable=True) as root:
+            verify(root)
+            for relative, data in payloads(True).items():
+                put(root, relative, data)
+            verify(root, latest=True)
+    else:
+        for device, name in (('/dev/xvda3', 'original'), ('/dev/xvdb3', 'candidate')):
+            with mounted(device, name) as root:
+                verify(root, latest=True)
+
+
+def main():
+    args = arguments()
+    result = {'kind': 'klokast.router-copy-test.v1', 'operation_id': args['klokast_operation'],
+              'inputs_sha256': args['klokast_inputs'], 'phase': args['klokast_phase'], 'success': False}
+    try:
+        execute(args)
+        result['success'] = True
+    except Exception as error:
+        result['error'] = type(error).__name__ + ': ' + str(error)[:256]
+    os.sync()
+    with RESULT.open('r+b', buffering=0) as stream:
+        stream.write((json.dumps(result, sort_keys=True) + '\n').encode() + b'\0')
+        os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

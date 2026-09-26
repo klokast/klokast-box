@@ -1,0 +1,12 @@
+---
+- name: Qualify synthetic router state copying through networkless Xen guests
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Run the fixed synthetic router copy qualification
+      ansible.builtin.import_role:
+        name: router-state-copy
+        tasks_from: qualification.yml

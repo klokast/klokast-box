@@ -159,6 +159,29 @@ stopped and all VBDs are detached.
 The source staging playbook is
 `ansible/playbooks/74-router-state-copy-source.yml`. It writes the two public
 source files to the controller cache for an exact `router_copy_operation`.
-It does not create, attach, or boot a VM. Dom0 dispatch, real VM interruption
-tests, and service-version compatibility proof remain required before this
-helper can be used with production state.
+It does not create, attach, or boot a VM.
+
+The synthetic qualification command uses frozen authenticated router packages
+to assemble a disposable boot environment. It takes the installation lock and
+runs five networkless Xen boots on new, fixed test disks:
+
+```sh
+ansible/bin/platform-router-update test-state-copy --box boxa \
+  --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION
+```
+
+The test creates synthetic state, interrupts and resumes a forward copy, changes
+the candidate state, copies it back, and verifies both disks. It checks file
+bytes, service ownership, permissions, lease timestamps, absent optional leases,
+and that each read-only source disk stays unchanged. The result binds the frozen
+package inputs and the test engine commit. It is copy evidence only; synthetic
+state does not prove that old and new service versions can read each other's
+formats. Production dispatch and service compatibility remain required.
+
+Successful tests remove their five exact disk files after Xen domains and loop
+attachments are absent. Failed tests retain them for diagnosis. Logs and records
+remain under `/mnt/dom0_data/klokast-router-copy-tests/OPERATION_ID`. After
+diagnosis, reclaim a failed operation with
+`ansible/playbooks/74-router-state-copy-test-cleanup.yml`, using the exact
+`router_copy_test_box` and `router_copy_test_operation` variables and limiting
+the play to that box's dom0.

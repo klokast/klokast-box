@@ -1,0 +1,138 @@
+---
+- name: Require an exact synthetic router copy operation
+  ansible.builtin.assert:
+    that:
+      - router_copy_test_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      - router_copy_test_operation is match('^[0-9a-f]{24}$')
+      - inventory_hostname == router_copy_test_box ~ '-dom0'
+      - router_copy_test_input_dir == '/var/cache/klokast/updates/router/copy-test-' ~ router_copy_test_operation
+      - router_copy_test_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_copy_test_operation
+
+- name: Require active-controller authority before allocating test resources
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_copy_test_controller
+
+- name: Verify active-controller status
+  ansible.builtin.assert:
+    that:
+      - (router_copy_test_controller.stdout | from_json).active | bool
+      - (router_copy_test_controller.stdout | from_json).configured | bool
+
+- name: Require persistent dom0 storage
+  ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+  changed_when: false
+
+- name: Create private copy qualification storage
+  ansible.builtin.file:
+    path: /mnt/dom0_data/klokast-router-copy-tests
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Inspect the unique copy qualification directory
+  ansible.builtin.stat:
+    path: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}'
+    follow: false
+  register: router_copy_test_existing
+
+- name: Refuse a reused copy qualification operation
+  ansible.builtin.assert:
+    that: [not router_copy_test_existing.stat.exists]
+
+- name: Allocate private copy qualification directories
+  ansible.builtin.file:
+    path: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', async]
+
+- name: Stage exact copy qualification inputs
+  ansible.builtin.copy:
+    src: '{{ router_copy_test_input_dir }}/{{ item.source }}'
+    dest: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item.target }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - {source: request.json, target: request.json}
+    - {source: boot/kernel, target: kernel}
+    - {source: boot/initramfs, target: initramfs}
+
+- name: Stage fixed copy qualification dispatcher
+  ansible.builtin.copy:
+    src: router-copy-test-dom0
+    dest: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/router-copy-test-dom0.py'
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Stage fixed Xen transport
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+    dest: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/xen_build_runtime.py'
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Unlock blank-disk partitioning tools in RAM
+  ansible.builtin.include_role:
+    name: dom0-apk-policy
+    tasks_from: maintenance-unlock.yml
+  vars:
+    dom0_maintenance_packages: [sfdisk]
+
+- name: Qualify synthetic copying and restore dom0 package policy
+  block:
+    - name: Run bounded forward and reverse copying on synthetic disks
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/router-copy-test-dom0.py'
+          - --box
+          - '{{ router_copy_test_box }}'
+          - --operation-id
+          - '{{ router_copy_test_operation }}'
+      async: 1500
+      poll: 10
+      vars:
+        ansible_async_dir: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/async'
+      register: router_copy_test_run
+      failed_when: false
+  always:
+    - name: Restore the exact dom0 package allowlist
+      ansible.builtin.include_role:
+        name: dom0-apk-policy
+        tasks_from: maintenance-lock.yml
+
+- name: Inspect bounded copy qualification evidence
+  ansible.builtin.stat:
+    path: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item }}'
+    follow: false
+    get_checksum: false
+  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, reverse.json, verify.json]
+  register: router_copy_test_evidence
+
+- name: Fetch bounded copy qualification records
+  ansible.builtin.fetch:
+    src: '{{ item.stat.path }}'
+    dest: '{{ router_copy_test_result_dir }}/{{ item.item }}'
+    flat: true
+  loop: '{{ router_copy_test_evidence.results }}'
+  when:
+    - item.stat.isreg | default(false)
+    - not (item.stat.islnk | default(false))
+    - item.stat.size | default(1048577) <= 1048576
+
+- name: Require every synthetic copy phase to pass
+  ansible.builtin.assert:
+    that: [router_copy_test_run.rc | default(1) == 0]
+    fail_msg: >-
+      Router copy qualification failed. Inspect the exact operation records.
+      No production router disk is part of this test.

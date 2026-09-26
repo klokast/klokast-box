@@ -114,6 +114,53 @@ def build_template(box, source):
                 'status': 'generic-template-qualified', 'replacement_authorized': False}
 
 
+def test_state_copy(box, source):
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router copy qualification requires an exact box ID')
+    transport.require_controller()
+    source = Path(source)
+    if source.parent != CACHE or not router_updates.match(re.compile('[0-9a-f]{24}'), source.name):
+        raise UpdateError('router copy qualification requires one frozen controller cache directory')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
+        raise UpdateError('router copy qualification requires a clean public implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    profile = transport.load(PROFILE)
+    manifest = transport.load(source / 'inputs.json')
+    # A synthetic test can reuse earlier authenticated package inputs. Its
+    # result separately records the exact engine that supplies the test code.
+    router_updates.validate_inputs(manifest, profile, manifest['engine_commit'])
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        operation = secrets.token_hex(12)
+        work, result = CACHE / ('copy-test-' + operation), STATE / operation
+        work.mkdir(mode=0o700)
+        result.mkdir(mode=0o700)
+        files = REPO / 'ansible/roles/router-state-copy/files'
+        boot = vm_template_inputs.bootstrap(source, work / 'boot', files / 'router-copy-test-guest',
+            expected_profile=router_updates.PROFILE,
+            job_files={'usr/local/lib/klokast/router_state.py': REPO / 'ansible/lib/router_state.py',
+                       'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})
+        transport.write(work / 'request.json', {'kind': 'klokast.router-copy-test-request.v1',
+            'box': box, 'role': 'router', 'operation_id': operation, 'engine_commit': engine,
+            'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot})
+        args = result / 'arguments.json'
+        transport.write(args, {'router_copy_test_box': box, 'router_copy_test_operation': operation,
+                              'router_copy_test_input_dir': str(work), 'router_copy_test_result_dir': str(result)})
+        with (result / 'copy-test.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                               REPO / 'ansible/playbooks/74-router-state-copy-test.yml', '--limit', box + '-dom0',
+                               '-e', '@' + str(args)], timeout=1800, log=log)
+        evidence = transport.load(result / 'result.json')
+        if (evidence.get('kind') != 'klokast.router-copy-qualification.v1' or evidence.get('box') != box or
+                evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
+                evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
+                evidence.get('success') is not True or evidence.get('synthetic_only') is not True or
+                evidence.get('phases') != ['seed', 'forward', 'mutate', 'reverse', 'verify'] or
+                evidence.get('service_compatibility_verified') is not False or evidence.get('replacement_authorized') is not False):
+            raise UpdateError('router copy qualification returned incomplete or different evidence')
+        return {**evidence, 'evidence_directory': str(result)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -122,6 +169,9 @@ def main():
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
+    copier = sub.add_parser('test-state-copy', help='qualify state copying on new synthetic disks in networkless Xen guests')
+    copier.add_argument('--box', required=True)
+    copier.add_argument('--inputs-directory', required=True)
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -129,8 +179,10 @@ def main():
             value = inspect(args.box)
         elif args.command == 'resolve':
             value = resolve(args.branch)
-        else:
+        elif args.command == 'build-template':
             value = build_template(args.box, args.inputs_directory)
+        else:
+            value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))
         return 0
     except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:

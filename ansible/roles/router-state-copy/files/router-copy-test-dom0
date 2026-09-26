@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Qualify router state copying with new synthetic disks only. Never mount them."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import uuid
+
+from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
+                               duplicate_fields, domain, attach_loop, detach_loop,
+                               boot_guest, read_slot, loop_devices)
+
+BASE = Path('/mnt/dom0_data/klokast-router-copy-tests')
+MIB = 1024 * 1024
+PHASES = ('seed', 'forward', 'mutate', 'reverse', 'verify')
+SLOTS = {'original': 64 * MIB, 'candidate': 64 * MIB, 'scratch': 64 * MIB,
+         'copy': MIB, 'result': MIB}
+
+
+def request(work, box, operation):
+    safe_file(work / 'request.json', MIB)
+    value = json.loads((work / 'request.json').read_text(), object_pairs_hook=duplicate_fields)
+    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'bootstrap', 'engine_commit'} or
+            value['kind'] != 'klokast.router-copy-test-request.v1' or value['box'] != box or
+            value['role'] != 'router' or value['operation_id'] != operation or
+            not isinstance(value['engine_commit'], str) or not re.fullmatch('[0-9a-f]{40}', value['engine_commit']) or
+            not isinstance(value['inputs_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256']) or
+            not isinstance(value['bootstrap'], dict) or set(value['bootstrap']) != {'kernel', 'initramfs'}):
+        raise RuntimeError('router copy test request has an invalid target or contract')
+    for name, maximum in (('kernel', 32 * MIB), ('initramfs', 1024 * MIB)):
+        item = value['bootstrap'][name]
+        if (not isinstance(item, dict) or set(item) != {'bytes', 'sha256'} or
+                type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum):
+            raise RuntimeError('router copy test boot identity is invalid')
+        safe_file(work / name, maximum)
+        if (work / name).stat().st_size != item['bytes'] or checksum(work / name) != item['sha256']:
+            raise RuntimeError('router copy test boot artifact differs')
+    return value
+
+
+def configuration(work, value, phase, identity, loops):
+    source, target = ('candidate', 'original') if phase == 'reverse' else ('original', 'candidate')
+    readonly = phase in ('forward', 'reverse', 'verify')
+    disks = [f'phy:{loops[source]},xvda,{"r" if readonly else "w"}',
+             f'phy:{loops[target]},xvdb,{"r" if phase == "verify" else "w"}',
+             f'phy:{loops["scratch"]},xvdc,w', f'phy:{loops["copy"]},xvdd,w',
+             f'phy:{loops["result"]},xvde,w']
+    name = 'router-copytest-' + phase + '-' + value['operation_id']
+    extra = ('console=hvc0 panic=1 klokast_operation=' + value['operation_id'] +
+             ' klokast_inputs=' + value['inputs_sha256'] + ' klokast_phase=' + phase)
+    return (f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 2048\nmaxmem = 2048\nvcpus = 2\n'
+            f'kernel = {str(work / "kernel")!r}\nramdisk = {str(work / "initramfs")!r}\nextra = {extra!r}\n'
+            f'disk = {disks!r}\nvif = []\non_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
+
+
+def cleanup(work, operation):
+    safe_file(work / 'lifecycle.json', MIB)
+    record = json.loads((work / 'lifecycle.json').read_text(), object_pairs_hook=duplicate_fields)
+    if (record.get('operation_id') != operation or record.get('stage') not in ('detached', 'cleaned') or
+            not isinstance(record.get('uuids'), dict) or set(record['uuids']) != set(PHASES)):
+        raise RuntimeError('copy test cleanup requires the exact detached operation')
+    for phase, identity in record['uuids'].items():
+        if not isinstance(identity, str) or str(uuid.UUID(identity)) != identity:
+            raise RuntimeError('copy test cleanup domain identity is invalid')
+        if domain('router-copytest-' + phase + '-' + operation) is not None:
+            raise RuntimeError('copy test domain remains; retain its disks')
+    present = []
+    for name, size in SLOTS.items():
+        path = work / (name + '.slot')
+        if not path.exists() and not path.is_symlink():
+            continue
+        safe_file(path, size)
+        if path.stat().st_size != size or loop_devices(path):
+            raise RuntimeError('copy test cleanup disk identity differs or remains attached')
+        present.append(path)
+    for path in present:
+        path.unlink()
+    write(work / 'lifecycle.json', {**record, 'stage': 'cleaned'})
+    return sum(SLOTS[path.stem] for path in present)
+
+
+def execute(work, value):
+    operation = value['operation_id']
+    if (work / 'lifecycle.json').exists():
+        raise RuntimeError('router copy test operation already exists')
+    for phase in PHASES:
+        if domain('router-copytest-' + phase + '-' + operation) is not None:
+            raise RuntimeError('router copy test domain already exists')
+    capacity = os.statvfs(work)
+    memory = re.search(r'^free_memory\s*:\s*(\d+)\s*$', run(['xl', 'info']).stdout, re.M)
+    if capacity.f_bavail * capacity.f_frsize < 256 * MIB or not memory or int(memory[1]) < 2304:
+        raise RuntimeError('router copy test needs 256 MiB storage and 2304 MiB free Xen memory')
+    identities = {phase: str(uuid.uuid4()) for phase in PHASES}
+    lifecycle = {'operation_id': operation, 'uuids': identities, 'stage': 'allocated'}
+    write(work / 'lifecycle.json', lifecycle)
+    loops = {}
+    records = []
+    try:
+        for name, size in SLOTS.items():
+            with (work / (name + '.slot')).open('xb') as stream:
+                os.posix_fallocate(stream.fileno(), 0, size)
+                os.fsync(stream.fileno())
+        for name in ('original', 'candidate'):
+            result = subprocess.run(['sfdisk', '--wipe', 'always', str(work / (name + '.slot'))],
+                                    input='label: dos\n,4M,83\n,1M,83\n,,83\n', text=True,
+                                    capture_output=True, timeout=30)
+            if result.returncode:
+                raise RuntimeError('synthetic disk partitioning failed')
+        for phase in PHASES:
+            source = 'candidate' if phase == 'reverse' else 'original'
+            unchanged = checksum(work / (source + '.slot')) if phase in ('forward', 'reverse') else None
+            with (work / 'result.slot').open('r+b') as stream:
+                stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+            for name in SLOTS:
+                readonly = (name == source and phase in ('forward', 'reverse')) or (
+                    name in ('original', 'candidate') and phase == 'verify')
+                loops[name] = attach_loop(work / (name + '.slot'), readonly=readonly)
+            config = work / (phase + '.cfg')
+            config.write_text(configuration(work, value, phase, identities[phase], loops))
+            boot_guest(work, 'router-copytest-' + phase + '-' + operation, identities[phase], config,
+                       value, kind='klokast.router-copy-test.v1', timeout=240)
+            record = read_slot(work / 'result.slot')
+            write(work / (phase + '.json'), record)
+            if (record.get('kind') != 'klokast.router-copy-test.v1' or record.get('success') is not True or
+                    record.get('operation_id') != operation or record.get('inputs_sha256') != value['inputs_sha256'] or
+                    record.get('phase') != phase):
+                raise RuntimeError('router copy test failed during ' + phase + '; inspect its phase record')
+            for name, device in list(loops.items()):
+                detach_loop(work / (name + '.slot'), device)
+                del loops[name]
+            if unchanged is not None and checksum(work / (source + '.slot')) != unchanged:
+                raise RuntimeError('copy guest changed its read-only source disk')
+            records.append(phase)
+        result = {'kind': 'klokast.router-copy-qualification.v1', 'box': value['box'], 'role': 'router',
+                  'operation_id': operation, 'inputs_sha256': value['inputs_sha256'],
+                  'engine_commit': value['engine_commit'],
+                  'phases': records, 'success': True, 'synthetic_only': True,
+                  'service_compatibility_verified': False, 'replacement_authorized': False}
+        write(work / 'result.json', result)
+    finally:
+        if any(domain('router-copytest-' + phase + '-' + operation) is not None for phase in PHASES):
+            raise RuntimeError('router copy test guest remains; retain all attachments')
+        for name, device in loops.items():
+            detach_loop(work / (name + '.slot'), device)
+        write(work / 'lifecycle.json', {**lifecycle, 'stage': 'detached'})
+    cleanup(work, operation)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--cleanup', action='store_true')
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('router copy test requires root on the selected dom0')
+    os.umask(0o077)
+    run(['mountpoint', '-q', '/mnt/dom0_data'])
+    work = BASE / args.operation_id
+    safe_directory(BASE); safe_directory(work)
+    with (BASE / 'test.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.cleanup:
+            print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id)}))
+        else:
+            print(json.dumps(execute(work, request(work, args.box, args.operation_id))))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        raise SystemExit('router-copy-test-dom0: ' + str(error))

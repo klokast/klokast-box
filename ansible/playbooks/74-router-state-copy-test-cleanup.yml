@@ -1,0 +1,33 @@
+---
+- name: Reclaim exact detached synthetic router copy disks
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require an exact synthetic copy operation
+      ansible.builtin.assert:
+        that:
+          - router_copy_test_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - router_copy_test_operation is match('^[0-9a-f]{24}$')
+          - inventory_hostname == router_copy_test_box ~ '-dom0'
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  tasks:
+    - name: Reclaim only recorded synthetic disks after Xen and attachment checks
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/router-copy-test-dom0.py'
+          - --box
+          - '{{ router_copy_test_box }}'
+          - --operation-id
+          - '{{ router_copy_test_operation }}'
+          - --cleanup
+      register: router_copy_test_cleanup
+      changed_when: (router_copy_test_cleanup.stdout | from_json).bytes_reclaimed | int > 0
