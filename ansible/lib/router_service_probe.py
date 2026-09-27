@@ -78,6 +78,7 @@ def network():
     run(['ip', 'link', 'set', 'eth0', 'address', '02:00:00:00:00:01'])
     run(['ip', 'link', 'set', 'eth0', 'up'])
     run(['ip', '-n', 'router-probe-upstream', 'address', 'add', '198.19.0.1/24', 'dev', 'wanpeer'])
+    run(['ip', '-n', 'router-probe-upstream', '-6', 'address', 'add', '2001:db8:1::1/64', 'dev', 'wanpeer'])
     run(['ip', '-n', 'router-probe-upstream', 'link', 'set', 'lo', 'up'])
     run(['ip', '-n', 'router-probe-upstream', 'link', 'set', 'wanpeer', 'up'])
     for number in range(1, 6):
@@ -94,6 +95,7 @@ def dhcp_dns():
     upstream = ['ip', 'netns', 'exec', 'router-probe-upstream', 'dnsmasq',
         '--keep-in-foreground', '--conf-file=/dev/null', '--interface=wanpeer',
         '--bind-interfaces', '--port=0', '--dhcp-range=198.19.0.50,198.19.0.100,5m',
+        '--enable-ra', '--dhcp-range=2001:db8:1::50,2001:db8:1::100,slaac,64,5m',
         '--dhcp-option=3,198.19.0.1', '--dhcp-leasefile=' + str(WORK / 'upstream.leases'),
         '--pid-file=' + str(WORK / 'upstream.pid')]
     lan = ['dnsmasq', '--keep-in-foreground', '--conf-file=/etc/dnsmasq.conf',
@@ -102,8 +104,9 @@ def dhcp_dns():
         wait_for(lambda: (WORK / 'upstream.pid').exists() and (WORK / 'lan.pid').exists(),
                  [server, dns], 'DHCP service readiness')
         with process('wan-client', ['dhcpcd', '--nobackground', '--timeout', '30', 'eth0']) as client:
-            wait_for(lambda: Path('/var/lib/dhcpcd/eth0.lease').exists(),
-                     [server, dns, client], 'native WAN lease', seconds=35)
+            wait_for(lambda: all(Path(path).exists() for path in (
+                '/var/lib/dhcpcd/eth0.lease', '/var/lib/dhcpcd/secret')),
+                [server, dns, client], 'native WAN lease and SLAAC privacy secret', seconds=35)
             for path in ('/var/lib/dhcpcd/duid', '/var/lib/dhcpcd/secret', '/var/lib/dhcpcd/eth0.lease'):
                 if not Path(path).is_file() or Path(path).stat().st_size == 0:
                     raise RuntimeError('native DHCP client did not create ' + path)
