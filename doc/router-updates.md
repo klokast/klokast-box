@@ -27,6 +27,11 @@ and nftables) with the common Ansible templates rendered from execution
 inventory. Missing evidence, unsafe file metadata, or a different checksum
 blocks readiness. Generated app includes still need separate compiler
 verification before a baseline can be adopted.
+The dom0 inspection compares the legacy Xen file with the common template and
+execution inventory. It also records the live Xen UUID and compares the running
+domain's boot paths, disk, memory, vCPUs, and ordered network attachments with
+that file. Duplicate or unsupported Xen statements fail inspection. A file on
+disk alone cannot prove the running generation's identity.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \

@@ -251,6 +251,9 @@ class LegacyBaselineTests(unittest.TestCase):
         dom0 = {'kind': 'klokast.router-inspection.v1', 'box': 'boxa', 'target': 'dom0',
                 'accepted_record_present': False, 'pending_record_present': False,
                 'configuration_sha256': 'a' * 64,
+                'expected_configuration_sha256': 'a' * 64,
+                'xen_runtime_matches': True,
+                'xen_runtime': {'uuid': '12345678-1234-1234-1234-123456789abc'},
                 'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w'],
                         'kernel': '/mnt/dom0_data/kernel', 'ramdisk': '/mnt/dom0_data/ramdisk'},
                 'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router', 'lv_uuid': 'synthetic-uuid'}]}]},
@@ -315,6 +318,21 @@ class LegacyBaselineTests(unittest.TestCase):
         dom0['boot_artifacts']['kernel']['sha256'] = 'invalid'
         findings = r.legacy_baseline_findings(guest, dom0, 'boxa')
         self.assertEqual(len(findings), 2)
+
+    def test_live_domain_identity_and_assignment_are_required(self):
+        for mutate in (lambda d: d.pop('xen_runtime'),
+                       lambda d: d.update(xen_runtime_matches=False),
+                       lambda d: d['xen_runtime'].update(uuid='invalid')):
+            guest, dom0 = self.fixture()
+            mutate(dom0)
+            self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
+                             ['live router Xen identity or attachments differ from the recorded configuration'])
+
+    def test_expected_xen_configuration_cannot_be_inferred_from_live_file(self):
+        guest, dom0 = self.fixture()
+        dom0['expected_configuration_sha256'] = 'b' * 64
+        self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
+                         ['router Xen configuration differs from the compiled inventory and template'])
 
     def test_inspection_rejects_state_that_copy_guest_cannot_read(self):
         for path, field, value in (

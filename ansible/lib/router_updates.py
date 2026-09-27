@@ -213,6 +213,14 @@ def legacy_baseline_findings(guest, dom0, box):
     if dom0.get('accepted_record_present') is not False or dom0.get('pending_record_present') is not False:
         findings.append('router assignment or transaction already exists')
     xen = dom0.get('xen')
+    if (not match(HASH, dom0.get('expected_configuration_sha256')) or
+            dom0.get('configuration_sha256') != dom0.get('expected_configuration_sha256')):
+        findings.append('router Xen configuration differs from the compiled inventory and template')
+    runtime = dom0.get('xen_runtime')
+    if (dom0.get('xen_runtime_matches') is not True or not isinstance(runtime, dict) or
+            not isinstance(runtime.get('uuid'), str) or not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', runtime['uuid'])):
+        findings.append('live router Xen identity or attachments differ from the recorded configuration')
     if (not isinstance(xen, dict) or xen.get('name') != 'router' or
             not isinstance(xen.get('disk'), list) or len(xen['disk']) != 1 or
             not isinstance(dom0.get('configuration_sha256'), str) or

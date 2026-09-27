@@ -115,17 +115,66 @@ def inspect_guest(box):
             'first_contact_key': info('/root/.ssh/authorized_keys')}
 
 
+def xen_configuration(text):
+    """Read only the closed literal configuration emitted by the router role."""
+    values = {}
+    required = {'name', 'type', 'memory', 'vcpus', 'kernel', 'ramdisk', 'extra',
+                'disk', 'vif', 'on_crash', 'on_reboot'}
+    for item in ast.parse(text).body:
+        if (not isinstance(item, ast.Assign) or len(item.targets) != 1 or
+                not isinstance(item.targets[0], ast.Name) or
+                item.targets[0].id not in required | {'uuid'} or item.targets[0].id in values):
+            raise RuntimeError('router Xen configuration has an unsupported or duplicate statement')
+        values[item.targets[0].id] = ast.literal_eval(item.value)
+    if (not required <= values.keys() or values['name'] != 'router' or values['type'] != 'pvh' or
+            values['on_crash'] != 'destroy' or values['on_reboot'] != 'restart' or
+            any(type(values[k]) is not int or values[k] <= 0 for k in ('memory', 'vcpus')) or
+            any(not isinstance(values[k], str) or not values[k] for k in ('kernel', 'ramdisk', 'extra')) or
+            not isinstance(values['disk'], list) or len(values['disk']) != 1 or
+            not isinstance(values['disk'][0], str) or
+            not re.fullmatch(r'phy:/dev/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+,xvda,w', values['disk'][0]) or
+            not isinstance(values['vif'], list) or not values['vif'] or any(
+                not isinstance(vif, str) or not re.fullmatch(
+                    r'bridge=[A-Za-z0-9_-]+,mac=(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', vif)
+                for vif in values['vif']) or len(set(values['vif'])) != len(values['vif']) or
+            'uuid' in values and not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', str(values['uuid']))):
+        raise RuntimeError('router Xen configuration is incomplete or outside the supported profile')
+    return values
+
+
+def xen_runtime(domains):
+    """Keep live identities and assignments; never infer these from router.cfg."""
+    if not isinstance(domains, list) or len(domains) != 1:
+        raise RuntimeError('router must have exactly one live Xen domain')
+    try:
+        config = domains[0]['config']
+        identity, boot = config['c_info'], config['b_info']
+        disks, nics = config['disks'], config['nics']
+        if (identity['name'] != 'router' or identity['type'] != 'pvh' or
+                not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', identity['uuid']) or
+                len(disks) != 1 or disks[0]['format'] != 'raw' or disks[0]['readwrite'] != 1 or
+                [nic['devid'] for nic in nics] != list(range(len(nics)))):
+            raise ValueError('unsupported domain configuration')
+        return {'name': identity['name'], 'type': identity['type'], 'uuid': identity['uuid'],
+                'memory_kb': boot['target_memkb'], 'vcpus': boot['max_vcpus'],
+                'kernel': boot['kernel'], 'ramdisk': boot['ramdisk'], 'extra': boot['cmdline'],
+                'disk': ['phy:' + disk['pdev_path'] + ',' + disk['vdev'] + ',w' for disk in disks],
+                'vif': ['bridge=' + nic['bridge'] + ',mac=' + nic['mac'] for nic in nics]}
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise RuntimeError('live router Xen identity or attachment evidence is incomplete') from error
+
+
 def inspect_dom0(box):
     if os.uname().nodename.split('.')[0] != box + '-dom0':
         raise RuntimeError('router inspection reached a different dom0')
     config = Path('/etc/xen/router.cfg')
-    values = {}
-    for item in ast.parse(config.read_text()).body:
-        if isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name):
-            if item.targets[0].id in ('name', 'uuid', 'kernel', 'ramdisk', 'disk', 'vif'):
-                values[item.targets[0].id] = ast.literal_eval(item.value)
-    if values.get('name') != 'router':
-        raise RuntimeError('canonical router configuration has a different Xen name')
+    values = xen_configuration(config.read_text())
+    runtime = xen_runtime(json.loads(run(['/usr/sbin/xl', 'list', '-l', 'router'])))
+    runtime_matches = (all(runtime[key] == values[key] for key in
+                           ('name', 'type', 'kernel', 'ramdisk', 'extra', 'disk', 'vif', 'vcpus')) and
+                       runtime['memory_kb'] == values['memory'] * 1024 and
+                       ('uuid' not in values or values['uuid'] == runtime['uuid']))
     artifacts = {}
     for field in ('kernel', 'ramdisk'):
         path = values.get(field)
@@ -133,6 +182,7 @@ def inspect_dom0(box):
             raise RuntimeError('router boot path is outside persistent storage')
         artifacts[field] = {'path': path, 'sha256': file_hash(path)}
     return {'configuration_sha256': file_hash(config), 'xen': values, 'boot_artifacts': artifacts,
+            'xen_runtime': runtime, 'xen_runtime_matches': runtime_matches,
             'logical_volumes': json.loads(run(['/sbin/lvs', '--reportformat', 'json', '--units', 'b',
                                                '--nosuffix', '-o', 'lv_path,lv_uuid,lv_size,origin'])),
             'accepted_record_present': Path('/mnt/dom0_data/klokast-router-updates/accepted.json').exists(),

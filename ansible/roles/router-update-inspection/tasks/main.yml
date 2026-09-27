@@ -41,6 +41,17 @@
   when: inventory_hostname == router_update_box ~ '-router'
   no_log: true
 
+- name: Bind the expected legacy Xen configuration from execution inventory
+  ansible.builtin.set_fact:
+    router_update_record: >-
+      {{ router_update_record | combine({'expected_configuration_sha256':
+          (lookup('ansible.builtin.template', role_path ~ '/../xen-guest/templates/xen-guest.cfg.j2') | hash('sha256'))}) }}
+  vars:
+    xen_guest_spec: '{{ node_xen_guest_specs.router }}'
+    xen_guest_active_stage: '{{ node_xen_guest_specs.router.installed }}'
+  when: inventory_hostname == router_update_box ~ '-dom0'
+  no_log: true
+
 - name: Store private router inspection evidence on the active controller
   ansible.builtin.copy:
     content: "{{ router_update_record | to_nice_json }}\n"
