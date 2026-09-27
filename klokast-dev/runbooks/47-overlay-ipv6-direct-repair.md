@@ -19,11 +19,11 @@ advertisement file is loaded.
 
 Both network helpers keep complete Ansible logs in owner-only files under
 the controller checkout's `.run/overlay-ipv6-router` or
-`.run/overlay-ipv6-ops`. Failure messages identify the last task and the
-private log path. Keep these logs on the controller.
-The final controller ping must use IPv6 UDP `41641`. An initial DERP reply
-while Tailscale establishes the direct path is permitted; a final DERP or
-IPv4 reply fails verification.
+`.run/overlay-ipv6-ops`. Failure messages identify the failed task and the
+private log path. Keep these logs on the controller. The router prerequisite
+and final controller verification each sample ten Tailscale replies without
+stopping at the first direct path. At least one reply must use the required
+IPv6 UDP `41641` endpoint. An IPv4 or DERP reply alone fails verification.
 
 ## Safety contract
 

@@ -178,7 +178,7 @@
       ansible.builtin.set_fact:
         overlay_ipv6_router_direct_ipv6_pings: >-
           {{ overlay_ipv6_router_direct_ping.stdout_lines
-             | select('search', 'via \\[' ~ hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout ~ '\\]:41641 in [0-9]+(\\.[0-9]+)?ms$')
+             | select('search', (('via [' ~ hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout ~ ']:41641') | regex_escape) ~ ' in [0-9]+([.][0-9]+)?ms$')
              | list }}
       when:
         - overlay_ipv6_router_operation == 'verify-prerequisite'

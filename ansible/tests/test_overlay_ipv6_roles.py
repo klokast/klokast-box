@@ -4,6 +4,7 @@ import importlib.util
 import tempfile
 import os
 import re
+import shutil
 import subprocess
 from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
@@ -180,6 +181,7 @@ esac
         select = next(t for t in tasks if t["name"] == "Select exact direct IPv6 replies from the peer router")
         environment = Environment()
         environment.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
+        environment.filters["regex_escape"] = re.escape
         template = environment.from_string(select["ansible.builtin.set_fact"]["overlay_ipv6_router_direct_ipv6_pings"])
         direct = "pong from peer (100.64.0.2) via [2001:db8::2]:41641 in 291ms"
         other = ["pong from peer (100.64.0.2) via DERP(hkg) in 450ms",
@@ -191,6 +193,32 @@ esac
             with self.subTest(lines=lines):
                 rendered = template.render(**variables, overlay_ipv6_router_direct_ping={"stdout_lines": lines})
                 self.assertEqual(yaml.safe_load(rendered), expected)
+
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "Ansible is available on the controller")
+    def test_router_prerequisite_selects_exact_ipv6_reply_in_ansible(self):
+        tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
+        selection = next(t for t in tasks if t["name"] == "Select exact direct IPv6 replies from the peer router")
+        expression = selection["ansible.builtin.set_fact"]["overlay_ipv6_router_direct_ipv6_pings"].replace(
+            "hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout", "peer_global"
+        )
+        direct = "pong from peer (100.64.0.2) via [2001:db8::2]:41641 in 291ms"
+        other = "pong from peer (100.64.0.2) via 192.0.2.1:41641 in 230ms"
+        play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                 "vars": {"peer_global": "2001:db8::2", "overlay_ipv6_router_direct_ping": {
+                     "stdout_lines": [other, direct, other]}},
+                 "tasks": [
+                     {"ansible.builtin.set_fact": {"overlay_ipv6_router_direct_ipv6_pings": expression}},
+                     {"ansible.builtin.assert": {"that": ["overlay_ipv6_router_direct_ipv6_pings == [" + repr(direct) + "]"]}},
+                     {"ansible.builtin.set_fact": {"overlay_ipv6_router_direct_ping": {"stdout_lines": [other]}}},
+                     {"ansible.builtin.set_fact": {"overlay_ipv6_router_direct_ipv6_pings": expression}},
+                     {"ansible.builtin.assert": {"that": ["overlay_ipv6_router_direct_ipv6_pings | length == 0"]}},
+                 ]}]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "probe.yml"
+            path.write_text(yaml.safe_dump(play), encoding="utf-8")
+            result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)],
+                                    text=True, capture_output=True, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_default_remains_ipv4_only(self):
         self.assertIn("router_enable_ipv6_downstream: false", ROUTER_VARS)
