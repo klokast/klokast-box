@@ -56,6 +56,13 @@ class PlatformCheckWrapperTest(unittest.TestCase):
         self.assertIn("ansible/bin/platform-check", result.stdout)
         self.assertIn("--target all", result.stdout)
         self.assertIn("--resources-registry none", result.stdout)
+        self.assertNotIn("git pull", result.stdout)
+
+        pulling = self.run_command(
+            [str(PLATFORM_CHECK_REMOTE), "--dry-run-plan", "--pull", "--box", "boxa"]
+        )
+        self.assertEqual(pulling.returncode, 0, pulling.stderr)
+        self.assertIn("git pull --ff-only", pulling.stdout)
 
     def test_remote_dry_run_auto_controller_does_not_require_tailscale(self):
         result = self.run_command(

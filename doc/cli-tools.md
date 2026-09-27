@@ -46,7 +46,7 @@ Source: `ansible/bin/`.
 | `platform-app` | active controller | Manages approved app lifecycle through `list`, `status`, `apply`, `verify`, `start`, `stop`, `restart`, `remove`, and `destroy`. |
 | `platform-guest` | active controller | Manages durable `bak`, `dmz`, and `iot` Xen guest runtime intent through `list`, `status`, `apply`, `verify`, `start`, and `stop`. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
-| `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH, optionally pulling first. |
+| `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
 | `platform-instance` | active controller | Guides and validates private initialization, seeds with a sealed-builder binary, maintains the root-custodied read-only source, and performs controlled engine promotion preflight, approval, activation, and status checks. |
 | `platform-apply` | active controller | Runs the closed Authority State conversion, Tailnet verification, or one-box connectivity preflight, execution, and forward rollback through the installed root Apply boundary. |
