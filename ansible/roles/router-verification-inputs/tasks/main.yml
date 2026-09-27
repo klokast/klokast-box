@@ -23,9 +23,9 @@
   ansible.builtin.command:
     argv:
       - "{{ playbook_dir }}/../bin/platform-resources"
-      - show-box-access-vars
       - --box
       - "{{ node_name }}"
+      - show-box-access-vars
   delegate_to: localhost
   become: false
   changed_when: false
