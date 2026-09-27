@@ -311,6 +311,10 @@ the controller. `router_compatibility_candidate_uuid` lets the cleanup playbook
 retire the explicitly inspected UUID only if the planned path, ownership tag,
 size, independent allocation, and native detachment checks also match. An absent
 allocation record or an unrecorded disk never permits inferred cleanup.
+Candidate retirement reads protected accepted and pending records under the
+local transaction lock. It refuses to remove an LV if either record refers to
+its path or UUID. Diagnostic cleanup cannot delete a disk after it becomes a
+router generation.
 Use the original qualification revision to clean older operations that used
 regular files for both test disks.
 
