@@ -40,7 +40,8 @@ def state():
     files = router_state.evidence(values)
     fingerprints = {}
     for kind in router_state.KEY_TYPES:
-        fingerprints[kind] = probe.run(['ssh-keygen', '-lf', '/etc/ssh/ssh_host_' + kind + '_key']).stdout.split()[1]
+        public = probe.run(['ssh-keygen', '-y', '-P', '', '-f', '/etc/ssh/ssh_host_' + kind + '_key']).stdout
+        fingerprints[kind] = probe.run(['ssh-keygen', '-lf', '-'], data=public).stdout.split()[1]
     saved = json.loads(Path('/var/lib/tailscale/tailscaled.state').read_text())
     machine = saved.get('_machinekey')
     if not isinstance(machine, str) or not machine:

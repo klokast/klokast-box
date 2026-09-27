@@ -15,5 +15,6 @@
           - -s
           - '{{ playbook_dir }}/../tests'
           - -p
-          - test_router_transaction.py
+          - '{{ item }}'
+      loop: [test_router_generations.py, test_router_transaction.py]
       changed_when: false

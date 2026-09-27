@@ -347,3 +347,16 @@ must not copy the candidate's now-older state over them. Failed state recovery
 fences both generations. Unconfirmed fencing is reported separately and requires
 console recovery. The native dom0 adapter and boot-service tests must also pass
 before this ordering can authorize a production switch.
+
+The generation contract keeps legacy inspection provenance separate from a
+qualified template. A legacy record does not claim a template build receipt.
+Each record binds one router LV UUID and size, bounded boot artifacts, Xen UUID,
+ordered production VIFs, packages, service account IDs, and configuration hashes.
+A transaction requires different disk paths, LV UUIDs, and Xen UUIDs for its two
+generations, with the same production VIF set. Candidate provenance must match
+the transaction engine. Record validation alone grants no execution authority.
+
+SSH inspection and compatibility tests derive each public key from the actual
+retained private key before calculating its fingerprint. A stale `.pub` sibling
+cannot substitute for that key. A native test covers this case and an unreadable
+private key.

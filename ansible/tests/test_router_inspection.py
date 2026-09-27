@@ -4,12 +4,32 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import unittest
+import shutil
+import subprocess
+import tempfile
 
 PATH = Path(__file__).resolve().parents[1] / 'roles/router-update-inspection/files/inspect-router-update'
 LOADER = importlib.machinery.SourceFileLoader('router_inspection', str(PATH))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 INSPECT = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(INSPECT)
+
+
+class FingerprintTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('ssh-keygen'), 'native OpenSSH key utility is required')
+    def test_stale_public_sibling_cannot_substitute_for_the_effective_private_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            first, second = Path(temp)/'first', Path(temp)/'second'
+            for path in (first, second):
+                subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(path)], check=True,
+                               stdin=subprocess.DEVNULL, capture_output=True)
+            expected = INSPECT.fingerprint(first)
+            self.assertNotEqual(expected, INSPECT.fingerprint(second))
+            first.with_suffix('.pub').write_bytes(second.with_suffix('.pub').read_bytes())
+            self.assertEqual(INSPECT.fingerprint(first), expected)
+            first.write_text('invalid private key\n')
+            with self.assertRaises(RuntimeError):
+                INSPECT.fingerprint(first)
 
 
 class XenInspectionTests(unittest.TestCase):

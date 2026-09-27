@@ -14,11 +14,22 @@ import stat
 import subprocess
 
 
-def run(argv):
-    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+def run(argv, *, data=None):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL if data is None else None,
+                            input=data, capture_output=True, text=True, timeout=30)
     if result.returncode:
         raise RuntimeError('router inspection command failed: ' + argv[0])
     return result.stdout.strip()
+
+
+def fingerprint(path):
+    # -l on a private-key filename can select a stale sibling .pub file.
+    # Derive the public key from the actual retained private bytes first.
+    public = run(['ssh-keygen', '-y', '-P', '', '-f', str(path)])
+    value = run(['ssh-keygen', '-lf', '-'], data=public + '\n').split()
+    if len(value) < 2 or not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', value[1]):
+        raise RuntimeError('router SSH host key has no valid native fingerprint')
+    return value[1]
 
 
 def info(path):
@@ -94,8 +105,7 @@ def inspect_guest(box):
             metadata = info(selected)
             if not metadata.get('regular') or metadata['links'] != 1:
                 raise RuntimeError('effective router SSH key is unsafe')
-            fingerprint = run(['ssh-keygen', '-lf', str(selected)]).split()
-            keys[kind] = {'path': str(selected), 'fingerprint': fingerprint[1], 'metadata': metadata}
+            keys[kind] = {'path': str(selected), 'fingerprint': fingerprint(selected), 'metadata': metadata}
     config = Path('/etc/dnsmasq.conf').read_text()
     root_entries = [line.split(':') for line in Path('/etc/shadow').read_text().splitlines()
                     if line.startswith('root:')]
