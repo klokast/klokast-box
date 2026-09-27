@@ -2685,7 +2685,13 @@ def overlay_runtime_view(runtime):
             valid is not None and (preferred is None or preferred > valid)
         ):
             raise ApplyError("overlay IPv6 address lifetime is too short or invalid")
-        lifetimes.extend(values)
+        # An RA can renew the same dynamic global address (RFC 4862 5.5.3).
+        # Keep the address, prefix, interface and every flag in the exact view.
+        lifetimes.append({
+            "valid": valid, "preferred": preferred,
+            "renewable": " scope global " in match[1] and
+                         re.search(r"(?<!\S)dynamic(?!\S)", match[1]) is not None,
+        })
         lines.append(match[1] + "<valid>" + match[4] + "<preferred>" + match[6])
     return "".join(lines), lifetimes
 
@@ -2773,12 +2779,21 @@ def compare_overlay_evidence(binding, evidence, intent, active, peer, suffix):
         after, new_lifetimes, new_counters = overlay_evidence_view(fresh_path, role, active, peer, suffix)
         if before != after or len(old_lifetimes) != len(new_lifetimes) or len(old_counters) != len(new_counters):
             raise ApplyError(f"overlay {role} configuration changed after authorization")
-        for old, new in zip(old_lifetimes, new_lifetimes):
-            if (
-                (old is None or new is None) and old != new
-                or old is not None and new is not None and not 0 <= old - new <= 600
-            ):
-                raise ApplyError(f"overlay {role} IPv6 lifetime changed outside the approved countdown")
+        for index, (old_address, new_address) in enumerate(zip(old_lifetimes, new_lifetimes), 1):
+            # Tolerate bounded renewal as well as the existing countdown.
+            # Static addresses cannot gain lifetime; finite/infinite changes,
+            # large lease changes and unusable lifetimes still require review.
+            renewal = 600 if old_address["renewable"] and new_address["renewable"] else 0
+            for field in ("valid", "preferred"):
+                old, new = old_address[field], new_address[field]
+                if (
+                    (old is None or new is None) and old != new
+                    or old is not None and new is not None and not -renewal <= old - new <= 600
+                ):
+                    raise ApplyError(
+                        f"overlay {role} IPv6 {field} lifetime changed outside the bounded "
+                        f"countdown or dynamic renewal (address {index}: {old} -> {new} seconds)"
+                    )
         if any(new < old for old, new in zip(old_counters, new_counters)):
             raise ApplyError(f"overlay {role} firewall counter reset after authorization")
 
@@ -2815,7 +2830,7 @@ def overlay_revalidate(binding, intent, work):
     compare_overlay_evidence(binding, evidence, intent, active, peer, suffix)
     append_audit(
         "overlay-repair.revalidated", nonce=intent["nonce"],
-        comparison="overlay_runtime_v1",
+        comparison="overlay_runtime_v2",
         **{role + "_sha256": evidence[role + "_sha256"] for role in (
             "router_preimage", "ops_preimage", "huawei_prerequisite"
         )},

@@ -120,7 +120,7 @@ class OverlayRevalidationTest(unittest.TestCase):
     def test_bad_lifetimes_and_address_flags_fail(self):
         baseline = self.docs["router_preimage"]
         for old, new in (
-            ("3600sec", "59sec"), ("3600sec", "0sec"), ("3600sec", "3601sec"),
+            ("3600sec", "59sec"), ("3600sec", "0sec"), ("3600sec", "4201sec"),
             ("3600sec", "2999sec"), ("3600sec", "forever"), ("7200sec", "3500sec"),
             ("3600sec", "-1sec"), ("3600sec", "unknown"),
             ("dynamic", "deprecated"), ("dynamic", "tentative"), ("dynamic", "dadfailed"),
@@ -129,14 +129,64 @@ class OverlayRevalidationTest(unittest.TestCase):
             with self.subTest(new=new), self.assertRaises(self.mod.ApplyError):
                 self.compare()
         text = baseline["runtime"].replace("7200sec", "forever").replace("3600sec", "forever")
-        self.assertEqual(self.mod.overlay_runtime_view(text)[1], [None, None])
+        self.assertEqual(self.mod.overlay_runtime_view(text)[1], [
+            {"valid": None, "preferred": None, "renewable": True}])
 
     def test_lifetime_countdown_boundaries(self):
         baseline = self.docs["router_preimage"]
         self.write_fresh("router_preimage", dict(baseline, runtime=baseline["runtime"].replace("7200sec", "6600sec").replace("3600sec", "3000sec")))
         self.compare()
         text = baseline["runtime"].replace("7200sec", "60sec").replace("3600sec", "60sec")
-        self.assertEqual(self.mod.overlay_runtime_view(text)[1], [60, 60])
+        self.assertEqual(self.mod.overlay_runtime_view(text)[1], [
+            {"valid": 60, "preferred": 60, "renewable": True}])
+
+    def test_dynamic_global_lifetimes_can_renew_within_the_bound(self):
+        originals = {key: Path(path).read_bytes() for key, path in self.binding.items()}
+        for increase in (1, 174, 600):
+            with self.subTest(increase=increase):
+                for role in ("router_preimage", "ops_preimage"):
+                    doc = copy.deepcopy(self.docs[role])
+                    doc["runtime"] = doc["runtime"].replace("7200sec", f"{7200+increase}sec").replace(
+                        "3600sec", f"{3600+increase}sec")
+                    self.write_fresh(role, doc)
+                self.compare()
+        for key, path in self.binding.items():
+            self.assertEqual(Path(path).read_bytes(), originals[key])
+
+    def test_renewal_does_not_allow_static_or_link_scope_extensions(self):
+        for old, new in (("dynamic mngtmpaddr", "mngtmpaddr"),
+                         ("scope global", "scope link"),
+                         ("scope global", "scope host")):
+            doc = copy.deepcopy(self.docs["router_preimage"])
+            doc["runtime"] = doc["runtime"].replace(old, new)
+            stored = Path(self.binding["router_preimage_path"])
+            stored.write_text(json.dumps(doc))
+            self.intent["router_preimage_sha256"] = self.mod.sha256_file(stored)
+            doc["runtime"] = doc["runtime"].replace("7200sec", "7201sec")
+            self.write_fresh("router_preimage", doc)
+            with self.subTest(replacement=new), self.assertRaises(self.mod.ApplyError):
+                self.compare()
+
+    def test_large_dynamic_renewal_reports_safe_lifetime_diagnostic(self):
+        doc = copy.deepcopy(self.docs["router_preimage"])
+        doc["runtime"] = doc["runtime"].replace("7200sec", "7801sec")
+        self.write_fresh("router_preimage", doc)
+        with self.assertRaisesRegex(self.mod.ApplyError, r"address 1: 7200 -> 7801 seconds"):
+            self.compare()
+
+    def test_renewal_cannot_change_infinite_lifetimes_or_hide_static_address_change(self):
+        doc = copy.deepcopy(self.docs["router_preimage"])
+        doc["runtime"] += "\n3: eth1    inet6 2606:4700::3/64 scope global \\\n       valid_lft forever preferred_lft forever".replace("\\\n", "\\")
+        stored = Path(self.binding["router_preimage_path"])
+        stored.write_text(json.dumps(doc))
+        self.intent["router_preimage_sha256"] = self.mod.sha256_file(stored)
+        doc["runtime"] = doc["runtime"].replace("7200sec", "7300sec").replace("3600sec", "3700sec")
+        self.write_fresh("router_preimage", doc)
+        self.compare()
+        doc["runtime"] = doc["runtime"].replace("forever", "7200sec")
+        self.write_fresh("router_preimage", doc)
+        with self.assertRaisesRegex(self.mod.ApplyError, "address 2"):
+            self.compare()
 
     def test_counters_may_increase_but_not_reset(self):
         baseline = self.docs["ops_preimage"]
@@ -211,7 +261,7 @@ class OverlayRevalidationTest(unittest.TestCase):
         self.intent.update({"plan_sha256": "plan", "authority_state_sha256": "state", "active_controller_box": "boxa", "peer_box": "boxb", "freebox_gateway_id_sha256": "gateway", "freebox_api_version": "12.0", "delegation_slot": 1, "delegated_prefix": "2606:4700:1::/64", "freebox_preimage_sha256": "delegation", "binary_sha256": "binary", "builder_receipt_sha256": "builder", "router_next_hop": "fe80::1"})
         with patch.object(self.mod, "validate_inputs_v3", return_value=current), patch.object(self.mod, "overlay_boxes", return_value=("boxa", "boxb")), patch.object(self.mod, "require_overlay_controller_box"), patch.object(self.mod, "plan_magicdns_suffix", return_value="example.ts.net"), patch.object(self.mod, "inspect_freebox", return_value=inspection), patch.object(self.mod, "collect_overlay_evidence", return_value=self.evidence), patch.object(self.mod, "append_audit") as audit:
             self.assertEqual(self.mod.overlay_revalidate(self.binding, self.intent, self.directory), (current, "example.ts.net"))
-            audit.assert_called_once_with("overlay-repair.revalidated", nonce="overlay_test_nonce", comparison="overlay_runtime_v1", **{role + "_sha256": self.evidence[role + "_sha256"] for role in self.docs})
+            audit.assert_called_once_with("overlay-repair.revalidated", nonce="overlay_test_nonce", comparison="overlay_runtime_v2", **{role + "_sha256": self.evidence[role + "_sha256"] for role in self.docs})
             for field in ("plan_sha256", "authority_state_sha256", "binary_sha256", "builder_receipt_sha256", "freebox_preimage_sha256", "active_controller_box"):
                 with self.subTest(field=field), self.assertRaisesRegex(self.mod.ApplyError, "evidence changed"):
                     self.mod.overlay_revalidate(self.binding, dict(self.intent, **{field: "changed"}), self.directory)

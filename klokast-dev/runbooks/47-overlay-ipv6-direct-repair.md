@@ -35,6 +35,16 @@ Freebox, router, and controller preimages. It then verifies IPv4 controller
 access and a working Tailscale path. A failed restoration records
 `recovery_required`.
 
+Revalidation keeps configuration, address identity, prefix length, interface,
+and address flags exact. IPv6 lifetimes can count down by at most 600 seconds.
+Router advertisements can renew the same dynamic global address under
+[RFC 4862, section 5.5.3](https://www.rfc-editor.org/rfc/rfc4862#section-5.5.3).
+This repair permits a lifetime increase of at most 600 seconds between samples.
+Static addresses cannot gain lifetime. Finite/infinite changes, unusable
+addresses, and larger lifetime changes are refused. Signed snapshot bytes
+remain unchanged. A refusal consumes the nonce and requires a fresh intent;
+do not retry the failed signed request.
+
 ## Prepare the peer Huawei rule
 
 Keep the Huawei IPv6 firewall enabled. On the active controller, run:
