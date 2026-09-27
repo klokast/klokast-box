@@ -7,6 +7,11 @@
     - name: Protect the accepted router before changing dom0 prerequisites
       ansible.builtin.import_role:
         name: router-boot-assignment
+      vars:
+        router_boot_assignment_allow_verify: true
+    - name: Keep the accepted router generation during a provisioning rerun
+      ansible.builtin.meta: end_play
+      when: router_boot_assignment_present | bool
   tasks:
     - name: Persist the dom0 bridge configuration
       ansible.builtin.import_role:
@@ -171,6 +176,9 @@
       -o UserKnownHostsFile={{ router_bootstrap_known_hosts_file }}
       -o ProxyCommand="{{ router_bootstrap_proxycommand }}"
   pre_tasks:
+    - name: Skip first-contact enrollment for the verified accepted router
+      ansible.builtin.meta: end_play
+      when: hostvars[node_name ~ '-dom0'].router_boot_assignment_present | default(false) | bool
     - name: Check whether the router steady-state Tailscale identity is online
       ansible.builtin.shell: |
         python3 - <<'PY'
@@ -277,6 +285,10 @@
 - name: Wait for the router guest to be reachable
   hosts: router
   gather_facts: false
+  pre_tasks:
+    - name: Skip legacy connectivity tasks for the verified accepted router
+      ansible.builtin.meta: end_play
+      when: hostvars[node_name ~ '-dom0'].router_boot_assignment_present | default(false) | bool
   tasks:
     - name: Wait for router connectivity after any Xen restart
       ansible.builtin.wait_for_connection:
@@ -287,6 +299,10 @@
 - name: Bootstrap python on router guests
   hosts: router
   gather_facts: false
+  pre_tasks:
+    - name: Skip legacy Python setup for the verified accepted router
+      ansible.builtin.meta: end_play
+      when: hostvars[node_name ~ '-dom0'].router_boot_assignment_present | default(false) | bool
   tasks:
     - name: Ensure Python is available on the Alpine router guest
       ansible.builtin.import_role:
@@ -294,7 +310,13 @@
 
 - name: Converge router guest configuration
   hosts: router
-  gather_facts: true
+  gather_facts: false
+  pre_tasks:
+    - name: Skip legacy convergence for the verified accepted router
+      ansible.builtin.meta: end_play
+      when: hostvars[node_name ~ '-dom0'].router_boot_assignment_present | default(false) | bool
+    - name: Gather router facts before legacy convergence
+      ansible.builtin.setup:
   tasks:
     - name: Keep the router Tailscale client converged first
       ansible.builtin.import_role:

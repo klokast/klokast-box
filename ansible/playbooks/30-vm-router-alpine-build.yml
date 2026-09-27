@@ -7,6 +7,11 @@
     - name: Protect the accepted router before changing dom0 prerequisites
       ansible.builtin.import_role:
         name: router-boot-assignment
+      vars:
+        router_boot_assignment_allow_verify: true
+    - name: Keep the accepted router generation during a provisioning rerun
+      ansible.builtin.meta: end_play
+      when: router_boot_assignment_present | bool
   tasks:
     - name: Unlock reviewed router image maintenance packages in RAM
       ansible.builtin.import_role:

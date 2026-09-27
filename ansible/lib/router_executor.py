@@ -88,7 +88,7 @@ def recover(storage, engine):
     return Transaction(host.request, host, pending).recover()
 
 
-def boot_assignment(storage):
+def boot_assignment(storage, *, require_running=False):
     path = storage.base / 'accepted.json'
     if not path.exists() and not path.is_symlink():
         return 'unadopted'
@@ -112,7 +112,9 @@ def boot_assignment(storage):
             os.readlink(link) not in ('../router.cfg', '/etc/xen/router.cfg')):
         raise TransactionError('accepted router has no exact managed autostart link')
     # Reject an unexpected running router or another VM holding this disk.
-    host.guest({'accepted': generation}, deadline=deadline)
+    live = host.guest({'accepted': generation}, deadline=deadline)
+    if require_running and (live is None or live[0] != 'accepted'):
+        raise TransactionError('accepted router generation is not running')
     return 'accepted-assignment-verified'
 
 
@@ -175,8 +177,8 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'prepare-copy', 'run',
-        'worker', 'recover', 'boot-recover', 'accept'))
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status',
+        'verify-boot-assignment', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -211,7 +213,13 @@ def main(argv, engine):
         result = 'controller-acceptance-published'
     else:
         with storage.lock():
-            if args.action in ('boot-recover', 'recover'):
+            if args.action == 'verify-boot-assignment':
+                if storage.pending() is not None:
+                    raise TransactionError('cannot verify a router provisioning rerun during a pending operation')
+                if not (storage.base / 'accepted.json').exists():
+                    raise TransactionError('router provisioning rerun has no accepted assignment')
+                result = boot_assignment(storage, require_running=True)
+            elif args.action in ('boot-recover', 'recover'):
                 result = recover(storage, engine)
                 if result == 'no-pending-operation':
                     result = boot_assignment(storage)

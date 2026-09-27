@@ -1,7 +1,8 @@
 ---
 # This guard does not infer an assignment from a disk name or guest marker.
 # Legacy entry points must stop before their first mutation when a router
-# transaction or accepted assignment exists.
+# transaction or accepted assignment exists. Top-level provisioning may use
+# the read-only accepted-assignment verifier and skip its legacy play.
 - name: Validate the router assignment selector
   ansible.builtin.assert:
     that:
@@ -42,12 +43,48 @@
   become_method: doas
   register: router_boot_assignment_records
 
-- name: Refuse legacy changes to an accepted or pending router generation
+- name: Record protected router assignment state
+  ansible.builtin.set_fact:
+    router_boot_assignment_present: "{{ router_boot_assignment_records.results[0].stat.exists | default(false) | bool }}"
+    router_boot_pending_present: "{{ router_boot_assignment_records.results[1].stat.exists | default(false) | bool }}"
+
+- name: Refuse provisioning during a pending router replacement
   ansible.builtin.assert:
     that:
-      - not (router_boot_assignment_records.results | map(attribute='stat.exists') | select('equalto', true) | list | length)
+      - not router_boot_pending_present
     fail_msg: >-
-      {{ node_name }}-router has a protected assignment or pending replacement.
+      {{ node_name }}-router has a pending replacement.
+      Reconcile the recorded operation before running provisioning.
+
+- name: Refuse legacy changes to an accepted router generation
+  ansible.builtin.assert:
+    that:
+      - not router_boot_assignment_present
+    fail_msg: >-
+      {{ node_name }}-router has a protected assignment.
       This legacy workflow cannot change its disk, boot artifacts, packages,
       service configuration, or enrolled identity. Reconcile the recorded router
       operation through the approved router release workflow before retrying.
+  when: not (router_boot_assignment_allow_verify | default(false) | bool)
+
+- name: Verify the running accepted router before skipping legacy provisioning
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, "{{ node_name }}"]
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  changed_when: false
+  register: router_boot_assignment_verification
+  when:
+    - router_boot_assignment_allow_verify | default(false) | bool
+    - router_boot_assignment_present
+
+- name: Require exact accepted router verification
+  ansible.builtin.assert:
+    that:
+      - (router_boot_assignment_verification.stdout | from_json).result == 'accepted-assignment-verified'
+      - (router_boot_assignment_verification.stdout | from_json).box == node_name
+      - (router_boot_assignment_verification.stdout | from_json).action == 'verify-boot-assignment'
+  when:
+    - router_boot_assignment_allow_verify | default(false) | bool
+    - router_boot_assignment_present

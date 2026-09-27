@@ -62,6 +62,22 @@ class PreparationTests(unittest.TestCase):
             self.assertTrue(play['any_errors_fatal'])
             self.assertEqual(play['pre_tasks'][0]['ansible.builtin.import_role']['name'], 'router-boot-assignment')
 
+    def test_provisioning_rerun_verifies_assignment_then_skips_legacy_work(self):
+        for name in ('30-vm-router-alpine-build.yml', '31-vm-router.yml'):
+            plays = yaml.safe_load((REPO / 'ansible/playbooks' / name).read_text())
+            first = plays[0]
+            self.assertTrue(first['pre_tasks'][0]['vars']['router_boot_assignment_allow_verify'])
+            self.assertEqual(first['pre_tasks'][1]['ansible.builtin.meta'], 'end_play')
+            self.assertIn('router_boot_assignment_present', first['pre_tasks'][1]['when'])
+            for play in plays[1:]:
+                self.assertFalse(play['gather_facts'])
+                self.assertEqual(play['pre_tasks'][0]['ansible.builtin.meta'], 'end_play')
+                self.assertIn('router_boot_assignment_present', play['pre_tasks'][0]['when'])
+        guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
+        verify = next(task for task in guard if task.get('register') == 'router_boot_assignment_verification')
+        self.assertEqual(verify['ansible.builtin.command']['argv'][1], 'verify-boot-assignment')
+        self.assertFalse(verify['changed_when'])
+
     @unittest.skipIf(Environment is None, 'Jinja is supplied by the controller Ansible toolchain')
     def test_asset_paths_preserve_shared_defaults_and_allow_router_namespace(self):
         defaults = yaml.safe_load((ROLES / 'alpine-virt-assets/defaults/main.yml').read_text())
