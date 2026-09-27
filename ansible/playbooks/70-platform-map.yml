@@ -91,6 +91,17 @@
       changed_when: false
       failed_when: false
 
+    - name: Collect the narrow router generation and copy status from protected records
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - map-status
+          - --box
+          - '{{ node_name }}'
+      register: platform_map_router_updates
+      changed_when: false
+      failed_when: false
+
     - name: Build dom0 Platform map fact
       ansible.builtin.set_fact:
         platform_map_fact:
@@ -101,6 +112,9 @@
           node_hostname: "{{ node_hostname | default(inventory_hostname) }}"
           ansible_host: "{{ ansible_host | default(inventory_hostname) }}"
           hostname: "{{ platform_map_dom0_hostname.stdout | default('') | trim }}"
+          router_updates:
+            rc: '{{ platform_map_router_updates.rc | default(999) }}'
+            stdout: "{{ platform_map_router_updates.stdout | default('') }}"
           os_release_stdout: "{{ platform_map_dom0_os_release.stdout | default('') }}"
           storage:
             disks: "{{ storage_inspection_disks | default([]) }}"

@@ -1173,6 +1173,42 @@ def box_override(overrides: dict[str, Any], box: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def summarize_router_updates(fact, box):
+    unavailable = {"available": False}
+    if not isinstance(fact, dict) or fact.get("rc") not in (0, "0"):
+        return unavailable
+    outer = parse_json_text(fact.get("stdout", ""), {})
+    if (not isinstance(outer, dict) or outer.get("kind") != "klokast.router-command-result.v1" or
+            outer.get("action") != "map-status" or outer.get("box") != box):
+        return unavailable
+    value = outer.get("result")
+    def generation(item):
+        return item is None or (isinstance(item, dict) and set(item) == {
+            "generation_id", "origin", "kernel_release", "record_sha256"} and
+            isinstance(item["generation_id"], str) and re.fullmatch("[0-9a-f]{24}", item["generation_id"]) and
+            item["origin"] in ("legacy", "template") and isinstance(item["kernel_release"], str) and
+            re.fullmatch("[A-Za-z0-9_.+-]{1,128}", item["kernel_release"]) and
+            isinstance(item["record_sha256"], str) and re.fullmatch("[0-9a-f]{64}", item["record_sha256"]))
+    if (not isinstance(value, dict) or set(value) != {"kind", "box", "current", "previous", "pending", "state_copy"} or
+            value["kind"] != "klokast.router-map.v1" or value["box"] != box or
+            not generation(value["current"]) or not generation(value["previous"])):
+        return unavailable
+    pending, copied = value["pending"], value["state_copy"]
+    if pending is not None and (not isinstance(pending, dict) or set(pending) != {
+            "phase", "candidate_started", "old_started", "operation_id", "old", "candidate"} or
+            not isinstance(pending["phase"], str) or not re.fullmatch("[a-z-]{1,40}", pending["phase"]) or
+            any(type(pending[k]) is not bool for k in ("candidate_started", "old_started")) or
+            not isinstance(pending["operation_id"], str) or not re.fullmatch("[0-9a-f]{24}", pending["operation_id"]) or
+            any(pending[k] is None or not generation(pending[k]) for k in ("old", "candidate"))):
+        return unavailable
+    if copied is not None and (not isinstance(copied, dict) or set(copied) != {"operation_id", "forward", "reverse"} or
+            not isinstance(copied["operation_id"], str) or not re.fullmatch("[0-9a-f]{24}", copied["operation_id"]) or
+            any(copied[k] not in ("complete", "absent", "unverified") for k in ("forward", "reverse")) or
+            pending is not None and copied["operation_id"] != pending["operation_id"]):
+        return unavailable
+    return {"available": True, **{k:value[k] for k in ("current", "previous", "pending", "state_copy")}}
+
+
 def summarize_box(
     box: str,
     *,
@@ -1427,6 +1463,7 @@ def summarize_box(
         "app_vms": app_vms,
         "dom0": {
             "reachable": bool(dom0_fact),
+            "router_updates": summarize_router_updates(dom0_fact.get("router_updates"), box),
             "os": parse_os_release(dom0_fact.get("os_release_stdout", "")) if dom0_fact else {},
             "storage": storage,
             "xen": {

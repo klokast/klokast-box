@@ -432,3 +432,18 @@ not stop a guest or adopt the baseline:
 ```sh
 ansible/bin/platform-router-update test-dom0-guards --box boxa
 ```
+
+
+## Generation status in Platform Map
+
+The installed versioned command has a read-only `map-status` action. Platform
+Map collects this action from dom0 and reports the current and previous
+router generations, pending operation, and per-direction state-copy status.
+It verifies copy receipts without attaching a disk or reading retained files.
+The projection omits receipt contents and private diagnostics. Changed pointers
+cause refusal, so a report cannot join two different operations.
+
+This reader must be installed through the approved recovery-engine workflow.
+An absent reader or an engine that does not support this action produces an
+unavailable map field, not a healthy or current-router claim. See the
+[Platform Map fields](platform-map.md#current-json-template).

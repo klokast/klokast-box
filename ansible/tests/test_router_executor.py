@@ -63,6 +63,35 @@ class SupervisorTests(unittest.TestCase):
         adapter.assert_not_called()
         self.assertEqual(self.host.live,'old')
 
+    def test_map_projects_generations_without_private_receipt_contents(self):
+        import json
+        initial=e.map_status(self.records)
+        self.assertEqual(initial['current']['generation_id'],self.old['generation_id'])
+        self.assertIsNone(initial['previous'])
+        self.assertIsNone(initial['state_copy'])
+        self.records.persist(self.pending)
+        directory=self.adapter.work/'copy'
+        directory.mkdir(exist_ok=True)
+        for name in ('forward.result.slot','forward.private.slot'):
+            (directory/name).write_text('synthetic private content')
+        self.copy.verify_receipt=mock.Mock()
+        with mock.patch.object(e,'adapter',return_value=self.adapter):
+            value=e.map_status(self.records)
+        self.assertEqual(value['pending']['operation_id'],self.request['operation_id'])
+        self.assertEqual(value['state_copy']['forward'],'complete')
+        self.assertEqual(value['state_copy']['reverse'],'absent')
+        self.assertNotIn('synthetic private',json.dumps(value))
+        self.copy.verify_receipt.side_effect=TransactionError('synthetic private parse error')
+        with mock.patch.object(e,'adapter',return_value=self.adapter):
+            value=e.map_status(self.records)
+        self.assertEqual(value['state_copy']['forward'],'unverified')
+        self.assertNotIn('parse error',json.dumps(value))
+
+    def test_map_refuses_changed_pointers_instead_of_joining_two_operations(self):
+        with mock.patch.object(self.records,'pending',side_effect=[None,self.pending]):
+            with self.assertRaisesRegex(TransactionError,'pointers changed'):
+                e.map_status(self.records)
+
 
 if __name__ == '__main__':
     unittest.main()

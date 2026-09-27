@@ -198,6 +198,18 @@ Each `boxes.<box>` object contains:
 - `capacity`: box-level capacity summaries.
 - `findings`: warnings and critical findings scoped to the box.
 
+`boxes.<box>.dom0.router_updates` reports protected router generation state.
+`available: false` means that the installed router reader is absent, failed, or
+returned incomplete evidence. It does not mean that the router is current.
+When available, `current` and `previous` contain only the generation ID, origin,
+kernel release, and generation-record checksum. `pending` contains the operation
+ID, phase, production-start markers, and its two generation summaries.
+`state_copy` reports `complete`, `absent`, or `unverified` separately for each
+direction. Complete status requires a matching public result and a verified
+private copy receipt. File contents and receipt details never enter the map.
+The reader refuses to join pointers that change during collection. This report
+is evidence only and cannot authorize a replacement or recovery action.
+
 `boxes.<box>.dom0.storage` contains:
 
 - `managed_layout`: detected target SSD, EFI partition, LVM partition, VG name,

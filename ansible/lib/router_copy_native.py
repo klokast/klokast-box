@@ -210,6 +210,12 @@ class Copy:
     def verify_copy(self, adapter, source, target, *, deadline):
         phase = phase_name(source, target)
         adapter.host.detached([v['disk']['path'] for v in adapter.pair.values()], deadline=deadline)
+        self.verify_receipt(adapter, phase)
+
+    def verify_receipt(self, adapter, phase):
+        """Verify completed copy evidence without reading or attaching a router disk."""
+        if phase not in ('forward', 'reverse'):
+            raise TransactionError('router receipt direction is invalid')
         value = self.result(adapter, phase)
         if value['success'] is not True:
             raise TransactionError('router state copy failed; destination remains fenced')

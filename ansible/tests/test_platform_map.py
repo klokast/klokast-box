@@ -26,6 +26,18 @@ class PlatformMapTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_module()
 
+    def test_router_generation_projection_rejects_unavailable_or_private_fields(self):
+        value={'kind':'klokast.router-map.v1','box':'boxa','current':{
+            'generation_id':'a'*24,'record_sha256':'b'*64,'origin':'template','kernel_release':'6.12.1-virt'},
+            'previous':None,'pending':None,'state_copy':None}
+        outer={'kind':'klokast.router-command-result.v1','box':'boxa','action':'map-status','result':value}
+        fact={'rc':0,'stdout':json.dumps(outer)}
+        self.assertTrue(self.mod.summarize_router_updates(fact,'boxa')['available'])
+        self.assertFalse(self.mod.summarize_router_updates(fact,'boxb')['available'])
+        self.assertFalse(self.mod.summarize_router_updates({'rc':2,'stdout':fact['stdout']},'boxa')['available'])
+        value['private_receipt']={'contents':'must not appear in map'}
+        self.assertEqual(self.mod.summarize_router_updates({'rc':0,'stdout':json.dumps(outer)},'boxa'),{'available':False})
+
     def peer(self, hostname, tags=None, online=True):
         return {
             "name": hostname,

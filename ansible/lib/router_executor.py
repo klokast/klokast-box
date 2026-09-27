@@ -23,6 +23,55 @@ def adapter(storage, operation):
     return Adapter(storage, operation, Copy())
 
 
+def map_status(storage):
+    """Project validated records only; never expose retained-state receipt contents."""
+    pending = storage.pending()
+    path = storage.base / 'accepted.json'
+    accepted = storage.accepted() if path.exists() or path.is_symlink() else None
+    def generation(checksum):
+        if checksum is None:
+            return None
+        value = storage.generation(checksum)
+        return {'generation_id':value['generation_id'], 'origin':value['origin'],
+                'kernel_release':value['kernel_release'], 'record_sha256':checksum}
+    result = {'kind':'klokast.router-map.v1', 'box':storage.box,
+              'current':generation(accepted['current_sha256']) if accepted else None,
+              'previous':generation(accepted['previous_sha256']) if accepted else None,
+              'pending':None, 'state_copy':None}
+    if pending:
+        result['pending'] = {key:pending[key] for key in ('phase','candidate_started','old_started')}
+        result['pending'].update(operation_id=pending['request']['operation_id'],
+            old=generation(pending['request']['old_sha256']),
+            candidate=generation(pending['request']['candidate_sha256']))
+    operation = pending['request']['operation_id'] if pending else (
+        accepted['operation_id'] if accepted and accepted['previous_sha256'] else None)
+    if operation:
+        host = adapter(storage, operation)
+        if pending and host.request != pending['request'] or not pending and (
+                host.request['candidate_sha256'] != accepted['current_sha256'] or
+                host.request['old_sha256'] != accepted['previous_sha256']):
+            raise TransactionError('router map operation differs from its protected pointers')
+        copies = {}
+        for phase in ('forward','reverse'):
+            try:
+                for kind in ('result','private'):
+                    slot = host.work / 'copy' / (phase + '.' + kind + '.slot')
+                    records.parents(slot)
+                    records.secure(slot, maximum=1024 * 1024)
+                host.copy_backend.verify_receipt(host, phase)
+            except FileNotFoundError:
+                copies[phase] = 'absent'
+            except (OSError, ValueError, TypeError, KeyError, TransactionError):
+                copies[phase] = 'unverified'
+            else:
+                copies[phase] = 'complete'
+        result['state_copy'] = {'operation_id':operation, **copies}
+    # Do not join records across concurrent pointer publication.
+    if storage.pending() != pending or (storage.accepted() if path.exists() or path.is_symlink() else None) != accepted:
+        raise TransactionError('router map pointers changed during collection; collect fresh evidence')
+    return result
+
+
 def recover(storage, engine):
     pending = storage.pending()
     if pending is None:
@@ -120,7 +169,7 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'prepare-copy', 'run',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'prepare-copy', 'run',
         'worker', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
@@ -131,6 +180,8 @@ def main(argv, engine):
     native.Native().guard(args.box, deadline=time.monotonic() + 30)
     if args.action == 'check-storage':
         result = 'persistent-storage-verified'
+    elif args.action == 'map-status':
+        result = map_status(storage)
     elif args.action == 'assignment-status':
         pending = storage.pending()
         path = storage.base / 'accepted.json'
