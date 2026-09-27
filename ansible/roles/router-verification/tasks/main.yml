@@ -18,6 +18,31 @@
   register: verify_router_nft_test
   changed_when: false
 
+- name: Hash the managed router core configuration
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    checksum_algorithm: sha256
+  loop:
+    - {path: /etc/network/interfaces, template: interfaces.j2}
+    - {path: /etc/dhcpcd.conf, template: dhcpcd.conf.j2}
+    - {path: /etc/dnsmasq.conf, template: dnsmasq.conf.j2}
+    - {path: /etc/nftables.nft, template: nftables.nft.j2}
+  register: verify_router_core_files
+
+- name: Refuse router core configuration drift
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == '0644'
+      - item.stat.nlink == 1
+      - item.stat.checksum == (lookup('ansible.builtin.template', role_path ~ '/../router/templates/' ~ item.item.template) | hash('sha256'))
+    fail_msg: "Router configuration differs from the approved template: {{ item.item.path }}"
+  loop: "{{ verify_router_core_files.results }}"
+
 - name: Collect managed router service states
   ansible.builtin.command: "rc-service {{ item }} status"
   loop:
