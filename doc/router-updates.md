@@ -87,9 +87,13 @@ controller renders synthetic inputs through the normal router Jinja templates.
 The `router_personalize` helper checks template provenance, the exact package
 set, and absence of existing identity before it creates the management account,
 configuration files, and service links. Native `dnsmasq` and `nft` validate the
-rendered files. This test does not start router services, enroll a machine, or
-copy production state. It is not proof of the complete candidate boot or of
-compatibility between old and new service versions.
+rendered files. The test then creates synthetic links and an upstream namespace
+inside the networkless guest. Native dhcpcd obtains a WAN lease; dnsmasq assigns
+a LAN lease and answers its DNS name. An offline Tailscale daemon writes
+synthetic preferences and must read the latest value after restart. Its login
+server is a refused localhost port. This test cannot enroll a machine or copy
+production state. It is not proof of complete candidate boot or compatibility
+between old and new service versions. The result records these limits.
 
 The rootfs role now has separate `legacy` and `template` modes. Provisioning
 still uses the legacy mode until the common personalization and accepted-release

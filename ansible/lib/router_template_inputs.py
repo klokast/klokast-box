@@ -60,6 +60,7 @@ def stage(source, work, profile, engine, guest):
             archive.add(source / relative, arcname=relative, recursive=False)
         archive.add(guest, arcname='guest.py', recursive=False)
         archive.add(repo / 'ansible/lib/router_personalize.py', arcname='router_personalize.py', recursive=False)
+        archive.add(repo / 'ansible/lib/router_service_probe.py', arcname='router_service_probe.py', recursive=False)
         archive.add(fixture, arcname='personalization.json', recursive=False)
     # Native APK extraction is scriptless and unprivileged on the controller.
     # The template's package scripts and filesystem tools run only inside Xen.

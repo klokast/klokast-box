@@ -17,7 +17,9 @@ class PersonalizationTests(unittest.TestCase):
 
     def setUp(self):
         generic.GenericTests.setUp(self)
-        self.put('etc/passwd', 'root:x:0:0:root:/root:/bin/ash\n')
+        self.put('etc/passwd', 'root:x:0:0:root:/root:/bin/ash\n'
+                 'tailscale:x:103:103:tailscale:/var/lib/tailscale:/sbin/nologin\n'
+                 'dhcpcd:x:104:104:dhcpcd:/var/lib/dhcpcd:/sbin/nologin\n')
         self.put('etc/group', 'root:x:0:\nwheel:x:10:root\n')
         self.put('etc/klokast-router-inputs.json', json.dumps(self.manifest))
         self.put('usr/local/libexec/router-template-test', '# synthetic qualification hook\n')
@@ -87,6 +89,27 @@ class PersonalizationTests(unittest.TestCase):
         os.link(self.root / 'etc/hostname', self.root / 'hostname-copy')
         with self.assertRaisesRegex(ValueError, 'file is unsafe'):
             self.apply()
+
+    def test_declared_service_owner_does_not_relax_parent_or_write_checks(self):
+        path = self.root / 'var/lib/tailscale'
+        path.mkdir(parents=True, exist_ok=True)
+        original = Path.lstat
+
+        def owned(item, *args, **kwargs):
+            info = original(item, *args, **kwargs)
+            if item == path:
+                values = list(info)
+                values[4:6] = [103, 103]
+                return os.stat_result(values)
+            return info
+
+        with patch.object(Path, 'lstat', owned):
+            self.assertEqual(p.service_directory(self.root, 'var/lib/tailscale'), path)
+            with self.assertRaisesRegex(ValueError, 'parent is unsafe'):
+                p.directory(self.root, 'var/lib/tailscale')
+            path.chmod(0o770)
+            with self.assertRaisesRegex(ValueError, 'parent is unsafe'):
+                p.service_directory(self.root, 'var/lib/tailscale')
 
 
 if __name__ == '__main__':

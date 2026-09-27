@@ -57,7 +57,7 @@ def validate(value):
         raise ValueError('router personalization requires its complete frozen package manifest')
 
 
-def directory(root, relative, *, create=False):
+def directory(root, relative, *, create=False, service_owner=None):
     path = Path(root)
     device = path.stat().st_dev
     for part in ('.', *Path(relative).parts):
@@ -67,11 +67,23 @@ def directory(root, relative, *, create=False):
         if create and not path.exists() and not path.is_symlink():
             path.mkdir(mode=0o755)
         info = path.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+        owned = info.st_uid == os.geteuid() or (
+            path == Path(root) / relative and service_owner == (info.st_uid, info.st_gid))
+        if (not stat.S_ISDIR(info.st_mode) or not owned or
                 info.st_mode & 0o022 or info.st_dev != device):
             raise ValueError('router configuration parent is unsafe: ' + str(path) +
                              ' (uid=' + str(info.st_uid) + ', mode=' + oct(stat.S_IMODE(info.st_mode)) + ')')
     return path
+
+
+def service_directory(root, relative):
+    services = {'var/lib/tailscale': 'tailscale', 'var/lib/dhcpcd': 'dhcpcd'}
+    rows = [line.split(':') for line in regular(root, 'etc/passwd').read_text().splitlines()]
+    selected = [row for row in rows if len(row) == 7 and row[0] == services[relative]]
+    if len(selected) != 1 or any(not value.isdecimal() or not 1 <= int(value) < 1000
+                                  for value in selected[0][2:4]):
+        raise ValueError('router template lacks the declared service account: ' + services[relative])
+    return directory(root, relative, create=True, service_owner=tuple(map(int, selected[0][2:4])))
 
 
 def regular(root, relative):
@@ -170,7 +182,7 @@ def personalize(root, request):
         if path.exists() or path.is_symlink():
             raise ValueError('router clone contains existing machine or service state')
     for relative in ('var/lib/tailscale', 'var/lib/dhcpcd'):
-        path = directory(root, relative, create=True)
+        path = service_directory(root, relative)
         if any(path.iterdir()):
             raise ValueError('router clone contains existing service identity')
     if list(directory(root, 'etc/ssh').glob('ssh_host_*')):

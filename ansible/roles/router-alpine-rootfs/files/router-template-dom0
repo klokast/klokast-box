@@ -175,7 +175,7 @@ def execute(work, value):
         boot_guest(work, names['personalize'], identities['personalize'], config, value,
                    kind='klokast.router-template-test.v1', timeout=180)
         personalized = result(work, value, 'klokast.router-template-test.v1',
-            dict.fromkeys(('personalization', 'exact_packages', 'identity_absent', 'service_syntax'), True))
+            dict.fromkeys(('personalization', 'exact_packages', 'identity_absent', 'service_syntax', 'native_services'), True))
         if personalized['kernel_release'] != built['kernel_release']:
             raise RuntimeError('router personalization test ran a different kernel')
         write(work / 'personalize.json', personalized)

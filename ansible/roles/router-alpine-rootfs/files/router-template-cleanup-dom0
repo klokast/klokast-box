@@ -117,6 +117,8 @@ def reclaim(work, operation, kind='failed'):
                 ('personalization', 'exact_packages', 'identity_absent', 'service_syntax'), True)))
         for mode, required in required_tests:
             result = read(work / (mode + '.json'))
+            if mode == 'personalize' and 'service_probe' in result:
+                required = {**required, 'native_services': True}
             if (result.get('kind') != 'klokast.router-template-test.v1' or result.get('success') is not True or
                     result.get('operation_id') != operation or result.get('tests') != required or
                     result.get('inputs_sha256') != candidate.get('inputs_sha256')):
