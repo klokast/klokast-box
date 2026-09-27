@@ -360,3 +360,21 @@ SSH inspection and compatibility tests derive each public key from the actual
 retained private key before calculating its fingerprint. A stale `.pub` sibling
 cannot substitute for that key. A native test covers this case and an unreadable
 private key.
+
+The dom0 adapter uses root-owned generation records, an atomic accepted pointer,
+and a separate pending record under `/mnt/dom0_data/klokast-router-updates`.
+It checks LV identities, live Xen assignments, and both Xen inventory and block
+backend records before copying. It preallocates opaque scratch storage. A
+networkless copy guest receives the source read-only and the target writable.
+Its private receipt stays on the box; public results contain only the complete
+receipt checksum and operation identity. Full host copy time is recorded
+separately from guest execution time.
+
+The adapter requires a short-lived, root-staged controller authorization before
+arming. Recovery uses the already protected pending operation and does not need
+an available controller or an unexpired grant. The accepted pointer takes
+precedence over a stale pending phase. The adapter tests cover real atomic
+records with simulated Xen failures. The command entry point, authority issuer,
+OpenRC recovery chain, and native fault tests must be qualified before this code
+can perform a production cutover. The model playbook includes the adapter,
+native guard, copy receipt, and persistent-record tests.

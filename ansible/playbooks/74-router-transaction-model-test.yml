@@ -16,5 +16,12 @@
           - '{{ playbook_dir }}/../tests'
           - -p
           - '{{ item }}'
-      loop: [test_router_generations.py, test_router_transaction.py, test_router_copy_inputs.py]
+      loop:
+        - test_router_generations.py
+        - test_router_transaction.py
+        - test_router_copy_inputs.py
+        - test_router_records.py
+        - test_router_native.py
+        - test_router_dom0.py
+        - test_router_copy_native.py
       changed_when: false

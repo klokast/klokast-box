@@ -110,4 +110,5 @@ def configuration(value):
              'extra': 'console=hvc0 root=/dev/xvda3 rw modules=ext4',
              'disk': ['phy:' + value['disk']['path'] + ',xvda,w'], 'vif': value['xen']['vif'],
              'on_crash': 'destroy', 'on_reboot': 'restart'}
-    return '\n'.join(k + ' = ' + repr(v) for k, v in items.items()) + '\n'
+    # Alpine xendomains reads the domain name from double quotes with sed.
+    return '\n'.join(k + ' = ' + (json.dumps(v) if k == 'name' else repr(v)) for k, v in items.items()) + '\n'

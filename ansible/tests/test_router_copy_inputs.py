@@ -6,6 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_copy_inputs
+import router_copy_contract
 import router_generations
 from test_router_generations import generation
 from test_router_transaction import request
@@ -56,6 +57,22 @@ class CopyInputsTests(unittest.TestCase):
             changed['reverse'][field]=wrong
             with self.subTest(field=field),self.assertRaises(RuntimeError):
                 self.guest.select(changed,self.command(changed,'reverse'))
+
+    def test_capsule_cannot_share_production_uuid_or_change_boot_inputs(self):
+        value = {'kind':'klokast.router-copy-capsule.v1','operation_id':self.request['operation_id'],
+            'engine_commit':self.request['engine_commit'],'transaction_sha256':router_generations.digest(self.request),
+            'inputs_sha256':'f'*64,'job_sha256':router_generations.digest(self.job),
+            'bootstrap':{name:{'bytes':1024,'sha256':'e'*64} for name in ('kernel','initramfs')},
+            'domains':{'forward':'33333333-1111-4111-8111-111111111111',
+                       'reverse':'44444444-1111-4111-8111-111111111111'}}
+        router_copy_contract.capsule(value,self.request,self.old,self.new)
+        for mutate in (lambda v:v['domains'].update(forward=self.old['xen']['uuid']),
+                       lambda v:v['bootstrap']['kernel'].update(bytes=2**30),
+                       lambda v:v.update(transaction_sha256='0'*64),
+                       lambda v:v.update(inputs_sha256='0'*64)):
+            changed=copy.deepcopy(value); mutate(changed)
+            with self.assertRaises(ValueError):
+                router_copy_contract.capsule(changed,self.request,self.old,self.new)
 
 
 if __name__ == '__main__':

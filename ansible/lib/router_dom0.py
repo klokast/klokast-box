@@ -1,0 +1,216 @@
+"""Dom0 adapter for one protected router transaction.
+
+The approved controller stages exact records and an expiring authorization.
+This adapter cannot discover releases, enroll identities, or extend deadlines.
+Its native copy backend must leave both production disks detached on return.
+"""
+import ipaddress
+import os
+from pathlib import Path
+import time
+
+import router_generations as generations
+import router_native as native
+import router_records as records
+import router_transaction as transaction
+
+
+def readiness(value, request):
+    if (not isinstance(value, dict) or set(value) != {'kind', 'request_sha256', 'release_sha256',
+            'candidate_qualification_sha256', 'compatibility_sha256', 'copy_qualification_sha256', 'gateway'} or
+            value['kind'] != 'klokast.router-readiness.v1' or value['request_sha256'] != generations.digest(request) or
+            any(not generations.matches('[0-9a-f]{64}', value[k]) for k in
+                ('release_sha256', 'candidate_qualification_sha256', 'compatibility_sha256', 'copy_qualification_sha256'))):
+        raise transaction.TransactionError('router preparation lacks exact release, candidate, compatibility, or copy evidence')
+    try:
+        gateway = ipaddress.IPv4Address(value['gateway'])
+        if str(gateway) != value['gateway'] or not gateway.is_private or gateway.is_loopback or gateway.is_unspecified:
+            raise ValueError('unsupported gateway')
+    except (ValueError, TypeError) as error:
+        raise transaction.TransactionError('router local probe requires its approved private backend IPv4 gateway') from error
+    return value
+
+
+def acceptance(value, request):
+    if (not isinstance(value, dict) or set(value) != {'kind', 'request_sha256', 'candidate_sha256', 'evidence_sha256'} or
+            value['kind'] != 'klokast.router-controller-acceptance.v1' or
+            value['request_sha256'] != generations.digest(request) or value['candidate_sha256'] != request['candidate_sha256'] or
+            not generations.matches('[0-9a-f]{64}', value['evidence_sha256'])):
+        raise transaction.TransactionError('controller acceptance does not verify this exact router candidate and transaction')
+    return value
+
+
+class Adapter:
+    def __init__(self, storage, operation, copy_backend, *, host=None, xen=Path('/etc/xen')):
+        self.storage, self.work = storage, storage.operation(operation)
+        self.request = records.read(self.work / 'request.json')
+        transaction.validate(self.request)
+        if self.request['box'] != storage.box or self.request['operation_id'] != operation:
+            raise transaction.TransactionError('router operation directory differs from its recorded target')
+        self.pair = {side: storage.generation(self.request[key]) for side, key in
+                     (('old', 'old_sha256'), ('candidate', 'candidate_sha256'))}
+        generations.pair(self.pair['old'], self.pair['candidate'], self.request)
+        self.host, self.copy_backend, self.xen = host or native.Native(), copy_backend, Path(xen)
+        self.ready = readiness(records.read(self.work / 'readiness.json'), self.request)
+
+    def monotonic(self):
+        return self.host.monotonic()
+
+    def persist(self, value):
+        self.storage.persist(value)
+
+    def resources(self, *, deadline):
+        self.host.guard(self.storage.box, deadline=deadline)
+        for side, value in self.pair.items():
+            self.host.disk(value['disk'], deadline=deadline)
+            for item in value['boot'].values():
+                self.host.artifact(item, deadline=deadline)
+            config = self.work / (side + '.cfg')
+            if records.secure(config).read_text() != generations.configuration(value):
+                raise transaction.TransactionError('router staged configuration differs from its generation record')
+        self.copy_backend.verify(self, deadline=deadline)
+
+    def verify_prepared(self, request):
+        if request != self.request or self.storage.pending() is not None or (self.work / 'complete.json').exists():
+            raise transaction.TransactionError('router operation is already pending or completed; refusing replay')
+        grant = records.read(self.work / 'authorization.json')
+        now = time.time()
+        if (not isinstance(grant, dict) or set(grant) != {'kind', 'request_sha256', 'granted_at', 'expires_at', 'readiness_sha256'} or
+                grant['kind'] != 'klokast.router-operation-authorization.v1' or
+                grant['request_sha256'] != generations.digest(request) or grant['readiness_sha256'] != generations.digest(self.ready) or
+                any(type(grant[k]) is not int for k in ('granted_at', 'expires_at')) or
+                not grant['granted_at'] <= now < grant['expires_at'] <= grant['granted_at'] + 900):
+            raise transaction.TransactionError('router controller authorization is stale or differs from the qualified operation')
+        deadline = self.monotonic() + min(120, grant['expires_at'] - now)
+        self.resources(deadline=deadline)
+        if self.storage.committed(request):
+            raise transaction.TransactionError('router candidate is already accepted')
+        current = self.host.guest(self.pair, deadline=deadline)
+        if current is None or current[0] != 'old':
+            raise transaction.TransactionError('router cutover requires the exact running accepted old generation')
+        self.host.detached([self.pair['candidate']['disk']['path']], deadline=deadline)
+        config = native.literal_configuration(records.secure(self.xen / 'router.cfg').read_text())
+        expected = native.literal_configuration(generations.configuration(self.pair['old']))
+        # Adoption can retain the original legacy file without an explicit UUID.
+        if self.pair['old']['origin'] == 'legacy' and 'uuid' not in config:
+            config['uuid'] = expected['uuid']
+        if config != expected:
+            raise transaction.TransactionError('installed router configuration drifted from its accepted generation')
+        self.autostart_link(required=True)
+        if time.time() >= grant['expires_at'] or self.monotonic() >= deadline:
+            raise transaction.TransactionError('router authorization expired during preflight')
+
+    def autostart_link(self, *, required=False):
+        directory = self.xen / 'auto'
+        records.parents(directory)
+        records.secure(directory, directory=True)
+        link = directory / 'router.cfg'
+        if link.is_symlink():
+            if link.lstat().st_uid != 0 or os.readlink(link) not in ('../router.cfg', str(self.xen / 'router.cfg')):
+                raise transaction.TransactionError('router autostart link has an unexpected owner or target')
+        elif link.exists() or required:
+            raise transaction.TransactionError('router autostart is not its recorded managed link')
+        return link
+
+    def disable_autostart(self, *, deadline):
+        link = self.autostart_link()
+        if link.is_symlink():
+            link.unlink()
+            records.syncdir(link.parent)
+        # Persist before stopping a router. Pending also survives on dom0_data.
+        native.command(['/usr/sbin/lbu', 'commit', '-d'], deadline, maximum_seconds=120)
+
+    def arm(self, *, deadline):
+        self.disable_autostart(deadline=deadline)
+
+    def stop(self, side, *, deadline):
+        self.host.stop(self.pair, side, deadline=deadline)
+
+    def copy(self, source, target, *, deadline):
+        self.copy_backend.copy(self, source, target, deadline=deadline)
+
+    def verify_copy(self, source, target, *, deadline):
+        self.copy_backend.verify_copy(self, source, target, deadline=deadline)
+
+    def start(self, side, *, deadline):
+        self.copy_backend.fence(self, deadline=deadline)
+        self.host.start(self.pair, side, self.work / (side + '.cfg'), deadline=deadline)
+
+    def check_local(self, side, *, deadline):
+        gateway = self.ready['gateway']
+        while self.monotonic() < deadline:
+            current = self.host.guest(self.pair, deadline=deadline)
+            if current is None or current[0] != side:
+                raise transaction.TransactionError('router local check reached the wrong running generation')
+            try:
+                native.command(['/bin/ping', '-n', '-c', '1', '-W', '1', gateway], deadline, maximum_seconds=3)
+                # The fixed DNS question exercises the router resolver and WAN.
+                native.command(['/usr/bin/nslookup', 'example.com', gateway], deadline, maximum_seconds=5)
+                return
+            except transaction.TransactionError:
+                time.sleep(min(1, max(0, deadline - self.monotonic())))
+        raise transaction.TransactionError('router backend gateway or WAN DNS did not recover within its fixed budget')
+
+    def wait_acceptance(self, *, deadline):
+        path = self.work / 'acceptance.json'
+        while self.monotonic() < deadline:
+            if path.exists() or path.is_symlink():
+                acceptance(records.read(path), self.request)
+                return True
+            current = self.host.guest(self.pair, deadline=deadline)
+            if current is None or current[0] != 'candidate':
+                raise transaction.TransactionError('candidate stopped before controller acceptance')
+            time.sleep(min(1, max(0, deadline - self.monotonic())))
+        return False
+
+    def commit(self, side, *, deadline):
+        if side != 'candidate':
+            raise transaction.TransactionError('router commitment may select only the exact candidate')
+        proof = acceptance(records.read(self.work / 'acceptance.json'), self.request)
+        current = self.host.guest(self.pair, deadline=deadline)
+        if current is None or current[0] != side:
+            raise transaction.TransactionError('candidate disappeared before its atomic acceptance')
+        self.storage.commit(self.request, proof['evidence_sha256'])
+
+    def committed(self, *, deadline):
+        return self.storage.committed(self.request)
+
+    def verify_recovery(self, request, *, deadline):
+        if request != self.request:
+            raise transaction.TransactionError('router recovery request changed')
+        # Never require a working controller, current policy, or an unexpired
+        # grant to recover an operation that was already durably armed.
+        self.disable_autostart(deadline=deadline)
+        self.copy_backend.fence(self, deadline=deadline)
+        self.resources(deadline=deadline)
+        self.storage.committed(request)
+
+    def disarm(self, side, *, deadline):
+        if self.storage.committed(self.request) != (side == 'candidate'):
+            raise transaction.TransactionError('router autostart selection contradicts the durable accepted assignment')
+        current = self.host.guest(self.pair, deadline=deadline)
+        if current is None or current[0] != side:
+            raise transaction.TransactionError('router cannot enable autostart for an unverified running generation')
+        records.atomic(self.xen / 'router.cfg', generations.configuration(self.pair[side]).encode())
+        link = self.autostart_link()
+        if not link.is_symlink():
+            link.symlink_to('../router.cfg')
+            records.syncdir(link.parent)
+        native.command(['/usr/sbin/lbu', 'commit', '-d'], deadline, maximum_seconds=120)
+
+    def finish(self, outcome):
+        self.storage.finish(self.request, outcome)
+
+    def fence_all(self, *, deadline):
+        # A failed persistence command must not skip attempts to stop writers.
+        errors = []
+        for action in (lambda: self.disable_autostart(deadline=min(deadline, self.monotonic() + 5)),
+                       lambda: self.copy_backend.fence(self, deadline=min(deadline, self.monotonic() + 5)),
+                       lambda: self.host.stop(self.pair, 'candidate', deadline=min(deadline, self.monotonic() + 8), graceful=False),
+                       lambda: self.host.stop(self.pair, 'old', deadline=min(deadline, self.monotonic() + 8), graceful=False)):
+            try:
+                action()
+            except Exception as error:
+                errors.append(type(error).__name__)
+        if errors:
+            raise transaction.TransactionError('router fencing could not confirm every writer stopped; use console recovery')
