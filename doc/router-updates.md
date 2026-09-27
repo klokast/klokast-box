@@ -119,6 +119,25 @@ The legacy rootfs role now refuses `router_alpine_rebuild` and a caller-selected
 LV. It creates the declared LV only if absent; an existing disk is not resized
 or formatted by this role.
 
+The diagnostic candidate preparation command clones a new 2 GiB LV from a
+qualified template, prepares the replacement configuration in a networkless
+guest, checks the runtime package set and service syntax, and retires that
+exact test LV. It does not create an accepted generation or production
+identity. Use inputs and a template built from the same clean engine commit:
+
+```sh
+ansible/bin/platform-router-update test-candidate-preparation --box boxa \
+  --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION \
+  --template-operation TEMPLATE_OPERATION
+```
+
+If LVM refuses allocation before the LV exists, the private disk record stays
+`planned`. Inspect that exact LV on the controller. When it is absent, run
+`74-router-candidate-test-abort.yml` with the exact box and operation ID to
+record `aborted`. An existing LV needs its recorded UUID and a separate exact
+retirement check. The successful diagnostic records `retired` after it stops
+the guest, detaches the result disk, and removes its own LV.
+
 Each template operation uses an exact directory under
 `/mnt/dom0_data/klokast-router-templates` on dom0. The controller stores bounded
 evidence under `/var/lib/klokast/updates/discovery/router`. Failed operations
