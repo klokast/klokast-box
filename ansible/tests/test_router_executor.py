@@ -90,6 +90,17 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(value['state_copy']['forward'],'unverified')
         self.assertNotIn('parse error',json.dumps(value))
 
+    def test_accepted_manifest_exposes_only_current_package_and_file_identity(self):
+        value=e.accepted_manifest(self.records)
+        self.assertEqual(value['generation_sha256'],self.old['record_sha256'])
+        self.assertEqual(value['packages'],self.old['packages'])
+        self.assertEqual(value['configuration_files'],self.old['configuration_files'])
+        self.assertNotIn('disk',value)
+        self.assertNotIn('accounts',value)
+        self.records.persist(self.pending)
+        with self.assertRaisesRegex(TransactionError,'pending'):
+            e.accepted_manifest(self.records)
+
     def test_map_refuses_changed_pointers_instead_of_joining_two_operations(self):
         with mock.patch.object(self.records,'pending',side_effect=[None,self.pending]):
             with self.assertRaisesRegex(TransactionError,'pointers changed'):

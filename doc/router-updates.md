@@ -480,6 +480,12 @@ The command returns the protected controller evidence directory and generation
 checksum. Review the private operation log and run the router verification and
 Platform Map checks after adoption.
 
+For an accepted router, `74-router-accepted-verification.yml` compares the
+running service checks, installed APK database, running kernel, and managed
+configuration file hashes with the protected current generation. Playbook 31
+runs the same checks when it skips legacy provisioning for an accepted router.
+The root engine refuses to project this manifest during a pending operation.
+
 
 ## Generation status in Platform Map
 

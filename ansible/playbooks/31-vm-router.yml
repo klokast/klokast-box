@@ -476,3 +476,6 @@
     - name: Check the accepted router service and network state
       ansible.builtin.import_role:
         name: router-verification
+    - name: Check the accepted router packages, kernel, and configuration
+      ansible.builtin.import_role:
+        name: router-accepted-manifest-verification

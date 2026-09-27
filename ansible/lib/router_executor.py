@@ -78,6 +78,17 @@ def map_status(storage):
     return result
 
 
+def accepted_manifest(storage):
+    """Expose only the installed package and file identities of the current generation."""
+    if storage.pending() is not None:
+        raise TransactionError('router accepted manifest is unavailable during a pending operation')
+    assignment = storage.accepted()
+    current = storage.generation(assignment['current_sha256'])
+    return {'kind':'klokast.router-accepted-manifest.v1', 'box':storage.box,
+            'generation_sha256':current['record_sha256'], 'kernel_release':current['kernel_release'],
+            'packages':current['packages'], 'configuration_files':current['configuration_files']}
+
+
 def recover(storage, engine):
     pending = storage.pending()
     if pending is None:
@@ -228,7 +239,7 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest',
         'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
@@ -241,6 +252,9 @@ def main(argv, engine):
         result = 'persistent-storage-verified'
     elif args.action == 'map-status':
         result = map_status(storage)
+    elif args.action == 'accepted-manifest':
+        with storage.lock():
+            result = accepted_manifest(storage)
     elif args.action == 'assignment-status':
         pending = storage.pending()
         path = storage.base / 'accepted.json'

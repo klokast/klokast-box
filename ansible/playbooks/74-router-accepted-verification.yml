@@ -1,0 +1,16 @@
+---
+- name: Verify the accepted router against its protected generation
+  hosts: '{{ router_update_box }}-router'
+  gather_facts: false
+  pre_tasks:
+    - name: Require one exact accepted router target
+      ansible.builtin.assert:
+        that:
+          - router_update_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - inventory_hostname == router_update_box ~ '-router'
+    - name: Load current compiled router verification inputs
+      ansible.builtin.import_role:
+        name: router-verification-inputs
+  roles:
+    - router-verification
+    - router-accepted-manifest-verification

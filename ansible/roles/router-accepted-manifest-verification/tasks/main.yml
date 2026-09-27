@@ -1,0 +1,85 @@
+---
+- name: Require one accepted router target
+  ansible.builtin.assert:
+    that:
+      - node_name is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      - inventory_hostname == node_name ~ '-router'
+
+- name: Read the protected accepted router manifest
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, accepted-manifest, --box, '{{ node_name }}']
+  delegate_to: '{{ node_name }}-dom0'
+  become: true
+  become_method: doas
+  changed_when: false
+  register: router_accepted_manifest_command
+
+- name: Select the exact accepted package and file identities
+  ansible.builtin.set_fact:
+    router_accepted_manifest: '{{ (router_accepted_manifest_command.stdout | from_json).result }}'
+
+- name: Validate the accepted manifest target and size
+  ansible.builtin.assert:
+    that:
+      - router_accepted_manifest.kind == 'klokast.router-accepted-manifest.v1'
+      - router_accepted_manifest.box == node_name
+      - router_accepted_manifest.generation_sha256 is match('^[0-9a-f]{64}$')
+      - router_accepted_manifest.packages is mapping
+      - router_accepted_manifest.packages | length > 0
+      - router_accepted_manifest.packages | length <= 512
+      - router_accepted_manifest.configuration_files is mapping
+      - router_accepted_manifest.configuration_files | length > 0
+      - router_accepted_manifest.configuration_files | length <= 1033
+
+- name: Read the installed router package database
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        from pathlib import Path
+        packages = {}
+        for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
+            rows = [line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:'))]
+            if not rows:
+                continue
+            fields = dict(rows)
+            if len(rows) != 2 or set(fields) != {'P', 'V'} or fields['P'] in packages:
+                raise SystemExit('Installed router package database is incomplete or ambiguous')
+            packages[fields['P']] = fields['V']
+        print(json.dumps(packages, sort_keys=True))
+  changed_when: false
+  register: router_accepted_installed_packages
+
+- name: Read the running router kernel release
+  ansible.builtin.command:
+    argv: [uname, -r]
+  changed_when: false
+  register: router_accepted_running_kernel
+
+- name: Check the accepted router configuration file hashes
+  ansible.builtin.stat:
+    path: '/{{ item.key }}'
+    follow: false
+    checksum_algorithm: sha256
+  loop: '{{ router_accepted_manifest.configuration_files | dict2items }}'
+  register: router_accepted_configuration_files
+
+- name: Refuse installed package, kernel, or configuration drift
+  ansible.builtin.assert:
+    that:
+      - (router_accepted_installed_packages.stdout | from_json) == router_accepted_manifest.packages
+      - router_accepted_running_kernel.stdout == router_accepted_manifest.kernel_release
+    fail_msg: Accepted router packages, kernel, or configuration differ from the protected generation.
+
+- name: Match each protected configuration checksum
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.uid | default(-1) == 0
+      - item.stat.nlink | default(0) == 1
+      - item.stat.checksum | default('') == item.item.value
+    fail_msg: 'Router configuration differs from its accepted generation: /{{ item.item.key }}'
+  loop: '{{ router_accepted_configuration_files.results }}'
