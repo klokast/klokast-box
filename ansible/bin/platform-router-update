@@ -341,7 +341,7 @@ def build_template(box, source):
         with (result / 'build.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                                REPO / 'ansible/playbooks/74-router-template.yml', '--limit', box + '-dom0',
-                               '-e', '@' + str(args)], timeout=2400, log=log)
+                               '-e', '@' + str(args)], timeout=5400, log=log)
         candidate = transport.load(result / 'candidate.json')
         approved = transport.approved_engine()
         receipt = None
