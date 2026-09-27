@@ -390,7 +390,7 @@ def execute(work, value):
             else:
                 detach_loop(work / (name + '.slot'), device)
         write(work / 'lifecycle.json', {**lifecycle, 'stage': 'detached'})
-    cleanup(work, operation)
+    cleanup(work, operation, value['box'])
     return result
 
 
