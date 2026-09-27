@@ -59,6 +59,7 @@ class FinalizationTests(unittest.TestCase):
         p=self.root/'etc/apk/world'
         p.write_text('\n'.join(s for s in p.read_text().splitlines() if not s.startswith('openssh='))+'\n')
         (self.root/'usr/sbin/sshd').unlink()
+        (self.root/'etc/ssh').rmdir()  # Native APK removes its now-empty package directory.
         return SimpleNamespace(returncode=0)
 
     def apply(self):
@@ -70,6 +71,10 @@ class FinalizationTests(unittest.TestCase):
         self.assertNotIn('openssh',result['packages'])
         self.assertTrue(all(result['tests'].values()))
         self.assertEqual(result['removed_packages'],['openssh'])
+        self.assertTrue((self.root/'etc/ssh').is_dir())
+        fallback = self.root/'var/lib/tailscale/ssh'
+        self.assertEqual(fallback.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(list(fallback.iterdir()), [])
 
     def test_existing_identity_or_changed_world_stops_before_apk(self):
         for relative in ('root/.ssh/authorized_keys','var/lib/tailscale/tailscaled.state'):

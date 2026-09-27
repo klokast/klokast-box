@@ -5,6 +5,8 @@ refresh, added package, identity copy, enrollment, or service start is permitted
 The resulting package set is build evidence for subsequent runtime verification.
 """
 from pathlib import Path
+import os
+import stat
 import subprocess
 
 import router_personalize
@@ -60,6 +62,18 @@ def finalize(root, manifest):
         path = root / relative
         if path.exists() or path.is_symlink():
             raise ValueError('router first-contact server path remains after finalization: ' + relative)
+    # APK can remove its empty SSH directory along with the bootstrap packages.
+    # The fixed state-copy primitive requires prepared parents; it never creates
+    # arbitrary directories while parsing source state.
+    router_personalize.directory(root, 'etc/ssh', create=True)
+    parent = router_personalize.service_directory(root, 'var/lib/tailscale')
+    fallback = parent / 'ssh'
+    if not fallback.exists() and not fallback.is_symlink():
+        fallback.mkdir(mode=0o700)
+    info = fallback.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            info.st_dev != root.stat().st_dev or stat.S_IMODE(info.st_mode) != 0o700 or any(fallback.iterdir())):
+        raise ValueError('router finalization requires an empty private SSH fallback directory')
     world = '\n'.join(name + '=' + after[name] for name in manifest['world'] if name != 'openssh') + '\n'
     if router_personalize.regular(root, 'etc/apk/world').read_text() != world:
         raise ValueError('native APK did not preserve the exact frozen runtime world')
