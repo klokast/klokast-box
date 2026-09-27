@@ -24,6 +24,24 @@ FILES = {
 SERVICES = ('networking', 'dhcpcd', 'dnsmasq', 'nftables', 'tailscale')
 
 
+def file_modes(files):
+    """Only the common core and keyed compiler-owned firewall includes are writable."""
+    if not isinstance(files, dict) or not set(FILES) <= files.keys() or len(files) > 1033:
+        raise ValueError('router personalization lacks its fixed core configuration')
+    modes = dict(FILES)
+    for name, content in files.items():
+        if name not in modes:
+            if not isinstance(name, str) or not re.fullmatch(
+                    r'etc/klokast/app-resources/router-forward.d/[A-Za-z0-9_-]+\.nft', name):
+                raise ValueError('router personalization has an unsupported configuration path')
+            modes[name] = 0o644
+        if not isinstance(content, str) or not content or '\0' in content or len(content.encode()) > 128 * 1024:
+            raise ValueError('router personalization has an invalid configuration file')
+    if sum(len(v.encode()) for v in files.values()) > 768 * 1024:
+        raise ValueError('router personalization configuration exceeds its bound')
+    return modes
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                     separators=(',', ':')).encode()).hexdigest()
@@ -37,9 +55,8 @@ def validate(value):
             not isinstance(value['inputs_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256'])):
         raise ValueError('router personalization has an unknown target or input identity')
     files = value['files']
-    if (not isinstance(files, dict) or set(files) != set(FILES) or
-            any(not isinstance(v, str) or not v or '\0' in v or len(v.encode()) > 65536 for v in files.values()) or
-            files['etc/hostname'] != value['box'] + '-router\n'):
+    file_modes(files)
+    if files['etc/hostname'] != value['box'] + '-router\n':
         raise ValueError('router personalization requires the exact bounded configuration and hostname')
     # This first adapter cannot reconstruct an enabled overlay repair or take
     # arbitrary extra files as desired state. The compiler must own expansion.
@@ -194,8 +211,9 @@ def personalize(root, request):
     level = directory(root, 'etc/runlevels/default', create=True)
     if any(level.iterdir()):
         raise ValueError('router clone has unexpected default services')
+    modes = file_modes(request['files'])
     for relative, content in request['files'].items():
-        put(root, relative, content, FILES[relative])
+        put(root, relative, content, modes[relative])
     for relative, (content, mode) in accounts.items():
         put(root, relative, content, mode)
     put(root, 'etc/doas.d/20-klokast.conf', 'permit nopass :wheel\n', 0o600)
@@ -210,5 +228,5 @@ def personalize(root, request):
         raise ValueError('router personalization changed the frozen packages')
     return {'kind': 'klokast.router-personalization-result.v1', 'box': request['box'], 'role': 'router',
             'configuration_sha256': digest(request), 'inputs_sha256': request['inputs_sha256'],
-            'files': {k: hashlib.sha256(regular(root, k).read_bytes()).hexdigest() for k in FILES},
+            'files': {k: hashlib.sha256(regular(root, k).read_bytes()).hexdigest() for k in modes},
             'packages_unchanged': True, 'identity_copied': False, 'replacement_authorized': False}

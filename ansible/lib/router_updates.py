@@ -139,8 +139,8 @@ def dispatch(role):
     raise UpdateError('unsupported VM update role')
 
 
-def expected_includes(compiled, box):
-    """Render expected hashes from compiler output, never from a running router."""
+def rendered_includes(compiled, box):
+    """Select reconstructable files from compiler output, never a running router."""
     if (not isinstance(compiled, dict) or compiled.get('compiler') != 'platform-resources' or
             not match(HASH, compiled.get('registry_sha256')) or
             not isinstance(compiled.get('box_configs'), dict) or box not in compiled['box_configs'] or
@@ -166,6 +166,14 @@ def expected_includes(compiled, box):
         if path in files:
             raise UpdateError('resource compiler has duplicate router includes')
         files[path] = content
+    if len(files) > 1024 or sum(len(content.encode()) for content in files.values()) > 512 * 1024:
+        raise UpdateError('compiled router includes exceed the bounded personalization contract')
+    return files
+
+
+def expected_includes(compiled, box):
+    """Use the same reconstructable file set for inspection and preparation."""
+    files = rendered_includes(compiled, box)
     return {'registry_sha256': compiled['registry_sha256'],
             'files': {path: hashlib.sha256(content.encode()).hexdigest() for path, content in files.items()}}
 

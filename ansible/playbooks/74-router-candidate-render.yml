@@ -1,0 +1,12 @@
+---
+- name: Render exact candidate files from approved inventory and compiler inputs
+  hosts: router
+  gather_facts: false
+  connection: local
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Use the common router templates without activating services
+      ansible.builtin.import_role:
+        name: router
+        tasks_from: candidate-render.yml

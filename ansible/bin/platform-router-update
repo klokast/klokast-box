@@ -2,6 +2,7 @@
 """Inspect routers, freeze signed APK inputs, and qualify isolated templates."""
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -168,6 +169,55 @@ def test_state_copy(box, source):
         return {**evidence, 'evidence_directory': str(result)}
 
 
+def render_candidate(box, source):
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router candidate rendering requires an exact box')
+    transport.require_controller()
+    source = Path(source)
+    if source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name):
+        raise UpdateError('router candidate rendering requires one frozen input directory')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
+        raise UpdateError('router candidate rendering requires a clean implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    profile, manifest = transport.load(PROFILE), transport.load(source / 'inputs.json')
+    router_updates.validate_inputs(manifest, profile, manifest['engine_commit'])
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
+        includes = router_updates.rendered_includes(compiled, box)
+        compiler = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))
+        box_variables = compiler['box_access_router_vars'](compiled, box)
+        operation = secrets.token_hex(12)
+        result = STATE / operation
+        result.mkdir(mode=0o700)
+        args = result / 'arguments.json'
+        transport.write(args, {**box_variables, 'router_candidate_box': box,
+            'router_candidate_result_dir': str(result), 'router_candidate_manifest': manifest,
+            'router_candidate_packages': {p['name']: p['version'] for p in manifest['packages']},
+            'router_candidate_includes': {k.lstrip('/'): v for k, v in includes.items()}})
+        with (result / 'render.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-candidate-render.yml', '--limit', box + '-router',
+                '-e', '@' + str(args)], timeout=300, log=log)
+        import router_personalize
+        rendered = transport.load(result / 'personalization.json')
+        router_personalize.validate(rendered)
+        if (rendered['box'] != box or rendered['inputs_sha256'] != manifest['inputs_sha256'] or
+                rendered['packages'] != {p['name']: p['version'] for p in manifest['packages']} or
+                any(rendered['files'].get(k.lstrip('/')) != v for k, v in includes.items())):
+            raise UpdateError('router personalization differs from the exact selected inputs')
+        # The Instance/compiler inputs may not change while rendering is in flight.
+        if json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show'])) != compiled:
+            raise UpdateError('router compiler inputs changed during candidate rendering')
+        evidence = {'kind': 'klokast.router-render-result.v1', 'box': box, 'role': 'router',
+            'operation_id': operation, 'engine_commit': engine, 'inputs_sha256': manifest['inputs_sha256'],
+            'registry_sha256': compiled['registry_sha256'], 'configuration_sha256': router_personalize.digest(rendered),
+            'files': {k: hashlib.sha256(v.encode()).hexdigest() for k, v in rendered['files'].items()},
+            'replacement_authorized': False}
+        transport.write(result / 'render.json', evidence)
+        return {**evidence, 'evidence_directory': str(result)}
+
+
 def test_compatibility(box, source, template_operation):
     if (not router_updates.match(router_updates.BOX, box) or
             not re.fullmatch('[0-9a-f]{24}', template_operation)):
@@ -259,6 +309,9 @@ def main():
     compatibility.add_argument('--box', required=True)
     compatibility.add_argument('--inputs-directory', required=True)
     compatibility.add_argument('--template-operation', required=True)
+    renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
+    renderer.add_argument('--box', required=True)
+    renderer.add_argument('--inputs-directory', required=True)
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -268,6 +321,8 @@ def main():
             value = resolve(args.branch)
         elif args.command == 'build-template':
             value = build_template(args.box, args.inputs_directory)
+        elif args.command == 'render-candidate':
+            value = render_candidate(args.box, args.inputs_directory)
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
         else:

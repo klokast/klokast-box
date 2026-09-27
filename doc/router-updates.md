@@ -298,3 +298,25 @@ origin UUID, unique tag, read-only attributes, and COW reserve against the exact
 observed UUID before retirement. It does not select a snapshot by name alone.
 A complete allocation record can then be cleaned after all domain and loop
 checks pass. A partial allocation record still needs manual reconciliation.
+
+## Candidate configuration rendering
+
+`render-candidate` writes a private personalization input on the active
+controller. It uses the selected box's execution inventory, the normal router
+role templates and defaults, and the current verified resource compiler output.
+It does not connect to the router or activate services:
+
+```sh
+ansible/bin/platform-router-update render-candidate --box boxa \
+  --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION
+```
+
+The result binds the input manifest, exact file hashes, compiler registry hash,
+and implementation commit. The command checks the compiler output again after
+rendering and refuses a change. The personalization helper accepts only its
+fixed core files and bounded keyed `.nft` files under the compiler-owned
+`router-forward.d` directory. Other extra paths, nested paths, and path escapes
+are rejected before writing a clone. Inspection and rendering select firewall
+includes through the same compiler adapter. The rendered result has no
+replacement authority. Native candidate preparation and service verification
+must still pass before use.

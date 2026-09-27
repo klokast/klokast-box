@@ -71,6 +71,27 @@ class PersonalizationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'generic input'):
             self.apply()
 
+    def test_keyed_compiler_include_is_written_and_bound_to_evidence(self):
+        import hashlib
+        name = 'etc/klokast/app-resources/router-forward.d/probe_app.nft'
+        content = '# Synthetic compiler-owned rule.\n'
+        self.request['files'][name] = content
+        result = self.apply()
+        self.assertEqual((self.root / name).read_text(), content)
+        self.assertEqual(result['files'][name], hashlib.sha256(content.encode()).hexdigest())
+
+    def test_include_extension_cannot_escape_its_fixed_directory(self):
+        original = copy.deepcopy(self.request)
+        for path in ('etc/klokast/app-resources/router-forward.d/../escape.nft',
+                     'etc/klokast/app-resources/router-forward.d/nested/rule.nft',
+                     'etc/dnsmasq.d/injected.conf', 'etc/init.d/injected',
+                     '/etc/klokast/app-resources/router-forward.d/absolute.nft'):
+            self.request = copy.deepcopy(original)
+            self.request['files'][path] = '# unsafe selector\n'
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.apply()
+        self.assertEqual((self.root/'etc/hostname').read_text(), 'klokast-router-template\n')
+
     def test_existing_service_identity_stops_before_hostname_write(self):
         self.put('var/lib/tailscale/tailscaled.state', 'synthetic existing identity')
         with self.assertRaisesRegex(ValueError, 'existing service identity'):

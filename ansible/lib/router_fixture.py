@@ -116,8 +116,9 @@ def sanitize_legacy(root, *, box, expected_packages, expected_files, fixture):
             remove(root, 'etc/ssh/ssh_host_' + kind + '_key' + suffix)
     if list((root / 'etc/ssh').glob('ssh_host_*')):
         raise ValueError('legacy router fixture has an unsupported SSH host key')
+    modes = personalizer.file_modes(fixture['files'])
     for relative, content in fixture['files'].items():
-        personalizer.put(root, relative, content, personalizer.FILES[relative])
+        personalizer.put(root, relative, content, modes[relative])
     # A custom init runs the test. No production runlevel or local hook runs.
     if personalizer.packages(root) != expected_packages:
         raise ValueError('legacy fixture preparation changed the inspected software')
