@@ -27,6 +27,19 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(self.loader.engine_for('boot-recover',None),'a'*40)
                 read.assert_called_once_with(base/'pending.json')
 
+    def test_accepted_boot_verification_reaches_exact_installed_engine(self):
+        host = mock.Mock(nodename='boxa-dom0')
+        executor = mock.Mock()
+        executor.main.return_value = 0
+        with mock.patch.object(self.loader.os, 'uname', return_value=host), \
+             mock.patch.object(self.loader.os, 'geteuid', return_value=0), \
+             mock.patch.object(self.loader.Path, 'read_text', return_value='00000000-0000-0000-0000-000000000000'), \
+             mock.patch.object(self.loader, 'engine_for', return_value='a' * 40) as selected, \
+             mock.patch.object(self.loader, 'load', return_value=executor):
+            self.assertEqual(self.loader.main(['verify-boot-assignment', '--box', 'boxa']), 0)
+        selected.assert_called_once_with('verify-boot-assignment', None)
+        executor.main.assert_called_once_with(['verify-boot-assignment', '--box', 'boxa'], 'a' * 40)
+
     def test_invalid_operation_and_engine_cannot_select_paths(self):
         for identity in ('../foreign','a'*25,None):
             with self.assertRaises(RuntimeError):
