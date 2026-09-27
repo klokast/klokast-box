@@ -1,0 +1,202 @@
+---
+- name: Require the exact dom0 recovery installation target
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == node_name ~ '-dom0'
+
+- name: Require active controller authority before installing router recovery
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_recovery_controller
+
+- name: Read the activated engine through the root policy reader
+  ansible.builtin.command:
+    argv: [/usr/bin/doas, /usr/local/sbin/ksa-apply, vm-update-policy, source-status]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_recovery_source
+
+- name: Read the deployment source commit
+  ansible.builtin.command:
+    argv: [git, rev-parse, HEAD]
+    chdir: '{{ playbook_dir }}/../..'
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_recovery_commit
+
+- name: Check that the engine source has no uncommitted files
+  ansible.builtin.command:
+    argv: [git, status, --porcelain, --untracked-files=all]
+    chdir: '{{ playbook_dir }}/../..'
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_recovery_status
+
+- name: Bind installation to the clean activated controller engine
+  ansible.builtin.assert:
+    that:
+      - (router_recovery_controller.stdout | from_json).active | bool
+      - (router_recovery_controller.stdout | from_json).configured | bool
+      - router_recovery_commit.stdout is match('^[0-9a-f]{40}$')
+      - router_recovery_commit.stdout == (router_recovery_source.stdout | from_json).engine_commit
+      - router_recovery_status.stdout | length == 0
+
+- name: Require persistent router transaction storage
+  ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+  changed_when: false
+
+- name: Inspect pending router recovery before installing code
+  ansible.builtin.stat:
+    path: /mnt/dom0_data/klokast-router-updates/pending.json
+    follow: false
+  register: router_recovery_pending
+
+- name: Refuse code installation during a pending router operation
+  ansible.builtin.assert:
+    that: [not router_recovery_pending.stat.exists]
+
+- name: Create private persistent router recovery directories
+  ansible.builtin.file:
+    path: '/mnt/dom0_data/klokast-router-updates/{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', records, generations, operations]
+
+- name: Create the versioned router engine directory
+  ansible.builtin.file:
+    path: '/usr/local/lib/klokast/router-updates/{{ router_recovery_commit.stdout }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Declare the closed router recovery module list
+  ansible.builtin.set_fact:
+    router_recovery_modules:
+      - router_executor
+      - router_dom0
+      - router_native
+      - router_records
+      - router_transaction
+      - router_generations
+      - router_personalize
+      - router_finalize
+      - router_copy_contract
+      - router_copy_native
+    router_recovery_hashes: {}
+
+- name: Install the exact router engine modules
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+    dest: '/usr/local/lib/klokast/router-updates/{{ router_recovery_commit.stdout }}/{{ item }}.py'
+    owner: root
+    group: root
+    mode: '0600'
+  loop: '{{ router_recovery_modules }}'
+
+- name: Calculate the exact source module checksums
+  ansible.builtin.set_fact:
+    router_recovery_hashes: >-
+      {{ router_recovery_hashes | combine({item ~ '.py':
+          (lookup('ansible.builtin.file', playbook_dir ~ '/../lib/' ~ item ~ '.py', rstrip=false) | hash('sha256'))}) }}
+  loop: '{{ router_recovery_modules }}'
+
+- name: Publish the closed engine module manifest
+  ansible.builtin.copy:
+    content: >-
+      {{ {'kind': 'klokast.router-engine-files.v1', 'engine_commit': router_recovery_commit.stdout,
+          'files': router_recovery_hashes} | to_json }}
+    dest: '/usr/local/lib/klokast/router-updates/{{ router_recovery_commit.stdout }}/manifest.json'
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Publish the installed engine selector
+  ansible.builtin.copy:
+    content: >-
+      {{ {'kind': 'klokast.router-installed-engine.v1', 'engine_commit': router_recovery_commit.stdout} | to_json }}
+    dest: /usr/local/lib/klokast/router-updates/current.json
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Install the fixed router engine dispatcher
+  ansible.builtin.copy:
+    src: router-update-transaction
+    dest: /usr/local/sbin/router-update-transaction
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Verify installed module hashes and persistent storage
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, check-storage, --box, '{{ node_name }}']
+  changed_when: false
+
+- name: Install router boot recovery before guest autostart
+  ansible.builtin.copy:
+    src: klokast-router-update-recovery.openrc
+    dest: /etc/init.d/klokast-router-update-recovery
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Make router recovery a prerequisite for Xen autostart
+  ansible.builtin.blockinfile:
+    path: /etc/conf.d/xendomains
+    create: true
+    mode: '0644'
+    marker: '# {mark} KLOKAST ROUTER UPDATE RECOVERY'
+    block: 'rc_need="${rc_need:-} localmount klokast-router-update-recovery"'
+
+- name: Enable the router recovery oneshot without restarting guests
+  ansible.builtin.command: /sbin/rc-update add klokast-router-update-recovery default
+  changed_when: false
+
+- name: Include the router recovery boot chain in diskless persistence
+  ansible.builtin.command:
+    argv: [/usr/sbin/lbu, include, '{{ item }}']
+  loop:
+    - /usr/local/sbin/router-update-transaction
+    - /usr/local/lib/klokast/router-updates
+    - /etc/init.d/klokast-router-update-recovery
+  changed_when: false
+
+- name: Persist the installed router recovery chain
+  ansible.builtin.command: /usr/sbin/lbu commit -d
+  changed_when: false
+
+- name: Verify recovery code and boot dependencies in the persisted archive
+  ansible.builtin.shell: |
+    set -eu
+    archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
+    count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
+    if [ "$count" -ne 1 ]; then
+      echo 'Expected one persisted dom0 apkovl archive' >&2
+      exit 1
+    fi
+    tar -tzf "$archives" | awk -v engine='{{ router_recovery_commit.stdout }}' '
+      {sub(/^\.\//, "", $0)}
+      $0 == "usr/local/sbin/router-update-transaction" {helper=1}
+      $0 == "etc/init.d/klokast-router-update-recovery" {service=1}
+      $0 == "etc/conf.d/xendomains" {config=1}
+      $0 == "etc/runlevels/default/klokast-router-update-recovery" {runlevel=1}
+      $0 == "usr/local/lib/klokast/router-updates/current.json" {selector=1}
+      $0 == "usr/local/lib/klokast/router-updates/" engine "/manifest.json" {manifest=1}
+      /^mnt\/dom0_data(\/|$)/ {data=1}
+      END {
+        if (!helper || !service || !config || !runlevel || !selector || !manifest || data) {
+          print "Incomplete router recovery boot archive or included private persistent data" > "/dev/stderr"
+          exit 1
+        }
+      }
+    '
+  changed_when: false

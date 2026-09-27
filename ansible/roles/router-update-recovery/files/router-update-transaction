@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Load only the protected router engine selected by its pending operation."""
+import argparse
+import hashlib
+import importlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+
+BASE = Path('/mnt/dom0_data/klokast-router-updates')
+ENGINES = Path('/usr/local/lib/klokast/router-updates')
+MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 'router_native', 'router_records',
+    'router_transaction', 'router_generations', 'router_personalize', 'router_finalize', 'router_copy_contract', 'router_copy_native'))
+
+
+def secure(path, directory=False):
+    info = path.lstat()
+    if (not (stat.S_ISDIR if directory else stat.S_ISREG)(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or
+            not directory and (info.st_nlink != 1 or not 0 < info.st_size <= 1024 * 1024)):
+        raise RuntimeError('router engine path is unsafe: ' + path.name)
+    return path
+
+
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise RuntimeError('router engine selector has duplicate fields')
+        value[key] = item
+    return value
+
+
+def read(path):
+    for parent in path.parents:
+        secure(parent, True)
+    return json.loads(secure(path).read_text(), object_pairs_hook=unique)
+
+
+def engine_for(action, operation):
+    if action in ('prepare-copy', 'run', 'worker', 'accept'):
+        if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
+            raise RuntimeError('router command requires an exact operation selector')
+        value = read(BASE / 'operations' / operation / 'request.json')
+        engine = value.get('engine_commit')
+    elif (BASE / 'pending.json').exists() or (BASE / 'pending.json').is_symlink():
+        value = read(BASE / 'pending.json')
+        engine = value.get('request', {}).get('engine_commit')
+    else:
+        value = read(ENGINES / 'current.json')
+        if set(value) != {'kind', 'engine_commit'} or value['kind'] != 'klokast.router-installed-engine.v1':
+            raise RuntimeError('installed router engine selector is invalid')
+        engine = value.get('engine_commit')
+    if not isinstance(engine, str) or not re.fullmatch('[0-9a-f]{40}', engine):
+        raise RuntimeError('router operation has no exact installed engine identity')
+    return engine
+
+
+def load(engine):
+    directory = ENGINES / engine
+    manifest = read(directory / 'manifest.json')
+    if (set(manifest) != {'kind', 'engine_commit', 'files'} or manifest['kind'] != 'klokast.router-engine-files.v1' or
+            manifest['engine_commit'] != engine or not isinstance(manifest['files'], dict) or set(manifest['files']) != MODULES):
+        raise RuntimeError('router engine has an incomplete fixed module manifest')
+    if {p.name for p in directory.iterdir()} != MODULES | {'manifest.json'}:
+        raise RuntimeError('router engine directory contains an unexpected module, package, or bytecode cache')
+    for name, expected in manifest['files'].items():
+        path = secure(directory / name)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise RuntimeError('installed router engine module checksum differs: ' + name)
+    # Imports must use the verified source, never an unrelated or stale pyc.
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(directory))
+    return importlib.import_module('router_executor')
+
+
+def fence_autostart():
+    link = Path('/etc/xen/auto/router.cfg')
+    for parent in link.parents:
+        secure(parent, True)
+    if link.is_symlink():
+        if link.lstat().st_uid != 0 or os.readlink(link) not in ('../router.cfg', '/etc/xen/router.cfg'):
+            raise RuntimeError('cannot fence an unexpected router autostart link')
+        link.unlink()
+        descriptor = os.open(link.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    elif link.exists():
+        raise RuntimeError('cannot fence a router autostart file that is not the managed link')
+    subprocess.run(['/usr/sbin/lbu', 'commit', '-d'], check=True, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'prepare-copy', 'run', 'worker',
+        'recover', 'boot-recover', 'accept', 'fence-autostart'))
+    parser.add_argument('--box')
+    parser.add_argument('--operation-id')
+    args = parser.parse_args(argv)
+    box = os.uname().nodename.split('.')[0].removesuffix('-dom0')
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box) or
+            os.uname().nodename.split('.')[0] != box + '-dom0' or args.box not in (None, box) or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('router transaction command requires root on the exact dom0')
+    if args.action == 'fence-autostart':
+        fence_autostart()
+        print('Router autostart is fenced; other guests can continue booting.')
+        return 0
+    engine = engine_for(args.action, args.operation_id)
+    command = [args.action, '--box', box]
+    if args.operation_id is not None:
+        command += ['--operation-id', args.operation_id]
+    return load(engine).main(command, engine)
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print('Router command refused: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

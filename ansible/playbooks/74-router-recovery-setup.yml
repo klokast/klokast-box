@@ -1,0 +1,9 @@
+---
+- name: Install the activated router recovery engine on dom0
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  roles:
+    - router-update-recovery

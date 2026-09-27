@@ -1,0 +1,12 @@
+---
+- name: Qualify native dom0 router guards without stopping a guest
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Test native disk and Xen guards against the running legacy router
+      ansible.builtin.import_role:
+        name: router-update-recovery
+        tasks_from: qualification.yml

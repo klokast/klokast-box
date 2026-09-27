@@ -374,7 +374,28 @@ The adapter requires a short-lived, root-staged controller authorization before
 arming. Recovery uses the already protected pending operation and does not need
 an available controller or an unexpired grant. The accepted pointer takes
 precedence over a stale pending phase. The adapter tests cover real atomic
-records with simulated Xen failures. The command entry point, authority issuer,
-OpenRC recovery chain, and native fault tests must be qualified before this code
-can perform a production cutover. The model playbook includes the adapter,
-native guard, copy receipt, and persistent-record tests.
+records with simulated Xen failures. The model playbook includes the adapter,
+native guard, copy receipt, persistent-record, engine-loader, and supervisor tests.
+
+`router-update-transaction` loads a closed, checksum-verified module set from the
+engine recorded in the pending operation. A newer installation cannot replace
+that recovery engine. The bounded local supervisor stops all worker processes
+before it starts recovery. It reserves the exited worker PID until those
+processes are stopped. A killed worker cannot leave an `xl` command running
+during rollback.
+
+`74-router-recovery-setup.yml` installs this chain only from a clean checkout of
+the activated engine. It refuses installation during a pending transaction,
+persists the versioned code with LBU, and puts the recovery oneshot before Xen
+autostart. A recovery failure fences router autostart and allows other guests to
+boot. The authority issuer and native fault tests must be complete before the
+production cutover path is enabled.
+
+The read-only native guard qualification can run from a clean qualification
+checkout. It compares fresh inspection with dom0 LV, boot, live Xen, and kernel
+block-backend evidence. It must refuse the still-attached source disk. It does
+not stop a guest or adopt the baseline:
+
+```sh
+ansible/bin/platform-router-update test-dom0-guards --box boxa
+```

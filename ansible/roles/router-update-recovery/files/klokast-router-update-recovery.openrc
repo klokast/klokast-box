@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+description="Recover an interrupted router update before Xen guest autostart"
+
+depend() {
+    need localmount networking xenstored xenconsoled
+    before xendomains
+}
+
+start() {
+    ebegin "Verify and recover the accepted router generation"
+    if /usr/local/sbin/router-update-transaction boot-recover; then
+        eend 0
+        return 0
+    fi
+    eerror "Router recovery failed; fencing router autostart for console recovery"
+    /usr/local/sbin/router-update-transaction fence-autostart || return 1
+    logger -t klokast-router-update-recovery "CRITICAL: router recovery failed; router autostart fenced"
+    eend 0
+}

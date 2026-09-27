@@ -5,6 +5,7 @@ This adapter cannot discover releases, enroll identities, or extend deadlines.
 Its native copy backend must leave both production disks detached on return.
 """
 import ipaddress
+import logging
 import os
 from pathlib import Path
 import time
@@ -58,6 +59,8 @@ class Adapter:
 
     def persist(self, value):
         self.storage.persist(value)
+        logging.getLogger('klokast.router-update').info('box=%s operation=%s phase=%s reason=%s',
+            self.storage.box, self.request['operation_id'], value['phase'], value['reason'])
 
     def resources(self, *, deadline):
         self.host.guard(self.storage.box, deadline=deadline)

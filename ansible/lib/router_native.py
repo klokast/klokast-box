@@ -93,6 +93,14 @@ class Native:
                 Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
             raise TransactionError('router executor requires root on the exact box dom0')
         command(['/bin/mountpoint', '-q', '/mnt/dom0_data'], deadline)
+        mounts = [line.split() for line in Path('/proc/self/mountinfo').read_text().splitlines()
+                  if line.split()[4] == '/mnt/dom0_data']
+        if len(mounts) != 1:
+            raise TransactionError('router records require one persistent dom0 data mount')
+        mount = mounts[0]
+        separator = mount.index('-')
+        if mount[separator + 1] != 'ext4' or 'rw' not in mount[5].split(','):
+            raise TransactionError('router records require the writable persistent dom0 ext4 filesystem')
 
     def device(self, path):
         if not isinstance(path, str) or not path.startswith('/dev/') or '..' in Path(path).parts:

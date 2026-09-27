@@ -24,4 +24,6 @@
         - test_router_native.py
         - test_router_dom0.py
         - test_router_copy_native.py
+        - test_router_executor.py
+        - test_router_engine_loader.py
       changed_when: false

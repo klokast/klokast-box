@@ -294,11 +294,43 @@ def test_compatibility(box, source, template_operation):
         return {**evidence, 'evidence_directory': str(result)}
 
 
+def test_dom0_guards(box):
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
+        raise UpdateError('router native guard qualification requires a clean public checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    with transport.installation_lock():
+        inspection = inspect(box)
+        if inspection['adoption_findings']:
+            raise UpdateError('native router guard qualification requires a clear source inspection')
+        source = transport.load(Path(inspection['evidence_directory']) / (box + '-dom0.json'))
+        operation = secrets.token_hex(12)
+        directory = STATE / operation
+        directory.mkdir(mode=0o700)
+        transport.write(directory / 'request.json', {'kind':'klokast.router-native-guards-request.v1',
+            'box':box, 'operation_id':operation, 'engine_commit':engine, 'source':source})
+        args = directory / 'arguments.json'
+        transport.write(args, {'router_guard_box':box,'router_guard_operation':operation,'router_guard_directory':str(directory)})
+        with (directory / 'qualification.log').open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-native-guards-test.yml','--limit',box+'-dom0','-e','@'+str(args)],
+                timeout=240,log=log)
+        value = transport.load(directory / 'result.json')
+        if (value.get('kind') != 'klokast.router-native-guards-result.v1' or value.get('box') != box or
+                value.get('operation_id') != operation or value.get('engine_commit') != engine or
+                any(value.get(k) is not True for k in ('success','disk_identity_verified','boot_artifacts_verified',
+                    'xen_runtime_verified','block_backend_verified','attached_disk_refused')) or
+                value.get('router_changed') is not False or value.get('replacement_authorized') is not False):
+            raise UpdateError('native router guard qualification returned incomplete or different evidence')
+        return {**value,'evidence_directory':str(directory)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
+    sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -319,6 +351,8 @@ def main():
             value = inspect(args.box)
         elif args.command == 'resolve':
             value = resolve(args.branch)
+        elif args.command == 'test-dom0-guards':
+            value = test_dom0_guards(args.box)
         elif args.command == 'build-template':
             value = build_template(args.box, args.inputs_directory)
         elif args.command == 'render-candidate':
