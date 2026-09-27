@@ -79,27 +79,36 @@ def check_legacy(box):
         if (policy_source.get('kind') != 'klokast.vm-update-policy-source.v1' or
                 policy_source.get('engine_commit') != engine or
                 not isinstance(policy_source.get('policy'), dict) or
-                not isinstance(policy_source.get('policy_sha256'), str)):
+                not router_updates.match(router_updates.HASH, policy_source.get('policy_sha256')) or
+                type(policy_source.get('paused')) is not bool):
             raise UpdateError('router check has no exact signed policy source')
         metadata = None
         candidates = {}
         try:
             releases, checksum = upstream.fetch_json(profile['release_metadata'])
-            metadata = {'observed_at':router_updates.timestamp(observed), 'sha256':checksum, 'releases':releases}
-            _, eligible = router_updates.available_branches(releases, generation['alpine_branch'], observed,
-                                                            policy_source['policy']['branch-delay-days'])
-            branch = eligible or generation['alpine_branch']
-            try:
-                resolved = resolve(branch)
-                candidates[branch] = {'status':'verified', 'observed_at':router_updates.timestamp(observed),
-                    'inputs':transport.load(Path(resolved['inputs_directory']) / 'inputs.json')}
-            except (UpdateError, OSError, ValueError) as error:
-                candidates[branch] = {'status':'failed', 'reason':str(error)}
         except (UpdateError, OSError, ValueError):
-            pass
+            releases = None
+        if releases is not None:
+            metadata = {'observed_at':router_updates.timestamp(observed), 'sha256':checksum, 'releases':releases}
+            branch = None
+            try:
+                _, eligible = router_updates.available_branches(releases, generation['alpine_branch'], observed,
+                                                                policy_source['policy']['branch-delay-days'])
+                branch = eligible or generation['alpine_branch']
+            except (UpdateError, KeyError, TypeError, ValueError):
+                pass  # The pure decision marks malformed metadata as failed.
+            if branch is not None:
+                try:
+                    resolved = resolve(branch)
+                    candidates[branch] = {'status':'verified', 'observed_at':router_updates.timestamp(observed),
+                        'inputs':transport.load(Path(resolved['inputs_directory']) / 'inputs.json')}
+                except (UpdateError, OSError, ValueError) as error:
+                    candidates[branch] = {'status':'failed', 'reason':str(error)}
+        effective_policy = {**policy_source['policy'],
+                            'enabled':policy_source['policy'].get('enabled') is True and not policy_source['paused']}
         report = router_updates.check(box=box, role='router',
             accepted={'box':box, 'role':'router', 'generation':generation['record_sha256'], 'legacy':generation},
-            live=live, metadata=metadata, candidates=candidates, policy=policy_source['policy'],
+            live=live, metadata=metadata, candidates=candidates, policy=effective_policy,
             policy_sha256=policy_source['policy_sha256'], profile=profile, engine=engine,
             now=dt.datetime.now(dt.timezone.utc), compare=upstream.compare_versions)
         current_policy_source = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
