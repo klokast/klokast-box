@@ -281,7 +281,8 @@ class LegacyBaselineTests(unittest.TestCase):
                 'xen': {'name': 'router', 'disk': ['phy:/dev/vg0/lv_router,xvda,w'],
                         'kernel': '/mnt/dom0_data/kernel', 'ramdisk': '/mnt/dom0_data/ramdisk'},
                 'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router', 'lv_uuid': 'synthetic-uuid'}]}]},
-                'boot_artifacts': {name: {'path': '/mnt/dom0_data/' + name, 'sha256': 'a' * 64}
+                'boot_artifacts': {name: {'path': '/mnt/dom0_data/' + name, 'sha256': 'a' * 64,
+                                          'bytes': 1234}
                                    for name in ('kernel', 'ramdisk')}}
         return guest, dom0
 

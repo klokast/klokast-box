@@ -210,7 +210,11 @@ def inspect_dom0(box):
         path = values.get(field)
         if not isinstance(path, str) or not path.startswith('/mnt/dom0_data/') or '..' in Path(path).parts:
             raise RuntimeError('router boot path is outside persistent storage')
-        artifacts[field] = {'path': path, 'sha256': file_hash(path)}
+        metadata = info(path)
+        checksum = file_hash(path)
+        if info(path) != metadata:
+            raise RuntimeError('router boot artifact changed during inspection')
+        artifacts[field] = {'path': path, 'sha256': checksum, 'bytes': metadata['bytes']}
     return {'configuration_sha256': file_hash(config), 'xen': values, 'boot_artifacts': artifacts,
             'xen_runtime': runtime, 'xen_runtime_matches': runtime_matches,
             'logical_volumes': json.loads(run(['/sbin/lvs', '--reportformat', 'json', '--units', 'b',

@@ -382,6 +382,13 @@ installation result, missing identity-absence proof, and reused Xen identity.
 The result is a checked generation record only. A dom0 issuer must still verify
 the native resources and signed authority before it publishes that record.
 
+The legacy baseline assembler accepts only a fresh inspection with no blocking
+finding. Its proposed record binds the observed production LV, kernel,
+initramfs, live Xen identity, packages, service accounts, and only the router
+configuration files that the inspector compared with current Ansible and
+compiler output. It does not claim a template build or record uninspected
+files as approved state. It does not publish an accepted assignment.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.

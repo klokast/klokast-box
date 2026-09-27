@@ -22,7 +22,11 @@ def generation(origin='template'):
                'memory':512,'vcpus':1,'vif':['bridge=br-wan,mac=00:16:3e:00:00:01']},
         'packages':dict.fromkeys(('linux-virt','tailscale','dhcpcd','dnsmasq','nftables','openssh-keygen'),'1-r0'),
         'kernel_release':'6.18.53-0-virt','accounts':{'dnsmasq_uid':102,'dnsmasq_gid':103,'tailscale_gid':104},
-        'configuration_files':dict.fromkeys(router_personalize.FILES,'e'*64),'evidence_sha256':'f'*64})
+        'configuration_files':dict.fromkeys((
+            'etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf',
+            'etc/nftables.nft', 'etc/klokast/app-resources/router-forward.nft',
+            'etc/klokast/app-resources/router-forward.d/000-empty.nft') if origin == 'legacy'
+            else router_personalize.FILES,'e'*64),'evidence_sha256':'f'*64})
 
 
 def reseal(value):
@@ -36,8 +40,12 @@ class GenerationTests(unittest.TestCase):
             value=generation(origin)
             self.assertEqual(g.generation(value,'boxa'),value)
         legacy=generation('legacy')
+        self.assertNotIn('etc/resolv.conf',legacy['configuration_files'])
         legacy['packages'].pop('linux-virt'); reseal(legacy)
         g.generation(legacy,'boxa')
+        legacy['configuration_files']['etc/resolv.conf']='e'*64; reseal(legacy)
+        with self.assertRaises(g.GenerationError):
+            g.generation(legacy,'boxa')
         template=generation()
         template['packages'].pop('linux-virt'); reseal(template)
         with self.assertRaises(g.GenerationError):

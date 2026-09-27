@@ -303,7 +303,9 @@ def legacy_baseline_findings(guest, dom0, box):
             not isinstance(item, dict) or not isinstance(item.get('path'), str) or
             not item['path'].startswith('/mnt/dom0_data/') or
             item['path'] != (xen.get(name) if isinstance(xen, dict) else None) or
-            not match(HASH, item.get('sha256'))
+            not match(HASH, item.get('sha256')) or
+            type(item.get('bytes')) is not int or not 0 < item['bytes'] <=
+            (32 * 1024 * 1024 if name == 'kernel' else 128 * 1024 * 1024)
             for name, item in boot.items())):
         findings.append('router kernel or initramfs identity is missing')
     return findings

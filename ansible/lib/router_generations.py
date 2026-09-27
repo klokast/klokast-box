@@ -81,11 +81,25 @@ def generation(value, box):
     if (not isinstance(accounts, dict) or set(accounts) != {'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'} or
             any(type(v) is not int or not 1 <= v <= 65535 for v in accounts.values())):
         raise GenerationError('router generation lacks exact state-copy service accounts')
-    try:
-        router_personalize.file_modes(value['configuration_files'])
-    except ValueError as error:
-        raise GenerationError('router generation configuration selectors are invalid') from error
-    if any(not matches('[0-9a-f]{64}', v) for v in value['configuration_files'].values()):
+    files = value['configuration_files']
+    if value['origin'] == 'legacy':
+        # The legacy OS predates the complete template recipe. Its baseline
+        # records only files independently checked against current Ansible and
+        # compiler output by the read-only inspector.
+        required = {'etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf',
+                    'etc/nftables.nft', 'etc/klokast/app-resources/router-forward.nft',
+                    'etc/klokast/app-resources/router-forward.d/000-empty.nft'}
+        if (not isinstance(files, dict) or not required <= files.keys() or
+                len(files) > 1030 or any(name not in required and not matches(
+                    r'etc/klokast/app-resources/router-forward.d/[A-Za-z0-9_-]+\.nft', name)
+                    for name in files)):
+            raise GenerationError('legacy router record has unsupported configuration selectors')
+    else:
+        try:
+            router_personalize.file_modes(files)
+        except ValueError as error:
+            raise GenerationError('router generation configuration selectors are invalid') from error
+    if any(not matches('[0-9a-f]{64}', v) for v in files.values()):
         raise GenerationError('router generation configuration hashes are invalid')
     return value
 
