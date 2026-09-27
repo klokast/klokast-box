@@ -101,6 +101,14 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError,'pending'):
             e.accepted_manifest(self.records)
 
+    def test_accepted_source_is_exact_and_unavailable_during_replacement(self):
+        value=e.accepted_source(self.records)
+        self.assertEqual(value['assignment']['current_sha256'],self.old['record_sha256'])
+        self.assertEqual(value['generation'],self.old)
+        self.records.persist(self.pending)
+        with self.assertRaisesRegex(TransactionError,'pending'):
+            e.accepted_source(self.records)
+
     def test_map_refuses_changed_pointers_instead_of_joining_two_operations(self):
         with mock.patch.object(self.records,'pending',side_effect=[None,self.pending]):
             with self.assertRaisesRegex(TransactionError,'pointers changed'):

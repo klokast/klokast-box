@@ -398,6 +398,13 @@ The read-only `legacy_live` adapter accepts fresh router and dom0 reports only
 when they match the sealed accepted assignment and generation. It returns no
 retained state bytes or SSH key material. This adapter is a check input; it
 does not grant build or cutover authority.
+After supervised adoption, `platform-router-update check-legacy --box BOX` uses
+that adapter from the active controller. It reads the protected current source
+before and after the check, reads the signed policy twice, fetches official
+release metadata, and freezes authenticated package inputs for the selected
+branch. It stores a private decision report and returns a short status. The
+command does not create a candidate or grant replacement authority. It refuses
+an unapproved engine, an unadopted router, or changed source and policy records.
 
 ## Cutover order and failure model
 

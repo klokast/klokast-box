@@ -89,6 +89,15 @@ def accepted_manifest(storage):
             'packages':current['packages'], 'configuration_files':current['configuration_files']}
 
 
+def accepted_source(storage):
+    """Read one protected current generation for controller check input."""
+    if storage.pending() is not None:
+        raise TransactionError('router check source is unavailable during a pending operation')
+    assignment = storage.accepted()
+    return {'kind':'klokast.router-accepted-source.v1', 'box':storage.box,
+            'assignment':assignment, 'generation':storage.generation(assignment['current_sha256'])}
+
+
 def recover(storage, engine):
     pending = storage.pending()
     if pending is None:
@@ -239,7 +248,7 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
         'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
@@ -255,6 +264,9 @@ def main(argv, engine):
     elif args.action == 'accepted-manifest':
         with storage.lock():
             result = accepted_manifest(storage)
+    elif args.action == 'accepted-source':
+        with storage.lock():
+            result = accepted_source(storage)
     elif args.action == 'assignment-status':
         pending = storage.pending()
         path = storage.base / 'accepted.json'

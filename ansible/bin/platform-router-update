@@ -15,8 +15,11 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import router_updates
 import router_legacy_generation
+import router_generations
+import router_records
 import vm_template_inputs
 import router_template_inputs
+import platform_update_metadata as upstream
 from platform_updates import UpdateError, canonical, timestamp
 
 import router_update_controller as transport
@@ -24,6 +27,91 @@ import router_update_controller as transport
 PROFILE = REPO / 'ansible/update-profiles/router-alpine-v1.json'
 STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
+
+
+def check_legacy(box):
+    """Make a read-only first-template decision from one adopted legacy source."""
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router check requires an exact box ID')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('router check requires a clean public implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router check requires the activated signed engine commit')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    profile = transport.load(PROFILE)
+    router_updates.validate_profile(profile)
+    with transport.installation_lock():
+        inspected = inspect(box)
+        directory = Path(inspected['evidence_directory'])
+        operation = inspected['operation']
+
+        def source_at(name):
+            args = directory / (name + '-arguments.json')
+            transport.write(args, {'router_check_box':box, 'router_check_operation':operation,
+                                   'router_check_result_dir':str(directory), 'router_check_output':name + '.json'})
+            with (directory / (name + '.log')).open('x') as log:
+                transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                    REPO / 'ansible/playbooks/74-router-accepted-source.yml', '--limit', box + '-dom0',
+                    '-e', '@' + str(args)], timeout=180, log=log)
+            value = transport.load(directory / (name + '.json'))
+            if (value.get('kind') != 'klokast.router-command-result.v1' or
+                    value.get('box') != box or value.get('action') != 'accepted-source' or
+                    value.get('engine_commit') != engine or
+                    not isinstance(value.get('result'), dict) or
+                    value['result'].get('kind') != 'klokast.router-accepted-source.v1'):
+                raise UpdateError('protected router source reader returned a different engine or target')
+            return value['result']
+
+        first = source_at('accepted-source')
+        assignment = router_records.assignment(first['assignment'], box)
+        generation = router_generations.generation(first['generation'], box)
+        if first['box'] != box or generation['origin'] != 'legacy':
+            raise UpdateError('router check requires one adopted legacy generation')
+        observed = dt.datetime.now(dt.timezone.utc)
+        guest = transport.load(directory / (box + '-router.json'))
+        dom0 = transport.load(directory / (box + '-dom0.json'))
+        live = router_updates.legacy_live(box=box, assignment=assignment, source=generation,
+                                          guest=guest, dom0=dom0, now=observed)
+        policy_source = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+            'vm-update-policy', 'source-status']), object_pairs_hook=transport.unique_object)
+        if (policy_source.get('kind') != 'klokast.vm-update-policy-source.v1' or
+                policy_source.get('engine_commit') != engine or
+                not isinstance(policy_source.get('policy'), dict) or
+                not isinstance(policy_source.get('policy_sha256'), str)):
+            raise UpdateError('router check has no exact signed policy source')
+        metadata = None
+        candidates = {}
+        try:
+            releases, checksum = upstream.fetch_json(profile['release_metadata'])
+            metadata = {'observed_at':router_updates.timestamp(observed), 'sha256':checksum, 'releases':releases}
+            _, eligible = router_updates.available_branches(releases, generation['alpine_branch'], observed,
+                                                            policy_source['policy']['branch-delay-days'])
+            branch = eligible or generation['alpine_branch']
+            try:
+                resolved = resolve(branch)
+                candidates[branch] = {'status':'verified', 'observed_at':router_updates.timestamp(observed),
+                    'inputs':transport.load(Path(resolved['inputs_directory']) / 'inputs.json')}
+            except (UpdateError, OSError, ValueError) as error:
+                candidates[branch] = {'status':'failed', 'reason':str(error)}
+        except (UpdateError, OSError, ValueError):
+            pass
+        report = router_updates.check(box=box, role='router',
+            accepted={'box':box, 'role':'router', 'generation':generation['record_sha256'], 'legacy':generation},
+            live=live, metadata=metadata, candidates=candidates, policy=policy_source['policy'],
+            policy_sha256=policy_source['policy_sha256'], profile=profile, engine=engine,
+            now=dt.datetime.now(dt.timezone.utc), compare=upstream.compare_versions)
+        current_policy_source = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+            'vm-update-policy', 'source-status']), object_pairs_hook=transport.unique_object)
+        if current_policy_source != policy_source:
+            raise UpdateError('signed router policy source changed during the read-only update check')
+        if source_at('accepted-source-final') != first:
+            raise UpdateError('router accepted source changed during the read-only update check')
+        transport.write(directory / 'check.json', report)
+        return {'kind':'klokast.router-check-result.v1', 'box':box, 'status':report['status'],
+                'reason':report['reason'], 'report_sha256':report['report_sha256'],
+                'evidence_directory':str(directory), 'replacement_authorized':False}
 
 
 def adopt_legacy(box):
@@ -382,6 +470,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
+    sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('adopt-legacy', help='inspect and adopt one legacy router under activated authority').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
     sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
@@ -403,6 +492,8 @@ def main():
     try:
         if args.command == 'inspect':
             value = inspect(args.box)
+        elif args.command == 'check-legacy':
+            value = check_legacy(args.box)
         elif args.command == 'adopt-legacy':
             value = adopt_legacy(args.box)
         elif args.command == 'resolve':

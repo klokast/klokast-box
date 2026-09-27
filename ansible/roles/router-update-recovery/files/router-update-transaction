@@ -98,7 +98,7 @@ def fence_autostart():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'prepare-copy', 'run', 'worker',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'prepare-copy', 'run', 'worker',
         'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
