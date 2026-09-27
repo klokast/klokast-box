@@ -1,0 +1,24 @@
+---
+- name: Verify one running router without changing its state
+  hosts: "{{ router_update_box }}-router"
+  gather_facts: false
+  pre_tasks:
+    - name: Require one exact router target
+      ansible.builtin.assert:
+        that:
+          - router_update_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - inventory_hostname == router_update_box ~ '-router'
+    - name: Require the active controller for router verification
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_verification_controller
+    - name: Verify active-controller status
+      ansible.builtin.assert:
+        that:
+          - (router_verification_controller.stdout | from_json).active | bool
+          - (router_verification_controller.stdout | from_json).configured | bool
+  roles:
+    - router-verification

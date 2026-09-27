@@ -168,10 +168,21 @@ A pending record blocks provisioning. If an accepted record exists, playbooks
 30 and 31 run the installed, versioned `verify-boot-assignment` command on
 dom0. The command checks the protected record, boot files, Xen definition,
 and running generation. Playbook 31 also runs the read-only router service
-verifier. The playbooks then skip legacy work. A failed check
-stops the playbook before mutation. Direct calls to the rootfs builder, Xen
+verifier. The playbooks then skip legacy work. A failed check stops the
+playbook before mutation. Direct calls to the rootfs builder, Xen
 renderer, VM base, Tailscale client, and enrollment still refuse an accepted
 assignment. A missing record does not constitute a baseline adoption receipt.
+
+Run the router service verifier by itself from the active controller when a
+read-only check is needed:
+
+```sh
+ansible-playbook -i ansible/execution-inventory/hosts \
+  ansible/playbooks/74-router-verification-only.yml -e router_update_box=<box>
+```
+
+It checks the exact managed core file hashes, service and route state,
+firewall, DNS, and Tailscale status. It does not select an OS generation.
 
 `provision-box` and `provision-ops-vm` use the same installation lock. Nested
 shell calls reuse its inherited descriptor. Another process must wait until the
