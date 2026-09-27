@@ -5,6 +5,7 @@ must recheck source identity and authority before it publishes the record.
 """
 import router_generations as generations
 import router_updates
+import copy
 from router_transaction import TransactionError
 
 
@@ -36,8 +37,8 @@ def assemble(*, box, operation, engine_commit, guest, dom0):
         'boot':{'kernel':dom0['boot_artifacts']['kernel'],
                 'initramfs':dom0['boot_artifacts']['ramdisk']},
         'xen':{'uuid':dom0['xen_runtime']['uuid'], 'memory':xen['memory'],
-               'vcpus':xen['vcpus'], 'vif':xen['vif']},
-        'packages':guest['packages'], 'kernel_release':guest['kernel_release'],
-        'accounts':guest['service_accounts'], 'configuration_files':files,
+               'vcpus':xen['vcpus'], 'vif':copy.deepcopy(xen['vif'])},
+        'packages':copy.deepcopy(guest['packages']), 'kernel_release':guest['kernel_release'],
+        'accounts':copy.deepcopy(guest['service_accounts']), 'configuration_files':files,
         'evidence_sha256':generations.digest({'guest':guest, 'dom0':dom0})})
     return generations.generation(record, box)

@@ -1,5 +1,6 @@
 """A legacy baseline record must not claim uninspected template state."""
 import copy
+import datetime as dt
 from pathlib import Path
 import sys
 import unittest
@@ -7,6 +8,9 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_generations as generations
 import router_legacy_generation as legacy
+import router_records as records
+import router_updates as updates
+from platform_updates import UpdateError, timestamp
 from router_transaction import TransactionError
 import test_router_updates as fixtures
 
@@ -46,6 +50,35 @@ class LegacyGenerationTests(unittest.TestCase):
             change(args)
             with self.subTest(change=change),self.assertRaises((TransactionError,generations.GenerationError)):
                 legacy.assemble(**args)
+
+    def test_adopted_live_adapter_rejects_drift_and_projects_only_checked_identity(self):
+        args=self.fixture()
+        source=legacy.assemble(**args)
+        assignment=generations.seal({'kind':'klokast.router-assignment.v1','box':'boxa','role':'router',
+            'current_sha256':source['record_sha256'],'previous_sha256':None,
+            'operation_id':source['generation_id'],'engine_commit':source['engine_commit'],
+            'policy_sha256':records.BASELINE_AUTHORITY_SHA256,
+            'evidence_sha256':source['evidence_sha256']})
+        now=dt.datetime(2026,9,27,8,tzinfo=dt.timezone.utc)
+        guest,dom0=args['guest'],args['dom0']
+        guest['observed_at']=dom0['observed_at']=timestamp(now)
+        dom0['accepted_record_present']=True
+        result=updates.legacy_live(box='boxa',assignment=assignment,source=source,
+                                   guest=guest,dom0=dom0,now=now)
+        self.assertEqual(result['generation'],source['record_sha256'])
+        self.assertEqual(result['alpine_branch'],'v3.23')
+        self.assertNotIn('ssh_keys',result)
+        guest['packages']['tailscale']='2-r0'
+        with self.assertRaises(UpdateError):
+            updates.legacy_live(box='boxa',assignment=assignment,source=source,
+                                guest=guest,dom0=dom0,now=now)
+        guest['packages']['tailscale']='1-r0'
+        changed={**assignment,'engine_commit':'0'*40}
+        changed.pop('record_sha256')
+        changed=generations.seal(changed)
+        with self.assertRaises(UpdateError):
+            updates.legacy_live(box='boxa',assignment=changed,source=source,
+                                guest=guest,dom0=dom0,now=now)
 
 
 if __name__=='__main__': unittest.main()

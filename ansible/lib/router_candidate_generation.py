@@ -6,6 +6,7 @@ current assignment, signed policy, and native readiness before publication.
 """
 import router_generations as generations
 import router_updates
+import copy
 from router_transaction import TransactionError
 
 
@@ -54,9 +55,10 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
         'disk':{'path':disk_record['path'], 'uuid':disk_record['uuid'], 'bytes':2147483648},
         'boot':boot,
         'xen':{'uuid':xen_uuid, 'memory':old['xen']['memory'], 'vcpus':old['xen']['vcpus'],
-               'vif':old['xen']['vif']},
-        'packages':prepared['packages'], 'kernel_release':release['kernel_release'],
-        'accounts':prepared['accounts'], 'configuration_files':prepared['configuration_files'],
+               'vif':copy.deepcopy(old['xen']['vif'])},
+        'packages':copy.deepcopy(prepared['packages']), 'kernel_release':release['kernel_release'],
+        'accounts':copy.deepcopy(prepared['accounts']),
+        'configuration_files':copy.deepcopy(prepared['configuration_files']),
         'evidence_sha256':generations.digest({'release':release['receipt_sha256'],
             'prepared':prepared, 'disk':disk_record})})
     generations.generation(proposed, box)

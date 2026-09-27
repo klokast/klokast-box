@@ -394,6 +394,10 @@ retains this branch. The update decision treats a validated legacy generation
 as a source that needs its first approved template, even if installed package
 versions match the selected closure. It still refuses live package, kernel,
 boot, branch, or configuration drift before that decision.
+The read-only `legacy_live` adapter accepts fresh router and dom0 reports only
+when they match the sealed accepted assignment and generation. It returns no
+retained state bytes or SSH key material. This adapter is a check input; it
+does not grant build or cutover authority.
 
 ## Cutover order and failure model
 

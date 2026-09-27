@@ -10,6 +10,7 @@ import re
 
 import router_state
 import router_generations
+import router_records
 from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
 from platform_update_metadata import adjacent_stable_branch
 
@@ -179,7 +180,7 @@ def expected_includes(compiled, box):
             'files': {path: hashlib.sha256(content.encode()).hexdigest() for path, content in files.items()}}
 
 
-def legacy_baseline_findings(guest, dom0, box):
+def legacy_baseline_findings(guest, dom0, box, *, adopted=False):
     """Report missing legacy evidence without granting adoption authority."""
     findings = []
     for target, value in (('router', guest), ('dom0', dom0)):
@@ -273,8 +274,9 @@ def legacy_baseline_findings(guest, dom0, box):
                     observed_includes[path].get('metadata'), (128 * 1024, False), owners={(0, 0)})
                 for path, checksum in expected_files.items())):
         findings.append('router generated firewall or DNS includes differ from the current resource compiler')
-    if dom0.get('accepted_record_present') is not False or dom0.get('pending_record_present') is not False:
-        findings.append('router assignment or transaction already exists')
+    if (dom0.get('accepted_record_present') is not adopted or
+            dom0.get('pending_record_present') is not False):
+        findings.append('router assignment or transaction state differs from the inspection mode')
     xen = dom0.get('xen')
     if (not match(HASH, dom0.get('expected_configuration_sha256')) or
             dom0.get('configuration_sha256') != dom0.get('expected_configuration_sha256')):
@@ -312,6 +314,44 @@ def legacy_baseline_findings(guest, dom0, box):
             for name, item in boot.items())):
         findings.append('router kernel or initramfs identity is missing')
     return findings
+
+
+def legacy_live(*, box, assignment, source, guest, dom0, now):
+    """Normalize fresh adopted legacy evidence without reading retained bytes."""
+    router_records.assignment(assignment, box)
+    router_generations.generation(source, box)
+    if (source['origin'] != 'legacy' or assignment['current_sha256'] != source['record_sha256'] or
+            assignment['operation_id'] != source['generation_id'] or
+            assignment['engine_commit'] != source['engine_commit'] or
+            assignment['evidence_sha256'] != source['evidence_sha256'] or
+            assignment['previous_sha256'] is not None or
+            assignment['policy_sha256'] != router_records.BASELINE_AUTHORITY_SHA256 or
+            not fresh(guest.get('observed_at'), now, dt.timedelta(minutes=15)) or
+            not fresh(dom0.get('observed_at'), now, dt.timedelta(minutes=15))):
+        raise UpdateError('adopted legacy evidence is stale or differs from its protected assignment')
+    findings = legacy_baseline_findings(guest, dom0, box, adopted=True)
+    if findings:
+        raise UpdateError('adopted legacy router has drift or incomplete evidence: ' + ', '.join(findings))
+    files = {path.lstrip('/'):item['sha256'] for rows in
+             (guest['configuration_files'],guest['include_files']) for path,item in rows.items()}
+    rows = [item for item in dom0['logical_volumes']['report'][0]['lv']
+            if item.get('lv_path') == source['disk']['path']]
+    if (guest['alpine_branch'] != source['alpine_branch'] or
+            guest['packages'] != source['packages'] or guest['kernel_release'] != source['kernel_release'] or
+            guest['service_accounts'] != source['accounts'] or files != source['configuration_files'] or
+            len(rows) != 1 or rows[0]['lv_uuid'] != source['disk']['uuid'] or
+            int(rows[0]['lv_size']) != source['disk']['bytes'] or rows[0]['origin'] or
+            dom0['xen_runtime']['uuid'] != source['xen']['uuid'] or
+            dom0['xen']['vif'] != source['xen']['vif'] or
+            dom0['xen']['disk'] != ['phy:' + source['disk']['path'] + ',xvda,w'] or
+            {name:dom0['boot_artifacts'][key] for name,key in
+             (('kernel','kernel'),('initramfs','ramdisk'))} != source['boot']):
+        raise UpdateError('adopted legacy router differs from its protected generation')
+    return {'observed_at':guest['observed_at'], 'box':box, 'role':'router',
+            'generation':source['record_sha256'], 'packages':source['packages'],
+            'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
+            'boot_artifacts':{name:item['sha256'] for name,item in source['boot'].items()},
+            'configuration_verified':True, 'overlay_ipv6_enabled':False}
 
 
 def _copyable_metadata(value, limit, *, private=False, owners):
