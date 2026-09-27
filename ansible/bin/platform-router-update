@@ -194,6 +194,7 @@ def test_candidate_preparation(box, source, template_operation):
             raise UpdateError('candidate preparation test has incomplete result or exact cleanup evidence')
         if json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show'])) != compiled:
             raise UpdateError('candidate preparation compiler inputs changed during native test')
+        persist_diagnostic_lvm(box, result)
         return {'kind':'klokast.router-candidate-preparation-test.v1', 'box':box,
                 'operation':operation, 'evidence_directory':str(result), 'status':'qualified',
                 'production_identity':False, 'replacement_authorized':False}
@@ -517,7 +518,16 @@ def test_compatibility(box, source, template_operation):
                 not isinstance(allocation.get('uuid'), str) or not re.fullmatch('[A-Za-z0-9-]{1,64}', allocation['uuid']) or
                 evidence.get('candidate_disk') != {'path': allocation['path'], 'uuid': allocation['uuid'], 'bytes': 2147483648}):
             raise UpdateError('router candidate LV qualification lacks its exact completed retirement record')
+        persist_diagnostic_lvm(box, result)
         return {**evidence, 'evidence_directory': str(result)}
+
+
+def persist_diagnostic_lvm(box, result):
+    """Persist only reviewed LVM metadata after an exact disposable LV retired."""
+    with (Path(result) / 'lbu.log').open('x') as log:
+        transport.command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+            REPO / 'ansible/playbooks/74-router-diagnostic-lbu-commit.yml', '--limit', box + '-dom0',
+            '-e', 'router_diagnostic_lbu_box=' + box], timeout=180, log=log)
 
 
 def test_dom0_guards(box):
