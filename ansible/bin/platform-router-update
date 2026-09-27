@@ -17,6 +17,7 @@ import router_updates
 import router_legacy_generation
 import router_generations
 import router_records
+import router_personalize
 import vm_template_inputs
 import router_template_inputs
 import platform_update_metadata as upstream
@@ -121,6 +122,81 @@ def check_legacy(box):
         return {'kind':'klokast.router-check-result.v1', 'box':box, 'status':report['status'],
                 'reason':report['reason'], 'report_sha256':report['report_sha256'],
                 'evidence_directory':str(directory), 'replacement_authorized':False}
+
+
+def test_candidate_preparation(box, source, template_operation):
+    """Prepare and retire one disposable candidate LV; no production authority."""
+    if (not router_updates.match(router_updates.BOX, box) or
+            not re.fullmatch('[0-9a-f]{24}', template_operation)):
+        raise UpdateError('candidate preparation test requires an exact box and template operation')
+    transport.require_controller()
+    source = Path(source)
+    if source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name):
+        raise UpdateError('candidate preparation test requires one frozen controller input directory')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('candidate preparation test requires a clean public checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    profile, manifest = transport.load(PROFILE), transport.load(source / 'inputs.json')
+    router_updates.validate_inputs(manifest, profile, engine)
+    candidate_path = STATE / template_operation / 'candidate.json'
+    candidate = transport.load(candidate_path)
+    release = router_template_inputs.release(candidate, manifest, profile, engine,
+        box, template_operation, approved_engine=engine)
+    rendered = render_candidate(box, source)
+    personalization = transport.load(Path(rendered['evidence_directory']) / 'personalization.json')
+    operation = secrets.token_hex(12)
+    work, result = CACHE / ('candidate-test-' + operation), STATE / operation
+    work.mkdir(mode=0o700); result.mkdir(mode=0o700)
+    job = {'kind':'klokast.router-candidate-job.v1', 'mode':'replacement', 'box':box,
+        'role':'router', 'operation_id':operation, 'engine_commit':engine,
+        'inputs_sha256':manifest['inputs_sha256'], 'kernel_release':release['kernel_release'],
+        'personalization':personalization, 'runtime_packages':release['runtime_packages']}
+    import router_candidate
+    router_candidate.validate(job)
+    transport.write(work / 'candidate-job.json', job)
+    guest = REPO / 'ansible/roles/router-candidate-preparation/files/router-candidate-prepare-guest'
+    modules = ('router_candidate','router_finalize','router_personalize')
+    job_files = {'usr/local/lib/klokast/' + name + '.py':REPO / 'ansible/lib' / (name + '.py') for name in modules}
+    job_files['router-candidate-job.json'] = work / 'candidate-job.json'
+    boot = vm_template_inputs.bootstrap(source, work / 'boot', guest,
+        expected_profile=router_updates.PROFILE, job_files=job_files)
+    request = {'kind':'klokast.router-candidate-preparation-test.v1', 'box':box,
+        'operation_id':operation, 'engine_commit':engine, 'inputs_sha256':manifest['inputs_sha256'],
+        'template_operation':template_operation, 'template_sha256':vm_template_inputs.sha256(candidate_path),
+        'job_sha256':router_personalize.digest(job), 'bootstrap':boot}
+    transport.write(result / 'arguments.json', {'router_candidate_test_box':box,
+        'router_candidate_test_operation':operation, 'router_candidate_test_result_dir':str(result),
+        'router_candidate_test_boot_dir':str(work / 'boot'),
+        'router_candidate_test_request':request, 'router_candidate_test_job':job})
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
+        if compiled['registry_sha256'] != rendered['registry_sha256']:
+            raise UpdateError('candidate preparation compiler inputs changed after rendering')
+        with (result / 'preparation.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-candidate-preparation-test.yml', '--limit', box + '-dom0',
+                '-e', '@' + str(result / 'arguments.json')], timeout=1200, log=log)
+        evidence = transport.load(result / 'result.json')
+        disk = transport.load(result / 'candidate-disk.json')
+        lifecycle = transport.load(result / 'lifecycle.json')
+        if (evidence.get('kind') != 'klokast.router-candidate-preparation-test-result.v1' or
+                evidence.get('box') != box or evidence.get('operation_id') != operation or
+                evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
+                evidence.get('success') is not True or evidence.get('production_identity') is not False or
+                evidence.get('replacement_authorized') is not False or
+                evidence.get('prepared', {}).get('packages') != release['runtime_packages'] or
+                evidence['prepared'].get('configuration_files') != {
+                    name:hashlib.sha256(content.encode()).hexdigest()
+                    for name,content in personalization['files'].items()} or
+                disk.get('stage') != 'retired' or disk.get('operation_id') != operation or
+                lifecycle.get('stage') != 'retired' or lifecycle.get('operation_id') != operation):
+            raise UpdateError('candidate preparation test has incomplete result or exact cleanup evidence')
+        if json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show'])) != compiled:
+            raise UpdateError('candidate preparation compiler inputs changed during native test')
+        return {'kind':'klokast.router-candidate-preparation-test.v1', 'box':box,
+                'operation':operation, 'evidence_directory':str(result), 'status':'qualified',
+                'production_identity':False, 'replacement_authorized':False}
 
 
 def adopt_legacy(box):
@@ -493,6 +569,10 @@ def main():
     compatibility.add_argument('--box', required=True)
     compatibility.add_argument('--inputs-directory', required=True)
     compatibility.add_argument('--template-operation', required=True)
+    candidate_test = sub.add_parser('test-candidate-preparation', help='qualify and retire one new networkless candidate LV')
+    candidate_test.add_argument('--box', required=True)
+    candidate_test.add_argument('--inputs-directory', required=True)
+    candidate_test.add_argument('--template-operation', required=True)
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -515,6 +595,8 @@ def main():
             value = render_candidate(args.box, args.inputs_directory)
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
+        elif args.command == 'test-candidate-preparation':
+            value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

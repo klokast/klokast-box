@@ -364,6 +364,15 @@ old router disk, production VIF, enrollment key, or cutover command. The dom0
 dispatcher and restricted candidate boot must still be connected and tested
 before this guest can prepare a production candidate.
 
+`platform-router-update test-candidate-preparation --box BOX
+--inputs-directory INPUTS --template-operation TEMPLATE` stages that guest
+from one frozen router input set. On dom0 it clones the exact generic template
+to a new operation LV, boots the guest without VIFs, verifies the prepared
+files, and retires the diagnostic LV after the guest stops. The result is test
+evidence only. A failed or uncertain cleanup keeps its exact disk record for
+reconciliation. This test does not publish a generation or use the production
+router identity.
+
 The common preparation helper, `ansible/lib/router_candidate.py`, accepts only
 `initial-install` and `replacement` on a fresh generic clone inside networkless
 Xen. Both modes use the same configuration and account recipe. Initial mode

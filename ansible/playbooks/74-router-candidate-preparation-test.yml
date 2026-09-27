@@ -1,0 +1,119 @@
+---
+- name: Qualify candidate preparation on one disposable LV
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact diagnostic candidate target and paths
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_candidate_test_box ~ '-dom0'
+          - router_candidate_test_operation is match('^[0-9a-f]{24}$')
+          - router_candidate_test_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_candidate_test_operation
+          - router_candidate_test_boot_dir == '/var/cache/klokast/updates/router/candidate-test-' ~ router_candidate_test_operation ~ '/boot'
+          - router_candidate_test_request.box == router_candidate_test_box
+          - router_candidate_test_request.operation_id == router_candidate_test_operation
+          - router_candidate_test_job.operation_id == router_candidate_test_operation
+
+    - name: Require the active controller for diagnostic candidate preparation
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Require persistent dom0 candidate test storage
+      ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
+      changed_when: false
+
+    - name: Create the private candidate test base
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-router-candidate-tests
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Refuse a reused candidate preparation operation
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}'
+        follow: false
+      register: router_candidate_test_existing
+
+    - name: Require a new candidate test directory
+      ansible.builtin.assert:
+        that: [not router_candidate_test_existing.stat.exists]
+
+    - name: Create the private candidate preparation directory
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Stage the exact candidate test request
+      ansible.builtin.copy:
+        content: '{{ router_candidate_test_request | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/request.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Stage the exact candidate preparation job
+      ansible.builtin.copy:
+        content: '{{ router_candidate_test_job | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/candidate-job.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Stage the disposable Xen boot artifacts
+      ansible.builtin.copy:
+        src: '{{ router_candidate_test_boot_dir }}/{{ item.source }}'
+        dest: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/bootstrap-{{ item.name }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - {name: kernel, source: kernel}
+        - {name: initramfs, source: initramfs}
+
+    - name: Stage the closed diagnostic host module set
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+        dest: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/{{ item }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [router_candidate, router_candidate_disk, router_generations, router_native,
+             router_records, router_transaction, router_finalize, router_personalize, xen_build_runtime]
+
+    - name: Stage the fixed diagnostic candidate host command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-candidate-preparation/files/router-candidate-prepare-dom0'
+        dest: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/router-candidate-prepare-dom0'
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Prepare and retire the exact diagnostic candidate LV
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/router-candidate-prepare-dom0'
+          - --box
+          - '{{ router_candidate_test_box }}'
+          - --operation-id
+          - '{{ router_candidate_test_operation }}'
+      changed_when: true
+
+    - name: Fetch the bounded preparation evidence
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/{{ item }}.json'
+        dest: '{{ router_candidate_test_result_dir }}/{{ item }}.json'
+        flat: true
+      loop: [result, candidate-disk, lifecycle]

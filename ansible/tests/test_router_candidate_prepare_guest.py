@@ -10,6 +10,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
 GUEST = ROOT / 'roles/router-candidate-preparation/files/router-candidate-prepare-guest'
+HOST = ROOT / 'roles/router-candidate-preparation/files/router-candidate-prepare-dom0'
 
 
 class CandidatePrepareGuestTests(unittest.TestCase):
@@ -36,6 +37,23 @@ class CandidatePrepareGuestTests(unittest.TestCase):
             self.assertEqual([event[0:2] for event in events[-4:]],
                 [('/bin/umount',str(root/'dev')),('/bin/umount',str(root/'sys')),
                  ('/bin/umount',str(root/'proc')),('/bin/umount',str(root))])
+
+
+class CandidatePrepareHostTests(unittest.TestCase):
+    def test_diagnostic_xen_definition_has_only_new_disk_result_and_no_vif(self):
+        module = runpy.run_path(str(HOST), run_name='router_candidate_prepare_dom0')
+        with tempfile.TemporaryDirectory() as directory:
+            work=Path(directory)
+            name,path=module['configuration'](work,
+                {'operation_id':'a'*24,'inputs_sha256':'b'*64,'job_sha256':'c'*64},
+                {'path':'/dev/vg0/routergen_'+'a'*24},'/dev/loop7',
+                '12345678-1234-4234-8234-123456789abc')
+            content=path.read_text()
+            self.assertEqual(name,'router-candidate-prepare-'+'a'*24)
+            self.assertIn("vif = []",content)
+            self.assertIn('/dev/vg0/routergen_'+'a'*24,content)
+            self.assertIn('phy:/dev/loop7,xvdb,w',content)
+            self.assertNotIn('/dev/vg0/lv_router',content)
 
 
 if __name__ == '__main__':

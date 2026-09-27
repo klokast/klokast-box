@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Qualify one candidate preparation on a new LV, then retire that LV."""
+import argparse
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import sys
+import time
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import router_candidate
+import router_candidate_disk
+import router_personalize
+from xen_build_runtime import (attach_loop, boot_guest, checksum, detach_loop,
+    domain, duplicate_fields, read_slot, safe_directory, safe_file, write)
+
+BASE = Path('/mnt/dom0_data/klokast-router-candidate-tests')
+TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
+MIB = 1024 * 1024
+
+
+def load(path):
+    safe_file(path, MIB)
+    return json.loads(path.read_text(), object_pairs_hook=duplicate_fields)
+
+
+def request(work, box, operation):
+    value = load(work / 'request.json')
+    if (not isinstance(value, dict) or set(value) != {'kind','box','operation_id','engine_commit',
+            'inputs_sha256','template_operation','template_sha256','job_sha256','bootstrap'} or
+            value['kind'] != 'klokast.router-candidate-preparation-test.v1' or value['box'] != box or
+            value['operation_id'] != operation or
+            not re.fullmatch('[0-9a-f]{40}', value['engine_commit']) or
+            not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256']) or
+            not re.fullmatch('[0-9a-f]{24}', value['template_operation']) or
+            not re.fullmatch('[0-9a-f]{64}', value['template_sha256']) or
+            not re.fullmatch('[0-9a-f]{64}', value['job_sha256']) or
+            not isinstance(value['bootstrap'], dict) or set(value['bootstrap']) != {'kernel','initramfs'}):
+        raise RuntimeError('router candidate test request has an invalid target or input identity')
+    job = load(work / 'candidate-job.json')
+    router_candidate.validate(job)
+    if (job['mode'] != 'replacement' or job['box'] != box or job['operation_id'] != operation or
+            job['engine_commit'] != value['engine_commit'] or
+            job['inputs_sha256'] != value['inputs_sha256'] or
+            router_personalize.digest(job) != value['job_sha256']):
+        raise RuntimeError('candidate test job differs from the exact selected inputs')
+    for name, maximum in (('kernel',32*MIB),('initramfs',1024*MIB)):
+        item = value['bootstrap'][name]
+        if (not isinstance(item, dict) or set(item) != {'bytes','sha256'} or
+                type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum or
+                not re.fullmatch('[0-9a-f]{64}', item['sha256'])):
+            raise RuntimeError('candidate test bootstrap identity is invalid')
+        path = work / ('bootstrap-' + name)
+        safe_file(path, maximum)
+        if path.stat().st_size != item['bytes'] or checksum(path) != item['sha256']:
+            raise RuntimeError('candidate test bootstrap bytes changed')
+    return value, job
+
+
+def template(value):
+    work = TEMPLATES / value['template_operation']
+    safe_directory(TEMPLATES); safe_directory(work)
+    record = load(work / 'candidate.json')
+    if (checksum(work / 'candidate.json') != value['template_sha256'] or
+            record.get('kind') != 'klokast.router-template-candidate.v1' or
+            record.get('box') != value['box'] or record.get('role') != 'router' or
+            record.get('operation_id') != value['template_operation'] or
+            record.get('inputs_sha256') != value['inputs_sha256'] or
+            record.get('replacement_authorized') is not False):
+        raise RuntimeError('candidate test template differs from the selected diagnostic record')
+    source = work / 'os.slot'
+    safe_file(source, 2048*MIB)
+    if (source.stat().st_size != 2048*MIB or checksum(source) != record['artifacts']['os']['sha256']):
+        raise RuntimeError('candidate test template OS bytes changed')
+    return source, record
+
+
+def configuration(work, value, disk, result_loop, identity):
+    operation = value['operation_id']
+    name = 'router-candidate-prepare-' + operation
+    extra = ('console=hvc0 panic=1 klokast_operation=' + operation +
+             ' klokast_inputs=' + value['inputs_sha256'] + ' klokast_job=' + value['job_sha256'])
+    content = (f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 2048\nmaxmem = 2048\n'
+               f'vcpus = 2\nkernel = {str(work / "bootstrap-kernel")!r}\n'
+               f'ramdisk = {str(work / "bootstrap-initramfs")!r}\nextra = {extra!r}\n'
+               f'disk = {["phy:" + disk["path"] + ",xvda,w", "phy:" + result_loop + ",xvdb,w"]!r}\n'
+               'vif = []\non_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
+    path = work / 'prepare.cfg'
+    with path.open('x') as stream:
+        stream.write(content)
+        stream.flush(); os.fsync(stream.fileno())
+    return name, path
+
+
+def execute(work, value, job):
+    name = 'router-candidate-prepare-' + value['operation_id']
+    if domain(name) is not None or (work / 'candidate-disk.json').exists() or (work / 'result.slot').exists():
+        raise RuntimeError('candidate preparation test operation already has a domain or disk')
+    source, template_record = template(value)
+    disk = router_candidate_disk.create(work, value['operation_id'], source,
+                                        template_record['artifacts']['os'])
+    slot = work / 'result.slot'
+    with slot.open('xb') as stream:
+        os.posix_fallocate(stream.fileno(), 0, MIB)
+        os.fsync(stream.fileno())
+    result_loop = None
+    try:
+        result_loop = attach_loop(slot)
+        identity = str(uuid.uuid4())
+        name, config = configuration(work, value, disk, result_loop, identity)
+        write(work / 'lifecycle.json', {'kind':'klokast.router-candidate-preparation-lifecycle.v1',
+            'operation_id':value['operation_id'], 'domain':name, 'uuid':identity, 'stage':'booting'})
+        boot_guest(work, name, identity, config, value,
+            kind='klokast.router-candidate-preparation-result.v1', timeout=420)
+        result = read_slot(slot)
+        if (not isinstance(result, dict) or set(result) != {'kind','operation_id','inputs_sha256',
+                'job_sha256','success','prepared'} or
+                result['kind'] != 'klokast.router-candidate-preparation-result.v1' or
+                result['operation_id'] != value['operation_id'] or
+                result['inputs_sha256'] != value['inputs_sha256'] or
+                result['job_sha256'] != value['job_sha256'] or result['success'] is not True or
+                result['prepared'].get('mode') != 'replacement' or
+                result['prepared'].get('identity_absent') is not True or
+                result['prepared'].get('service_syntax') is not True or
+                result['prepared'].get('packages') != job['runtime_packages']):
+            raise RuntimeError('candidate preparation guest returned incomplete or different evidence')
+        write(work / 'result.json', {'kind':'klokast.router-candidate-preparation-test-result.v1',
+            'box':value['box'], 'operation_id':value['operation_id'], 'engine_commit':value['engine_commit'],
+            'inputs_sha256':value['inputs_sha256'], 'prepared':result['prepared'],
+            'production_identity':False, 'replacement_authorized':False, 'success':True})
+        return True
+    finally:
+        if domain(name) is not None:
+            raise RuntimeError('candidate preparation guest remains; retain its disk and result')
+        if result_loop is not None:
+            detach_loop(slot, result_loop)
+        router_candidate_disk.retire(work, value['operation_id'], box=value['box'])
+        write(work / 'lifecycle.json', {'kind':'klokast.router-candidate-preparation-lifecycle.v1',
+            'operation_id':value['operation_id'], 'domain':name, 'stage':'retired'})
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('router candidate test requires root on the exact dom0')
+    work = BASE / args.operation_id
+    safe_directory(BASE); safe_directory(work)
+    value, job = request(work, args.box, args.operation_id)
+    with (BASE / 'test.lock').open('a') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        execute(work, value, job)
+    print(json.dumps({'kind':'klokast.router-candidate-preparation-command.v1',
+                      'box':args.box, 'operation_id':args.operation_id, 'status':'qualified'}))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print('Router candidate preparation test refused: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)
