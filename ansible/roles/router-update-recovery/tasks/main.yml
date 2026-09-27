@@ -12,9 +12,9 @@
   changed_when: false
   register: router_recovery_controller
 
-- name: Read the activated engine through the root policy reader
+- name: Read the activated engine through the private Instance authority
   ansible.builtin.command:
-    argv: [/usr/bin/doas, /usr/local/sbin/ksa-apply, vm-update-policy, source-status]
+    argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
   delegate_to: localhost
   become: false
   changed_when: false
@@ -44,6 +44,9 @@
       - (router_recovery_controller.stdout | from_json).active | bool
       - (router_recovery_controller.stdout | from_json).configured | bool
       - router_recovery_commit.stdout is match('^[0-9a-f]{40}$')
+      - (router_recovery_source.stdout | from_json).valid | bool
+      - (router_recovery_source.stdout | from_json).activation_present | bool
+      - not ((router_recovery_source.stdout | from_json).pending_activation | bool)
       - router_recovery_commit.stdout == (router_recovery_source.stdout | from_json).engine_commit
       - router_recovery_status.stdout | length == 0
 
