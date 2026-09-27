@@ -193,13 +193,13 @@ class HostTests(unittest.TestCase):
             for live, attached in (({}, []), (None, ['/dev/loop7'])):
                 with patch.object(self.host, 'safe_file'), patch.object(self.host, 'domain', return_value=live), \
                      patch.object(self.host, 'loop_devices', return_value=attached), self.assertRaises(RuntimeError):
-                    self.host.cleanup(root, self.operation)
+                    self.host.cleanup(root, self.operation, 'boxa')
                 self.assertTrue(disk.exists())
             record['slots']['old']['inode'] += 1
             (root / 'lifecycle.json').write_text(json.dumps(record))
             with patch.object(self.host, 'safe_file'), patch.object(self.host, 'domain', return_value=None), \
                  patch.object(self.host, 'loop_devices', return_value=[]), self.assertRaises(RuntimeError):
-                self.host.cleanup(root, self.operation)
+                self.host.cleanup(root, self.operation, 'boxa')
             self.assertTrue(disk.exists())
 
     def test_changed_live_identity_refuses_before_snapshot_command(self):
