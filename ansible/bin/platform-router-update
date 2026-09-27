@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import re
+import runpy
 from pathlib import Path
 import secrets
 import sys
@@ -36,7 +37,9 @@ def inspect(box):
     args = directory / 'arguments.json'
     compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
     expected = router_updates.expected_includes(compiled, box)
-    transport.write(args, {'router_update_box': box, 'router_update_result_dir': str(directory),
+    compiler = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))
+    box_variables = compiler['box_access_router_vars'](compiled, box)
+    transport.write(args, {**box_variables, 'router_update_box': box, 'router_update_result_dir': str(directory),
                            'router_update_expected_includes': expected})
     with (directory / 'inspection.log').open('x') as log:
         transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',

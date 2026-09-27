@@ -26,7 +26,8 @@ Inspection compares the four core router files (interfaces, dhcpcd, dnsmasq,
 and nftables) with the common Ansible templates rendered from execution
 inventory. Missing evidence, unsafe file metadata, or a different checksum
 blocks readiness. Inspection also compiles the current verified Instance
-resources and compares every router firewall include with that output. Missing,
+resources, uses its managed DHCP reservations and access settings in the common
+renderer, and compares every router firewall include with that output. Missing,
 changed, or extra includes block readiness. The supported profile requires an
 empty dnsmasq include directory; an additional DNS feature needs an explicit
 reconstruction adapter.
