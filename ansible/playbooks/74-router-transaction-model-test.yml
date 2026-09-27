@@ -1,0 +1,19 @@
+---
+- name: Verify router cutover ordering and crash recovery without Platform access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Run the deterministic router transaction failure model
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -m
+          - unittest
+          - discover
+          - -s
+          - '{{ playbook_dir }}/../tests'
+          - -p
+          - test_router_transaction.py
+      changed_when: false

@@ -320,3 +320,30 @@ are rejected before writing a clone. Inspection and rendering select firewall
 includes through the same compiler adapter. The rendered result has no
 replacement authority. Native candidate preparation and service verification
 must still pass before use.
+
+## Cutover order and failure model
+
+`ansible/lib/router_transaction.py` defines the router-specific durable order.
+It requires an adapter for protected records, exact Xen resources, native copy,
+local probes, controller acceptance, and boot recovery. The ordering module
+alone is not a production executor. Run its model tests without Platform access:
+
+```sh
+python3 -m unittest discover -s ansible/tests -p 'test_router_transaction.py'
+```
+
+The same test is available through
+`ansible/playbooks/74-router-transaction-model-test.yml`. The model covers power
+loss at each cutover record, partial forward and reverse copies, an accepted
+pointer written before the pending record is updated, and unreadable latest
+state. It requires a separate fixed recovery budget. Controller acceptance
+cannot extend the cutover deadline.
+
+The production-start marker is written before starting the candidate. Rollback
+then uses the candidate's latest state even if its start result is uncertain.
+A second marker is written before restarting the old OS after rollback. Once
+that marker exists, reboot recovery must preserve the old OS's new writes and
+must not copy the candidate's now-older state over them. Failed state recovery
+fences both generations. Unconfirmed fencing is reported separately and requires
+console recovery. The native dom0 adapter and boot-service tests must also pass
+before this ordering can authorize a production switch.
