@@ -50,6 +50,7 @@
     - dnsmasq
     - nftables
     - tailscale
+    - ntpd
   register: verify_router_service_status
   changed_when: false
 

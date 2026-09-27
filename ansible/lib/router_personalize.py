@@ -21,7 +21,7 @@ FILES = {
     'etc/klokast/app-resources/router-forward.nft': 0o644,
     'etc/klokast/app-resources/router-forward.d/000-empty.nft': 0o644,
 }
-SERVICES = ('networking', 'dhcpcd', 'dnsmasq', 'nftables', 'tailscale')
+SERVICES = ('networking', 'dhcpcd', 'dnsmasq', 'nftables', 'tailscale', 'ntpd')
 
 
 def file_modes(files):

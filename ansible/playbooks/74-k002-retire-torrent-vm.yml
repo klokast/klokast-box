@@ -1,0 +1,178 @@
+---
+# One-time K002 retirement. Keep the app disk and boot files offline.
+- name: Stop the retired K002 torrent VM and fence its autostart
+  hosts: k002-dom0
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  pre_tasks:
+    - name: Require the exact K002 dom0 target
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == ['k002-dom0']
+          - inventory_hostname == 'k002-dom0'
+          - node_name == 'k002'
+
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: torrent_retirement_controller
+
+    - name: Read the activated public engine
+      ansible.builtin.command:
+        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: torrent_retirement_engine
+
+    - name: Read the clean deployment checkout identity
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: torrent_retirement_commit
+
+    - name: Check for local deployment checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: torrent_retirement_git_status
+
+    - name: Read the verified Instance source
+      ansible.builtin.command:
+        argv: [/home/smith/src/klokast/klokast-box/ansible/bin/platform-registry, read, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      no_log: true
+      register: torrent_retirement_source
+
+    - name: Require signed stopped intent for this exact app VM
+      ansible.builtin.assert:
+        that:
+          - (torrent_retirement_controller.stdout | from_json).active | bool
+          - (torrent_retirement_controller.stdout | from_json).configured | bool
+          - (torrent_retirement_engine.stdout | from_json).valid | bool
+          - (torrent_retirement_engine.stdout | from_json).activation_present | bool
+          - not ((torrent_retirement_engine.stdout | from_json).pending_activation | bool)
+          - torrent_retirement_commit.stdout == (torrent_retirement_engine.stdout | from_json).engine_commit
+          - torrent_retirement_git_status.stdout | length == 0
+          - (torrent_retirement_source.stdout | from_json).source == 'instance_specification_v1'
+          - (torrent_retirement_source.stdout | from_json).registry.apps.torrent.enabled is sameas false
+          - (torrent_retirement_source.stdout | from_json).registry.apps.torrent.placement.active_master == 'k002'
+          - (torrent_retirement_source.stdout | from_json).registry.apps.torrent.app_vms.torrent.k002.vm_ipv4_address == '192.168.200.30'
+        fail_msg: The signed Instance does not authorize retiring the K002 torrent VM.
+
+    - name: Inspect the exact Xen definition and autostart link
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop:
+        - /etc/xen/torrent.cfg
+        - /etc/xen/auto/torrent.cfg
+      register: torrent_retirement_paths
+
+    - name: Refuse a changed VM definition or autostart path
+      ansible.builtin.assert:
+        that:
+          - torrent_retirement_paths.results[0].stat.isreg | default(false)
+          - torrent_retirement_paths.results[0].stat.uid == 0
+          - torrent_retirement_paths.results[0].stat.gid == 0
+          - torrent_retirement_paths.results[0].stat.mode == '0644'
+          - torrent_retirement_paths.results[0].stat.nlink == 1
+          - torrent_retirement_paths.results[0].stat.checksum == '3cd5e2a77bbc47930b0bb04cb856fab3dd2e4ef2d934b7b1f65da202c5cb832b'
+          - torrent_retirement_paths.results[1].stat.islnk | default(false)
+          - torrent_retirement_paths.results[1].stat.uid == 0
+          - torrent_retirement_paths.results[1].stat.lnk_target == '/etc/xen/torrent.cfg'
+        fail_msg: K002 torrent VM files differ from the inspected retirement target.
+
+    - name: Inspect the running Xen domain
+      ansible.builtin.command: /usr/sbin/xl list -l torrent
+      changed_when: false
+      register: torrent_retirement_domain_raw
+
+    - name: Require the exact running torrent disk and network identity
+      ansible.builtin.assert:
+        that:
+          - (torrent_retirement_domain_raw.stdout | from_json) | length == 1
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.c_info.name == 'torrent'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.c_info.type == 'pvh'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.b_info.kernel == '/mnt/dom0_data/xen_images/torrent-kernel'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.b_info.ramdisk == '/mnt/dom0_data/xen_images/torrent-initramfs'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.disks | length == 1
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.disks[0].pdev_path == '/dev/vg0/lv_torrent_torrent'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.disks[0].vdev == 'xvda'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.nics | length == 1
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.nics[0].bridge == 'br-dmz'
+          - (torrent_retirement_domain_raw.stdout | from_json)[0].config.nics[0].mac == '00:16:3e:b6:db:16'
+        fail_msg: The running K002 torrent domain differs from the inspected VM.
+
+    - name: Record the data disk identity before retirement
+      ansible.builtin.command:
+        argv: [/sbin/lvs, --noheadings, -o, lv_uuid, vg0/lv_torrent_torrent]
+      changed_when: false
+      register: torrent_retirement_disk_before
+
+    - name: Require the data disk to exist
+      ansible.builtin.assert:
+        that: [torrent_retirement_disk_before.stdout | trim | length > 0]
+
+  tasks:
+    - name: Remove only the inspected torrent autostart link
+      ansible.builtin.file:
+        path: /etc/xen/auto/torrent.cfg
+        state: absent
+
+    - name: Persist the autostart fence before stopping the guest
+      ansible.builtin.command: /usr/sbin/lbu commit -d
+      changed_when: true
+
+    - name: Confirm the persistent overlay excludes torrent autostart
+      ansible.builtin.shell: |
+        set -eu
+        archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
+        count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
+        [ "$count" -eq 1 ] || { echo 'Expected one dom0 overlay archive' >&2; exit 1; }
+        if tar -tzf "$archives" | sed 's#^\./##' | grep -Fxq 'etc/xen/auto/torrent.cfg'; then
+          echo 'Torrent autostart remains in the dom0 overlay archive' >&2
+          exit 1
+        fi
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+    - name: Shut down the retired torrent guest without deleting its disk
+      ansible.builtin.include_role:
+        name: xen-guest-instance
+      vars:
+        xen_guest_name: torrent
+        xen_guest_runtime_state: stopped
+
+    - name: Recheck the retained data disk identity
+      ansible.builtin.command:
+        argv: [/sbin/lvs, --noheadings, -o, lv_uuid, vg0/lv_torrent_torrent]
+      changed_when: false
+      register: torrent_retirement_disk_after
+
+    - name: Check that torrent autostart stayed absent
+      ansible.builtin.stat:
+        path: /etc/xen/auto/torrent.cfg
+        follow: false
+      register: torrent_retirement_autostart_after
+
+    - name: Prove the app data disk was retained offline
+      ansible.builtin.assert:
+        that:
+          - torrent_retirement_disk_after.stdout | trim == torrent_retirement_disk_before.stdout | trim
+          - not (torrent_retirement_autostart_after.stat.exists | default(false))

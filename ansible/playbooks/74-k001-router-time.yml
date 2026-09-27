@@ -1,0 +1,152 @@
+---
+# Correct one inspected legacy router clock before update-report qualification.
+- name: Restore bounded UTC synchronization on the accepted K001 router
+  hosts: k001-router
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  become_method: doas
+  pre_tasks:
+    - name: Require the exact accepted router target
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == ['k001-router']
+          - inventory_hostname == 'k001-router'
+          - node_name == 'k001'
+
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_controller
+
+    - name: Require the controller's public UTC service
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, ntpd, status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_controller_ntp
+
+    - name: Read the activated public engine
+      ansible.builtin.command:
+        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_engine
+
+    - name: Read the clean deployment checkout identity
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_commit
+
+    - name: Check for deployment checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_git_status
+
+    - name: Verify the protected accepted boot assignment
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, k001]
+      delegate_to: k001-dom0
+      become: true
+      become_method: doas
+      changed_when: false
+      register: router_time_assignment
+
+    - name: Require the active controller and exact accepted router
+      ansible.builtin.assert:
+        that:
+          - (router_time_controller.stdout | from_json).active | bool
+          - (router_time_controller.stdout | from_json).configured | bool
+          - router_time_controller_ntp.rc == 0
+          - (router_time_engine.stdout | from_json).valid | bool
+          - (router_time_engine.stdout | from_json).activation_present | bool
+          - not ((router_time_engine.stdout | from_json).pending_activation | bool)
+          - router_time_commit.stdout == (router_time_engine.stdout | from_json).engine_commit
+          - router_time_git_status.stdout | length == 0
+          - (router_time_assignment.stdout | from_json).result == 'accepted-assignment-verified'
+          - (router_time_assignment.stdout | from_json).box == 'k001'
+
+    - name: Read the legacy router NTP configuration
+      ansible.builtin.command:
+        argv: [cat, /etc/conf.d/ntpd]
+      changed_when: false
+      register: router_time_ntp_config
+
+    - name: Require the inspected public NTP source
+      ansible.builtin.assert:
+        that:
+          - "'NTPD_OPTS=\"-N -p pool.ntp.org\"' in router_time_ntp_config.stdout_lines"
+
+    - name: Read controller UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_controller_epoch
+
+    - name: Read router UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      changed_when: false
+      register: router_time_guest_epoch
+
+    - name: Refuse an unbounded clock difference
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((router_time_guest_epoch.stdout | int) -
+             (router_time_controller_epoch.stdout | int)) | abs <= 600
+
+  tasks:
+    - name: Set router UTC from the synchronized controller when needed
+      ansible.builtin.command:
+        argv: [date, -u, -s, '@{{ router_time_controller_epoch.stdout }}']
+      when: >-
+        ((router_time_guest_epoch.stdout | int) -
+         (router_time_controller_epoch.stdout | int)) | abs > 30
+
+    - name: Enable and start the existing Alpine NTP client
+      ansible.builtin.service:
+        name: ntpd
+        enabled: true
+        state: started
+
+    - name: Read final controller UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_time_controller_final
+
+    - name: Read final router UTC epoch
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      changed_when: false
+      register: router_time_guest_final
+
+    - name: Require synchronized UTC and running NTP
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((router_time_guest_final.stdout | int) -
+             (router_time_controller_final.stdout | int)) | abs <= 30
+
+    - name: Verify the router NTP client is running
+      ansible.builtin.command:
+        argv: [/sbin/rc-service, ntpd, status]
+      changed_when: false

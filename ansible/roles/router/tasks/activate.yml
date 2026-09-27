@@ -126,6 +126,7 @@
     - dnsmasq
     - nftables
     - tailscale
+    - ntpd
 
 - name: Reapply the signed ops IPv6 downstream sysctl mode when present
   ansible.builtin.command: sysctl -p /etc/sysctl.d/91-klokast-ops-ipv6.conf

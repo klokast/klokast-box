@@ -18,6 +18,10 @@ SSH host keys, and file metadata that the fixed state-copy guest can read.
 Inspection records the service account IDs and checks each retained file against
 its allowed owners. Symlinked state paths and unsafe parent directories fail
 inspection.
+The common router recipe enables Alpine's NTP client. Update checks reject
+inspection timestamps that are ahead of the controller. Correct a legacy router
+clock through the bounded controller playbook before retrying; do not relax the
+freshness check to conceal clock drift.
 Baseline readiness also requires a locked root password, no running OpenSSH
 server, and no OpenSSH server packages, executable, or service links. Removing
 the root key alone is not sufficient. Older inspection records without these
