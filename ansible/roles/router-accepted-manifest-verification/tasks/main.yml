@@ -5,6 +5,21 @@
       - node_name is match('^[a-z0-9][a-z0-9-]{0,30}$')
       - inventory_hostname == node_name ~ '-router'
 
+- name: Verify the exact running accepted boot assignment
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, '{{ node_name }}']
+  delegate_to: '{{ node_name }}-dom0'
+  become: true
+  become_method: doas
+  changed_when: false
+  register: router_accepted_boot_command
+
+- name: Require the protected running boot assignment
+  ansible.builtin.assert:
+    that:
+      - (router_accepted_boot_command.stdout | from_json).box == node_name
+      - (router_accepted_boot_command.stdout | from_json).result == 'accepted-assignment-verified'
+
 - name: Read the protected accepted router manifest
   ansible.builtin.command:
     argv: [/usr/local/sbin/router-update-transaction, accepted-manifest, --box, '{{ node_name }}']
