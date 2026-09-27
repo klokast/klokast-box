@@ -118,6 +118,57 @@ def boot_assignment(storage, *, require_running=False):
     return 'accepted-assignment-verified'
 
 
+def baseline_grant(value, record, engine, now):
+    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'operation_id',
+            'engine_commit', 'generation_sha256', 'inspection_sha256', 'granted_at', 'expires_at'} or
+            value['kind'] != 'klokast.router-baseline-grant.v1' or
+            value['box'] != record['box'] or value['operation_id'] != record['generation_id'] or
+            value['engine_commit'] != engine or value['generation_sha256'] != record['record_sha256'] or
+            value['inspection_sha256'] != record['evidence_sha256'] or
+            type(value['granted_at']) is not int or type(value['expires_at']) is not int or
+            not value['granted_at'] <= now < value['expires_at'] <= value['granted_at'] + 300):
+        raise TransactionError('supervised router baseline grant is stale or targets different inspection evidence')
+    return value
+
+
+def adopt_baseline(storage, operation, engine, *, xen=Path('/etc/xen')):
+    if not generations.matches('[0-9a-f]{24}', operation):
+        raise TransactionError('router baseline adoption needs one exact operation')
+    work = storage.operation(operation)
+    record = generations.generation(records.read(work / 'generation.json'), storage.box)
+    if record['origin'] != 'legacy' or record['generation_id'] != operation or record['engine_commit'] != engine:
+        raise TransactionError('router baseline record differs from this operation or activated engine')
+    grant = baseline_grant(records.read(work / 'authorization.json'), record, engine, time.time())
+    if storage.pending() is not None or (storage.base / 'accepted.json').exists() or (storage.base / 'accepted.json').is_symlink():
+        raise TransactionError('router baseline adoption requires no accepted or pending generation')
+    host = native.Native()
+    deadline = host.monotonic() + 90
+    host.disk(record['disk'], deadline=deadline)
+    for item in record['boot'].values():
+        host.artifact(item, deadline=deadline)
+    xen = Path(xen)
+    expected = native.literal_configuration(generations.configuration(record))
+    actual = native.literal_configuration(records.secure(xen / 'router.cfg').read_text())
+    if 'uuid' not in actual:
+        actual['uuid'] = expected['uuid']
+    if actual != expected:
+        raise TransactionError('legacy router Xen definition changed after supervised inspection')
+    link = xen / 'auto/router.cfg'
+    records.parents(link)
+    if (not link.is_symlink() or link.lstat().st_uid != records.ROOT_UID or
+            os.readlink(link) not in ('../router.cfg', str(xen / 'router.cfg'))):
+        raise TransactionError('legacy router autostart link differs from managed boot state')
+    live = host.guest({'legacy':record}, deadline=deadline)
+    if live is None or live[0] != 'legacy':
+        raise TransactionError('legacy router is not running with its exact inspected Xen identity')
+    baseline_grant(grant, record, engine, time.time())
+    accepted = storage.adopt(record)
+    records.write(work / 'adoption.json', {'kind':'klokast.router-baseline-adoption.v1',
+        'generation_sha256':record['record_sha256'], 'assignment_sha256':accepted['record_sha256']})
+    return {'status':'baseline-adopted', 'generation_sha256':record['record_sha256'],
+            'assignment_sha256':accepted['record_sha256']}
+
+
 def supervise(storage, operation, engine):
     """One local supervisor, bounded by the operation budgets; not a daemon.
 
@@ -178,7 +229,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status',
-        'verify-boot-assignment', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
+        'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -213,7 +264,9 @@ def main(argv, engine):
         result = 'controller-acceptance-published'
     else:
         with storage.lock():
-            if args.action == 'verify-boot-assignment':
+            if args.action == 'adopt-baseline':
+                result = adopt_baseline(storage, args.operation_id, engine)
+            elif args.action == 'verify-boot-assignment':
                 if storage.pending() is not None:
                     raise TransactionError('cannot verify a router provisioning rerun during a pending operation')
                 if not (storage.base / 'accepted.json').exists():

@@ -1,0 +1,99 @@
+---
+- name: Adopt one inspected legacy router generation
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact baseline target and evidence
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_baseline_box ~ '-dom0'
+          - router_baseline_operation is match('^[0-9a-f]{24}$')
+          - router_baseline_record.box == router_baseline_box
+          - router_baseline_record.generation_id == router_baseline_operation
+          - router_baseline_record.origin == 'legacy'
+          - router_baseline_grant.operation_id == router_baseline_operation
+          - router_baseline_grant.generation_sha256 == router_baseline_record.record_sha256
+
+    - name: Recheck the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_baseline_controller
+
+    - name: Recheck the activated engine
+      ansible.builtin.command:
+        argv: [/usr/bin/doas, /usr/local/sbin/ksa-apply, vm-update-policy, source-status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_baseline_source
+
+    - name: Bind the baseline to current controller authority
+      ansible.builtin.assert:
+        that:
+          - (router_baseline_controller.stdout | from_json).active | bool
+          - (router_baseline_controller.stdout | from_json).configured | bool
+          - router_baseline_grant.engine_commit == (router_baseline_source.stdout | from_json).engine_commit
+          - router_baseline_record.engine_commit == router_baseline_grant.engine_commit
+
+    - name: Check that the baseline operation has not been staged
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_baseline_operation }}'
+        follow: false
+      register: router_baseline_existing
+
+    - name: Refuse a reused baseline operation
+      ansible.builtin.assert:
+        that: [not router_baseline_existing.stat.exists]
+
+    - name: Create the private baseline operation directory
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_baseline_operation }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Stage the exact inspected generation
+      ansible.builtin.copy:
+        content: '{{ router_baseline_record | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_baseline_operation }}/generation.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Stage the short baseline grant
+      ansible.builtin.copy:
+        content: '{{ router_baseline_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_baseline_operation }}/authorization.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Adopt only the still-running exact legacy generation
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, adopt-baseline, --box, '{{ router_baseline_box }}', --operation-id, '{{ router_baseline_operation }}']
+      register: router_baseline_result
+      changed_when: true
+
+    - name: Read the protected accepted assignment
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, assignment-status, --box, '{{ router_baseline_box }}']
+      register: router_baseline_assignment
+      changed_when: false
+
+    - name: Verify the published baseline pointer
+      ansible.builtin.assert:
+        that:
+          - (router_baseline_result.stdout | from_json).result.status == 'baseline-adopted'
+          - (router_baseline_assignment.stdout | from_json).result.adopted | bool
+          - not (router_baseline_assignment.stdout | from_json).result.pending | bool
+          - (router_baseline_assignment.stdout | from_json).result.assignment.current_sha256 == router_baseline_record.record_sha256
+          - (router_baseline_assignment.stdout | from_json).result.assignment.previous_sha256 == none

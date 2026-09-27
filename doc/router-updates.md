@@ -468,6 +468,18 @@ not stop a guest or adopt the baseline:
 ansible/bin/platform-router-update test-dom0-guards --box boxa
 ```
 
+For a supervised legacy baseline, run `platform-router-update adopt-legacy
+--box BOX` on the active controller from a clean checkout of the activated
+engine. The command holds the installation lock, installs the matching dom0
+recovery engine, inspects the running router, and assembles one legacy generation
+from the fresh evidence. It then stages a grant that expires after five minutes.
+The dom0 command checks the disk, boot files, Xen definition, autostart link,
+and running guest before it publishes the accepted assignment. It does not stop
+or rebuild the router. A failed check leaves the accepted assignment absent.
+The command returns the protected controller evidence directory and generation
+checksum. Review the private operation log and run the router verification and
+Platform Map checks after adoption.
+
 
 ## Generation status in Platform Map
 

@@ -11,8 +11,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_executor as e
+import router_generations as generations
+import router_records as records
 from router_transaction import TransactionError
 import test_router_dom0 as dom0_tests
+import test_router_generations as generation_tests
 
 
 class WorkerTests(unittest.TestCase):
@@ -97,6 +100,75 @@ class SupervisorTests(unittest.TestCase):
         with mock.patch.object(self.records,'committed',side_effect=TransactionError('assignment differs')):
             with self.assertRaisesRegex(TransactionError,'assignment differs'):
                 e.map_status(self.records)
+
+
+class BaselineTests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base=Path(temporary.name)
+        for name in ('records','generations','operations'):
+            (self.base/name).mkdir(mode=0o700)
+        for name,value in (('ROOT_UID',os.geteuid()),('parents',lambda path:None)):
+            patch=mock.patch.object(records,name,value)
+            patch.start();self.addCleanup(patch.stop)
+        self.storage=records.Records('boxa',self.base)
+        self.record=generation_tests.generation('legacy')
+        self.operation=self.record['generation_id']
+        self.work=self.base/'operations'/self.operation
+        self.work.mkdir(mode=0o700)
+        records.write(self.work/'generation.json',self.record)
+        now=int(time.time())
+        self.grant={'kind':'klokast.router-baseline-grant.v1','box':'boxa',
+                    'operation_id':self.operation,'engine_commit':self.record['engine_commit'],
+                    'generation_sha256':self.record['record_sha256'],
+                    'inspection_sha256':self.record['evidence_sha256'],
+                    'granted_at':now-1,'expires_at':now+180}
+        records.write(self.work/'authorization.json',self.grant)
+        self.xen=self.base/'xen'
+        (self.xen/'auto').mkdir(parents=True)
+        config=self.xen/'router.cfg'
+        config.write_text(generations.configuration(self.record))
+        config.chmod(0o600)
+        (self.xen/'auto/router.cfg').symlink_to('../router.cfg')
+        self.host=mock.Mock()
+        self.host.monotonic.return_value=100.0
+        self.host.guest.return_value=('legacy',{})
+        patch=mock.patch.object(e.native,'Native',return_value=self.host)
+        patch.start();self.addCleanup(patch.stop)
+
+    def test_adoption_checks_live_source_then_publishes_one_baseline(self):
+        with self.storage.lock():
+            result=e.adopt_baseline(self.storage,self.operation,self.record['engine_commit'],xen=self.xen)
+        self.assertEqual(result['status'],'baseline-adopted')
+        self.assertEqual(self.storage.accepted()['current_sha256'],self.record['record_sha256'])
+        self.assertEqual(records.read(self.work/'adoption.json')['assignment_sha256'],result['assignment_sha256'])
+        self.host.guest.assert_called_once()
+        with self.storage.lock(),self.assertRaisesRegex(TransactionError,'no accepted'):
+            e.adopt_baseline(self.storage,self.operation,self.record['engine_commit'],xen=self.xen)
+
+    def test_changed_boot_definition_or_stale_grant_never_publishes(self):
+        (self.xen/'router.cfg').write_text('name = "router-other"\n')
+        with self.storage.lock(),self.assertRaises(TransactionError):
+            e.adopt_baseline(self.storage,self.operation,self.record['engine_commit'],xen=self.xen)
+        self.assertFalse((self.base/'accepted.json').exists())
+        (self.xen/'router.cfg').write_text(generations.configuration(self.record))
+        records.write(self.work/'authorization.json',{**self.grant,'expires_at':self.grant['granted_at']})
+        with self.storage.lock(),self.assertRaisesRegex(TransactionError,'grant'):
+            e.adopt_baseline(self.storage,self.operation,self.record['engine_commit'],xen=self.xen)
+        self.assertFalse((self.base/'accepted.json').exists())
+
+    def test_changed_running_source_never_publishes(self):
+        self.host.guest.return_value=None
+        with self.storage.lock(),self.assertRaisesRegex(TransactionError,'not running'):
+            e.adopt_baseline(self.storage,self.operation,self.record['engine_commit'],xen=self.xen)
+        self.assertFalse((self.base/'accepted.json').exists())
+
+    def test_grant_for_another_engine_never_publishes(self):
+        records.write(self.work/'authorization.json',{**self.grant,'engine_commit':'f'*40})
+        with self.storage.lock(),self.assertRaisesRegex(TransactionError,'grant'):
+            e.adopt_baseline(self.storage,self.operation,self.record['engine_commit'],xen=self.xen)
+        self.assertFalse((self.base/'accepted.json').exists())
 
 
 if __name__ == '__main__':

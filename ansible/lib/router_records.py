@@ -16,6 +16,7 @@ import router_transaction as transaction
 
 BASE = Path('/mnt/dom0_data/klokast-router-updates')
 ROOT_UID = 0
+BASELINE_AUTHORITY_SHA256 = generations.digest({'kind':'klokast.router-supervised-baseline.v1'})
 
 
 def secure(path, *, directory=False, maximum=1024 * 1024):
@@ -150,6 +151,34 @@ class Records:
             if checksum is not None:
                 self.generation(checksum)
         return value
+
+    def adopt(self, record):
+        """Publish one supervised legacy source after the caller's native checks.
+
+        The caller holds the local transaction lock and validates the short
+        controller grant. This method keeps the generation durable before the
+        accepted pointer. It never formats or changes the running router.
+        """
+        generations.generation(record, self.box)
+        if record['origin'] != 'legacy' or self.pending() is not None:
+            raise transaction.TransactionError('baseline adoption requires one legacy router and no pending operation')
+        accepted_path = self.base / 'accepted.json'
+        if accepted_path.exists() or accepted_path.is_symlink():
+            raise transaction.TransactionError('router already has an accepted generation')
+        path = self.base / 'records' / (record['record_sha256'] + '.json')
+        if path.exists() or path.is_symlink():
+            if read(path) != record:
+                raise transaction.TransactionError('legacy router record path contains different evidence')
+        else:
+            write(path, record)
+        accepted = assignment(generations.seal({
+            'kind':'klokast.router-assignment.v1', 'box':self.box, 'role':'router',
+            'current_sha256':record['record_sha256'], 'previous_sha256':None,
+            'operation_id':record['generation_id'], 'engine_commit':record['engine_commit'],
+            'policy_sha256':BASELINE_AUTHORITY_SHA256,
+            'evidence_sha256':record['evidence_sha256']}), self.box)
+        write(accepted_path, accepted)
+        return accepted
 
     def pending(self):
         path = self.base / 'pending.json'

@@ -112,6 +112,24 @@ class RecordsTests(unittest.TestCase):
         self.records.finish(self.request, 'rolled-back')
         self.assertFalse(self.records.committed(self.request))
 
+    def test_supervised_baseline_publication_is_single_use_and_durable(self):
+        (self.base / 'accepted.json').unlink()
+        with self.records.lock():
+            accepted = self.records.adopt(self.old)
+        self.assertEqual(accepted['current_sha256'], self.old['record_sha256'])
+        self.assertIsNone(accepted['previous_sha256'])
+        self.assertEqual(accepted['policy_sha256'], r.BASELINE_AUTHORITY_SHA256)
+        self.assertEqual(r.Records('boxa', self.base).accepted(), accepted)
+        with self.records.lock(), self.assertRaisesRegex(TransactionError, 'already has'):
+            self.records.adopt(self.old)
+
+    def test_baseline_publication_refuses_pending_operation(self):
+        (self.base / 'accepted.json').unlink()
+        self.records.persist(self.pending)
+        with self.records.lock(), self.assertRaisesRegex(TransactionError, 'no pending'):
+            self.records.adopt(self.old)
+        self.assertFalse((self.base / 'accepted.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

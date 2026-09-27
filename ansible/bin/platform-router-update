@@ -14,6 +14,7 @@ import sys
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import router_updates
+import router_legacy_generation
 import vm_template_inputs
 import router_template_inputs
 from platform_updates import UpdateError, canonical, timestamp
@@ -23,6 +24,48 @@ import router_update_controller as transport
 PROFILE = REPO / 'ansible/update-profiles/router-alpine-v1.json'
 STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
+
+
+def adopt_legacy(box):
+    """Issue one supervised baseline from fresh evidence on the active controller."""
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router baseline adoption requires an exact box ID')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('router baseline adoption requires a clean public implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router baseline adoption requires the activated signed engine commit')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        setup = STATE / secrets.token_hex(12)
+        setup.mkdir(mode=0o700)
+        with (setup / 'recovery-install.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-recovery-setup.yml', '--limit', box + '-dom0'],
+                timeout=600, log=log)
+        inspected = inspect(box)
+        if not inspected['adoption_ready']:
+            raise UpdateError('legacy router baseline is blocked: ' + ', '.join(inspected['adoption_findings']))
+        directory = Path(inspected['evidence_directory'])
+        record = router_legacy_generation.assemble(box=box, operation=inspected['operation'],
+            engine_commit=engine, guest=transport.load(directory / (box + '-router.json')),
+            dom0=transport.load(directory / (box + '-dom0.json')))
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-baseline-grant.v1', 'box':box,
+            'operation_id':record['generation_id'], 'engine_commit':engine,
+            'generation_sha256':record['record_sha256'], 'inspection_sha256':record['evidence_sha256'],
+            'granted_at':now, 'expires_at':now + 300}
+        arguments = directory / 'adoption-arguments.json'
+        transport.write(arguments, {'router_baseline_box':box, 'router_baseline_operation':inspected['operation'],
+                                    'router_baseline_record':record, 'router_baseline_grant':grant})
+        with (directory / 'adoption.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-baseline-adopt.yml', '--limit', box + '-dom0',
+                '-e', '@' + str(arguments)], timeout=300, log=log)
+        return {'kind':'klokast.router-baseline-adoption-result.v1', 'box':box,
+                'generation_sha256':record['record_sha256'], 'operation':record['generation_id'],
+                'evidence_directory':str(directory), 'status':'adopted'}
 
 
 def inspect(box):
@@ -339,6 +382,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
+    sub.add_parser('adopt-legacy', help='inspect and adopt one legacy router under activated authority').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
     sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
@@ -359,6 +403,8 @@ def main():
     try:
         if args.command == 'inspect':
             value = inspect(args.box)
+        elif args.command == 'adopt-legacy':
+            value = adopt_legacy(args.box)
         elif args.command == 'resolve':
             value = resolve(args.branch)
         elif args.command == 'test-dom0-guards':
