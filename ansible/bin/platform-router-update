@@ -287,6 +287,7 @@ def test_compatibility(box, source, template_operation):
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('production_identity') is not False or
                 evidence.get('phases') != ['prepare', 'seed', 'forward', 'new', 'reverse', 'old'] or
+                evidence.get('candidate_modes') != ['initial-install', 'replacement'] or
                 evidence.get('source_packages') != router['packages'] or
                 evidence.get('runtime_packages') != release['runtime_packages'] or
                 evidence.get('control_plane_rotation_tested') is not False or evidence.get('replacement_authorized') is not False):

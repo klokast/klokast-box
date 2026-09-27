@@ -85,7 +85,7 @@ def mounted(device, name, *, writable=False):
 
 def prepare(request):
     # Both devices are private copies. The production LV is never attached.
-    for disk in ('xvda', 'xvdb'):
+    for disk in ('xvda', 'xvdb', 'xvdc'):
         if Path('/sys/class/block/' + disk + '/ro').read_text().strip() != '0':
             raise RuntimeError('fixture preparation requires writable disposable copies')
         run(['e2fsck', '-p', '/dev/' + disk + '3'], allowed=(0, 1))
@@ -94,7 +94,7 @@ def prepare(request):
     modules = {name + '.py': Path('/usr/local/lib/klokast') / (name + '.py') for name in
                ('router_service_probe', 'router_state', 'router_personalize', 'router_fixture', 'router_compatibility',
                 'router_finalize', 'router_candidate')}
-    for device, name in (('/dev/xvda3', 'legacy'), ('/dev/xvdb3', 'candidate')):
+    for device, name in (('/dev/xvda3', 'legacy'), ('/dev/xvdc3', 'initial'), ('/dev/xvdb3', 'candidate')):
         with mounted(device, name, writable=True) as root:
             if name == 'legacy':
                 records[name] = router_fixture.sanitize_legacy(root, box=request['box'],
@@ -110,7 +110,8 @@ def prepare(request):
                     # Package scripts require executable mounts inside this VM.
                     run(['mount', '-o', 'remount,rw,nodev,nosuid,exec', root])
                     prepared = router_candidate.prepare(root, {
-                        'kind': 'klokast.router-candidate-job.v1', 'mode': 'replacement',
+                        'kind': 'klokast.router-candidate-job.v1',
+                        'mode': 'initial-install' if name == 'initial' else 'replacement',
                         'box': request['fixture']['box'], 'role': 'router',
                         'operation_id': request['operation_id'],
                         'engine_commit': request['manifest']['engine_commit'],
@@ -121,11 +122,13 @@ def prepare(request):
                 finally:
                     for directory in reversed(binds):
                         run(['umount', directory])
-                if prepared['packages'] != request['runtime_packages']:
+                expected = request['fixture']['packages'] if name == 'initial' else request['runtime_packages']
+                if prepared['packages'] != expected:
                     raise RuntimeError('candidate fixture runtime packages differ from template qualification')
                 records[name] = {'packages': prepared['packages'], 'accounts': router_fixture.accounts(root),
                                  'production_state_removed': True, 'candidate_preparation': prepared}
-            router_fixture.install_probe(root, request, modules, Path(__file__))
+            if name != 'initial':
+                router_fixture.install_probe(root, request, modules, Path(__file__))
     return {'prepared': True, 'fixtures': records, 'production_identity': False}
 
 

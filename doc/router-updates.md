@@ -330,8 +330,11 @@ The verifier checks the exact package world, kernel module directory, generated
 files and modes, default service links, locked accounts, and absent identity.
 Extra firewall includes and DNS configuration fail verification.
 
-The native compatibility playbook uses this helper for its disposable candidate
-and requires the exact preparation result before it runs service tests. The
+The native compatibility playbook uses this helper on two separate template
+clones, one for each mode. It requires both exact preparation results before
+it runs service tests. The initial-install clone uses the preallocated recovery
+scratch slot only during preparation. It is unmounted before a state-copy guest
+can use that slot for journal recovery. The
 result is diagnostic evidence. Allocation of a production candidate, restricted
 management boot, initial enrollment and resumption, and accepted-assignment
 convergence are still separate integration gates.

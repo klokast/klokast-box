@@ -218,25 +218,28 @@ def validate_phase(record, value, phase):
             raise RuntimeError('compatibility copy phase has no complete receipt')
     elif phase == 'prepare':
         fixtures = record.get('fixtures', {})
-        if record.get('prepared') is not True or set(fixtures) != {'legacy', 'candidate'}:
+        if record.get('prepared') is not True or set(fixtures) != {'legacy', 'candidate', 'initial'}:
             raise RuntimeError('compatibility preparation has incomplete fixture evidence')
-        for name, packages in (('legacy', value['guest']['source_packages']), ('candidate', value['guest']['runtime_packages'])):
+        for name, packages in (('legacy', value['guest']['source_packages']), ('candidate', value['guest']['runtime_packages']),
+                               ('initial', value['guest']['fixture']['packages'])):
             if fixtures[name].get('production_state_removed') is not True or fixtures[name].get('packages') != packages:
                 raise RuntimeError('compatibility fixture retains production state or has different packages')
-        prepared = fixtures['candidate'].get('candidate_preparation', {})
         guest = value['guest']
         import hashlib
-        expected = {'kind': 'klokast.router-candidate-files.v1', 'mode': 'replacement',
-                    'box': guest['fixture']['box'], 'role': 'router',
-                    'operation_id': value['operation_id'], 'inputs_sha256': value['inputs_sha256'],
-                    'engine_commit': guest['manifest']['engine_commit'],
-                    'packages': guest['runtime_packages'], 'accounts': fixtures['candidate'].get('accounts'),
-                    'configuration_files': {k: hashlib.sha256(v.encode()).hexdigest()
-                                            for k, v in guest['fixture']['files'].items()},
-                    'identity_absent': True, 'service_syntax': True, 'replacement_authorized': False}
-        if prepared != expected or not isinstance(expected['accounts'], dict) or set(expected['accounts']) != {
-                'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'}:
-            raise RuntimeError('compatibility candidate lacks exact common preparation evidence')
+        for name, mode, packages in (('candidate', 'replacement', guest['runtime_packages']),
+                                     ('initial', 'initial-install', guest['fixture']['packages'])):
+            prepared = fixtures[name].get('candidate_preparation', {})
+            expected = {'kind': 'klokast.router-candidate-files.v1', 'mode': mode,
+                        'box': guest['fixture']['box'], 'role': 'router',
+                        'operation_id': value['operation_id'], 'inputs_sha256': value['inputs_sha256'],
+                        'engine_commit': guest['manifest']['engine_commit'],
+                        'packages': packages, 'accounts': fixtures[name].get('accounts'),
+                        'configuration_files': {k: hashlib.sha256(v.encode()).hexdigest()
+                                                for k, v in guest['fixture']['files'].items()},
+                        'identity_absent': True, 'service_syntax': True, 'replacement_authorized': False}
+            if prepared != expected or not isinstance(expected['accounts'], dict) or set(expected['accounts']) != {
+                    'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'}:
+                raise RuntimeError('compatibility candidate lacks exact common preparation evidence')
     else:
         common = {'wan_dhcp_identity', 'wan_lease', 'lan_lease', 'lan_dns'}
         expected = common | ({'expiry_lease_created', 'offline_tailscale_state', 'latest_preferences_after_restart',
@@ -314,13 +317,14 @@ def execute(work, value):
     for label, original in (('old-kernel', value['source']['boot_artifacts']['kernel']['path']),
                             ('old-initramfs', value['source']['boot_artifacts']['ramdisk']['path']),
                             ('new-kernel', template / 'kernel'), ('new-initramfs', template / 'initramfs'),
-                            ('new.slot', template / 'os.slot')):
+                            ('new.slot', template / 'os.slot'), ('scratch.slot', template / 'os.slot')):
         with Path(original).open('rb') as source, (work / label).open('r+b' if label.endswith('.slot') else 'xb') as target:
             shutil.copyfileobj(source, target); target.flush(); os.fsync(target.fileno())
     for label, field in (('old-kernel', 'kernel'), ('old-initramfs', 'ramdisk')):
         if checksum(work / label) != value['source']['boot_artifacts'][field]['sha256']:
             raise RuntimeError('legacy boot artifact changed while staging')
-    artifact(work / 'new.slot', candidate['artifacts']['os'], SLOTS['new'])
+    for name in ('new', 'scratch'):
+        artifact(work / (name + '.slot'), candidate['artifacts']['os'], SLOTS[name])
     loops, records = {}, {}
     try:
         for phase in PHASES:
@@ -357,7 +361,7 @@ def execute(work, value):
                   'source_packages': value['guest']['source_packages'], 'runtime_packages': value['guest']['runtime_packages'],
                   'phases': list(records), 'phase_seconds': {k: v['seconds'] for k, v in records.items()},
                   'success': True, 'production_identity': False, 'control_plane_rotation_tested': False,
-                  'replacement_authorized': False}
+                  'candidate_modes': ['initial-install', 'replacement'], 'replacement_authorized': False}
         write(work / 'result.json', result)
     finally:
         if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES):

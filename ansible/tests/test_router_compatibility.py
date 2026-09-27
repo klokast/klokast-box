@@ -113,7 +113,8 @@ class HostTests(unittest.TestCase):
         value = {'operation_id':self.operation, 'inputs_sha256':'b'*64,
                  'guest':{'source_packages':{'tailscale':'old'}, 'runtime_packages':{'tailscale':'new'},
                           'manifest':{'engine_commit':'c'*40},
-                          'fixture':{'box':'boxa', 'files':{'etc/hostname':'boxa-router\n'}}}}
+                          'fixture':{'box':'boxa', 'files':{'etc/hostname':'boxa-router\n'},
+                                     'packages':{'tailscale':'new', 'openssh':'bootstrap'}}}}
         prepared = {'kind':'klokast.router-candidate-files.v1', 'mode':'replacement', 'box':'boxa', 'role':'router',
                     'operation_id':self.operation, 'inputs_sha256':'b'*64, 'engine_commit':'c'*40,
                     'packages':{'tailscale':'new'}, 'accounts':accounts,
@@ -125,6 +126,10 @@ class HostTests(unittest.TestCase):
                       'legacy':{'packages':{'tailscale':'old'}, 'production_state_removed':True},
                       'candidate':{'packages':{'tailscale':'new'}, 'production_state_removed':True,
                                    'accounts':accounts, 'candidate_preparation':prepared}}}
+        initial = copy.deepcopy(record['fixtures']['candidate'])
+        initial['packages'] = value['guest']['fixture']['packages']
+        initial['candidate_preparation'].update(mode='initial-install', packages=initial['packages'])
+        record['fixtures']['initial'] = initial
         self.host.validate_phase(record, value, 'prepare')
         for field, wrong in (('mode','initial-install'), ('box','boxb'), ('role','dmz'),
                              ('engine_commit','d'*40), ('configuration_files',{}),
