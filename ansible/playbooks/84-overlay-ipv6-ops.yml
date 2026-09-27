@@ -138,8 +138,7 @@
         ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} scope global | grep -E '{{ overlay_ipv6_prefix | regex_replace('::/64$', ':') | regex_escape }}'
         tailscale netcheck | grep -E 'IPv6:[[:space:]]+yes'
         result=$(tailscale ping --c 3 {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }})
-        ! printf '%s\n' "$result" | grep -F 'via DERP'
-        printf '%s\n' "$result" | grep -E 'via \[[0-9A-Fa-f:]+\]:41641'
+        printf '%s\n' "$result" | tail -n 1 | grep -E 'via \[[0-9A-Fa-f:]+\]:41641 in [0-9]+(\.[0-9]+)?ms$'
         nft list ruleset | grep -F 'ops-native-ipv6-tailscale-input'
       args:
         executable: /bin/sh

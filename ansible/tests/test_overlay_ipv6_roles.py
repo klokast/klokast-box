@@ -187,6 +187,26 @@ esac
         self.assertIn("via \\[[0-9A-Fa-f:]+\\]:41641", OPS_PLAY)
         self.assertIn("ops-native-ipv6-tailscale-input", OPS_PLAY)
 
+    def test_ops_verification_requires_final_direct_ipv6_pong(self):
+        tasks = yaml.safe_load(OPS_PLAY)[0]["tasks"]
+        task = next(t for t in tasks if t["name"] == "Verify native IPv6 and direct peer routing")
+        script = task["ansible.builtin.shell"]
+        start = script.index('result=')
+        end = script.index('nft list ruleset')
+        probe = script[start:end].replace("{{ overlay_ipv6_peer_box }}", "boxb").replace("{{ platform_magicdns_suffix }}", "example.ts.net")
+        prefix = 'set -eu\ntailscale() { printf "%s\\n" "$PING_OUTPUT"; return "$PING_RC"; }\n'
+        direct = "pong from boxb-router (100.64.0.2) via [2001:db8::2]:41641 in 291ms"
+        relay = "pong from boxb-router (100.64.0.2) via DERP(hkg) in 450ms"
+        cases = [(direct, 0, True), (relay + "\n" + direct, 0, True), (relay, 0, False),
+                 (direct + "\n" + relay, 0, False), (direct.replace("41641", "41642"), 0, False),
+                 (direct.replace("[2001:db8::2]", "192.0.2.1"), 0, False),
+                 (direct, 1, False), (direct + "\nextra output", 0, False)]
+        for output, code, success in cases:
+            with self.subTest(output=output, code=code):
+                result = subprocess.run(["/bin/sh", "-s"], input=prefix + probe, text=True, capture_output=True,
+                                        env={**os.environ, "PING_OUTPUT": output, "PING_RC": str(code)})
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+
     def test_rollback_covers_files_firewall_and_runtime(self):
         self.assertIn("klokast.overlay-ipv6-router-preimage.v1", ROUTER_PLAY)
         self.assertIn("Restore exact router firewall runtime state", ROUTER_PLAY)
