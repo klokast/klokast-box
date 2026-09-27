@@ -18,16 +18,26 @@
   become: false
   changed_when: false
 
-- name: Set fixed candidate configuration and compiled application rules
+- name: Set fixed candidate configuration
   ansible.builtin.set_fact:
-    router_candidate_files: >-
-      {{ router_candidate_includes | combine({
-        'etc/hostname': router_candidate_box ~ '-router\n',
-        'etc/hosts': '127.0.0.1 localhost\n::1 localhost\n',
-        'etc/resolv.conf': 'nameserver ' ~ (router_dns_upstreams | join('\nnameserver ')) ~ '\n',
-        'etc/sysctl.conf': 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=0\n',
-        'etc/klokast/overlay-ipv6.nft': '# Ops IPv6 downstream is disabled.\n'
-      }) }}
+    router_candidate_files:
+      etc/hostname: "{{ router_candidate_box }}-router\n"
+      etc/hosts: |
+        127.0.0.1 localhost
+        ::1 localhost
+      etc/resolv.conf: |
+        {% for address in router_dns_upstreams %}
+        nameserver {{ address }}
+        {% endfor %}
+      etc/sysctl.conf: |
+        net.ipv4.ip_forward=1
+        net.ipv6.conf.all.forwarding=0
+      etc/klokast/overlay-ipv6.nft: "# Ops IPv6 downstream is disabled.\n"
+  no_log: true
+
+- name: Add the exact compiled application rules
+  ansible.builtin.set_fact:
+    router_candidate_files: '{{ router_candidate_files | combine(router_candidate_includes) }}'
   no_log: true
 
 - name: Render candidate service files through the normal router templates
