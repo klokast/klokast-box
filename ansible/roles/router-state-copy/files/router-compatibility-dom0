@@ -206,6 +206,38 @@ def file_identity(path):
     return {'device': info.st_dev, 'inode': info.st_ino, 'bytes': info.st_size}
 
 
+def validate_phase(record, value, phase):
+    if (not isinstance(record, dict) or record.get('kind') != 'klokast.router-compatibility-phase.v1' or
+            record.get('success') is not True or record.get('phase') != phase or
+            record.get('operation_id') != value['operation_id'] or
+            record.get('inputs_sha256') != value['inputs_sha256'] or record.get('production_identity') is not False or
+            type(record.get('seconds')) not in (float, int) or not 0 <= record['seconds'] <= 420):
+        raise RuntimeError('compatibility failed during ' + phase + '; inspect its bounded phase record')
+    if phase in ('forward', 'reverse'):
+        if record.get('copy_complete') is not True:
+            raise RuntimeError('compatibility copy phase has no complete receipt')
+    elif phase == 'prepare':
+        fixtures = record.get('fixtures', {})
+        if record.get('prepared') is not True or set(fixtures) != {'legacy', 'candidate'}:
+            raise RuntimeError('compatibility preparation has incomplete fixture evidence')
+        for name, packages in (('legacy', value['guest']['source_packages']), ('candidate', value['guest']['runtime_packages'])):
+            if fixtures[name].get('production_state_removed') is not True or fixtures[name].get('packages') != packages:
+                raise RuntimeError('compatibility fixture retains production state or has different packages')
+    else:
+        common = {'wan_dhcp_identity', 'wan_lease', 'lan_lease', 'lan_dns'}
+        expected = common | ({'expiry_lease_created', 'offline_tailscale_state', 'latest_preferences_after_restart',
+            'native_machine_key_after_restart', 'synthetic_profile'} if phase == 'seed' else {
+            'latest_tailscale_preferences', 'native_state_restart', 'identity_continuity', 'latest_machine_key', 'copied_timestamps'})
+        if phase == 'new':
+            expected |= {'expired_lease_removed', 'old_client_renewed'}
+        if (record.get('tests') != dict.fromkeys(expected, True) or
+                record.get('control_plane_rotation_tested') is not False or
+                record.get('packages') != value['guest']['runtime_packages' if phase == 'new' else 'source_packages'] or
+                not isinstance(record.get('state'), dict) or set(record['state']) != {
+                    'files', 'ssh_fingerprints', 'machine_key_sha256', 'lan_leases'}):
+            raise RuntimeError('compatibility native phase has incomplete service or state evidence')
+
+
 def cleanup(work, operation):
     record = load(work / 'lifecycle.json')
     if (record.get('operation_id') != operation or record.get('stage') not in ('allocated', 'detached', 'cleaned') or
@@ -298,13 +330,7 @@ def execute(work, value):
                        kind='klokast.router-compatibility-phase.v1', timeout=420)
             record = read_slot(work / 'result.slot')
             write(work / (phase + '.json'), record)
-            if (record.get('kind') != 'klokast.router-compatibility-phase.v1' or record.get('success') is not True or
-                    record.get('phase') != phase or record.get('operation_id') != operation or
-                    record.get('inputs_sha256') != value['inputs_sha256'] or record.get('production_identity') is not False):
-                raise RuntimeError('compatibility failed during ' + phase + '; inspect its bounded phase record')
-            if phase in ('seed', 'new', 'old') and record.get('packages') != value['guest'][
-                    'runtime_packages' if phase == 'new' else 'source_packages']:
-                raise RuntimeError('compatibility phase used a different software manifest')
+            validate_phase(record, value, phase)
             for name, device in list(loops.items()):
                 detach_loop(work / (name + '.slot'), device); del loops[name]
             if unchanged is not None and checksum(work / (source + '.slot')) != unchanged:

@@ -95,6 +95,18 @@ class HostTests(unittest.TestCase):
         self.host = module('router-compatibility-dom0')
         self.operation = 'a' * 24
 
+    def test_success_flag_without_native_evidence_cannot_pass(self):
+        value = {'operation_id': self.operation, 'inputs_sha256': 'b' * 64,
+                 'guest': {'source_packages': {'tailscale': 'old'}, 'runtime_packages': {'tailscale': 'new'}}}
+        record = {'kind': 'klokast.router-compatibility-phase.v1', 'operation_id': self.operation,
+                  'inputs_sha256': 'b' * 64, 'success': True, 'production_identity': False, 'seconds': 1}
+        for phase in self.host.PHASES:
+            with self.subTest(phase=phase), self.assertRaises(RuntimeError):
+                self.host.validate_phase({**record, 'phase': phase}, value, phase)
+        self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True}, value, 'forward')
+        with self.assertRaises(RuntimeError):
+            self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True, 'production_identity': True}, value, 'forward')
+
     def test_boots_have_no_production_disk_or_network_and_copies_are_readonly(self):
         loops = {name: '/dev/loop' + str(index) for index, name in enumerate(self.host.SLOTS)}
         value = {'operation_id': self.operation, 'inputs_sha256': 'b' * 64, 'guest': {}}

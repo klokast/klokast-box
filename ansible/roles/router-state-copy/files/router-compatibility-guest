@@ -181,7 +181,12 @@ def main():
         result.update(execute(phase, request), success=True)
     except Exception as error:
         # Never print untrusted source bytes from the legacy preparation phase.
-        result['error'] = str(error)[:400] if phase != 'prepare' else 'isolated fixture preparation failed: ' + type(error).__name__
+        safe_preparation_error = (type(error) in (ValueError, RuntimeError) and str(error).startswith(
+            ('router fixture ', 'legacy router ', 'legacy fixture ', 'router configuration ',
+             'router personalization ', 'router clone ', 'router template ', 'router finalization ',
+             'router compatibility ', 'candidate fixture ', 'native APK ', 'finalized router ')))
+        result['error'] = (str(error)[:400] if phase != 'prepare' or safe_preparation_error else
+                           'isolated fixture preparation failed: ' + type(error).__name__)
     result['seconds'] = round(time.monotonic() - started, 3)
     os.sync()
     with Path('/dev/xvde').open('r+b', buffering=0) as stream:
