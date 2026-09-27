@@ -3,6 +3,7 @@ import copy
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -59,6 +60,18 @@ class GenericTests(unittest.TestCase):
         self.assertEqual((self.root / 'etc/apk/world').read_text().splitlines(),
                          [name + '=1-r0' for name in self.manifest['world']])
 
+    def test_recipe_directories_are_safe_with_initramfs_umask(self):
+        previous = os.umask(0)
+        try:
+            self.guest.put(self.root, 'new/parent/config', 'test\n')
+        finally:
+            os.umask(previous)
+        self.assertEqual((self.root / 'new').stat().st_mode & 0o777, 0o755)
+        self.assertEqual((self.root / 'new/parent').stat().st_mode & 0o777, 0o755)
+        (self.root / 'new/parent').chmod(0o777)
+        with self.assertRaisesRegex(RuntimeError, 'parent is unsafe'):
+            self.guest.put(self.root, 'new/parent/config', 'changed\n')
+
     def test_every_retained_identity_is_forbidden_in_generic_disk(self):
         for name in (*self.guest.ABSENT, 'var/lib/tailscale/tailscaled.state',
                      'var/lib/tailscale/ssh/ssh_host_ed25519_key', 'var/lib/dhcpcd/duid',
@@ -104,7 +117,7 @@ class GenericTests(unittest.TestCase):
 
     def test_recipe_cannot_write_through_parent_symlink(self):
         (self.root / 'escape').symlink_to('/tmp')
-        with self.assertRaisesRegex(RuntimeError, 'parent is a symlink'):
+        with self.assertRaisesRegex(RuntimeError, 'parent is unsafe'):
             self.guest.put(self.root, 'escape/router-template-unsafe', 'test')
 
 

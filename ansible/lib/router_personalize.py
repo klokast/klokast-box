@@ -69,7 +69,8 @@ def directory(root, relative, *, create=False):
         info = path.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
                 info.st_mode & 0o022 or info.st_dev != device):
-            raise ValueError('router configuration parent is unsafe')
+            raise ValueError('router configuration parent is unsafe: ' + str(path) +
+                             ' (uid=' + str(info.st_uid) + ', mode=' + oct(stat.S_IMODE(info.st_mode)) + ')')
     return path
 
 
