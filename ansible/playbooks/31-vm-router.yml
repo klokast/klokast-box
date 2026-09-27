@@ -343,20 +343,14 @@
         name: router-verification
 
     - name: Check controller reachability to the router over Tailscale
-      ansible.builtin.command: "tailscale ping --c 1 {{ ansible_host }}"
+      # Direct transport is required by the separate signed IPv6 repair, not
+      # by normal Platform health (doc/secret-authority.md). SSH is proved below.
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ping, --c, '1', --until-direct=false, '{{ ansible_host }}']
       delegate_to: localhost
       become: false
       register: verify_router_controller_tailscale_ping
       changed_when: false
-
-    - name: Assert the controller reaches the router directly over Tailscale
-      ansible.builtin.assert:
-        that:
-          - "'via DERP' not in verify_router_controller_tailscale_ping.stdout"
-        fail_msg: >-
-          Router reachability is still relayed through DERP from the controller.
-          Review WAN IPv6, Tailscale path selection, and downstream route cleanup
-          before moving on to new VM provisioning.
 
     - name: Prove router Tailscale SSH before retiring first-contact root access
       ansible.builtin.command:
@@ -438,6 +432,6 @@
         that:
           - not (router_root_first_contact_retired.stat.exists | default(false))
 
-    - name: Show verified controller-to-router Tailscale path
+    - name: Show the observed controller-to-router Tailscale path
       ansible.builtin.debug:
         msg: "{{ verify_router_controller_tailscale_ping.stdout }}"

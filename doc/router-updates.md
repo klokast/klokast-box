@@ -150,7 +150,7 @@ normal dnsmasq lease path is `/var/lib/misc/dnsmasq.leases`. These phases do not
 supply candidate authority or bypass assignment checks.
 
 Legacy playbook 31 removes the first-contact root authorized key after it
-verifies router service, a direct controller path, and Tailscale SSH as `neo`.
+verifies router service, controller reachability, and Tailscale SSH as `neo`.
 It requires the key to match the approved controller public key and OpenSSH to
 be absent. An unexpected key or remaining OpenSSH path stops the playbook for
 review. A legacy router whose root key differs from the current approved
@@ -162,6 +162,8 @@ a missing status fact from leaving the first-contact server installed.
 Before it removes OpenSSH, the play keeps the installed `openssh-keygen` version
 as an explicit package request. Router inspection needs this utility to verify
 the retained SSH host keys.
+DERP is a valid management path for normal provisioning. The separate signed
+IPv6 repair requires direct transport, as defined in [Secret Authority](secret-authority.md).
 
 The Alpine asset role accepts separate output paths and an approved ISO digest.
 Its defaults preserve the existing shared VM paths. Its extraction receipt
