@@ -45,7 +45,9 @@ def release():
                    'inputs': inputs(), 'kernel_release': '6.12.1-virt',
                    'artifacts': {name: name[0] * 64 if name[0] in 'abcdef' else 'e' * 64
                                  for name in ('os', 'kernel', 'initramfs')},
-                   'generic_tests': {name: True for name in ('identity_absent', 'exact_packages', 'kernel_modules', 'openrc')}})
+                   'generic_tests': {name: True for name in ('identity_absent', 'exact_packages', 'kernel_modules', 'openrc')},
+                   'runtime_packages': {p['name']: p['version'] for p in inputs()['packages'] if p['name'] != 'openssh'},
+                   'runtime_tests': dict.fromkeys(('frozen_packages', 'no_openssh_server', 'locked_root', 'pinned_world'), True)})
 
 
 def branch(name, date='2026-01-01'):
@@ -61,7 +63,7 @@ class RouterCheckTests(unittest.TestCase):
         accepted = {'box': 'boxa', 'role': 'router', 'generation': 'f' * 64, 'release': release()}
         return dict(box='boxa', role='router', accepted=accepted,
                     live={'observed_at': timestamp(NOW), 'box': 'boxa', 'role': 'router',
-                          'generation': accepted['generation'], 'packages': {p['name']: p['version'] for p in inputs()['packages']},
+                          'generation': accepted['generation'], 'packages': dict(accepted['release']['runtime_packages']),
                           'kernel_release': '6.12.1-virt', 'configuration_verified': True,
                           'overlay_ipv6_enabled': False,
                           'boot_artifacts': {k: accepted['release']['artifacts'][k] for k in ('kernel', 'initramfs')}},
@@ -102,6 +104,7 @@ class RouterCheckTests(unittest.TestCase):
         f = self.fixture()
         accepted = f['accepted']['release']
         accepted['inputs']['packages'].append(package('zz-old-dependency'))
+        accepted['runtime_packages']['zz-old-dependency'] = '1-r0'
         reseal(accepted['inputs'], 'inputs_sha256')
         reseal(accepted)
         f['live']['packages']['zz-old-dependency'] = '1-r0'

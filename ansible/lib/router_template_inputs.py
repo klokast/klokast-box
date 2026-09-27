@@ -61,6 +61,7 @@ def stage(source, work, profile, engine, guest):
         archive.add(guest, arcname='guest.py', recursive=False)
         archive.add(repo / 'ansible/lib/router_personalize.py', arcname='router_personalize.py', recursive=False)
         archive.add(repo / 'ansible/lib/router_service_probe.py', arcname='router_service_probe.py', recursive=False)
+        archive.add(repo / 'ansible/lib/router_finalize.py', arcname='router_finalize.py', recursive=False)
         archive.add(fixture, arcname='personalization.json', recursive=False)
     # Native APK extraction is scriptless and unprivileged on the controller.
     # The template's package scripts and filesystem tools run only inside Xen.
@@ -79,9 +80,21 @@ def release(candidate, manifest, profile, engine, box, operation, *, approved_en
             candidate.get('inputs_sha256') != manifest['inputs_sha256'] or
             candidate.get('replacement_authorized') is not False):
         raise UpdateError('router template result belongs to another operation or target')
+    personalized = candidate.get('personalization_test')
+    if (not isinstance(personalized, dict) or personalized.get('success') is not True or
+            personalized.get('operation_id') != operation or
+            personalized.get('inputs_sha256') != manifest['inputs_sha256'] or
+            personalized.get('kernel_release') != candidate['kernel_release'] or
+            personalized.get('tests') != dict.fromkeys(('personalization', 'exact_packages',
+                'identity_absent', 'service_syntax', 'native_services'), True)):
+        raise UpdateError('router release requires matching native personalization and service evidence')
+    finalization = personalized.get('finalization')
+    if not isinstance(finalization, dict) or finalization.get('kind') != 'klokast.router-finalization.v1':
+        raise UpdateError('router release requires native first-contact package retirement')
     value = router_updates.seal({'kind': router_updates.RELEASE, 'profile': router_updates.PROFILE,
         'engine_commit': engine, 'inputs': manifest, 'kernel_release': candidate['kernel_release'],
         'artifacts': {k: v['sha256'] for k, v in candidate['artifacts'].items()},
-        'generic_tests': candidate['generic_tests']})
+        'generic_tests': candidate['generic_tests'], 'runtime_packages': finalization.get('packages'),
+        'runtime_tests': finalization.get('tests')})
     router_updates.validate_release(value, profile, engine)
     return value

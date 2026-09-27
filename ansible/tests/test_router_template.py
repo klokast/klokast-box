@@ -217,6 +217,13 @@ class TransportTests(unittest.TestCase):
                      'operation_id': 'a' * 24, 'inputs_sha256': inputs()['inputs_sha256'],
                      'kernel_release': '6.18.1-virt', 'replacement_authorized': False,
                      'generic_tests': dict.fromkeys(('identity_absent', 'exact_packages', 'kernel_modules', 'openrc'), True),
+                     'personalization_test': {'success': True, 'operation_id': 'a' * 24,
+                         'inputs_sha256': inputs()['inputs_sha256'], 'kernel_release': '6.18.1-virt',
+                         'tests': dict.fromkeys(('personalization', 'exact_packages', 'identity_absent',
+                                                'service_syntax', 'native_services'), True),
+                         'finalization': {'kind': 'klokast.router-finalization.v1',
+                         'packages': {p['name']: p['version'] for p in inputs()['packages'] if p['name'] != 'openssh'},
+                         'tests': dict.fromkeys(('frozen_packages', 'no_openssh_server', 'locked_root', 'pinned_world'), True)}},
                      'artifacts': {n: {'sha256': 'd' * 64, 'bytes': 4096} for n in ('os', 'kernel', 'initramfs')}}
         receipt = router_template_inputs.release(candidate, inputs(), PROFILE, ENGINE, 'boxa', 'a' * 24,
                                                 approved_engine=ENGINE)
@@ -225,7 +232,7 @@ class TransportTests(unittest.TestCase):
             router_template_inputs.release(candidate, inputs(), PROFILE, ENGINE, 'boxa', 'a' * 24,
                                            approved_engine='f' * 40)
         for field, value in (('box', 'boxb'), ('role', 'dmz'), ('operation_id', 'e' * 24),
-                             ('replacement_authorized', True), ('generic_tests', {})):
+                             ('replacement_authorized', True), ('generic_tests', {}), ('personalization_test', {})):
             with self.subTest(field=field), self.assertRaises(UpdateError):
                 router_template_inputs.release({**candidate, field: value}, inputs(), PROFILE, ENGINE,
                                                'boxa', 'a' * 24, approved_engine=ENGINE)

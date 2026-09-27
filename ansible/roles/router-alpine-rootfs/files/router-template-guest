@@ -110,7 +110,7 @@ def unpack(args, device='/dev/xvda'):
         for member in archive:
             total += member.size
             if (len(members) >= 600 or total > 2049 * MIB or not member.isfile() or
-                    not re.fullmatch(r'(inputs\.json|guest\.py|router_personalize\.py|router_service_probe\.py|personalization\.json|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk)', member.name) or
+                    not re.fullmatch(r'(inputs\.json|guest\.py|router_personalize\.py|router_service_probe\.py|router_finalize\.py|personalization\.json|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk)', member.name) or
                     member.name in {m.name for m in members}):
                 raise RuntimeError('router capsule contains unsafe or duplicate members')
             members.append(member)
@@ -122,7 +122,7 @@ def unpack(args, device='/dev/xvda'):
             manifest.get('inputs_sha256') != args['klokast_inputs'] or
             digest({k: v for k, v in manifest.items() if k != 'inputs_sha256'}) != args['klokast_inputs']):
         raise RuntimeError('router inputs differ from the build assignment')
-    expected = {'inputs.json', 'guest.py', 'router_personalize.py', 'router_service_probe.py', 'personalization.json'}
+    expected = {'inputs.json', 'guest.py', 'router_personalize.py', 'router_service_probe.py', 'router_finalize.py', 'personalization.json'}
     for p in manifest['packages']:
         if (not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.-]*', p['name']) or
                 not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.~-]*', p['version']) or
@@ -328,11 +328,14 @@ def test_boot(args):
             raise RuntimeError('router personalization created or copied a service identity')
         if (root / 'etc/runlevels/default/sshd').exists():
             raise RuntimeError('router personalization enabled first-contact SSH')
+        import router_finalize
+        finalization = router_finalize.finalize(root, manifest)
         import router_service_probe
         services = router_service_probe.execute()
         return {'tests': dict.fromkeys(('personalization', 'exact_packages', 'identity_absent',
                                        'service_syntax', 'native_services'), True),
-                'kernel_release': os.uname().release, 'personalization': result, 'service_probe': services}
+                'kernel_release': os.uname().release, 'personalization': result, 'service_probe': services,
+                'finalization': finalization}
     if args.get('klokast_router_openrc') == '1':
         if Path('/proc/1/comm').read_text().strip() != 'init':
             raise RuntimeError('router OpenRC test did not use the normal init process')

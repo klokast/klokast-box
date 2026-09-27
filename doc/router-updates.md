@@ -73,6 +73,15 @@ The kernel and modules come from the signed `linux-virt` package. This path does
 not use an ISO or the shared Alpine asset paths.
 The frozen router world also includes `openssh`, which the existing first-contact
 bootstrap role needs. It does not add packages while it personalizes a clone.
+After rendering, a separate networkless finalization step removes the
+first-contact OpenSSH package closure with native APK. It cannot add or change
+a package, remove a runtime world request, or refresh a repository. Unknown
+dependency removals fail qualification. The generic disk keeps its bootstrap
+packages; the disposable clone proves the final runtime package set and a locked
+root account without an OpenSSH server. Release v2 records that exact runtime
+manifest and its native tests. Live release verification compares against this
+runtime manifest. Earlier v1 receipts lack this evidence and cannot qualify a
+finalized router.
 
 The template must have the exact resolved package closure and no machine or
 service identity. A disposable copy then boots with its own kernel and initramfs

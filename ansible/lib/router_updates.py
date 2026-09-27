@@ -13,7 +13,7 @@ from platform_updates import UpdateError, branch_number, digest, fresh, timestam
 from platform_update_metadata import adjacent_stable_branch
 
 PROFILE = 'router-alpine-v1'
-RELEASE = 'klokast.router-release.v1'
+RELEASE = 'klokast.router-release.v2'
 DECISION = 'klokast.router-update-check.v1'
 HASH = re.compile(r'[0-9a-f]{64}')
 NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9+_.-]*')
@@ -108,7 +108,7 @@ def effective_inputs(inputs):
 
 def validate_release(receipt, profile, engine):
     closed(receipt, 'kind profile engine_commit inputs kernel_release artifacts generic_tests '
-           'receipt_sha256', 'router release')
+           'runtime_packages runtime_tests receipt_sha256', 'router release')
     verify_seal(receipt)
     validate_inputs(receipt['inputs'], profile, engine)
     if (receipt['kind'] != RELEASE or receipt['profile'] != PROFILE or
@@ -120,6 +120,15 @@ def validate_release(receipt, profile, engine):
     closed(receipt['generic_tests'], 'identity_absent exact_packages kernel_modules openrc', 'generic tests')
     if any(value is not True for value in receipt['generic_tests'].values()):
         raise UpdateError('router generic template has not passed every native test')
+    import router_finalize
+    try:
+        router_finalize.validate_packages({p['name']: p['version'] for p in receipt['inputs']['packages']},
+                                          receipt['runtime_packages'], receipt['inputs']['world'])
+    except ValueError as error:
+        raise UpdateError(str(error)) from error
+    closed(receipt['runtime_tests'], 'frozen_packages no_openssh_server locked_root pinned_world', 'router runtime tests')
+    if any(value is not True for value in receipt['runtime_tests'].values()):
+        raise UpdateError('router release lacks complete native runtime finalization evidence')
 
 
 def dispatch(role):
@@ -423,7 +432,7 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
         report['accepted_sha256'] = digest(accepted)
         if (not isinstance(live, dict) or not fresh(live.get('observed_at'), now, dt.timedelta(minutes=15)) or
                 live.get('box') != box or live.get('role') != role or live.get('generation') != accepted['generation'] or
-                live.get('packages') != {p['name']: p['version'] for p in release['inputs']['packages']} or
+                live.get('packages') != release['runtime_packages'] or
                 live.get('kernel_release') != release['kernel_release'] or
                 live.get('boot_artifacts') != {k: release['artifacts'][k] for k in ('kernel', 'initramfs')} or
                 live.get('configuration_verified') is not True):
