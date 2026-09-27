@@ -106,12 +106,38 @@ def create(work, operation, source, expected):
     return disk
 
 
-def retire(work, operation, *, inspected_uuid=None):
+def refuse_referenced_disk(box, operation, disk):
+    """A diagnostic disk must never be retired after it becomes a generation."""
+    if not generations.matches('[a-z0-9][a-z0-9-]{0,30}', box):
+        raise TransactionError('router candidate retirement requires an exact box')
+    base = records.BASE
+    if not base.exists() and not base.is_symlink():
+        return
+    storage = records.Records(box)
+    pending = storage.pending()
+    if pending and pending['request']['operation_id'] == operation:
+        raise TransactionError('router candidate belongs to a pending production operation')
+    checksums = set()
+    accepted = base / 'accepted.json'
+    if accepted.exists() or accepted.is_symlink():
+        assignment = storage.accepted()
+        checksums.update(v for v in (assignment['current_sha256'], assignment['previous_sha256']) if v)
+    if pending:
+        checksums.update((pending['request']['old_sha256'], pending['request']['candidate_sha256']))
+    for checksum in checksums:
+        generation = storage.generation(checksum)
+        if (generation['disk']['path'] == disk['path'] or
+                generation['disk']['uuid'] == disk['uuid']):
+            raise TransactionError('router candidate disk is referenced by an accepted or pending generation')
+
+
+def retire(work, operation, *, box, inspected_uuid=None):
     """Retire only the exact recorded disk after native mount/backend checks."""
     work = Path(work)
     value = record(work, operation)
     row = observed(operation)
     if value['stage'] in ('retired','retiring') and row is None:
+        refuse_referenced_disk(box, operation, {'path':value['path'], 'uuid':value['uuid']})
         records.write(work / 'candidate-disk.json', {**value,'stage':'retired'})
         return 0
     if value['stage'] == 'retired':
@@ -125,6 +151,7 @@ def retire(work, operation, *, inspected_uuid=None):
     elif inspected_uuid is not None and inspected_uuid != value['uuid']:
         raise TransactionError('router candidate retirement UUID differs from the recorded allocation')
     disk = verify(work, operation)
+    refuse_referenced_disk(box, operation, disk)
     records.write(work / 'candidate-disk.json', {**value,'stage':'retiring'})
     native.command(['/sbin/lvremove','--yes',disk['path']], time.monotonic() + 60, maximum_seconds=60)
     if observed(operation) is not None:

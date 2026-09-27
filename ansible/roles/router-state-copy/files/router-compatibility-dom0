@@ -257,7 +257,7 @@ def validate_phase(record, value, phase):
             raise RuntimeError('compatibility native phase has incomplete service or state evidence')
 
 
-def cleanup(work, operation):
+def cleanup(work, operation, box):
     record = load(work / 'lifecycle.json')
     if (record.get('operation_id') != operation or record.get('stage') not in ('allocated', 'detached', 'cleaned') or
             set(record.get('uuids', {})) != set(PHASES) or set(record.get('slots', {})) != set(SLOTS) - {'new'} or
@@ -277,7 +277,7 @@ def cleanup(work, operation):
         if file_identity(path) != record['slots'][name] or path.stat().st_size != size or loop_devices(path):
             raise RuntimeError('compatibility disk changed or remains attached; retain it')
         present.append(path)
-    reclaimed = router_candidate_disk.retire(work, operation)
+    reclaimed = router_candidate_disk.retire(work, operation, box=box)
     for path in present:
         path.unlink()
     write(work / 'lifecycle.json', {**record, 'stage': 'cleaned'})
@@ -418,9 +418,9 @@ def main():
             print(json.dumps({'snapshot_retired': True}))
         elif args.retire_candidate_uuid:
             print(json.dumps({'bytes_reclaimed': router_candidate_disk.retire(
-                work, args.operation_id, inspected_uuid=args.retire_candidate_uuid)}))
+                work, args.operation_id, box=args.box, inspected_uuid=args.retire_candidate_uuid)}))
         elif args.cleanup:
-            print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id)}))
+            print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id, args.box)}))
         else:
             print(json.dumps(execute(work, request(work, args.box, args.operation_id))))
 

@@ -18,6 +18,7 @@ class DiskTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.work = Path(temporary.name)
         self.operation = 'a'*24
+        self.box = 'boxa'
         self.path, self.tag = c.selection(self.operation)
         self.row = {'lv_path':self.path, 'lv_uuid':'exact-uuid', 'lv_size':str(c.BYTES),
                     'origin':'', 'lv_attr':'-wi-a-----', 'lv_tags':self.tag}
@@ -26,6 +27,7 @@ class DiskTests(unittest.TestCase):
                       'template_sha256':'b'*64}
         for name, value in (('ROOT_UID',os.geteuid()), ('parents',lambda path:None)):
             p=patch.object(c.records,name,value); p.start(); self.addCleanup(p.stop)
+        p=patch.object(c.records,'BASE',self.work/'protected'); p.start(); self.addCleanup(p.stop)
         self.host=Mock()
         p=patch.object(c.native,'Native',return_value=self.host);p.start();self.addCleanup(p.stop)
 
@@ -47,41 +49,62 @@ class DiskTests(unittest.TestCase):
         self.host.wait_detached.side_effect=TransactionError('still attached')
         with patch.object(c,'observed',return_value=self.row),patch.object(c.native,'command') as command:
             with self.assertRaisesRegex(TransactionError,'still attached'):
-                c.retire(self.work,self.operation)
+                c.retire(self.work,self.operation,box=self.box)
             command.assert_not_called()
         self.assertEqual(c.record(self.work,self.operation)['stage'],'cloned')
 
     def test_retirement_uses_exact_identity_and_is_repeatable_after_removal(self):
         self.store()
         with patch.object(c,'observed',side_effect=[self.row,self.row,None]),patch.object(c.native,'command') as command:
-            self.assertEqual(c.retire(self.work,self.operation),c.BYTES)
+            self.assertEqual(c.retire(self.work,self.operation,box=self.box),c.BYTES)
             self.assertEqual(command.call_args.args[0],['/sbin/lvremove','--yes',self.path])
         with patch.object(c,'observed',return_value=None),patch.object(c.native,'command') as command:
-            self.assertEqual(c.retire(self.work,self.operation),0)
+            self.assertEqual(c.retire(self.work,self.operation,box=self.box),0)
             command.assert_not_called()
         self.assertEqual(c.record(self.work,self.operation)['stage'],'retired')
 
     def test_missing_before_retirement_and_reappearing_after_retirement_fail(self):
         self.store()
         with patch.object(c,'observed',return_value=None),self.assertRaises(TransactionError):
-            c.retire(self.work,self.operation)
+            c.retire(self.work,self.operation,box=self.box)
         self.store(stage='retired')
         with patch.object(c,'observed',return_value=self.row),self.assertRaisesRegex(TransactionError,'reappeared'):
-            c.retire(self.work,self.operation)
+            c.retire(self.work,self.operation,box=self.box)
         self.store(stage='retiring')
         with patch.object(c,'observed',return_value=None):
-            self.assertEqual(c.retire(self.work,self.operation),0)
+            self.assertEqual(c.retire(self.work,self.operation,box=self.box),0)
 
     def test_interrupted_allocation_requires_explicit_observed_uuid(self):
         self.store(stage='planned',uuid=None)
         with patch.object(c,'observed',return_value=self.row),patch.object(c.native,'command') as command:
             with self.assertRaisesRegex(TransactionError,'explicitly inspected'):
-                c.retire(self.work,self.operation)
+                c.retire(self.work,self.operation,box=self.box)
             with self.assertRaises(TransactionError):
-                c.retire(self.work,self.operation,inspected_uuid='foreign')
+                c.retire(self.work,self.operation,box=self.box,inspected_uuid='foreign')
             command.assert_not_called()
         with patch.object(c,'observed',side_effect=[self.row,self.row,None]),patch.object(c.native,'command'):
-            self.assertEqual(c.retire(self.work,self.operation,inspected_uuid='exact-uuid'),c.BYTES)
+            self.assertEqual(c.retire(self.work,self.operation,box=self.box,inspected_uuid='exact-uuid'),c.BYTES)
+
+    def test_retirement_refuses_accepted_and_pending_references(self):
+        self.store()
+        protected=self.work/'protected'
+        protected.mkdir()
+        generation={'disk':{'path':self.path,'uuid':'exact-uuid'}}
+        storage=Mock()
+        storage.accepted.return_value={'current_sha256':'b'*64,'previous_sha256':None}
+        storage.generation.return_value=generation
+        (protected/'accepted.json').write_text('{}')
+        with patch.object(c.records,'Records',return_value=storage),patch.object(c,'observed',return_value=self.row), \
+             patch.object(c.native,'command') as command:
+            storage.pending.return_value=None
+            with self.assertRaisesRegex(TransactionError,'referenced'):
+                c.retire(self.work,self.operation,box=self.box)
+            command.assert_not_called()
+            (protected/'accepted.json').unlink()
+            storage.pending.return_value={'request':{'operation_id':self.operation}}
+            with self.assertRaisesRegex(TransactionError,'pending production'):
+                c.retire(self.work,self.operation,box=self.box)
+            command.assert_not_called()
 
     def test_changed_template_refuses_before_lvcreate(self):
         source=self.work/'template'
