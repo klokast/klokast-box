@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reclaim only the large disks of one failed, detached router template build.
+"""Reclaim one failed or qualified router template operation's large files.
 
 Small lifecycle and console evidence stays in place. No production LV, accepted
 release, candidate, or other operation path is a cleanup target.
@@ -17,6 +17,7 @@ import subprocess
 BASE = Path('/mnt/dom0_data/klokast-router-templates')
 FAILED_DISKS = ('os.slot', 'test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
 SCRATCH_DISKS = ('test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
+STAGED_INPUTS = ('capsule.tar', 'bootstrap-kernel', 'bootstrap-initramfs')
 UUID = re.compile(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}')
 
 
@@ -78,9 +79,47 @@ def attached(path):
                   if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
 
 
-def reclaim(work, operation, kind='failed'):
+def reclaim(work, operation, kind='failed', box=None):
     safe_dir(BASE)
     safe_dir(work)
+    if kind == 'staged':
+        if not box:
+            raise RuntimeError('staged router cleanup requires an exact box')
+        request = read(work / 'request.json')
+        if (set(request) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'capsule', 'bootstrap'} or
+                request['kind'] != 'klokast.router-template-request.v1' or
+                request['box'] != box or request['role'] != 'router' or
+                request['operation_id'] != operation):
+            raise RuntimeError('staged router cleanup request differs from the exact target')
+        if any((work / name).exists() or (work / name).is_symlink()
+               for name in ('lifecycle.json', 'candidate.json')) or list(work.glob('*.slot')):
+            raise RuntimeError('staged router cleanup found a started build or disk')
+        async_dir = work / 'async'
+        if async_dir.exists():
+            safe_dir(async_dir)
+            if any(async_dir.iterdir()):
+                raise RuntimeError('staged router cleanup found an active async record')
+        if any(name.endswith('-' + operation) for name, _ in domains()):
+            raise RuntimeError('staged router template domain still exists')
+        present = []
+        for name in STAGED_INPUTS:
+            path = work / name
+            if not path.exists() and not path.is_symlink():
+                continue
+            metadata = safe_file(path)
+            if attached(path):
+                raise RuntimeError('staged router input still has a loop attachment: ' + name)
+            present.append((path, metadata.st_size))
+        for path, _ in present:
+            path.unlink()
+        descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
+                'cleanup_kind': kind, 'removed': [path.name for path, _ in present],
+                'bytes_reclaimed': sum(size for _, size in present)}
     record = read(work / 'lifecycle.json')
     if (set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
             record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed', 'scratch-reclaimed') or
@@ -176,7 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
-    parser.add_argument('--kind', choices=('failed', 'scratch'), default='failed')
+    parser.add_argument('--kind', choices=('failed', 'scratch', 'staged'), default='failed')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
@@ -186,7 +225,7 @@ def main():
     work = BASE / args.operation_id
     with (BASE / 'build.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        print(json.dumps(reclaim(work, args.operation_id, args.kind), sort_keys=True))
+        print(json.dumps(reclaim(work, args.operation_id, args.kind, args.box), sort_keys=True))
 
 
 if __name__ == '__main__':

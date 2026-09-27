@@ -61,6 +61,42 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(json.loads((self.work / 'lifecycle.json').read_text())['stage'], 'storage-reclaimed')
         self.assertEqual(self.module.reclaim(self.work, self.operation)['removed'], [])
 
+    def staged(self):
+        (self.work / 'lifecycle.json').unlink()
+        for path in self.work.glob('*.slot'):
+            path.unlink()
+        (self.work / 'request.json').write_text(json.dumps({
+            'kind': 'klokast.router-template-request.v1', 'box': 'k001',
+            'role': 'router', 'operation_id': self.operation,
+            'inputs_sha256': 'b' * 64, 'capsule': {}, 'bootstrap': {}}))
+        (self.work / 'async').mkdir()
+        for name in self.module.STAGED_INPUTS:
+            (self.work / name).write_bytes(b'partial')
+
+    def test_staged_cleanup_reclaims_only_exact_inactive_inputs(self):
+        self.staged()
+        other = self.base / ('b' * 24)
+        other.mkdir()
+        (other / 'capsule.tar').write_bytes(b'keep')
+        result = self.module.reclaim(self.work, self.operation, 'staged', 'k001')
+        self.assertEqual(result['removed'], list(self.module.STAGED_INPUTS))
+        self.assertEqual(result['bytes_reclaimed'], 7 * len(self.module.STAGED_INPUTS))
+        self.assertTrue((self.work / 'request.json').exists())
+        self.assertEqual((other / 'capsule.tar').read_bytes(), b'keep')
+        self.assertEqual(self.module.reclaim(self.work, self.operation, 'staged', 'k001')['removed'], [])
+
+    def test_staged_cleanup_refuses_started_or_unknown_target(self):
+        self.staged()
+        with self.assertRaisesRegex(RuntimeError, 'exact target'):
+            self.module.reclaim(self.work, self.operation, 'staged', 'k002')
+        with patch.object(self.module, 'domains', return_value={('router-build-' + self.operation, 'uuid')}):
+            with self.assertRaisesRegex(RuntimeError, 'domain still exists'):
+                self.module.reclaim(self.work, self.operation, 'staged', 'k001')
+        (self.work / 'lifecycle.json').write_text(json.dumps(self.record))
+        with self.assertRaisesRegex(RuntimeError, 'started build'):
+            self.module.reclaim(self.work, self.operation, 'staged', 'k001')
+        self.assertTrue((self.work / 'capsule.tar').exists())
+
     def test_candidate_or_running_guest_blocks_every_unlink(self):
         (self.work / 'candidate.json').write_text('{}')
         with self.assertRaisesRegex(RuntimeError, 'qualified'):
