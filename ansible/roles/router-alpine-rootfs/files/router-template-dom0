@@ -59,6 +59,9 @@ def configuration(work, value, name, identity, disks, mode):
         extra += ' root=/dev/xvda3 rootfstype=ext4 modules=ext4 rw klokast_router_test=1'
         extra += (' init=/sbin/init klokast_router_openrc=1' if mode == 'openrc' else
                   ' init=/usr/local/libexec/router-template-test')
+        if mode == 'personalize':
+            extra += (' klokast_router_personalize=1 klokast_capsule=' + value['capsule']['sha256'] +
+                      ' klokast_capsule_bytes=' + str(value['capsule']['bytes']))
     return (f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 2048\nmaxmem = 2048\nvcpus = 2\n'
             f'kernel = {str(work / kernel)!r}\nramdisk = {str(work / initramfs)!r}\nextra = {extra!r}\n'
             f'disk = {disks!r}\nvif = []\non_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
@@ -83,7 +86,7 @@ def reserve(path, size):
 
 def execute(work, value):
     operation = value['operation_id']
-    names = {mode: 'router-' + mode + '-' + operation for mode in ('build', 'test', 'openrc')}
+    names = {mode: 'router-' + mode + '-' + operation for mode in ('build', 'test', 'openrc', 'personalize')}
     if any(domain(name) is not None for name in names.values()):
         raise RuntimeError('router build operation already has a Xen domain')
     capacity = os.statvfs(work)
@@ -153,12 +156,36 @@ def execute(work, value):
             if tested['kernel_release'] != built['kernel_release']:
                 raise RuntimeError('router test boot ran a different kernel')
             write(work / (mode + '.json'), tested)
+        # Personalization gets a fresh copy. Generic and normal OpenRC tests
+        # have already written transient state to their disposable disk.
+        detach_loop(work / 'test.slot', loops.pop('test'))
+        with (work / 'os.slot').open('rb') as source, (work / 'test.slot').open('r+b') as target:
+            shutil.copyfileobj(source, target)
+            target.flush(); os.fsync(target.fileno())
+        if checksum(work / 'test.slot') != os_hash:
+            raise RuntimeError('router personalization copy differs from the generic template')
+        loops['test'] = attach_loop(work / 'test.slot')
+        loops['input'] = attach_loop(work / 'capsule.tar', readonly=True)
+        with (work / 'result.slot').open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        config = work / 'personalize.cfg'
+        config.write_text(configuration(work, value, names['personalize'], identities['personalize'],
+            ['phy:' + loops['test'] + ',xvda,w', 'phy:' + loops['result'] + ',xvde,w',
+             'phy:' + loops['input'] + ',xvdf,r'], 'personalize'))
+        boot_guest(work, names['personalize'], identities['personalize'], config, value,
+                   kind='klokast.router-template-test.v1', timeout=180)
+        personalized = result(work, value, 'klokast.router-template-test.v1',
+            dict.fromkeys(('personalization', 'exact_packages', 'identity_absent', 'service_syntax'), True))
+        if personalized['kernel_release'] != built['kernel_release']:
+            raise RuntimeError('router personalization test ran a different kernel')
+        write(work / 'personalize.json', personalized)
         if checksum(work / 'os.slot') != os_hash:
             raise RuntimeError('router generic template changed during qualification')
         record = {'kind': 'klokast.router-template-candidate.v1', 'box': value['box'], 'role': 'router',
                   'operation_id': operation, 'inputs_sha256': value['inputs_sha256'],
                   'kernel_release': built['kernel_release'], 'replacement_authorized': False,
                   'artifacts': {'os': {'sha256': os_hash, 'bytes': SLOTS['os']}, **built['artifacts']},
+                  'personalization_test': personalized,
                   'generic_tests': dict.fromkeys(('identity_absent', 'exact_packages', 'kernel_modules', 'openrc'), True)}
         write(work / 'candidate.json', record)
         return record

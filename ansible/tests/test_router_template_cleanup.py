@@ -134,5 +134,29 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue((self.work / 'test.slot').exists())
 
 
+    def test_personalization_domain_and_evidence_are_required_for_new_builds(self):
+        self.qualify()
+        self.record['domains']['personalize'] = 'router-personalize-' + self.operation
+        self.record['uuids']['personalize'] = '22222222-2222-4222-8222-222222222222'
+        (self.work / 'lifecycle.json').write_text(json.dumps(self.record))
+        with self.assertRaises(FileNotFoundError):
+            self.module.reclaim(self.work, self.operation, 'scratch')
+        result = {'kind': 'klokast.router-template-test.v1', 'success': True,
+                  'operation_id': self.operation, 'inputs_sha256': 'b' * 64,
+                  'tests': dict.fromkeys(('personalization', 'exact_packages', 'identity_absent', 'service_syntax'), True)}
+        (self.work / 'personalize.json').write_text(json.dumps(result))
+        with self.assertRaisesRegex(RuntimeError, 'different personalization'):
+            self.module.reclaim(self.work, self.operation, 'scratch')
+        candidate = json.loads((self.work / 'candidate.json').read_text())
+        candidate['personalization_test'] = result
+        (self.work / 'candidate.json').write_text(json.dumps(candidate))
+        with patch.object(self.module, 'domains', return_value={
+                (self.record['domains']['personalize'], self.record['uuids']['personalize'])}):
+            with self.assertRaisesRegex(RuntimeError, 'domain still exists'):
+                self.module.reclaim(self.work, self.operation, 'scratch')
+        self.assertTrue((self.work / 'test.slot').exists())
+        self.assertEqual(self.module.reclaim(self.work, self.operation, 'scratch')['bytes_reclaimed'], 18)
+
+
 if __name__ == '__main__':
     unittest.main()

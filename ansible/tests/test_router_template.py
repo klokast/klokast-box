@@ -119,7 +119,7 @@ class TransportTests(unittest.TestCase):
                 'bootstrap': {n: {'sha256': 'c' * 64, 'bytes': 10} for n in ('kernel', 'initramfs')}}
 
     def test_build_and_both_boots_have_no_production_vif_or_disk(self):
-        for mode in ('build', 'test', 'openrc'):
+        for mode in ('build', 'test', 'openrc', 'personalize'):
             with self.subTest(mode=mode):
                 text = self.host.configuration(Path('/operation'), self.value(), 'router-' + mode,
                     '11111111-1111-4111-8111-111111111111', ['phy:/dev/loop1,xvda,r'], mode)

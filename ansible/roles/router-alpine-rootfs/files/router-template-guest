@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 
@@ -86,13 +87,13 @@ def block(path, readonly):
         raise RuntimeError('router template VBD has the wrong access mode')
 
 
-def unpack(args):
-    block(Path('/dev/xvda'), True)
+def unpack(args, device='/dev/xvda'):
+    block(Path(device), True)
     size = int(args.get('klokast_capsule_bytes', '0'))
     if not 0 < size <= 2049 * MIB or not re.fullmatch('[0-9a-f]{64}', args.get('klokast_capsule', '')):
         raise RuntimeError('router capsule identity is missing or too large')
     capsule = Path('/run/router-input.tar')
-    with Path('/dev/xvda').open('rb') as source, capsule.open('xb') as target:
+    with Path(device).open('rb') as source, capsule.open('xb') as target:
         remaining = size
         while remaining:
             data = source.read(min(remaining, MIB))
@@ -109,7 +110,7 @@ def unpack(args):
         for member in archive:
             total += member.size
             if (len(members) >= 600 or total > 2049 * MIB or not member.isfile() or
-                    not re.fullmatch(r'(inputs\.json|guest\.py|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk)', member.name) or
+                    not re.fullmatch(r'(inputs\.json|guest\.py|router_personalize\.py|personalization\.json|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk)', member.name) or
                     member.name in {m.name for m in members}):
                 raise RuntimeError('router capsule contains unsafe or duplicate members')
             members.append(member)
@@ -121,7 +122,7 @@ def unpack(args):
             manifest.get('inputs_sha256') != args['klokast_inputs'] or
             digest({k: v for k, v in manifest.items() if k != 'inputs_sha256'}) != args['klokast_inputs']):
         raise RuntimeError('router inputs differ from the build assignment')
-    expected = {'inputs.json', 'guest.py'}
+    expected = {'inputs.json', 'guest.py', 'router_personalize.py', 'personalization.json'}
     for p in manifest['packages']:
         if (not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.-]*', p['name']) or
                 not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.~-]*', p['version']) or
@@ -300,6 +301,28 @@ def test_boot(args):
     manifest = json.loads(Path('/etc/klokast-router-inputs.json').read_text(), object_pairs_hook=unique)
     if manifest['inputs_sha256'] != args['klokast_inputs']:
         raise RuntimeError('test disk has a different input identity')
+    if args.get('klokast_router_personalize') == '1':
+        verify_generic(root, manifest)
+        supplied = unpack(args, '/dev/xvdf')
+        if supplied != manifest:
+            raise RuntimeError('router personalization capsule has different template inputs')
+        sys.path.insert(0, str(INPUT))
+        import router_personalize
+        request = json.loads((INPUT / 'personalization.json').read_text(), object_pairs_hook=unique)
+        result = router_personalize.personalize(root, request)
+        for relative, expected in request['files'].items():
+            if router_personalize.regular(root, relative).read_text() != expected:
+                raise RuntimeError('router rendered configuration differs from the approved fixture')
+        run(['dnsmasq', '--test', '--conf-file=/etc/dnsmasq.conf'])
+        run(['nft', '-c', '-f', '/etc/nftables.nft'])
+        if any((root / relative).exists() for relative in (
+                'root/.ssh/authorized_keys', 'var/lib/tailscale/tailscaled.state',
+                'var/lib/dhcpcd/duid', 'var/lib/dhcpcd/secret', 'var/lib/misc/dnsmasq.leases')):
+            raise RuntimeError('router personalization created or copied a service identity')
+        if (root / 'etc/runlevels/default/sshd').exists():
+            raise RuntimeError('router personalization enabled first-contact SSH')
+        return {'tests': dict.fromkeys(('personalization', 'exact_packages', 'identity_absent', 'service_syntax'), True),
+                'kernel_release': os.uname().release, 'personalization': result}
     if args.get('klokast_router_openrc') == '1':
         if Path('/proc/1/comm').read_text().strip() != 'init':
             raise RuntimeError('router OpenRC test did not use the normal init process')

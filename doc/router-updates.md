@@ -69,6 +69,15 @@ is ahead of the approved engine, the CLI reports a qualified template with
 `engine_approved: false` and no release receipt. A release receipt is build
 evidence, not an accepted router assignment or replacement authority.
 
+A fourth isolated boot tests configuration on a fresh disposable clone. The
+controller renders synthetic inputs through the normal router Jinja templates.
+The `router_personalize` helper checks template provenance, the exact package
+set, and absence of existing identity before it creates the management account,
+configuration files, and service links. Native `dnsmasq` and `nft` validate the
+rendered files. This test does not start router services, enroll a machine, or
+copy production state. It is not proof of the complete candidate boot or of
+compatibility between old and new service versions.
+
 The rootfs role now has separate `legacy` and `template` modes. Provisioning
 still uses the legacy mode until the common personalization and accepted-release
 path is complete. Bootstrap integration, protected baseline adoption, native compatibility qualification,

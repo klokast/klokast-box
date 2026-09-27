@@ -84,7 +84,8 @@ def reclaim(work, operation, kind='failed'):
     record = read(work / 'lifecycle.json')
     if (set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
             record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed', 'scratch-reclaimed') or
-            not isinstance(record['domains'], dict) or set(record['domains']) != {'build', 'test', 'openrc'} or
+            not isinstance(record['domains'], dict) or set(record['domains']) not in (
+                {'build', 'test', 'openrc'}, {'build', 'test', 'openrc', 'personalize'}) or
             not isinstance(record['uuids'], dict) or set(record['uuids']) != set(record['domains'])):
         raise RuntimeError('router template cleanup requires its exact detached operation record')
     for mode, name in record['domains'].items():
@@ -107,15 +108,21 @@ def reclaim(work, operation, kind='failed'):
                     'kernel_modules': True, 'openrc': True} or
                 candidate.get('replacement_authorized') is not False):
             raise RuntimeError('qualified router cleanup lacks exact candidate evidence')
-        for mode, required in (('test', {'identity_absent': True, 'exact_packages': True,
+        required_tests = [('test', {'identity_absent': True, 'exact_packages': True,
                                         'kernel_modules': True, 'service_syntax': True}),
                                ('openrc', {'kernel_modules': True, 'openrc': True,
-                                           'service_syntax': True})):
+                                           'service_syntax': True})]
+        if 'personalize' in record['domains']:
+            required_tests.append(('personalize', dict.fromkeys(
+                ('personalization', 'exact_packages', 'identity_absent', 'service_syntax'), True)))
+        for mode, required in required_tests:
             result = read(work / (mode + '.json'))
             if (result.get('kind') != 'klokast.router-template-test.v1' or result.get('success') is not True or
                     result.get('operation_id') != operation or result.get('tests') != required or
                     result.get('inputs_sha256') != candidate.get('inputs_sha256')):
                 raise RuntimeError('qualified router cleanup lacks matching boot evidence')
+            if mode == 'personalize' and candidate.get('personalization_test') != result:
+                raise RuntimeError('qualified router cleanup has different personalization evidence')
         os_disk = work / 'os.slot'
         safe_file(os_disk)
         if attached(os_disk):

@@ -136,9 +136,11 @@
     - lifecycle.json
     - test.json
     - openrc.json
+    - personalize.json
     - "router-build-{{ router_template_operation }}.log"
     - "router-test-{{ router_template_operation }}.log"
     - "router-openrc-{{ router_template_operation }}.log"
+    - "router-personalize-{{ router_template_operation }}.log"
   register: router_template_evidence
 
 - name: Fetch available bounded qualification records
