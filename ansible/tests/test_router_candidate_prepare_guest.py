@@ -40,6 +40,21 @@ class CandidatePrepareGuestTests(unittest.TestCase):
 
 
 class CandidatePrepareHostTests(unittest.TestCase):
+    def test_failed_allocation_records_exact_absence_and_preserves_reason(self):
+        module = runpy.run_path(str(HOST), run_name='router_candidate_prepare_dom0')
+        operation = 'a' * 24
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            def fail_create(*args):
+                (work / 'candidate-disk.json').write_text('planned')
+                raise RuntimeError('LVM refused the allocation')
+            disk = types.SimpleNamespace(create=mock.Mock(side_effect=fail_create), retire=mock.Mock(return_value=0))
+            with mock.patch.dict(module['allocate'].__globals__, {'router_candidate_disk':disk}):
+                with self.assertRaisesRegex(RuntimeError, 'LVM refused the allocation'):
+                    module['allocate'](work, {'operation_id':operation,'box':'boxa'}, work / 'template',
+                                       {'artifacts':{'os':{'bytes':2147483648}}})
+            disk.retire.assert_called_once_with(work, operation, box='boxa')
+
     def test_diagnostic_xen_definition_has_only_new_disk_result_and_no_vif(self):
         module = runpy.run_path(str(HOST), run_name='router_candidate_prepare_dom0')
         with tempfile.TemporaryDirectory() as directory:
