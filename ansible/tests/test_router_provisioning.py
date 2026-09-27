@@ -67,11 +67,11 @@ class PreparationTests(unittest.TestCase):
             plays = yaml.safe_load((REPO / 'ansible/playbooks' / name).read_text())
             first = plays[0]
             self.assertTrue(first['pre_tasks'][0]['vars']['router_boot_assignment_allow_verify'])
-            self.assertEqual(first['pre_tasks'][1]['ansible.builtin.meta'], 'end_play')
+            self.assertEqual(first['pre_tasks'][1]['ansible.builtin.meta'], 'end_host')
             self.assertIn('router_boot_assignment_present', first['pre_tasks'][1]['when'])
             for play in plays[1:]:
                 self.assertFalse(play['gather_facts'])
-                self.assertEqual(play['pre_tasks'][0]['ansible.builtin.meta'], 'end_play')
+                self.assertEqual(play['pre_tasks'][0]['ansible.builtin.meta'], 'end_host')
                 self.assertIn('router_boot_assignment_present', play['pre_tasks'][0]['when'])
         guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
         verify = next(task for task in guard if task.get('register') == 'router_boot_assignment_verification')

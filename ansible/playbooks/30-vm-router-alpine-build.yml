@@ -10,7 +10,7 @@
       vars:
         router_boot_assignment_allow_verify: true
     - name: Keep the accepted router generation during a provisioning rerun
-      ansible.builtin.meta: end_play
+      ansible.builtin.meta: end_host
       when: router_boot_assignment_present | bool
   tasks:
     - name: Unlock reviewed router image maintenance packages in RAM
