@@ -303,6 +303,9 @@ def test_boot(args):
         raise RuntimeError('test disk has a different input identity')
     if args.get('klokast_router_personalize') == '1':
         verify_generic(root, manifest)
+        # Alpine's initramfs initially mounts root read-only even with rw in
+        # the command line. This is only the disposable, hash-checked clone.
+        run(['mount', '-o', 'remount,rw', '/'])
         supplied = unpack(args, '/dev/xvdf')
         if supplied != manifest:
             raise RuntimeError('router personalization capsule has different template inputs')
