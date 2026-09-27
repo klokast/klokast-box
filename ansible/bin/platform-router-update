@@ -168,6 +168,82 @@ def test_state_copy(box, source):
         return {**evidence, 'evidence_directory': str(result)}
 
 
+def test_compatibility(box, source, template_operation):
+    if (not router_updates.match(router_updates.BOX, box) or
+            not re.fullmatch('[0-9a-f]{24}', template_operation)):
+        raise UpdateError('router compatibility requires an exact box and template operation')
+    transport.require_controller()
+    source = Path(source)
+    if source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name):
+        raise UpdateError('router compatibility requires one frozen controller cache directory')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
+        raise UpdateError('router compatibility requires a clean implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    profile, manifest = transport.load(PROFILE), transport.load(source / 'inputs.json')
+    router_updates.validate_inputs(manifest, profile, manifest['engine_commit'])
+    candidate_path = STATE / template_operation / 'candidate.json'
+    candidate = transport.load(candidate_path)
+    # Verify the complete template result without treating this diagnostic
+    # software pair as an approved release or a production assignment.
+    release = router_template_inputs.release(candidate, manifest, profile, manifest['engine_commit'],
+                                            box, template_operation, approved_engine=manifest['engine_commit'])
+    with transport.installation_lock():
+        inspected = inspect(box)
+        if not inspected['adoption_ready']:
+            raise UpdateError('legacy router is not ready for compatibility: ' + ', '.join(inspected['adoption_findings']))
+        inspection = Path(inspected['evidence_directory'])
+        router = transport.load(inspection / (box + '-router.json'))
+        dom0 = transport.load(inspection / (box + '-dom0.json'))
+        if dom0['accepted_record_present'] or dom0['pending_record_present']:
+            raise UpdateError('legacy compatibility refuses an accepted or pending router assignment')
+        disks = [row for row in dom0['logical_volumes']['report'][0]['lv'] if row['lv_path'] == '/dev/vg0/lv_router']
+        if len(disks) != 1 or int(disks[0]['lv_size']) != 2147483648 or disks[0]['origin']:
+            raise UpdateError('legacy compatibility requires the recorded two GiB router LV')
+        operation = secrets.token_hex(12)
+        work, result = CACHE / ('compatibility-' + operation), STATE / operation
+        work.mkdir(mode=0o700); result.mkdir(mode=0o700)
+        guest = {'kind': 'klokast.router-compatibility-request.v1', 'operation_id': operation,
+                 'inputs_sha256': manifest['inputs_sha256'], 'box': box,
+                 'source_packages': router['packages'], 'source_kernel_release': router['kernel_release'],
+                 'source_files': {k.lstrip('/'): v['sha256'] for k, v in {
+                     **router['configuration_files'], **router['include_files']}.items()},
+                 'fixture': router_template_inputs.personalization_fixture(REPO, manifest), 'manifest': manifest,
+                 'runtime_packages': release['runtime_packages'], 'kernel_release': candidate['kernel_release']}
+        transport.write(work / 'guest.json', guest)
+        files = REPO / 'ansible/roles/router-state-copy/files'
+        modules = ('router_service_probe', 'router_state', 'router_personalize', 'router_fixture',
+                   'router_compatibility', 'router_finalize')
+        job_files = {'usr/local/lib/klokast/' + name + '.py': REPO / 'ansible/lib' / (name + '.py') for name in modules}
+        job_files.update({'router-compatibility-request.json': work / 'guest.json',
+                          'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})
+        boot = vm_template_inputs.bootstrap(source, work / 'boot', files / 'router-compatibility-guest',
+            expected_profile=router_updates.PROFILE, job_files=job_files)
+        transport.write(work / 'request.json', {'kind': 'klokast.router-compatibility-host.v1',
+            'box': box, 'role': 'router', 'operation_id': operation, 'engine_commit': engine,
+            'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot,
+            'template': {'operation': template_operation, 'sha256': vm_template_inputs.sha256(candidate_path)},
+            'guest': guest, 'source': {**{k: dom0[k] for k in ('configuration_sha256', 'xen_runtime', 'boot_artifacts')},
+                'disk': {'path': disks[0]['lv_path'], 'uuid': disks[0]['lv_uuid'], 'bytes': int(disks[0]['lv_size'])}}})
+        args = result / 'arguments.json'
+        transport.write(args, {'router_compatibility_box': box, 'router_compatibility_operation': operation,
+            'router_compatibility_input_dir': str(work), 'router_compatibility_result_dir': str(result)})
+        with (result / 'compatibility.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-compatibility.yml', '--limit', box + '-dom0',
+                '-e', '@' + str(args)], timeout=3400, log=log)
+        evidence = transport.load(result / 'result.json')
+        if (evidence.get('kind') != 'klokast.router-compatibility-result.v1' or evidence.get('box') != box or
+                evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
+                evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
+                evidence.get('success') is not True or evidence.get('production_identity') is not False or
+                evidence.get('phases') != ['prepare', 'seed', 'forward', 'new', 'reverse', 'old'] or
+                evidence.get('source_packages') != router['packages'] or
+                evidence.get('runtime_packages') != release['runtime_packages'] or
+                evidence.get('control_plane_rotation_tested') is not False or evidence.get('replacement_authorized') is not False):
+            raise UpdateError('router compatibility returned incomplete or different evidence')
+        return {**evidence, 'evidence_directory': str(result)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -179,6 +255,10 @@ def main():
     copier = sub.add_parser('test-state-copy', help='qualify state copying on new synthetic disks in networkless Xen guests')
     copier.add_argument('--box', required=True)
     copier.add_argument('--inputs-directory', required=True)
+    compatibility = sub.add_parser('test-compatibility', help='test native old/new/old services on private networkless copies')
+    compatibility.add_argument('--box', required=True)
+    compatibility.add_argument('--inputs-directory', required=True)
+    compatibility.add_argument('--template-operation', required=True)
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -188,6 +268,8 @@ def main():
             value = resolve(args.branch)
         elif args.command == 'build-template':
             value = build_template(args.box, args.inputs_directory)
+        elif args.command == 'test-compatibility':
+            value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

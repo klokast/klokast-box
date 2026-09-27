@@ -91,7 +91,23 @@ def network():
     run(['ip', 'link', 'set', 'probeclient', 'up'])
 
 
-def dhcp_dns():
+def dhcp_dns(client_id=2, *, seed_expiry=False, verify_expiry=False):
+    if client_id not in (2, 3):
+        raise RuntimeError('unsupported synthetic LAN client')
+    mac = '02:00:00:00:03:0' + str(client_id)
+    hostname = 'router-probe-client' if client_id == 2 else 'router-probe-latest'
+    run(['ip', 'link', 'set', 'probeclient', 'address', mac])
+    previous = None
+    expiring = None
+    lease_file = Path('/var/lib/misc/dnsmasq.leases')
+    if lease_file.exists():
+        rows = [line.split() for line in lease_file.read_text().splitlines()]
+        previous = next((row[2] for row in rows if len(row) == 5 and row[1] == mac and
+                         row[0].isdigit() and int(row[0]) > time.time()), None)
+        expiring = next((int(row[0]) for row in rows if len(row) == 5 and
+                         row[1] == '02:00:00:00:03:04' and row[0].isdigit()), None)
+    if verify_expiry and expiring is None:
+        raise RuntimeError('native expiry test lost the old synthetic lease')
     upstream = ['ip', 'netns', 'exec', 'router-probe-upstream', 'dnsmasq',
         '--keep-in-foreground', '--conf-file=/dev/null', '--interface=wanpeer',
         '--bind-interfaces', '--port=0', '--dhcp-range=198.19.0.50,198.19.0.100,5m',
@@ -99,13 +115,15 @@ def dhcp_dns():
         '--dhcp-option=3,198.19.0.1', '--dhcp-leasefile=' + str(WORK / 'upstream.leases'),
         '--pid-file=' + str(WORK / 'upstream.pid')]
     lan = ['dnsmasq', '--keep-in-foreground', '--conf-file=/etc/dnsmasq.conf',
-           '--pid-file=' + str(WORK / 'lan.pid')]
+           '--pid-file=' + str(WORK / 'lan.pid'),
+           '--dhcp-host=02:00:00:00:03:04,router-probe-expiring,2m']
     with process('upstream', upstream) as server, process('lan', lan) as dns:
         wait_for(lambda: (WORK / 'upstream.pid').exists() and (WORK / 'lan.pid').exists(),
                  [server, dns], 'DHCP service readiness')
         with process('wan-client', ['dhcpcd', '--nobackground', '--timeout', '30', 'eth0']) as client:
             wait_for(lambda: all(Path(path).exists() for path in (
-                '/var/lib/dhcpcd/eth0.lease', '/var/lib/dhcpcd/secret')),
+                '/var/lib/dhcpcd/eth0.lease', '/var/lib/dhcpcd/secret')) and
+                '198.19.0.' in run(['ip', '-4', '-o', 'address', 'show', 'dev', 'eth0']).stdout,
                 [server, dns, client], 'native WAN lease and SLAAC privacy secret', seconds=35)
             for path in ('/var/lib/dhcpcd/duid', '/var/lib/dhcpcd/secret', '/var/lib/dhcpcd/eth0.lease'):
                 if not Path(path).is_file() or Path(path).stat().st_size == 0:
@@ -114,19 +132,48 @@ def dhcp_dns():
         hook.write_text('#!/bin/sh\nset -eu\ncase "$1" in\nbound|renew) '
                         'printf "%s\\n" "$ip" > /run/router-service-probe/client.address;;\nesac\n')
         hook.chmod(0o700)
+        if verify_expiry:
+            # Renew the old writer's lease before requesting a new client grant.
+            retained = next((row[2] for row in rows if len(row) == 5 and row[1] == '02:00:00:00:03:02'), None)
+            if retained is None:
+                raise RuntimeError('native renewal test lost the old LAN client')
+            run(['ip', 'link', 'set', 'probeclient', 'address', '02:00:00:00:03:02'])
+            run(['busybox', 'udhcpc', '-i', 'probeclient', '-q', '-n', '-t', '3', '-T', '3',
+                 '-x', 'hostname:router-probe-client', '-s', str(hook)], timeout=20)
+            if (WORK / 'client.address').read_text().strip() != retained:
+                raise RuntimeError('new dnsmasq did not renew the old writer LAN assignment')
+            run(['ip', 'link', 'set', 'probeclient', 'address', mac])
         run(['busybox', 'udhcpc', '-i', 'probeclient', '-q', '-n', '-t', '3', '-T', '3',
-             '-x', 'hostname:router-probe-client', '-s', str(hook)], timeout=20)
+             '-x', 'hostname:' + hostname, '-s', str(hook)], timeout=20)
         address = (WORK / 'client.address').read_text().strip()
         if not address.startswith('198.18.3.') or not 50 <= int(address.split('.')[-1]) <= 150:
             raise RuntimeError('native LAN DHCP client obtained an unexpected address')
         rows = [line.split() for line in Path('/var/lib/misc/dnsmasq.leases').read_text().splitlines()]
-        if not any(len(row) == 5 and row[1:4] == [
-                '02:00:00:00:03:02', address, 'router-probe-client'] for row in rows):
+        if not any(len(row) == 5 and row[1:4] == [mac, address, hostname] for row in rows):
             raise RuntimeError('native dnsmasq did not persist its synthetic LAN assignment')
-        answer = run(['busybox', 'nslookup', 'router-probe-client', '198.18.3.1']).stdout
+        if previous is not None and address != previous:
+            raise RuntimeError('native dnsmasq did not retain the unexpired synthetic client assignment')
+        answer = run(['busybox', 'nslookup', hostname, '198.18.3.1']).stdout
         if address not in answer:
             raise RuntimeError('native DNS service did not resolve the persisted LAN client')
-    return {'wan_dhcp_identity': True, 'wan_lease': True, 'lan_lease': True, 'lan_dns': True}
+        if seed_expiry:
+            run(['ip', 'link', 'set', 'probeclient', 'address', '02:00:00:00:03:04'])
+            run(['busybox', 'udhcpc', '-i', 'probeclient', '-q', '-n', '-t', '3', '-T', '3',
+                 '-x', 'hostname:router-probe-expiring', '-s', str(hook)], timeout=20)
+            rows = [line.split() for line in lease_file.read_text().splitlines()]
+            expiry = next((int(row[0]) for row in rows if len(row) == 5 and row[1] ==
+                           '02:00:00:00:03:04' and row[0].isdigit()), 0)
+            if not 90 <= expiry - time.time() <= 125:
+                raise RuntimeError('native dnsmasq did not create the bounded expiry fixture')
+        if verify_expiry:
+            wait_for(lambda: all('02:00:00:00:03:04' not in line for line in lease_file.read_text().splitlines()),
+                     [server, dns], 'native expiry of the old LAN lease', seconds=150)
+    result = {'wan_dhcp_identity': True, 'wan_lease': True, 'lan_lease': True, 'lan_dns': True}
+    if seed_expiry:
+        result['expiry_lease_created'] = True
+    if verify_expiry:
+        result.update(expired_lease_removed=True, old_client_renewed=True)
+    return result
 
 
 def tailscale_state():

@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Prepare and test private disposable router copies inside networkless Xen."""
+import contextlib
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import subprocess
+import sys
+import time
+
+sys.path[:0] = ['/usr/local/lib/klokast/router-probe', '/usr/local/lib/klokast']
+import router_compatibility
+import router_finalize
+import router_fixture
+import router_personalize
+import router_state
+
+MIB = 1024 * 1024
+PHASES = ('prepare', 'seed', 'forward', 'new', 'reverse', 'old')
+
+
+def run(argv, allowed=(0,), timeout=120):
+    result = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=timeout)
+    if result.returncode not in allowed:
+        # Preparation may encounter production data in the private clone.
+        # Do not emit filesystem or source-service output to a console log.
+        raise RuntimeError('router compatibility native command failed: ' + str(argv[0]))
+
+
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise RuntimeError('duplicate router compatibility field')
+        value[key] = item
+    return value
+
+
+def guard():
+    router_personalize.environment()
+    parameters = {}
+    for field in Path('/proc/cmdline').read_text().split():
+        name, sep, value = field.partition('=')
+        if sep and name.startswith('klokast_'):
+            if name in parameters:
+                raise RuntimeError('duplicate router compatibility boot parameter')
+            parameters[name] = value
+    if (parameters.get('klokast_phase') not in PHASES or
+            not re.fullmatch('[0-9a-f]{24}', parameters.get('klokast_operation', '')) or
+            not re.fullmatch('[0-9a-f]{64}', parameters.get('klokast_job', ''))):
+        raise RuntimeError('router compatibility boot identity is invalid')
+    phase = parameters['klokast_phase']
+    path = Path('/router-compatibility-request.json') if phase in ('prepare', 'forward', 'reverse') else Path(
+        '/etc/klokast-router-compatibility.json')
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= MIB:
+        raise RuntimeError('router compatibility request is absent or unsafe')
+    request = json.loads(path.read_text(), object_pairs_hook=unique)
+    if (request.get('kind') != 'klokast.router-compatibility-request.v1' or
+            request.get('operation_id') != parameters['klokast_operation'] or
+            request.get('inputs_sha256') != parameters.get('klokast_inputs') or
+            router_personalize.digest(request) != parameters['klokast_job']):
+        raise RuntimeError('router compatibility request differs from the selected job')
+    if phase in ('seed', 'old', 'new'):
+        kernel = request['kernel_release'] if phase == 'new' else request['source_kernel_release']
+        if os.uname().release != kernel:
+            raise RuntimeError('router compatibility boot used the wrong recorded kernel')
+    return phase, request
+
+
+@contextlib.contextmanager
+def mounted(device, name, *, writable=False):
+    root = Path('/run') / name
+    root.mkdir(mode=0o700)
+    run(['mount', '-t', 'ext4', '-o', 'rw,nodev,nosuid,noexec' if writable else 'ro,noload,nodev,nosuid,noexec', device, root])
+    try:
+        yield root
+    finally:
+        run(['umount', root], timeout=30)
+        root.rmdir()
+
+
+def prepare(request):
+    # Both devices are private copies. The production LV is never attached.
+    for disk in ('xvda', 'xvdb'):
+        if Path('/sys/class/block/' + disk + '/ro').read_text().strip() != '0':
+            raise RuntimeError('fixture preparation requires writable disposable copies')
+        run(['e2fsck', '-p', '/dev/' + disk + '3'], allowed=(0, 1))
+        run(['e2fsck', '-fn', '/dev/' + disk + '3'])
+    records = {}
+    modules = {name + '.py': Path('/usr/local/lib/klokast') / (name + '.py') for name in
+               ('router_service_probe', 'router_state', 'router_personalize', 'router_fixture', 'router_compatibility',
+                'router_finalize')}
+    for device, name in (('/dev/xvda3', 'legacy'), ('/dev/xvdb3', 'candidate')):
+        with mounted(device, name, writable=True) as root:
+            if name == 'legacy':
+                records[name] = router_fixture.sanitize_legacy(root, box=request['box'],
+                    expected_packages=request['source_packages'], expected_files=request['source_files'],
+                    fixture=request['fixture'])
+            else:
+                router_personalize.personalize(root, request['fixture'])
+                # The clone is not an execution root yet. APK retirement scripts
+                # need proc/sys/dev but never a network interface.
+                binds = []
+                try:
+                    for directory in ('proc', 'sys', 'dev'):
+                        run(['mount', '--bind', '/' + directory, root / directory]); binds.append(root / directory)
+                    # Package scripts require executable mounts inside this VM.
+                    run(['mount', '-o', 'remount,rw,nodev,nosuid,exec', root])
+                    finalized = router_finalize.finalize(root, request['manifest'])
+                finally:
+                    for directory in reversed(binds):
+                        run(['umount', directory])
+                if finalized['packages'] != request['runtime_packages']:
+                    raise RuntimeError('candidate fixture runtime packages differ from template qualification')
+                records[name] = {'packages': finalized['packages'], 'accounts': router_fixture.accounts(root),
+                                 'production_state_removed': True}
+            router_fixture.install_probe(root, request, modules, Path(__file__))
+    return {'prepared': True, 'fixtures': records, 'production_identity': False}
+
+
+def copy(request):
+    service_accounts = []
+    # Resolve only fixed native account fields, then unmount before the real
+    # helper. No source program or hook executes in the copy environment.
+    for device, name in (('/dev/xvda3', 'accounts-source'), ('/dev/xvdb3', 'accounts-target')):
+        with mounted(device, name) as root:
+            marker = json.loads(router_personalize.regular(root, 'etc/klokast-router-compatibility.json').read_text())
+            if marker != request:
+                raise RuntimeError('router copy fixture belongs to a different test')
+            service_accounts.append(router_fixture.accounts(root))
+    value = {'kind': 'klokast.router-copy-request.v1', 'role': 'router', 'box': 'boxa',
+             'operation': request['operation_id'], 'seconds': 120,
+             'source_id': 'synthetic-source', 'destination_id': 'synthetic-destination',
+             'source_accounts': service_accounts[0], 'destination_accounts': service_accounts[1]}
+    value['request_sha256'] = router_personalize.digest(value)
+    Path('/router-copy-request.json').write_text(json.dumps(value))
+    helper = runpy.run_path('/usr/local/libexec/router-state-copy-guest')
+    helper['execute'](helper['guard']())
+    with Path('/dev/xvdd').open('rb') as stream:
+        receipt = json.loads(stream.read(65536).split(b'\0', 1)[0], object_pairs_hook=unique)
+    if receipt.get('complete') is not True or receipt.get('request_sha256') != value['request_sha256']:
+        raise RuntimeError('router compatibility state copy did not complete')
+    return {'copy_complete': True, 'production_identity': False}
+
+
+def execute(phase, request):
+    if phase == 'prepare':
+        return prepare(request)
+    if phase in ('forward', 'reverse'):
+        return copy(request)
+    run(['mount', '-o', 'remount,rw', '/'])
+    expected = None
+    if phase != 'seed':
+        if Path('/sys/class/block/xvdf/ro').read_text().strip() != '1':
+            raise RuntimeError('router compatibility previous evidence must be read-only')
+        with Path('/dev/xvdf').open('rb') as stream:
+            previous = json.loads(stream.read(MIB).split(b'\0', 1)[0], object_pairs_hook=unique)
+        if (previous.get('operation_id') != request['operation_id'] or previous.get('success') is not True or
+                previous.get('phase') != ('seed' if phase == 'new' else 'new')):
+            raise RuntimeError('router compatibility has no matching previous writer evidence')
+        expected = previous['state']
+    return router_compatibility.execute(phase, request, expected)
+
+
+def main():
+    os.umask(0o022)
+    if os.getpid() == 1:
+        for fs, path in (('proc', '/proc'), ('sysfs', '/sys'), ('devtmpfs', '/dev')):
+            if not os.path.ismount(path):
+                run(['mount', '-t', fs, fs, path])
+        if not os.path.ismount('/run'):
+            run(['mount', '-t', 'tmpfs', 'tmpfs', '/run'])
+    phase, request = guard()
+    result = {'kind': 'klokast.router-compatibility-phase.v1', 'phase': phase,
+              'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'], 'success': False}
+    started = time.monotonic()
+    try:
+        result.update(execute(phase, request), success=True)
+    except Exception as error:
+        # Never print untrusted source bytes from the legacy preparation phase.
+        result['error'] = str(error)[:400] if phase != 'prepare' else 'isolated fixture preparation failed: ' + type(error).__name__
+    result['seconds'] = round(time.monotonic() - started, 3)
+    os.sync()
+    with Path('/dev/xvde').open('r+b', buffering=0) as stream:
+        stream.write(json.dumps(result, sort_keys=True).encode() + b'\0')
+        os.fsync(stream.fileno())
+    if os.getpid() == 1:
+        run(['poweroff', '-f'])
+        while True:
+            time.sleep(1)
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

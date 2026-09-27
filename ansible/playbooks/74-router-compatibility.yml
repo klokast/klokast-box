@@ -1,0 +1,12 @@
+---
+- name: Qualify native router services on private networkless copies
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Run the fixed native compatibility qualification
+      ansible.builtin.import_role:
+        name: router-state-copy
+        tasks_from: compatibility.yml

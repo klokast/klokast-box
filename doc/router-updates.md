@@ -244,3 +244,49 @@ diagnosis, reclaim a failed operation with
 `ansible/playbooks/74-router-state-copy-test-cleanup.yml`, using the exact
 `router_copy_test_box` and `router_copy_test_operation` variables and limiting
 the play to that box's dom0.
+
+## Native old/new/old qualification
+
+The diagnostic command below tests a recorded legacy router against an existing
+qualified template. Run it on the active controller from a clean checkout:
+
+```sh
+ansible/bin/platform-router-update test-compatibility --box boxa \
+  --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION \
+  --template-operation TEMPLATE_OPERATION
+```
+
+The command takes the installation lock and requires a fresh, clear legacy
+inspection. It refuses an accepted or pending assignment. Dom0 checks the live
+Xen UUID, configuration, boot hashes, and exact two GiB legacy LV again. It takes
+a read-only LVM snapshot with a one GiB COW reserve, copies its opaque blocks to
+private storage, verifies the copy, and retires the snapshot by recorded UUID,
+origin UUID, tag, and path. An uncertain snapshot is retained for reconciliation.
+Dom0 does not mount either guest filesystem.
+
+A networkless preparation guest removes the production identity from the copy,
+checks its packages and configuration against inspection, and installs only the
+fixed synthetic probe. It personalizes and finalizes a separate template copy.
+Neither production runlevels nor local startup hooks run on the old copy. The
+old software then creates native synthetic state. The fixed copy helper moves
+that state to the new copy and later moves the new writer's state back. Each
+runtime uses its recorded kernel and exact package set. The test checks DHCP
+renewal and new grants, DNS, lease expiry, SSH fingerprints, DUID and privacy
+secret continuity, copied timestamps, and native Tailscale state reads and
+writes in both directions.
+
+The offline Tailscale test uses a logged-out synthetic profile and native
+machine-key storage writes. It does not test control-plane node-key rotation or
+Tailnet enrollment. Its receipt explicitly records that limit and cannot
+authorize replacement. Interrupted state writes and reboot recovery also need
+their own transaction qualification.
+
+Private test disks remain under
+`/mnt/dom0_data/klokast-router-compatibility/OPERATION_ID`. Successful tests
+remove them after every recorded guest stops and all loop devices detach.
+Failed tests retain them. After diagnosis, use
+`ansible/playbooks/74-router-compatibility-cleanup.yml` with
+`router_compatibility_box` and `router_compatibility_operation`. Cleanup requires
+a retired snapshot, a detached lifecycle record, and the exact recorded file
+identities. It refuses live guests, changed files, or attached disks. Operations
+interrupted before a detached record require explicit reconciliation first.

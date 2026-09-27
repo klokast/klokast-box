@@ -1,0 +1,33 @@
+---
+- name: Reclaim exact detached isolated router compatibility disks
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require an exact isolated compatibility operation
+      ansible.builtin.assert:
+        that:
+          - router_compatibility_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - router_compatibility_operation is match('^[0-9a-f]{24}$')
+          - inventory_hostname == router_compatibility_box ~ '-dom0'
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  tasks:
+    - name: Reclaim only recorded private test disks after Xen and attachment checks
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-dom0.py'
+          - --box
+          - '{{ router_compatibility_box }}'
+          - --operation-id
+          - '{{ router_compatibility_operation }}'
+          - --cleanup
+      register: router_compatibility_cleanup
+      changed_when: (router_compatibility_cleanup.stdout | from_json).bytes_reclaimed | int > 0

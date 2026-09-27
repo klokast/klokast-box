@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Qualify a legacy/new service pair on private networkless copies only."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import shutil
+import socket
+import time
+import uuid
+
+from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
+    duplicate_fields, domain, attach_loop, detach_loop, boot_guest, read_slot, loop_devices)
+
+BASE = Path('/mnt/dom0_data/klokast-router-compatibility')
+TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
+MIB = 1024 * 1024
+PHASES = ('prepare', 'seed', 'forward', 'new', 'reverse', 'old')
+SLOTS = {'old': 2048 * MIB, 'new': 2048 * MIB, 'scratch': 2048 * MIB,
+         'copy': MIB, 'result': MIB, 'previous': MIB}
+
+
+def load(path):
+    safe_file(path, MIB)
+    return json.loads(path.read_text(), object_pairs_hook=duplicate_fields)
+
+
+def digest(value):
+    import hashlib
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                    separators=(',', ':')).encode()).hexdigest()
+
+
+def artifact(path, expected, maximum):
+    if (not isinstance(expected, dict) or set(expected) != {'bytes', 'sha256'} or
+            type(expected['bytes']) is not int or not 0 < expected['bytes'] <= maximum or
+            not re.fullmatch('[0-9a-f]{64}', str(expected['sha256']))):
+        raise RuntimeError('compatibility artifact identity is invalid')
+    safe_file(path, maximum)
+    if path.stat().st_size != expected['bytes'] or checksum(path) != expected['sha256']:
+        raise RuntimeError('compatibility artifact differs from recorded bytes')
+
+
+def request(work, box, operation):
+    value = load(work / 'request.json')
+    fields = {'kind', 'role', 'box', 'operation_id', 'inputs_sha256', 'engine_commit',
+              'bootstrap', 'template', 'source', 'guest'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.router-compatibility-host.v1' or value['role'] != 'router' or
+            value['box'] != box or value['operation_id'] != operation or
+            not re.fullmatch('[0-9a-f]{64}', str(value['inputs_sha256'])) or
+            not re.fullmatch('[0-9a-f]{40}', str(value['engine_commit'])) or
+            not isinstance(value['template'], dict) or set(value['template']) != {'operation', 'sha256'} or
+            not re.fullmatch('[0-9a-f]{24}', str(value['template']['operation'])) or
+            not re.fullmatch('[0-9a-f]{64}', str(value['template']['sha256'])) or
+            not isinstance(value['bootstrap'], dict) or set(value['bootstrap']) != {'kernel', 'initramfs'}):
+        raise RuntimeError('compatibility request has an invalid target or contract')
+    guest = value['guest']
+    if (not isinstance(guest, dict) or set(guest) != {'kind', 'operation_id', 'inputs_sha256', 'box',
+            'source_packages', 'source_files', 'source_kernel_release', 'fixture', 'manifest',
+            'runtime_packages', 'kernel_release'} or
+            guest['kind'] != 'klokast.router-compatibility-request.v1' or
+            any(guest[key] != value[key] for key in ('operation_id', 'inputs_sha256', 'box')) or
+            guest['manifest'].get('inputs_sha256') != value['inputs_sha256'] or
+            not all(re.fullmatch('[A-Za-z0-9_.+-]{1,128}', str(guest[k]))
+                    for k in ('kernel_release', 'source_kernel_release'))):
+        raise RuntimeError('compatibility guest contract is invalid')
+    for name, maximum in (('kernel', 32 * MIB), ('initramfs', 1024 * MIB)):
+        artifact(work / name, value['bootstrap'][name], maximum)
+    return value
+
+
+def source_identity(work, value):
+    current = runpy.run_path(str(work / 'inspect-router-update.py'))['inspect_dom0'](value['box'])
+    wanted = value['source']
+    if (not isinstance(wanted, dict) or set(wanted) != {'configuration_sha256', 'xen_runtime', 'boot_artifacts', 'disk'} or
+            current['accepted_record_present'] or current['pending_record_present'] or
+            current['xen_runtime_matches'] is not True or
+            any(current[key] != wanted[key] for key in ('configuration_sha256', 'xen_runtime', 'boot_artifacts'))):
+        raise RuntimeError('legacy source runtime, boot, configuration, or assignment changed')
+    disk = wanted['disk']
+    if (not isinstance(disk, dict) or set(disk) != {'path', 'uuid', 'bytes'} or
+            disk['path'] != '/dev/vg0/lv_router' or disk['bytes'] != SLOTS['old'] or
+            not re.fullmatch('[A-Za-z0-9-]{1,64}', str(disk['uuid'])) or
+            current['xen']['disk'] != ['phy:/dev/vg0/lv_router,xvda,w']):
+        raise RuntimeError('legacy compatibility supports only the exact recorded two GiB router LV')
+    rows = current['logical_volumes']['report'][0]['lv']
+    matches = [row for row in rows if row['lv_path'] == disk['path']]
+    if (len(matches) != 1 or matches[0]['lv_uuid'] != disk['uuid'] or matches[0]['origin'] or
+            int(matches[0]['lv_size']) != disk['bytes']):
+        raise RuntimeError('legacy compatibility source LV identity changed')
+    return current
+
+
+def snapshot_info(path):
+    # A successful complete inventory is required before absence is accepted.
+    value = json.loads(run(['lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix',
+        '-o', 'lv_path,lv_uuid,lv_size,origin_uuid,lv_attr,lv_tags,data_percent']).stdout)
+    rows = [row for report in value['report'] for row in report['lv'] if row['lv_path'] == str(path)]
+    if len(rows) > 1:
+        raise RuntimeError('compatibility snapshot identity is ambiguous')
+    return rows[0] if rows else None
+
+
+def validate_snapshot(row, record):
+    if (row is None or row['lv_uuid'] != record['uuid'] or row['origin_uuid'] != record['origin_uuid'] or
+            row['lv_path'] != record['path'] or row['lv_tags'].split(',') != [record['tag']] or
+            not row['lv_attr'].startswith('sr') or row['lv_attr'][4] != 'a' or
+            int(row['lv_size']) != SLOTS['old'] or not 0 <= float(row['data_percent']) < 95):
+        raise RuntimeError('compatibility snapshot changed or exceeded its COW reserve; retain it')
+
+
+def retire_snapshot(work):
+    record = load(work / 'snapshot.json')
+    if (record.get('operation_id') != work.name or record.get('stage') not in ('created', 'retired') or
+            record.get('path') != '/dev/vg0/routercompat_' + work.name or
+            record.get('tag') != 'routercompat_' + work.name):
+        raise RuntimeError('compatibility snapshot has no exact retirement record')
+    row = snapshot_info(record['path'])
+    if row is None and record['stage'] == 'retired':
+        return
+    validate_snapshot(row, record)
+    run(['lvremove', '--yes', record['path']])
+    if snapshot_info(record['path']) is not None:
+        raise RuntimeError('compatibility snapshot remains after retirement')
+    write(work / 'snapshot.json', {**record, 'stage': 'retired'})
+
+
+def private_copy(work, value):
+    source_identity(work, value)
+    disk = value['source']['disk']
+    tag = 'routercompat_' + value['operation_id']
+    path = '/dev/vg0/' + tag
+    if snapshot_info(path) is not None:
+        raise RuntimeError('compatibility snapshot path already exists')
+    record = {'operation_id': value['operation_id'], 'path': path, 'tag': tag,
+              'origin_uuid': disk['uuid'], 'stage': 'planned'}
+    write(work / 'snapshot.json', record)
+    run(['lvcreate', '--snapshot', '--permission', 'r', '--size', '1G',
+         '--name', tag, '--addtag', tag, disk['path']], timeout=120)
+    row = snapshot_info(path)
+    if row is None:
+        raise RuntimeError('compatibility snapshot creation has no recorded result')
+    record.update(uuid=row['lv_uuid'], stage='created')
+    validate_snapshot(row, record)
+    write(work / 'snapshot.json', record)
+    try:
+        run(['dd', 'if=' + path, 'of=' + str(work / 'old.slot'), 'bs=1M',
+             'count=2048', 'conv=notrunc,fsync'], timeout=180)
+        validate_snapshot(snapshot_info(path), record)
+        if checksum(work / 'old.slot') != checksum(Path(path), SLOTS['old']):
+            raise RuntimeError('private legacy disk copy differs from its recorded snapshot')
+        source_identity(work, value)
+    finally:
+        retire_snapshot(work)
+
+
+def configuration(work, value, phase, identity, loops):
+    old, new = ('new', 'old') if phase == 'reverse' else ('old', 'new')
+    if phase in ('prepare', 'forward', 'reverse'):
+        disks = [f'phy:{loops[old]},xvda,{"w" if phase == "prepare" else "r"}',
+                 f'phy:{loops[new]},xvdb,w', f'phy:{loops["scratch"]},xvdc,w', f'phy:{loops["copy"]},xvdd,w']
+        kernel, initramfs = 'kernel', 'initramfs'
+        extra = ''
+    else:
+        selected = 'new' if phase == 'new' else 'old'
+        disks = [f'phy:{loops[selected]},xvda,w']
+        if phase != 'seed':
+            disks.append(f'phy:{loops["previous"]},xvdf,r')
+        kernel, initramfs = selected + '-kernel', selected + '-initramfs'
+        extra = ' root=/dev/xvda3 rootfstype=ext4 modules=ext4 rw init=/usr/local/libexec/router-compatibility-guest'
+    disks.append(f'phy:{loops["result"]},xvde,w')
+    extra = ('console=hvc0 panic=1 klokast_operation=' + value['operation_id'] +
+             ' klokast_inputs=' + value['inputs_sha256'] + ' klokast_phase=' + phase +
+             ' klokast_job=' + digest(value['guest']) + extra)
+    name = 'router-compat-' + phase + '-' + value['operation_id']
+    return (f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 2048\nmaxmem = 2048\nvcpus = 2\n'
+            f'kernel = {str(work / kernel)!r}\nramdisk = {str(work / initramfs)!r}\nextra = {extra!r}\n'
+            f'disk = {disks!r}\nvif = []\non_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
+
+
+def file_identity(path):
+    info = path.lstat()
+    return {'device': info.st_dev, 'inode': info.st_ino, 'bytes': info.st_size}
+
+
+def cleanup(work, operation):
+    record = load(work / 'lifecycle.json')
+    if (record.get('operation_id') != operation or record.get('stage') not in ('detached', 'cleaned') or
+            set(record.get('uuids', {})) != set(PHASES) or set(record.get('slots', {})) != set(SLOTS) or
+            load(work / 'snapshot.json').get('stage') != 'retired'):
+        raise RuntimeError('compatibility cleanup needs a complete detached operation and retired snapshot')
+    for phase, identity in record['uuids'].items():
+        if str(uuid.UUID(identity)) != identity or domain('router-compat-' + phase + '-' + operation) is not None:
+            raise RuntimeError('compatibility domain remains; retain private disks')
+    present = []
+    for name, size in SLOTS.items():
+        path = work / (name + '.slot')
+        if not path.exists() and not path.is_symlink():
+            continue
+        safe_file(path, size)
+        if file_identity(path) != record['slots'][name] or path.stat().st_size != size or loop_devices(path):
+            raise RuntimeError('compatibility disk changed or remains attached; retain it')
+        present.append(path)
+    for path in present:
+        path.unlink()
+    write(work / 'lifecycle.json', {**record, 'stage': 'cleaned'})
+    return sum(SLOTS[path.stem] for path in present)
+
+
+def execute(work, value):
+    operation = value['operation_id']
+    if (work / 'lifecycle.json').exists() or (work / 'snapshot.json').exists():
+        raise RuntimeError('compatibility operation already exists')
+    if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES):
+        raise RuntimeError('compatibility domain already exists')
+    capacity = os.statvfs(work)
+    memory = re.search(r'^free_memory\s*:\s*(\d+)\s*$', run(['xl', 'info']).stdout, re.M)
+    if capacity.f_bavail * capacity.f_frsize < sum(SLOTS.values()) + 256 * MIB or not memory or int(memory[1]) < 2304:
+        raise RuntimeError('compatibility needs seven GiB storage and 2304 MiB free Xen memory')
+    # LVM refuses allocation if the explicit one GiB COW reserve is unavailable.
+    source_identity(work, value)
+    template = TEMPLATES / value['template']['operation']
+    safe_directory(TEMPLATES); safe_directory(template)
+    candidate = load(template / 'candidate.json')
+    if (checksum(template / 'candidate.json') != value['template']['sha256'] or
+            candidate.get('kind') != 'klokast.router-template-candidate.v1' or candidate.get('box') != value['box'] or
+            candidate.get('operation_id') != value['template']['operation'] or
+            candidate.get('inputs_sha256') != value['inputs_sha256'] or
+            candidate['personalization_test']['finalization']['packages'] != value['guest']['runtime_packages'] or
+            candidate['kernel_release'] != value['guest']['kernel_release']):
+        raise RuntimeError('compatibility template evidence differs from selected test inputs')
+    for name, maximum in (('os', SLOTS['new']), ('kernel', 32 * MIB), ('initramfs', 128 * MIB)):
+        source = template / ('os.slot' if name == 'os' else name)
+        artifact(source, candidate['artifacts'][name], maximum)
+    identities = {phase: str(uuid.uuid4()) for phase in PHASES}
+    lifecycle = {'operation_id': operation, 'uuids': identities, 'stage': 'allocating', 'slots': {}}
+    write(work / 'lifecycle.json', lifecycle)
+    for name, size in SLOTS.items():
+        with (work / (name + '.slot')).open('xb') as stream:
+            os.posix_fallocate(stream.fileno(), 0, size); os.fsync(stream.fileno())
+        lifecycle['slots'][name] = file_identity(work / (name + '.slot'))
+    lifecycle['stage'] = 'allocated'
+    write(work / 'lifecycle.json', lifecycle)
+    private_copy(work, value)
+    for label, original in (('old-kernel', value['source']['boot_artifacts']['kernel']['path']),
+                            ('old-initramfs', value['source']['boot_artifacts']['ramdisk']['path']),
+                            ('new-kernel', template / 'kernel'), ('new-initramfs', template / 'initramfs'),
+                            ('new.slot', template / 'os.slot')):
+        with Path(original).open('rb') as source, (work / label).open('r+b' if label.endswith('.slot') else 'xb') as target:
+            shutil.copyfileobj(source, target); target.flush(); os.fsync(target.fileno())
+    for label, field in (('old-kernel', 'kernel'), ('old-initramfs', 'ramdisk')):
+        if checksum(work / label) != value['source']['boot_artifacts'][field]['sha256']:
+            raise RuntimeError('legacy boot artifact changed while staging')
+    artifact(work / 'new.slot', candidate['artifacts']['os'], SLOTS['new'])
+    loops, records = {}, {}
+    try:
+        for phase in PHASES:
+            source = 'new' if phase == 'reverse' else 'old'
+            unchanged = checksum(work / (source + '.slot')) if phase in ('forward', 'reverse') else None
+            with (work / 'result.slot').open('r+b') as stream:
+                stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+            if phase in ('new', 'old'):
+                previous = records['seed' if phase == 'new' else 'new']
+                with (work / 'previous.slot').open('r+b') as stream:
+                    stream.write(json.dumps(previous, sort_keys=True).encode() + b'\0')
+                    stream.flush(); os.fsync(stream.fileno())
+            selected = list(SLOTS) if phase in ('prepare', 'forward', 'reverse') else [
+                'new' if phase == 'new' else 'old', 'result', *(['previous'] if phase != 'seed' else [])]
+            for name in selected:
+                loops[name] = attach_loop(work / (name + '.slot'), readonly=name == 'previous' or
+                                         (name == source and phase in ('forward', 'reverse')))
+            config = work / (phase + '.cfg')
+            config.write_text(configuration(work, value, phase, identities[phase], loops))
+            boot_guest(work, 'router-compat-' + phase + '-' + operation, identities[phase], config, value,
+                       kind='klokast.router-compatibility-phase.v1', timeout=420)
+            record = read_slot(work / 'result.slot')
+            write(work / (phase + '.json'), record)
+            if (record.get('kind') != 'klokast.router-compatibility-phase.v1' or record.get('success') is not True or
+                    record.get('phase') != phase or record.get('operation_id') != operation or
+                    record.get('inputs_sha256') != value['inputs_sha256'] or record.get('production_identity') is not False):
+                raise RuntimeError('compatibility failed during ' + phase + '; inspect its bounded phase record')
+            if phase in ('seed', 'new', 'old') and record.get('packages') != value['guest'][
+                    'runtime_packages' if phase == 'new' else 'source_packages']:
+                raise RuntimeError('compatibility phase used a different software manifest')
+            for name, device in list(loops.items()):
+                detach_loop(work / (name + '.slot'), device); del loops[name]
+            if unchanged is not None and checksum(work / (source + '.slot')) != unchanged:
+                raise RuntimeError('compatibility copy changed its read-only source')
+            records[phase] = record
+        source_identity(work, value)
+        result = {'kind': 'klokast.router-compatibility-result.v1', 'box': value['box'], 'role': 'router',
+                  'operation_id': operation, 'inputs_sha256': value['inputs_sha256'], 'engine_commit': value['engine_commit'],
+                  'template_operation': value['template']['operation'], 'source': value['source'],
+                  'source_packages': value['guest']['source_packages'], 'runtime_packages': value['guest']['runtime_packages'],
+                  'phases': list(records), 'phase_seconds': {k: v['seconds'] for k, v in records.items()},
+                  'success': True, 'production_identity': False, 'control_plane_rotation_tested': False,
+                  'replacement_authorized': False}
+        write(work / 'result.json', result)
+    finally:
+        if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES):
+            raise RuntimeError('compatibility guest remains; retain private disks and attachments')
+        for name, device in loops.items():
+            detach_loop(work / (name + '.slot'), device)
+        write(work / 'lifecycle.json', {**lifecycle, 'stage': 'detached'})
+    cleanup(work, operation)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--cleanup', action='store_true')
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('compatibility requires root on the exact dom0')
+    os.umask(0o077)
+    run(['mountpoint', '-q', '/mnt/dom0_data'])
+    work = BASE / args.operation_id
+    safe_directory(BASE); safe_directory(work)
+    with (BASE / 'test.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.cleanup:
+            print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id)}))
+        else:
+            print(json.dumps(execute(work, request(work, args.box, args.operation_id))))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        raise SystemExit('router-compatibility-dom0: ' + str(error))
