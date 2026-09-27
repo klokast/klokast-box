@@ -78,6 +78,7 @@ class PreparationTests(unittest.TestCase):
                 self.assertFalse(accepted['gather_facts'])
                 self.assertEqual(accepted['pre_tasks'][0]['ansible.builtin.meta'], 'end_host')
                 self.assertIn('not (', accepted['pre_tasks'][0]['when'])
+                self.assertEqual(accepted['pre_tasks'][1]['ansible.builtin.import_role']['name'], 'router-verification-inputs')
                 self.assertEqual(accepted['tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification')
         guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
         verify = next(task for task in guard if task.get('register') == 'router_boot_assignment_verification')

@@ -181,8 +181,9 @@ ansible-playbook -i ansible/execution-inventory/hosts \
   ansible/playbooks/74-router-verification-only.yml -e router_update_box=<box>
 ```
 
-It checks the exact managed core file hashes, service and route state,
-firewall, DNS, and Tailscale status. It does not select an OS generation.
+It reads current compiled Instance router inputs, then checks the exact managed
+core file hashes, service and route state, firewall, DNS, and Tailscale status.
+It does not select an OS generation.
 
 `provision-box` and `provision-ops-vm` use the same installation lock. Nested
 shell calls reuse its inherited descriptor. Another process must wait until the

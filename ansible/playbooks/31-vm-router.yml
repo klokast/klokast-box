@@ -469,6 +469,9 @@
     - name: Skip accepted-release checks before baseline adoption
       ansible.builtin.meta: end_host
       when: not (hostvars[node_name ~ '-dom0'].router_boot_assignment_present | default(false) | bool)
+    - name: Load current compiled router verification inputs
+      ansible.builtin.import_role:
+        name: router-verification-inputs
   tasks:
     - name: Check the accepted router service and network state
       ansible.builtin.import_role:

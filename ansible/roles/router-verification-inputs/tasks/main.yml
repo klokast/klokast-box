@@ -1,0 +1,60 @@
+---
+- name: Require one exact router for compiled verification inputs
+  ansible.builtin.assert:
+    that:
+      - node_name is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      - inventory_hostname == node_name ~ '-router'
+
+- name: Require active-controller authority before reading router intent
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_verification_inputs_controller
+
+- name: Verify the active controller
+  ansible.builtin.assert:
+    that:
+      - (router_verification_inputs_controller.stdout | from_json).active | bool
+      - (router_verification_inputs_controller.stdout | from_json).configured | bool
+
+- name: Read current compiled router access and DHCP intent
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/../bin/platform-resources"
+      - show-box-access-vars
+      - --box
+      - "{{ node_name }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_verification_compiler_output
+  no_log: true
+
+- name: Parse the exact compiled router variables
+  ansible.builtin.set_fact:
+    router_verification_compiled_vars: "{{ router_verification_compiler_output.stdout | from_json }}"
+  no_log: true
+
+- name: Require complete compiled router intent for this box
+  ansible.builtin.assert:
+    that:
+      - router_verification_compiled_vars.keys() | list | sort == ['platform_resources_box_access', 'router_managed_dhcp_hosts']
+      - router_verification_compiled_vars.platform_resources_box_access.keys() | list == [node_name]
+      - router_verification_compiled_vars.router_managed_dhcp_hosts is sequence
+      - router_verification_compiled_vars.router_managed_dhcp_hosts | rejectattr('node', 'equalto', node_name) | list | length == 0
+    fail_msg: Compiled router verification inputs are incomplete or select another box.
+
+- name: Select the approved router access and DHCP intent
+  ansible.builtin.set_fact:
+    platform_resources_box_access: "{{ router_verification_compiled_vars.platform_resources_box_access }}"
+    router_managed_dhcp_hosts: "{{ router_verification_compiled_vars.router_managed_dhcp_hosts }}"
+  no_log: true
+
+- name: Refuse an extra-vars override of compiled router intent
+  ansible.builtin.assert:
+    that:
+      - platform_resources_box_access == router_verification_compiled_vars.platform_resources_box_access
+      - router_managed_dhcp_hosts == router_verification_compiled_vars.router_managed_dhcp_hosts
+    fail_msg: Router verification variables differ from current compiled Instance intent.
