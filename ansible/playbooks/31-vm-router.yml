@@ -461,3 +461,15 @@
     - name: Show the observed controller-to-router Tailscale path
       ansible.builtin.debug:
         msg: "{{ verify_router_controller_tailscale_ping.stdout }}"
+
+- name: Verify the accepted router without legacy convergence
+  hosts: router
+  gather_facts: false
+  pre_tasks:
+    - name: Skip accepted-release checks before baseline adoption
+      ansible.builtin.meta: end_host
+      when: not (hostvars[node_name ~ '-dom0'].router_boot_assignment_present | default(false) | bool)
+  tasks:
+    - name: Check the accepted router service and network state
+      ansible.builtin.import_role:
+        name: router-verification

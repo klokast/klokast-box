@@ -18,7 +18,7 @@ ROLES = REPO / 'ansible/roles'
 class PreparationTests(unittest.TestCase):
     def test_router_removes_openssh_only_after_fresh_management_proof(self):
         plays = yaml.safe_load((REPO / 'ansible/playbooks/31-vm-router.yml').read_text())
-        tasks = plays[-1]['tasks']
+        tasks = next(play['tasks'] for play in plays if play['name'] == 'Converge router guest configuration')
         roles = {task['ansible.builtin.import_role']['name']: index
                  for index, task in enumerate(tasks) if 'ansible.builtin.import_role' in task}
         probe = next(index for index, task in enumerate(tasks)
@@ -69,10 +69,16 @@ class PreparationTests(unittest.TestCase):
             self.assertTrue(first['pre_tasks'][0]['vars']['router_boot_assignment_allow_verify'])
             self.assertEqual(first['pre_tasks'][1]['ansible.builtin.meta'], 'end_host')
             self.assertIn('router_boot_assignment_present', first['pre_tasks'][1]['when'])
-            for play in plays[1:]:
+            for play in plays[1:-1] if name == '31-vm-router.yml' else plays[1:]:
                 self.assertFalse(play['gather_facts'])
                 self.assertEqual(play['pre_tasks'][0]['ansible.builtin.meta'], 'end_host')
                 self.assertIn('router_boot_assignment_present', play['pre_tasks'][0]['when'])
+            if name == '31-vm-router.yml':
+                accepted = plays[-1]
+                self.assertFalse(accepted['gather_facts'])
+                self.assertEqual(accepted['pre_tasks'][0]['ansible.builtin.meta'], 'end_host')
+                self.assertIn('not (', accepted['pre_tasks'][0]['when'])
+                self.assertEqual(accepted['tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification')
         guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
         verify = next(task for task in guard if task.get('register') == 'router_boot_assignment_verification')
         self.assertEqual(verify['ansible.builtin.command']['argv'][1], 'verify-boot-assignment')

@@ -167,7 +167,8 @@ paths under `/mnt/dom0_data/klokast-router-updates` before its first mutation.
 A pending record blocks provisioning. If an accepted record exists, playbooks
 30 and 31 run the installed, versioned `verify-boot-assignment` command on
 dom0. The command checks the protected record, boot files, Xen definition,
-and running generation. The playbooks then skip legacy work. A failed check
+and running generation. Playbook 31 also runs the read-only router service
+verifier. The playbooks then skip legacy work. A failed check
 stops the playbook before mutation. Direct calls to the rootfs builder, Xen
 renderer, VM base, Tailscale client, and enrollment still refuse an accepted
 assignment. A missing record does not constitute a baseline adoption receipt.
