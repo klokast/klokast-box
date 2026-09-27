@@ -179,7 +179,7 @@ esac
         self.assertEqual(ping["ansible.builtin.command"]["argv"][2:5], ["--until-direct=false", "--c", "10"])
         select = next(t for t in tasks if t["name"] == "Select exact direct IPv6 replies from the peer router")
         environment = Environment()
-        environment.filters["search"] = lambda value, pattern: re.search(pattern, value) is not None
+        environment.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
         template = environment.from_string(select["ansible.builtin.set_fact"]["overlay_ipv6_router_direct_ipv6_pings"])
         direct = "pong from peer (100.64.0.2) via [2001:db8::2]:41641 in 291ms"
         other = ["pong from peer (100.64.0.2) via DERP(hkg) in 450ms",
