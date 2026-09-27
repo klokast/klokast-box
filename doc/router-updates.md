@@ -150,6 +150,9 @@ adopt a router release.
 The steady-state play first collects Tailscale status and proves independent
 Tailscale SSH. Only then can the VM base role remove OpenSSH. This order prevents
 a missing status fact from leaving the first-contact server installed.
+Before it removes OpenSSH, the play keeps the installed `openssh-keygen` version
+as an explicit package request. Router inspection needs this utility to verify
+the retained SSH host keys.
 
 The Alpine asset role accepts separate output paths and an approved ISO digest.
 Its defaults preserve the existing shared VM paths. Its extraction receipt

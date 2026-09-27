@@ -1,0 +1,31 @@
+---
+- name: Read the installed APK versions before dependency retirement
+  ansible.builtin.package_facts:
+    manager: apk
+
+- name: Require an installed version for each retained utility
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9][A-Za-z0-9+_.-]*$')
+      - item not in (vm_removed_packages_effective | default([]))
+      - ansible_facts.packages.get(item, []) | length == 1
+      - ansible_facts.packages[item][0].version is match('^[A-Za-z0-9][A-Za-z0-9+_.~-]*$')
+  loop: '{{ vm_preserve_installed_packages }}'
+
+- name: Read the existing world requests
+  ansible.builtin.command: cat /etc/apk/world
+  changed_when: false
+  register: vm_preserve_world
+
+- name: Preserve each installed utility at its exact version without downloads or scripts
+  ansible.builtin.command:
+    argv:
+      - /sbin/apk
+      - add
+      - --no-network
+      - --no-scripts
+      - '{{ item }}={{ ansible_facts.packages[item][0].version }}'
+  loop: '{{ vm_preserve_installed_packages }}'
+  when:
+    - item not in vm_preserve_world.stdout_lines
+    - (item ~ '=' ~ ansible_facts.packages[item][0].version) not in vm_preserve_world.stdout_lines

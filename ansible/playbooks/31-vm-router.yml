@@ -323,6 +323,10 @@
     - name: Converge the router VM base access model after management verification
       ansible.builtin.import_role:
         name: vm-base
+      vars:
+        # APK otherwise removes this dependency with the openssh metapackage.
+        # Inspection and retained host-key verification still need ssh-keygen.
+        vm_preserve_installed_packages: [openssh-keygen]
 
     - name: Configure the router guest
       ansible.builtin.import_role:

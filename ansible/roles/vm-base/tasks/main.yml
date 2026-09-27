@@ -188,6 +188,14 @@
   when: vm_base_can_disable_sshd
 
 - name: Remove packages that should not remain on this VM
+  # Keep exact already-installed utilities before deleting their former parent.
+  # This does not select newer package versions or fetch repository metadata.
+  ansible.builtin.include_tasks: preserve-installed.yml
+  when:
+    - (vm_removed_packages_effective | default([])) | length > 0
+    - (vm_preserve_installed_packages | default([])) | length > 0
+
+- name: Remove packages that should not remain on this VM
   community.general.apk:
     name: "{{ vm_removed_packages_effective | default([]) }}"
     state: absent
