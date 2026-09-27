@@ -31,6 +31,12 @@
     dest: "/var/cache/klokast/updates/router/{{ router_copy_operation }}/copy-source/router-state-copy-guest"
     mode: '0600'
 
+- name: Stage the bounded transaction guest entry point
+  ansible.builtin.copy:
+    src: router-copy-transaction-guest
+    dest: "/var/cache/klokast/updates/router/{{ router_copy_operation }}/copy-source/router-copy-transaction-guest"
+    mode: '0600'
+
 - name: Stage the fixed copy implementation for the guest capsule
   ansible.builtin.copy:
     src: "{{ role_path }}/../../lib/router_state.py"

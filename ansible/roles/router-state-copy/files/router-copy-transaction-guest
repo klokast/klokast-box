@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Run one fixed forward or reverse copy; keep the private receipt on the box."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import stat
+import time
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError('router copy job has duplicate fields')
+        result[key] = value
+    return result
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def select(job, cmdline):
+    parameters = {}
+    for field in cmdline.split():
+        name, separator, value = field.partition('=')
+        if separator and name.startswith('klokast_'):
+            if name in parameters:
+                raise RuntimeError('router copy job has duplicate boot parameters')
+            parameters[name] = value
+    if (not isinstance(job, dict) or set(job) != {'kind', 'operation_id', 'inputs_sha256', 'forward', 'reverse'} or
+            job['kind'] != 'klokast.router-copy-job.v1' or
+            not re.fullmatch('[0-9a-f]{24}', str(job['operation_id'])) or
+            not re.fullmatch('[0-9a-f]{64}', str(job['inputs_sha256'])) or
+            parameters.get('klokast_phase') not in ('forward', 'reverse') or
+            parameters.get('klokast_operation') != job['operation_id'] or
+            parameters.get('klokast_inputs') != job['inputs_sha256'] or parameters.get('klokast_job') != digest(job)):
+        raise RuntimeError('router copy job differs from its exact staged operation')
+    forward, reverse = job['forward'], job['reverse']
+    common = ('kind', 'operation', 'role', 'box', 'seconds')
+    if (not isinstance(forward, dict) or not isinstance(reverse, dict) or
+            any(forward.get(k) != reverse.get(k) for k in common) or
+            forward.get('operation') != job['operation_id'] or forward.get('role') != 'router' or
+            forward.get('source_id') != reverse.get('destination_id') or
+            forward.get('destination_id') != reverse.get('source_id') or
+            forward.get('source_accounts') != reverse.get('destination_accounts') or
+            forward.get('destination_accounts') != reverse.get('source_accounts')):
+        raise RuntimeError('router copy job does not reverse the same recorded generation pair')
+    return parameters['klokast_phase'], job[parameters['klokast_phase']]
+
+
+def main():
+    if (os.geteuid() != 0 or Path('/sys/hypervisor/type').read_text().strip() != 'xen' or
+            Path('/sys/hypervisor/uuid').read_text().strip() == '00000000-0000-0000-0000-000000000000' or
+            {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}):
+        raise RuntimeError('router copy job requires networkless Xen, never dom0')
+    path = Path('/router-copy-job.json')
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 32768:
+        raise RuntimeError('router copy job is absent or unsafe')
+    job = json.loads(path.read_text(), object_pairs_hook=unique)
+    phase, request = select(job, Path('/proc/cmdline').read_text())
+    output = Path('/dev/xvde')
+    if (output.is_symlink() or not stat.S_ISBLK(output.stat().st_mode) or
+            Path('/sys/class/block/xvde/ro').read_text().strip() != '0'):
+        raise RuntimeError('router copy job has no fixed writable public result slot')
+    result = {'kind': 'klokast.router-copy-phase.v1', 'phase': phase, 'operation_id': job['operation_id'],
+              'inputs_sha256': job['inputs_sha256'], 'job_sha256': digest(job), 'success': False}
+    started = time.monotonic()
+    try:
+        Path('/router-copy-request.json').write_text(json.dumps(request, sort_keys=True))
+        helper = runpy.run_path('/usr/local/libexec/router-state-copy-guest')
+        helper['execute'](helper['guard']())
+        with Path('/dev/xvdd').open('rb') as stream:
+            receipt = json.loads(stream.read(65536).split(b'\0', 1)[0], object_pairs_hook=unique)
+        if (receipt.get('kind') != 'klokast.router-state-copy.v1' or receipt.get('complete') is not True or
+                receipt.get('operation') != job['operation_id'] or receipt.get('request_sha256') != request['request_sha256'] or
+                receipt.get('source') != request['source_id'] or receipt.get('destination') != request['destination_id'] or
+                digest({k: v for k, v in receipt.items() if k != 'receipt_sha256'}) != receipt.get('receipt_sha256')):
+            raise RuntimeError('router copy job did not produce its exact complete private receipt')
+        result.update(success=True, copy_receipt_sha256=receipt['receipt_sha256'],
+                      recovered_clone=receipt['recovered_clone'])
+    except Exception as error:
+        # Do not expose source bytes or state-file hashes in the public result.
+        result['error'] = 'router state copy failed; destination remains unqualified (' + type(error).__name__ + ')'
+    result['seconds'] = round(time.monotonic() - started, 3)
+    os.sync()
+    with output.open('r+b', buffering=0) as stream:
+        stream.write(json.dumps(result, sort_keys=True).encode() + b'\0')
+        os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
