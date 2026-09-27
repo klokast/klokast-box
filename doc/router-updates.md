@@ -374,6 +374,14 @@ result is diagnostic evidence. Allocation of a production candidate, restricted
 management boot, initial enrollment and resumption, and accepted-assignment
 convergence are still separate integration gates.
 
+The controller-side candidate generation assembler binds a proposed template
+generation to one approved release receipt, one replacement preparation result,
+one recorded candidate LV, versioned boot artifacts, and the accepted router
+topology. It rejects changed package or configuration evidence, an initial
+installation result, missing identity-absence proof, and reused Xen identity.
+The result is a checked generation record only. A dom0 issuer must still verify
+the native resources and signed authority before it publishes that record.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.
