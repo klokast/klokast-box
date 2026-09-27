@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Prepare one new router clone inside a bounded networkless Xen guest."""
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, '/usr/local/lib/klokast')
+import router_candidate
+import router_personalize
+
+REQUEST = Path('/router-candidate-job.json')
+ROOT = Path('/run/router-candidate-root')
+RESULT = Path('/dev/xvdb')
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError('router candidate job contains duplicate fields')
+        result[key] = value
+    return result
+
+
+def command(argv, deadline, *, allowed=(0,)):
+    remaining = min(120, int(deadline - time.monotonic()))
+    if remaining <= 0:
+        raise RuntimeError('router candidate preparation exceeded its fixed budget')
+    try:
+        result = subprocess.run([str(item) for item in argv], stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=remaining)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError('router candidate native command timed out or is unavailable: ' + str(argv[0])) from error
+    if result.returncode not in allowed:
+        raise RuntimeError('router candidate native command failed: ' + str(argv[0]))
+
+
+def guard():
+    router_personalize.environment()
+    args = {}
+    for item in Path('/proc/cmdline').read_text().split():
+        key, separator, value = item.partition('=')
+        if separator and key.startswith('klokast_'):
+            if key in args:
+                raise RuntimeError('router candidate boot has a duplicate identity field')
+            args[key] = value
+    if (set(args) != {'klokast_operation', 'klokast_inputs', 'klokast_job'} or
+            not re.fullmatch('[0-9a-f]{24}', args['klokast_operation']) or
+            not re.fullmatch('[0-9a-f]{64}', args['klokast_inputs']) or
+            not re.fullmatch('[0-9a-f]{64}', args['klokast_job'])):
+        raise RuntimeError('router candidate boot identity is incomplete')
+    if REQUEST.is_symlink() or not REQUEST.is_file() or not 0 < REQUEST.stat().st_size <= 1024 * 1024:
+        raise RuntimeError('router candidate preparation job is absent or unsafe')
+    value = json.loads(REQUEST.read_text(), object_pairs_hook=unique)
+    router_candidate.validate(value)
+    if (value['operation_id'] != args['klokast_operation'] or
+            value['inputs_sha256'] != args['klokast_inputs'] or
+            router_personalize.digest(value) != args['klokast_job']):
+        raise RuntimeError('router candidate boot job differs from its selected input identity')
+    if value['mode'] != 'replacement':
+        raise RuntimeError('router replacement preparation cannot select initial enrollment mode')
+    for path, name in ((Path('/dev/xvda'), 'xvda'), (RESULT, 'xvdb')):
+        if (path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode) or
+                Path('/sys/class/block', name, 'ro').read_text().strip() != '0'):
+            raise RuntimeError('router candidate preparation has an invalid writable block device')
+    if Path('/dev/xvda').stat().st_rdev == RESULT.stat().st_rdev:
+        raise RuntimeError('router candidate and result block devices overlap')
+    if {path.name for path in Path('/sys/class/block').glob('xvd*') if not re.fullmatch(r'xvda[0-9]+', path.name)} != {'xvda','xvdb'}:
+        raise RuntimeError('router candidate preparation has an unexpected Xen disk')
+    return value
+
+
+def prepare(value):
+    deadline = time.monotonic() + 300
+    command(['/sbin/e2fsck', '-fn', '/dev/xvda3'], deadline)
+    ROOT.mkdir(mode=0o700)
+    command(['/bin/mount', '-t', 'ext4', '-o', 'rw,nodev,nosuid,exec', '/dev/xvda3', ROOT], deadline)
+    mounted = []
+    try:
+        for name in ('proc', 'sys', 'dev'):
+            command(['/bin/mount', '--bind', '/' + name, ROOT / name], deadline)
+            mounted.append(ROOT / name)
+        result = router_candidate.prepare(ROOT, value)
+        command(['/bin/sync'], deadline)
+        return result
+    finally:
+        for path in reversed(mounted):
+            command(['/bin/umount', path], deadline)
+        command(['/bin/umount', ROOT], deadline)
+
+
+def main():
+    os.umask(0o077)
+    value = guard()
+    result = {'kind':'klokast.router-candidate-preparation-result.v1',
+              'operation_id':value['operation_id'], 'inputs_sha256':value['inputs_sha256'],
+              'job_sha256':router_personalize.digest(value), 'success':False}
+    try:
+        result.update(prepared=prepare(value), success=True)
+    except Exception as error:
+        result['error'] = str(error)[:500]
+    data = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    if len(data) > 1024 * 1024 - 1:
+        raise RuntimeError('router candidate preparation result exceeds its fixed slot')
+    with RESULT.open('r+b', buffering=0) as stream:
+        stream.write(data + b'\0')
+        os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

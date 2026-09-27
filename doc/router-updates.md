@@ -356,6 +356,14 @@ includes through the same compiler adapter. The rendered result has no
 replacement authority. Native candidate preparation and service verification
 must still pass before use.
 
+The candidate preparation guest is a networkless Xen job for one new clone.
+It accepts one hashed replacement job, a writable candidate disk, and a
+separate result slot. It mounts only the candidate root, runs the common
+preparation helper, then unmounts the root before it writes success. It has no
+old router disk, production VIF, enrollment key, or cutover command. The dom0
+dispatcher and restricted candidate boot must still be connected and tested
+before this guest can prepare a production candidate.
+
 The common preparation helper, `ansible/lib/router_candidate.py`, accepts only
 `initial-install` and `replacement` on a fresh generic clone inside networkless
 Xen. Both modes use the same configuration and account recipe. Initial mode
