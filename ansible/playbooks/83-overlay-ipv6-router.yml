@@ -127,8 +127,9 @@
         argv:
           - tailscale
           - ping
+          - --until-direct=false
           - --c
-          - "3"
+          - "10"
           - "{{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}"
       register: overlay_ipv6_router_direct_ping
       changed_when: false
@@ -173,12 +174,20 @@
         - overlay_ipv6_router_operation == 'connectivity-check'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
+    - name: Select exact direct IPv6 replies from the peer router
+      ansible.builtin.set_fact:
+        overlay_ipv6_router_direct_ipv6_pings: >-
+          {{ overlay_ipv6_router_direct_ping.stdout_lines
+             | select('search', 'via \\[' ~ hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout ~ '\\]:41641 in [0-9]+(\\.[0-9]+)?ms$')
+             | list }}
+      when:
+        - overlay_ipv6_router_operation == 'verify-prerequisite'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Require the Huawei direct-path prerequisite
       ansible.builtin.assert:
         that:
-          - >-
-            (overlay_ipv6_router_direct_ping.stdout_lines | last | default(''))
-            is search('via \\[' ~ hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout ~ '\\]:41641 in [0-9]+(\\.[0-9]+)?ms$')
+          - overlay_ipv6_router_direct_ipv6_pings | length > 0
         fail_msg: The active router does not reach the peer router directly through an IPv6 UDP 41641 endpoint.
       when:
         - overlay_ipv6_router_operation == 'verify-prerequisite'
@@ -197,7 +206,7 @@
             'peer_global_ipv6': hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout,
             'udp_port': 41641,
             'direct_ping': (
-              (overlay_ipv6_router_direct_ping.stdout_lines | last | default(''))
+              (overlay_ipv6_router_direct_ipv6_pings | last | default(''))
               if overlay_ipv6_router_operation == 'verify-prerequisite'
               else ''
             ),

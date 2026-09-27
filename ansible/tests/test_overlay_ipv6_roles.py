@@ -3,6 +3,7 @@ import unittest
 import importlib.util
 import tempfile
 import os
+import re
 import subprocess
 from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
@@ -11,6 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import yaml
+try:
+    from jinja2 import Environment
+except ImportError:
+    Environment = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,7 +119,13 @@ esac
                 with self.subTest(role=role, returncode=returncode):
                     module = self.load_ops_helper(role)
                     args = SimpleNamespace(box="boxa", peer_box=None, magicdns_suffix="example.ts.net", check=False, command="apply")
-                    stdout = "TASK [Wait for one SLAAC address] ********\nprivate diagnostic\nPLAY RECAP ********\nfailed=1\n"
+                    stdout = (
+                        "TASK [Wait for one SLAAC address] ********\n"
+                        "fatal: [boxa-router]: FAILED! => private diagnostic\n"
+                        "TASK [Later skipped task] ********\n"
+                        "skipping: [boxa-router]\n"
+                        "PLAY RECAP ********\nfailed=1\n"
+                    )
                     stderr = "private stderr\n"
                     with tempfile.TemporaryDirectory() as temporary:
                         root = Path(temporary)
@@ -132,6 +143,7 @@ esac
                                     module.run_playbook(*arguments)
                                 message = str(failure.exception)
                                 self.assertIn("Wait for one SLAAC address", message)
+                                self.assertNotIn("Later skipped task", message)
                                 self.assertNotIn("private diagnostic", message)
                                 self.assertNotIn("private stderr", message)
                                 self.assertEqual(len(message.splitlines()), 1)
@@ -160,6 +172,26 @@ esac
         self.assertLess(names.index("Advertise only the delegated ops prefix"), names.index(task["name"]))
         self.assertLess(names.index(task["name"]), names.index("Restart dnsmasq to start ops router advertisements"))
 
+    @unittest.skipIf(Environment is None, "Jinja2 is available on the controller")
+    def test_router_prerequisite_selects_exact_ipv6_reply_within_bounded_probe(self):
+        tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
+        ping = next(t for t in tasks if t["name"] == "Prove the active router reaches the peer directly over IPv6")
+        self.assertEqual(ping["ansible.builtin.command"]["argv"][2:5], ["--until-direct=false", "--c", "10"])
+        select = next(t for t in tasks if t["name"] == "Select exact direct IPv6 replies from the peer router")
+        environment = Environment()
+        environment.filters["search"] = lambda value, pattern: re.search(pattern, value) is not None
+        template = environment.from_string(select["ansible.builtin.set_fact"]["overlay_ipv6_router_direct_ipv6_pings"])
+        direct = "pong from peer (100.64.0.2) via [2001:db8::2]:41641 in 291ms"
+        other = ["pong from peer (100.64.0.2) via DERP(hkg) in 450ms",
+                 "pong from peer (100.64.0.2) via 192.0.2.1:41641 in 230ms",
+                 "pong from peer (100.64.0.2) via [2001:db8::3]:41641 in 300ms"]
+        variables = {"overlay_ipv6_peer_box": "boxb", "hostvars": {"boxb-router": {
+            "overlay_ipv6_peer_global": {"stdout": "2001:db8::2"}}}}
+        for lines, expected in ((other[:1] + [direct] + other[1:], [direct]), (other, [])):
+            with self.subTest(lines=lines):
+                rendered = template.render(**variables, overlay_ipv6_router_direct_ping={"stdout_lines": lines})
+                self.assertEqual(yaml.safe_load(rendered), expected)
+
     def test_default_remains_ipv4_only(self):
         self.assertIn("router_enable_ipv6_downstream: false", ROUTER_VARS)
         self.assertIn("router_enable_ops_ipv6_downstream: false", ROUTER_VARS)
@@ -187,7 +219,7 @@ esac
         self.assertIn("via \\[[0-9A-Fa-f:]+\\]:41641", OPS_PLAY)
         self.assertIn("ops-native-ipv6-tailscale-input", OPS_PLAY)
 
-    def test_ops_verification_requires_final_direct_ipv6_pong(self):
+    def test_ops_verification_requires_direct_ipv6_pong_within_bounded_probe(self):
         tasks = yaml.safe_load(OPS_PLAY)[0]["tasks"]
         task = next(t for t in tasks if t["name"] == "Verify native IPv6 and direct peer routing")
         script = task["ansible.builtin.shell"]
@@ -198,9 +230,9 @@ esac
         direct = "pong from boxb-router (100.64.0.2) via [2001:db8::2]:41641 in 291ms"
         relay = "pong from boxb-router (100.64.0.2) via DERP(hkg) in 450ms"
         cases = [(direct, 0, True), (relay + "\n" + direct, 0, True), (relay, 0, False),
-                 (direct + "\n" + relay, 0, False), (direct.replace("41641", "41642"), 0, False),
+                 (direct + "\n" + relay, 0, True), (direct.replace("41641", "41642"), 0, False),
                  (direct.replace("[2001:db8::2]", "192.0.2.1"), 0, False),
-                 (direct, 1, False), (direct + "\nextra output", 0, False)]
+                 (direct, 1, False), (direct + "\nextra output", 0, True)]
         for output, code, success in cases:
             with self.subTest(output=output, code=code):
                 result = subprocess.run(["/bin/sh", "-s"], input=prefix + probe, text=True, capture_output=True,

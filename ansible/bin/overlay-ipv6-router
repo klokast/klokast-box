@@ -103,8 +103,15 @@ def run_playbook(args, variables, limit):
             log.write(completed.stdout)
             log.write("\n" + completed.stderr)
         if completed.returncode != 0:
-            tasks = re.findall(r"^TASK \[([^\r\n]+)\] \*+$", completed.stdout, re.MULTILINE)
-            task = tasks[-1] if tasks else "before the first task"
+            task = "before the first task"
+            failed_task = None
+            for line in completed.stdout.splitlines():
+                match = re.fullmatch(r"TASK \[([^\r\n]+)\] \*+", line)
+                if match:
+                    task = match.group(1)
+                elif line.startswith("fatal: [") and failed_task is None:
+                    failed_task = task
+            task = failed_task or task
             raise HelperError(f"router Ansible operation failed at {task[:160]} (exit {completed.returncode}); private log: {log_path}")
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
