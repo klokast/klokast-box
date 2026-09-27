@@ -10,6 +10,7 @@
       - item not in (vm_removed_packages_effective | default([]))
       - ansible_facts.packages.get(item, []) | length == 1
       - ansible_facts.packages[item][0].version is match('^[A-Za-z0-9][A-Za-z0-9+_.~-]*$')
+      - ansible_facts.packages[item][0].release is match('^r[0-9]+$')
   loop: '{{ vm_preserve_installed_packages }}'
 
 - name: Read the existing world requests
@@ -24,8 +25,8 @@
       - add
       - --no-network
       - --no-scripts
-      - '{{ item }}={{ ansible_facts.packages[item][0].version }}'
+      - '{{ item }}={{ ansible_facts.packages[item][0].version }}-{{ ansible_facts.packages[item][0].release }}'
   loop: '{{ vm_preserve_installed_packages }}'
   when:
     - item not in vm_preserve_world.stdout_lines
-    - (item ~ '=' ~ ansible_facts.packages[item][0].version) not in vm_preserve_world.stdout_lines
+    - (item ~ '=' ~ ansible_facts.packages[item][0].version ~ '-' ~ ansible_facts.packages[item][0].release) not in vm_preserve_world.stdout_lines
