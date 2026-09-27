@@ -154,6 +154,7 @@ class DiskTests(unittest.TestCase):
             if argv[0]=='/sbin/lvcreate':
                 self.assertEqual(value['stage'],'planned')
                 self.assertIsNone(value['uuid'])
+                self.assertEqual(argv[-4:],['--wipesignatures','y','--yes','vg0'])
             else:
                 self.assertEqual(value['stage'],'allocated')
                 self.assertEqual(value['uuid'],'exact-uuid')

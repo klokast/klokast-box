@@ -92,7 +92,8 @@ def create(work, operation, source, expected):
     value = {'kind':'klokast.router-candidate-disk.v1', 'operation_id':operation, 'path':path,
              'tag':tag, 'uuid':None, 'stage':'planned', 'template_sha256':expected['sha256']}
     records.write(work / 'candidate-disk.json', value)
-    native.command(['/sbin/lvcreate', '--size', '2G', '--name', tag, '--addtag', tag, 'vg0'],
+    native.command(['/sbin/lvcreate', '--size', '2G', '--name', tag, '--addtag', tag,
+                    '--wipesignatures', 'y', '--yes', 'vg0'],
                    time.monotonic() + 120, maximum_seconds=120, lvm_diagnostic=True)
     row = observed(operation)
     disk = validate_row(row, operation, row.get('lv_uuid') if isinstance(row, dict) else None)
