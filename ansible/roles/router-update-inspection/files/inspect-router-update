@@ -46,6 +46,25 @@ def file_hash(path):
     return value.hexdigest()
 
 
+def include_files():
+    paths = [Path('/etc/klokast/app-resources/router-forward.nft')]
+    for name in ('/etc/klokast/app-resources/router-forward.d', '/etc/dnsmasq.d'):
+        directory = Path(name)
+        metadata = directory.lstat()
+        if (any(parent.is_symlink() for parent in directory.parents) or
+                not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022):
+            raise RuntimeError('router include directory is missing or unsafe')
+        paths.extend(directory.iterdir())
+    if len(paths) > 1024:
+        raise RuntimeError('router has too many generated include files')
+    result = {}
+    for path in paths:
+        metadata = info(path)
+        result[str(path)] = {'metadata': metadata, 'sha256': file_hash(path)
+                            if metadata.get('regular') and metadata['bytes'] <= 128 * 1024 else None}
+    return result
+
+
 def inspect_guest(box):
     packages = {}
     for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
@@ -103,6 +122,7 @@ def inspect_guest(box):
     return {'packages': packages, 'kernel_release': os.uname().release,
             'service_accounts': service_accounts,
             'configuration_files': configuration,
+            'include_files': include_files(),
             'machine_id': status.get('Self', {}).get('ID'), 'tags': status.get('Self', {}).get('Tags'),
             'tailscale_running': status.get('BackendState') == 'Running', 'tailscale_ssh': prefs.get('RunSSH'),
             'state_paths': {path: info(path) for path in state_paths}, 'ssh_keys': keys,

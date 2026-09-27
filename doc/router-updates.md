@@ -25,8 +25,11 @@ checks cannot establish readiness.
 Inspection compares the four core router files (interfaces, dhcpcd, dnsmasq,
 and nftables) with the common Ansible templates rendered from execution
 inventory. Missing evidence, unsafe file metadata, or a different checksum
-blocks readiness. Generated app includes still need separate compiler
-verification before a baseline can be adopted.
+blocks readiness. Inspection also compiles the current verified Instance
+resources and compares every router firewall include with that output. Missing,
+changed, or extra includes block readiness. The supported profile requires an
+empty dnsmasq include directory; an additional DNS feature needs an explicit
+reconstruction adapter.
 The dom0 inspection compares the legacy Xen file with the common template and
 execution inventory. It also records the live Xen UUID and compares the running
 domain's boot paths, disk, memory, vCPUs, and ordered network attachments with

@@ -37,7 +37,9 @@
 
 - name: Bind expected configuration to the router inspection
   ansible.builtin.set_fact:
-    router_update_record: '{{ router_update_record | combine({"expected_configuration": router_update_expected_configuration}) }}'
+    router_update_record: >-
+      {{ router_update_record | combine({"expected_configuration": router_update_expected_configuration,
+          "expected_includes": router_update_expected_includes}) }}
   when: inventory_hostname == router_update_box ~ '-router'
   no_log: true
 

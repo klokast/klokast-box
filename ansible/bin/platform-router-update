@@ -2,6 +2,7 @@
 """Inspect routers, freeze signed APK inputs, and qualify isolated templates."""
 import argparse
 import datetime as dt
+import json
 import os
 import re
 from pathlib import Path
@@ -33,7 +34,10 @@ def inspect(box):
     directory = STATE / operation
     directory.mkdir(mode=0o700)
     args = directory / 'arguments.json'
-    transport.write(args, {'router_update_box': box, 'router_update_result_dir': str(directory)})
+    compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
+    expected = router_updates.expected_includes(compiled, box)
+    transport.write(args, {'router_update_box': box, 'router_update_result_dir': str(directory),
+                           'router_update_expected_includes': expected})
     with (directory / 'inspection.log').open('x') as log:
         transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                            REPO / 'ansible/playbooks/74-router-update-inspect.yml', '-e', '@' + str(args)],

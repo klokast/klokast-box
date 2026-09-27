@@ -5,6 +5,7 @@ box state and policy from the verified Instance reader. A report cannot authoriz
 initial installation, adoption, or replacement.
 """
 import datetime as dt
+import hashlib
 import re
 
 import router_state
@@ -129,6 +130,37 @@ def dispatch(role):
     raise UpdateError('unsupported VM update role')
 
 
+def expected_includes(compiled, box):
+    """Render expected hashes from compiler output, never from a running router."""
+    if (not isinstance(compiled, dict) or compiled.get('compiler') != 'platform-resources' or
+            not match(HASH, compiled.get('registry_sha256')) or
+            not isinstance(compiled.get('box_configs'), dict) or box not in compiled['box_configs'] or
+            not isinstance(compiled.get('app_resource_effective_files'), list)):
+        raise UpdateError('router include inspection requires complete current resource compiler output')
+    files = {
+        '/etc/klokast/app-resources/router-forward.nft':
+            '# Legacy aggregate include retired by keyed platform-resources.\n',
+        '/etc/klokast/app-resources/router-forward.d/000-empty.nft':
+            '# Empty placeholder so nft include globs always match.\n',
+    }
+    for row in compiled['app_resource_effective_files']:
+        if not isinstance(row, dict):
+            raise UpdateError('resource compiler has an invalid effective file')
+        if row.get('node') != box or row.get('host_role') != 'router':
+            continue
+        name, content = row.get('filename'), row.get('content')
+        if (row.get('kind') != 'router-forward' or not isinstance(name, str) or
+                not re.fullmatch(r'[a-zA-Z0-9_-]+\.nft', name) or
+                not isinstance(content, str) or not 0 < len(content.encode()) <= 128 * 1024):
+            raise UpdateError('resource compiler has an unsupported router include')
+        path = '/etc/klokast/app-resources/router-forward.d/' + name
+        if path in files:
+            raise UpdateError('resource compiler has duplicate router includes')
+        files[path] = content
+    return {'registry_sha256': compiled['registry_sha256'],
+            'files': {path: hashlib.sha256(content.encode()).hexdigest() for path, content in files.items()}}
+
+
 def legacy_baseline_findings(guest, dom0, box):
     """Report missing legacy evidence without granting adoption authority."""
     findings = []
@@ -210,6 +242,17 @@ def legacy_baseline_findings(guest, dom0, box):
     if (not isinstance(guest.get('packages'), dict) or not guest['packages'] or
             not isinstance(guest.get('kernel_release'), str) or not guest['kernel_release']):
         findings.append('installed router package or kernel evidence is missing')
+    expected_includes_record, observed_includes = guest.get('expected_includes'), guest.get('include_files')
+    expected_files = expected_includes_record.get('files') if isinstance(expected_includes_record, dict) else None
+    if (not isinstance(expected_includes_record, dict) or
+            not match(HASH, expected_includes_record.get('registry_sha256')) or
+            not isinstance(expected_files, dict) or not expected_files or
+            not isinstance(observed_includes, dict) or set(observed_includes) != set(expected_files) or any(
+                not match(HASH, checksum) or not isinstance(observed_includes.get(path), dict) or
+                observed_includes[path].get('sha256') != checksum or not _copyable_metadata(
+                    observed_includes[path].get('metadata'), (128 * 1024, False), owners={(0, 0)})
+                for path, checksum in expected_files.items())):
+        findings.append('router generated firewall or DNS includes differ from the current resource compiler')
     if dom0.get('accepted_record_present') is not False or dom0.get('pending_record_present') is not False:
         findings.append('router assignment or transaction already exists')
     xen = dom0.get('xen')

@@ -216,6 +216,25 @@ class LifecycleTests(unittest.TestCase):
 
 
 class LegacyBaselineTests(unittest.TestCase):
+    def test_include_inputs_come_from_complete_compiler_output(self):
+        row = {'node': 'boxa', 'host_role': 'router', 'kind': 'router-forward',
+               'filename': 'aabbcc.nft', 'content': '# rendered rule\n'}
+        compiled = {'compiler': 'platform-resources', 'registry_sha256': 'a' * 64,
+                    'box_configs': {'boxa': {}}, 'app_resource_effective_files': [row]}
+        value = r.expected_includes(compiled, 'boxa')
+        self.assertEqual(value['files']['/etc/klokast/app-resources/router-forward.d/aabbcc.nft'],
+                         hashlib.sha256(row['content'].encode()).hexdigest())
+        self.assertEqual(len(value['files']), 3)
+        for mutation in (lambda c: c.pop('app_resource_effective_files'),
+                         lambda c: c['box_configs'].clear(),
+                         lambda c: c['app_resource_effective_files'].append(copy.deepcopy(row)),
+                         lambda c: c['app_resource_effective_files'][0].update(filename='../escape.nft'),
+                         lambda c: c['app_resource_effective_files'][0].update(kind='vm-input')):
+            changed = copy.deepcopy(compiled)
+            mutation(changed)
+            with self.assertRaises(UpdateError):
+                r.expected_includes(changed, 'boxa')
+
     def fixture(self):
         def state(size, mode, uid=0, gid=0):
             return {'present': True, 'regular': True, 'links': 1, 'bytes': size,
@@ -241,6 +260,8 @@ class LegacyBaselineTests(unittest.TestCase):
                      ('/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft')},
                  'configuration_files': {path: {'sha256': 'a' * 64, 'metadata': state(300, 0o644)} for path in
                      ('/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft')},
+                 'expected_includes': {'registry_sha256': 'a' * 64, 'files': {'/etc/example.nft': 'b' * 64}},
+                 'include_files': {'/etc/example.nft': {'sha256': 'b' * 64, 'metadata': state(100, 0o644)}},
                  'packages': {'tailscale': '1-r0'}, 'kernel_release': '6.12.1-virt',
                  'state_paths': {'/var/lib/tailscale/tailscaled.state': state(2410, 0o600, gid=103),
                                  '/var/lib/dhcpcd/duid': state(42, 0o640),
@@ -264,6 +285,17 @@ class LegacyBaselineTests(unittest.TestCase):
     def test_complete_inspection_only_reports_readiness(self):
         guest, dom0 = self.fixture()
         self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'), [])
+
+    def test_missing_changed_and_extra_generated_rules_block_adoption(self):
+        for mutate in (lambda g: g.pop('expected_includes'),
+                       lambda g: g['include_files'].clear(),
+                       lambda g: g['include_files']['/etc/example.nft'].update(sha256='c' * 64),
+                       lambda g: g['include_files'].update({'/etc/dnsmasq.d/extra.conf': {}}),
+                       lambda g: g['include_files']['/etc/example.nft']['metadata'].update(regular=False)):
+            guest, dom0 = self.fixture()
+            mutate(guest)
+            self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
+                             ['router generated firewall or DNS includes differ from the current resource compiler'])
 
     def test_missing_lease_path_and_first_contact_key_block_adoption(self):
         guest, dom0 = self.fixture()
