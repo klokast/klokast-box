@@ -174,6 +174,17 @@ class OverlayRevalidationTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.ApplyError, r"address 1: 7200 -> 7801 seconds"):
             self.compare()
 
+    def test_interface_name_cannot_supply_the_dynamic_address_flag(self):
+        doc = copy.deepcopy(self.docs["router_preimage"])
+        doc["runtime"] = doc["runtime"].replace("eth0", "dynamic").replace("dynamic mngtmpaddr", "mngtmpaddr")
+        stored = Path(self.binding["router_preimage_path"])
+        stored.write_text(json.dumps(doc))
+        self.intent["router_preimage_sha256"] = self.mod.sha256_file(stored)
+        doc["runtime"] = doc["runtime"].replace("7200sec", "7201sec")
+        self.write_fresh("router_preimage", doc)
+        with self.assertRaisesRegex(self.mod.ApplyError, "address 1"):
+            self.compare()
+
     def test_renewal_cannot_change_infinite_lifetimes_or_hide_static_address_change(self):
         doc = copy.deepcopy(self.docs["router_preimage"])
         doc["runtime"] += "\n3: eth1    inet6 2606:4700::3/64 scope global \\\n       valid_lft forever preferred_lft forever".replace("\\\n", "\\")

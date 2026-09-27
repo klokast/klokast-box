@@ -2689,8 +2689,8 @@ def overlay_runtime_view(runtime):
         # Keep the address, prefix, interface and every flag in the exact view.
         lifetimes.append({
             "valid": valid, "preferred": preferred,
-            "renewable": " scope global " in match[1] and
-                         re.search(r"(?<!\S)dynamic(?!\S)", match[1]) is not None,
+            "renewable": re.search(r"(?<!\S)dynamic(?!\S)",
+                                   match[1].partition(" scope global ")[2]) is not None,
         })
         lines.append(match[1] + "<valid>" + match[4] + "<preferred>" + match[6])
     return "".join(lines), lifetimes
