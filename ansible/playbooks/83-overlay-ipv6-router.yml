@@ -383,6 +383,16 @@
         - overlay_ipv6_router_operation == 'apply'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
+    - name: Load the exact ops advertisement file from the dnsmasq entry point
+      ansible.builtin.lineinfile:
+        path: /etc/dnsmasq.conf
+        line: conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf
+        insertafter: EOF
+        validate: /usr/sbin/dnsmasq --test --conf-file=%s
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Validate the ops IPv6 router advertisement configuration
       ansible.builtin.command: dnsmasq --test
       changed_when: false
@@ -405,6 +415,7 @@
         ip -o -6 address show dev {{ router_ops_interface }} | grep -F '{{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64'
         test "$(sysctl -n net.ipv6.conf.all.forwarding)" = 1
         test "$(sysctl -n net.ipv6.conf.{{ router_wan_interface }}.accept_ra)" = 2
+        grep -Fx 'conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf' /etc/dnsmasq.conf
         grep -F 'constructor:{{ router_ops_interface }},ra-only,64' /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
         nft list ruleset | grep -F 'ops-ipv6-tailscale-source-egress'
         ! grep -R 'enable-ra' /etc/dnsmasq.d --exclude=91-klokast-ops-ipv6.conf

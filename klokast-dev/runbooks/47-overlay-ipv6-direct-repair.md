@@ -11,6 +11,17 @@ Run Platform commands as `smith` on the active controller from
 `~/src/klokast/klokast-box`. Run approval commands on the trusted MacBook. Do
 not run these operations on an infra-agent or airunner.
 
+The repair adds an exact `conf-file` include to the router's
+`/etc/dnsmasq.conf`. This also supports legacy routers that do not load
+`/etc/dnsmasq.d`. The main configuration is part of the signed preimage and
+is restored on failure. A syntax check alone cannot prove that an unreferenced
+advertisement file is loaded.
+
+Both network helpers keep complete Ansible logs in owner-only files under
+the controller checkout's `.run/overlay-ipv6-router` or
+`.run/overlay-ipv6-ops`. Failure messages identify the last task and the
+private log path. Keep these logs on the controller.
+
 ## Safety contract
 
 The v2 repair intent accepts only a closed, instance-only Plan v8 for a

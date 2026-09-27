@@ -74,7 +74,8 @@ def manual_output_path(value):
 
 def run_playbook(args, variables, limit):
     run_dir = REPO_ROOT / ".run" / "overlay-ipv6-router"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run_dir.chmod(0o700)
     temporary = Path(tempfile.mkdtemp(prefix="run-", dir=run_dir))
     try:
         inventories = []
@@ -97,9 +98,14 @@ def run_playbook(args, variables, limit):
         environment["ANSIBLE_ROLES_PATH"] = str(REPO_ROOT / "ansible/roles")
         environment["ANSIBLE_SSH_COMMON_ARGS"] = f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={temporary / 'known_hosts'}"
         completed = subprocess.run([str(item) for item in command], cwd=REPO_ROOT, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        descriptor, log_path = tempfile.mkstemp(prefix=f"{args.command}-", suffix=".log", dir=run_dir)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as log:
+            log.write(completed.stdout)
+            log.write("\n" + completed.stderr)
         if completed.returncode != 0:
-            diagnostic = "\n".join((completed.stderr + "\n" + completed.stdout).splitlines()[-20:])
-            raise HelperError(f"router Ansible operation failed:\n{diagnostic[:4096]}")
+            tasks = re.findall(r"^TASK \[([^\r\n]+)\] \*+$", completed.stdout, re.MULTILINE)
+            task = tasks[-1] if tasks else "before the first task"
+            raise HelperError(f"router Ansible operation failed at {task[:160]} (exit {completed.returncode}); private log: {log_path}")
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 

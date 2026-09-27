@@ -4,6 +4,7 @@ import importlib.util
 import tempfile
 import os
 import subprocess
+from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
@@ -75,8 +76,8 @@ esac
             with self.subTest(options=options):
                 self.assertNotEqual(self.run_collision_probe(**options)[0].returncode, 0)
 
-    def load_ops_helper(self):
-        loader = SourceFileLoader("overlay_ops_test", str(ROOT / "ansible/bin/overlay-ipv6-ops"))
+    def load_ops_helper(self, role="ops"):
+        loader = SourceFileLoader(f"overlay_{role}_test", str(ROOT / f"ansible/bin/overlay-ipv6-{role}"))
         spec = importlib.util.spec_from_loader(loader.name, loader)
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
@@ -84,7 +85,7 @@ esac
 
     def test_ops_helper_uses_local_connection_only_on_selected_host(self):
         module = self.load_ops_helper()
-        args = SimpleNamespace(box="boxa", magicdns_suffix="example.ts.net", check=True)
+        args = SimpleNamespace(box="boxa", magicdns_suffix="example.ts.net", check=True, command="snapshot")
         calls = []
         def run(command, **kwargs):
             calls.append(command)
@@ -95,7 +96,7 @@ esac
                 self.assertEqual(variables["ansible_python_interpreter"], "/usr/bin/python3")
                 self.assertEqual(command[command.index("--limit") + 1], "boxa-ops")
                 self.assertIn("--check", command)
-            return Mock(returncode=0)
+            return Mock(returncode=0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as temporary, patch.object(module, "REPO_ROOT", Path(temporary)), patch.object(
             module.socket, "gethostname", return_value="boxa-ops.example.ts.net"
         ), patch.object(module.subprocess, "run", side_effect=run):
@@ -106,6 +107,58 @@ esac
         ) as run, self.assertRaisesRegex(module.HelperError, "selected controller host"):
             module.run_playbook(args, {})
         run.assert_not_called()
+
+    def test_helpers_keep_private_logs_and_report_failed_task(self):
+        for role in ("ops", "router"):
+            for returncode in (0, 2):
+                with self.subTest(role=role, returncode=returncode):
+                    module = self.load_ops_helper(role)
+                    args = SimpleNamespace(box="boxa", peer_box=None, magicdns_suffix="example.ts.net", check=False, command="apply")
+                    stdout = "TASK [Wait for one SLAAC address] ********\nprivate diagnostic\nPLAY RECAP ********\nfailed=1\n"
+                    stderr = "private stderr\n"
+                    with tempfile.TemporaryDirectory() as temporary:
+                        root = Path(temporary)
+                        patches = [patch.object(module, "REPO_ROOT", root), patch.object(module.subprocess, "run", side_effect=[
+                            Mock(returncode=0), Mock(returncode=returncode, stdout=stdout, stderr=stderr),
+                        ])]
+                        if role == "ops":
+                            patches.append(patch.object(module.socket, "gethostname", return_value="boxa-ops"))
+                        with ExitStack() as stack:
+                            for item in patches:
+                                stack.enter_context(item)
+                            arguments = (args, {}) if role == "ops" else (args, {}, "boxa-router")
+                            if returncode:
+                                with self.assertRaises(module.HelperError) as failure:
+                                    module.run_playbook(*arguments)
+                                message = str(failure.exception)
+                                self.assertIn("Wait for one SLAAC address", message)
+                                self.assertNotIn("private diagnostic", message)
+                                self.assertNotIn("private stderr", message)
+                                self.assertEqual(len(message.splitlines()), 1)
+                            else:
+                                module.run_playbook(*arguments)
+                        run_dir = root / ".run" / f"overlay-ipv6-{role}"
+                        logs = list(run_dir.glob("apply-*.log"))
+                        self.assertEqual(len(logs), 1)
+                        self.assertEqual(logs[0].read_text(), stdout + "\n" + stderr)
+                        self.assertEqual(logs[0].stat().st_mode & 0o777, 0o600)
+                        self.assertEqual(run_dir.stat().st_mode & 0o777, 0o700)
+                        self.assertEqual(list(run_dir.glob("run-*")), [])
+
+    def test_router_loads_exact_advertisement_inside_rollback_scope(self):
+        play = yaml.safe_load(ROUTER_PLAY)[0]
+        tasks = play["tasks"]
+        task = next(t for t in tasks if t["name"] == "Load the exact ops advertisement file from the dnsmasq entry point")
+        line = task["ansible.builtin.lineinfile"]
+        self.assertEqual(line["path"], "/etc/dnsmasq.conf")
+        self.assertIn(line["path"], play["vars"]["overlay_ipv6_router_files"])
+        self.assertEqual(line["line"], "conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf")
+        self.assertIn(line["line"].split("=", 1)[1], play["vars"]["overlay_ipv6_router_files"])
+        self.assertIn("--test --conf-file=%s", line["validate"])
+        self.assertIn("overlay_ipv6_router_operation == 'apply'", task["when"])
+        names = [t["name"] for t in tasks]
+        self.assertLess(names.index("Advertise only the delegated ops prefix"), names.index(task["name"]))
+        self.assertLess(names.index(task["name"]), names.index("Restart dnsmasq to start ops router advertisements"))
 
     def test_default_remains_ipv4_only(self):
         self.assertIn("router_enable_ipv6_downstream: false", ROUTER_VARS)

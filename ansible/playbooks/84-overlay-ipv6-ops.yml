@@ -121,6 +121,9 @@
           sleep 2
           attempt=$((attempt + 1))
         done
+        echo 'No ops SLAAC address arrived from the delegated prefix within 60 seconds. Check that dnsmasq loads the ops advertisement file.' >&2
+        ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} >&2
+        ip -6 route show default >&2
         exit 1
       args:
         executable: /bin/sh
