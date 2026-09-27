@@ -281,10 +281,18 @@ Tailnet enrollment. Its receipt explicitly records that limit and cannot
 authorize replacement. Interrupted state writes and reboot recovery also need
 their own transaction qualification.
 
-Private test disks remain under
+The replacement test clone uses a new two GiB LV named
+`/dev/vg0/routergen_OPERATION_ID`. The allocation record binds its UUID, unique
+ownership tag, template checksum, and lifecycle stage before template copying.
+Dom0 copies opaque bytes only. The guest performs all filesystem and package
+work. This tests the candidate storage primitive without accepting a generation
+or granting production boot authority.
+
+Private test files and the candidate LV record remain under
 `/mnt/dom0_data/klokast-router-compatibility/OPERATION_ID`. Successful tests
 remove them after every recorded guest stops and all loop devices detach.
-Failed tests retain them. After diagnosis, use
+Failed tests retain them. LV cleanup checks the exact UUID, tag, size, mount state,
+and Xen block backends before removal. After diagnosis, use
 `ansible/playbooks/74-router-compatibility-cleanup.yml` with
 `router_compatibility_box` and `router_compatibility_operation`. Cleanup requires
 a retired snapshot, a detached lifecycle record, and the exact recorded file
@@ -298,6 +306,13 @@ origin UUID, unique tag, read-only attributes, and COW reserve against the exact
 observed UUID before retirement. It does not select a snapshot by name alone.
 A complete allocation record can then be cleaned after all domain and loop
 checks pass. A partial allocation record still needs manual reconciliation.
+For an interrupted candidate `lvcreate`, first inspect that exact LV through
+the controller. `router_compatibility_candidate_uuid` lets the cleanup playbook
+retire the explicitly inspected UUID only if the planned path, ownership tag,
+size, independent allocation, and native detachment checks also match. An absent
+allocation record or an unrecorded disk never permits inferred cleanup.
+Use the original qualification revision to clean older operations that used
+regular files for both test disks.
 
 ## Candidate configuration rendering
 

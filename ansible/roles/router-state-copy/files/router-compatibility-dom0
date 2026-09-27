@@ -12,6 +12,8 @@ import socket
 import time
 import uuid
 
+import router_candidate_disk
+
 from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
     duplicate_fields, domain, attach_loop, detach_loop, boot_guest, read_slot, loop_devices)
 
@@ -258,7 +260,7 @@ def validate_phase(record, value, phase):
 def cleanup(work, operation):
     record = load(work / 'lifecycle.json')
     if (record.get('operation_id') != operation or record.get('stage') not in ('allocated', 'detached', 'cleaned') or
-            set(record.get('uuids', {})) != set(PHASES) or set(record.get('slots', {})) != set(SLOTS) or
+            set(record.get('uuids', {})) != set(PHASES) or set(record.get('slots', {})) != set(SLOTS) - {'new'} or
             load(work / 'snapshot.json').get('stage') != 'retired'):
         raise RuntimeError('compatibility cleanup needs a complete detached operation and retired snapshot')
     for phase, identity in record['uuids'].items():
@@ -266,6 +268,8 @@ def cleanup(work, operation):
             raise RuntimeError('compatibility domain remains; retain private disks')
     present = []
     for name, size in SLOTS.items():
+        if name == 'new':
+            continue
         path = work / (name + '.slot')
         if not path.exists() and not path.is_symlink():
             continue
@@ -273,10 +277,11 @@ def cleanup(work, operation):
         if file_identity(path) != record['slots'][name] or path.stat().st_size != size or loop_devices(path):
             raise RuntimeError('compatibility disk changed or remains attached; retain it')
         present.append(path)
+    reclaimed = router_candidate_disk.retire(work, operation)
     for path in present:
         path.unlink()
     write(work / 'lifecycle.json', {**record, 'stage': 'cleaned'})
-    return sum(SLOTS[path.stem] for path in present)
+    return reclaimed + sum(SLOTS[path.stem] for path in present)
 
 
 def execute(work, value):
@@ -308,28 +313,32 @@ def execute(work, value):
     lifecycle = {'operation_id': operation, 'uuids': identities, 'stage': 'allocating', 'slots': {}}
     write(work / 'lifecycle.json', lifecycle)
     for name, size in SLOTS.items():
+        if name == 'new':
+            continue
         with (work / (name + '.slot')).open('xb') as stream:
             os.posix_fallocate(stream.fileno(), 0, size); os.fsync(stream.fileno())
         lifecycle['slots'][name] = file_identity(work / (name + '.slot'))
     lifecycle['stage'] = 'allocated'
     write(work / 'lifecycle.json', lifecycle)
+    candidate_disk = router_candidate_disk.create(work, operation, template / 'os.slot', candidate['artifacts']['os'])
     private_copy(work, value)
     for label, original in (('old-kernel', value['source']['boot_artifacts']['kernel']['path']),
                             ('old-initramfs', value['source']['boot_artifacts']['ramdisk']['path']),
                             ('new-kernel', template / 'kernel'), ('new-initramfs', template / 'initramfs'),
-                            ('new.slot', template / 'os.slot'), ('scratch.slot', template / 'os.slot')):
+                            ('scratch.slot', template / 'os.slot')):
         with Path(original).open('rb') as source, (work / label).open('r+b' if label.endswith('.slot') else 'xb') as target:
             shutil.copyfileobj(source, target); target.flush(); os.fsync(target.fileno())
     for label, field in (('old-kernel', 'kernel'), ('old-initramfs', 'ramdisk')):
         if checksum(work / label) != value['source']['boot_artifacts'][field]['sha256']:
             raise RuntimeError('legacy boot artifact changed while staging')
-    for name in ('new', 'scratch'):
+    for name in ('scratch',):
         artifact(work / (name + '.slot'), candidate['artifacts']['os'], SLOTS[name])
     loops, records = {}, {}
     try:
         for phase in PHASES:
             source = 'new' if phase == 'reverse' else 'old'
-            unchanged = checksum(work / (source + '.slot')) if phase in ('forward', 'reverse') else None
+            source_path = Path(candidate_disk['path']) if source == 'new' else work / 'old.slot'
+            unchanged = checksum(source_path, SLOTS[source]) if phase in ('forward', 'reverse') else None
             with (work / 'result.slot').open('r+b') as stream:
                 stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
             if phase in ('new', 'old'):
@@ -340,6 +349,10 @@ def execute(work, value):
             selected = list(SLOTS) if phase in ('prepare', 'forward', 'reverse') else [
                 'new' if phase == 'new' else 'old', 'result', *(['previous'] if phase != 'seed' else [])]
             for name in selected:
+                if name == 'new':
+                    router_candidate_disk.verify(work, operation)
+                    loops[name] = candidate_disk['path']
+                    continue
                 loops[name] = attach_loop(work / (name + '.slot'), readonly=name == 'previous' or
                                          (name == source and phase in ('forward', 'reverse')))
             config = work / (phase + '.cfg')
@@ -350,8 +363,12 @@ def execute(work, value):
             write(work / (phase + '.json'), record)
             validate_phase(record, value, phase)
             for name, device in list(loops.items()):
-                detach_loop(work / (name + '.slot'), device); del loops[name]
-            if unchanged is not None and checksum(work / (source + '.slot')) != unchanged:
+                if name == 'new':
+                    router_candidate_disk.verify(work, operation)
+                else:
+                    detach_loop(work / (name + '.slot'), device)
+                del loops[name]
+            if unchanged is not None and checksum(source_path, SLOTS[source]) != unchanged:
                 raise RuntimeError('compatibility copy changed its read-only source')
             records[phase] = record
         source_identity(work, value)
@@ -361,13 +378,17 @@ def execute(work, value):
                   'source_packages': value['guest']['source_packages'], 'runtime_packages': value['guest']['runtime_packages'],
                   'phases': list(records), 'phase_seconds': {k: v['seconds'] for k, v in records.items()},
                   'success': True, 'production_identity': False, 'control_plane_rotation_tested': False,
-                  'candidate_modes': ['initial-install', 'replacement'], 'replacement_authorized': False}
+                  'candidate_modes': ['initial-install', 'replacement'], 'candidate_disk': candidate_disk,
+                  'replacement_authorized': False}
         write(work / 'result.json', result)
     finally:
         if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES):
             raise RuntimeError('compatibility guest remains; retain private disks and attachments')
         for name, device in loops.items():
-            detach_loop(work / (name + '.slot'), device)
+            if name == 'new':
+                router_candidate_disk.verify(work, operation)
+            else:
+                detach_loop(work / (name + '.slot'), device)
         write(work / 'lifecycle.json', {**lifecycle, 'stage': 'detached'})
     cleanup(work, operation)
     return result
@@ -379,6 +400,7 @@ def main():
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--cleanup', action='store_true')
     parser.add_argument('--retire-snapshot-uuid')
+    parser.add_argument('--retire-candidate-uuid')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
@@ -394,6 +416,9 @@ def main():
         if args.retire_snapshot_uuid:
             reconcile_snapshot(work, request(work, args.box, args.operation_id), args.retire_snapshot_uuid)
             print(json.dumps({'snapshot_retired': True}))
+        elif args.retire_candidate_uuid:
+            print(json.dumps({'bytes_reclaimed': router_candidate_disk.retire(
+                work, args.operation_id, inspected_uuid=args.retire_candidate_uuid)}))
         elif args.cleanup:
             print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id)}))
         else:

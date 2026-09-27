@@ -187,7 +187,7 @@ class HostTests(unittest.TestCase):
                 stream.truncate(self.host.SLOTS['old'])
             record = {'operation_id': self.operation, 'stage': 'detached',
                       'uuids': dict.fromkeys(self.host.PHASES, '11111111-1111-4111-8111-111111111111'),
-                      'slots': {name: self.host.file_identity(disk) for name in self.host.SLOTS}}
+                      'slots': {name: self.host.file_identity(disk) for name in self.host.SLOTS if name != 'new'}}
             (root / 'lifecycle.json').write_text(json.dumps(record))
             (root / 'snapshot.json').write_text(json.dumps({'stage': 'retired'}))
             for live, attached in (({}, []), (None, ['/dev/loop7'])):

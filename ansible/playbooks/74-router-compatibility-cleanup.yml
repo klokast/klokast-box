@@ -19,10 +19,33 @@
       become: false
       changed_when: false
   tasks:
+    - name: Create separate cleanup code storage without changing qualification source
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Stage the candidate allocation module and native guards for exact cleanup
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+        dest: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code/{{ item }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - router_candidate_disk
+        - router_native
+        - router_records
+        - router_transaction
+        - router_generations
+        - router_personalize
+        - router_finalize
+        - xen_build_runtime
     - name: Stage the current fixed reconciliation helper without replacing operation source
       ansible.builtin.copy:
         src: '{{ playbook_dir }}/../roles/router-state-copy/files/router-compatibility-dom0'
-        dest: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-cleanup.py'
+        dest: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code/router-compatibility-cleanup.py'
         owner: root
         group: root
         mode: '0600'
@@ -30,7 +53,7 @@
       ansible.builtin.command:
         argv:
           - /usr/bin/python3
-          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-cleanup.py'
+          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code/router-compatibility-cleanup.py'
           - --box
           - '{{ router_compatibility_box }}'
           - --operation-id
@@ -38,11 +61,23 @@
           - --retire-snapshot-uuid
           - '{{ router_compatibility_snapshot_uuid }}'
       when: router_compatibility_snapshot_uuid is defined
+    - name: Reconcile only an explicitly inspected candidate LV UUID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code/router-compatibility-cleanup.py'
+          - --box
+          - '{{ router_compatibility_box }}'
+          - --operation-id
+          - '{{ router_compatibility_operation }}'
+          - --retire-candidate-uuid
+          - '{{ router_compatibility_candidate_uuid }}'
+      when: router_compatibility_candidate_uuid is defined
     - name: Reclaim only recorded private test disks after Xen and attachment checks
       ansible.builtin.command:
         argv:
           - /usr/bin/python3
-          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-cleanup.py'
+          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code/router-compatibility-cleanup.py'
           - --box
           - '{{ router_compatibility_box }}'
           - --operation-id
