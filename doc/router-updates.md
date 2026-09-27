@@ -22,6 +22,11 @@ Baseline readiness also requires a locked root password, no running OpenSSH
 server, and no OpenSSH server packages, executable, or service links. Removing
 the root key alone is not sufficient. Older inspection records without these
 checks cannot establish readiness.
+Inspection compares the four core router files (interfaces, dhcpcd, dnsmasq,
+and nftables) with the common Ansible templates rendered from execution
+inventory. Missing evidence, unsafe file metadata, or a different checksum
+blocks readiness. Generated app includes still need separate compiler
+verification before a baseline can be adopted.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \

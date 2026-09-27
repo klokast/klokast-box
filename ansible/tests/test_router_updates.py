@@ -237,6 +237,10 @@ class LegacyBaselineTests(unittest.TestCase):
                  'root_password_locked': True, 'sshd_running': False,
                  'openssh_paths': {path: {'present': False} for path in
                                    ('/usr/sbin/sshd', '/etc/init.d/sshd', '/etc/runlevels/default/sshd')},
+                 'expected_configuration': {path: 'a' * 64 for path in
+                     ('/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft')},
+                 'configuration_files': {path: {'sha256': 'a' * 64, 'metadata': state(300, 0o644)} for path in
+                     ('/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft')},
                  'packages': {'tailscale': '1-r0'}, 'kernel_release': '6.12.1-virt',
                  'state_paths': {'/var/lib/tailscale/tailscaled.state': state(2410, 0o600, gid=103),
                                  '/var/lib/dhcpcd/duid': state(42, 0o640),
@@ -285,6 +289,18 @@ class LegacyBaselineTests(unittest.TestCase):
             guest['root_password_locked'] = value
             self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
                              ['router root password is not proved locked'])
+
+    def test_missing_changed_or_unsafe_configuration_blocks_adoption(self):
+        for mutate in (
+                lambda g: g.pop('expected_configuration'),
+                lambda g: g['expected_configuration'].pop('/etc/dhcpcd.conf'),
+                lambda g: g['configuration_files']['/etc/nftables.nft'].update(sha256='b' * 64),
+                lambda g: g['configuration_files']['/etc/dnsmasq.conf']['metadata'].update(regular=False),
+                lambda g: g['configuration_files']['/etc/network/interfaces']['metadata'].update(mode='0o666')):
+            guest, dom0 = self.fixture()
+            mutate(guest)
+            self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
+                             ['router core configuration differs from the current compiled inventory and templates'])
 
     def test_unknown_state_and_existing_assignment_block_adoption(self):
         guest, dom0 = self.fixture()

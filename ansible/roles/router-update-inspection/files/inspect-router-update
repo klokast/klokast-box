@@ -95,8 +95,14 @@ def inspect_guest(box):
     overlay_enabled = (Path('/etc/sysctl.d/91-klokast-ops-ipv6.conf').exists() or
                        (overlay.exists() and any(line.strip() and not line.lstrip().startswith('#')
                                                  for line in overlay.read_text().splitlines())))
+    configuration = {}
+    for path in ('/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft'):
+        metadata = info(path)
+        configuration[path] = {'metadata': metadata,
+                               'sha256': file_hash(path) if metadata.get('regular') else None}
     return {'packages': packages, 'kernel_release': os.uname().release,
             'service_accounts': service_accounts,
+            'configuration_files': configuration,
             'machine_id': status.get('Self', {}).get('ID'), 'tags': status.get('Self', {}).get('Tags'),
             'tailscale_running': status.get('BackendState') == 'Running', 'tailscale_ssh': prefs.get('RunSSH'),
             'state_paths': {path: info(path) for path in state_paths}, 'ssh_keys': keys,

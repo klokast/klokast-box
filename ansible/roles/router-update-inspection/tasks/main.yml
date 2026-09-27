@@ -16,9 +16,34 @@
   changed_when: false
   no_log: true
 
+- name: Read the observed router record
+  ansible.builtin.set_fact:
+    router_update_record: '{{ router_update_inspection.stdout | from_json }}'
+    router_update_expected_configuration: {}
+  no_log: true
+
+- name: Render expected router configuration from the approved inventory and common templates
+  ansible.builtin.set_fact:
+    router_update_expected_configuration: >-
+      {{ router_update_expected_configuration | combine({item.path:
+          (lookup('ansible.builtin.template', role_path ~ '/../router/templates/' ~ item.template) | hash('sha256'))}) }}
+  loop:
+    - {path: /etc/network/interfaces, template: interfaces.j2}
+    - {path: /etc/dhcpcd.conf, template: dhcpcd.conf.j2}
+    - {path: /etc/dnsmasq.conf, template: dnsmasq.conf.j2}
+    - {path: /etc/nftables.nft, template: nftables.nft.j2}
+  when: inventory_hostname == router_update_box ~ '-router'
+  no_log: true
+
+- name: Bind expected configuration to the router inspection
+  ansible.builtin.set_fact:
+    router_update_record: '{{ router_update_record | combine({"expected_configuration": router_update_expected_configuration}) }}'
+  when: inventory_hostname == router_update_box ~ '-router'
+  no_log: true
+
 - name: Store private router inspection evidence on the active controller
   ansible.builtin.copy:
-    content: "{{ router_update_inspection.stdout | from_json | to_nice_json }}\n"
+    content: "{{ router_update_record | to_nice_json }}\n"
     dest: "{{ router_update_result_dir }}/{{ inventory_hostname }}.json"
     mode: '0600'
   delegate_to: localhost

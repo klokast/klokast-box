@@ -352,6 +352,10 @@
       register: verify_router_controller_tailscale_ping
       changed_when: false
 
+    - name: Protect router assignment before bootstrap access retirement
+      ansible.builtin.import_role:
+        name: router-boot-assignment
+
     - name: Prove router Tailscale SSH before retiring first-contact root access
       ansible.builtin.command:
         argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ inventory_hostname }}', sh, -s]
