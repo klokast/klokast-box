@@ -18,6 +18,18 @@ from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_probe_requires_complete_modules_before_writing(self):
+        source = Path(__file__)
+        modules = {name:source for name in fixture.PROBE_MODULES}
+        for wrong in ({}, {k:v for k,v in modules.items() if k != 'router_candidate.py'},
+                      {**modules, 'extra.py':source}):
+            with self.assertRaisesRegex(ValueError, 'complete fixed set'):
+                fixture.install_probe(self.root, {}, wrong, source)
+            self.assertFalse((self.root/'usr/local/lib/klokast/router-probe').exists())
+        fixture.install_probe(self.root, {}, modules, source)
+        self.assertEqual({p.name for p in (self.root/'usr/local/lib/klokast/router-probe').iterdir()},
+                         set(fixture.PROBE_MODULES))
+
     def test_native_key_fixture_uses_decoded_api_bytes_and_hides_invalid_data(self):
         value = 'privkey:' + '0' * 64
         encoded = base64.b64encode(value.encode()).decode()

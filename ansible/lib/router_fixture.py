@@ -13,6 +13,9 @@ import stat
 
 import router_personalize as personalizer
 
+PROBE_MODULES = ('router_service_probe.py', 'router_state.py', 'router_personalize.py',
+                 'router_fixture.py', 'router_compatibility.py', 'router_finalize.py', 'router_candidate.py')
+
 
 def clear_directory(root, relative):
     """Bounded deletion in only a fixed service directory on the disposable copy."""
@@ -131,10 +134,9 @@ def install_probe(root, request, modules, entry):
     target = root / 'usr/local/lib/klokast/router-probe'
     if target.exists() or target.is_symlink():
         raise ValueError('router fixture already has a compatibility probe')
+    if set(modules) != set(PROBE_MODULES):
+        raise ValueError('router fixture probe modules differ from the complete fixed set')
     for name, source in modules.items():
-        if name not in ('router_service_probe.py', 'router_state.py', 'router_personalize.py',
-                        'router_fixture.py', 'router_compatibility.py', 'router_finalize.py'):
-            raise ValueError('router fixture probe module is outside the fixed set')
         personalizer.put(root, 'usr/local/lib/klokast/router-probe/' + name, Path(source).read_text(), 0o600)
     personalizer.put(root, 'usr/local/libexec/router-compatibility-guest', Path(entry).read_text(), 0o700)
     personalizer.put(root, 'etc/klokast-router-compatibility.json', json.dumps(request, sort_keys=True) + '\n', 0o600)

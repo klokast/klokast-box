@@ -91,9 +91,7 @@ def prepare(request):
         run(['e2fsck', '-p', '/dev/' + disk + '3'], allowed=(0, 1))
         run(['e2fsck', '-fn', '/dev/' + disk + '3'])
     records = {}
-    modules = {name + '.py': Path('/usr/local/lib/klokast') / (name + '.py') for name in
-               ('router_service_probe', 'router_state', 'router_personalize', 'router_fixture', 'router_compatibility',
-                'router_finalize', 'router_candidate')}
+    modules = {name: Path('/usr/local/lib/klokast') / name for name in router_fixture.PROBE_MODULES}
     for device, name in (('/dev/xvda3', 'legacy'), ('/dev/xvdc3', 'initial'), ('/dev/xvdb3', 'candidate')):
         with mounted(device, name, writable=True) as root:
             if name == 'legacy':
