@@ -5,6 +5,7 @@ private records on dom0. Qualification uses the same fresh clone primitive.
 A partial allocation never permits guessing an LV identity or formatting it.
 """
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import time
 
@@ -133,6 +134,19 @@ def refuse_referenced_disk(box, operation, disk):
 
 def retire(work, operation, *, box, inspected_uuid=None):
     """Retire only the exact recorded disk after native mount/backend checks."""
+    if not generations.matches('[a-z0-9][a-z0-9-]{0,30}', box):
+        raise TransactionError('router candidate retirement requires an exact box')
+    base = records.BASE
+    if base.exists() or base.is_symlink():
+        context = records.Records(box).lock()
+    else:
+        context = nullcontext()
+    with context:
+        return _retire_locked(work, operation, box=box, inspected_uuid=inspected_uuid)
+
+
+def _retire_locked(work, operation, *, box, inspected_uuid):
+    """The generation reference check and removal share the local record lock."""
     work = Path(work)
     value = record(work, operation)
     row = observed(operation)

@@ -1,5 +1,6 @@
 """Allocation and retirement must preserve exact ownership through interruptions."""
 import copy
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import sys
@@ -91,6 +92,7 @@ class DiskTests(unittest.TestCase):
         protected.mkdir()
         generation={'disk':{'path':self.path,'uuid':'exact-uuid'}}
         storage=Mock()
+        storage.lock.return_value=nullcontext()
         storage.accepted.return_value={'current_sha256':'b'*64,'previous_sha256':None}
         storage.generation.return_value=generation
         (protected/'accepted.json').write_text('{}')
