@@ -16,6 +16,11 @@ ROLES = REPO / 'ansible/roles'
 
 
 class PreparationTests(unittest.TestCase):
+    def test_platform_router_check_uses_current_compiled_intent(self):
+        play = yaml.safe_load((REPO / 'ansible/playbooks/72-platform-check-router.yml').read_text())[0]
+        self.assertEqual(play['pre_tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification-inputs')
+        self.assertEqual(play['tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification')
+
     def test_router_removes_openssh_only_after_fresh_management_proof(self):
         plays = yaml.safe_load((REPO / 'ansible/playbooks/31-vm-router.yml').read_text())
         tasks = next(play['tasks'] for play in plays if play['name'] == 'Converge router guest configuration')

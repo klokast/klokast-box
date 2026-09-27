@@ -2,6 +2,10 @@
 - name: Check router steady-state Platform health
   hosts: router
   gather_facts: false
+  pre_tasks:
+    - name: Load current compiled router verification inputs
+      ansible.builtin.import_role:
+        name: router-verification-inputs
   tasks:
     - name: Verify router steady-state health
       ansible.builtin.import_role:
