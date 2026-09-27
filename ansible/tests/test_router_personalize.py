@@ -20,6 +20,7 @@ class PersonalizationTests(unittest.TestCase):
         self.put('etc/passwd', 'root:x:0:0:root:/root:/bin/ash\n')
         self.put('etc/group', 'root:x:0:\nwheel:x:10:root\n')
         self.put('etc/klokast-router-inputs.json', json.dumps(self.manifest))
+        self.put('usr/local/libexec/router-template-test', '# synthetic qualification hook\n')
         (self.root / 'etc/ssh').mkdir(exist_ok=True)
         for name in p.SERVICES:
             self.put('etc/init.d/' + name, '#!/sbin/openrc-run\n')
@@ -46,6 +47,7 @@ class PersonalizationTests(unittest.TestCase):
         self.assertEqual({v.name for v in (self.root / 'etc/runlevels/default').iterdir()}, set(p.SERVICES))
         self.assertEqual(list((self.root / 'var/lib/tailscale').iterdir()), [])
         self.assertFalse((self.root / 'root/.ssh').exists())
+        self.assertFalse((self.root / 'usr/local/libexec/router-template-test').exists())
         with self.assertRaisesRegex(ValueError, 'generic input'):
             self.apply()
 

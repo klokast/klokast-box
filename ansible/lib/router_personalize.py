@@ -175,6 +175,7 @@ def personalize(root, request):
     if list(directory(root, 'etc/ssh').glob('ssh_host_*')):
         raise ValueError('router clone contains SSH host identity')
     accounts = account_files(root)
+    qualification_hook = regular(root, 'usr/local/libexec/router-template-test')
     for name in SERVICES:
         regular(root, 'etc/init.d/' + name)
     level = directory(root, 'etc/runlevels/default', create=True)
@@ -191,6 +192,7 @@ def personalize(root, request):
     directory(root, 'etc/dnsmasq.d', create=True)
     for name in SERVICES:
         (level / name).symlink_to('/etc/init.d/' + name)
+    qualification_hook.unlink()
     if packages(root) != request['packages']:
         raise ValueError('router personalization changed the frozen packages')
     return {'kind': 'klokast.router-personalization-result.v1', 'box': request['box'], 'role': 'router',
