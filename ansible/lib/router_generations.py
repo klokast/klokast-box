@@ -33,12 +33,14 @@ def check_seal(value):
 
 def generation(value, box):
     check_seal(value)
-    fields = {'kind', 'box', 'role', 'generation_id', 'origin', 'engine_commit', 'disk', 'boot',
+    fields = {'kind', 'box', 'role', 'generation_id', 'origin', 'engine_commit', 'alpine_branch', 'disk', 'boot',
               'xen', 'packages', 'kernel_release', 'accounts', 'configuration_files', 'evidence_sha256', 'record_sha256'}
     if (set(value) != fields or value['kind'] != 'klokast.router-generation.v1' or value['role'] != 'router' or
             value['box'] != box or not matches('[a-z0-9][a-z0-9-]{0,30}', box) or
             not matches('[0-9a-f]{24}', value['generation_id']) or value['origin'] not in ('legacy', 'template') or
-            not matches('[0-9a-f]{40}', value['engine_commit']) or not matches('[0-9a-f]{64}', value['evidence_sha256']) or
+            not matches('[0-9a-f]{40}', value['engine_commit']) or
+            not matches(r'v[0-9]+\.[0-9]+', value['alpine_branch']) or
+            not matches('[0-9a-f]{64}', value['evidence_sha256']) or
             not matches('[A-Za-z0-9_.+-]{1,128}', value['kernel_release'])):
         raise GenerationError('router generation has an invalid target or provenance')
     disk = value['disk']

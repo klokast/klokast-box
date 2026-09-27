@@ -31,6 +31,7 @@ def assemble(*, box, operation, engine_commit, guest, dom0):
     record = generations.seal({
         'kind':'klokast.router-generation.v1', 'box':box, 'role':'router',
         'generation_id':operation, 'origin':'legacy', 'engine_commit':engine_commit,
+        'alpine_branch':guest['alpine_branch'],
         'disk':{'path':'/dev/vg0/lv_router', 'uuid':rows[0]['lv_uuid'], 'bytes':2147483648},
         'boot':{'kernel':dom0['boot_artifacts']['kernel'],
                 'initramfs':dom0['boot_artifacts']['ramdisk']},

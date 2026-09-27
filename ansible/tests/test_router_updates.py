@@ -10,6 +10,7 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import router_updates as r
+import test_router_generations as generation_fixture
 from platform_updates import UpdateError, digest, timestamp
 
 NOW = dt.datetime(2026, 9, 25, 12, tzinfo=dt.timezone.utc)
@@ -87,6 +88,23 @@ class RouterCheckTests(unittest.TestCase):
                     f['metadata']['releases']['release_branches'][0]['releases'].append(
                         {'version': '3.23.9', 'date': '2026-09-20'})
                 self.assertEqual(r.check(**f)['status'], 'unchanged')
+
+    def test_adopted_legacy_source_requires_first_template_even_when_versions_match(self):
+        f = self.fixture()
+        source = generation_fixture.generation('legacy')
+        f['accepted'] = {'box':'boxa', 'role':'router', 'generation':source['record_sha256'], 'legacy':source}
+        f['live'].update(generation=source['record_sha256'], packages=source['packages'],
+            kernel_release=source['kernel_release'], alpine_branch=source['alpine_branch'],
+            boot_artifacts={name:item['sha256'] for name,item in source['boot'].items()})
+        result = r.check(**f)
+        self.assertEqual(result['status'], 'update-required', result)
+        self.assertIn('first approved template', result['reason'])
+        self.assertEqual(result['accepted_sha256'], digest(f['accepted']))
+        f['live']['alpine_branch'] = 'v3.22'
+        self.assertEqual(r.check(**f)['status'], 'failed')
+        f['live']['alpine_branch'] = source['alpine_branch']
+        f['policy']['enabled'] = False
+        self.assertEqual(r.check(**f)['status'], 'deferred')
 
     def test_service_dependency_and_kernel_changes(self):
         for name in ('tailscale', 'linux-virt', 'new-dependency'):
@@ -266,6 +284,7 @@ class LegacyBaselineTests(unittest.TestCase):
                  'expected_includes': {'registry_sha256': 'a' * 64, 'files': {'/etc/example.nft': 'b' * 64}},
                  'include_files': {'/etc/example.nft': {'sha256': 'b' * 64, 'metadata': state(100, 0o644)}},
                  'packages': {'tailscale': '1-r0'}, 'kernel_release': '6.12.1-virt',
+                 'alpine_branch': 'v3.23',
                  'state_paths': {'/var/lib/tailscale/tailscaled.state': state(2410, 0o600, gid=103),
                                  '/var/lib/dhcpcd/duid': state(42, 0o640),
                                  '/var/lib/dhcpcd/secret': state(192, 0o400),
@@ -289,6 +308,12 @@ class LegacyBaselineTests(unittest.TestCase):
     def test_complete_inspection_only_reports_readiness(self):
         guest, dom0 = self.fixture()
         self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'), [])
+
+    def test_missing_stable_branch_blocks_legacy_baseline(self):
+        guest, dom0 = self.fixture()
+        guest['alpine_branch'] = 'edge'
+        self.assertIn('router Alpine stable branch evidence is missing',
+                      r.legacy_baseline_findings(guest, dom0, 'boxa'))
 
     def test_missing_changed_and_extra_generated_rules_block_adoption(self):
         for mutate in (lambda g: g.pop('expected_includes'),

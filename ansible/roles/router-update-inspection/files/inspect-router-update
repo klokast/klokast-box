@@ -77,6 +77,17 @@ def include_files():
 
 
 def inspect_guest(box):
+    release = Path('/etc/alpine-release').read_text().strip()
+    branch = re.fullmatch(r'([0-9]+\.[0-9]+)\.[0-9]+', release)
+    if branch is None:
+        raise RuntimeError('router Alpine release is outside the stable branch contract')
+    branch = 'v' + branch[1]
+    repositories = Path('/etc/apk/repositories').read_text().splitlines()
+    expected_repositories = [[origin + '/' + branch + '/' + name for name in ('main', 'community')]
+                             for origin in ('http://dl-cdn.alpinelinux.org/alpine',
+                                            'https://dl-cdn.alpinelinux.org/alpine')]
+    if repositories not in expected_repositories:
+        raise RuntimeError('router repositories differ from one exact stable Alpine branch')
     packages = {}
     for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
         fields = dict(line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:')))
@@ -130,6 +141,7 @@ def inspect_guest(box):
         configuration[path] = {'metadata': metadata,
                                'sha256': file_hash(path) if metadata.get('regular') else None}
     return {'packages': packages, 'kernel_release': os.uname().release,
+            'alpine_branch': branch,
             'service_accounts': service_accounts,
             'configuration_files': configuration,
             'include_files': include_files(),

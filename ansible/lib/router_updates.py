@@ -9,6 +9,7 @@ import hashlib
 import re
 
 import router_state
+import router_generations
 from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
 from platform_update_metadata import adjacent_stable_branch
 
@@ -185,6 +186,8 @@ def legacy_baseline_findings(guest, dom0, box):
         if (not isinstance(value, dict) or value.get('kind') != 'klokast.router-inspection.v1' or
                 value.get('box') != box or value.get('target') != target):
             raise UpdateError('router baseline inspection belongs to another box or target')
+    if not isinstance(guest.get('alpine_branch'), str) or not re.fullmatch(r'v[0-9]+\.[0-9]+', guest['alpine_branch']):
+        findings.append('router Alpine stable branch evidence is missing')
     if (guest.get('tailscale_running') is not True or guest.get('tailscale_ssh') is not True or
             not guest.get('machine_id') or guest.get('tags') != ['tag:vm']):
         findings.append('router management identity is not fully active')
@@ -413,6 +416,23 @@ def package_difference(old, new, compare):
     return result
 
 
+def legacy_package_difference(old, new, compare):
+    """Compare legacy versions without claiming unrecorded package byte hashes."""
+    current = {p['name']:p['version'] for p in new}
+    result = []
+    for name in sorted(old.keys() | current.keys()):
+        before, after = old.get(name), current.get(name)
+        if before == after:
+            continue
+        if before is not None and after is not None:
+            order = compare(before, after)
+            if order not in ('<', '=', '>') or order == '>':
+                raise UpdateError('unexplained legacy package downgrade: ' + name)
+        result.append({'name':name, 'old':before, 'new':after,
+                       'change':'added' if before is None else 'removed' if after is None else 'updated'})
+    return result
+
+
 def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha256, profile, engine,
           now, compare):
     """Classify complete evidence. Any missing evidence prevents `unchanged`."""
@@ -432,19 +452,33 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
         if accepted is None:
             report.update(status='deferred', reason='router baseline requires supervised adoption')
             return seal(report, 'report_sha256')
-        closed(accepted, 'box role generation release', 'accepted router evidence')
+        if not isinstance(accepted, dict) or set(accepted) not in (
+                {'box','role','generation','release'}, {'box','role','generation','legacy'}):
+            raise UpdateError('accepted router evidence has missing or unknown fields')
         if accepted['box'] != box or accepted['role'] != role or not match(HASH, accepted['generation']):
             raise UpdateError('accepted generation belongs to another box or role')
-        release = accepted['release']
-        # An accepted recipe may use an earlier engine. Validate it against its
-        # recorded engine; compare the candidate with the newly approved engine.
-        validate_release(release, profile, release['engine_commit'])
+        legacy = 'legacy' in accepted
+        if legacy:
+            source = router_generations.generation(accepted['legacy'], box)
+            if source['origin'] != 'legacy' or source['record_sha256'] != accepted['generation']:
+                raise UpdateError('legacy check source differs from its accepted generation')
+            branch = source['alpine_branch']
+            expected_packages, expected_kernel = source['packages'], source['kernel_release']
+            expected_boot = {key:item['sha256'] for key,item in source['boot'].items()}
+        else:
+            release = accepted['release']
+            # An accepted recipe may use an earlier engine. Validate it against
+            # its recorded engine; compare the candidate with the new engine.
+            validate_release(release, profile, release['engine_commit'])
+            branch = release['inputs']['branch']
+            expected_packages, expected_kernel = release['runtime_packages'], release['kernel_release']
+            expected_boot = {k: release['artifacts'][k] for k in ('kernel', 'initramfs')}
         report['accepted_sha256'] = digest(accepted)
         if (not isinstance(live, dict) or not fresh(live.get('observed_at'), now, dt.timedelta(minutes=15)) or
                 live.get('box') != box or live.get('role') != role or live.get('generation') != accepted['generation'] or
-                live.get('packages') != release['runtime_packages'] or
-                live.get('kernel_release') != release['kernel_release'] or
-                live.get('boot_artifacts') != {k: release['artifacts'][k] for k in ('kernel', 'initramfs')} or
+                live.get('packages') != expected_packages or live.get('kernel_release') != expected_kernel or
+                live.get('boot_artifacts') != expected_boot or
+                legacy and live.get('alpine_branch') != branch or
                 live.get('configuration_verified') is not True):
             raise UpdateError('live router evidence is missing, stale, or differs from its accepted release')
         if live.get('overlay_ipv6_enabled') is not False:
@@ -455,10 +489,10 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
             report.update(status='deferred', reason='fresh Alpine release metadata is unavailable')
             return seal(report, 'report_sha256')
         report['source_sha256'] = metadata['sha256']
-        availability, eligible = available_branches(metadata.get('releases'), release['inputs']['branch'], now,
+        availability, eligible = available_branches(metadata.get('releases'), branch, now,
                                                    policy['branch-delay-days'])
         report['availability'] = availability
-        branch = eligible or release['inputs']['branch']
+        branch = eligible or branch
         report['selected_branch'] = branch
         evidence = candidates.get(branch)
         if not isinstance(evidence, dict) or evidence.get('status') == 'unavailable':
@@ -475,18 +509,20 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
             raise UpdateError('candidate package closure belongs to a different branch')
         report['candidate_inputs_sha256'] = inputs['inputs_sha256']
         report['effective_inputs_sha256'] = effective_inputs(inputs)
-        report['package_difference'] = package_difference(release['inputs']['packages'], inputs['packages'], compare)
-        changed = effective_inputs(release['inputs']) != effective_inputs(inputs)
+        report['package_difference'] = (legacy_package_difference(source['packages'], inputs['packages'], compare)
+                                        if legacy else package_difference(release['inputs']['packages'], inputs['packages'], compare))
+        changed = legacy or effective_inputs(release['inputs']) != effective_inputs(inputs)
         excluded = any(r.get('box') == box and r.get('role') == role for r in policy.get('exclusions', []))
         if policy.get('enabled') is not True or excluded:
             report.update(status='deferred', reason='router update policy is disabled or target is excluded')
         elif changed:
-            report.update(status='update-required', reason='eligible router build inputs changed')
+            report.update(status='update-required', reason=('legacy router requires its first approved template generation'
+                          if legacy else 'eligible router build inputs changed'))
         elif any(not r['eligible'] for r in availability):
             report.update(status='deferred', reason='current inputs are unchanged; a future branch is held')
         else:
             report.update(status='unchanged', reason='all effective router build inputs match')
-    except (UpdateError, ValueError, TypeError, KeyError) as error:
+    except (UpdateError, router_generations.GenerationError, ValueError, TypeError, KeyError) as error:
         report.update(status='failed', reason=str(error))
     return seal(report, 'report_sha256')
 

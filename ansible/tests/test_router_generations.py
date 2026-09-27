@@ -14,7 +14,7 @@ def generation(origin='template'):
     identity = ('a' if origin == 'legacy' else 'b') * 24
     directory = '/mnt/dom0_data/klokast-router-updates/generations/' + identity
     return g.seal({'kind':'klokast.router-generation.v1','role':'router','box':'boxa','generation_id':identity,
-        'origin':origin,'engine_commit':'c'*40,
+        'origin':origin,'engine_commit':'c'*40,'alpine_branch':'v3.23',
         'disk':{'path':'/dev/vg0/lv_router' if origin=='legacy' else '/dev/vg0/routergen_'+identity,
                 'uuid': 'old-uuid' if origin=='legacy' else 'new-uuid','bytes':2147483648},
         'boot': {name:{'path':directory+'/'+name,'sha256':'d'*64,'bytes':1234} for name in ('kernel','initramfs')},
@@ -53,6 +53,7 @@ class GenerationTests(unittest.TestCase):
 
     def test_unknown_disk_boot_alias_role_and_configuration_paths_are_rejected(self):
         for mutate in (lambda v:v.update(role='dmz'), lambda v:v.update(box='boxb'),
+                       lambda v:v.update(alpine_branch='edge'),
                        lambda v:v['disk'].update(path='/dev/vg0/lv_ops'),
                        lambda v:v['boot']['kernel'].update(path='/mnt/dom0_data/../foreign/kernel'),
                        lambda v:v['configuration_files'].update({'root/.ssh/authorized_keys':'e'*64}),

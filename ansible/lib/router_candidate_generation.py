@@ -50,6 +50,7 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
     proposed = generations.seal({
         'kind':'klokast.router-generation.v1', 'box':box, 'role':'router',
         'generation_id':operation, 'origin':'template', 'engine_commit':approved_engine,
+        'alpine_branch':release['inputs']['branch'],
         'disk':{'path':disk_record['path'], 'uuid':disk_record['uuid'], 'bytes':2147483648},
         'boot':boot,
         'xen':{'uuid':xen_uuid, 'memory':old['xen']['memory'], 'vcpus':old['xen']['vcpus'],

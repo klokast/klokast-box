@@ -388,6 +388,12 @@ initramfs, live Xen identity, packages, service accounts, and only the router
 configuration files that the inspector compared with current Ansible and
 compiler output. It does not claim a template build or record uninspected
 files as approved state. It does not publish an accepted assignment.
+The inspector also records the stable Alpine branch and requires exactly the
+`main` and `community` repositories for that branch. The protected generation
+retains this branch. The update decision treats a validated legacy generation
+as a source that needs its first approved template, even if installed package
+versions match the selected closure. It still refuses live package, kernel,
+boot, branch, or configuration drift before that decision.
 
 ## Cutover order and failure model
 
