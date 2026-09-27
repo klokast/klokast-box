@@ -141,6 +141,32 @@ def dispatch(role):
     raise UpdateError('unsupported VM update role')
 
 
+def unactivated_diagnostic_policy(schedule, box):
+    """Use sealed Instance timing for a read-only router check without update authority."""
+    if (not isinstance(schedule, dict) or set(schedule) != {'kind','policy','activated','replacement_ready'} or
+            schedule.get('kind') != 'klokast.vm-update-schedule.v1' or
+            schedule.get('activated') is not False or schedule.get('replacement_ready') is not False or
+            not match(BOX, box) or
+            not isinstance(schedule.get('policy'), dict)):
+        raise UpdateError('unactivated router check requires verified Instance schedule intent')
+    source = schedule['policy']
+    if (source.get('branch-policy') != 'tested-stable' or
+            type(source.get('branch-delay-days')) is not int or not 0 <= source['branch-delay-days'] <= 365 or
+            type(source.get('report-max-age-hours')) is not int or not 24 <= source['report-max-age-hours'] <= 168 or
+            not isinstance(source.get('targets'), dict)):
+        raise UpdateError('Instance schedule has no supported router check timing')
+    if any(not match(BOX, key) or not isinstance(roles, list) or
+           len(roles) != len(set(roles)) or
+           any(role not in ('bak', 'dmz', 'iot') for role in roles)
+           for key, roles in source['targets'].items()):
+        raise UpdateError('Instance schedule has unsupported target declarations')
+    targets = {key: list(roles) for key, roles in source['targets'].items()}
+    targets[box] = sorted(set(targets.get(box, [])) | {'router'})
+    policy = {**source, 'targets':targets, 'enabled':False}
+    return policy, digest({'kind':'klokast.router-unactivated-diagnostic.v1',
+                           'box':box, 'schedule':schedule})
+
+
 def rendered_includes(compiled, box):
     """Select reconstructable files from compiler output, never a running router."""
     if (not isinstance(compiled, dict) or compiled.get('compiler') != 'platform-resources' or

@@ -76,6 +76,35 @@ class RouterCheckTests(unittest.TestCase):
                     policy_sha256='d' * 64, profile=PROFILE, engine=ENGINE, now=NOW,
                     compare=lambda a, b: '=' if a == b else '<' if a < b else '>')
 
+    def test_unactivated_instance_schedule_can_only_defer_router_check(self):
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
+                    'replacement_ready':False, 'policy':{
+                        'enabled':True, 'targets':{'boxa':['dmz']}, 'exclusions':[],
+                        'branch-policy':'tested-stable', 'branch-delay-days':21,
+                        'report-max-age-hours':30}}
+        policy, checksum = r.unactivated_diagnostic_policy(schedule, 'boxa')
+        self.assertFalse(policy['enabled'])
+        self.assertEqual(policy['targets']['boxa'], ['dmz', 'router'])
+        f = self.fixture()
+        f['policy'], f['policy_sha256'] = policy, checksum
+        self.assertEqual(r.check(**f)['status'], 'deferred')
+        self.assertTrue(schedule['policy']['enabled'])
+        self.assertEqual(schedule['policy']['targets']['boxa'], ['dmz'])
+        with self.assertRaises(UpdateError):
+            r.unactivated_diagnostic_policy({**schedule, 'activated':True}, 'boxa')
+        with self.assertRaises(UpdateError):
+            r.unactivated_diagnostic_policy({**schedule, 'replacement_ready':True}, 'boxa')
+        source = generation_fixture.generation('legacy')
+        f['accepted'] = {'box':'boxa', 'role':'router', 'generation':source['record_sha256'], 'legacy':source}
+        f['live'].update(generation=source['record_sha256'], packages=source['packages'],
+            kernel_release=source['kernel_release'], alpine_branch=source['alpine_branch'],
+            boot_artifacts={name:item['sha256'] for name,item in source['boot'].items()})
+        self.assertEqual(r.check(**f)['status'], 'deferred')
+        malformed = copy.deepcopy(schedule)
+        malformed['policy']['targets']['boxa'] = {'dmz': True}
+        with self.assertRaises(UpdateError):
+            r.unactivated_diagnostic_policy(malformed, 'boxa')
+
     def test_unchanged_and_unrelated_index_and_patch(self):
         for change in ('none', 'index', 'patch'):
             with self.subTest(change=change):

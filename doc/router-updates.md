@@ -436,11 +436,18 @@ retained state bytes or SSH key material. This adapter is a check input; it
 does not grant build or cutover authority.
 After supervised adoption, `platform-router-update check-legacy --box BOX` uses
 that adapter from the active controller. It reads the protected current source
-before and after the check, reads the signed policy twice, fetches official
-release metadata, and freezes authenticated package inputs for the selected
+before and after the check, reads the verified Instance schedule and any
+activated signed policy twice, fetches official release metadata, and freezes
+authenticated package inputs for the selected
 branch. It stores a private decision report and returns a short status. The
 command does not create a candidate or grant replacement authority. It refuses
-an unapproved engine, an unadopted router, or changed source and policy records.
+an unapproved engine, an unadopted router, or changed source and authority records.
+If the current Instance schedule is verified but its standing update policy is
+not activated, the command uses that schedule's branch timing for a read-only
+diagnostic. The diagnostic adds the selected router only to an in-memory,
+disabled comparison policy. Its decision is deferred and cannot authorize
+preparation or cutover. An activated policy must name the router target before
+the normal update-required decision can be issued.
 
 ## Cutover order and failure model
 

@@ -31,7 +31,11 @@ class WorkerTests(unittest.TestCase):
             limit=time.monotonic()+2
             while time.monotonic()<limit:
                 status=Path('/proc')/str(identity)/'stat'
-                if not status.exists() or status.read_text().rsplit(')',1)[1].split()[0]=='Z':
+                try:
+                    state=status.read_text().rsplit(')',1)[1].split()[0]
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                if state=='Z':
                     break
                 time.sleep(.01)
             else:
