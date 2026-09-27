@@ -92,6 +92,12 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(TransactionError,'pointers changed'):
                 e.map_status(self.records)
 
+    def test_map_rejects_pending_operation_for_another_accepted_pointer(self):
+        self.records.persist(self.pending)
+        with mock.patch.object(self.records,'committed',side_effect=TransactionError('assignment differs')):
+            with self.assertRaisesRegex(TransactionError,'assignment differs'):
+                e.map_status(self.records)
+
 
 if __name__ == '__main__':
     unittest.main()

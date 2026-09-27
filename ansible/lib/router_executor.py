@@ -28,6 +28,10 @@ def map_status(storage):
     pending = storage.pending()
     path = storage.base / 'accepted.json'
     accepted = storage.accepted() if path.exists() or path.is_symlink() else None
+    if pending:
+        if accepted is None:
+            raise TransactionError('router map has a pending operation without an accepted assignment')
+        storage.committed(pending['request'])
     def generation(checksum):
         if checksum is None:
             return None
@@ -51,6 +55,8 @@ def map_status(storage):
                 host.request['candidate_sha256'] != accepted['current_sha256'] or
                 host.request['old_sha256'] != accepted['previous_sha256']):
             raise TransactionError('router map operation differs from its protected pointers')
+        if not pending and not storage.committed(host.request):
+            raise TransactionError('router map accepted operation has no matching committed assignment')
         copies = {}
         for phase in ('forward','reverse'):
             try:
