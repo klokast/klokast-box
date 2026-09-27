@@ -2,6 +2,7 @@
 import ast
 import base64
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -106,6 +107,33 @@ class HostTests(unittest.TestCase):
         self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True}, value, 'forward')
         with self.assertRaises(RuntimeError):
             self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True, 'production_identity': True}, value, 'forward')
+
+    def test_prepare_binds_common_recipe_and_cannot_substitute_success(self):
+        accounts = {'dnsmasq_uid':65, 'dnsmasq_gid':65, 'tailscale_gid':103}
+        value = {'operation_id':self.operation, 'inputs_sha256':'b'*64,
+                 'guest':{'source_packages':{'tailscale':'old'}, 'runtime_packages':{'tailscale':'new'},
+                          'manifest':{'engine_commit':'c'*40},
+                          'fixture':{'box':'boxa', 'files':{'etc/hostname':'boxa-router\n'}}}}
+        prepared = {'kind':'klokast.router-candidate-files.v1', 'mode':'replacement', 'box':'boxa', 'role':'router',
+                    'operation_id':self.operation, 'inputs_sha256':'b'*64, 'engine_commit':'c'*40,
+                    'packages':{'tailscale':'new'}, 'accounts':accounts,
+                    'configuration_files':{'etc/hostname':hashlib.sha256(b'boxa-router\n').hexdigest()},
+                    'identity_absent':True, 'service_syntax':True, 'replacement_authorized':False}
+        record = {'kind':'klokast.router-compatibility-phase.v1', 'operation_id':self.operation,
+                  'inputs_sha256':'b'*64, 'success':True, 'production_identity':False, 'seconds':1,
+                  'phase':'prepare', 'prepared':True, 'fixtures':{
+                      'legacy':{'packages':{'tailscale':'old'}, 'production_state_removed':True},
+                      'candidate':{'packages':{'tailscale':'new'}, 'production_state_removed':True,
+                                   'accounts':accounts, 'candidate_preparation':prepared}}}
+        self.host.validate_phase(record, value, 'prepare')
+        for field, wrong in (('mode','initial-install'), ('box','boxb'), ('role','dmz'),
+                             ('engine_commit','d'*40), ('configuration_files',{}),
+                             ('identity_absent',False), ('service_syntax',False),
+                             ('replacement_authorized',True)):
+            changed = copy.deepcopy(record)
+            changed['fixtures']['candidate']['candidate_preparation'][field] = wrong
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, 'common preparation'):
+                self.host.validate_phase(changed, value, 'prepare')
 
     def test_boots_have_no_production_disk_or_network_and_copies_are_readonly(self):
         loops = {name: '/dev/loop' + str(index) for index, name in enumerate(self.host.SLOTS)}

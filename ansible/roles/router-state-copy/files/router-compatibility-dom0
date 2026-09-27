@@ -223,6 +223,20 @@ def validate_phase(record, value, phase):
         for name, packages in (('legacy', value['guest']['source_packages']), ('candidate', value['guest']['runtime_packages'])):
             if fixtures[name].get('production_state_removed') is not True or fixtures[name].get('packages') != packages:
                 raise RuntimeError('compatibility fixture retains production state or has different packages')
+        prepared = fixtures['candidate'].get('candidate_preparation', {})
+        guest = value['guest']
+        import hashlib
+        expected = {'kind': 'klokast.router-candidate-files.v1', 'mode': 'replacement',
+                    'box': guest['fixture']['box'], 'role': 'router',
+                    'operation_id': value['operation_id'], 'inputs_sha256': value['inputs_sha256'],
+                    'engine_commit': guest['manifest']['engine_commit'],
+                    'packages': guest['runtime_packages'], 'accounts': fixtures['candidate'].get('accounts'),
+                    'configuration_files': {k: hashlib.sha256(v.encode()).hexdigest()
+                                            for k, v in guest['fixture']['files'].items()},
+                    'identity_absent': True, 'service_syntax': True, 'replacement_authorized': False}
+        if prepared != expected or not isinstance(expected['accounts'], dict) or set(expected['accounts']) != {
+                'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'}:
+            raise RuntimeError('compatibility candidate lacks exact common preparation evidence')
     else:
         common = {'wan_dhcp_identity', 'wan_lease', 'lan_lease', 'lan_dns'}
         expected = common | ({'expiry_lease_created', 'offline_tailscale_state', 'latest_preferences_after_restart',

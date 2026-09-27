@@ -262,7 +262,7 @@ def test_compatibility(box, source, template_operation):
         transport.write(work / 'guest.json', guest)
         files = REPO / 'ansible/roles/router-state-copy/files'
         modules = ('router_service_probe', 'router_state', 'router_personalize', 'router_fixture',
-                   'router_compatibility', 'router_finalize')
+                   'router_compatibility', 'router_finalize', 'router_candidate')
         job_files = {'usr/local/lib/klokast/' + name + '.py': REPO / 'ansible/lib' / (name + '.py') for name in modules}
         job_files.update({'router-compatibility-request.json': work / 'guest.json',
                           'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})

@@ -321,6 +321,21 @@ includes through the same compiler adapter. The rendered result has no
 replacement authority. Native candidate preparation and service verification
 must still pass before use.
 
+The common preparation helper, `ansible/lib/router_candidate.py`, accepts only
+`initial-install` and `replacement` on a fresh generic clone inside networkless
+Xen. Both modes use the same configuration and account recipe. Initial mode
+keeps the frozen first-contact packages but does not add a key or enroll a
+machine. Replacement mode removes the qualified first-contact package closure.
+The verifier checks the exact package world, kernel module directory, generated
+files and modes, default service links, locked accounts, and absent identity.
+Extra firewall includes and DNS configuration fail verification.
+
+The native compatibility playbook uses this helper for its disposable candidate
+and requires the exact preparation result before it runs service tests. The
+result is diagnostic evidence. Allocation of a production candidate, restricted
+management boot, initial enrollment and resumption, and accepted-assignment
+convergence are still separate integration gates.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.

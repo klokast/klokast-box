@@ -17,6 +17,7 @@
           - -p
           - '{{ item }}'
       loop:
+        - test_router_candidate.py
         - test_router_generations.py
         - test_router_transaction.py
         - test_router_copy_inputs.py
