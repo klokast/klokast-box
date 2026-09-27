@@ -60,6 +60,10 @@ class NativeTests(unittest.TestCase):
         host = n.Native()
         with mock.patch.object(n, 'command', return_value=json.dumps([zero, live])):
             self.assertEqual(len(host.inventory(deadline=100)), 2)
+        without_uuid = copy.deepcopy(zero)
+        without_uuid['config']['c_info'].pop('uuid')
+        with mock.patch.object(n, 'command', return_value=json.dumps([without_uuid, live])):
+            self.assertEqual(len(host.inventory(deadline=100)), 2)
         for values in ([live], [zero, live, live], [], [zero, {**live, 'domid': -1}]):
             with mock.patch.object(n, 'command', return_value=json.dumps(values)), self.assertRaises(TransactionError):
                 host.inventory(deadline=100)

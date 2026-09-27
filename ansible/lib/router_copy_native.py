@@ -96,8 +96,8 @@ class Copy:
         capsule, _ = self.inputs(adapter)
         name = 'router-copy-' + adapter.request['operation_id'] + '-' + phase
         identity = capsule['domains'][phase]
-        found = [v for v in adapter.host.inventory(deadline=deadline) if
-                 v['config']['c_info']['name'] == name or v['config']['c_info']['uuid'] == identity]
+        found = [v for v in adapter.host.inventory(deadline=deadline) if v['domid'] > 0 and
+                 (v['config']['c_info']['name'] == name or v['config']['c_info']['uuid'] == identity)]
         if not found:
             return None
         if len(found) != 1:

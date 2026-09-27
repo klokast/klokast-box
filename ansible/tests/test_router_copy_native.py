@@ -70,6 +70,11 @@ class CopyNativeTests(unittest.TestCase):
             with self.assertRaises(TransactionError):
                 self.copy.result(self.adapter,'forward')
 
+    def test_dom0_without_uuid_cannot_be_mistaken_for_the_copy_guest(self):
+        self.capsule['domains']={'forward':'33333333-1111-4111-8111-111111111111'}
+        self.adapter.host.inventory.return_value=[{'domid':0,'config':{'c_info':{'name':'Domain-0','type':'pv'}}}]
+        self.assertIsNone(self.copy.helper(self.adapter,'forward',deadline=100))
+
 
 if __name__ == '__main__':
     unittest.main()

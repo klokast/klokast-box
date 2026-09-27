@@ -155,9 +155,11 @@ class Native:
         for value in values:
             info = value.get('config', {}).get('c_info', {})
             name, identity, domid = info.get('name'), info.get('uuid'), value.get('domid')
+            # Xen omits c_info.uuid for Domain-0 on supported Alpine hosts.
+            valid_identity = (identity in (None, '00000000-0000-0000-0000-000000000000') if domid == 0 else
+                generations.matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', identity))
             if (not isinstance(name, str) or type(domid) is not int or domid < 0 or
-                    name in names or domid in ids or identity in uuids or
-                    not generations.matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', identity) or
+                    not valid_identity or name in names or domid in ids or identity in uuids or
                     (domid == 0) != (name == 'Domain-0')):
                 raise TransactionError('Xen returned incomplete or ambiguous domain identities')
             names.add(name); ids.add(domid); uuids.add(identity)
