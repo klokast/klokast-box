@@ -176,8 +176,9 @@
     - name: Require the Huawei direct-path prerequisite
       ansible.builtin.assert:
         that:
-          - "'via DERP' not in overlay_ipv6_router_direct_ping.stdout"
-          - overlay_ipv6_router_direct_ping.stdout is search('via \\[[0-9A-Fa-f:]+\\]:41641')
+          - >-
+            (overlay_ipv6_router_direct_ping.stdout_lines | last | default(''))
+            is search('via \\[' ~ hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout ~ '\\]:41641 in [0-9]+(\\.[0-9]+)?ms$')
         fail_msg: The active router does not reach the peer router directly through an IPv6 UDP 41641 endpoint.
       when:
         - overlay_ipv6_router_operation == 'verify-prerequisite'
@@ -196,7 +197,7 @@
             'peer_global_ipv6': hostvars[overlay_ipv6_peer_box ~ '-router'].overlay_ipv6_peer_global.stdout,
             'udp_port': 41641,
             'direct_ping': (
-              overlay_ipv6_router_direct_ping.stdout
+              (overlay_ipv6_router_direct_ping.stdout_lines | last | default(''))
               if overlay_ipv6_router_operation == 'verify-prerequisite'
               else ''
             ),
