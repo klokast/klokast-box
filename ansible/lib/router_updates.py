@@ -187,6 +187,17 @@ def legacy_baseline_findings(guest, dom0, box):
     first_contact = guest.get('first_contact_key')
     if not isinstance(first_contact, dict) or first_contact.get('present') is not False:
         findings.append('first-contact root SSH access is still present or unknown')
+    openssh = guest.get('openssh_paths')
+    if (guest.get('sshd_running') is not False or not isinstance(openssh, dict) or
+            set(openssh) != {'/usr/sbin/sshd', '/etc/init.d/sshd', '/etc/runlevels/default/sshd'} or
+            any(not isinstance(item, dict) or item.get('present') is not False
+                for item in openssh.values()) or
+            isinstance(guest.get('packages'), dict) and
+            any(name in guest['packages'] for name in ('openssh', 'openssh-server',
+                                                       'openssh-server-common', 'openssh-server-common-openrc'))):
+        findings.append('router OpenSSH server retirement is incomplete or unknown')
+    if guest.get('root_password_locked') is not True:
+        findings.append('router root password is not proved locked')
     if (not isinstance(guest.get('packages'), dict) or not guest['packages'] or
             not isinstance(guest.get('kernel_release'), str) or not guest['kernel_release']):
         findings.append('installed router package or kernel evidence is missing')

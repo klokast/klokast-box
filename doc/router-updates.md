@@ -18,6 +18,10 @@ SSH host keys, and file metadata that the fixed state-copy guest can read.
 Inspection records the service account IDs and checks each retained file against
 its allowed owners. Symlinked state paths and unsafe parent directories fail
 inspection.
+Baseline readiness also requires a locked root password, no running OpenSSH
+server, and no OpenSSH server packages, executable, or service links. Removing
+the root key alone is not sufficient. Older inspection records without these
+checks cannot establish readiness.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
@@ -143,6 +147,9 @@ be absent. An unexpected key or remaining OpenSSH path stops the playbook for
 review. A legacy router whose root key differs from the current approved
 bootstrap key needs a separate supervised reconciliation. This cleanup does not
 adopt a router release.
+The steady-state play first collects Tailscale status and proves independent
+Tailscale SSH. Only then can the VM base role remove OpenSSH. This order prevents
+a missing status fact from leaving the first-contact server installed.
 
 The Alpine asset role accepts separate output paths and an approved ISO digest.
 Its defaults preserve the existing shared VM paths. Its extraction receipt

@@ -234,6 +234,9 @@ class LegacyBaselineTests(unittest.TestCase):
                                     'metadata': state(411, 0o600)}
                               for kind in ('rsa', 'ecdsa', 'ed25519')},
                  'first_contact_key': {'present': False},
+                 'root_password_locked': True, 'sshd_running': False,
+                 'openssh_paths': {path: {'present': False} for path in
+                                   ('/usr/sbin/sshd', '/etc/init.d/sshd', '/etc/runlevels/default/sshd')},
                  'packages': {'tailscale': '1-r0'}, 'kernel_release': '6.12.1-virt',
                  'state_paths': {'/var/lib/tailscale/tailscaled.state': state(2410, 0o600, gid=103),
                                  '/var/lib/dhcpcd/duid': state(42, 0o640),
@@ -263,6 +266,25 @@ class LegacyBaselineTests(unittest.TestCase):
         self.assertEqual(len(findings), 2)
         self.assertTrue(any('lease file' in finding for finding in findings))
         self.assertTrue(any('root SSH' in finding for finding in findings))
+
+    def test_retiring_a_key_alone_cannot_qualify_bootstrap_access(self):
+        for mutate in (
+                lambda g: g.update(sshd_running=True),
+                lambda g: g.pop('sshd_running'),
+                lambda g: g['openssh_paths']['/usr/sbin/sshd'].update(present=True),
+                lambda g: g['openssh_paths'].pop('/etc/init.d/sshd'),
+                lambda g: g['packages'].update({'openssh-server': '10.2_p1-r0'})):
+            guest, dom0 = self.fixture()
+            mutate(guest)
+            self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
+                             ['router OpenSSH server retirement is incomplete or unknown'])
+
+    def test_absent_or_unlocked_root_evidence_blocks_adoption(self):
+        for value in (None, False, 'true', 1):
+            guest, dom0 = self.fixture()
+            guest['root_password_locked'] = value
+            self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'),
+                             ['router root password is not proved locked'])
 
     def test_unknown_state_and_existing_assignment_block_adoption(self):
         guest, dom0 = self.fixture()

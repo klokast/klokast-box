@@ -16,6 +16,19 @@ ROLES = REPO / 'ansible/roles'
 
 
 class PreparationTests(unittest.TestCase):
+    def test_router_removes_openssh_only_after_fresh_management_proof(self):
+        plays = yaml.safe_load((REPO / 'ansible/playbooks/31-vm-router.yml').read_text())
+        tasks = plays[-1]['tasks']
+        roles = {task['ansible.builtin.import_role']['name']: index
+                 for index, task in enumerate(tasks) if 'ansible.builtin.import_role' in task}
+        probe = next(index for index, task in enumerate(tasks)
+                     if task.get('register') == 'router_pre_retirement_ssh_probe')
+        proof = next(index for index, task in enumerate(tasks)
+                     if 'router_pre_retirement_ssh_probe.stdout' in str(task.get('ansible.builtin.assert')))
+        self.assertLess(roles['tailscale-client'], probe)
+        self.assertLess(probe, proof)
+        self.assertLess(proof, roles['vm-base'])
+
     def test_legacy_router_builder_cannot_rebuild_or_resize_an_existing_disk(self):
         tasks = yaml.safe_load((ROLES / 'router-alpine-rootfs/tasks/legacy.yml').read_text())
         guard = tasks[0]['ansible.builtin.assert']['that']

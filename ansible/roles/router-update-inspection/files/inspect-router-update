@@ -78,6 +78,18 @@ def inspect_guest(box):
             fingerprint = run(['ssh-keygen', '-lf', str(selected)]).split()
             keys[kind] = {'path': str(selected), 'fingerprint': fingerprint[1], 'metadata': metadata}
     config = Path('/etc/dnsmasq.conf').read_text()
+    root_entries = [line.split(':') for line in Path('/etc/shadow').read_text().splitlines()
+                    if line.startswith('root:')]
+    root_locked = len(root_entries) == 1 and root_entries[0][1].startswith(('!', '*'))
+    sshd_processes = False
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if (process / 'comm').read_text().strip() in ('sshd', 'sshd-session', 'sshd-auth'):
+                sshd_processes = True
+        except FileNotFoundError:
+            pass  # The process exited between enumeration and inspection.
     lease_paths = re.findall(r'^\s*dhcp-leasefile\s*=\s*(\S+)\s*$', config, re.M)
     overlay = Path('/etc/klokast/overlay-ipv6.nft')
     overlay_enabled = (Path('/etc/sysctl.d/91-klokast-ops-ipv6.conf').exists() or
@@ -91,6 +103,9 @@ def inspect_guest(box):
             'dnsmasq_lease_paths': lease_paths, 'overlay_ipv6_enabled': overlay_enabled,
             'unsupported_state': {path: Path(path).exists() for path in
                                   ('/var/lib/tailscale/tka', '/var/lib/tailscale/tpm-sealed')},
+            'root_password_locked': root_locked, 'sshd_running': sshd_processes,
+            'openssh_paths': {path: info(path) for path in
+                              ('/usr/sbin/sshd', '/etc/init.d/sshd', '/etc/runlevels/default/sshd')},
             'first_contact_key': info('/root/.ssh/authorized_keys')}
 
 

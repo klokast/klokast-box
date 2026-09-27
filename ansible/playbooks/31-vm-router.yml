@@ -296,16 +296,33 @@
   hosts: router
   gather_facts: true
   tasks:
-    - name: Converge the router VM base access model
-      ansible.builtin.import_role:
-        name: vm-base
-
     - name: Keep the router Tailscale client converged first
       ansible.builtin.import_role:
         name: tailscale-client
 
     - name: Reset the SSH connection after router Tailscale SSH changes
       ansible.builtin.meta: reset_connection
+
+    - name: Prove Tailscale SSH before VM base can remove OpenSSH
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ inventory_hostname }}', sh, -s]
+        stdin: "hostname\n"
+        stdin_add_newline: false
+      delegate_to: localhost
+      become: false
+      register: router_pre_retirement_ssh_probe
+      changed_when: false
+
+    - name: Require the router management identity before retiring OpenSSH
+      ansible.builtin.assert:
+        that:
+          - router_pre_retirement_ssh_probe.stdout | trim == inventory_hostname
+          - tailscale_client_status.BackendState | default('') == 'Running'
+          - tailscale_client_prefs.RunSSH | default(false) | bool
+
+    - name: Converge the router VM base access model after management verification
+      ansible.builtin.import_role:
+        name: vm-base
 
     - name: Configure the router guest
       ansible.builtin.import_role:
