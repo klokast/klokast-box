@@ -109,7 +109,7 @@ def validate_snapshot(row, record):
     if (row is None or row['lv_uuid'] != record['uuid'] or row['origin_uuid'] != record['origin_uuid'] or
             row['lv_path'] != record['path'] or row['lv_tags'].split(',') != [record['tag']] or
             not row['lv_attr'].startswith('sr') or row['lv_attr'][4] != 'a' or
-            int(row['lv_size']) != SLOTS['old'] or not 0 <= float(row['data_percent']) < 95):
+            int(row['lv_size']) != 1024 * MIB or not 0 <= float(row['data_percent']) < 95):
         raise RuntimeError('compatibility snapshot changed or exceeded its COW reserve; retain it')
 
 
@@ -129,6 +129,23 @@ def retire_snapshot(work):
     write(work / 'snapshot.json', {**record, 'stage': 'retired'})
 
 
+def reconcile_snapshot(work, value, expected_uuid):
+    """Resolve an interrupted create only with an explicitly inspected UUID."""
+    source_identity(work, value)
+    record = load(work / 'snapshot.json')
+    if (record.get('operation_id') != work.name or record.get('stage') not in ('planned', 'created') or
+            record.get('path') != '/dev/vg0/routercompat_' + work.name or
+            record.get('tag') != 'routercompat_' + work.name or
+            record.get('origin_uuid') != value['source']['disk']['uuid'] or
+            not re.fullmatch('[A-Za-z0-9-]{1,64}', expected_uuid) or
+            record.get('uuid', expected_uuid) != expected_uuid):
+        raise RuntimeError('snapshot reconciliation requires the exact planned operation and inspected UUID')
+    record = {**record, 'uuid': expected_uuid, 'stage': 'created'}
+    validate_snapshot(snapshot_info(record['path']), record)
+    write(work / 'snapshot.json', record)
+    retire_snapshot(work)
+
+
 def private_copy(work, value):
     source_identity(work, value)
     disk = value['source']['disk']
@@ -145,9 +162,11 @@ def private_copy(work, value):
     if row is None:
         raise RuntimeError('compatibility snapshot creation has no recorded result')
     record.update(uuid=row['lv_uuid'], stage='created')
-    validate_snapshot(row, record)
     write(work / 'snapshot.json', record)
+    validate_snapshot(row, record)
     try:
+        if int(run(['blockdev', '--getsize64', path]).stdout.strip()) != SLOTS['old']:
+            raise RuntimeError('compatibility snapshot virtual size differs from its source')
         run(['dd', 'if=' + path, 'of=' + str(work / 'old.slot'), 'bs=1M',
              'count=2048', 'conv=notrunc,fsync'], timeout=180)
         validate_snapshot(snapshot_info(path), record)
@@ -189,7 +208,7 @@ def file_identity(path):
 
 def cleanup(work, operation):
     record = load(work / 'lifecycle.json')
-    if (record.get('operation_id') != operation or record.get('stage') not in ('detached', 'cleaned') or
+    if (record.get('operation_id') != operation or record.get('stage') not in ('allocated', 'detached', 'cleaned') or
             set(record.get('uuids', {})) != set(PHASES) or set(record.get('slots', {})) != set(SLOTS) or
             load(work / 'snapshot.json').get('stage') != 'retired'):
         raise RuntimeError('compatibility cleanup needs a complete detached operation and retired snapshot')
@@ -315,6 +334,7 @@ def main():
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--cleanup', action='store_true')
+    parser.add_argument('--retire-snapshot-uuid')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
@@ -327,7 +347,10 @@ def main():
     safe_directory(BASE); safe_directory(work)
     with (BASE / 'test.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if args.cleanup:
+        if args.retire_snapshot_uuid:
+            reconcile_snapshot(work, request(work, args.box, args.operation_id), args.retire_snapshot_uuid)
+            print(json.dumps({'snapshot_retired': True}))
+        elif args.cleanup:
             print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id)}))
         else:
             print(json.dumps(execute(work, request(work, args.box, args.operation_id))))

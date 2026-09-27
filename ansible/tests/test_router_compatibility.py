@@ -1,5 +1,6 @@
 """Legacy copies must be fenced, sanitized, and bound to exact source evidence."""
 import ast
+import base64
 import copy
 import json
 import os
@@ -11,10 +12,19 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_fixture as fixture
+import router_compatibility
 from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_native_key_fixture_uses_decoded_api_bytes_and_hides_invalid_data(self):
+        value = 'privkey:' + '0' * 64
+        encoded = base64.b64encode(value.encode()).decode()
+        self.assertEqual(router_compatibility.native_key_bytes(encoded), value)
+        for invalid in ('private-fixture-invalid', value, encoded + 'bad', None, 'x' * 1000):
+            with self.assertRaisesRegex(RuntimeError, '^native rotation fixture has an unsupported machine-key encoding$'):
+                router_compatibility.native_key_bytes(invalid)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -105,7 +115,7 @@ class HostTests(unittest.TestCase):
     def test_snapshot_checks_uuid_origin_tag_permissions_capacity(self):
         record = {'uuid': 'snapshot', 'origin_uuid': 'source', 'path': '/dev/vg0/test', 'tag': 'tag'}
         row = {'lv_uuid': 'snapshot', 'origin_uuid': 'source', 'lv_path': '/dev/vg0/test',
-               'lv_tags': 'tag', 'lv_attr': 'sri-a-s---', 'lv_size': str(self.host.SLOTS['old']), 'data_percent': '0.1'}
+               'lv_tags': 'tag', 'lv_attr': 'sri-a-s---', 'lv_size': str(1024 * self.host.MIB), 'data_percent': '0.1'}
         self.host.validate_snapshot(row, record)
         for field, wrong in (('lv_uuid', 'foreign'), ('origin_uuid', 'other'), ('lv_tags', 'other'),
                               ('lv_attr', 'swi-a-s---'), ('lv_attr', 'sri-I-s---'), ('data_percent', '95')):
@@ -149,6 +159,25 @@ class HostTests(unittest.TestCase):
                  patch.object(self.host, 'run') as run, self.assertRaises(RuntimeError):
                 self.host.source_identity(Path('/operation'), {'box': 'boxa', 'source': source})
             run.assert_not_called()
+
+    def test_snapshot_reconciliation_needs_the_explicit_uuid_and_origin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / self.operation
+            root.mkdir()
+            planned = {'operation_id': self.operation, 'stage': 'planned',
+                       'path': '/dev/vg0/routercompat_' + self.operation,
+                       'tag': 'routercompat_' + self.operation, 'origin_uuid': 'source'}
+            (root / 'snapshot.json').write_text(json.dumps(planned))
+            row = {'lv_uuid': 'snapshot', 'origin_uuid': 'source', 'lv_path': planned['path'],
+                   'lv_tags': planned['tag'], 'lv_attr': 'sri-a-s---',
+                   'lv_size': str(1024 * self.host.MIB), 'data_percent': '0.1'}
+            for change in ({'lv_uuid': 'foreign'}, {'origin_uuid': 'foreign'}, {'lv_tags': 'foreign'}):
+                with patch.object(self.host, 'safe_file'), patch.object(self.host, 'source_identity'), \
+                     patch.object(self.host, 'snapshot_info', return_value={**row, **change}), \
+                     patch.object(self.host, 'run') as run, self.assertRaises(RuntimeError):
+                    self.host.reconcile_snapshot(root, {'source': {'disk': {'uuid': 'source'}}}, 'snapshot')
+                run.assert_not_called()
+                self.assertEqual(json.loads((root / 'snapshot.json').read_text()), planned)
 
 
 if __name__ == '__main__':

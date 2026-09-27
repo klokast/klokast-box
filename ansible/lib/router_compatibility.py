@@ -4,6 +4,7 @@ The fixture marker binds a single operation and exact software. Only synthetic
 key digests and lease metadata leave this guest. No control-plane enrollment or
 production router identity is part of this test.
 """
+import base64
 import hashlib
 import json
 import os
@@ -18,6 +19,20 @@ import router_state
 
 def checksum(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def native_key_bytes(encoded):
+    # Tailscale FileStore is map[StateKey][]byte: JSON encodes each value as
+    # base64. The development store API instead accepts the original bytes.
+    try:
+        if not isinstance(encoded, str) or len(encoded) > 128:
+            raise ValueError()
+        value = base64.b64decode(encoded, validate=True).decode('ascii')
+        if not re.fullmatch('privkey:[0-9a-f]{64}', value):
+            raise ValueError()
+        return value
+    except (ValueError, UnicodeError):
+        raise RuntimeError('native rotation fixture has an unsupported machine-key encoding') from None
 
 
 def state():
@@ -74,7 +89,8 @@ def resume_tailscale(phase):
             probe.wait_for(lambda: Path(rotation_socket).exists(), [child], 'native rotation fixture')
             probe.run(['tailscale', '--socket=' + rotation_socket, 'up',
                        '--login-server=https://127.0.0.1:1', '--timeout=2s'], check=False, timeout=10)
-            new_key = json.loads(rotation_state.read_text())['_machinekey']
+            encoded_key = json.loads(rotation_state.read_text())['_machinekey']
+            new_key = native_key_bytes(encoded_key)
         with probe.process('rotate-tailscale', daemon) as child:
             probe.wait_for(lambda: Path(socket).exists(), [child], 'native state writer')
             probe.run([*cli, 'debug', 'dev-store-set', '--danger', '_machinekey', '-'], data=new_key)

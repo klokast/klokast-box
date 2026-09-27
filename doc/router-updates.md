@@ -290,3 +290,11 @@ Failed tests retain them. After diagnosis, use
 a retired snapshot, a detached lifecycle record, and the exact recorded file
 identities. It refuses live guests, changed files, or attached disks. Operations
 interrupted before a detached record require explicit reconciliation first.
+
+If a snapshot create was interrupted before the UUID was recorded, inspect that
+one LV through the controller first. The cleanup playbook accepts
+`router_compatibility_snapshot_uuid` for this case. It checks the planned path,
+origin UUID, unique tag, read-only attributes, and COW reserve against the exact
+observed UUID before retirement. It does not select a snapshot by name alone.
+A complete allocation record can then be cleaned after all domain and loop
+checks pass. A partial allocation record still needs manual reconciliation.

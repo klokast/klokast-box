@@ -19,11 +19,30 @@
       become: false
       changed_when: false
   tasks:
+    - name: Stage the current fixed reconciliation helper without replacing operation source
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-state-copy/files/router-compatibility-dom0'
+        dest: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-cleanup.py'
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Reconcile only an explicitly inspected snapshot UUID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-cleanup.py'
+          - --box
+          - '{{ router_compatibility_box }}'
+          - --operation-id
+          - '{{ router_compatibility_operation }}'
+          - --retire-snapshot-uuid
+          - '{{ router_compatibility_snapshot_uuid }}'
+      when: router_compatibility_snapshot_uuid is defined
     - name: Reclaim only recorded private test disks after Xen and attachment checks
       ansible.builtin.command:
         argv:
           - /usr/bin/python3
-          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-dom0.py'
+          - '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/router-compatibility-cleanup.py'
           - --box
           - '{{ router_compatibility_box }}'
           - --operation-id
