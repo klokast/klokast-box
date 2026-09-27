@@ -54,9 +54,10 @@ def record(work, operation):
             value['kind'] != 'klokast.router-candidate-disk.v1' or value['operation_id'] != operation or
             (value['path'], value['tag']) != selection(operation) or
             not generations.matches('[0-9a-f]{64}', value['template_sha256']) or
-            value['stage'] not in ('planned','allocated','cloned','retiring','retired') or
-            (value['stage'] == 'planned' and value['uuid'] is not None) or
-            (value['stage'] != 'planned' and not generations.matches('[A-Za-z0-9-]{1,64}', value['uuid']))):
+            value['stage'] not in ('planned','aborted','allocated','cloned','retiring','retired') or
+            (value['stage'] in ('planned','aborted') and value['uuid'] is not None) or
+            (value['stage'] not in ('planned','aborted') and
+             not generations.matches('[A-Za-z0-9-]{1,64}', value['uuid']))):
         raise TransactionError('router candidate disk record has an invalid identity or stage')
     return value
 
@@ -150,6 +151,13 @@ def _retire_locked(work, operation, *, box, inspected_uuid):
     work = Path(work)
     value = record(work, operation)
     row = observed(operation)
+    if value['stage'] in ('planned','aborted') and row is None:
+        refuse_referenced_disk(box, operation, {'path':value['path'], 'uuid':None})
+        if value['stage'] == 'planned':
+            records.write(work / 'candidate-disk.json', {**value,'stage':'aborted'})
+        return 0
+    if value['stage'] == 'aborted':
+        raise TransactionError('an aborted candidate LV appeared after exact absence was recorded')
     if value['stage'] in ('retired','retiring') and row is None:
         refuse_referenced_disk(box, operation, {'path':value['path'], 'uuid':value['uuid']})
         records.write(work / 'candidate-disk.json', {**value,'stage':'retired'})

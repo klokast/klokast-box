@@ -86,6 +86,16 @@ class DiskTests(unittest.TestCase):
         with patch.object(c,'observed',side_effect=[self.row,self.row,None]),patch.object(c.native,'command'):
             self.assertEqual(c.retire(self.work,self.operation,box=self.box,inspected_uuid='exact-uuid'),c.BYTES)
 
+    def test_failed_lvcreate_with_exact_absence_records_aborted_operation(self):
+        self.store(stage='planned',uuid=None)
+        with patch.object(c,'observed',return_value=None),patch.object(c.native,'command') as command:
+            self.assertEqual(c.retire(self.work,self.operation,box=self.box),0)
+            self.assertEqual(c.retire(self.work,self.operation,box=self.box),0)
+            command.assert_not_called()
+        self.assertEqual(c.record(self.work,self.operation)['stage'],'aborted')
+        with patch.object(c,'observed',return_value=self.row),self.assertRaisesRegex(TransactionError,'aborted'):
+            c.retire(self.work,self.operation,box=self.box)
+
     def test_retirement_refuses_accepted_and_pending_references(self):
         self.store()
         protected=self.work/'protected'

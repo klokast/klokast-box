@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Qualify one candidate preparation on a new LV, then retire that LV."""
 import argparse
-import argparse
 import fcntl
 import json
 import os
