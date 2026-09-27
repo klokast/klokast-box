@@ -77,6 +77,16 @@ class NativeTests(unittest.TestCase):
                 n.command(['xl', 'list'], 99)
             self.assertEqual(run.call_count, 1)
 
+    def test_only_explicit_lvcreate_diagnostic_exposes_bounded_stderr(self):
+        failure = subprocess.CompletedProcess(['/sbin/lvcreate'], 5, '', '  LVM allocation refused\n')
+        with mock.patch.object(n.subprocess, 'run', return_value=failure):
+            with self.assertRaisesRegex(TransactionError, 'LVM allocation refused'):
+                n.command(['/sbin/lvcreate'], n.time.monotonic() + 1, lvm_diagnostic=True)
+            with self.assertRaisesRegex(TransactionError, '^router native command failed:'):
+                n.command(['/sbin/lvcreate'], n.time.monotonic() + 1)
+            with self.assertRaisesRegex(TransactionError, '^router native command failed:'):
+                n.command(['/bin/dd'], n.time.monotonic() + 1, lvm_diagnostic=True)
+
     def test_foreign_guest_cannot_hold_a_router_disk_through_an_alias(self):
         pair = {'old': generation('legacy'), 'candidate': generation()}
         host = n.Native()

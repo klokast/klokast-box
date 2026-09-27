@@ -14,7 +14,7 @@ import router_records as records
 from router_transaction import TransactionError
 
 
-def command(argv, deadline, *, maximum_seconds=30):
+def command(argv, deadline, *, maximum_seconds=30, lvm_diagnostic=False):
     remaining = min(maximum_seconds, deadline - time.monotonic())
     if remaining <= 0:
         raise TransactionError('router native command has no remaining action budget')
@@ -25,6 +25,10 @@ def command(argv, deadline, *, maximum_seconds=30):
         raise TransactionError('router native command unavailable or timed out: ' + str(argv[0])) from error
     if result.returncode or len(result.stdout) > 8 * 1024 * 1024:
         # State-copy and guest diagnostics must never enter this output.
+        if lvm_diagnostic and argv[0] == '/sbin/lvcreate':
+            detail = result.stderr[:2048].strip()
+            if detail and all(character.isprintable() or character in '\r\n\t' for character in detail):
+                raise TransactionError('router candidate LV creation failed: ' + detail)
         raise TransactionError('router native command failed: ' + str(argv[0]))
     return result.stdout
 
