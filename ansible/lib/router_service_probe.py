@@ -28,9 +28,9 @@ def guard():
             raise RuntimeError('router service probe refuses existing service identity')
 
 
-def run(argv, *, timeout=20, check=True):
-    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, timeout=timeout)
+def run(argv, *, timeout=20, check=True, data=None):
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL if data is None else None,
+                            input=data, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode:
         raise RuntimeError('synthetic router probe command failed: ' + argv[0] +
                            ': ' + result.stderr[-800:])
@@ -145,13 +145,39 @@ def tailscale_state():
         state = Path('/var/lib/tailscale/tailscaled.state')
         if not state.is_file() or not state.stat().st_size:
             raise RuntimeError('offline Tailscale did not create its native state file')
+        machine_key = json.loads(state.read_text()).get('_machinekey')
+        if not machine_key:
+            raise RuntimeError('offline Tailscale did not generate its machine key')
+        # Tailscale intentionally keeps an unenrolled profile only in memory.
+        # Its native development store API seeds a synthetic, logged-out profile
+        # so the real daemon can exercise its persisted-profile reader/writer.
+        # No node key or enrollment is invented. The machine key above is native.
+        # Schema: tailscale v1.90.9 ipn/ipnlocal/profiles.go and ipn/prefs.go.
+        user = {'ID': 4242, 'LoginName': 'router-probe@example.invalid'}
+        profile = {'ID': '00aa', 'Key': 'profile-00aa', 'Name': 'router-probe',
+                   'NodeID': 'nrouterprobe', 'UserProfile': user,
+                   'ControlURL': 'https://127.0.0.1:1'}
+        prefs.update(WantRunning=False, LoggedOut=True,
+                     Config={'NodeID': profile['NodeID'], 'UserProfile': user})
+        for key, value in (('profile-00aa', json.dumps(prefs)),
+                           ('_profiles', json.dumps({'00aa': profile})),
+                           ('_current-profile', 'profile-00aa')):
+            run([*cli, 'debug', 'dev-store-set', '--danger', key, '-'], data=value)
+    with process('tailscale-profile', daemon) as child:
+        wait_for(lambda: Path(socket).exists(), [child], 'synthetic Tailscale profile')
+        prefs = json.loads(run([*cli, 'debug', 'prefs']).stdout)
+        if prefs.get('RunSSH') is not True or prefs.get('Hostname') != 'router-probe-initial':
+            raise RuntimeError('Tailscale did not read the stored synthetic profile')
         run([*cli, 'set', '--hostname=router-probe-latest'])
     with process('tailscale-restart', daemon) as child:
         wait_for(lambda: Path(socket).exists(), [child], 'restarted Tailscale socket')
         prefs = json.loads(run([*cli, 'debug', 'prefs']).stdout)
         if prefs.get('RunSSH') is not True or prefs.get('Hostname') != 'router-probe-latest':
             raise RuntimeError('restarted Tailscale did not retain the latest native preferences')
-    return {'offline_tailscale_state': True, 'latest_preferences_after_restart': True}
+    if json.loads(state.read_text()).get('_machinekey') != machine_key:
+        raise RuntimeError('Tailscale changed its native machine key across synthetic restarts')
+    return {'offline_tailscale_state': True, 'latest_preferences_after_restart': True,
+            'native_machine_key_after_restart': True, 'synthetic_profile': True}
 
 
 def execute():

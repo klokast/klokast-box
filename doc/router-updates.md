@@ -90,9 +90,12 @@ set, and absence of existing identity before it creates the management account,
 configuration files, and service links. Native `dnsmasq` and `nft` validate the
 rendered files. The test then creates synthetic links and an upstream namespace
 inside the networkless guest. Native dhcpcd obtains a WAN lease; dnsmasq assigns
-a LAN lease and answers its DNS name. An offline Tailscale daemon writes
-synthetic preferences and must read the latest value after restart. Its login
-server is a refused localhost port. This test cannot enroll a machine or copy
+a LAN lease and answers its DNS name. An offline Tailscale daemon creates a
+machine key. Its native development store API seeds a synthetic logged-out
+profile; normal preference updates must survive restart, and the machine key
+must stay unchanged. An unenrolled profile alone is not persisted by
+[Tailscale's profile manager](https://github.com/tailscale/tailscale/blob/v1.90.9/ipn/ipnlocal/profiles.go).
+The test login server is a refused localhost port. This test cannot enroll a machine or copy
 production state. It is not proof of complete candidate boot or compatibility
 between old and new service versions. The result records these limits.
 
