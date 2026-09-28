@@ -7,7 +7,7 @@
   become_method: community.general.doas
   become_flags: -n
   vars:
-    approval_mode_file: /etc/klokast/secret-authority/human-approval-mode
+    approval_mode_file: /etc/klokast/human-approval-mode
     development_key_dir: /home/smith/private/klokast/development-approvals
     development_signers:
       - purpose: platform-apply
@@ -40,6 +40,11 @@
         fail_msg: Select development or signed mode on the active in-Platform controller.
 
   tasks:
+    - name: Remove the inaccessible first development mode location
+      ansible.builtin.file:
+        path: /etc/klokast/secret-authority/human-approval-mode
+        state: absent
+
     - name: Disable automatic development signing before removing its keys
       ansible.builtin.copy:
         dest: "{{ approval_mode_file }}"

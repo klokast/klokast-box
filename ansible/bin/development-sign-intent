@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 
-MODE_FILE = pathlib.Path("/etc/klokast/secret-authority/human-approval-mode")
+MODE_FILE = pathlib.Path("/etc/klokast/human-approval-mode")
 KEY_DIR = pathlib.Path("/home/smith/private/klokast/development-approvals")
 PURPOSES = {
     "platform-apply": "klokast-platform-apply",

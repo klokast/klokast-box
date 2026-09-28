@@ -79,7 +79,7 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i localhost, \
 The playbook requires active controller authority. It creates separate
 owner-only keys under `~/private/klokast/development-approvals/`, adds only
 their scoped public keys to the root-owned allowed signer files, and writes
-`/etc/klokast/secret-authority/human-approval-mode`. The checked helper signs
+`/etc/klokast/human-approval-mode`. The checked helper signs
 one prepared intent without a human prompt:
 
 ```sh
