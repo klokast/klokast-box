@@ -2753,7 +2753,7 @@ def overlay_evidence_view(path, role, active, peer, suffix):
         "/etc/network/interfaces", "/etc/sysctl.d/91-klokast-ops-ipv6.conf",
     }
     if role == "router_preimage":
-        file_paths.update({"/etc/dhcpcd.conf", "/etc/dnsmasq.conf", "/etc/dnsmasq.d/91-klokast-ops-ipv6.conf", "/etc/klokast/overlay-ipv6.nft", "/etc/network/if-up.d/91-klokast-ops-ipv6"})
+        file_paths.update({"/etc/dhcpcd.conf", "/etc/dnsmasq.conf", "/etc/nftables.nft", "/etc/dnsmasq.d/91-klokast-ops-ipv6.conf", "/etc/klokast/overlay-ipv6.nft", "/etc/network/if-up.d/91-klokast-ops-ipv6"})
     elif role == "ops_preimage":
         file_paths.add("/etc/klokast/overlay-ipv6-input.nft")
     else:
@@ -2892,8 +2892,8 @@ def overlay_execute(args, intent):
                     run_freebox_action("restore", intent)
                 router_snapshot = locals().get("router_snapshot") or stage_overlay_snapshot(binding["router_preimage_path"], work, "router-preimage.json")
                 ops_snapshot = locals().get("ops_snapshot") or stage_overlay_snapshot(binding["ops_preimage_path"], work, "ops-preimage.json")
-                run_overlay_helper(OPS_NETWORK_HELPER, "restore", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], snapshot=ops_snapshot)
                 run_overlay_helper(ROUTER_NETWORK_HELPER, "restore", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], next_hop=intent["router_next_hop"], snapshot=router_snapshot)
+                run_overlay_helper(OPS_NETWORK_HELPER, "restore", intent["active_controller_box"], None, suffix, prefix=intent["delegated_prefix"], snapshot=ops_snapshot)
                 run_overlay_helper(OPS_NETWORK_HELPER, "verify-recovery", intent["active_controller_box"], intent["peer_box"], suffix)
                 run_overlay_helper(ROUTER_NETWORK_HELPER, "verify-recovery", intent["active_controller_box"], intent["peer_box"], suffix)
                 recovery_result = "restored"

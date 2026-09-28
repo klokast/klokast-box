@@ -5,6 +5,7 @@ import tempfile
 import os
 import re
 import shutil
+import shlex
 import subprocess
 from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
@@ -172,6 +173,74 @@ esac
         names = [t["name"] for t in tasks]
         self.assertLess(names.index("Advertise only the delegated ops prefix"), names.index(task["name"]))
         self.assertLess(names.index(task["name"]), names.index("Restart dnsmasq to start ops router advertisements"))
+
+    def test_router_loads_firewall_fragment_inside_rollback_scope(self):
+        play = yaml.safe_load(ROUTER_PLAY)[0]
+        tasks = play["tasks"]
+        task = next(t for t in tasks if t["name"] == "Load the exact IPv6 rules file from the router forward chain")
+        line = task["ansible.builtin.lineinfile"]
+        self.assertIn(line["path"], play["vars"]["overlay_ipv6_router_files"])
+        self.assertEqual(line["line"].strip(), 'include "/etc/klokast/overlay-ipv6.nft"')
+        self.assertEqual(line["validate"], '/usr/sbin/nft -c -f %s')
+        names = [t["name"] for t in tasks]
+        self.assertLess(names.index("Install the narrow ops-only IPv6 forwarding rules"), names.index(task["name"]))
+        self.assertLess(names.index(task["name"]), names.index("Load the prepared IPv6 firewall rules"))
+        self.assertLess(names.index("Restart dnsmasq after exact router restoration"), names.index("Restore router runtime sysctl and managed addresses"))
+
+    @unittest.skipIf(Environment is None, "Jinja2 is available on the controller")
+    def test_recovery_removes_expanded_slaac_but_preserves_preimage_addresses(self):
+        environment = Environment()
+        environment.filters['quote'] = shlex.quote
+        for role, source, name in (("router", ROUTER_PLAY, "Restore router runtime sysctl and managed addresses"),
+                                   ("ops", OPS_PLAY, "Restore ops runtime sysctl and delegated addresses")):
+            task = next(t for t in yaml.safe_load(source)[0]['tasks'] if t['name'] == name)
+            interface = 'eth6' if role == 'router' else 'eth0'
+            old = '2001:db8:1234:1::88/64'
+            added = '2001:db8:1234:1:216:3eff:fe71:6001/64'
+            runtime = f'forwarding=0\naccept_ra=1\nautoconf=1\n8: {interface} inet6 {old} scope global'
+            variables = {'overlay_ipv6_prefix': '2001:db8:1234:1::/64', 'overlay_ipv6_next_hop': 'fe80::1234',
+                         'router_wan_interface': 'eth0', 'router_ops_interface': 'eth6',
+                         'platform_control_zones': {'ops': {'vm_interface': 'eth0'}},
+                         f'overlay_ipv6_{role}_preimage': {'runtime': runtime}}
+            script = environment.from_string(task['ansible.builtin.shell']).render(**variables)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root/'ip').write_text('''#!/bin/sh
+case "$*" in
+  *'to fe80::1234/128'*) printf '2: eth0 inet6 fe80::1234/64 scope link\\n' ;;
+  *'to 2001:db8:1234:1::/64'*) printf '%s\\n' "$CURRENT_ADDRESSES" ;;
+  '-6 address del '*) printf '%s\\n' "$*" >>"$DELETIONS" ;;
+  *) exit 2 ;;
+esac
+''')
+                (root/'sysctl').write_text('#!/bin/sh\nexit 0\n')
+                for path in (root/'ip', root/'sysctl'): path.chmod(0o700)
+                current = f'8: {interface} inet6 {old} scope global\n8: {interface} inet6 {added} scope global deprecated'
+                result = subprocess.run(['/bin/sh', '-s'], input=script, text=True, capture_output=True,
+                                        env={**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'],
+                                             'CURRENT_ADDRESSES': current, 'DELETIONS': str(root/'deleted')})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                deletions = (root/'deleted').read_text().splitlines()
+                self.assertIn(f'-6 address del {added} dev {interface}', deletions)
+                self.assertFalse(any(old in line for line in deletions))
+                self.assertEqual(len(deletions), 2 if role == 'router' else 1)
+
+    def test_recovery_ping_accepts_derp_and_refuses_unreachable_peer(self):
+        for source in (ROUTER_PLAY, OPS_PLAY):
+            task = next(t for t in yaml.safe_load(source)[0]['tasks'] if t['name'].startswith('Verify ') and 'recovery' in t['name'])
+            command = next(line.strip() for line in task['ansible.builtin.shell'].splitlines() if line.strip().startswith('tailscale ping'))
+            command = re.sub(r'{{.*?}}', 'peer', command)
+            stub = '''set -eu
+tailscale() {
+  case "$*" in *--until-direct=false*) ;; *) return 1 ;; esac
+  [ "$PEER_REACHABLE" = yes ] || return 1
+  echo 'pong from peer (100.64.0.2) via DERP(nue) in 200ms'
+}
+'''
+            for reachable in ('yes', 'no'):
+                result = subprocess.run(['/bin/sh','-s'],input=stub+command+'\n',text=True,capture_output=True,
+                                        env={**os.environ,'PEER_REACHABLE':reachable})
+                self.assertEqual(result.returncode == 0, reachable == 'yes')
 
     @unittest.skipIf(Environment is None, "Jinja2 is available on the controller")
     def test_router_prerequisite_selects_exact_ipv6_reply_within_bounded_probe(self):

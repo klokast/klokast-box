@@ -177,8 +177,12 @@
     - name: Restore ops runtime sysctl and delegated addresses
       ansible.builtin.shell: |
         set -eu
-        for address in $(ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} scope global | awk '{print $4}'); do
-          case "$address" in {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}*) ip -6 address del "$address" dev {{ platform_control_zones.ops.vm_interface }} ;; esac
+        before=$(printf '%s\n' {{ overlay_ipv6_ops_preimage.runtime | quote }} | awk '$3 == "inet6" {print $4}')
+        current=$(ip -o -6 address show dev {{ platform_control_zones.ops.vm_interface }} to {{ overlay_ipv6_prefix }} scope global)
+        for address in $(printf '%s\n' "$current" | awk '{print $4}'); do
+          if ! printf '%s\n' "$before" | grep -Fx "$address" >/dev/null; then
+            ip -6 address del "$address" dev {{ platform_control_zones.ops.vm_interface }}
+          fi
         done
         accept_ra=$(printf '%s\n' {{ overlay_ipv6_ops_preimage.runtime | quote }} | sed -n 's/^accept_ra=//p')
         autoconf=$(printf '%s\n' {{ overlay_ipv6_ops_preimage.runtime | quote }} | sed -n 's/^autoconf=//p')
@@ -206,7 +210,7 @@
         set -eu
         ip -4 route show default | grep -F 'via {{ platform_control_zones.ops.router_ipv4_address }}'
         tailscale status --json | grep -E '"BackendState"[[:space:]]*:[[:space:]]*"Running"'
-        tailscale ping --c 1 {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}
+        tailscale ping --until-direct=false --c 2 --timeout=5s {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}
       args:
         executable: /bin/sh
       changed_when: false

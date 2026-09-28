@@ -17,6 +17,11 @@ The repair adds an exact `conf-file` include to the router's
 is restored on failure. A syntax check alone cannot prove that an unreferenced
 advertisement file is loaded.
 
+The router's forward chain also loads the exact `/etc/klokast/overlay-ipv6.nft`
+fragment. The repair includes `/etc/nftables.nft` in the signed rollback files
+and validates the candidate rules before loading them. This supports legacy
+routers whose main firewall file does not yet include the fragment.
+
 Both network helpers keep complete Ansible logs in owner-only files under
 the controller checkout's `.run/overlay-ipv6-router` or
 `.run/overlay-ipv6-ops`. Failure messages identify the failed task and the
@@ -48,6 +53,11 @@ If verification fails after mutation starts, the executor restores the exact
 Freebox, router, and controller preimages. It then verifies IPv4 controller
 access and a working Tailscale path. A failed restoration records
 `recovery_required`.
+
+Restoration stops router advertisements before it removes new addresses on
+the router and then the controller. It selects addresses by IPv6 CIDR and
+preserves addresses recorded in the preimage. Recovery accepts a working
+DERP path; a direct path is required only for the repair's success checks.
 
 Revalidation keeps configuration, address identity, prefix length, interface,
 and address flags exact. IPv6 lifetimes can count down by at most 600 seconds.

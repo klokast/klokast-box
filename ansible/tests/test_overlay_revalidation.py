@@ -27,7 +27,7 @@ class OverlayRevalidationTest(unittest.TestCase):
         for role in ("router_preimage", "ops_preimage"):
             paths = {"/etc/network/interfaces", "/etc/sysctl.d/91-klokast-ops-ipv6.conf"}
             if role == "router_preimage":
-                paths.update({"/etc/dhcpcd.conf", "/etc/dnsmasq.conf", "/etc/dnsmasq.d/91-klokast-ops-ipv6.conf", "/etc/klokast/overlay-ipv6.nft", "/etc/network/if-up.d/91-klokast-ops-ipv6"})
+                paths.update({"/etc/dhcpcd.conf", "/etc/dnsmasq.conf", "/etc/nftables.nft", "/etc/dnsmasq.d/91-klokast-ops-ipv6.conf", "/etc/klokast/overlay-ipv6.nft", "/etc/network/if-up.d/91-klokast-ops-ipv6"})
             else:
                 paths.add("/etc/klokast/overlay-ipv6-input.nft")
             self.docs[role] = {

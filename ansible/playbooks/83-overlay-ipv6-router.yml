@@ -7,6 +7,7 @@
       - /etc/network/interfaces
       - /etc/dhcpcd.conf
       - /etc/dnsmasq.conf
+      - /etc/nftables.nft
       - /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
       - /etc/klokast/overlay-ipv6.nft
       - /etc/sysctl.d/91-klokast-ops-ipv6.conf
@@ -315,6 +316,17 @@
         - overlay_ipv6_router_operation == 'prepare'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
+    - name: Load the exact IPv6 rules file from the router forward chain
+      ansible.builtin.lineinfile:
+        path: /etc/nftables.nft
+        regexp: '^\s*include "/etc/klokast/overlay-ipv6.nft"\s*$'
+        line: '        include "/etc/klokast/overlay-ipv6.nft"'
+        insertafter: '^        type filter hook forward priority 0; policy drop;$'
+        validate: /usr/sbin/nft -c -f %s
+      when:
+        - overlay_ipv6_router_operation == 'prepare'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Load the prepared IPv6 firewall rules
       ansible.builtin.shell: |
         set -eu
@@ -468,11 +480,30 @@
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
         - not (item.value[0] | bool)
 
+    - name: Restart dnsmasq after exact router restoration
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Restore router runtime sysctl and managed addresses
       ansible.builtin.shell: |
         set -eu
-        ip -6 address del {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64 dev {{ router_ops_interface }} 2>/dev/null || true
-        ip -6 address del {{ overlay_ipv6_next_hop }}/64 dev {{ router_wan_interface }} 2>/dev/null || true
+        before=$(printf '%s\n' {{ overlay_ipv6_router_preimage.runtime | quote }} | awk '$3 == "inet6" {print $2 " " $4}')
+        for interface in {{ router_wan_interface }} {{ router_ops_interface }}; do
+          case "$interface" in
+            {{ router_wan_interface }}) target={{ overlay_ipv6_next_hop }}/128 ;;
+            {{ router_ops_interface }}) target={{ overlay_ipv6_prefix }} ;;
+          esac
+          current=$(ip -o -6 address show dev "$interface" to "$target")
+          for address in $(printf '%s\n' "$current" | awk '{print $4}'); do
+            if ! printf '%s\n' "$before" | grep -Fx "$interface $address" >/dev/null; then
+              ip -6 address del "$address" dev "$interface"
+            fi
+          done
+        done
         forwarding=$(printf '%s\n' {{ overlay_ipv6_router_preimage.runtime | quote }} | sed -n 's/^forwarding=//p')
         accept_ra=$(printf '%s\n' {{ overlay_ipv6_router_preimage.runtime | quote }} | sed -n 's/^accept_ra=//p')
         sysctl -w net.ipv6.conf.all.forwarding="$forwarding"
@@ -498,20 +529,12 @@
         - overlay_ipv6_router_operation == 'restore'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
-    - name: Restart dnsmasq after exact router restoration
-      ansible.builtin.service:
-        name: dnsmasq
-        state: restarted
-      when:
-        - overlay_ipv6_router_operation == 'restore'
-        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
-
     - name: Verify IPv4 and Tailnet recovery from the active router
       ansible.builtin.shell: |
         set -eu
         ip -4 route show default | grep -F 'dev {{ router_wan_interface }}'
         tailscale status --json | grep -E '"BackendState"[[:space:]]*:[[:space:]]*"Running"'
-        tailscale ping --c 1 {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}
+        tailscale ping --until-direct=false --c 2 --timeout=5s {{ overlay_ipv6_peer_box }}-router.{{ platform_magicdns_suffix }}
       args:
         executable: /bin/sh
       changed_when: false
