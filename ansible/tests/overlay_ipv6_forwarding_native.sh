@@ -39,6 +39,8 @@ ip -n "$wan_ns" address add 192.0.2.1/24 dev eth0
 ip -n "$router_ns" route add default via 192.0.2.1
 ip -n "$client_ns" address add 198.51.100.10/24 dev eth0
 ip -n "$client_ns" route add default via 198.51.100.254
+ip netns exec "$router_ns" python3 "$fixture/routes.py" snapshot eth6 >"$test_dir/router-routes.json"
+ip netns exec "$client_ns" python3 "$fixture/routes.py" snapshot eth0 >"$test_dir/client-routes.json"
 ip -n "$router_ns" address add 2001:db8:1234::2/64 dev eth0
 ip -n "$wan_ns" address add 2001:db8:1234::1/64 dev eth0
 ip -n "$wan_ns" -6 route add 2001:db8:1234:1::/64 via 2001:db8:1234::2
@@ -122,15 +124,24 @@ ip netns exec "$client_ns" python3 "$test_dir/udp.py" 41641
 if ip netns exec "$client_ns" python3 "$test_dir/udp.py" 41642; then echo 'Unexpected UDP source port passed the narrow rule.' >&2; exit 1; fi
 sed "s|/etc/|$test_dir/etc/|g" "$fixture/router-verify.sh" >"$test_dir/router-verify.sh"
 ip netns exec "$router_ns" sh "$test_dir/router-verify.sh"
+printf '%s\n' 'enable-ra' >"$test_dir/etc/dnsmasq.d/unexpected.conf"
+if ip netns exec "$router_ns" sh "$test_dir/router-verify.sh"; then
+  echo 'Unexpected router advertisement configuration passed verification.' >&2; exit 1
+fi
+rm "$test_dir/etc/dnsmasq.d/unexpected.conf"
 echo 'Actual forwarding rules pass the permitted UDP probe and reject another source port.'
 stop_dns
 # Reproduce both fully expanded residual SLAAC addresses from the live failure.
 ip -n "$router_ns" address add 2001:db8:1234:1:216:3eff:fe71:1107/64 dev eth6 preferred_lft 0
 ip netns exec "$router_ns" sh "$fixture/router-cleanup.sh"
 ip netns exec "$client_ns" sh "$fixture/ops-cleanup.sh"
+OVERLAY_IPV6_ROUTES_PREIMAGE=$(cat "$test_dir/router-routes.json") ip netns exec "$router_ns" python3 "$fixture/routes.py" restore eth6 --prefix 2001:db8:1234:1::/64
+OVERLAY_IPV6_ROUTES_PREIMAGE=$(cat "$test_dir/client-routes.json") ip netns exec "$client_ns" python3 "$fixture/routes.py" restore eth0 --prefix 2001:db8:1234:1::/64
 test -z "$(ip -n "$router_ns" -o -6 address show dev eth6 to 2001:db8:1234:1::/64)"
 test -z "$(ip -n "$client_ns" -o -6 address show dev eth0 to 2001:db8:1234:1::/64)"
 test -z "$(ip -n "$client_ns" -6 route show to 2001:db8:1234:1::/64)"
+test -z "$(ip -n "$router_ns" -6 route show to 2001:db8:1234:1::/64)"
+test -z "$(ip -n "$client_ns" -6 route show default proto ra)"
 ip -n "$router_ns" -4 route show default | grep -F 'via 192.0.2.1'
 ip -n "$client_ns" -4 route show default | grep -F 'via 198.51.100.254'
 ip -n "$router_ns" -o -6 address show dev eth0 to 2001:db8:1234::2/128 | grep -F '2001:db8:1234::2/64'

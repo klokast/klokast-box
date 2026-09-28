@@ -2722,7 +2722,7 @@ def overlay_nft_view(ruleset):
 def overlay_evidence_view(path, role, active, peer, suffix):
     if role not in {"router_preimage", "ops_preimage", "huawei_prerequisite"}:
         raise ApplyError("overlay evidence role is not closed")
-    fields = {"schema_version", "kind", "box", "files", "runtime", "nft_ruleset"}
+    fields = {"schema_version", "kind", "box", "files", "runtime", "nft_ruleset", "ipv6_routes"}
     if role == "huawei_prerequisite":
         fields = {"schema_version", "kind", "active_router", "peer_router", "peer_global_ipv6", "udp_port", "direct_ping"}
     value = load_json(path, expected_fields=fields)
@@ -2749,6 +2749,8 @@ def overlay_evidence_view(path, role, active, peer, suffix):
         return value, [], []
     if value["box"] != active or not isinstance(value["files"], dict) or not isinstance(value["runtime"], str) or not isinstance(value["nft_ruleset"], str):
         raise ApplyError("overlay preimage identity or fields are invalid")
+    if not isinstance(value["ipv6_routes"], list) or not all(isinstance(route, dict) and "expires" not in route for route in value["ipv6_routes"]):
+        raise ApplyError("overlay preimage IPv6 routes are invalid")
     file_paths = {
         "/etc/network/interfaces", "/etc/sysctl.d/91-klokast-ops-ipv6.conf",
     }

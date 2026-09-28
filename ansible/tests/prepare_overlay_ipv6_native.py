@@ -46,6 +46,7 @@ def main():
             content = environment.from_string(value).render(**variables)
             (args.output / filename).write_text(content + "\n", encoding="utf-8")
     (args.output / "run.sh").write_bytes((ROOT / "ansible/tests/overlay_ipv6_forwarding_native.sh").read_bytes())
+    (args.output / "routes.py").write_bytes((ROOT / "ansible/lib/overlay_ipv6_routes.py").read_bytes())
 
 
 if __name__ == "__main__":

@@ -59,6 +59,14 @@ the router and then the controller. It selects addresses by IPv6 CIDR and
 preserves addresses recorded in the preimage. Recovery accepts a working
 DERP path; a direct path is required only for the repair's success checks.
 
+New preimages also record IPv6 routes on the ops-facing interfaces. Restoration
+removes only newly learned routes for the delegated prefix and new RA default
+routes. It preserves routes present in the preimage and unrelated routes.
+Route expiry timers are excluded from approval comparison. Old preimages without
+route evidence require a separate reviewed recovery; never assume an empty route
+preimage. The router verifier checks advertisement files with Python because
+Alpine BusyBox grep does not support `--exclude`.
+
 Revalidation keeps configuration, address identity, prefix length, interface,
 and address flags exact. IPv6 lifetimes can count down by at most 600 seconds.
 Router advertisements can renew the same dynamic global address under

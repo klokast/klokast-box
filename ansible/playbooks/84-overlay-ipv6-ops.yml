@@ -15,6 +15,14 @@
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == node_name ~ '-ops'
 
+    - name: Require recorded routes before ops restoration
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_ops_preimage.ipv6_routes is defined
+          - overlay_ipv6_ops_preimage.ipv6_routes is sequence
+        fail_msg: The ops preimage has no IPv6 route evidence. Use reviewed legacy recovery; do not infer an empty preimage.
+      when: overlay_ipv6_ops_operation == 'restore'
+
     - name: Inspect ops rollback files
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -41,6 +49,14 @@
       args:
         executable: /bin/sh
       register: overlay_ipv6_ops_runtime
+      changed_when: false
+      when: overlay_ipv6_ops_operation == 'snapshot'
+
+    - name: Read ops IPv6 routes for rollback
+      ansible.builtin.script:
+        cmd: ../lib/overlay_ipv6_routes.py snapshot {{ platform_control_zones.ops.vm_interface }}
+        executable: /usr/bin/python3
+      register: overlay_ipv6_ops_routes
       changed_when: false
       when: overlay_ipv6_ops_operation == 'snapshot'
 
@@ -73,6 +89,7 @@
               )
             ),
             'runtime': overlay_ipv6_ops_runtime.stdout,
+            'ipv6_routes': overlay_ipv6_ops_routes.stdout | from_json,
             'nft_ruleset': overlay_ipv6_ops_nft_preimage.stdout,
           } | to_nice_json }}
       delegate_to: localhost
@@ -190,6 +207,14 @@
         sysctl -w net.ipv6.conf.{{ platform_control_zones.ops.vm_interface }}.autoconf="$autoconf"
       args:
         executable: /bin/sh
+      when: overlay_ipv6_ops_operation == 'restore'
+
+    - name: Remove new ops IPv6 routes
+      ansible.builtin.script:
+        cmd: ../lib/overlay_ipv6_routes.py restore {{ platform_control_zones.ops.vm_interface }} --prefix {{ overlay_ipv6_prefix }}
+        executable: /usr/bin/python3
+      environment:
+        OVERLAY_IPV6_ROUTES_PREIMAGE: "{{ overlay_ipv6_ops_preimage.ipv6_routes | to_json }}"
       when: overlay_ipv6_ops_operation == 'restore'
 
     - name: Restore exact ops firewall runtime state

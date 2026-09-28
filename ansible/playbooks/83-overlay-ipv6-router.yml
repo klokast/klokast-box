@@ -20,6 +20,16 @@
           - inventory_hostname in [overlay_ipv6_active_box ~ '-router', overlay_ipv6_peer_box ~ '-router']
         fail_msg: The overlay IPv6 router operation or host selection is invalid.
 
+    - name: Require recorded routes before router restoration
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_router_preimage.ipv6_routes is defined
+          - overlay_ipv6_router_preimage.ipv6_routes is sequence
+        fail_msg: The router preimage has no IPv6 route evidence. Use reviewed legacy recovery; do not infer an empty preimage.
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Inspect router rollback files
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -58,6 +68,16 @@
         - overlay_ipv6_router_operation == 'snapshot'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
+    - name: Read router ops-network IPv6 routes for rollback
+      ansible.builtin.script:
+        cmd: ../lib/overlay_ipv6_routes.py snapshot {{ router_ops_interface }}
+        executable: /usr/bin/python3
+      register: overlay_ipv6_router_routes
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation == 'snapshot'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Read router firewall rollback state
       ansible.builtin.command: /usr/sbin/nft list ruleset
       register: overlay_ipv6_router_nft_preimage
@@ -89,6 +109,7 @@
               )
             ),
             'runtime': overlay_ipv6_router_runtime.stdout,
+            'ipv6_routes': overlay_ipv6_router_routes.stdout | from_json,
             'nft_ruleset': overlay_ipv6_router_nft_preimage.stdout,
           } | to_nice_json }}
       delegate_to: localhost
@@ -439,7 +460,19 @@
         grep -Fx 'conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf' /etc/dnsmasq.conf
         grep -F 'constructor:{{ router_ops_interface }},ra-only,64' /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
         nft list ruleset | grep -F 'ops-ipv6-tailscale-source-egress'
-        ! grep -R 'enable-ra' /etc/dnsmasq.d --exclude=91-klokast-ops-ipv6.conf
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+        def unreadable(error):
+            raise error
+        for directory, _, names in os.walk('/etc/dnsmasq.d', onerror=unreadable):
+            for name in names:
+                path = Path(directory) / name
+                if path == Path('/etc/dnsmasq.d/91-klokast-ops-ipv6.conf'):
+                    continue
+                if b'enable-ra' in path.read_bytes():
+                    raise SystemExit(f'Unexpected router advertisement configuration: {path}')
+        PY
       args:
         executable: /bin/sh
       changed_when: false
@@ -510,6 +543,16 @@
         sysctl -w net.ipv6.conf.{{ router_wan_interface }}.accept_ra="$accept_ra"
       args:
         executable: /bin/sh
+      when:
+        - overlay_ipv6_router_operation == 'restore'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
+    - name: Remove new router ops-network IPv6 routes
+      ansible.builtin.script:
+        cmd: ../lib/overlay_ipv6_routes.py restore {{ router_ops_interface }} --prefix {{ overlay_ipv6_prefix }}
+        executable: /usr/bin/python3
+      environment:
+        OVERLAY_IPV6_ROUTES_PREIMAGE: "{{ overlay_ipv6_router_preimage.ipv6_routes | to_json }}"
       when:
         - overlay_ipv6_router_operation == 'restore'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'

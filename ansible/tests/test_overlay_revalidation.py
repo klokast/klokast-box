@@ -35,6 +35,7 @@ class OverlayRevalidationTest(unittest.TestCase):
                 "kind": f"klokast.overlay-ipv6-{role.removesuffix('_preimage')}-preimage.v1",
                 "box": "boxa",
                 "files": {path: [False, "", "0600"] for path in paths},
+                "ipv6_routes": [],
                 "runtime": "forwarding=0\naccept_ra=1\nwan_addresses_begin\n"
                 "2: eth0    inet6 2606:4700::1/64 scope global dynamic mngtmpaddr \\\n"
                 "       valid_lft 7200sec preferred_lft 3600sec\nwan_addresses_end",
@@ -85,6 +86,7 @@ class OverlayRevalidationTest(unittest.TestCase):
     def test_configuration_and_unknown_field_changes_fail(self):
         role = "router_preimage"
         changes = [
+            ("ipv6_routes", [{"dst": "default", "protocol": "ra"}]),
             ("box", "boxb"), ("extra", True), ("schema_version", True),
             ("runtime", self.docs[role]["runtime"].replace("accept_ra=1", "accept_ra=2")),
             ("runtime", self.docs[role]["runtime"].replace("eth0", "eth1")),
