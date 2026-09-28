@@ -1,9 +1,5 @@
 # Direct Overlay IPv6 Repair
 
-Status: the first signed repair completed on K002. Its direct IPv6 path did not
-stay selected. The revised repair below needs a new engine promotion and signed
-execution. Do not use the retired Plan v3 repair contract.
-
 Use this procedure only to restore a direct Tailscale path from the active
 `<box>-ops` controller to the one peer `<box>-router`. The repair routes one
 Freebox `/64` to the active box ops network. IPv4 TCP and DERP stay available.
@@ -34,6 +30,8 @@ direct IPv6 for repair success.
 
 Preparation reuses the stable WAN link local address when the exact `/64` is
 already assigned. It refuses the same address with a different prefix.
+Apply also reuses the exact delegated router address on the ops-facing
+interface. It refuses the same address with a different prefix.
 
 Both network helpers keep complete Ansible logs in owner-only files under
 the controller checkout's `.run/overlay-ipv6-router` or

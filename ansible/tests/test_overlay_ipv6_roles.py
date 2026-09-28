@@ -97,6 +97,34 @@ esac
         add = next(t for t in tasks if t["name"] == "Add the stable WAN next hop without restarting IPv4")
         self.assertIn("overlay_ipv6_next_hop_collision.stdout | trim == 'unused'", add["when"])
 
+    def test_existing_ops_router_address_is_reused_only_with_exact_prefix(self):
+        tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
+        check = next(t for t in tasks if t["name"] == "Check the ops delegated router address")
+        add = next(t for t in tasks if t["name"] == "Add the ops delegated router address without restarting IPv4")
+        self.assertIn("overlay_ipv6_ops_router_address.stdout | trim == 'unused'", add["when"])
+        script = check["ansible.builtin.shell"].replace(
+            "{{ ((overlay_ipv6_prefix | regex_replace('/64$', '')) ~ '1') | quote }}",
+            "'2001:db8:1234:1::1'",
+        ).replace("{{ router_ops_interface }}", "eth6")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ip = root / "ip"
+            ip.write_text('#!/bin/sh\nprintf "%s\\n" "$CURRENT_ADDRESSES"\n')
+            ip.chmod(0o700)
+            for address, expected, succeeds in (
+                ("8: eth6 inet6 2001:db8:1234:1::1/64 scope global", "local", True),
+                ("8: eth6 inet6 2001:db8:1234:1::1/128 scope global", "unexpected local prefix", False),
+                ("8: eth6 inet6 fe80::1/64 scope link", "unused", True),
+            ):
+                with self.subTest(address=address):
+                    result = subprocess.run(
+                        ["/bin/sh", "-s"], input=script, text=True, capture_output=True,
+                        env={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                             "CURRENT_ADDRESSES": address},
+                    )
+                    self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                    self.assertIn(expected, result.stdout if succeeds else result.stderr)
+
     def load_ops_helper(self, role="ops"):
         loader = SourceFileLoader(f"overlay_{role}_test", str(ROOT / f"ansible/bin/overlay-ipv6-{role}"))
         spec = importlib.util.spec_from_loader(loader.name, loader)

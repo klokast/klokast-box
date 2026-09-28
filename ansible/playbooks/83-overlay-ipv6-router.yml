@@ -417,6 +417,29 @@
         - overlay_ipv6_router_operation == 'apply'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
+    - name: Check the ops delegated router address
+      ansible.builtin.shell: |
+        set -eu
+        address={{ ((overlay_ipv6_prefix | regex_replace('/64$', '')) ~ '1') | quote }}
+        local_addresses=$(ip -o -6 address show dev {{ router_ops_interface }})
+        if printf '%s\n' "$local_addresses" | awk '{print $4}' | grep -Fqx "$address/64"; then
+          echo local
+          exit 0
+        fi
+        if printf '%s\n' "$local_addresses" | awk '{print $4}' | cut -d/ -f1 | grep -Fqx "$address"; then
+          echo 'ops delegated router address has an unexpected local prefix' >&2
+          exit 1
+        fi
+        echo unused
+      args:
+        executable: /bin/sh
+      register: overlay_ipv6_ops_router_address
+      changed_when: false
+      check_mode: false
+      when:
+        - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Add the ops delegated router address without restarting IPv4
       ansible.builtin.command: "ip -6 address add {{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64 dev {{ router_ops_interface }}"
       register: overlay_ipv6_add_ops_router
@@ -427,6 +450,7 @@
       when:
         - overlay_ipv6_router_operation == 'apply'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+        - overlay_ipv6_ops_router_address.stdout | trim == 'unused'
 
     - name: Advertise only the delegated ops prefix
       ansible.builtin.copy:
