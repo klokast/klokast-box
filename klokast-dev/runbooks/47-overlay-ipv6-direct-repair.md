@@ -1,11 +1,12 @@
 # Direct Overlay IPv6 Repair
 
-Status: implemented but not deployed. Group its controller rollout with other
-reviewed public changes. Do not use the retired Plan v3 repair contract.
+Status: the first signed repair completed on K002. Its direct IPv6 path did not
+stay selected. The revised repair below needs a new engine promotion and signed
+execution. Do not use the retired Plan v3 repair contract.
 
 Use this procedure only to restore a direct Tailscale path from the active
 `<box>-ops` controller to the one peer `<box>-router`. The repair routes one
-Freebox `/64` to the active box ops network. IPv4 and DERP stay available.
+Freebox `/64` to the active box ops network. IPv4 TCP and DERP stay available.
 
 Run Platform commands as `smith` on the active controller from
 `~/src/klokast/klokast-box`. Run approval commands on the trusted MacBook. Do
@@ -21,6 +22,15 @@ The router's forward chain also loads the exact `/etc/klokast/overlay-ipv6.nft`
 fragment. The repair includes `/etc/nftables.nft` in the signed rollback files
 and validates the candidate rules before loading them. This supports legacy
 routers whose main firewall file does not yet include the fragment.
+
+The router also drops WAN IPv4 UDP from the ops VM when its source port is
+`41641`. This stops Tailscale from selecting a low bandwidth direct IPv4 path
+to the peer. The rule is before the forward chain's established-traffic rule,
+so an existing IPv4 UDP session cannot bypass it. It does not match local
+management paths, other VM sources, TCP, or IPv6. The main firewall file and
+loaded ruleset are part of the signed rollback evidence. If direct IPv6 stops,
+Tailscale can use DERP over TCP for recovery. The signed verifier requires
+direct IPv6 for repair success.
 
 Both network helpers keep complete Ansible logs in owner-only files under
 the controller checkout's `.run/overlay-ipv6-router` or

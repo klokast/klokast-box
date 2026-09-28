@@ -307,6 +307,18 @@ tailscale() {
         self.assertNotIn("router_backend_interface }} inet6", ROUTER_PLAY)
         self.assertIn("Check the stable WAN next hop is not in use", ROUTER_PLAY)
 
+    def test_ops_direct_ipv4_is_suppressed_before_established_forwarding(self):
+        tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
+        task = next(t for t in tasks if t["name"] == "Keep ops Tailscale WAN UDP off the slower direct IPv4 path")
+        rule = task["ansible.builtin.lineinfile"]
+        self.assertEqual(rule["path"], "/etc/nftables.nft")
+        self.assertEqual(rule["insertafter"], "^        type filter hook forward priority 0; policy drop;$")
+        self.assertIn('iifname "{{ router_ops_interface }}"', rule["line"])
+        self.assertIn('oifname "{{ router_wan_interface }}"', rule["line"])
+        self.assertIn('ip saddr {{ platform_control_zones.ops.vm_ipv4_address }}', rule["line"])
+        self.assertIn('udp sport 41641 drop', rule["line"])
+        self.assertIn("nft -c -f %s", rule["validate"])
+
     def test_ops_slaac_preserves_ipv4_and_requires_direct_ipv6(self):
         self.assertIn("Persist ops SLAAC kernel settings", OPS_PLAY)
         self.assertNotIn("blockinfile", OPS_PLAY)

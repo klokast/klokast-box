@@ -11,6 +11,7 @@ wan_ns="ko-w-${test_dir##*.}"
 created=
 dns_pid=
 udp_pid=
+udp4_pid=
 stop_dns() {
   if [ -n "$dns_pid" ]; then kill "$dns_pid" 2>/dev/null || true; wait "$dns_pid" 2>/dev/null || true; dns_pid=; fi
 }
@@ -19,6 +20,7 @@ cleanup() {
   trap - EXIT HUP INT TERM
   stop_dns
   if [ -n "$udp_pid" ]; then kill "$udp_pid" 2>/dev/null || true; wait "$udp_pid" 2>/dev/null || true; fi
+  if [ -n "$udp4_pid" ]; then kill "$udp4_pid" 2>/dev/null || true; wait "$udp4_pid" 2>/dev/null || true; fi
   if [ "$status" -ne 0 ] && [ -f "$test_dir/dns.log" ]; then cat "$test_dir/dns.log" >&2; fi
   for ns in $created; do ip netns del "$ns" || status=1; done
   rm -rf "$test_dir"
@@ -38,7 +40,9 @@ ip -n "$router_ns" address add 192.0.2.2/24 dev eth0
 ip -n "$wan_ns" address add 192.0.2.1/24 dev eth0
 ip -n "$router_ns" route add default via 192.0.2.1
 ip -n "$client_ns" address add 198.51.100.10/24 dev eth0
+ip -n "$router_ns" address add 198.51.100.254/24 dev eth6
 ip -n "$client_ns" route add default via 198.51.100.254
+ip -n "$wan_ns" route add 198.51.100.0/24 via 192.0.2.2
 ip netns exec "$router_ns" python3 "$fixture/routes.py" snapshot eth6 >"$test_dir/router-routes.json"
 ip netns exec "$client_ns" python3 "$fixture/routes.py" snapshot eth0 >"$test_dir/client-routes.json"
 ip -n "$router_ns" address add 2001:db8:1234::2/64 dev eth0
@@ -50,6 +54,7 @@ ip -n "$router_ns" address add fe80::1234/64 dev eth0
 ip -n "$router_ns" address add 2001:db8:1234:1::1/64 dev eth6
 mkdir -p "$test_dir/etc/klokast" "$test_dir/etc/dnsmasq.d"
 cp "$fixture/router-rules.nft" "$test_dir/etc/klokast/overlay-ipv6.nft"
+cp "$fixture/router-ipv4-suppression.nft" "$test_dir/router-ipv4-suppression.nft"
 cp "$fixture/ops-rules.nft" "$test_dir/ops-rules.nft"
 cat >"$test_dir/router-base.nft" <<'NFT'
 flush ruleset
@@ -59,10 +64,33 @@ table inet filter {
         ct state { established, related } accept
         meta nfproto ipv4 accept
     }
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
 }
 NFT
 cp "$test_dir/router-base.nft" "$test_dir/router.nft"
 ip netns exec "$router_ns" nft -f "$test_dir/router.nft"
+cat >"$test_dir/udp4.py" <<'PY'
+import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+if sys.argv[1]=='server':
+    s.bind(('192.0.2.1',41641)); s.settimeout(60)
+    while True:
+        data,peer=s.recvfrom(1024); s.sendto(data,peer)
+else:
+    s.bind(('198.51.100.10',int(sys.argv[1]))); s.settimeout(2)
+    s.sendto(b'klokast-native-ipv4',('192.0.2.1',41641))
+    try:
+        data,_=s.recvfrom(1024)
+    except socket.timeout:
+        sys.exit(1)
+    assert data==b'klokast-native-ipv4'
+PY
+ip netns exec "$wan_ns" python3 "$test_dir/udp4.py" server &
+udp4_pid=$!
+sleep 1
+ip netns exec "$client_ns" python3 "$test_dir/udp4.py" 41641
 cat >"$test_dir/ops.nft" <<NFT
 table inet filter {
  chain input {
@@ -117,9 +145,19 @@ udp_pid=$!
 sleep 1
 if ip netns exec "$client_ns" python3 "$test_dir/udp.py" 41641; then echo 'Missing router include unexpectedly forwarded IPv6.' >&2; exit 1; fi
 echo 'Legacy firewall without the include blocks the native IPv6 probe.'
-sed "/type filter hook forward priority 0; policy drop;/a\        include \"$test_dir/etc/klokast/overlay-ipv6.nft\"" "$test_dir/router-base.nft" >"$test_dir/router.nft"
+awk -v rule="$test_dir/router-ipv4-suppression.nft" -v include="$test_dir/etc/klokast/overlay-ipv6.nft" '
+  { print }
+  /type filter hook forward priority 0; policy drop;/ {
+    while ((getline line < rule) > 0) print line
+    close(rule)
+    print "        include \"" include "\""
+  }
+' "$test_dir/router-base.nft" >"$test_dir/router.nft"
 ip netns exec "$router_ns" nft -c -f "$test_dir/router.nft"
 ip netns exec "$router_ns" nft -f "$test_dir/router.nft"
+cp "$test_dir/router.nft" "$test_dir/etc/nftables.nft"
+if ip netns exec "$client_ns" python3 "$test_dir/udp4.py" 41641; then echo 'Ops Tailscale direct IPv4 UDP bypassed suppression.' >&2; exit 1; fi
+ip netns exec "$client_ns" python3 "$test_dir/udp4.py" 41642
 ip netns exec "$client_ns" python3 "$test_dir/udp.py" 41641
 if ip netns exec "$client_ns" python3 "$test_dir/udp.py" 41642; then echo 'Unexpected UDP source port passed the narrow rule.' >&2; exit 1; fi
 sed "s|/etc/|$test_dir/etc/|g" "$fixture/router-verify.sh" >"$test_dir/router-verify.sh"
@@ -129,7 +167,7 @@ if ip netns exec "$router_ns" sh "$test_dir/router-verify.sh"; then
   echo 'Unexpected router advertisement configuration passed verification.' >&2; exit 1
 fi
 rm "$test_dir/etc/dnsmasq.d/unexpected.conf"
-echo 'Actual forwarding rules pass the permitted UDP probe and reject another source port.'
+echo 'Actual forwarding rules prefer direct IPv6, suppress ops direct IPv4 UDP, and reject another IPv6 source port.'
 stop_dns
 # Reproduce both fully expanded residual SLAAC addresses from the live failure.
 ip -n "$router_ns" address add 2001:db8:1234:1:216:3eff:fe71:1107/64 dev eth6 preferred_lft 0

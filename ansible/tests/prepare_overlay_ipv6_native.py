@@ -22,13 +22,14 @@ def main():
     variables = {
         "router_wan_interface": "eth0", "router_ops_interface": "eth6",
         "overlay_ipv6_prefix": "2001:db8:1234:1::/64", "overlay_ipv6_next_hop": "fe80::1234",
-        "platform_control_zones": {"ops": {"vm_interface": "eth0"}},
+        "platform_control_zones": {"ops": {"vm_interface": "eth0", "vm_ipv4_address": "198.51.100.10"}},
         "overlay_ipv6_router_preimage": {"runtime": "forwarding=0\naccept_ra=1"},
         "overlay_ipv6_ops_preimage": {"runtime": "accept_ra=1\nautoconf=1"},
     }
     selections = {
         "83-overlay-ipv6-router.yml": [
             ("Install the narrow ops-only IPv6 forwarding rules", "ansible.builtin.copy", "content", "router-rules.nft"),
+            ("Keep ops Tailscale WAN UDP off the slower direct IPv4 path", "ansible.builtin.lineinfile", "line", "router-ipv4-suppression.nft"),
             ("Restore router runtime sysctl and managed addresses", "ansible.builtin.shell", None, "router-cleanup.sh"),
             ("Collect the enabled ops IPv6 router state", "ansible.builtin.shell", None, "router-verify.sh"),
         ],
