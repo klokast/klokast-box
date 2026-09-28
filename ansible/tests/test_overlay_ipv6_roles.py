@@ -28,7 +28,7 @@ ROUTER_NFT = (ROOT / "ansible/roles/router/templates/nftables.nft.j2").read_text
 
 
 class OverlayIPv6RoleTest(unittest.TestCase):
-    def run_collision_probe(self, before="", after="", *, ping_rc=1, ip_rc=0, repeat=False):
+    def run_collision_probe(self, before="", after="", *, local_addresses="", ping_rc=1, ip_rc=0, repeat=False):
         play = yaml.safe_load(ROUTER_PLAY)[0]
         task = next(t for t in play["tasks"] if t["name"] == "Check the stable WAN next hop is not in use")
         script = task["ansible.builtin.shell"].replace(
@@ -39,7 +39,7 @@ class OverlayIPv6RoleTest(unittest.TestCase):
             ip = root / "ip"
             ip.write_text("""#!/bin/sh
 case "$*" in
-  *'address show'*) exit 0 ;;
+  *'address show'*) printf '%s\n' "$PROBE_LOCAL_ADDRESSES" ;;
   *'neigh show'*)
     [ "$PROBE_IP_RC" = 0 ] || exit "$PROBE_IP_RC"
     if [ -f "$PROBE_MARKER" ]; then
@@ -58,6 +58,7 @@ esac
                 **os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
                 "PROBE_MARKER": str(root / "probed"), "PROBE_BEFORE": before,
                 "PROBE_AFTER": after, "PROBE_PING_RC": str(ping_rc), "PROBE_IP_RC": str(ip_rc),
+                "PROBE_LOCAL_ADDRESSES": local_addresses,
             }
             results = [subprocess.run(["/bin/sh", "-s"], input=script, text=True, capture_output=True, env=env)]
             if repeat:
@@ -82,6 +83,19 @@ esac
         for options in ({"ping_rc": 0}, {"ip_rc": 2}, {"before": "fe80::1234 UNKNOWN"}):
             with self.subTest(options=options):
                 self.assertNotEqual(self.run_collision_probe(**options)[0].returncode, 0)
+
+    def test_existing_next_hop_is_reused_only_with_exact_prefix(self):
+        address = "4: eth0    inet6 fe80::1234/64 scope link"
+        result = self.run_collision_probe(local_addresses=address)[0]
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "local")
+        address = "4: eth0    inet6 fe80::1234/128 scope link"
+        result = self.run_collision_probe(local_addresses=address)[0]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected local prefix", result.stderr)
+        tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
+        add = next(t for t in tasks if t["name"] == "Add the stable WAN next hop without restarting IPv4")
+        self.assertIn("overlay_ipv6_next_hop_collision.stdout | trim == 'unused'", add["when"])
 
     def load_ops_helper(self, role="ops"):
         loader = SourceFileLoader(f"overlay_{role}_test", str(ROOT / f"ansible/bin/overlay-ipv6-{role}"))

@@ -32,6 +32,9 @@ loaded ruleset are part of the signed rollback evidence. If direct IPv6 stops,
 Tailscale can use DERP over TCP for recovery. The signed verifier requires
 direct IPv6 for repair success.
 
+Preparation reuses the stable WAN link local address when the exact `/64` is
+already assigned. It refuses the same address with a different prefix.
+
 Both network helpers keep complete Ansible logs in owner-only files under
 the controller checkout's `.run/overlay-ipv6-router` or
 `.run/overlay-ipv6-ops`. Failure messages identify the failed task and the

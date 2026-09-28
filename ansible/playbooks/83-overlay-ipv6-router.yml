@@ -244,9 +244,13 @@
         set -eu
         address={{ overlay_ipv6_next_hop | quote }}
         local_addresses=$(ip -o -6 address show dev {{ router_wan_interface }})
-        if printf '%s\n' "$local_addresses" | awk '{print $4}' | cut -d/ -f1 | grep -Fqx "$address"; then
+        if printf '%s\n' "$local_addresses" | awk '{print $4}' | grep -Fqx "$address/64"; then
           echo local
           exit 0
+        fi
+        if printf '%s\n' "$local_addresses" | awk '{print $4}' | cut -d/ -f1 | grep -Fqx "$address"; then
+          echo 'next hop has an unexpected local prefix' >&2
+          exit 1
         fi
         known_neighbour() {
           # A failed probe can leave an unresolved entry without a MAC address.
@@ -306,6 +310,7 @@
       when:
         - overlay_ipv6_router_operation == 'prepare'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+        - overlay_ipv6_next_hop_collision.stdout | trim == 'unused'
 
     - name: Require successful duplicate address detection for the stable next hop
       ansible.builtin.shell: |
