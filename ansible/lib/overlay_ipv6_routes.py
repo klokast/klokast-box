@@ -26,9 +26,15 @@ def deletions(before, current, interface, prefix):
         selected = (destination == prefix and protocol in {"kernel", "ra"}) or (destination == "default" and protocol == "ra")
         if not selected or identity(route) in previous:
             continue
-        allowed = {"dst", "gateway", "dev", "protocol", "metric", "flags", "pref", "table"}
+        allowed = {"dst", "gateway", "dev", "protocol", "metric", "metrics", "flags", "pref", "table"}
         if set(route) - allowed or route.get("flags") or route.get("dev", interface) != interface or route.get("table", "main") != "main":
             raise ValueError("Refuse to remove an unknown IPv6 repair route.")
+        if "metrics" in route:
+            metrics = route["metrics"]
+            if not (isinstance(metrics, list) and len(metrics) == 1 and isinstance(metrics[0], dict)
+                    and set(metrics[0]) == {"hoplimit"} and type(metrics[0]["hoplimit"]) is int
+                    and 1 <= metrics[0]["hoplimit"] <= 255):
+                raise ValueError("The IPv6 repair route has unsupported metrics.")
         command = ["ip", "-6", "route", "del", destination]
         if "gateway" in route:
             command += ["via", str(ipaddress.IPv6Address(route["gateway"]))]
