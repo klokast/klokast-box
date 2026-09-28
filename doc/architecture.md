@@ -61,6 +61,12 @@ The sealed `klokast` binary creates the Plan from the approved inputs and eviden
 
 The human reviews the Apply intent and signs it on the trusted workstation. The approval applies to one exact Plan.
 
+During pre-production, the active in-Platform controller can use a temporary,
+scoped development signer for each human approval purpose. The controller still
+verifies the signature, fresh evidence, exact intent, and single-use nonce.
+The [Secret Authority procedure](secret-authority.md#pre-production-human-approval-mode)
+removes these signers before production.
+
 Before an Apply, the root executor verifies the required evidence. This includes the active-controller state, Plan, sealed engine, controller toolchain, source receipts, Observation, signature, expiry, and single-use nonce.
 
 If an input changes or expires, the controller must create new evidence and a new Plan. An old approval does not authorize a different Plan.

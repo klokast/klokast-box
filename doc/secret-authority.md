@@ -59,6 +59,45 @@ The controller paths are:
 /etc/klokast/secret-authority/allowed-signers-platform-apply
 ```
 
+## Pre-production human approval mode
+
+The active in-Platform controller can sign prepared intents with temporary
+development keys during pre-production. This removes the need for Touch ID
+approval on the MacBook for Platform Apply, private-instance, and static-site
+actions. Each root executor still verifies its scoped signature, current
+evidence, action binding, expiry, and single-use nonce. Build, package, and
+source integrity checks remain active.
+
+From the active controller checkout as `smith`, enable the mode with:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i localhost, \
+  ansible/playbooks/68-ops-development-approvals.yml \
+  -e development_approval_mode=development
+```
+
+The playbook requires active controller authority. It creates separate
+owner-only keys under `~/private/klokast/development-approvals/`, adds only
+their scoped public keys to the root-owned allowed signer files, and writes
+`/etc/klokast/secret-authority/human-approval-mode`. The checked helper signs
+one prepared intent without a human prompt:
+
+```sh
+ansible/bin/development-sign-intent --purpose platform-apply \
+  --intent /path/to/prepared-intent.json \
+  --signature /path/to/prepared-intent.json.sig
+```
+
+Select `private-instance` or `static-site` for the other approval purposes.
+Keep the prepared intent and signature in an owner-only controller directory.
+Do not copy the private development keys to the MacBook or infra-agent.
+
+Before production, run the same playbook with
+`-e development_approval_mode=signed`. It disables development signing first,
+then removes the development public signer entries and private keys. Verify
+that a stored development signature is refused after this change. The trusted
+MacBook signers remain in their separate allowed signer files.
+
 Generate an approval intent from the controller checkout:
 
 ```sh

@@ -146,6 +146,12 @@ groups, complete Authority State v5 ownership, and no compatibility inputs.
 
 ## Check and approve
 
+During pre-production, the active controller can use the
+[development signer](../../doc/secret-authority.md#pre-production-human-approval-mode)
+after it prepares and reviews the same intent. Use the `platform-apply`
+purpose, then execute the prepared intent through `ansible/bin/platform-apply`.
+The production procedure below uses the trusted MacBook.
+
 On the trusted MacBook, first prepare and review without a signature:
 
 ```sh

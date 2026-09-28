@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Sign a prepared intent with the active controller's temporary development key."""
+
+import argparse
+import datetime as dt
+import getpass
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import subprocess
+import sys
+
+
+MODE_FILE = pathlib.Path("/etc/klokast/secret-authority/human-approval-mode")
+KEY_DIR = pathlib.Path("/home/smith/private/klokast/development-approvals")
+PURPOSES = {
+    "platform-apply": "klokast-platform-apply",
+    "private-instance": "klokast-secret-authority",
+    "static-site": "klokast-secret-authority",
+}
+
+
+def require_regular(path, owner, max_mode):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & 0o777 & ~max_mode:
+        raise ValueError(f"unsafe development approval file: {path}")
+    return info
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--purpose", choices=sorted(PURPOSES), required=True)
+    parser.add_argument("--intent", type=pathlib.Path, required=True)
+    parser.add_argument("--signature", type=pathlib.Path, required=True)
+    args = parser.parse_args(argv)
+    if getpass.getuser() != "smith":
+        raise ValueError("run development signing as smith on the active controller")
+    guard = subprocess.run(
+        ["/usr/local/sbin/klokast-controller-guard", "--status", "--json", "--require-active"],
+        text=True, capture_output=True, check=False,
+    )
+    if guard.returncode or not json.loads(guard.stdout).get("active"):
+        raise ValueError("development signing requires the active controller")
+    require_regular(MODE_FILE, 0, 0o644)
+    if MODE_FILE.read_text(encoding="ascii") != "development\n":
+        raise ValueError("development signing is disabled")
+    directory = KEY_DIR.lstat()
+    if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or directory.st_mode & 0o777 != 0o700:
+        raise ValueError("unsafe development signing directory")
+    key = KEY_DIR / args.purpose
+    require_regular(key, os.getuid(), 0o600)
+    require_regular(args.intent, os.getuid(), 0o600)
+    if args.signature.exists() or args.signature.is_symlink():
+        raise ValueError("signature output already exists")
+    if args.signature.parent.resolve(strict=True) != args.intent.parent.resolve(strict=True):
+        raise ValueError("write the signature beside its prepared intent")
+    intent = args.intent.read_bytes()
+    if len(intent) > 65536:
+        raise ValueError("prepared intent is too large")
+    result = subprocess.run(
+        ["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", PURPOSES[args.purpose]],
+        input=intent, capture_output=True, check=False,
+    )
+    if result.returncode or not result.stdout.startswith(b"-----BEGIN SSH SIGNATURE-----\n"):
+        raise ValueError("development intent signing failed")
+    descriptor = os.open(args.signature, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(result.stdout)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        args.signature.unlink(missing_ok=True)
+        raise
+    audit = KEY_DIR / "signatures.jsonl"
+    record = {
+        "at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "intent_sha256": hashlib.sha256(intent).hexdigest(),
+        "purpose": args.purpose,
+    }
+    with audit.open("a", encoding="utf-8") as output:
+        output.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+    audit.chmod(0o600)
+    print(args.signature)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"development-sign-intent: {error}", file=sys.stderr)
+        raise SystemExit(1)

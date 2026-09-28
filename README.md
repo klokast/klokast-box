@@ -31,6 +31,10 @@ From a Macbook:
 1. install `brew`
 2. `brew install klokast` : this should create and provision the deployment server (using terraform and Ansible). Secret Authority approval on the trusted Mac uses Apple system OpenSSH with a native, Touch ID-protected CryptoTokenKit identity. The package must not replace this signer path with an ambient or long-running SSH agent or another OpenSSH build. A private Apple agent can run only for the duration of one identity-selection and signing operation.
 
+During pre-production, the active in-Platform controller can use the temporary
+[development approval mode](doc/secret-authority.md#pre-production-human-approval-mode)
+for all human approval purposes. The production mode uses the trusted Mac signer.
+
 Optional cloud bootstrap host or cloud-based `airunner`:
 - `klokast-ops/bin/provision-vultr-ops` creates the `vultr-ops` cloud host.
 - [cloud-providers.json](cloud-providers.json) contains the supported cloud
