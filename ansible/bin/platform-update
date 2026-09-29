@@ -416,9 +416,11 @@ def automatic_selection(discovery, metadata, policy_source, engine_commit, obser
     declared = set()
     for box, roles in policy['targets'].items():
         if (not isinstance(box, str) or not isinstance(roles, list) or
-                any(role not in vm_no_application.ROLES for role in roles)):
+                any(role not in (*vm_no_application.ROLES, 'router') for role in roles)):
             raise UpdateError('automatic preparation policy has an invalid target')
-        declared.update((box, role) for role in roles)
+        # The signed policy can also name routers. This shared executor never
+        # selects them; router checks and replacement use a separate profile.
+        declared.update((box, role) for role in roles if role != 'router')
     selected = tuple(target for target in AUTO_TARGETS if target in declared and target not in excluded)
     if selected != AUTO_TARGETS or declared - set(AUTO_TARGETS) - excluded:
         raise UpdateError('automatic preparation is limited to k001-dmz, k002-dmz, and k002-iot')

@@ -340,6 +340,15 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(selected['branch'], 'v3.24')
         self.assertEqual(selected['build_box'], 'k001')
         self.assertEqual(selected['targets'], ['k001-dmz', 'k002-dmz', 'k002-iot'])
+        with_router = copy.deepcopy(source)
+        with_router['policy']['targets']['k001'].append('router')
+        with_router['policy']['targets']['k002'].append('router')
+        self.assertEqual(cli.automatic_selection(report, metadata, with_router, 'c' * 40, NOW)['targets'],
+                         selected['targets'])
+        unknown = copy.deepcopy(source)
+        unknown['policy']['targets']['k001'].append('ops')
+        with self.assertRaisesRegex(u.UpdateError, 'invalid target'):
+            cli.automatic_selection(report, metadata, unknown, 'c' * 40, NOW)
         first = copy.deepcopy(report); first['hosts'][0]['branch'] = 'v3.24'
         metadata['v3.24'] = copy.deepcopy(metadata['v3.23'])
         self.assertEqual(cli.automatic_selection(first, metadata, source, 'c' * 40, NOW), selected)
