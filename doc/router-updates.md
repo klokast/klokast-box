@@ -185,10 +185,11 @@ storage. The primitive has no authority to attach disks or start a router.
 
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router
-disk in a disposable networkless Xen guest. Dom0 partitions new opaque storage;
-package scripts, filesystem creation, and filesystem inspection run inside Xen.
-The kernel and modules come from the signed `linux-virt` package. This path does
-not use an ISO or the shared Alpine asset paths.
+disk in a disposable networkless Xen guest. Dom0 writes a fixed MBR to the new
+scratch disk. It does not mount a guest filesystem or change its APK world for
+this build. Package scripts, filesystem creation, and filesystem inspection
+run inside Xen. The kernel and modules come from the signed `linux-virt`
+package. This path does not use an ISO or the shared Alpine asset paths.
 The frozen router world also includes `openssh`, which the existing first-contact
 bootstrap role needs. It does not add packages while it personalizes a clone.
 After rendering, a separate networkless finalization step removes the

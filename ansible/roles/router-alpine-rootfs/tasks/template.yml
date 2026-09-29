@@ -97,35 +97,21 @@
     group: root
     mode: '0600'
 
-- name: Unlock native blank-disk partitioning in RAM
-  ansible.builtin.include_role:
-    name: dom0-apk-policy
-    tasks_from: maintenance-unlock.yml
+- name: Build and boot the generic router disk without a network interface
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/router-template-dom0.py"
+      - --box
+      - "{{ router_template_box }}"
+      - --operation-id
+      - "{{ router_template_operation }}"
+  async: 1800
+  poll: 10
   vars:
-    dom0_maintenance_packages: [sfdisk]
-
-- name: Qualify the router template and restore dom0 package policy
-  block:
-    - name: Build and boot the generic router disk without a network interface
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/python3
-          - "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/router-template-dom0.py"
-          - --box
-          - "{{ router_template_box }}"
-          - --operation-id
-          - "{{ router_template_operation }}"
-      async: 1800
-      poll: 10
-      vars:
-        ansible_async_dir: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/async"
-      register: router_template_build
-      failed_when: false
-  always:
-    - name: Restore the exact dom0 package allowlist and lock APK
-      ansible.builtin.include_role:
-        name: dom0-apk-policy
-        tasks_from: maintenance-lock.yml
+    ansible_async_dir: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/async"
+  register: router_template_build
+  failed_when: false
 
 - name: Inspect bounded router template evidence
   ansible.builtin.stat:

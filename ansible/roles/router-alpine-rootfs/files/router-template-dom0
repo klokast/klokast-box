@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import stat
+import struct
 import subprocess
 import uuid
 
@@ -84,6 +86,39 @@ def reserve(path, size):
         os.fsync(stream.fileno())
 
 
+def partition_blank_disk(path):
+    """Write the fixed three-partition MBR layout to one new scratch disk."""
+    descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        size = info.st_size
+        sectors = size // 512
+        first_start, first_count = 2048, 524288
+        second_start, second_count = first_start + first_count, 2048
+        third_start = second_start + second_count
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or size % 512 or
+                sectors > 0xffffffff or sectors <= third_start):
+            raise RuntimeError('router scratch disk is not a new, bounded blank MBR disk')
+        with os.fdopen(os.dup(descriptor), 'r+b', buffering=0) as stream:
+            if stream.read(512) != bytes(512):
+                raise RuntimeError('router scratch disk is not a new, bounded blank MBR disk')
+            entries = bytearray(64)
+            for index, (active, start, count) in enumerate((
+                    (0x80, first_start, first_count), (0, second_start, second_count),
+                    (0, third_start, sectors - third_start))):
+                if not 0 < count <= 0xffffffff or start + count > sectors:
+                    raise RuntimeError('router scratch partition is outside its disk bounds')
+                entry = struct.pack('<B3sB3sII', active, b'\xfe\xff\xff', 0x83,
+                                    b'\xfe\xff\xff', start, count)
+                entries[index * 16:(index + 1) * 16] = entry
+            stream.seek(0)
+            if stream.write(bytes(446) + bytes(entries) + b'\x55\xaa') != 512:
+                raise RuntimeError('router scratch MBR write was incomplete')
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+
+
 def execute(work, value):
     operation = value['operation_id']
     names = {mode: 'router-' + mode + '-' + operation for mode in ('build', 'test', 'openrc', 'personalize')}
@@ -103,13 +138,9 @@ def execute(work, value):
     try:
         for name, size in SLOTS.items():
             reserve(work / (name + '.slot'), size)
-        # Native partitioning of a new opaque file. Dom0 never mounts it or
-        # runs package scripts. The layout stays compatible with router state copy.
-        completed = subprocess.run(['sfdisk', '--wipe', 'always', str(work / 'os.slot')],
-                                   input='label: dos\n,256M,83,*\n,1M,83\n,,83\n',
-                                   text=True, capture_output=True, timeout=30)
-        if completed.returncode:
-            raise RuntimeError('router blank disk partitioning failed')
+        # Dom0 writes only a fixed MBR to this new scratch file. It never mounts
+        # a guest filesystem or changes its APK world to qualify a router.
+        partition_blank_disk(work / 'os.slot')
         loops['input'] = attach_loop(work / 'capsule.tar', readonly=True)
         for name in SLOTS:
             loops[name] = attach_loop(work / (name + '.slot'))

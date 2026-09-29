@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import struct
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -134,6 +135,41 @@ class TransportTests(unittest.TestCase):
                 'capsule': {'sha256': 'b' * 64, 'bytes': 10240},
                 'bootstrap': {n: {'sha256': 'c' * 64, 'bytes': 10} for n in ('kernel', 'initramfs')}}
 
+    def test_dom0_writes_only_the_fixed_mbr_to_a_new_scratch_disk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            disk = Path(temporary) / 'scratch.img'
+            with disk.open('wb') as stream:
+                stream.truncate(2 * 1024 * 1024 * 1024)
+            self.host.partition_blank_disk(disk)
+            with disk.open('rb') as stream:
+                mbr = stream.read(512)
+            self.assertEqual(mbr[510:512], b'\x55\xaa')
+            rows = [struct.unpack('<B3sB3sII', mbr[446 + index * 16:462 + index * 16])
+                    for index in range(3)]
+            self.assertEqual([(row[0], row[2], row[4], row[5]) for row in rows], [
+                (0x80, 0x83, 2048, 524288),
+                (0, 0x83, 526336, 2048),
+                (0, 0x83, 528384, 4194304 - 528384),
+            ])
+            self.assertEqual(mbr[:446], bytes(446))
+
+    def test_dom0_partition_writer_refuses_nonblank_or_small_disk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            disk = Path(temporary) / 'scratch.img'
+            disk.write_bytes(b'not blank')
+            with self.assertRaisesRegex(RuntimeError, 'new, bounded blank'):
+                self.host.partition_blank_disk(disk)
+            with disk.open('wb') as stream:
+                stream.truncate(2 * 1024 * 1024)
+            with self.assertRaisesRegex(RuntimeError, 'new, bounded blank'):
+                self.host.partition_blank_disk(disk)
+
+    def test_template_playbook_does_not_converge_dom0_apk_policy(self):
+        playbook = (REPO / 'ansible/roles/router-alpine-rootfs/tasks/template.yml').read_text()
+        self.assertNotIn('dom0-apk-policy', playbook)
+        self.assertNotIn('maintenance-lock', playbook)
+        self.assertNotIn('maintenance-unlock', playbook)
+
     def test_build_and_both_boots_have_no_production_vif_or_disk(self):
         for mode in ('build', 'test', 'openrc', 'personalize'):
             with self.subTest(mode=mode):
@@ -184,6 +220,7 @@ class TransportTests(unittest.TestCase):
             with patch.object(self.host, 'SLOTS', {name: 4096 for name in self.host.SLOTS}), \
                     patch.object(self.host, 'domain', return_value=None), \
                     patch.object(self.host, 'run', return_value=SimpleNamespace(stdout='free_memory : 8192\n')), \
+                    patch.object(self.host, 'partition_blank_disk'), \
                     patch.object(self.host.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
                     patch.object(self.host, 'attach_loop', return_value='/dev/loop1'), \
                     patch.object(self.host, 'detach_loop') as detach, \
@@ -205,6 +242,7 @@ class TransportTests(unittest.TestCase):
             with patch.object(self.host, 'SLOTS', {name: 4096 for name in self.host.SLOTS}), \
                     patch.object(self.host, 'domain', side_effect=lambda name: {} if running else None), \
                     patch.object(self.host, 'run', return_value=SimpleNamespace(stdout='free_memory : 8192\n')), \
+                    patch.object(self.host, 'partition_blank_disk'), \
                     patch.object(self.host.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
                     patch.object(self.host, 'attach_loop', return_value='/dev/loop1'), \
                     patch.object(self.host, 'detach_loop') as detach, \
