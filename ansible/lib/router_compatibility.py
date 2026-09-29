@@ -68,8 +68,10 @@ def validate_copy(expected):
 
 def resume_tailscale(phase):
     socket = str(probe.WORK / 'tailscale.sock')
-    cli = ['tailscale', '--socket=' + socket]
-    daemon = ['tailscaled', '--tun=userspace-networking', '--port=0', '--socket=' + socket,
+    cli_path = '/usr/local/bin/tailscale' if phase == 'new' else '/usr/bin/tailscale'
+    daemon_path = '/usr/local/sbin/tailscaled' if phase == 'new' else '/usr/sbin/tailscaled'
+    cli = [cli_path, '--socket=' + socket]
+    daemon = [daemon_path, '--tun=userspace-networking', '--port=0', '--socket=' + socket,
               '--state=/var/lib/tailscale/tailscaled.state']
     old_hostname = 'router-probe-latest' if phase == 'new' else 'router-probe-candidate'
     with probe.process('resume-tailscale', daemon) as child:
@@ -85,10 +87,10 @@ def resume_tailscale(phase):
         # This is an offline storage test, not a Tailnet key-rotation protocol.
         rotation_socket = str(probe.WORK / 'rotation.sock')
         rotation_state = probe.WORK / 'rotation.state'
-        with probe.process('rotation-source', ['tailscaled', '--tun=userspace-networking', '--port=0',
+        with probe.process('rotation-source', [daemon_path, '--tun=userspace-networking', '--port=0',
                 '--socket=' + rotation_socket, '--state=' + str(rotation_state)]) as child:
             probe.wait_for(lambda: Path(rotation_socket).exists(), [child], 'native rotation fixture')
-            probe.run(['tailscale', '--socket=' + rotation_socket, 'up',
+            probe.run([cli_path, '--socket=' + rotation_socket, 'up',
                        '--login-server=https://127.0.0.1:1', '--timeout=2s'], check=False, timeout=10)
             encoded_key = json.loads(rotation_state.read_text())['_machinekey']
             new_key = native_key_bytes(encoded_key)

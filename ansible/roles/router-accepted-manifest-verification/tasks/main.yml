@@ -39,6 +39,10 @@
       - router_accepted_manifest.kind == 'klokast.router-accepted-manifest.v1'
       - router_accepted_manifest.box == node_name
       - router_accepted_manifest.generation_sha256 is match('^[0-9a-f]{64}$')
+      - router_accepted_manifest.origin in ['legacy', 'template']
+      - >-
+        (router_accepted_manifest.origin == 'legacy' and router_accepted_manifest.tailscale is none)
+        or (router_accepted_manifest.origin == 'template' and router_accepted_manifest.tailscale is mapping)
       - router_accepted_manifest.packages is mapping
       - router_accepted_manifest.packages | length > 0
       - router_accepted_manifest.packages | length <= 512
@@ -72,6 +76,57 @@
     argv: [uname, -r]
   changed_when: false
   register: router_accepted_running_kernel
+
+- name: Check installed upstream Tailscale files on an accepted template router
+  ansible.builtin.stat:
+    path: '{{ item }}'
+    follow: false
+    checksum_algorithm: sha256
+  loop:
+    - /usr/local/bin/tailscale
+    - /usr/local/sbin/tailscaled
+    - /etc/init.d/tailscale
+  register: router_accepted_tailscale_files
+  when: router_accepted_manifest.origin == 'template'
+
+- name: Verify the running upstream Tailscale daemon version and executable
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os
+        from pathlib import Path
+        import subprocess
+        import sys
+        version = sys.argv[1]
+        lines = subprocess.check_output(['/usr/local/bin/tailscale',
+            '--socket=/run/tailscale/tailscaled.sock', 'version', '--daemon'], text=True,
+            timeout=10).splitlines()
+        daemon = [line.removeprefix('Daemon: ') for line in lines if line.startswith('Daemon: ')]
+        if len(daemon) != 1 or daemon[0] != version and not daemon[0].startswith(version + '-'):
+            raise SystemExit('Running Tailscale daemon version differs from the accepted release')
+        pid = int(Path('/run/tailscale/tailscaled.pid').read_text().strip())
+        if os.readlink('/proc/' + str(pid) + '/exe') != '/usr/local/sbin/tailscaled':
+            raise SystemExit('Running Tailscale daemon is not the accepted upstream executable')
+      - '{{ router_accepted_manifest.tailscale.version }}'
+  changed_when: false
+  when: router_accepted_manifest.origin == 'template'
+
+- name: Require the installed upstream Tailscale component hashes
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.uid | default(-1) == 0
+      - item.stat.nlink | default(0) == 1
+      - item.stat.mode == '0755'
+      - >-
+        item.stat.checksum == router_accepted_manifest.tailscale[
+          'openrc_sha256' if item.item == '/etc/init.d/tailscale'
+          else (item.item | basename) ~ '_sha256']
+  loop: '{{ router_accepted_tailscale_files.results }}'
+  when: router_accepted_manifest.origin == 'template'
 
 - name: Check the accepted router configuration file hashes
   ansible.builtin.stat:

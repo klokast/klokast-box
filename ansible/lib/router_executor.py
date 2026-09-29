@@ -86,6 +86,7 @@ def accepted_manifest(storage):
     current = storage.generation(assignment['current_sha256'])
     return {'kind':'klokast.router-accepted-manifest.v1', 'box':storage.box,
             'generation_sha256':current['record_sha256'], 'kernel_release':current['kernel_release'],
+            'origin':current['origin'], 'tailscale':current.get('tailscale'),
             'packages':current['packages'], 'configuration_files':current['configuration_files']}
 
 

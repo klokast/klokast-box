@@ -98,6 +98,8 @@ class SupervisorTests(unittest.TestCase):
         value=e.accepted_manifest(self.records)
         self.assertEqual(value['generation_sha256'],self.old['record_sha256'])
         self.assertEqual(value['packages'],self.old['packages'])
+        self.assertEqual(value['origin'],self.old['origin'])
+        self.assertEqual(value['tailscale'],self.old.get('tailscale'))
         self.assertEqual(value['configuration_files'],self.old['configuration_files'])
         self.assertNotIn('disk',value)
         self.assertNotIn('accounts',value)

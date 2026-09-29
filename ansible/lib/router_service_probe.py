@@ -176,20 +176,25 @@ def dhcp_dns(client_id=2, *, seed_expiry=False, verify_expiry=False):
     return result
 
 
-def tailscale_state():
-    component = json.loads(Path('/etc/klokast-router-inputs.json').read_text())['tailscale']
-    version = component['version']
-    if (run(['tailscale', 'version']).stdout.splitlines()[0] != version or
-            run(['tailscaled', '--version']).stdout.splitlines()[0] != version):
-        raise RuntimeError('synthetic router has a different upstream Tailscale binary version')
+def tailscale_state(component=None):
+    cli_path = '/usr/local/bin/tailscale' if component else '/usr/bin/tailscale'
+    daemon_path = '/usr/local/sbin/tailscaled' if component else '/usr/sbin/tailscaled'
+    if component:
+        version = component['version']
+        if (run([cli_path, 'version']).stdout.splitlines()[0] != version or
+                run([daemon_path, '--version']).stdout.splitlines()[0] != version):
+            raise RuntimeError('synthetic router has a different upstream Tailscale binary version')
     socket = str(WORK / 'tailscale.sock')
-    cli = ['tailscale', '--socket=' + socket]
-    daemon = ['tailscaled', '--tun=userspace-networking', '--port=0', '--socket=' + socket,
+    cli = [cli_path, '--socket=' + socket]
+    daemon = [daemon_path, '--tun=userspace-networking', '--port=0', '--socket=' + socket,
               '--state=/var/lib/tailscale/tailscaled.state']
     with process('tailscale', daemon) as child:
         wait_for(lambda: Path(socket).exists(), [child], 'offline Tailscale socket')
-        if 'Daemon: ' + version not in run([*cli, 'version', '--daemon']).stdout.splitlines():
-            raise RuntimeError('synthetic router is running a different Tailscale daemon version')
+        if component:
+            lines = run([*cli, 'version', '--daemon']).stdout.splitlines()
+            if not any(line == 'Daemon: ' + version or line.startswith('Daemon: ' + version + '-')
+                       for line in lines):
+                raise RuntimeError('synthetic router is running a different Tailscale daemon version')
         # A refused local port cannot enroll a machine or leave this guest.
         run([*cli, 'up', '--login-server=https://127.0.0.1:1', '--hostname=router-probe-initial',
              '--ssh', '--accept-dns=false', '--timeout=2s'], check=False, timeout=10)
@@ -230,9 +235,9 @@ def tailscale_state():
             raise RuntimeError('restarted Tailscale did not retain the latest native preferences')
     if json.loads(state.read_text()).get('_machinekey') != machine_key:
         raise RuntimeError('Tailscale changed its native machine key across synthetic restarts')
-    return {'offline_tailscale_state': True, 'upstream_daemon_version': True,
-            'latest_preferences_after_restart': True,
-            'native_machine_key_after_restart': True, 'synthetic_profile': True}
+    return {'offline_tailscale_state': True, 'latest_preferences_after_restart': True,
+            'native_machine_key_after_restart': True, 'synthetic_profile': True,
+            **({'upstream_daemon_version': True} if component else {})}
 
 
 def execute():
@@ -242,7 +247,8 @@ def execute():
     try:
         network()
         run(['nft', '-f', '/etc/nftables.nft'])
-        result = {**dhcp_dns(), **tailscale_state()}
+        component = json.loads(Path('/etc/klokast-router-inputs.json').read_text())['tailscale']
+        result = {**dhcp_dns(), **tailscale_state(component)}
         return {'kind': 'klokast.router-native-services.v1', 'success': True, 'tests': result,
                 'seconds': round(time.monotonic() - started, 3),
                 'production_identity': False, 'cross_release_compatibility': False}
