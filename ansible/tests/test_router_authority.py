@@ -30,8 +30,9 @@ class RouterAuthorityTests(unittest.TestCase):
         cli = router_cli()
         schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
                     'replacement_ready':False, 'policy':{'enabled':False, 'targets':{},
-                    'branch-policy':'tested-stable', 'branch-delay-days':21}}
-        resolved = {'inputs_directory':'/private/inputs', 'inputs_sha256':'a' * 64}
+                    'branch-policy':'tested-stable', 'branch-delay-days':21,
+                    'report-max-age-hours':72}}
+        resolved = {'inputs_directory':'/private/inputs', 'inputs_sha256':'a' * 64, 'branch':'v3.24'}
         changed = copy.deepcopy(schedule)
         changed['policy']['branch-delay-days'] = 30
         for final in (schedule, changed):

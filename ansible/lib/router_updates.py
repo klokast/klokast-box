@@ -45,6 +45,45 @@ def verify_seal(value, field='receipt_sha256'):
         raise UpdateError('record checksum does not match its contents')
 
 
+def validate_initial_selection(selection, resolved, schedule, engine, metadata_sha256, now):
+    """Bind a first-install input choice to the current verified version policy.
+
+    This validates the saved choice. The issuer must still check current
+    upstream eligibility and native release evidence before using it.
+    """
+    closed(selection, 'kind engine_commit observed_at branch branch_delay_days schedule_sha256 '
+           'metadata_sha256 inputs_sha256 replacement_authorized receipt_sha256',
+           'router first-install selection')
+    verify_seal(selection)
+    policy = schedule.get('policy') if isinstance(schedule, dict) else None
+    if (selection['kind'] != 'klokast.router-bootstrap-input-selection.v1' or
+            not match(re.compile(r'[0-9a-f]{40}'), engine) or selection['engine_commit'] != engine or
+            selection['replacement_authorized'] is not False or
+            not isinstance(policy, dict) or schedule.get('kind') != 'klokast.vm-update-schedule.v1' or
+            policy.get('branch-policy') != 'tested-stable' or
+            type(policy.get('branch-delay-days')) is not int or
+            not 0 <= policy['branch-delay-days'] <= 365 or
+            type(policy.get('report-max-age-hours')) is not int or
+            not 24 <= policy['report-max-age-hours'] <= 168 or
+            selection['branch_delay_days'] != policy['branch-delay-days'] or
+            selection['schedule_sha256'] != digest(schedule) or
+            not match(HASH, metadata_sha256) or selection['metadata_sha256'] != metadata_sha256 or
+            not isinstance(resolved, dict) or selection['branch'] != resolved.get('branch') or
+            not match(HASH, selection['inputs_sha256']) or
+            selection['inputs_sha256'] != resolved.get('inputs_sha256')):
+        raise UpdateError('router first-install choice differs from the verified policy or frozen inputs')
+    branch_number(selection['branch'])
+    if not isinstance(now, dt.datetime) or now.tzinfo is None:
+        raise UpdateError('router first-install choice needs current UTC time')
+    try:
+        observed = dt.datetime.strptime(selection['observed_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError) as error:
+        raise UpdateError('router first-install choice has no valid UTC time') from error
+    if observed > now or now - observed > dt.timedelta(hours=policy['report-max-age-hours']):
+        raise UpdateError('router first-install choice is stale or from the future')
+    return selection
+
+
 def validate_profile(profile):
     closed(profile, 'kind profile architecture roles branch_policy state_contract packages '
            'repositories repository_origin release_metadata', 'router profile')

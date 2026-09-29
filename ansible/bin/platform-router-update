@@ -404,6 +404,8 @@ def resolve_initial():
         'branch_delay_days': schedule['policy']['branch-delay-days'],
         'schedule_sha256': router_updates.digest(schedule), 'metadata_sha256': checksum,
         'inputs_sha256': result['inputs_sha256'], 'replacement_authorized': False})
+    router_updates.validate_initial_selection(
+        selection, result, schedule, engine, checksum, dt.datetime.now(dt.timezone.utc))
     transport.write(Path(result['inputs_directory']) / 'selection.json', selection)
     return {**result, 'selection_sha256': selection['receipt_sha256']}
 
