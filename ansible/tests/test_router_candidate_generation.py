@@ -78,7 +78,7 @@ class CandidateGenerationTests(unittest.TestCase):
         values = dict(box='boxa', operation=args['operation'], release=selected,
             profile=PROFILE, prepared=prepared, finalized=finalized,
             disk_record=args['disk_record'], boot=args['boot'], xen=args['old']['xen'],
-            enrollment_sha256='d'*64, approved_engine=ENGINE)
+            selection_sha256='c'*64, enrollment_sha256='d'*64, approved_engine=ENGINE)
         record = candidate.assemble_initial(**values)
         self.assertEqual(generations.generation(record, 'boxa'), record)
         self.assertEqual(record['packages'], selected['runtime_packages'])
@@ -86,6 +86,7 @@ class CandidateGenerationTests(unittest.TestCase):
         for change in (lambda v:v['prepared'].update(mode='replacement'),
                        lambda v:v['finalized'].update(enrolled_state_preserved=False),
                        lambda v:v['finalized']['packages'].update(openssh='1-r0'),
+                       lambda v:v.update(selection_sha256='0'),
                        lambda v:v.update(enrollment_sha256='0'),
                        lambda v:v['disk_record'].update(stage='allocated')):
             invalid = copy.deepcopy(values)

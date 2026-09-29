@@ -72,7 +72,8 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
 
 
 def assemble_initial(*, box, operation, release, profile, prepared, finalized,
-                     disk_record, boot, xen, enrollment_sha256, approved_engine):
+                     disk_record, boot, xen, selection_sha256, enrollment_sha256,
+                     approved_engine):
     """Bind one verified first enrollment to the same qualified template recipe."""
     router_updates.validate_release(release, profile, approved_engine)
     component = {key:release['inputs']['tailscale'][key] for key in (
@@ -83,6 +84,7 @@ def assemble_initial(*, box, operation, release, profile, prepared, finalized,
                          'configuration_files', 'identity_absent', 'replacement_authorized',
                          'service_syntax'}
     if (not generations.matches('[0-9a-f]{24}', operation) or
+            not generations.matches('[0-9a-f]{64}', selection_sha256) or
             not generations.matches('[0-9a-f]{64}', enrollment_sha256) or
             not isinstance(prepared, dict) or set(prepared) != expected_prepared or
             prepared['kind'] != 'klokast.router-candidate-files.v1' or
@@ -128,6 +130,7 @@ def assemble_initial(*, box, operation, release, profile, prepared, finalized,
         'tailscale':component, 'accounts':copy.deepcopy(prepared['accounts']),
         'configuration_files':copy.deepcopy(prepared['configuration_files']),
         'evidence_sha256':generations.digest({'release':release['receipt_sha256'],
-            'prepared':prepared, 'finalized':finalized, 'enrollment':enrollment_sha256,
+            'selection':selection_sha256, 'prepared':prepared,
+            'finalized':finalized, 'enrollment':enrollment_sha256,
             'disk':disk_record, 'xen':xen})})
     return generations.generation(proposed, box)
