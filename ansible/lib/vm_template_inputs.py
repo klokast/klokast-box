@@ -108,11 +108,14 @@ def read_package(path):
 
 
 def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys"),
-           expected_profile="shared-alpine-v1"):
+           expected_profile="shared-alpine-v1", apk_network_timeout=None):
     """Use a new empty resolver root and native solver; never reuse stale indexes."""
     branch_number(branch)
     if not re.fullmatch(r"[0-9a-f]{40}", engine_commit or ""):
         raise UpdateError("template inputs require the exact engine commit")
+    if apk_network_timeout is not None and (type(apk_network_timeout) is not int or
+                                            not 1 <= apk_network_timeout <= 30):
+        raise UpdateError("template APK network timeout is invalid")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
             expected_profile not in {"shared-alpine-v1", "router-alpine-v1"} or
             profile.get("profile") != expected_profile or
@@ -152,6 +155,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         raise UpdateError("installed Alpine signing keys are missing")
     options = ["/sbin/apk", "--root", resolver, "--arch", "x86_64", "--keys-dir", keys,
                "--repositories-file", repo_file, "--cache-dir", resolver / "var/cache/apk", "--no-progress"]
+    if apk_network_timeout is not None:
+        options.extend(["--timeout", str(apk_network_timeout)])
     invoke([*options, "update"], timeout=180)
     indexes = sorted((resolver / "var/cache/apk").glob("APKINDEX.*.tar.gz"))
     if len(indexes) != 2:

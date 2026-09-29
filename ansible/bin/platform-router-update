@@ -303,7 +303,8 @@ def resolve(branch):
     router_updates.validate_profile(profile)
     directory = CACHE / secrets.token_hex(12)
     value = vm_template_inputs.freeze(directory, profile, branch, engine,
-                                     expected_profile=router_updates.PROFILE)
+                                     expected_profile=router_updates.PROFILE,
+                                     apk_network_timeout=3)
     router_updates.validate_inputs(value, profile, engine)
     return {'kind': 'klokast.router-resolved-inputs.v1', 'observed_at': timestamp(dt.datetime.now(dt.timezone.utc)),
             'inputs_directory': str(directory), 'inputs_sha256': value['inputs_sha256'],
