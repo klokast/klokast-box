@@ -21,6 +21,15 @@ ANSIBLE_CONFIG = (REPO_ROOT / "ansible" / "ansible.cfg").read_text(encoding="utf
 
 
 class RouterRoleTest(unittest.TestCase):
+    def test_overlay_ipv6_rule_precedes_established_forward_traffic(self):
+        forward = ROUTER_TEMPLATE.split("    chain forward {", 1)[1].split(
+            "    chain output {", 1
+        )[0]
+        self.assertLess(
+            forward.index('include "/etc/klokast/overlay-ipv6.nft"'),
+            forward.index("ct state { established, related } accept"),
+        )
+
     def test_sysctl_service_is_enabled_in_boot_runlevel(self):
         tasks = "\n".join((ROLE / "tasks" / name).read_text(encoding="utf-8")
                           for name in ("render.yml", "activate.yml"))
