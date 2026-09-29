@@ -465,6 +465,30 @@
         - overlay_ipv6_router_operation == 'apply'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
+    - name: Classify the exact dnsmasq advertisement load path
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        from pathlib import Path
+        lines = [line.strip() for line in Path('/etc/dnsmasq.conf').read_text().splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')]
+        managed = lines.count('conf-dir=/etc/dnsmasq.d,*.conf')
+        explicit = lines.count('conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf')
+        supported = {'conf-dir=/etc/dnsmasq.d,*.conf',
+                     'conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf'}
+        if (managed > 1 or explicit > 1 or (managed and explicit) or
+                any('/etc/dnsmasq.d' in line and line.startswith(('conf-dir=', 'conf-file='))
+                    and line not in supported for line in lines)):
+            raise SystemExit('Ops IPv6 advertisement has duplicate or unknown dnsmasq load paths')
+        print('managed-dir' if managed else 'explicit' if explicit else 'missing')
+        PY
+      args:
+        executable: /bin/sh
+      register: overlay_ipv6_dnsmasq_load_path
+      changed_when: false
+      when:
+        - overlay_ipv6_router_operation in ['apply', 'verify']
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+
     - name: Load the exact ops advertisement file from the dnsmasq entry point
       ansible.builtin.lineinfile:
         path: /etc/dnsmasq.conf
@@ -473,6 +497,15 @@
         validate: /usr/sbin/dnsmasq --test --conf-file=%s
       when:
         - overlay_ipv6_router_operation == 'apply'
+        - inventory_hostname == overlay_ipv6_active_box ~ '-router'
+        - overlay_ipv6_dnsmasq_load_path.stdout == 'missing'
+
+    - name: Require one active dnsmasq advertisement load path
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_dnsmasq_load_path.stdout in ['managed-dir', 'explicit']
+      when:
+        - overlay_ipv6_router_operation == 'verify'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
     - name: Validate the ops IPv6 router advertisement configuration
@@ -497,7 +530,6 @@
         ip -o -6 address show dev {{ router_ops_interface }} | grep -F '{{ overlay_ipv6_prefix | regex_replace('/64$', '') }}1/64'
         test "$(sysctl -n net.ipv6.conf.all.forwarding)" = 1
         test "$(sysctl -n net.ipv6.conf.{{ router_wan_interface }}.accept_ra)" = 2
-        grep -Fx 'conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf' /etc/dnsmasq.conf
         grep -F 'constructor:{{ router_ops_interface }},ra-only,64' /etc/dnsmasq.d/91-klokast-ops-ipv6.conf
         nft list ruleset | grep -F 'ops-ipv6-tailscale-source-egress'
         nft list ruleset | grep -F 'ops-tailscale-wan-ipv4-suppression'

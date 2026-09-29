@@ -8,11 +8,12 @@ Run Platform commands as `smith` on the active controller from
 `~/src/klokast/klokast-box`. Run approval commands on the trusted MacBook. Do
 not run these operations on an infra-agent or airunner.
 
-The repair adds an exact `conf-file` include to the router's
-`/etc/dnsmasq.conf`. This also supports legacy routers that do not load
-`/etc/dnsmasq.d`. The main configuration is part of the signed preimage and
-is restored on failure. A syntax check alone cannot prove that an unreferenced
-advertisement file is loaded.
+The repair uses the router's managed `conf-dir` when it loads
+`/etc/dnsmasq.d/*.conf`. On a legacy router without this load path, the repair
+adds an exact `conf-file` include to `/etc/dnsmasq.conf`. It refuses duplicate
+or unknown load paths for the advertisement file. The main configuration is
+part of the signed preimage and is restored on failure. A syntax check alone
+cannot prove that an unreferenced advertisement file is loaded.
 
 The router's forward chain also loads the exact `/etc/klokast/overlay-ipv6.nft`
 fragment. The repair includes `/etc/nftables.nft` in the signed rollback files

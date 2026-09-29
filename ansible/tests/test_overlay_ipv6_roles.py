@@ -212,9 +212,33 @@ esac
         self.assertIn(line["line"].split("=", 1)[1], play["vars"]["overlay_ipv6_router_files"])
         self.assertIn("--test --conf-file=%s", line["validate"])
         self.assertIn("overlay_ipv6_router_operation == 'apply'", task["when"])
+        self.assertIn("overlay_ipv6_dnsmasq_load_path.stdout == 'missing'", task["when"])
         names = [t["name"] for t in tasks]
         self.assertLess(names.index("Advertise only the delegated ops prefix"), names.index(task["name"]))
         self.assertLess(names.index(task["name"]), names.index("Restart dnsmasq to start ops router advertisements"))
+
+    def test_router_advertisement_load_path_rejects_duplicates(self):
+        tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
+        task = next(t for t in tasks if t["name"] == "Classify the exact dnsmasq advertisement load path")
+        script = task["ansible.builtin.shell"]
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "dnsmasq.conf"
+            script = script.replace("/etc/dnsmasq.conf", str(config))
+            cases = (
+                ("conf-dir=/etc/dnsmasq.d,*.conf\n", "managed-dir", 0),
+                ("conf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf\n", "explicit", 0),
+                ("domain-needed\n", "missing", 0),
+                ("conf-dir=/etc/dnsmasq.d,*.conf\nconf-file=/etc/dnsmasq.d/91-klokast-ops-ipv6.conf\n", "", 1),
+                ("conf-dir=/etc/dnsmasq.d\n", "", 1),
+            )
+            for content, expected, failure in cases:
+                with self.subTest(content=content):
+                    config.write_text(content)
+                    result = subprocess.run(["/bin/sh", "-s"], input=script, text=True,
+                                            capture_output=True)
+                    self.assertEqual(result.returncode != 0, bool(failure), result.stderr)
+                    if not failure:
+                        self.assertEqual(result.stdout.strip(), expected)
 
     def test_router_loads_firewall_fragment_inside_rollback_scope(self):
         play = yaml.safe_load(ROUTER_PLAY)[0]
