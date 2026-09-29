@@ -23,6 +23,30 @@ def load_cli():
 
 
 class TemplateInventoryTests(unittest.TestCase):
+    def test_rejected_initial_selection_allocates_no_build_operation(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache, state = root / 'cache', root / 'state'
+            cache.mkdir(); state.mkdir()
+            source = cache / ('b' * 24)
+            source.mkdir()
+
+            def command(argv, **kwargs):
+                return ENGINE if 'rev-parse' in argv else ''
+
+            with patch.object(cli, 'CACHE', cache), patch.object(cli, 'STATE', state), \
+                    patch.object(cli.transport, 'require_controller'), \
+                    patch.object(cli.transport, 'installation_lock', return_value=nullcontext()), \
+                    patch.object(cli.transport, 'command', side_effect=command), \
+                    patch.object(cli.transport, 'load', return_value={'profile':'router-alpine-v2'}), \
+                    patch.object(cli, 'initial_template_selection',
+                                 side_effect=cli.UpdateError('selection changed')):
+                with self.assertRaisesRegex(cli.UpdateError, 'selection changed'):
+                    cli.build_template('boxa', source, initial_selection=True)
+            self.assertEqual(list(state.iterdir()), [])
+            self.assertEqual(list(source.iterdir()), [])
+
     def test_initial_template_requires_the_current_exact_selection(self):
         cli = load_cli()
         source = Path('/var/cache/klokast/updates/router/' + 'b' * 24)
