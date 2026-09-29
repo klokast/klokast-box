@@ -259,7 +259,9 @@ key and backend address on that disposable disk, then records the key,
 interface, firewall, temporary SSH configuration, and generated host-key
 hashes. The firewall permits SSH only from the dom0 backend address to the
 router backend address. OpenSSH and nftables pass native syntax checks. The
-test guest has no VIF, and the candidate is retired without enrollment.
+helper also checks OpenSSH's effective settings so a missing config include or
+an extra listen address fails closed. The test guest has no VIF, and the
+candidate is retired without enrollment.
 Replacement retires the first-contact package closure offline. Neither test
 enrolls a machine or creates an accepted generation. Use inputs and a template
 built from the same clean engine commit:

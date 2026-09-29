@@ -37,6 +37,20 @@ class RouterInitialContactTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 contact.first_contact_firewall(base, source, '192.0.2.2', 24)
 
+    def test_effective_sshd_settings_must_restrict_backend_and_disable_extra_access(self):
+        settings = ('port 22\nlistenaddress 192.0.2.2:22\n'
+            'passwordauthentication no\nkbdinteractiveauthentication no\n'
+            'pubkeyauthentication yes\npermitrootlogin prohibit-password\n'
+            'allowtcpforwarding no\nallowagentforwarding no\nx11forwarding no\n'
+            'permittunnel no\npermittty no\npermituserenvironment no\n')
+        self.assertTrue(contact.verify_effective_sshd_config(settings, '192.0.2.2'))
+        for changed in (settings.replace('listenaddress 192.0.2.2:22', 'listenaddress 0.0.0.0:22'),
+                        settings.replace('permittty no', 'permittty yes'),
+                        settings.replace('allowtcpforwarding no', 'allowtcpforwarding yes'),
+                        settings + 'listenaddress 0.0.0.0:22\n'):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, 'effective OpenSSH settings'):
+                contact.verify_effective_sshd_config(changed, '192.0.2.2')
+
     def test_public_key_parser_rejects_malformed_key_material(self):
         for key in ('ssh-ed25519 YQ==', 'ssh-ed25519 !!!! comment',
                     'ssh-rsa YQ== comment\nssh-ed25519 YQ=='):
@@ -73,6 +87,13 @@ class RouterInitialContactTests(unittest.TestCase):
         native_calls = []
         def native(argv, **kwargs):
             native_calls.append(argv)
+            if argv[0] == 'chroot' and argv[2] == '/usr/sbin/sshd' and '-T' in argv:
+                return SimpleNamespace(returncode=0, stdout=(
+                    'port 22\nlistenaddress 192.0.2.2:22\n'
+                    'passwordauthentication no\nkbdinteractiveauthentication no\n'
+                    'pubkeyauthentication yes\npermitrootlogin prohibit-password\n'
+                    'allowtcpforwarding no\nallowagentforwarding no\nx11forwarding no\n'
+                    'permittunnel no\npermittty no\npermituserenvironment no\n'))
             if argv[0] == 'chroot' and argv[2] == '/usr/bin/ssh-keygen' and '-A' in argv:
                 for name in ('rsa','ecdsa','ed25519'):
                     fixture.put('etc/ssh/ssh_host_' + name + '_key', 'synthetic private key\n')

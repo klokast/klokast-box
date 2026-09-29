@@ -75,6 +75,35 @@ def first_contact_sshd_config(address):
             'PermitUserEnvironment no\n')
 
 
+def verify_effective_sshd_config(output, address):
+    expected = {
+        'passwordauthentication': 'no',
+        'kbdinteractiveauthentication': 'no',
+        'pubkeyauthentication': 'yes',
+        'permitrootlogin': 'prohibit-password',
+        'allowtcpforwarding': 'no',
+        'allowagentforwarding': 'no',
+        'x11forwarding': 'no',
+        'permittunnel': 'no',
+        'permittty': 'no',
+        'permituserenvironment': 'no',
+    }
+    actual = {}
+    listens = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) == 2:
+            actual[fields[0].lower()] = fields[1].lower()
+        if len(fields) == 2 and fields[0].lower() == 'listenaddress':
+            listens.add(fields[1].lower())
+    address = str(ipaddress.IPv4Address(address)).lower()
+    if (actual.get('port') != '22' or actual.get('passwordauthentication') != expected['passwordauthentication'] or
+            any(actual.get(key) != value for key, value in expected.items()) or
+            not listens or not listens <= {address, address + ':22'}):
+        raise ValueError('router first-contact effective OpenSSH settings do not restrict backend access')
+    return True
+
+
 def _ssh_directory(root, *, create):
     personalize.directory(root, 'root')
     path = Path(root) / 'root/.ssh'
@@ -193,6 +222,11 @@ def seed(root, *, job, key, personalization, backend_address, backend_prefix):
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     if checked.returncode:
         raise ValueError('router first-contact OpenSSH configuration failed its native syntax check')
+    checked = subprocess.run(['chroot', str(root), '/usr/sbin/sshd', '-T', '-f', '/etc/ssh/sshd_config'],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    if checked.returncode:
+        raise ValueError('router first-contact OpenSSH configuration failed its effective settings check')
+    verify_effective_sshd_config(checked.stdout, backend_address)
     checked = subprocess.run(['chroot', str(root), 'nft', '-c', '-f', '/etc/nftables.nft'],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     if checked.returncode:
