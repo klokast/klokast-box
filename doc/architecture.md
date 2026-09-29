@@ -1,18 +1,20 @@
-# Standard architecture of the boxes
-Each box of the Platform is one mini-PC that implements the same 4-layers architecture.
+Each box of the Platform is one mini-PC that implements the same 4-layers architecture:
+1. baremetal Host & Xen hypervisor
+2. Virtual Machines
+3. Services
+4. SDN (Software Defined Network)
 
-## Top-level control flow
+Ansible playbooks and bash wrappers automate the lifecycle of the Platform, including bootstrap and updates of boxes.
 
-The Platform has two main control flows:
+The codebase consists of two Github repositories:
+1. the "upstream" Github public repository `klokast/klokast-box` contains the Platform implementation.
+2. one "instance" Github private repository (`<family-name>/klokast-instance`) for each Platform deployment, contains the desired state for each deployment, such as Tailscale network name, number of boxes, etc.
 
+The Platform has two main control flows, keeping separate desired state, observed state, human approval, build authority, and runtime state:
 1. the desired-state and Apply flow;
 2. the artifact build and distribution flow.
 
-These flows keep desired state, observed state, human approval, build authority, and runtime state separate.
-
 ### Desired-state and Apply flow
-
-The public `klokast-box` repository contains the Platform implementation. The private instance repository contains the desired state for one installation.
 
 The private `klokast.lock.json` selects one approved `klokast-box` engine commit. The active controller builds the `klokast` binary from this commit. It uses the sealed, networkless `platform-builder`.
 
@@ -55,8 +57,6 @@ new Observation
         +----> input to the next Plan
 ```
 
-The Instance is desired state. An Observation is observed state. An Observation is evidence only. It must not become desired state.
-
 The sealed `klokast` binary creates the Plan from the approved inputs and evidence. The Plan defines the exact operations that an Apply can perform.
 
 The human reviews the Apply intent and signs it on the trusted workstation. The approval applies to one exact Plan.
@@ -84,71 +84,6 @@ Historical migration contracts remain for recovery, tests, and historical eviden
 After the change, the mapper and verifier can create a new Observation. This closes the control loop without changing the desired-state authority.
 
 For the normative rules, see [Klokast Instance Specification v1](klokast-instance-specification.md) and [Secret Authority](secret-authority.md).
-
-### Artifact build and distribution flow
-
-Deployable artifacts have a separate build and distribution flow.
-
-The control flow is:
-
-```text
-public source
-        +
-digest-pinned upstream inputs
-        |
-        v
-artifact-specific build boundary
-        |
-        v
-built artifact
-        +
-provenance
-        +
-digest or checksum lock
-        |
-        v
-artifact store or controlled distribution path
-        |
-        v
-target verification
-        |
-        v
-target load or installation
-```
-
-The build boundary depends on the artifact type. There is not one build environment for all artifacts.
-
-The deployable `klokast` Go binary uses the sealed, networkless Xen `platform-builder`. The controller injects the approved source, vendored Go modules, and the digest-pinned Go build image. The builder has no network interface.
-
-The current app OCI image workflow uses `platform-image-build` on the active controller as `smith`. It uses digest-pinned upstream images. It builds with Podman and Buildah chroot isolation, then creates an OCI archive. It does not use the sealed Xen Go builder.
-
-The OCI flow is:
-
-```text
-digest-pinned upstream image + app build context
-        -> controller-local build
-        -> local image ID + OCI archive
-        -> images.lock.yml: digest + archive_sha256
-        -> transfer to target
-        -> archive SHA-256 check
-        -> target-local podman load
-```
-
-The lock's built-image `digest` field records the local Podman image ID. The archive checksum identifies the transferred bytes. These are different checks. The current loader checks the archive and image presence. It does not independently compare the target image ID with the locked image ID. If the archive checksum is absent, the loader can compute it from the local archive. That fallback checks transfer integrity only. The strict `verify` command requires the archive checksum in the lock.
-
-The bootstrap ISO has another build boundary. Its checked-in workflow runs Debian `live-build` in a temporary, rootful privileged Podman container on a backend VM. It requires a privileged approval with an expiry and cleanup requirement. The container builds a generic ISO without the box name or bootstrap key. It sends the ISO and SHA-512 checksum directly to NanoKVM, then stops and is removed.
-
-The build workflow records immutable artifact identity. Depending on the artifact type, this can include an image digest, an archive SHA-256 checksum, a build receipt, or another approved provenance record.
-
-The artifact store is a distribution service. It is not an authority. An artifact does not become trusted because the store contains it.
-
-A distribution path can also transfer an artifact directly from the active controller to its target. The trust rule is the same for both distribution methods.
-
-The target must verify the artifact against approved provenance before it uses the artifact. For the current OCI workflow, the target verifies the OCI archive SHA-256 checksum before `podman load`.
-
-The target must not use a mutable tag, store contents, or an unverified downloaded file as the source of artifact authority.
-
-See the [sealed Go builder](secure-builder.md), [OCI workflow](../ansible/bin/platform-image-build), and [bootstrap ISO builder](../apps/bootstrap-iso-debian/builder-container.md) for the implemented checks and cleanup rules.
 
 ## Layer 1: baremetal Host & Xen hypervisor
 - Tailnet hostname: `<box>-dom0`; Tailscale tag: `tag:dom0`
@@ -508,20 +443,26 @@ deployment and security gates are implemented and validated.
 
 - `broker` (credentials broker): root-owned, versioned, deterministic wrappers on the active `<box>-ops`. It validates narrow actions, uses provider/app credentials without revealing them, enforces the active-controller guard, and appends audit records.
 
-- `builder` (artifact build workflows):
-  - The build boundary depends on the artifact. The [artifact flow](#artifact-build-and-distribution-flow) describes the Go, OCI, and bootstrap ISO paths.
-  - A Xen build guest uses the name `<box>-builder-<purpose>-<id>`. This naming rule does not mean that every current artifact build runs in a Xen guest.
-  - The `klokast` Go CLI uses the stricter `platform-builder` profile: a
-    sealed Alpine 3.23 template, a unique writable LVM snapshot, no VIF or
-    Tailnet identity, and rootless Podman with networking disabled. The active
-    controller injects only a Git archive of the synchronized approved commit,
-    vendored modules, and a digest-pinned Go OCI archive while the guest is
-    stopped. The guest boots to run the build, then stops before result collection.
-    The guest is the authoritative build locus. The controller and airunner
-    do not compile deployable CLI binaries. The controller also verifies the canonical repository and safe
-    upstream branch. The guest binds that repository, ref, and commit into the
-    binary and its receipt, and the controller verifies the receipt values.
-  - The resulting sealed binary is the `klokast` contract and planning engine described above.
+- `builders`: different tools depending on the artifacts to be built:
+
+  1. `platform-builder`: the (Alpine Xen guest) VM used to build the Klokast Go CLI binary.
+    - inputs are injected by the controller: approved source from public git repository, vendored Go modules, and the digest-pinned Go build OCI image, digest-pinned upstream inputs, Alpine template, fresh writable LVM snapshot
+    - output : `<box>-builder-klokast-cli-<operation-id>`
+    - disposable: built only when needed, and immediately cleaned as soon as the artifact is ready
+    - sealed: no VIF, SSH, Tailscale or other networking
+    - operated by user `smith` on the active controller
+    - details: `doc/secure-builder.md`
+
+  2. `platform-image-build`: the VM used to build OCI images. (It does not use the sealed Xen Go builder.)
+    - inputs: digest-pinned upstream images.
+    - outputs: OCI archive, SHA-256 checksum.
+    - It builds with Podman and Buildah chroot isolation, then creates an OCI archive.
+    - operated by user `smith` on the active controller
+    - details: `../ansible/bin/platform-image-build`
+
+  3. `bootstrap-iso-debian`: container that builds a generic Debian `live-build` bootstrap ISO (without box name, and without Tailscale key), to be run in a temporary, rootful privileged Podman container on a backend VM. It sends the ISO and SHA-512 checksum directly to NanoKVM, then stops and is removed.
+    - requires a privileged approval with an expiry and cleanup requirement
+    - details: `../apps/bootstrap-iso-debian/builder-container.md`
 
 - `store` (design role): rootless blob-distribution containers in `<box>-bak` on the active- and standby-controller boxes. A general replicated store workflow is not implemented in this repository. Current builds can use direct archive transfer. The store design is an untrusted distribution layer, outside the TCB:
   - content-addressed, immutable blobs;
@@ -531,6 +472,8 @@ deployment and security gates are implemented and validated.
   - artifacts replicated between the store instances.
   - The persistent volume belongs to the VM/storage substrate, not to the disposable container.
   - The store is not the only source for artifacts required to reconstruct the Platform. Bootstrap and controller images also have an offline or off-platform recovery copy.
+  - The artifact store is a distribution service. It is not an authority. An artifact does not become trusted because the store contains it. The target must verify the artifact against approved provenance before it uses the artifact.
+  - It is also possible to transfer the artifact directly from its builder to the target, without going via the store.
 
 - `encrypter` and `uploader` (proposed off-platform archiver): create encrypted backup and archive bundles and send them to an off-platform depot. This repository does not implement a general encrypter/uploader workflow. The intended boundary is:
   - `encrypter`: versioned CLI in `<box>-ops`.
@@ -582,11 +525,19 @@ See [Instance data lifecycle](klokast-instance-specification.md#application-and-
 
 ### Zones, realms, and capabilities
 
-Workload zones are `bak`, `dmz`, `iot`, and `usr`. The `ops` zone is control-only. App manifests cannot request workloads or network resources in `ops`.
+Workload zones are `bak`, `dmz`, `iot`, and `usr`.
+The `ops` zone is control-only. App manifests cannot request workloads or network resources in `ops`.
 
-Network realms identify endpoints outside workload zones. `wan` is upstream internet. `household` is the local client realm. `admin` covers AP-management and client networks. `ap-uplink` is the access-point Ethernet handoff. New manifests must use the explicit realm instead of the transitional `lan` alias.
+Network realms identify endpoints outside workload zones:
+- `wan` is upstream internet.
+- `household` is the local client realm.
+- `admin` covers AP-management and client networks.
+- `ap-uplink` is the access-point Ethernet handoff.
+New manifests must use the explicit realm instead of the transitional `lan` alias.
 
-Instance v1 declares available and enabled box connectivity. It does not select app flows. The resolver translates its names into compiler names:
+Instance v1 declares available and enabled box connectivity.
+It does not select app flows.
+The resolver translates its names into compiler names:
 
 | Instance v1 | Compiler view |
 | --- | --- |
@@ -596,9 +547,17 @@ Instance v1 declares available and enabled box connectivity. It does not select 
 | `edge-tunnel-ingress` | `edge-ingress` |
 | `direct-wan-ingress` | `direct-ingress` |
 
-The compiler vocabulary also includes `local-lan`, `vpn-egress`, and reserved `rg-lan`. These are not extra accepted Instance v1 values. The adapter derives the prohibited set from the supported compiler vocabulary. Instance v1 supports Tailscale as its overlay provider.
+The compiler vocabulary also includes:
+- `local-lan`
+- `vpn-egress`
+- `rg-lan` (reserved)
+These are not extra accepted Instance v1 values.
+The adapter derives the prohibited set from the supported compiler vocabulary.
+Instance v1 supports Tailscale as its overlay provider.
 
-App manifests request symbolic flows, such as realm-to-zone or device-to-zone access. Platform-owned topology resolves these requests to interfaces, addresses, router rules, and VM firewall rules. An enabled capability alone does not open a port. Unknown fields and missing required capabilities cause refusal.
+App manifests request symbolic flows, such as realm-to-zone or device-to-zone access.
+Platform-owned topology resolves these requests to interfaces, addresses, router rules, and VM firewall rules.
+An enabled capability alone does not open a port. Unknown fields and missing required capabilities cause refusal.
 
 The local-client path can use router DHCP and DNS, a dedicated household VPN gateway, and DMZ-local HTTPS ingress. Public ingress uses an approved edge tunnel. These paths remain subject to declared resource rules.
 

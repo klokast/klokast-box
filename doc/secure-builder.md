@@ -61,3 +61,18 @@ Dependency updates are source maintenance, not artifact production. An
 airunner may use an official checksum-pinned Go toolchain below its temporary
 directory to update reviewed `go.sum` and `vendor/`; it must remove that
 toolchain afterward, and its binaries are never deployable artifacts.
+
+- A Xen build guest uses the name `<box>-builder-<purpose>-<id>`. This naming rule does not mean that every current artifact build runs in a Xen guest.
+
+- The `klokast` Go CLI uses the stricter `platform-builder` profile: a
+  sealed Alpine 3.23 template, a unique writable LVM snapshot, no VIF or
+  Tailnet identity, and rootless Podman with networking disabled. The active
+  controller injects only a Git archive of the synchronized approved commit,
+  vendored modules, and a digest-pinned Go OCI archive while the guest is
+  stopped. The guest boots to run the build, then stops before result collection.
+  The guest is the authoritative build locus. The controller and airunner
+  do not compile deployable CLI binaries. The controller also verifies the canonical repository and safe
+  upstream branch. The guest binds that repository, ref, and commit into the
+  binary and its receipt, and the controller verifies the receipt values.
+
+- The resulting sealed binary is the `klokast` contract and planning engine described above.
