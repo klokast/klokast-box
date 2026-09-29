@@ -45,7 +45,7 @@ def verify_seal(value, field='receipt_sha256'):
         raise UpdateError('record checksum does not match its contents')
 
 
-def validate_initial_selection(selection, resolved, schedule, engine, metadata_sha256, now):
+def validate_initial_selection(selection, resolved, schedule, engine, releases, metadata_sha256, now):
     """Bind a first-install input choice to the current verified version policy.
 
     This validates the saved choice. The issuer must still check current
@@ -81,6 +81,8 @@ def validate_initial_selection(selection, resolved, schedule, engine, metadata_s
         raise UpdateError('router first-install choice has no valid UTC time') from error
     if observed > now or now - observed > dt.timedelta(hours=policy['report-max-age-hours']):
         raise UpdateError('router first-install choice is stale or from the future')
+    if select_branch('initial-install', releases, now, policy) != selection['branch']:
+        raise UpdateError('router first-install branch is no longer eligible under the verified policy')
     return selection
 
 

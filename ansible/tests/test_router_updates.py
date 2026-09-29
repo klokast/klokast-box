@@ -76,27 +76,32 @@ class RouterCheckTests(unittest.TestCase):
                     'policy': {'branch-policy': 'tested-stable', 'branch-delay-days': 21,
                                'report-max-age-hours': 72, 'enabled': False, 'targets': {}}}
         resolved = {'branch': 'v3.24', 'inputs_sha256': 'a' * 64}
+        releases = {'release_branches': [branch('v3.23'), branch('v3.24')]}
         choice = r.seal({'kind': 'klokast.router-bootstrap-input-selection.v1',
             'engine_commit': ENGINE, 'observed_at': timestamp(NOW), 'branch': 'v3.24',
             'branch_delay_days': 21, 'schedule_sha256': digest(schedule),
             'metadata_sha256': 'b' * 64, 'inputs_sha256': 'a' * 64,
             'replacement_authorized': False})
-        self.assertEqual(r.validate_initial_selection(choice, resolved, schedule, ENGINE, 'b' * 64, NOW), choice)
+        self.assertEqual(r.validate_initial_selection(choice, resolved, schedule, ENGINE, releases, 'b' * 64, NOW), choice)
         for field, value in (('branch', 'v3.23'), ('inputs_sha256', 'c' * 64),
                              ('replacement_authorized', True), ('branch_delay_days', 20)):
             changed = {key: item for key, item in choice.items() if key != 'receipt_sha256'}
             changed[field] = value
             with self.subTest(field=field), self.assertRaises(UpdateError):
-                r.validate_initial_selection(r.seal(changed), resolved, schedule, ENGINE, 'b' * 64, NOW)
+                r.validate_initial_selection(r.seal(changed), resolved, schedule, ENGINE, releases, 'b' * 64, NOW)
         with self.assertRaises(UpdateError):
-            r.validate_initial_selection(choice, resolved, schedule, ENGINE, 'c' * 64, NOW)
+            r.validate_initial_selection(choice, resolved, schedule, ENGINE, releases, 'c' * 64, NOW)
         with self.assertRaises(UpdateError):
             r.validate_initial_selection(choice, resolved,
                 {**schedule, 'policy': {**schedule['policy'], 'branch-delay-days': 30}},
-                ENGINE, 'b' * 64, NOW)
+                ENGINE, releases, 'b' * 64, NOW)
         with self.assertRaisesRegex(UpdateError, 'stale'):
-            r.validate_initial_selection(choice, resolved, schedule, ENGINE, 'b' * 64,
+            r.validate_initial_selection(choice, resolved, schedule, ENGINE, releases, 'b' * 64,
                                          NOW + dt.timedelta(hours=73))
+        with self.assertRaisesRegex(UpdateError, 'no longer eligible'):
+            r.validate_initial_selection(choice, resolved, schedule, ENGINE,
+                {'release_branches': releases['release_branches'] + [branch('v3.25')]},
+                'b' * 64, NOW)
 
     def test_common_resolver_fresh_install_and_adjacent_replacement(self):
         policy = {'branch-policy': 'tested-stable', 'branch-delay-days': 21}
