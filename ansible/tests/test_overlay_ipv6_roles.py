@@ -243,6 +243,13 @@ esac
     def test_router_loads_firewall_fragment_inside_rollback_scope(self):
         play = yaml.safe_load(ROUTER_PLAY)[0]
         tasks = play["tasks"]
+        install = next(t for t in tasks if t["name"] == "Install the narrow ops-only IPv6 forwarding rules")
+        content = install["ansible.builtin.copy"]["content"]
+        self.assertEqual(content.count('comment "ops-tailscale-wan-ipv4-suppression"'), 1)
+        self.assertLess(content.index('ops-tailscale-wan-ipv4-suppression'),
+                        content.index('ops-ipv6-tailscale-source-egress'))
+        retire = next(t for t in tasks if t["name"] == "Remove the legacy inline ops Tailscale IPv4 suppression rule")
+        self.assertEqual(retire["ansible.builtin.lineinfile"]["state"], "absent")
         task = next(t for t in tasks if t["name"] == "Load the exact IPv6 rules file from the router forward chain")
         line = task["ansible.builtin.lineinfile"]
         self.assertIn(line["path"], play["vars"]["overlay_ipv6_router_files"])
@@ -375,15 +382,16 @@ tailscale() {
 
     def test_ops_direct_ipv4_is_suppressed_before_established_forwarding(self):
         tasks = yaml.safe_load(ROUTER_PLAY)[0]["tasks"]
-        task = next(t for t in tasks if t["name"] == "Keep ops Tailscale WAN UDP off the slower direct IPv4 path")
-        rule = task["ansible.builtin.lineinfile"]
-        self.assertEqual(rule["path"], "/etc/nftables.nft")
-        self.assertEqual(rule["insertafter"], "^        type filter hook forward priority 0; policy drop;$")
-        self.assertIn('iifname "{{ router_ops_interface }}"', rule["line"])
-        self.assertIn('oifname "{{ router_wan_interface }}"', rule["line"])
-        self.assertIn('ip saddr {{ platform_control_zones.ops.vm_ipv4_address }}', rule["line"])
-        self.assertIn('udp sport 41641 drop', rule["line"])
-        self.assertIn("nft -c -f %s", rule["validate"])
+        task = next(t for t in tasks if t["name"] == "Install the narrow ops-only IPv6 forwarding rules")
+        rule = task["ansible.builtin.copy"]
+        self.assertEqual(rule["dest"], "/etc/klokast/overlay-ipv6.nft")
+        self.assertIn('iifname "{{ router_ops_interface }}"', rule["content"])
+        self.assertIn('oifname "{{ router_wan_interface }}"', rule["content"])
+        self.assertIn('ip saddr {{ platform_control_zones.ops.vm_ipv4_address }}', rule["content"])
+        self.assertIn('udp sport 41641 drop', rule["content"])
+        self.assertLess(ROUTER_NFT.index('include "/etc/klokast/overlay-ipv6.nft"'),
+                        ROUTER_NFT.index('ct state { established, related } accept',
+                                         ROUTER_NFT.index('chain forward {')))
 
     def test_ops_slaac_preserves_ipv4_and_requires_direct_ipv6(self):
         self.assertIn("Persist ops SLAAC kernel settings", OPS_PLAY)

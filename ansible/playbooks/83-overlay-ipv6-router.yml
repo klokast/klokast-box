@@ -333,6 +333,7 @@
         group: root
         mode: "0600"
         content: |
+          iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip saddr {{ platform_control_zones.ops.vm_ipv4_address }} udp sport 41641 drop comment "ops-tailscale-wan-ipv4-suppression"
           iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip6 saddr {{ overlay_ipv6_prefix }} udp sport 41641 accept comment "ops-ipv6-tailscale-source-egress"
           iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip6 saddr {{ overlay_ipv6_prefix }} udp dport 3478 accept comment "ops-ipv6-tailscale-stun-egress"
           iifname "{{ router_wan_interface }}" oifname "{{ router_ops_interface }}" ip6 daddr {{ overlay_ipv6_prefix }} udp dport 41641 accept comment "ops-ipv6-tailscale-input"
@@ -353,12 +354,11 @@
         - overlay_ipv6_router_operation == 'prepare'
         - inventory_hostname == overlay_ipv6_active_box ~ '-router'
 
-    - name: Keep ops Tailscale WAN UDP off the slower direct IPv4 path
+    - name: Remove the legacy inline ops Tailscale IPv4 suppression rule
       ansible.builtin.lineinfile:
         path: /etc/nftables.nft
-        regexp: '^\s*.*comment "ops-tailscale-wan-ipv4-suppression"$'
-        line: '        iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip saddr {{ platform_control_zones.ops.vm_ipv4_address }} udp sport 41641 drop comment "ops-tailscale-wan-ipv4-suppression"'
-        insertafter: '^        type filter hook forward priority 0; policy drop;$'
+        regexp: '^\s*iifname "{{ router_ops_interface }}" oifname "{{ router_wan_interface }}" ip saddr {{ platform_control_zones.ops.vm_ipv4_address | regex_escape }} udp sport 41641 drop comment "ops-tailscale-wan-ipv4-suppression"$'
+        state: absent
         validate: /usr/sbin/nft -c -f %s
       when:
         - overlay_ipv6_router_operation == 'prepare'
@@ -538,8 +538,13 @@
         source = Path('/etc/nftables.nft').read_text()
         forward = source.split('    chain forward {', 1)[1].split('    chain output {', 1)[0]
         marker = 'comment "ops-tailscale-wan-ipv4-suppression"'
-        if forward.count(marker) != 1 or forward.index(marker) > forward.index('ct state { established, related } accept'):
-            raise SystemExit('Ops Tailscale IPv4 suppression must precede established traffic acceptance')
+        include = 'include "/etc/klokast/overlay-ipv6.nft"'
+        if (forward.count(marker) != 0 or forward.count(include) != 1 or
+                forward.index(include) > forward.index('ct state { established, related } accept')):
+            raise SystemExit('Ops Tailscale IPv4 suppression must have one early overlay load path')
+        fragment = Path('/etc/klokast/overlay-ipv6.nft').read_text()
+        if fragment.count(marker) != 1:
+            raise SystemExit('Ops Tailscale IPv4 suppression must have one managed overlay rule')
         PY
         python3 - <<'PY'
         import os

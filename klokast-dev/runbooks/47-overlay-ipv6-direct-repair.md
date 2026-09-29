@@ -22,7 +22,8 @@ routers whose main firewall file does not yet include the fragment.
 
 The router also drops WAN IPv4 UDP from the ops VM when its source port is
 `41641`. This stops Tailscale from selecting a low bandwidth direct IPv4 path
-to the peer. The rule is before the forward chain's established-traffic rule,
+to the peer. The signed overlay firewall fragment contains this rule, and the
+managed forward chain loads it before the established-traffic rule,
 so an existing IPv4 UDP session cannot bypass it. It does not match local
 management paths, other VM sources, TCP, or IPv6. The main firewall file and
 loaded ruleset are part of the signed rollback evidence. If direct IPv6 stops,
