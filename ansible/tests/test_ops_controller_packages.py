@@ -12,6 +12,9 @@ CONTROLLER_TASKS = REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" 
 VERIFY_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "ops-controller-verification" / "tasks" / "main.yml"
 )
+TAILSCALE_DIST_SIGN_TASKS = (
+    REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "tailscale-distsign.yml"
+)
 WRAPPER = REPO_ROOT / "ansible" / "bin" / "converge-ops-controller"
 
 
@@ -99,6 +102,18 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         self.assertIn("- podman", text)
         self.assertIn("- skopeo", text)
         self.assertIn("import bcrypt", text)
+
+    def test_controller_template_and_convergence_install_verified_distsign_toolchain(self):
+        tasks = yaml.safe_load(CONTROLLER_TASKS.read_text(encoding="utf-8"))
+        install = next(task for task in tasks if task.get("name") == "Install the pinned Go and Tailscale signature verifier toolchain")
+        self.assertEqual(install["ansible.builtin.import_tasks"], "tailscale-distsign.yml")
+        self.assertIn("ops-controller-tailscale-distsign", install["tags"])
+        source = yaml.safe_load(TAILSCALE_DIST_SIGN_TASKS.read_text(encoding="utf-8"))
+        self.assertTrue(any(task.get("name") == "Download the checksum-pinned official Go toolchain" for task in source))
+        self.assertTrue(any(task.get("name") == "Build the checksum-frozen verifier in a networkless user namespace" for task in source))
+        verification = VERIFY_TASKS.read_text(encoding="utf-8")
+        self.assertIn("ops_controller_check_distsign.binary_sha256 == ops_controller_check_distsign_binary.stat.checksum", verification)
+        self.assertIn("'go1.26.6 linux/amd64'", verification)
 
     def test_wrapper_exposes_explicit_prune_flag(self):
         text = WRAPPER.read_text(encoding="utf-8")
