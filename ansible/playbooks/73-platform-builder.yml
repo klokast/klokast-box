@@ -44,20 +44,24 @@
               - /bin/sh
               - -c
               - >-
+                missing='';
                 for tool in curl kpartx sfdisk xorriso; do
-                  command -v "$tool" >/dev/null 2>&1 || exit 1;
-                done
+                  if ! command -v "$tool" >/dev/null 2>&1; then
+                    missing="$missing $tool";
+                  fi;
+                done;
+                printf '%s\n' "${missing# }"
           changed_when: false
           register: builder_host_tools
 
         - name: Require installed dom0 builder tools without changing its package set
           ansible.builtin.assert:
             that:
-              - builder_host_tools.rc == 0
+              - builder_host_tools.stdout | trim == ''
             fail_msg: >-
-              The dom0 builder tools are not installed. Install them through an
-              approved dom0 maintenance workflow before building. This builder
-              will not change dom0 packages or upgrade Xen.
+              Missing dom0 builder tools: {{ builder_host_tools.stdout | trim }}.
+              Provide these tools through an approved dom0 maintenance workflow
+              before building. This builder will not change dom0 packages or upgrade Xen.
 
         - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
           ansible.builtin.import_role:

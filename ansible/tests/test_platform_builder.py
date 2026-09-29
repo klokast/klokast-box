@@ -408,6 +408,21 @@ class PlatformBuilderDom0Test(unittest.TestCase):
         self.assertEqual(lifecycle["block"][0]["name"], "Check that the dom0 builder tools already exist")
         self.assertEqual(lifecycle["always"][0]["name"], "Remove operation-specific Ansible transfer scratch space")
 
+    def test_host_tool_preflight_names_every_missing_utility(self):
+        tasks = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))[0]["tasks"]
+        lifecycle = next(task for task in tasks if task.get("name") == "Run the sealed Klokast CLI builder lifecycle")
+        preflight = lifecycle["block"][0]["ansible.builtin.command"]["argv"]
+        with tempfile.TemporaryDirectory() as temporary:
+            env = {**os.environ, "PATH": temporary}
+            missing = subprocess.run(preflight, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(missing.stdout.strip(), "curl kpartx sfdisk xorriso")
+            for name in ("curl", "kpartx", "sfdisk"):
+                tool = Path(temporary) / name
+                tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                tool.chmod(0o755)
+            missing = subprocess.run(preflight, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(missing.stdout.strip(), "xorriso")
+
     def test_large_transfers_use_bounded_dom0_data_scratch(self):
         playbook = PLAYBOOK.read_text(encoding="utf-8")
         tasks = ROLE_TASKS.read_text(encoding="utf-8")
