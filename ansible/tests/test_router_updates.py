@@ -364,6 +364,7 @@ class LifecycleTests(unittest.TestCase):
         f['installation'] = generation_fixture.g.seal({
             'kind':'klokast.router-initial-installation.v1', 'box':'boxa', 'role':'router',
             'operation_id':'a'*24, 'engine_commit':'b'*40, 'release_sha256':'c'*64,
+            'selection_sha256':'0'*64,
             'disk':f['existing_disk'], 'stage':'enrolled', 'preparation_sha256':'d'*64,
             'enrollment_sha256':'e'*64, 'machine_id':'n123', 'generation_sha256':None})
         self.assertEqual(r.lifecycle('initial-install', **f), 'resume')

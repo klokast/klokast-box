@@ -4,7 +4,7 @@ from router_transaction import TransactionError
 
 STAGES = ('allocated', 'prepared', 'enrolled', 'verified')
 FIELDS = frozenset({'kind', 'box', 'role', 'operation_id', 'engine_commit',
-                    'release_sha256', 'disk', 'stage', 'preparation_sha256',
+                    'selection_sha256', 'release_sha256', 'disk', 'stage', 'preparation_sha256',
                     'enrollment_sha256', 'machine_id', 'generation_sha256', 'record_sha256'})
 
 
@@ -17,6 +17,7 @@ def validate(value, box):
             value['box'] != box or value['role'] != 'router' or
             not generations.matches('[0-9a-f]{24}', value['operation_id']) or
             not generations.matches('[0-9a-f]{40}', value['engine_commit']) or
+            not generations.matches('[0-9a-f]{64}', value['selection_sha256']) or
             not generations.matches('[0-9a-f]{64}', value['release_sha256']) or
             value['stage'] not in STAGES):
         raise TransactionError('router initial installation has an invalid target or source')
@@ -45,7 +46,8 @@ def advance(current, next_value, box):
         return next_value
     before, after = STAGES.index(current['stage']), STAGES.index(next_value['stage'])
     if after != before + 1 or any(current[name] != next_value[name] for name in (
-            'box', 'role', 'operation_id', 'engine_commit', 'release_sha256', 'disk')) or any(
+            'box', 'role', 'operation_id', 'engine_commit', 'selection_sha256',
+            'release_sha256', 'disk')) or any(
             current[name] != next_value[name] for name in
             ('preparation_sha256', 'enrollment_sha256', 'generation_sha256')[:before]) or (
             before >= 2 and current['machine_id'] != next_value['machine_id']):

@@ -572,7 +572,8 @@ Extra firewall includes and DNS configuration fail verification.
 
 The first-install record advances through `allocated`, `prepared`, `enrolled`,
 and `verified` under the dom0 router lock. It binds one operation, engine,
-release, LV UUID, preparation result, enrollment result, and proposed generation.
+policy selection receipt, release, LV UUID, preparation result, enrollment
+result, and proposed generation.
 A missing or changed record cannot authorize a second disk or identity. The
 first accepted-generation writer requires the matching verified record. The
 record itself grants no installation authority: the issuer must prove the

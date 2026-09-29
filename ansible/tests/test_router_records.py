@@ -47,6 +47,7 @@ class RecordsTests(unittest.TestCase):
     def record_verified_installation(self):
         value = {'kind':'klokast.router-initial-installation.v1', 'box':'boxa', 'role':'router',
                  'operation_id':self.new['generation_id'], 'engine_commit':self.new['engine_commit'],
+                 'selection_sha256':'0'*64,
                  'release_sha256':'1'*64, 'disk':self.new['disk'], 'stage':'allocated',
                  'preparation_sha256':None, 'enrollment_sha256':None,
                  'machine_id':None, 'generation_sha256':None}
@@ -184,7 +185,8 @@ class RecordsTests(unittest.TestCase):
         (self.base / 'accepted.json').unlink()
         allocated = g.seal({'kind':'klokast.router-initial-installation.v1',
             'box':'boxa', 'role':'router', 'operation_id':self.new['generation_id'],
-            'engine_commit':self.new['engine_commit'], 'release_sha256':'1'*64,
+            'engine_commit':self.new['engine_commit'], 'selection_sha256':'0'*64,
+            'release_sha256':'1'*64,
             'disk':self.new['disk'], 'stage':'allocated', 'preparation_sha256':None,
             'enrollment_sha256':None, 'machine_id':None, 'generation_sha256':None})
         with self.records.lock():
@@ -199,6 +201,11 @@ class RecordsTests(unittest.TestCase):
                 'preparation_sha256':'2'*64})
             with self.assertRaisesRegex(TransactionError, 'cannot skip'):
                 self.records.record_installation(changed_disk)
+            changed_selection = g.seal({**{k:v for k,v in allocated.items() if k != 'record_sha256'},
+                'stage':'prepared', 'selection_sha256':'f'*64,
+                'preparation_sha256':'2'*64})
+            with self.assertRaisesRegex(TransactionError, 'cannot skip'):
+                self.records.record_installation(changed_selection)
         with self.records.lock():
             verified = self.record_verified_installation()
         self.assertEqual(verified['stage'], 'verified')
