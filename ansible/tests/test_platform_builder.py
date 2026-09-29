@@ -9,6 +9,7 @@ import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest.mock import Mock, patch
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -402,6 +403,10 @@ class PlatformBuilderDom0Test(unittest.TestCase):
             playbook.index("Prepare pinned Alpine 3.23 VIRT boot assets on dom0"),
             playbook.index("Remove operation-specific Ansible transfer scratch space"),
         )
+        tasks = yaml.safe_load(playbook)[0]["tasks"]
+        lifecycle = next(task for task in tasks if task.get("name") == "Run the sealed Klokast CLI builder lifecycle")
+        self.assertEqual(lifecycle["block"][0]["name"], "Check that the dom0 builder tools already exist")
+        self.assertEqual(lifecycle["always"][0]["name"], "Remove operation-specific Ansible transfer scratch space")
 
     def test_large_transfers_use_bounded_dom0_data_scratch(self):
         playbook = PLAYBOOK.read_text(encoding="utf-8")

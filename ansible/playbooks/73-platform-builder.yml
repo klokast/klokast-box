@@ -36,29 +36,29 @@
       ansible.builtin.set_fact:
         ansible_remote_tmp: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"
 
-    - name: Check that the dom0 builder tools already exist
-      ansible.builtin.command:
-        argv:
-          - /bin/sh
-          - -c
-          - >-
-            for tool in curl kpartx sfdisk xorriso; do
-              command -v "$tool" >/dev/null 2>&1 || exit 1;
-            done
-      changed_when: false
-      register: builder_host_tools
-
-    - name: Require installed dom0 builder tools without changing its package set
-      ansible.builtin.assert:
-        that:
-          - builder_host_tools.rc == 0
-        fail_msg: >-
-          The dom0 builder tools are not installed. Install them through an
-          approved dom0 maintenance workflow before building. This builder
-          will not change dom0 packages or upgrade Xen.
-
     - name: Run the sealed Klokast CLI builder lifecycle
       block:
+        - name: Check that the dom0 builder tools already exist
+          ansible.builtin.command:
+            argv:
+              - /bin/sh
+              - -c
+              - >-
+                for tool in curl kpartx sfdisk xorriso; do
+                  command -v "$tool" >/dev/null 2>&1 || exit 1;
+                done
+          changed_when: false
+          register: builder_host_tools
+
+        - name: Require installed dom0 builder tools without changing its package set
+          ansible.builtin.assert:
+            that:
+              - builder_host_tools.rc == 0
+            fail_msg: >-
+              The dom0 builder tools are not installed. Install them through an
+              approved dom0 maintenance workflow before building. This builder
+              will not change dom0 packages or upgrade Xen.
+
         - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
           ansible.builtin.import_role:
             name: alpine-virt-assets
