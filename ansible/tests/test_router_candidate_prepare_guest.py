@@ -67,7 +67,8 @@ class CandidatePrepareHostTests(unittest.TestCase):
         operation = 'a' * 24
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
-            def fail_create(*args):
+            def fail_create(*args, **kwargs):
+                self.assertEqual(kwargs, {'box':'boxa'})
                 (work / 'candidate-disk.json').write_text('planned')
                 raise RuntimeError('LVM refused the allocation')
             disk = types.SimpleNamespace(create=mock.Mock(side_effect=fail_create), retire=mock.Mock(return_value=0))

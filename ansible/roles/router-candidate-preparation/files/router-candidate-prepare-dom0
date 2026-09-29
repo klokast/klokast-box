@@ -102,7 +102,7 @@ def configuration(work, value, disk, result_loop, identity):
 def allocate(work, value, source, template_record):
     try:
         return router_candidate_disk.create(work, value['operation_id'], source,
-                                            template_record['artifacts']['os'])
+                                            template_record['artifacts']['os'], box=value['box'])
     except Exception as error:
         record_path = work / 'candidate-disk.json'
         if record_path.exists() or record_path.is_symlink():

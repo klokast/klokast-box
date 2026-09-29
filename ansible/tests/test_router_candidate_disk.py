@@ -151,13 +151,27 @@ class DiskTests(unittest.TestCase):
                 c.retire(self.work,self.operation,box=self.box)
             command.assert_not_called()
 
+    def test_clone_refuses_an_existing_initial_installation_operation(self):
+        protected=self.work/'protected'
+        protected.mkdir()
+        storage=Mock()
+        storage.installation.return_value={'operation_id':self.operation,
+            'disk':{'path':self.path,'uuid':'exact-uuid'}}
+        with patch.object(c.records,'Records',return_value=storage),patch.object(c,'observed',return_value=None), \
+             patch.object(c.native,'command') as command:
+            with self.assertRaisesRegex(TransactionError,'recorded first installation'):
+                c.create(self.work,self.operation,self.work/'template',
+                         {'sha256':'b'*64,'bytes':c.BYTES},box=self.box)
+            command.assert_not_called()
+        self.assertFalse((self.work/'candidate-disk.json').exists())
+
     def test_changed_template_refuses_before_lvcreate(self):
         source=self.work/'template'
         with source.open('wb') as f: f.truncate(c.BYTES)
         with patch.object(c,'safe_file'),patch.object(c,'observed',return_value=None), \
              patch.object(c,'checksum',return_value='c'*64),patch.object(c.native,'command') as command:
             with self.assertRaisesRegex(TransactionError,'template bytes'):
-                c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES})
+                c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES},box=self.box)
             command.assert_not_called()
         self.assertFalse((self.work/'candidate-disk.json').exists())
 
@@ -169,12 +183,12 @@ class DiskTests(unittest.TestCase):
         with patch.object(c,'safe_file'),patch.object(c,'observed',side_effect=[None,self.row,self.row]), \
              patch.object(c,'checksum',return_value='b'*64),patch.object(c.native,'command',side_effect=command):
             with self.assertRaisesRegex(TransactionError,'interrupted opaque clone'):
-                c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES})
+                c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES},box=self.box)
         self.assertEqual(c.record(self.work,self.operation)['uuid'],'exact-uuid')
         self.assertEqual(c.record(self.work,self.operation)['stage'],'allocated')
         with patch.object(c.native,'command') as command:
             with self.assertRaisesRegex(TransactionError,'already exists'):
-                c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES})
+                c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES},box=self.box)
             command.assert_not_called()
 
     def test_clone_records_uuid_before_copy_and_checks_complete_bytes(self):
@@ -195,7 +209,7 @@ class DiskTests(unittest.TestCase):
         with patch.object(c,'safe_file'),patch.object(c,'observed',side_effect=[None,self.row,self.row,self.row]), \
              patch.object(c,'checksum',return_value='b'*64) as checksum, \
              patch.object(c.native,'command',side_effect=command):
-            disk=c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES})
+            disk=c.create(self.work,self.operation,source,{'sha256':'b'*64,'bytes':c.BYTES},box=self.box)
             self.assertEqual(disk['uuid'],'exact-uuid')
             self.assertEqual(checksum.call_args.args,(Path(self.path),c.BYTES))
         self.assertEqual([v[0] for v in commands],['/sbin/lvcreate','/bin/dd'])

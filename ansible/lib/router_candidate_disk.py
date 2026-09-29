@@ -75,13 +75,14 @@ def verify(work, operation, *, detached=True):
     return disk
 
 
-def create(work, operation, source, expected):
+def create(work, operation, source, expected, *, box):
     """Clone only authenticated opaque bytes into a newly created, recorded LV."""
     work, source = Path(work), Path(source)
     path, tag = selection(operation)
     records.parents(work / 'candidate-disk.json')
     if (work / 'candidate-disk.json').exists() or (work / 'candidate-disk.json').is_symlink() or observed(operation):
         raise TransactionError('router candidate allocation already exists; reconcile its exact record')
+    refuse_referenced_disk(box, operation, {'path':path, 'uuid':None})
     if (not isinstance(expected, dict) or set(expected) != {'bytes','sha256'} or expected['bytes'] != BYTES or
             not generations.matches('[0-9a-f]{64}', expected['sha256'])):
         raise TransactionError('router candidate requires the exact qualified template size and hash')
