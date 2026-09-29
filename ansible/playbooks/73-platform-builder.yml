@@ -36,18 +36,28 @@
       ansible.builtin.set_fact:
         ansible_remote_tmp: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"
 
-    - name: Unlock reviewed builder maintenance packages in RAM
-      ansible.builtin.import_role:
-        name: dom0-apk-policy
-        tasks_from: maintenance-unlock.yml
-      vars:
-        dom0_maintenance_packages:
-          - curl
-          - kpartx
-          - sfdisk
-          - xorriso
+    - name: Check that the dom0 builder tools already exist
+      ansible.builtin.command:
+        argv:
+          - /bin/sh
+          - -c
+          - >-
+            for tool in curl kpartx sfdisk xorriso; do
+              command -v "$tool" >/dev/null 2>&1 || exit 1;
+            done
+      changed_when: false
+      register: builder_host_tools
 
-    - name: Run the builder workflow with bounded persistent transfer scratch
+    - name: Require installed dom0 builder tools without changing its package set
+      ansible.builtin.assert:
+        that:
+          - builder_host_tools.rc == 0
+        fail_msg: >-
+          The dom0 builder tools are not installed. Install them through an
+          approved dom0 maintenance workflow before building. This builder
+          will not change dom0 packages or upgrade Xen.
+
+    - name: Run the sealed Klokast CLI builder lifecycle
       block:
         - name: Prepare pinned Alpine 3.23 VIRT boot assets on dom0
           ansible.builtin.import_role:
@@ -57,14 +67,6 @@
           ansible.builtin.import_role:
             name: klokast-cli-builder
       always:
-        - name: Remove builder maintenance packages and lock APK
-          ansible.builtin.import_role:
-            name: dom0-apk-policy
-            tasks_from: maintenance-lock.yml
-
-        - name: Persist the restored dom0 package policy before scratch cleanup
-          ansible.builtin.meta: flush_handlers
-
         - name: Remove operation-specific Ansible transfer scratch space
           ansible.builtin.file:
             path: "/mnt/dom0_data/klokast-builder/transfer/{{ builder_operation_id }}"

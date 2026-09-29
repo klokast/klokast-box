@@ -74,5 +74,8 @@ toolchain afterward, and its binaries are never deployable artifacts.
   do not compile deployable CLI binaries. The controller also verifies the canonical repository and safe
   upstream branch. The guest binds that repository, ref, and commit into the
   binary and its receipt, and the controller verifies the receipt values.
+  The builder does not install, upgrade, or remove packages on dom0. It fails
+  before the build when the required host tools are absent. This keeps build
+  maintenance from changing the Xen host package set.
 
 - The resulting sealed binary is the `klokast` contract and planning engine described above.
