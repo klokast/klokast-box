@@ -296,7 +296,9 @@ ansible/bin/platform-router-update test-compatibility --box boxa \
 ```
 
 The command takes the installation lock and requires a fresh, clear legacy
-inspection. It refuses an accepted or pending assignment. Dom0 checks the live
+inspection. An adopted legacy source must also match the protected accepted
+assignment before and after the test. A pending assignment fails inspection.
+Dom0 checks the live
 Xen UUID, configuration, boot hashes, and exact two GiB legacy LV again. It takes
 a read-only LVM snapshot with a one GiB COW reserve, copies its opaque blocks to
 private storage, verifies the copy, and retires the snapshot by recorded UUID,
@@ -525,8 +527,9 @@ production cutover path is enabled.
 
 The read-only native guard qualification can run from a clean qualification
 checkout. It compares fresh inspection with dom0 LV, boot, live Xen, and kernel
-block-backend evidence. It must refuse the still-attached source disk. It does
-not stop a guest or adopt the baseline:
+block-backend evidence. An adopted legacy source must match its protected
+accepted assignment before and after the test. It must refuse the still-attached
+source disk. It does not stop a guest or adopt the baseline:
 
 ```sh
 ansible/bin/platform-router-update test-dom0-guards --box boxa

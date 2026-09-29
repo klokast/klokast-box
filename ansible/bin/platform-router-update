@@ -30,6 +30,48 @@ STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
 
 
+def accepted_source_at(box, directory, operation, engine, name):
+    """Read one exact protected assignment through the checked dom0 reader."""
+    args = directory / (name + '-arguments.json')
+    transport.write(args, {'router_check_box':box, 'router_check_operation':operation,
+                           'router_check_result_dir':str(directory), 'router_check_output':name + '.json'})
+    with (directory / (name + '.log')).open('x') as log:
+        transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+            REPO / 'ansible/playbooks/74-router-accepted-source.yml', '--limit', box + '-dom0',
+            '-e', '@' + str(args)], timeout=180, log=log)
+    value = transport.load(directory / (name + '.json'))
+    if (value.get('kind') != 'klokast.router-command-result.v1' or
+            value.get('box') != box or value.get('action') != 'accepted-source' or
+            value.get('engine_commit') != engine or
+            not isinstance(value.get('result'), dict) or
+            value['result'].get('kind') != 'klokast.router-accepted-source.v1'):
+        raise UpdateError('protected router source reader returned a different engine or target')
+    return value['result']
+
+
+def qualify_inspected_legacy(box, inspected, engine):
+    """Accept a fresh unadopted inspection or prove an adopted legacy source."""
+    directory = Path(inspected['evidence_directory'])
+    guest = transport.load(directory / (box + '-router.json'))
+    dom0 = transport.load(directory / (box + '-dom0.json'))
+    if not dom0['accepted_record_present']:
+        if inspected['adoption_findings']:
+            raise UpdateError('legacy router source is not ready: ' + ', '.join(inspected['adoption_findings']))
+        return guest, dom0, None
+    source = accepted_source_at(box, directory, inspected['operation'], engine, 'accepted-source')
+    assignment = router_records.assignment(source['assignment'], box)
+    generation = router_generations.generation(source['generation'], box)
+    router_updates.legacy_live(box=box, assignment=assignment, source=generation,
+                               guest=guest, dom0=dom0, now=dt.datetime.now(dt.timezone.utc))
+    return guest, dom0, source
+
+
+def require_accepted_source_unchanged(box, inspected, engine, source):
+    if source is not None and accepted_source_at(box, Path(inspected['evidence_directory']),
+            inspected['operation'], engine, 'accepted-source-final') != source:
+        raise UpdateError('accepted legacy router source changed during qualification')
+
+
 def check_legacy(box):
     """Make a read-only first-template decision from one adopted legacy source."""
     if not router_updates.match(router_updates.BOX, box):
@@ -48,24 +90,7 @@ def check_legacy(box):
         directory = Path(inspected['evidence_directory'])
         operation = inspected['operation']
 
-        def source_at(name):
-            args = directory / (name + '-arguments.json')
-            transport.write(args, {'router_check_box':box, 'router_check_operation':operation,
-                                   'router_check_result_dir':str(directory), 'router_check_output':name + '.json'})
-            with (directory / (name + '.log')).open('x') as log:
-                transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
-                    REPO / 'ansible/playbooks/74-router-accepted-source.yml', '--limit', box + '-dom0',
-                    '-e', '@' + str(args)], timeout=180, log=log)
-            value = transport.load(directory / (name + '.json'))
-            if (value.get('kind') != 'klokast.router-command-result.v1' or
-                    value.get('box') != box or value.get('action') != 'accepted-source' or
-                    value.get('engine_commit') != engine or
-                    not isinstance(value.get('result'), dict) or
-                    value['result'].get('kind') != 'klokast.router-accepted-source.v1'):
-                raise UpdateError('protected router source reader returned a different engine or target')
-            return value['result']
-
-        first = source_at('accepted-source')
+        first = accepted_source_at(box, directory, operation, engine, 'accepted-source')
         assignment = router_records.assignment(first['assignment'], box)
         generation = router_generations.generation(first['generation'], box)
         if first['box'] != box or generation['origin'] != 'legacy':
@@ -126,7 +151,7 @@ def check_legacy(box):
         final_schedule, final_policy_source, _, _ = policy_at()
         if final_schedule != schedule or final_policy_source != policy_source:
             raise UpdateError('router update schedule or signed policy changed during the read-only check')
-        if source_at('accepted-source-final') != first:
+        if accepted_source_at(box, directory, operation, engine, 'accepted-source-final') != first:
             raise UpdateError('router accepted source changed during the read-only update check')
         if policy_source is None:
             report = router_updates.seal({**{k:v for k,v in report.items() if k != 'report_sha256'},
@@ -473,13 +498,7 @@ def test_compatibility(box, source, template_operation):
                                             box, template_operation, approved_engine=manifest['engine_commit'])
     with transport.installation_lock():
         inspected = inspect(box)
-        if not inspected['adoption_ready']:
-            raise UpdateError('legacy router is not ready for compatibility: ' + ', '.join(inspected['adoption_findings']))
-        inspection = Path(inspected['evidence_directory'])
-        router = transport.load(inspection / (box + '-router.json'))
-        dom0 = transport.load(inspection / (box + '-dom0.json'))
-        if dom0['accepted_record_present'] or dom0['pending_record_present']:
-            raise UpdateError('legacy compatibility refuses an accepted or pending router assignment')
+        router, dom0, accepted = qualify_inspected_legacy(box, inspected, engine)
         disks = [row for row in dom0['logical_volumes']['report'][0]['lv'] if row['lv_path'] == '/dev/vg0/lv_router']
         if len(disks) != 1 or int(disks[0]['lv_size']) != 2147483648 or disks[0]['origin']:
             raise UpdateError('legacy compatibility requires the recorded two GiB router LV')
@@ -536,6 +555,7 @@ def test_compatibility(box, source, template_operation):
                 evidence.get('candidate_disk') != {'path': allocation['path'], 'uuid': allocation['uuid'], 'bytes': 2147483648}):
             raise UpdateError('router candidate LV qualification lacks its exact completed retirement record')
         persist_diagnostic_lvm(box, result)
+        require_accepted_source_unchanged(box, inspected, engine, accepted)
         return {**evidence, 'evidence_directory': str(result)}
 
 
@@ -554,9 +574,7 @@ def test_dom0_guards(box):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     with transport.installation_lock():
         inspection = inspect(box)
-        if inspection['adoption_findings']:
-            raise UpdateError('native router guard qualification requires a clear source inspection')
-        source = transport.load(Path(inspection['evidence_directory']) / (box + '-dom0.json'))
+        _, source, accepted = qualify_inspected_legacy(box, inspection, engine)
         operation = secrets.token_hex(12)
         directory = STATE / operation
         directory.mkdir(mode=0o700)
@@ -575,6 +593,7 @@ def test_dom0_guards(box):
                     'xen_runtime_verified','block_backend_verified','attached_disk_refused')) or
                 value.get('router_changed') is not False or value.get('replacement_authorized') is not False):
             raise UpdateError('native router guard qualification returned incomplete or different evidence')
+        require_accepted_source_unchanged(box, inspection, engine, accepted)
         return {**value,'evidence_directory':str(directory)}
 
 
