@@ -126,8 +126,9 @@ class DevelopmentCredentialTest(unittest.TestCase):
         self.app = mock.Mock()
         self.integration = mock.Mock()
         self.integration.get_app_installation.return_value.permissions = {'contents':'write', 'metadata':'read'}
-        self.integration.create_jwt.return_value = 'jwt'
-        self.app.integration.return_value = (self.integration, 10)
+        self.app_auth = mock.Mock()
+        self.app_auth.create_jwt.return_value = 'jwt'
+        self.app.integration.return_value = (self.integration, 10, self.app_auth)
         self.responses = [
             {'token':'secret', 'permissions': {'contents':'write', 'metadata':'read'}},
             {'total_count':1, 'repositories':[{'id':42, 'full_name':'org/klokast-instance', 'private':True}]},
@@ -149,6 +150,7 @@ class DevelopmentCredentialTest(unittest.TestCase):
 
     def test_token_request_selects_exact_repository_and_permissions(self):
         self.assertEqual(self.token(), 'secret')
+        self.app_auth.create_jwt.assert_called_once_with(60)
         self.assertEqual(self.calls[0].args[3], {'repository_ids':[42], 'permissions':{'contents':'write','metadata':'read'}})
 
     def test_unrelated_app_authority_is_rejected_before_mint(self):

@@ -403,14 +403,15 @@ class GithubApp:
             private_key = self.private_key_path.read_text(encoding="utf-8")
         except (KeyError, ValueError, OSError) as error:
             raise InstanceAuthorityError("temporary instance GitHub App credential is invalid") from error
-        return GithubIntegration(auth=Auth.AppAuth(app_id, private_key)), installation_id
+        app_auth = Auth.AppAuth(app_id, private_key)
+        return GithubIntegration(auth=app_auth), installation_id, app_auth
 
     def installation_present(self):
         try:
             from github import GithubException, UnknownObjectException
         except ImportError as error:
             raise InstanceAuthorityError("py3-pygithub is required on the active controller") from error
-        integration, installation_id = self.integration()
+        integration, installation_id, _ = self.integration()
         try:
             installation = integration.get_app_installation(installation_id)
         except UnknownObjectException as error:
@@ -437,7 +438,7 @@ class GithubApp:
             raise InstanceAuthorityError("instance bootstrap App must not request Contents access")
         if permissions.get("administration") not in {"read", "write"}:
             raise InstanceAuthorityError("instance bootstrap App requires bounded Administration access")
-        integration, installation_id = self.integration()
+        integration, installation_id, _ = self.integration()
         result = integration.get_access_token(
             installation_id, permissions
         )
@@ -2520,7 +2521,7 @@ def development_token(state):
         if not expected_type(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
             raise InstanceAuthorityError("development publication credential permissions are unsafe")
     app = GithubApp(DEVELOPMENT_APP_ROOT)
-    integration, installation_id = app.integration()
+    integration, installation_id, app_auth = app.integration()
     try:
         installation = integration.get_app_installation(installation_id)
     except Exception as error:
@@ -2528,7 +2529,7 @@ def development_token(state):
     if installation.permissions != {"contents": "write", "metadata": "read"}:
         raise InstanceAuthorityError("development App must have only Contents write and Metadata read")
     # PyGithub owns JWT signing. Request one repository even if the installation grows.
-    value = github_request(integration.create_jwt(), "POST",
+    value = github_request(app_auth.create_jwt(60), "POST",
                            f"/app/installations/{installation_id}/access_tokens", {
                                "repository_ids": [state["repository_id"]],
                                "permissions": {"contents": "write", "metadata": "read"},
