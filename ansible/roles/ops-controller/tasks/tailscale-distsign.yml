@@ -25,11 +25,15 @@
     mode: '0644'
 
 - name: Expand the pinned Go toolchain
-  ansible.builtin.unarchive:
-    src: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
-    dest: /usr/local/share/klokast/toolchains/go1.26.6
-    remote_src: true
-    creates: /usr/local/share/klokast/toolchains/go1.26.6/go/bin/go
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - 'set -e; /bin/tar -xzf "$1" -C "$2"; /bin/touch "$2/.extracted"'
+      - sh
+      - /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
+      - /usr/local/share/klokast/toolchains/go1.26.6
+    creates: /usr/local/share/klokast/toolchains/go1.26.6/.extracted
 
 - name: Publish the Go compiler command
   ansible.builtin.file:
@@ -105,14 +109,18 @@
   changed_when: false
 
 - name: Extract committed verifier source for the isolated build account
-  ansible.builtin.unarchive:
-    src: /var/cache/klokast/tailscale-distsign-source.tar
-    dest: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
-    remote_src: true
-    extra_opts: [--strip-components=2]
-    owner: tailscale-build
-    group: tailscale-build
-    creates: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/main.go"
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - 'set -e; /bin/tar -xf "$1" -C "$2" --strip-components 2; /bin/touch "$2/.extracted"'
+      - tailscale-build
+      - sh
+      - /var/cache/klokast/tailscale-distsign-source.tar
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
+    creates: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/.extracted"
 
 - name: Fetch and verify exact Go module dependencies without credentials
   ansible.builtin.command:
