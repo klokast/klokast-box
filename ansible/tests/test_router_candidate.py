@@ -122,6 +122,16 @@ class CandidateTests(unittest.TestCase):
                 candidate.verify(self.root, self.job)
             path.write_bytes(before)
 
+    def test_upstream_binary_bound_allows_signed_static_binary_size(self):
+        path = self.root / 'usr/local/sbin/tailscaled'
+        with path.open('r+b') as stream:
+            stream.truncate(17 * 1024 * 1024)
+        self.assertEqual(candidate.upstream_binary(self.root, 'usr/local/sbin/tailscaled'), path)
+        with path.open('r+b') as stream:
+            stream.truncate(65 * 1024 * 1024)
+        with self.assertRaisesRegex(ValueError, 'unsafe'):
+            candidate.upstream_binary(self.root, 'usr/local/sbin/tailscaled')
+
     def test_no_receipt_after_native_syntax_failure(self):
         self.job['mode'] = 'initial-install'
         with patch.object(personalize, 'environment'), patch.object(personalize.os, 'chown'), \

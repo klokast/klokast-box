@@ -140,15 +140,19 @@ def reclaim(work, operation, kind='failed', box=None):
         if record['stage'] not in ('detached', 'scratch-reclaimed'):
             raise RuntimeError('qualified router cleanup requires a detached operation')
         candidate = read(work / 'candidate.json')
+        generic = candidate.get('generic_tests')
+        upstream = isinstance(generic, dict) and generic.get('upstream_tailscale') is True
+        expected_generic = {'identity_absent': True, 'exact_packages': True,
+                            'kernel_modules': True, 'openrc': True,
+                            **({'upstream_tailscale': True} if upstream else {})}
         if (candidate.get('kind') != 'klokast.router-template-candidate.v1' or
                 candidate.get('role') != 'router' or candidate.get('operation_id') != operation or
-                candidate.get('generic_tests') != {
-                    'identity_absent': True, 'exact_packages': True,
-                    'kernel_modules': True, 'openrc': True} or
+                generic != expected_generic or
                 candidate.get('replacement_authorized') is not False):
             raise RuntimeError('qualified router cleanup lacks exact candidate evidence')
         required_tests = [('test', {'identity_absent': True, 'exact_packages': True,
-                                        'kernel_modules': True, 'service_syntax': True}),
+                                        'kernel_modules': True, 'service_syntax': True,
+                                        **({'upstream_tailscale': True} if upstream else {})}),
                                ('openrc', {'kernel_modules': True, 'openrc': True,
                                            'service_syntax': True})]
         if 'personalize' in record['domains']:

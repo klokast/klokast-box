@@ -131,10 +131,10 @@ class CleanupTests(unittest.TestCase):
                      'role': 'router', 'operation_id': self.operation,
                      'inputs_sha256': 'b' * 64, 'replacement_authorized': False,
                      'generic_tests': {'identity_absent': True, 'exact_packages': True,
-                                       'kernel_modules': True, 'openrc': True}}
+                                       'upstream_tailscale': True, 'kernel_modules': True, 'openrc': True}}
         (self.work / 'candidate.json').write_text(json.dumps(candidate))
         for mode, tests in (('test', {'identity_absent': True, 'exact_packages': True,
-                                     'kernel_modules': True, 'service_syntax': True}),
+                                     'upstream_tailscale': True, 'kernel_modules': True, 'service_syntax': True}),
                             ('openrc', {'kernel_modules': True, 'openrc': True,
                                         'service_syntax': True})):
             (self.work / (mode + '.json')).write_text(json.dumps({

@@ -21,6 +21,25 @@ def matches(pattern, value):
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
 
 
+def upstream_binary(root, relative):
+    personalize.directory(root, str(Path(relative).parent))
+    path = Path(root) / relative
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+            info.st_uid != os.geteuid() or info.st_dev != Path(root).stat().st_dev or
+            stat.S_IMODE(info.st_mode) != 0o755 or not 0 < info.st_size <= 64 * 1024 * 1024):
+        raise ValueError('router upstream Tailscale binary is unsafe: ' + relative)
+    return path
+
+
+def checksum(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def validate(request):
     if (not isinstance(request, dict) or set(request) != {'kind', 'mode', 'box', 'role', 'operation_id',
             'engine_commit', 'inputs_sha256', 'kernel_release', 'personalization', 'runtime_packages'} or
@@ -116,13 +135,12 @@ def verify(root, request):
         raise ValueError('router candidate lacks verified upstream Tailscale inputs')
     for name, relative in (('tailscale', 'usr/local/bin/tailscale'),
                            ('tailscaled', 'usr/local/sbin/tailscaled')):
-        path = personalize.regular(root, relative)
-        if (stat.S_IMODE(path.stat().st_mode) != 0o755 or
-                hashlib.sha256(path.read_bytes()).hexdigest() != component[name + '_sha256']):
+        path = upstream_binary(root, relative)
+        if checksum(path) != component[name + '_sha256']:
             raise ValueError('router candidate upstream Tailscale binary differs: ' + name)
     service = personalize.regular(root, 'etc/init.d/tailscale')
     if (stat.S_IMODE(service.stat().st_mode) != 0o755 or
-            hashlib.sha256(service.read_bytes()).hexdigest() != component['openrc_sha256']):
+            checksum(service) != component['openrc_sha256']):
         raise ValueError('router candidate upstream Tailscale service differs')
     expected = request['runtime_packages'] if request['mode'] == 'replacement' else request['personalization']['packages']
     if personalize.packages(root) != expected:
