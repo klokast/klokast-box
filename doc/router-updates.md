@@ -221,6 +221,12 @@ matches the controller's signed policy source. When the public implementation
 is ahead of the approved engine, the CLI reports a qualified template with
 `engine_approved: false` and no release receipt. A release receipt is build
 evidence, not an accepted router assignment or replacement authority.
+For a diagnostic build while the checked inventory source still uses the old
+engine, `build-template --compatibility-inventory` renders the exact box into
+the retained Ansible inventory. This option still requires the active
+controller and qualified template inputs. It never publishes a release receipt
+or grants replacement authority. Use the checked inventory for an approved
+build after engine activation.
 
 A fourth isolated boot tests configuration on a fresh disposable clone. The
 controller renders synthetic inputs through the normal router Jinja templates.

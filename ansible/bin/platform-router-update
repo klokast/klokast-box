@@ -432,7 +432,7 @@ def resolve(branch):
             'replacement_authorized': False}
 
 
-def build_template(box, source):
+def build_template(box, source, *, compatibility_inventory=False):
     if not router_updates.match(router_updates.BOX, box):
         raise UpdateError('router template requires an exact box ID')
     transport.require_controller()
@@ -458,20 +458,27 @@ def build_template(box, source):
         args = result / 'arguments.json'
         transport.write(args, {'router_template_box': box, 'router_template_operation': operation,
                               'router_template_input_dir': str(work), 'router_template_result_dir': str(result)})
+        inventory = [REPO / 'ansible/execution-inventory/hosts']
+        if compatibility_inventory:
+            rendered = result / 'compatibility-inventory.yml'
+            transport.command([REPO / 'ansible/bin/render-node-inventory', '--node', box,
+                               '--output', rendered])
+            inventory = [REPO / 'ansible/inventory/hosts.yml', rendered]
+        inventory_args = [argument for path in inventory for argument in ('-i', path)]
         with (result / 'build.log').open('x') as log:
-            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+            transport.command(['ansible-playbook', '-vv', *inventory_args,
                                REPO / 'ansible/playbooks/74-router-template.yml', '--limit', box + '-dom0',
                                '-e', '@' + str(args)], timeout=5400, log=log)
         candidate = transport.load(result / 'candidate.json')
         approved = transport.approved_engine()
         receipt = None
-        if approved == engine:
+        if approved == engine and not compatibility_inventory:
             receipt = router_template_inputs.release(candidate, manifest, profile, engine,
                                                      box, operation, approved_engine=approved)
             transport.write(result / 'release.json', receipt)
         return {'kind': 'klokast.router-template-result.v1', 'box': box, 'operation': operation,
                 'release_sha256': receipt['receipt_sha256'] if receipt else None,
-                'evidence_directory': str(result), 'engine_approved': approved == engine,
+                'evidence_directory': str(result), 'engine_approved': approved == engine and not compatibility_inventory,
                 'status': 'generic-template-qualified', 'replacement_authorized': False}
 
 
@@ -704,6 +711,8 @@ def main():
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
+    builder.add_argument('--compatibility-inventory', action='store_true',
+                         help='diagnostic build with the retained inventory; never publish an approved release')
     copier = sub.add_parser('test-state-copy', help='qualify state copying on new synthetic disks in networkless Xen guests')
     copier.add_argument('--box', required=True)
     copier.add_argument('--inputs-directory', required=True)
@@ -735,7 +744,8 @@ def main():
         elif args.command == 'test-dom0-guards':
             value = test_dom0_guards(args.box)
         elif args.command == 'build-template':
-            value = build_template(args.box, args.inputs_directory)
+            value = build_template(args.box, args.inputs_directory,
+                                   compatibility_inventory=args.compatibility_inventory)
         elif args.command == 'render-candidate':
             value = render_candidate(args.box, args.inputs_directory)
         elif args.command == 'test-compatibility':
