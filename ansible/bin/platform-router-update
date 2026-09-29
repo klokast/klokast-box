@@ -166,11 +166,12 @@ def check_legacy(box):
                 'diagnostic_only':policy_source is None}
 
 
-def test_candidate_preparation(box, source, template_operation):
+def test_candidate_preparation(box, source, template_operation, mode='replacement'):
     """Prepare and retire one disposable candidate LV; no production authority."""
     if (not router_updates.match(router_updates.BOX, box) or
-            not re.fullmatch('[0-9a-f]{24}', template_operation)):
-        raise UpdateError('candidate preparation test requires an exact box and template operation')
+            not re.fullmatch('[0-9a-f]{24}', template_operation) or
+            mode not in ('initial-install', 'replacement')):
+        raise UpdateError('candidate preparation test requires an exact box, template operation, and mode')
     transport.require_controller()
     source = Path(source)
     if source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name):
@@ -189,7 +190,7 @@ def test_candidate_preparation(box, source, template_operation):
     operation = secrets.token_hex(12)
     work, result = CACHE / ('candidate-test-' + operation), STATE / operation
     work.mkdir(mode=0o700); result.mkdir(mode=0o700)
-    job = {'kind':'klokast.router-candidate-job.v1', 'mode':'replacement', 'box':box,
+    job = {'kind':'klokast.router-candidate-job.v1', 'mode':mode, 'box':box,
         'role':'router', 'operation_id':operation, 'engine_commit':engine,
         'inputs_sha256':manifest['inputs_sha256'], 'kernel_release':release['kernel_release'],
         'personalization':personalization, 'runtime_packages':release['runtime_packages']}
@@ -205,7 +206,7 @@ def test_candidate_preparation(box, source, template_operation):
     request = {'kind':'klokast.router-candidate-preparation-test.v1', 'box':box,
         'operation_id':operation, 'engine_commit':engine, 'inputs_sha256':manifest['inputs_sha256'],
         'template_operation':template_operation, 'template_sha256':vm_template_inputs.sha256(candidate_path),
-        'job_sha256':router_personalize.digest(job), 'bootstrap':boot}
+        'job_sha256':router_personalize.digest(job), 'mode':mode, 'bootstrap':boot}
     transport.write(result / 'arguments.json', {'router_candidate_test_box':box,
         'router_candidate_test_operation':operation, 'router_candidate_test_result_dir':str(result),
         'router_candidate_test_boot_dir':str(work / 'boot'),
@@ -227,7 +228,10 @@ def test_candidate_preparation(box, source, template_operation):
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('production_identity') is not False or
                 evidence.get('replacement_authorized') is not False or
-                evidence.get('prepared', {}).get('packages') != release['runtime_packages'] or
+                evidence.get('mode') != mode or evidence.get('prepared', {}).get('mode') != mode or
+                evidence.get('prepared', {}).get('packages') != (
+                    {item['name']:item['version'] for item in manifest['packages']}
+                    if mode == 'initial-install' else release['runtime_packages']) or
                 evidence['prepared'].get('configuration_files') != {
                     name:hashlib.sha256(content.encode()).hexdigest()
                     for name,content in personalization['files'].items()} or
@@ -238,7 +242,7 @@ def test_candidate_preparation(box, source, template_operation):
             raise UpdateError('candidate preparation compiler inputs changed during native test')
         persist_diagnostic_lvm(box, result)
         return {'kind':'klokast.router-candidate-preparation-test.v1', 'box':box,
-                'operation':operation, 'evidence_directory':str(result), 'status':'qualified',
+                'operation':operation, 'mode':mode, 'evidence_directory':str(result), 'status':'qualified',
                 'production_identity':False, 'replacement_authorized':False}
 
 
@@ -658,6 +662,7 @@ def main():
     candidate_test.add_argument('--box', required=True)
     candidate_test.add_argument('--inputs-directory', required=True)
     candidate_test.add_argument('--template-operation', required=True)
+    candidate_test.add_argument('--mode', choices=('initial-install', 'replacement'), default='replacement')
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -683,7 +688,7 @@ def main():
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
         elif args.command == 'test-candidate-preparation':
-            value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation)
+            value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation, args.mode)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

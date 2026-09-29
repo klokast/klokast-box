@@ -250,15 +250,21 @@ LV. It creates the declared LV only if absent; an existing disk is not resized
 or formatted by this role.
 
 The diagnostic candidate preparation command clones a new 2 GiB LV from a
-qualified template, prepares the replacement configuration in a networkless
-guest, checks the runtime package set and service syntax, and retires that
-exact test LV. It does not create an accepted generation or production
-identity. Use inputs and a template built from the same clean engine commit:
+qualified template, prepares the selected initial-install or replacement
+configuration in a networkless guest, checks the selected package set and
+service syntax, and retires that exact test LV. Initial-install keeps the
+template's first-contact packages; replacement retires them offline. Neither
+test enrolls a machine or creates an accepted generation. Use inputs and a
+template built from the same clean engine commit:
 
 ```sh
 ansible/bin/platform-router-update test-candidate-preparation --box boxa \
   --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION \
   --template-operation TEMPLATE_OPERATION
+
+ansible/bin/platform-router-update test-candidate-preparation --box boxa \
+  --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION \
+  --template-operation TEMPLATE_OPERATION --mode initial-install
 ```
 
 If LVM refuses allocation before the LV exists, the private disk record stays

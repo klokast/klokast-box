@@ -31,7 +31,7 @@ def load(path):
 def request(work, box, operation):
     value = load(work / 'request.json')
     if (not isinstance(value, dict) or set(value) != {'kind','box','operation_id','engine_commit',
-            'inputs_sha256','template_operation','template_sha256','job_sha256','bootstrap'} or
+            'inputs_sha256','template_operation','template_sha256','job_sha256','mode','bootstrap'} or
             value['kind'] != 'klokast.router-candidate-preparation-test.v1' or value['box'] != box or
             value['operation_id'] != operation or
             not re.fullmatch('[0-9a-f]{40}', value['engine_commit']) or
@@ -39,11 +39,12 @@ def request(work, box, operation):
             not re.fullmatch('[0-9a-f]{24}', value['template_operation']) or
             not re.fullmatch('[0-9a-f]{64}', value['template_sha256']) or
             not re.fullmatch('[0-9a-f]{64}', value['job_sha256']) or
+            value['mode'] not in ('initial-install', 'replacement') or
             not isinstance(value['bootstrap'], dict) or set(value['bootstrap']) != {'kernel','initramfs'}):
         raise RuntimeError('router candidate test request has an invalid target or input identity')
     job = load(work / 'candidate-job.json')
     router_candidate.validate(job)
-    if (job['mode'] != 'replacement' or job['box'] != box or job['operation_id'] != operation or
+    if (job['mode'] != value['mode'] or job['box'] != box or job['operation_id'] != operation or
             job['engine_commit'] != value['engine_commit'] or
             job['inputs_sha256'] != value['inputs_sha256'] or
             router_personalize.digest(job) != value['job_sha256']):
@@ -137,14 +138,16 @@ def execute(work, value, job):
                 result['operation_id'] != value['operation_id'] or
                 result['inputs_sha256'] != value['inputs_sha256'] or
                 result['job_sha256'] != value['job_sha256'] or result['success'] is not True or
-                result['prepared'].get('mode') != 'replacement' or
+                result['prepared'].get('mode') != value['mode'] or
                 result['prepared'].get('identity_absent') is not True or
                 result['prepared'].get('service_syntax') is not True or
-                result['prepared'].get('packages') != job['runtime_packages']):
+                result['prepared'].get('packages') != (
+                    job['personalization']['packages'] if value['mode'] == 'initial-install'
+                    else job['runtime_packages'])):
             raise RuntimeError('candidate preparation guest returned incomplete or different evidence')
         write(work / 'result.json', {'kind':'klokast.router-candidate-preparation-test-result.v1',
             'box':value['box'], 'operation_id':value['operation_id'], 'engine_commit':value['engine_commit'],
-            'inputs_sha256':value['inputs_sha256'], 'prepared':result['prepared'],
+            'inputs_sha256':value['inputs_sha256'], 'mode':value['mode'], 'prepared':result['prepared'],
             'production_identity':False, 'replacement_authorized':False, 'success':True})
         return True
     finally:
