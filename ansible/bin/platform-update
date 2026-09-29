@@ -972,6 +972,9 @@ def daily():
     source = schedule_source()
     if not source['policy'] or not source['policy']['enabled']:
         return {'status': 'deferred', 'reason': 'Instance update policy is disabled'}
+    targets = source['policy'].get('targets', {})
+    if not any(role in targets.get(box, []) for box, role in AUTO_TARGETS):
+        return {'status': 'deferred', 'reason': 'signed policy has no shared VM update targets'}
     scan()
     verification = verify_accepted()
     if not verification['verified']:

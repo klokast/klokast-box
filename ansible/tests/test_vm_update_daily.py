@@ -122,10 +122,24 @@ class DailyUpdates(unittest.TestCase):
 
     def test_daily_does_not_prepare_after_failed_verification(self):
         cli = load_cli()
-        with patch.object(cli, 'schedule_source', return_value={'policy': {'enabled': True}, 'activated': True}), \
+        with patch.object(cli, 'schedule_source', return_value={'policy': {'enabled': True,
+                'targets': {'k001': ['dmz']}}, 'activated': True}), \
                 patch.object(cli, 'scan'), patch.object(cli, 'verify_accepted', return_value={'verified': False}), \
                 patch.object(cli, 'prepare_auto') as prepare:
             self.assertEqual(cli.daily()['status'], 'failed')
+            prepare.assert_not_called()
+
+    def test_router_only_policy_does_not_start_shared_daily_work(self):
+        cli = load_cli()
+        schedule = {'policy': {'enabled': True, 'targets': {'k001': ['router']}},
+                    'activated': True}
+        with patch.object(cli, 'schedule_source', return_value=schedule), \
+                patch.object(cli, 'scan') as scan, \
+                patch.object(cli, 'verify_accepted') as verify, \
+                patch.object(cli, 'prepare_auto') as prepare:
+            self.assertEqual(cli.daily()['status'], 'deferred')
+            scan.assert_not_called()
+            verify.assert_not_called()
             prepare.assert_not_called()
 
     def test_accepted_verification_does_not_depend_on_policy_schedule_reader(self):
