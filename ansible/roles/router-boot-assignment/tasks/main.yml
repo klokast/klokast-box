@@ -33,11 +33,11 @@
       - router_boot_assignment_directory.stat.mode == '0700'
   when: router_boot_assignment_directory.stat.exists
 
-- name: Inspect protected router assignment and pending transaction paths
+- name: Inspect protected router assignment, pending, and first-install paths
   ansible.builtin.stat:
     path: "/mnt/dom0_data/klokast-router-updates/{{ item }}.json"
     follow: false
-  loop: [accepted, pending]
+  loop: [accepted, pending, installation]
   delegate_to: "{{ node_name }}-dom0"
   become: true
   become_method: doas
@@ -47,6 +47,18 @@
   ansible.builtin.set_fact:
     router_boot_assignment_present: "{{ router_boot_assignment_records.results[0].stat.exists | default(false) | bool }}"
     router_boot_pending_present: "{{ router_boot_assignment_records.results[1].stat.exists | default(false) | bool }}"
+    router_boot_initial_installation_present: "{{ router_boot_assignment_records.results[2].stat.exists | default(false) | bool }}"
+
+- name: Require a protected first-install record path when present
+  ansible.builtin.assert:
+    that:
+      - router_boot_assignment_records.results[2].stat.isreg | default(false)
+      - not (router_boot_assignment_records.results[2].stat.islnk | default(false))
+      - router_boot_assignment_records.results[2].stat.uid == 0
+      - router_boot_assignment_records.results[2].stat.mode == '0600'
+      - router_boot_assignment_records.results[2].stat.nlink == 1
+    fail_msg: Router first-install record has unsafe ownership, type, or mode.
+  when: router_boot_initial_installation_present
 
 - name: Refuse provisioning during a pending router replacement
   ansible.builtin.assert:
@@ -55,6 +67,15 @@
     fail_msg: >-
       {{ node_name }}-router has a pending replacement.
       Reconcile the recorded operation before running provisioning.
+
+- name: Refuse legacy provisioning during a recorded first installation
+  ansible.builtin.assert:
+    that:
+      - not router_boot_initial_installation_present or router_boot_assignment_present
+    fail_msg: >-
+      {{ node_name }}-router has a recorded first installation without an
+      accepted generation. Resume that exact installation through the approved
+      native installer. Legacy provisioning cannot create or start another router.
 
 - name: Refuse legacy changes to an accepted router generation
   ansible.builtin.assert:

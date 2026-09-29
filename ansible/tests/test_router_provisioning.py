@@ -86,6 +86,12 @@ class PreparationTests(unittest.TestCase):
                 self.assertEqual(accepted['pre_tasks'][1]['ansible.builtin.import_role']['name'], 'router-verification-inputs')
                 self.assertEqual(accepted['tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification')
         guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
+        inspected = next(task for task in guard if task.get('register') == 'router_boot_assignment_records')
+        self.assertEqual(inspected['loop'], ['accepted', 'pending', 'installation'])
+        first_install = next(task for task in guard if task.get('name') ==
+                             'Refuse legacy provisioning during a recorded first installation')
+        self.assertIn('router_boot_initial_installation_present',
+                      first_install['ansible.builtin.assert']['that'][0])
         verify = next(task for task in guard if task.get('register') == 'router_boot_assignment_verification')
         self.assertEqual(verify['ansible.builtin.command']['argv'][1], 'verify-boot-assignment')
         self.assertFalse(verify['changed_when'])

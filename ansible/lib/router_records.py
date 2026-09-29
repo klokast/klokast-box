@@ -152,6 +152,11 @@ class Records:
         for checksum in (value['current_sha256'], value['previous_sha256']):
             if checksum is not None:
                 self.generation(checksum)
+        if value['policy_sha256'] == INITIAL_AUTHORITY_SHA256:
+            if value['previous_sha256'] is not None:
+                raise transaction.TransactionError('first accepted router cannot have a previous generation')
+            initial_installation.matches_generation(
+                self.installation(), self.generation(value['current_sha256']), self.box)
         return value
 
     def installation(self):

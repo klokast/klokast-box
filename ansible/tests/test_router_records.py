@@ -159,6 +159,14 @@ class RecordsTests(unittest.TestCase):
         self.assertEqual(accepted['policy_sha256'], r.INITIAL_AUTHORITY_SHA256)
         self.assertEqual(accepted['current_sha256'], self.new['record_sha256'])
         self.assertIsNone(accepted['previous_sha256'])
+        self.assertEqual(self.records.accepted(), accepted)
+        verified = self.records.installation()
+        changed = g.seal({**{key: value for key, value in verified.items()
+                             if key != 'record_sha256'}, 'generation_sha256': '0' * 64})
+        r.write(self.base / 'installation.json', changed)
+        with self.assertRaisesRegex(TransactionError, 'differs from its verified installation'):
+            self.records.accepted()
+        r.write(self.base / 'installation.json', verified)
         with self.records.lock(), self.assertRaisesRegex(TransactionError, 'one template'):
             self.records.accept_initial(self.old)
         other = copy.deepcopy(self.new)

@@ -347,6 +347,11 @@ verifier. The playbooks then skip legacy work. A failed check stops the
 playbook before mutation. Direct calls to the rootfs builder, Xen
 renderer, VM base, Tailscale client, and enrollment still refuse an accepted
 assignment. A missing record does not constitute a baseline adoption receipt.
+If a first installation is recorded but has no accepted generation, these
+legacy paths stop before mutation. The native installer must resume the exact
+recorded operation; a provisioning rerun cannot create a second router disk.
+For a first accepted template generation, the protected assignment reader also
+checks that the verified installation record names that same generation.
 
 Run the router service verifier by itself from the active controller when a
 read-only check is needed:
