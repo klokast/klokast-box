@@ -17,7 +17,10 @@ import subprocess
 BASE = Path('/mnt/dom0_data/klokast-router-templates')
 FAILED_DISKS = ('os.slot', 'test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
 SCRATCH_DISKS = ('test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
-STAGED_INPUTS = ('capsule.tar', 'bootstrap-kernel', 'bootstrap-initramfs')
+STAGED_INPUTS = ('capsule.tar', '.capsule.tar.assembling', 'bootstrap-kernel',
+                 '.bootstrap-kernel.assembling', 'bootstrap-initramfs',
+                 '.bootstrap-initramfs.assembling')
+PART_ARTIFACTS = ('capsule', 'kernel', 'initramfs')
 UUID = re.compile(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}')
 
 
@@ -79,6 +82,65 @@ def attached(path):
                   if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
 
 
+def capsule_parts(work, request=None):
+    directory = work / 'parts'
+    record = work / 'parts.json'
+    if not directory.exists() and not directory.is_symlink():
+        if record.exists() or record.is_symlink():
+            raise RuntimeError('router capsule part directory is absent')
+        return []
+    safe_dir(directory)
+    if {path.name for path in directory.iterdir()} != set(PART_ARTIFACTS):
+        raise RuntimeError('router build input part directories differ from the fixed set')
+    for artifact in PART_ARTIFACTS:
+        safe_dir(directory / artifact)
+    if not record.exists() and not record.is_symlink():
+        if any(any((directory / artifact).iterdir()) for artifact in PART_ARTIFACTS):
+            raise RuntimeError('router capsule parts lack an exact manifest')
+        return []
+    if request is None:
+        request = read(work / 'request.json')
+    parts = read(record)
+    bootstrap = request.get('bootstrap')
+    if (not isinstance(parts, list) or not 3 <= len(parts) <= 1553 or
+            not isinstance(bootstrap, dict) or set(bootstrap) != {'kernel', 'initramfs'}):
+        raise RuntimeError('router capsule part cleanup has no exact request')
+    expected = {'capsule': request.get('capsule'), **bootstrap}
+    present = []
+    cursor = 0
+    for artifact in PART_ARTIFACTS:
+        reference = expected[artifact]
+        group = [item for item in parts if isinstance(item, dict) and item.get('artifact') == artifact]
+        if (not isinstance(reference, dict) or set(reference) != {'sha256', 'bytes'} or
+                type(reference['bytes']) is not int or not 1 <= len(group) or
+                parts[cursor:cursor + len(group)] != group):
+            raise RuntimeError('router capsule part cleanup has an invalid artifact order')
+        cursor += len(group)
+        total = 0
+        for index, item in enumerate(group):
+            if (set(item) != {'artifact', 'name', 'bytes', 'sha256'} or
+                    item['name'] != f'part-{index:04d}' or type(item['bytes']) is not int or
+                    not 0 < item['bytes'] <= 2 * 1024 * 1024 or
+                    index < len(group) - 1 and item['bytes'] != 2 * 1024 * 1024 or
+                    not isinstance(item['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', item['sha256'])):
+                raise RuntimeError('router capsule part cleanup found an invalid sequence')
+            total += item['bytes']
+        part_dir = directory / artifact
+        if total != reference['bytes'] or {path.name for path in part_dir.iterdir()} - {
+                item['name'] for item in group}:
+            raise RuntimeError('router capsule part cleanup differs from its request')
+        for item in group:
+            path = part_dir / item['name']
+            if path.exists() or path.is_symlink():
+                metadata = safe_file(path)
+                if metadata.st_size != item['bytes'] or attached(path):
+                    raise RuntimeError('router capsule part cleanup found changed or attached bytes')
+                present.append((path, metadata.st_size))
+    if cursor != len(parts):
+        raise RuntimeError('router capsule part cleanup contains an unknown artifact')
+    return present
+
+
 def reclaim(work, operation, kind='failed', box=None):
     safe_dir(BASE)
     safe_dir(work)
@@ -101,7 +163,7 @@ def reclaim(work, operation, kind='failed', box=None):
                 raise RuntimeError('staged router cleanup found an active async record')
         if any(name.endswith('-' + operation) for name, _ in domains()):
             raise RuntimeError('staged router template domain still exists')
-        present = []
+        present = capsule_parts(work, request)
         for name in STAGED_INPUTS:
             path = work / name
             if not path.exists() and not path.is_symlink():
@@ -118,7 +180,7 @@ def reclaim(work, operation, kind='failed', box=None):
         finally:
             os.close(descriptor)
         return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
-                'cleanup_kind': kind, 'removed': [path.name for path, _ in present],
+                'cleanup_kind': kind, 'removed': [str(path.relative_to(work)) for path, _ in present],
                 'bytes_reclaimed': sum(size for _, size in present)}
     record = read(work / 'lifecycle.json')
     if (set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
@@ -180,7 +242,7 @@ def reclaim(work, operation, kind='failed', box=None):
            any(name == record['domains'][mode] for name, _ in live)
            for mode in record['domains']):
         raise RuntimeError('router template domain still exists')
-    present = []
+    present = capsule_parts(work)
     for name in disks:
         path = work / name
         if not path.exists() and not path.is_symlink():
@@ -211,7 +273,7 @@ def reclaim(work, operation, kind='failed', box=None):
             os.close(descriptor)
     return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
             'cleanup_kind': kind,
-            'removed': [path.name for path, _ in present],
+            'removed': [str(path.relative_to(work)) for path, _ in present],
             'bytes_reclaimed': sum(size for _, size in present)}
 
 

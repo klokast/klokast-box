@@ -190,6 +190,11 @@ scratch disk. It does not mount a guest filesystem or change its APK world for
 this build. Package scripts, filesystem creation, and filesystem inspection
 run inside Xen. The kernel and modules come from the signed `linux-virt`
 package. This path does not use an ISO or the shared Alpine asset paths.
+The controller copies the frozen capsule, bootstrap kernel, and initramfs as
+bounded parts. Dom0 checks each part, assembles each original file, and checks
+its frozen size and SHA-256 hash before it starts a build guest. This permits
+the standard Ansible transfer to work on a slow Tailnet path without changing
+the signed inputs or giving the build guest network access.
 The frozen router world also includes `openssh`, which the existing first-contact
 bootstrap role needs. It does not add packages while it personalizes a clone.
 After rendering, a separate networkless finalization step removes the

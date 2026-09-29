@@ -97,6 +97,33 @@ class CleanupTests(unittest.TestCase):
             self.module.reclaim(self.work, self.operation, 'staged', 'k001')
         self.assertTrue((self.work / 'capsule.tar').exists())
 
+    def test_staged_cleanup_reclaims_only_recorded_capsule_parts(self):
+        self.staged()
+        request = json.loads((self.work / 'request.json').read_text())
+        request['capsule'] = {'sha256': 'c' * 64, 'bytes': 3}
+        request['bootstrap'] = {'kernel': {'sha256': 'e' * 64, 'bytes': 2},
+                                'initramfs': {'sha256': 'f' * 64, 'bytes': 4}}
+        (self.work / 'request.json').write_text(json.dumps(request))
+        (self.work / 'parts').mkdir(mode=0o700)
+        for artifact in ('capsule', 'kernel', 'initramfs'):
+            (self.work / 'parts' / artifact).mkdir(mode=0o700)
+        (self.work / 'parts.json').write_text(json.dumps([
+            {'artifact': 'capsule', 'name': 'part-0000', 'bytes': 3, 'sha256': 'd' * 64},
+            {'artifact': 'kernel', 'name': 'part-0000', 'bytes': 2, 'sha256': 'e' * 64},
+            {'artifact': 'initramfs', 'name': 'part-0000', 'bytes': 4, 'sha256': 'f' * 64}]))
+        (self.work / 'parts' / 'capsule' / 'part-0000').write_bytes(b'abc')
+        (self.work / 'parts' / 'kernel' / 'part-0000').write_bytes(b'kk')
+        (self.work / 'parts' / 'initramfs' / 'part-0000').write_bytes(b'iiii')
+        (self.work / 'parts' / 'capsule' / 'unexpected').write_bytes(b'x')
+        with self.assertRaisesRegex(RuntimeError, 'differs from its request'):
+            self.module.reclaim(self.work, self.operation, 'staged', 'k001')
+        self.assertTrue((self.work / 'capsule.tar').exists())
+        (self.work / 'parts' / 'capsule' / 'unexpected').unlink()
+        result = self.module.reclaim(self.work, self.operation, 'staged', 'k001')
+        self.assertIn('parts/capsule/part-0000', result['removed'])
+        self.assertFalse((self.work / 'parts' / 'capsule' / 'part-0000').exists())
+        self.assertTrue((self.work / 'parts.json').exists())
+
     def test_candidate_or_running_guest_blocks_every_unlink(self):
         (self.work / 'candidate.json').write_text('{}')
         with self.assertRaisesRegex(RuntimeError, 'qualified'):

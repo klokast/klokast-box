@@ -7,6 +7,9 @@
       - inventory_hostname == router_template_box ~ '-dom0'
       - router_template_input_dir == '/var/cache/klokast/updates/router/build-' ~ router_template_operation
       - router_template_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_template_operation
+      - router_template_transfer_parts is sequence
+      - router_template_transfer_parts | length >= 3
+      - router_template_transfer_parts | length <= 1553
 
 - name: Require the active controller before allocating template resources
   ansible.builtin.command:
@@ -66,7 +69,7 @@
     owner: root
     group: root
     mode: '0700'
-  loop: ['', async]
+  loop: ['', async, parts, parts/capsule, parts/kernel, parts/initramfs]
 
 - name: Stage exact router build inputs
   ansible.builtin.copy:
@@ -77,9 +80,49 @@
     mode: '0600'
   loop:
     - {source: request.json, target: request.json}
-    - {source: capsule.tar, target: capsule.tar}
-    - {source: boot/kernel, target: bootstrap-kernel}
-    - {source: boot/initramfs, target: bootstrap-initramfs}
+
+- name: Stage exact bounded router input part identities
+  ansible.builtin.copy:
+    content: "{{ router_template_transfer_parts | to_json }}\n"
+    dest: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/parts.json"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Transfer bounded router build input parts
+  ansible.builtin.copy:
+    src: "{{ router_template_input_dir }}/transfer/{{ item.artifact }}/{{ item.name }}"
+    dest: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/parts/{{ item.artifact }}/{{ item.name }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop: "{{ router_template_transfer_parts }}"
+  loop_control:
+    label: "{{ item.artifact }}/{{ item.name }}"
+  register: router_template_part_copy
+  retries: 3
+  delay: 3
+  until: router_template_part_copy is succeeded
+
+- name: Stage the checked router build input assembler
+  ansible.builtin.copy:
+    src: router-template-assemble-dom0
+    dest: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/router-template-assemble-dom0.py"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Assemble and verify the exact router build inputs on dom0
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/router-template-assemble-dom0.py"
+      - --box
+      - "{{ router_template_box }}"
+      - --operation-id
+      - "{{ router_template_operation }}"
+  register: router_template_assembled
+  changed_when: (router_template_assembled.stdout | from_json).assembled | bool
 
 - name: Stage the router-only dom0 helper
   ansible.builtin.copy:

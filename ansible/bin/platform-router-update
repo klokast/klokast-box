@@ -452,12 +452,21 @@ def build_template(box, source, *, compatibility_inventory=False):
         result.mkdir(mode=0o700)
         manifest, capsule, boot = router_template_inputs.stage(source, work, profile, engine,
             REPO / 'ansible/roles/router-alpine-rootfs/files/router-template-guest')
+        (work / 'transfer').mkdir(mode=0o700)
+        parts = []
+        for artifact, source_path, identity in (
+                ('capsule', work / 'capsule.tar', capsule),
+                ('kernel', work / 'boot' / 'kernel', boot['kernel']),
+                ('initramfs', work / 'boot' / 'initramfs', boot['initramfs'])):
+            parts.extend({'artifact': artifact, **part} for part in
+                router_template_inputs.split_payload(source_path, work / 'transfer' / artifact, identity))
         transport.write(work / 'request.json', {'kind': 'klokast.router-template-request.v1',
             'box': box, 'role': 'router', 'operation_id': operation,
             'inputs_sha256': manifest['inputs_sha256'], 'capsule': capsule, 'bootstrap': boot})
         args = result / 'arguments.json'
         transport.write(args, {'router_template_box': box, 'router_template_operation': operation,
-                              'router_template_input_dir': str(work), 'router_template_result_dir': str(result)})
+                              'router_template_input_dir': str(work), 'router_template_result_dir': str(result),
+                              'router_template_transfer_parts': parts})
         inventory = [REPO / 'ansible/execution-inventory/hosts']
         if compatibility_inventory:
             rendered = result / 'compatibility-inventory.yml'
@@ -468,7 +477,7 @@ def build_template(box, source, *, compatibility_inventory=False):
         with (result / 'build.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', *inventory_args,
                                REPO / 'ansible/playbooks/74-router-template.yml', '--limit', box + '-dom0',
-                               '-e', '@' + str(args)], timeout=5400, log=log)
+                               '-e', '@' + str(args)], timeout=14400, log=log)
         candidate = transport.load(result / 'candidate.json')
         approved = transport.approved_engine()
         receipt = None

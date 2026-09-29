@@ -1,6 +1,10 @@
 """Controller-side router-only build staging. Outputs are qualification evidence."""
 from pathlib import Path
+import hashlib
 import json
+import os
+import re
+import stat
 import tarfile
 
 import router_updates
@@ -69,6 +73,41 @@ def stage(source, work, profile, engine, guest):
     boot = vm_template_inputs.bootstrap(source, work / 'boot', guest, expected_profile=router_updates.PROFILE)
     vm_template_inputs.verify_inputs(source, manifest, expected_profile=router_updates.PROFILE)
     return manifest, {'sha256': vm_template_inputs.sha256(capsule), 'bytes': capsule.stat().st_size}, boot
+
+
+def split_payload(source_path, directory, expected, *, chunk_bytes=2 * 1024 * 1024):
+    """Stage bounded Ansible copies without changing a qualified build input."""
+    source_path, directory = Path(source_path), Path(directory)
+    if (not isinstance(expected, dict) or set(expected) != {'sha256', 'bytes'} or
+            not isinstance(expected['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', expected['sha256']) or
+            type(expected['bytes']) is not int or not 0 < expected['bytes'] <= 2049 * 1024 * 1024 or
+            chunk_bytes != 2 * 1024 * 1024 or directory.exists() or directory.is_symlink()):
+        raise UpdateError('router input split requires one exact new bounded input')
+    info = source_path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or
+            info.st_mode & 0o077):
+        raise UpdateError('router input source has unsafe metadata')
+    if source_path.stat().st_size != expected['bytes'] or vm_template_inputs.sha256(source_path) != expected['sha256']:
+        raise UpdateError('router input differs from its frozen build request')
+    directory.mkdir(mode=0o700)
+    parts = []
+    whole = hashlib.sha256()
+    with source_path.open('rb') as source:
+        for index in range(1025):
+            block = source.read(chunk_bytes)
+            if not block:
+                break
+            name = f'part-{index:04d}'
+            with (directory / name).open('xb') as target:
+                target.write(block)
+                target.flush()
+                os.fsync(target.fileno())
+            (directory / name).chmod(0o600)
+            whole.update(block)
+            parts.append({'name': name, 'bytes': len(block), 'sha256': hashlib.sha256(block).hexdigest()})
+        if source.read(1) or sum(part['bytes'] for part in parts) != expected['bytes'] or whole.hexdigest() != expected['sha256']:
+            raise UpdateError('router input split exceeded its exact frozen byte identity')
+    return parts
 
 
 def release(candidate, manifest, profile, engine, box, operation, *, approved_engine):

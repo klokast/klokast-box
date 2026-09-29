@@ -31,6 +31,7 @@ class TemplateInventoryTests(unittest.TestCase):
             source = cache / ('b' * 24)
             source.mkdir()
             commands = []
+            writes = []
 
             def command(argv, **kwargs):
                 commands.append([str(value) for value in argv])
@@ -55,9 +56,11 @@ class TemplateInventoryTests(unittest.TestCase):
                     patch.object(cli.transport, 'installation_lock', return_value=nullcontext()), \
                     patch.object(cli.transport, 'command', side_effect=command), \
                     patch.object(cli.transport, 'load', side_effect=load), \
-                    patch.object(cli.transport, 'write'), \
+                    patch.object(cli.transport, 'write', side_effect=lambda path, value: writes.append((path, value))), \
                     patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
                     patch.object(cli.router_template_inputs, 'stage', return_value=stage), \
+                    patch.object(cli.router_template_inputs, 'split_payload', return_value=[
+                        {'name':'part-0000','bytes':1,'sha256':'d' * 64}]), \
                     patch.object(cli.router_template_inputs, 'release') as release:
                 result = cli.build_template('boxa', source, compatibility_inventory=True)
 
@@ -72,6 +75,9 @@ class TemplateInventoryTests(unittest.TestCase):
                     '-i', str(state / ('1' * 24) / 'compatibility-inventory.yml')])
             self.assertTrue(any(str(REPO / 'ansible/bin/render-node-inventory') == argv[0]
                                 for argv in commands))
+            arguments = next(value for path, value in writes if path.name == 'arguments.json')
+            self.assertEqual([item['artifact'] for item in arguments['router_template_transfer_parts']],
+                             ['capsule', 'kernel', 'initramfs'])
 
 
 if __name__ == '__main__':

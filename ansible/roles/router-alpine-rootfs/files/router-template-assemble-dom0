@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Assemble authenticated router build inputs from bounded Ansible copies."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+
+BASE = Path('/mnt/dom0_data/klokast-router-templates')
+CHUNK = 2 * 1024 * 1024
+MAXIMUM = 2049 * 1024 * 1024
+ARTIFACTS = {'capsule': ('capsule.tar', MAXIMUM),
+             'kernel': ('bootstrap-kernel', 32 * 1024 * 1024),
+             'initramfs': ('bootstrap-initramfs', 1024 * 1024 * 1024)}
+
+
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise RuntimeError('router input record has duplicate fields')
+        value[key] = item
+    return value
+
+
+def safe(path, *, directory=False, maximum=MAXIMUM, owner=0):
+    info = path.lstat()
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not kind(info.st_mode) or info.st_uid != owner or
+            stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600) or
+            not directory and (info.st_nlink != 1 or not 0 < info.st_size <= maximum)):
+        raise RuntimeError('router input path has unsafe metadata: ' + path.name)
+    return info
+
+
+def load(path, *, owner=0):
+    safe(path, maximum=1024 * 1024, owner=owner)
+    return json.loads(path.read_text(), object_pairs_hook=unique)
+
+
+def identity(work, box, operation, *, owner=0):
+    safe(work.parent, directory=True, owner=owner)
+    safe(work, directory=True, owner=owner)
+    safe(work / 'parts', directory=True, owner=owner)
+    for artifact in ARTIFACTS:
+        safe(work / 'parts' / artifact, directory=True, owner=owner)
+    request = load(work / 'request.json', owner=owner)
+    if (not isinstance(request, dict) or set(request) != {'kind', 'box', 'role', 'operation_id',
+            'inputs_sha256', 'capsule', 'bootstrap'} or
+            request['kind'] != 'klokast.router-template-request.v1' or request['box'] != box or
+            request['role'] != 'router' or request['operation_id'] != operation):
+        raise RuntimeError('router input request targets another operation')
+    if not isinstance(request['bootstrap'], dict) or set(request['bootstrap']) != {'kernel', 'initramfs'}:
+        raise RuntimeError('router bootstrap input request is incomplete')
+    expected = {'capsule': request['capsule'], **request['bootstrap']}
+    for artifact, (_, maximum) in ARTIFACTS.items():
+        item = expected[artifact]
+        if (not isinstance(item, dict) or set(item) != {'sha256', 'bytes'} or
+                not isinstance(item['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', item['sha256']) or
+                type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum):
+            raise RuntimeError('router build input request has an invalid byte identity')
+    parts = load(work / 'parts.json', owner=owner)
+    if not isinstance(parts, list) or not 3 <= len(parts) <= 1553:
+        raise RuntimeError('router input part record is incomplete')
+    if {path.name for path in (work / 'parts').iterdir()} != set(ARTIFACTS):
+        raise RuntimeError('router input part directory differs from its exact manifest')
+    grouped = {}
+    cursor = 0
+    for artifact in ARTIFACTS:
+        group = [item for item in parts if isinstance(item, dict) and item.get('artifact') == artifact]
+        if (not 1 <= len(group) <= (expected[artifact]['bytes'] + CHUNK - 1) // CHUNK or
+                parts[cursor:cursor + len(group)] != group):
+            raise RuntimeError('router input part record has an invalid artifact order')
+        cursor += len(group)
+        total = 0
+        for index, item in enumerate(group):
+            if (set(item) != {'artifact', 'name', 'bytes', 'sha256'} or
+                    item['name'] != f'part-{index:04d}' or type(item['bytes']) is not int or
+                    not 0 < item['bytes'] <= CHUNK or
+                    index < len(group) - 1 and item['bytes'] != CHUNK or
+                    not isinstance(item['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', item['sha256'])):
+                raise RuntimeError('router input part record has an invalid sequence or checksum')
+            total += item['bytes']
+        if total != expected[artifact]['bytes'] or {
+                path.name for path in (work / 'parts' / artifact).iterdir()} != {
+                item['name'] for item in group}:
+            raise RuntimeError('router input parts differ from their exact manifest')
+        grouped[artifact] = group
+    if cursor != len(parts):
+        raise RuntimeError('router input part record contains an unknown artifact')
+    return expected, grouped
+
+
+def checksum(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def assemble_one(work, artifact, expected, parts, *, owner=0):
+    name, maximum = ARTIFACTS[artifact]
+    output = work / name
+    if output.exists() or output.is_symlink():
+        info = safe(output, maximum=maximum, owner=owner)
+        if info.st_size != expected['bytes'] or checksum(output) != expected['sha256']:
+            raise RuntimeError('existing router build input differs from the frozen request: ' + name)
+        return False
+    temporary = work / ('.' + name + '.assembling')
+    if temporary.exists() or temporary.is_symlink():
+        info = temporary.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_nlink != 1 or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > maximum):
+            raise RuntimeError('router build input partial assembly has unsafe metadata')
+        temporary.unlink()
+    digest = hashlib.sha256()
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    total = 0
+    try:
+        with os.fdopen(descriptor, 'wb') as target:
+            for item in parts:
+                path = work / 'parts' / artifact / item['name']
+                info = safe(path, maximum=CHUNK, owner=owner)
+                if info.st_size != item['bytes'] or checksum(path) != item['sha256']:
+                    raise RuntimeError('router build input part bytes changed: ' + artifact + '/' + item['name'])
+                with path.open('rb') as source:
+                    for block in iter(lambda: source.read(1024 * 1024), b''):
+                        target.write(block)
+                        digest.update(block)
+                        total += len(block)
+            target.flush()
+            os.fsync(target.fileno())
+        if total != expected['bytes'] or digest.hexdigest() != expected['sha256']:
+            raise RuntimeError('assembled router build input differs from its frozen request: ' + name)
+        os.replace(temporary, output)
+        descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def assemble(work, box, operation, *, owner=0):
+    expected, grouped = identity(work, box, operation, owner=owner)
+    changed = False
+    for artifact in ARTIFACTS:
+        changed = assemble_one(work, artifact, expected[artifact], grouped[artifact], owner=owner) or changed
+    return {'kind': 'klokast.router-build-input-assembly.v1', 'operation_id': operation,
+            'assembled': changed,
+            'artifacts': {artifact: expected[artifact] for artifact in ARTIFACTS}}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
+        raise RuntimeError('router build input assembly requires root on the exact Xen dom0')
+    work = BASE / args.operation_id
+    with (BASE / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print(json.dumps(assemble(work, args.box, args.operation_id), sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        raise SystemExit('router-template-assemble-dom0: ' + str(error))
