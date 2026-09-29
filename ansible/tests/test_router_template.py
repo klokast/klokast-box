@@ -165,7 +165,7 @@ class TransportTests(unittest.TestCase):
                 self.host.request(work, 'boxa', 'a' * 24)
 
     def test_partial_failed_or_wrong_kernel_evidence_is_not_success(self):
-        expected = dict.fromkeys(('identity_absent', 'exact_packages'), True)
+        expected = dict.fromkeys(('identity_absent', 'exact_packages', 'upstream_tailscale'), True)
         good = {'kind': 'klokast.router-template-build.v1', 'success': True,
                 'operation_id': 'a' * 24, 'inputs_sha256': self.value()['inputs_sha256'],
                 'kernel_release': '6.18.1-virt', 'tests': expected}
