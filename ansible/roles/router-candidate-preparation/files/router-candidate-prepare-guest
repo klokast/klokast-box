@@ -11,6 +11,7 @@ import time
 
 sys.path.insert(0, '/usr/local/lib/klokast')
 import router_candidate
+import router_initial_contact
 import router_personalize
 
 REQUEST = Path('/router-candidate-job.json')
@@ -84,8 +85,14 @@ def prepare(value):
             command(['/bin/mount', '--bind', '/' + name, ROOT / name], deadline)
             mounted.append(ROOT / name)
         result = router_candidate.prepare(ROOT, value)
+        first_contact = None
+        if value['mode'] == 'initial-install':
+            details = value['first_contact']
+            first_contact = router_initial_contact.seed(ROOT, job=value, key=details['key'],
+                personalization=value['personalization'], backend_address=details['backend_address'],
+                backend_prefix=details['backend_prefix'])
         command(['/bin/sync'], deadline)
-        return result
+        return result, first_contact
     finally:
         for path in reversed(mounted):
             command(['/bin/umount', path], deadline)
@@ -99,7 +106,10 @@ def main():
               'operation_id':value['operation_id'], 'inputs_sha256':value['inputs_sha256'],
               'job_sha256':router_personalize.digest(value), 'success':False}
     try:
-        result.update(prepared=prepare(value), success=True)
+        prepared, first_contact = prepare(value)
+        result.update(prepared=prepared, success=True)
+        if first_contact is not None:
+            result['first_contact'] = first_contact
     except Exception as error:
         result['error'] = str(error)[:500]
     data = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()

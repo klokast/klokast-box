@@ -6,6 +6,7 @@ authority. Initial install retains the frozen first-contact packages until
 enrollment is verified; replacement retires them before receiving any identity.
 """
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -41,15 +42,36 @@ def checksum(path):
 
 
 def validate(request):
-    if (not isinstance(request, dict) or set(request) != {'kind', 'mode', 'box', 'role', 'operation_id',
-            'engine_commit', 'inputs_sha256', 'kernel_release', 'personalization', 'runtime_packages'} or
-            request['kind'] != 'klokast.router-candidate-job.v1' or request['mode'] not in ('initial-install', 'replacement') or
+    if (not isinstance(request, dict) or request.get('kind') != 'klokast.router-candidate-job.v1' or
+            request.get('mode') not in ('initial-install', 'replacement')):
+        raise ValueError('router candidate requires an exact box, lifecycle mode, engine, and input identity')
+    fields = {'kind', 'mode', 'box', 'role', 'operation_id', 'engine_commit', 'inputs_sha256',
+              'kernel_release', 'personalization', 'runtime_packages'}
+    if request['mode'] == 'initial-install':
+        if 'first_contact' not in request:
+            raise ValueError('initial router candidate requires one bounded first-contact key and backend address')
+        fields.add('first_contact')
+    if (set(request) != fields or
             request['role'] != 'router' or not matches('[a-z0-9][a-z0-9-]{0,30}', request['box']) or
             not matches('[0-9a-f]{24}', request['operation_id']) or
             not matches('[0-9a-f]{40}', request['engine_commit']) or
             not matches('[0-9a-f]{64}', request['inputs_sha256']) or
             not matches('[A-Za-z0-9_.+-]{1,128}', request['kernel_release'])):
         raise ValueError('router candidate requires an exact box, lifecycle mode, engine, and input identity')
+    if request['mode'] == 'initial-install':
+        first = request['first_contact']
+        try:
+            address = str(ipaddress.IPv4Address(first.get('backend_address'))) if isinstance(first, dict) else ''
+            source = str(ipaddress.IPv4Address(first.get('backend_source_address'))) if isinstance(first, dict) else ''
+        except (ipaddress.AddressValueError, TypeError):
+            address, source = '', ''
+        if (not isinstance(first, dict) or set(first) != {
+                'key', 'backend_address', 'backend_prefix', 'backend_source_address'} or
+                not isinstance(first['key'], str) or not 1 <= len(first['key'].encode()) <= 4096 or
+                '\n' in first['key'] or '\r' in first['key'] or '\0' in first['key'] or
+                address != first['backend_address'] or type(first['backend_prefix']) is not int or
+                not 1 <= first['backend_prefix'] <= 32 or source != first['backend_source_address']):
+            raise ValueError('initial router candidate requires one bounded first-contact key and backend address')
     value = request['personalization']
     personalize.validate(value)
     if any(value[key] != request[key] for key in ('box', 'role', 'inputs_sha256')):

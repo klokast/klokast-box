@@ -9,6 +9,7 @@ import re
 import runpy
 from pathlib import Path
 import secrets
+import stat
 import sys
 
 REPO = Path(__file__).resolve().parents[2]
@@ -18,6 +19,7 @@ import router_legacy_generation
 import router_generations
 import router_records
 import router_personalize
+import router_initial_contact
 import vm_template_inputs
 import router_template_inputs
 import router_tailscale
@@ -187,6 +189,29 @@ def test_candidate_preparation(box, source, template_operation, mode='replacemen
         box, template_operation, approved_engine=engine)
     rendered = render_candidate(box, source)
     personalization = transport.load(Path(rendered['evidence_directory']) / 'personalization.json')
+    first_contact = None
+    if mode == 'initial-install':
+        key_path = Path.home() / '.ssh/github-klokast-codex.pub'
+        try:
+            key_info = key_path.lstat()
+            if (not stat.S_ISREG(key_info.st_mode) or key_info.st_nlink != 1 or
+                    key_info.st_uid != os.getuid() or key_info.st_mode & 0o022 or
+                    not 0 < key_info.st_size <= 4096):
+                raise UpdateError('controller first-contact public key is unsafe')
+            key = key_path.read_text().strip()
+        except OSError as error:
+            raise UpdateError('controller first-contact public key is unavailable') from error
+        interfaces = personalization['files'].get('etc/network/interfaces', '')
+        backend = re.search(r'(?m)^iface eth3 inet static\n[ \t]+address ([0-9.]+)/([0-9]+)$', interfaces)
+        if not backend:
+            raise UpdateError('approved router personalization lacks the fixed backend bootstrap address')
+        topology = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))['load_topology']()
+        source_address = topology['zones'].get('bak', {}).get('dom0_ipv4_address')
+        if not isinstance(source_address, str):
+            raise UpdateError('approved router topology lacks the dom0 backend source address')
+        first_contact = {'key':key, 'backend_address':backend.group(1),
+                         'backend_prefix':int(backend.group(2)),
+                         'backend_source_address':source_address}
     operation = secrets.token_hex(12)
     work, result = CACHE / ('candidate-test-' + operation), STATE / operation
     work.mkdir(mode=0o700); result.mkdir(mode=0o700)
@@ -194,11 +219,13 @@ def test_candidate_preparation(box, source, template_operation, mode='replacemen
         'role':'router', 'operation_id':operation, 'engine_commit':engine,
         'inputs_sha256':manifest['inputs_sha256'], 'kernel_release':release['kernel_release'],
         'personalization':personalization, 'runtime_packages':release['runtime_packages']}
+    if first_contact is not None:
+        job['first_contact'] = first_contact
     import router_candidate
     router_candidate.validate(job)
     transport.write(work / 'candidate-job.json', job)
     guest = REPO / 'ansible/roles/router-candidate-preparation/files/router-candidate-prepare-guest'
-    modules = ('router_candidate','router_finalize','router_personalize')
+    modules = ('router_candidate','router_finalize','router_personalize','router_initial_contact')
     job_files = {'usr/local/lib/klokast/' + name + '.py':REPO / 'ansible/lib' / (name + '.py') for name in modules}
     job_files['router-candidate-job.json'] = work / 'candidate-job.json'
     boot = vm_template_inputs.bootstrap(source, work / 'boot', guest,
@@ -223,12 +250,38 @@ def test_candidate_preparation(box, source, template_operation, mode='replacemen
         evidence = transport.load(result / 'result.json')
         disk = transport.load(result / 'candidate-disk.json')
         lifecycle = transport.load(result / 'lifecycle.json')
+        if not isinstance(evidence, dict):
+            raise UpdateError('candidate preparation test returned an invalid result record')
+        first_contact_evidence = evidence.get('first_contact')
+        first_contact_valid = mode != 'initial-install'
+        if mode == 'initial-install' and first_contact is not None:
+            host_keys = first_contact_evidence.get('host_key_public_sha256') if isinstance(first_contact_evidence, dict) else None
+            first_contact_valid = (
+                isinstance(first_contact_evidence, dict)
+                and set(first_contact_evidence) == {'kind','authorized_key_sha256','interfaces_sha256',
+                    'firewall_sha256','sshd_config_sha256','host_key_public_sha256'}
+                and first_contact_evidence.get('kind') == 'klokast.router-first-contact.v1'
+                and first_contact_evidence.get('authorized_key_sha256') == hashlib.sha256((first_contact['key'] + '\n').encode()).hexdigest()
+                and first_contact_evidence.get('interfaces_sha256') == hashlib.sha256(
+                    router_initial_contact.first_contact_interfaces(first_contact['backend_address'],
+                        first_contact['backend_prefix']).encode()).hexdigest()
+                and first_contact_evidence.get('firewall_sha256') == hashlib.sha256(
+                    router_initial_contact.first_contact_firewall(
+                        personalization['files']['etc/nftables.nft'], first_contact['backend_source_address'],
+                        first_contact['backend_address'], first_contact['backend_prefix']).encode()).hexdigest()
+                and first_contact_evidence.get('sshd_config_sha256') == hashlib.sha256(
+                    router_initial_contact.first_contact_sshd_config(first_contact['backend_address']).encode()).hexdigest()
+                and isinstance(host_keys, dict) and bool(host_keys)
+                and set(host_keys) <= {'rsa','ecdsa','ed25519'}
+                and all(re.fullmatch('[0-9a-f]{64}', value) for value in host_keys.values())
+            )
         if (evidence.get('kind') != 'klokast.router-candidate-preparation-test-result.v1' or
                 evidence.get('box') != box or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('production_identity') is not False or
                 evidence.get('replacement_authorized') is not False or
                 evidence.get('mode') != mode or evidence.get('prepared', {}).get('mode') != mode or
+                not first_contact_valid or
                 evidence.get('prepared', {}).get('packages') != (
                     {item['name']:item['version'] for item in manifest['packages']}
                     if mode == 'initial-install' else release['runtime_packages']) or

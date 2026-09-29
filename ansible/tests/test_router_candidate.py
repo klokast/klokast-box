@@ -56,12 +56,28 @@ class CandidateTests(unittest.TestCase):
 
     def test_initial_recipe_keeps_frozen_bootstrap_packages_without_enrollment(self):
         self.job['mode'] = 'initial-install'
+        self.job['first_contact'] = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
+                                     'backend_prefix':24,'backend_source_address':'192.0.2.1'}
         value = self.prepare()
         self.assertEqual(value['packages'], self.request['packages'])
         self.assertTrue((self.root/'usr/sbin/sshd').is_file())
         self.assertFalse((self.root/'root/.ssh/authorized_keys').exists())
         self.assertFalse((self.root/'etc/runlevels/default/sshd').exists())
         self.assertFalse(value['replacement_authorized'])
+
+    def test_initial_install_requires_one_bounded_first_contact_descriptor(self):
+        self.job['mode'] = 'initial-install'
+        with self.assertRaisesRegex(ValueError, 'first-contact key and backend address'):
+            candidate.validate(self.job)
+        self.job['first_contact'] = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
+                                     'backend_prefix':24,'backend_source_address':'192.0.2.1'}
+        candidate.validate(self.job)
+        for field, value in (('backend_address','192.0.2.0/24'), ('backend_prefix',33),
+                             ('key','line one\nline two')):
+            invalid = copy.deepcopy(self.job)
+            invalid['first_contact'][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'first-contact key'):
+                candidate.validate(invalid)
 
     def test_wrong_target_engine_manifest_mode_and_kernel_refuse(self):
         for field, value in (('box','boxb'), ('role','bak'), ('mode','adopt'),
@@ -134,6 +150,8 @@ class CandidateTests(unittest.TestCase):
 
     def test_no_receipt_after_native_syntax_failure(self):
         self.job['mode'] = 'initial-install'
+        self.job['first_contact'] = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
+                                     'backend_prefix':24,'backend_source_address':'192.0.2.1'}
         with patch.object(personalize, 'environment'), patch.object(personalize.os, 'chown'), \
                 patch.object(candidate.subprocess, 'run', return_value=SimpleNamespace(returncode=1)):
             with self.assertRaisesRegex(ValueError, 'native service syntax'):

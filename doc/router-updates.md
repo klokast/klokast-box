@@ -254,9 +254,15 @@ The diagnostic candidate preparation command clones a new 2 GiB LV from a
 qualified template, prepares the selected initial-install or replacement
 configuration in a networkless guest, checks the selected package set and
 service syntax, and retires that exact test LV. Initial-install keeps the
-template's first-contact packages; replacement retires them offline. Neither
-test enrolls a machine or creates an accepted generation. Use inputs and a
-template built from the same clean engine commit:
+template's first-contact packages. It also seeds the approved temporary SSH
+key and backend address on that disposable disk, then records the key,
+interface, firewall, temporary SSH configuration, and generated host-key
+hashes. The firewall permits SSH only from the dom0 backend address to the
+router backend address. OpenSSH and nftables pass native syntax checks. The
+test guest has no VIF, and the candidate is retired without enrollment.
+Replacement retires the first-contact package closure offline. Neither test
+enrolls a machine or creates an accepted generation. Use inputs and a template
+built from the same clean engine commit:
 
 ```sh
 ansible/bin/platform-router-update test-candidate-preparation --box boxa \

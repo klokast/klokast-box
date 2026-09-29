@@ -38,6 +38,28 @@ class CandidatePrepareGuestTests(unittest.TestCase):
                 [('/bin/umount',str(root/'dev')),('/bin/umount',str(root/'sys')),
                  ('/bin/umount',str(root/'proc')),('/bin/umount',str(root))])
 
+    def test_initial_install_seeds_first_contact_after_candidate_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'candidate'
+            events=[]
+            def command(argv, deadline, **kwargs):
+                events.append(tuple(map(str,argv)))
+            prepared={'identity_absent':True,'mode':'initial-install'}
+            seed=mock.Mock(return_value={'kind':'klokast.router-first-contact.v1'})
+            candidate=types.SimpleNamespace(prepare=mock.Mock(return_value=prepared))
+            value={'mode':'initial-install','personalization':{'approved':True},
+                   'first_contact':{'key':'ssh-ed25519 key','backend_address':'192.0.2.2',
+                                    'backend_prefix':24,'backend_source_address':'192.0.2.1'}}
+            with mock.patch.dict(self.prepare.__globals__, {'ROOT':root,'command':command,
+                    'router_candidate':candidate,'router_initial_contact':types.SimpleNamespace(seed=seed)}):
+                result, first_contact = self.prepare(value)
+            self.assertEqual(result, prepared)
+            self.assertEqual(first_contact, {'kind':'klokast.router-first-contact.v1'})
+            candidate.prepare.assert_called_once()
+            seed.assert_called_once_with(root, job=value, key='ssh-ed25519 key',
+                personalization=value['personalization'], backend_address='192.0.2.2', backend_prefix=24)
+            self.assertIn(('/bin/sync',), events)
+
 
 class CandidatePrepareHostTests(unittest.TestCase):
     def test_failed_allocation_records_exact_absence_and_preserves_reason(self):
