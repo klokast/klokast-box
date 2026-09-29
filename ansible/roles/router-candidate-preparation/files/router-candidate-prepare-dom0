@@ -2,23 +2,19 @@
 """Qualify one candidate preparation on a new LV, then retire that LV."""
 import argparse
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import socket
 import sys
-import time
-import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import router_candidate
 import router_candidate_disk
-import router_initial_contact
 import router_personalize
-from xen_build_runtime import (attach_loop, boot_guest, checksum, detach_loop,
-    domain, duplicate_fields, read_slot, safe_directory, safe_file, write)
+from router_candidate_preparation import configuration, prepare
+from xen_build_runtime import (checksum, domain, duplicate_fields, safe_directory, safe_file, write)
 
 BASE = Path('/mnt/dom0_data/klokast-router-candidate-tests')
 TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
@@ -82,23 +78,6 @@ def template(value):
     return source, record
 
 
-def configuration(work, value, disk, result_loop, identity):
-    operation = value['operation_id']
-    name = 'router-candidate-prepare-' + operation
-    extra = ('console=hvc0 panic=1 klokast_operation=' + operation +
-             ' klokast_inputs=' + value['inputs_sha256'] + ' klokast_job=' + value['job_sha256'])
-    content = (f'name = {name!r}\nuuid = {identity!r}\ntype = "pvh"\nmemory = 2048\nmaxmem = 2048\n'
-               f'vcpus = 2\nkernel = {str(work / "bootstrap-kernel")!r}\n'
-               f'ramdisk = {str(work / "bootstrap-initramfs")!r}\nextra = {extra!r}\n'
-               f'disk = {["phy:" + disk["path"] + ",xvda,w", "phy:" + result_loop + ",xvdb,w"]!r}\n'
-               'vif = []\non_poweroff = "destroy"\non_reboot = "destroy"\non_crash = "destroy"\n')
-    path = work / 'prepare.cfg'
-    with path.open('x') as stream:
-        stream.write(content)
-        stream.flush(); os.fsync(stream.fileno())
-    return name, path
-
-
 def allocate(work, value, source, template_record):
     try:
         return router_candidate_disk.create(work, value['operation_id'], source,
@@ -120,63 +99,8 @@ def execute(work, value, job):
         raise RuntimeError('candidate preparation test operation already has a domain or disk')
     source, template_record = template(value)
     disk = allocate(work, value, source, template_record)
-    slot = work / 'result.slot'
-    with slot.open('xb') as stream:
-        os.posix_fallocate(stream.fileno(), 0, MIB)
-        os.fsync(stream.fileno())
-    result_loop = None
     try:
-        result_loop = attach_loop(slot)
-        identity = str(uuid.uuid4())
-        name, config = configuration(work, value, disk, result_loop, identity)
-        write(work / 'lifecycle.json', {'kind':'klokast.router-candidate-preparation-lifecycle.v1',
-            'operation_id':value['operation_id'], 'domain':name, 'uuid':identity, 'stage':'booting'})
-        boot_guest(work, name, identity, config, value,
-            kind='klokast.router-candidate-preparation-result.v1', timeout=420)
-        result = read_slot(slot)
-        expected_result_fields = {'kind','operation_id','inputs_sha256','job_sha256','success','prepared'}
-        if value['mode'] == 'initial-install':
-            expected_result_fields.add('first_contact')
-        first = result.get('first_contact') if isinstance(result, dict) else None
-        first_contact_valid = value['mode'] != 'initial-install'
-        if value['mode'] == 'initial-install' and isinstance(first, dict):
-            host_keys = first.get('host_key_public_sha256')
-            first_contact_valid = (
-                set(first) == {'kind','authorized_key_sha256','interfaces_sha256','firewall_sha256',
-                    'sshd_config_sha256','host_key_public_sha256'}
-                and first.get('kind') == 'klokast.router-first-contact.v1'
-                and first.get('authorized_key_sha256') == hashlib.sha256(
-                    (job['first_contact']['key'] + '\n').encode()).hexdigest()
-                and first.get('interfaces_sha256') == hashlib.sha256(
-                    router_initial_contact.first_contact_interfaces(job['first_contact']['backend_address'],
-                        job['first_contact']['backend_prefix']).encode()).hexdigest()
-                and first.get('firewall_sha256') == hashlib.sha256(
-                    router_initial_contact.first_contact_firewall(
-                        job['personalization']['files']['etc/nftables.nft'],
-                        job['first_contact']['backend_source_address'],
-                        job['first_contact']['backend_address'],
-                        job['first_contact']['backend_prefix']).encode()).hexdigest()
-                and first.get('sshd_config_sha256') == hashlib.sha256(
-                    router_initial_contact.first_contact_sshd_config(
-                        job['first_contact']['backend_address']).encode()).hexdigest()
-                and isinstance(host_keys, dict) and bool(host_keys)
-                and set(host_keys) <= {'rsa','ecdsa','ed25519'}
-                and all(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest)
-                        for digest in host_keys.values())
-            )
-        if (not isinstance(result, dict) or set(result) != expected_result_fields or
-                result['kind'] != 'klokast.router-candidate-preparation-result.v1' or
-                result['operation_id'] != value['operation_id'] or
-                result['inputs_sha256'] != value['inputs_sha256'] or
-                result['job_sha256'] != value['job_sha256'] or result['success'] is not True or
-                not first_contact_valid or
-                result['prepared'].get('mode') != value['mode'] or
-                result['prepared'].get('identity_absent') is not True or
-                result['prepared'].get('service_syntax') is not True or
-                result['prepared'].get('packages') != (
-                    job['personalization']['packages'] if value['mode'] == 'initial-install'
-                    else job['runtime_packages'])):
-            raise RuntimeError('candidate preparation guest returned incomplete or different evidence')
+        result = prepare(work, value, job, disk)
         write(work / 'result.json', {'kind':'klokast.router-candidate-preparation-test-result.v1',
             'box':value['box'], 'operation_id':value['operation_id'], 'engine_commit':value['engine_commit'],
             'inputs_sha256':value['inputs_sha256'], 'mode':value['mode'], 'prepared':result['prepared'],
@@ -186,8 +110,6 @@ def execute(work, value, job):
     finally:
         if domain(name) is not None:
             raise RuntimeError('candidate preparation guest remains; retain its disk and result')
-        if result_loop is not None:
-            detach_loop(slot, result_loop)
         router_candidate_disk.retire(work, value['operation_id'], box=value['box'])
         write(work / 'lifecycle.json', {'kind':'klokast.router-candidate-preparation-lifecycle.v1',
             'operation_id':value['operation_id'], 'domain':name, 'stage':'retired'})

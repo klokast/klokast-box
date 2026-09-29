@@ -90,7 +90,7 @@
         owner: root
         group: root
         mode: '0600'
-      loop: [router_candidate, router_candidate_disk, router_generations, router_native,
+      loop: [router_candidate, router_candidate_preparation, router_candidate_disk, router_generations, router_native,
              router_records, router_initial_installation, router_transaction, router_finalize,
              router_personalize, router_initial_contact, xen_build_runtime]
 
@@ -117,4 +117,4 @@
         src: '/mnt/dom0_data/klokast-router-candidate-tests/{{ router_candidate_test_operation }}/{{ item }}.json'
         dest: '{{ router_candidate_test_result_dir }}/{{ item }}.json'
         flat: true
-      loop: [result, candidate-disk, lifecycle]
+      loop: [result, candidate-disk, lifecycle, preparation, preparation-result]

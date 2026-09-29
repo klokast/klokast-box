@@ -545,7 +545,7 @@ replacement authority. Native candidate preparation and service verification
 must still pass before use.
 
 The candidate preparation guest is a networkless Xen job for one new clone.
-It accepts one hashed replacement job, a writable candidate disk, and a
+It accepts one hashed initial-install or replacement job, a writable disk, and a
 separate result slot. It mounts only the candidate root, runs the common
 preparation helper, then unmounts the root before it writes success. It has no
 old router disk, production VIF, enrollment key, or cutover command. The dom0
@@ -560,6 +560,16 @@ files, and retires the diagnostic LV after the guest stops. The result is test
 evidence only. A failed or uncertain cleanup keeps its exact disk record for
 reconciliation. This test does not publish a generation or use the production
 router identity.
+
+The shared dom0 runner, `router_candidate_preparation.py`, records the exact
+disk, job, Xen configuration, and result slot before it starts the preparation
+guest. It does not allocate or delete a disk. After an interruption, it can
+recover a complete result from a stopped guest without another preparation
+boot. A changed input, attached disk, incomplete result, or conflicting
+completion record causes refusal. This recovery applies only to preparation;
+it does not authorize a production boot or repeat enrollment. The diagnostic
+dispatcher still retires its test disk. The production first-install issuer
+must own disk retention and the installation-stage checks.
 
 The common preparation helper, `ansible/lib/router_candidate.py`, accepts only
 `initial-install` and `replacement` on a fresh generic clone inside networkless

@@ -285,6 +285,8 @@ def test_candidate_preparation(box, source, template_operation, mode='replacemen
                 evidence.get('prepared', {}).get('packages') != (
                     {item['name']:item['version'] for item in manifest['packages']}
                     if mode == 'initial-install' else release['runtime_packages']) or
+                evidence['prepared'].get('tailscale') != {key:manifest['tailscale'][key] for key in (
+                    'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')} or
                 evidence['prepared'].get('configuration_files') != {
                     name:hashlib.sha256(content.encode()).hexdigest()
                     for name,content in personalization['files'].items()} or
