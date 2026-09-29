@@ -52,7 +52,7 @@ esac
             master, slave = pty.openpty()
             try:
                 completed = subprocess.run(
-                    [str(SIGNER), "--purpose", "platform-apply", "--intent", str(intent),
+                    [os.environ.get("KLOKAST_TEST_BASH", "bash"), str(SIGNER), "--purpose", "platform-apply", "--intent", str(intent),
                      "--controller", "k002-ops"],
                     stdin=slave, stdout=slave, stderr=subprocess.PIPE, timeout=15,
                     env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],

@@ -1240,6 +1240,14 @@ def engine_authority(args):
                 "--new-engine-commit", args.new_engine_commit,
                 "--build-operation", args.build_operation,
             ])
+    elif args.action == "development-promote":
+        command.extend(["--new-engine-commit", args.new_engine_commit,
+                        "--build-operation", args.build_operation,
+                        "--schema-transition", args.schema_transition])
+        if args.check:
+            command.append("--check")
+        if args.resume_operation:
+            command.extend(["--resume-operation", args.resume_operation])
     elif args.action == "promotion-approve":
         command.extend([
             "--approval-intent", args.approval_intent,
@@ -1308,6 +1316,13 @@ def parse_args(argv):
     promotion_activate.add_argument("--engine-commit", required=True)
     promotion_activate.add_argument("--private-commit", required=True)
     promotion_activate.add_argument("--promotion-receipt", required=True)
+    commands.add_parser("development-check")
+    development = commands.add_parser("development-promote")
+    development.add_argument("--new-engine-commit", required=True)
+    development.add_argument("--build-operation", required=True)
+    development.add_argument("--schema-transition", choices=sorted(SCHEMA_TRANSITIONS), default=SCHEMA_TRANSITION_METADATA_ONLY)
+    development.add_argument("--check", action="store_true")
+    development.add_argument("--resume-operation")
     engine_status = commands.add_parser("engine-status")
     engine_status.add_argument("--candidate-engine")
     engine_status.add_argument("--candidate-tree")
@@ -1327,7 +1342,7 @@ def main(argv=None):
             seed(args)
         elif args.action in {
             "promotion-preflight", "promotion-approve", "promotion-activate",
-            "engine-status",
+            "engine-status", "development-promote", "development-check",
         }:
             if args.action == "engine-status":
                 args.action = "status"

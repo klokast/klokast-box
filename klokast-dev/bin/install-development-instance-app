@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+KSA_TOOL_NAME=install-development-instance-app
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+. "$SCRIPT_DIR/../lib/approval-common.sh"
+controller=""
+pem=""
+app_id=""
+installation_id=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --controller|--pem|--app-id|--installation-id)
+      [ "$#" -ge 2 ] || ksa_die "$1 needs a value"
+      case "$1" in
+        --controller) controller="$2" ;;
+        --pem) pem="$2" ;;
+        --app-id) app_id="$2" ;;
+        --installation-id) installation_id="$2" ;;
+      esac
+      shift 2 ;;
+    --help|-h)
+      printf 'Usage: %s --controller HOST --pem FILE --app-id ID --installation-id ID\n' "$0"
+      exit 0 ;;
+    *) ksa_die "unknown argument: $1" ;;
+  esac
+done
+ksa_valid_controller "$controller" || ksa_die "--controller HOST is required"
+case "$app_id:$installation_id" in *[!0-9:]*|:*|*:) ksa_die "App and installation IDs must be integers" ;; esac
+[ -f "$pem" ] && [ ! -L "$pem" ] || ksa_die "--pem must select a regular private key file"
+ksa_need_command python3
+ksa_need_command tailscale
+umask 077
+work="$(mktemp -d "${TMPDIR:-/tmp}/klokast-app-enrollment.XXXXXXXX")"
+remote_dir=""
+cleanup() {
+  rm -f "$work/path" "$work/enrollment.json"
+  rmdir "$work"
+  if [ -n "$remote_dir" ]; then
+    tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'REMOTE' >/dev/null 2>&1 || true
+set -eu
+rm -f "$1/enrollment.json"
+rmdir "$1"
+REMOTE
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+python3 - "$pem" "$app_id" "$installation_id" >"$work/enrollment.json" <<'PY'
+import json, pathlib, sys
+pem = pathlib.Path(sys.argv[1]).read_text()
+if 'PRIVATE KEY' not in pem or len(pem) > 16384:
+    raise SystemExit('invalid App private key file')
+print(json.dumps({'development_approval_mode': 'development',
+                  'development_github_app_id': sys.argv[2],
+                  'development_github_installation_id': sys.argv[3],
+                  'development_github_app_pem': pem}))
+PY
+tailscale ssh "smith@$controller" sh -s >"$work/path" <<'REMOTE'
+set -eu
+/usr/local/sbin/klokast-controller-guard --require-active >/dev/null
+[ "$(cat /etc/klokast/human-approval-mode)" = development ]
+umask 077
+mktemp -d "$HOME/private/klokast/app-enrollment.XXXXXXXX"
+REMOTE
+remote_dir="$(cat "$work/path")"
+case "$remote_dir" in
+  /home/smith/private/klokast/app-enrollment.*)
+    suffix="${remote_dir##*/app-enrollment.}"
+    case "$suffix" in ''|*[!A-Za-z0-9]*) remote_dir=""; ksa_die "unsafe remote path" ;; esac ;;
+  *) remote_dir=""; ksa_die "unsafe remote path" ;;
+esac
+tailscale ssh "smith@$controller" "umask 077; cat > '$remote_dir/enrollment.json'" <"$work/enrollment.json"
+tailscale ssh "smith@$controller" sh -s -- "$remote_dir" <<'REMOTE'
+set -eu
+cd "$HOME/src/klokast/klokast-box"
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
+  ansible/playbooks/68-ops-development-approvals.yml -e "@$1/enrollment.json"
+ansible/bin/platform-instance development-check
+REMOTE
+printf 'Development publication App enrolled on %s.\n' "$controller"

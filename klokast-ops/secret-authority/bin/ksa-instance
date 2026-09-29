@@ -2,6 +2,9 @@
 """Root-side private-instance repository bootstrap and read-only source wrapper."""
 
 import argparse
+import contextlib
+import fcntl
+import io
 import datetime as dt
 import hashlib
 import json
@@ -1300,6 +1303,8 @@ def cmd_status(args):
         "approval_signer": EXPECTED_SIGNER_ID,
         "github_app_configured": (Path(args.config_root) / "github-app.env").is_file()
         and (Path(args.config_root) / "github-app.pem").is_file(),
+        "development_app_configured": (DEVELOPMENT_APP_ROOT / "github-app.env").is_file()
+        and (DEVELOPMENT_APP_ROOT / "github-app.pem").is_file(),
         "source_prepared": paths["config"].is_file() and paths["key"].is_file() and paths["public"].is_file(),
         "repository_registered": repository_state_path(args).is_file(),
         "checkout_present": (Path(args.checkout) / ".git").is_dir(),
@@ -2064,10 +2069,11 @@ def validate_promotion_intent(value):
     return issued, expires
 
 
-def cmd_promotion_preflight(args):
+def cmd_promotion_preflight(args, envelope=None):
     require_root()
     require_active_controller()
-    envelope = read_promotion_envelope()
+    if envelope is None:
+        envelope = read_promotion_envelope()
     if envelope["action"] == "promote-engine":
         if not args.new_engine_commit or not args.build_operation:
             raise InstanceAuthorityError("promotion requires a new engine commit and build operation")
@@ -2484,6 +2490,231 @@ def add_instance_actions(parent, for_intent=False):
         status.add_argument("--redacted", action="store_true")
 
 
+DEVELOPMENT_APP_ROOT = Path("/etc/klokast/secret-authority/instance-development")
+DEVELOPMENT_MODE = Path("/etc/klokast/human-approval-mode")
+
+
+def require_development_mode():
+    require_root()
+    require_active_controller()
+    try:
+        info = DEVELOPMENT_MODE.lstat()
+    except FileNotFoundError as error:
+        raise InstanceAuthorityError("development publication is disabled") from error
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o022 or DEVELOPMENT_MODE.read_text() != "development\n"):
+        raise InstanceAuthorityError("development publication is disabled")
+
+
+def development_token(state):
+    require_development_mode()
+    for path in (DEVELOPMENT_APP_ROOT, DEVELOPMENT_APP_ROOT / "github-app.env",
+                 DEVELOPMENT_APP_ROOT / "github-app.pem"):
+        try:
+            info = path.lstat()
+        except FileNotFoundError as error:
+            raise InstanceAuthorityError(
+                "development publication App is not enrolled; see doc/secret-authority.md#autonomous-development-promotion"
+            ) from error
+        expected_type = stat.S_ISDIR if path == DEVELOPMENT_APP_ROOT else stat.S_ISREG
+        if not expected_type(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            raise InstanceAuthorityError("development publication credential permissions are unsafe")
+    app = GithubApp(DEVELOPMENT_APP_ROOT)
+    integration, installation_id = app.integration()
+    try:
+        installation = integration.get_app_installation(installation_id)
+    except Exception as error:
+        raise InstanceAuthorityError("cannot verify the development GitHub App installation") from error
+    if installation.permissions != {"contents": "write", "metadata": "read"}:
+        raise InstanceAuthorityError("development App must have only Contents write and Metadata read")
+    # PyGithub owns JWT signing. Request one repository even if the installation grows.
+    value = github_request(integration.create_jwt(), "POST",
+                           f"/app/installations/{installation_id}/access_tokens", {
+                               "repository_ids": [state["repository_id"]],
+                               "permissions": {"contents": "write", "metadata": "read"},
+                           }, expected=(201,))
+    token = value.get("token", "")
+    if not token:
+        raise InstanceAuthorityError("development App returned no installation token")
+    try:
+        repositories = github_request(token, "GET", "/installation/repositories?per_page=100")
+        items = repositories.get("repositories", [])
+        if (value.get("permissions") != {"contents": "write", "metadata": "read"}
+                or repositories.get("total_count") != 1 or len(items) != 1
+                or items[0].get("id") != state["repository_id"]
+                or items[0].get("full_name") != state["repository"]
+                or items[0].get("private") is not True):
+            raise InstanceAuthorityError("development token is not limited to the registered private repository")
+    except BaseException:
+        github_request(token, "DELETE", "/installation/token", expected=(204,))
+        raise
+    return token
+
+
+def capture_action(action, args):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        action(args)
+    return decode_closed_json(output.getvalue(), "internal action result")
+
+
+def development_candidate(args):
+    checkout, base, tree = checkout_state(args.checkout)
+    instance = decode_closed_json(read_bounded_regular(checkout / "klokast-instance.json", 65536, "instance"), "instance")
+    lock = decode_closed_json(read_bounded_regular(checkout / "klokast.lock.json", 65536, "lock"), "lock")
+    old = lock["engine"]["commit"]
+    instance = transition_instance_v1(instance, args.schema_transition, args.new_engine_commit)
+    lock["$schema"] = schema_url(args.new_engine_commit, "klokast-lock-v1.schema.json")
+    lock["engine"]["commit"] = args.new_engine_commit
+    documents = {"candidate_instance_json": json.dumps(instance, indent=2, sort_keys=True) + "\n",
+                 "candidate_lock_json": json.dumps(lock, indent=2, sort_keys=True) + "\n"}
+    with tempfile.TemporaryDirectory(prefix=".development-candidate.", dir=checkout.parent) as temporary:
+        candidate = Path(temporary)
+        run(["git", "-C", candidate, "init", "-q", "--initial-branch=main"])
+        for name in (".gitignore", "AGENTS.md", "README.md"):
+            (candidate / name).write_bytes(read_bounded_regular(checkout / name, 65536, name))
+        for name, field in (("klokast-instance.json", "candidate_instance_json"), ("klokast.lock.json", "candidate_lock_json")):
+            (candidate / name).write_text(documents[field])
+        run(["git", "-C", candidate, "add", "-A"])
+        candidate_tree = git_output(candidate, "write-tree")[0]
+    return {"schema_version": 1, "action": "promote-engine",
+            "engine_repository": CANONICAL_ENGINE_REPOSITORY, "engine_ref": CANONICAL_ENGINE_REF,
+            "schema_transition": args.schema_transition, "old_engine_commit": old,
+            "new_engine_commit": args.new_engine_commit, "private_base_commit": base,
+            "private_base_tree": tree, "rollback_tree": tree, "candidate_tree": candidate_tree, **documents}
+
+
+def development_publish(args, token, state, envelope, receipt, operation):
+    prefix = f"/repos/{state['repository']}"
+    commit_path = operation / "publication.json"
+    publication = None
+    if commit_path.exists():
+        publication = decode_closed_json(read_bounded_regular(commit_path, 65536, "publication"), "publication")
+        if not HEAD_RE.fullmatch(publication.get("commit", "")):
+            raise InstanceAuthorityError("development publication commit is invalid")
+    current = github_request(token, "GET", prefix + "/git/ref/heads/main")["object"]["sha"]
+    if publication and current == publication["commit"]:
+        return current  # Reconcile a lost response without another publication or nonce.
+    if current != receipt["private_base_commit"]:
+        raise InstanceAuthorityError("private main changed; development publication refused")
+    if now_utc() >= parse_utc(receipt["expires_at"], "expires_at"):
+        raise InstanceAuthorityError("development publication approval expired before publication")
+    if publication is None:
+        tree = github_request(token, "POST", prefix + "/git/trees", {
+            "base_tree": receipt["private_base_tree"],
+            "tree": [{"path": name, "mode": "100644", "type": "blob", "content": envelope[field]}
+                     for name, field in (("klokast-instance.json", "candidate_instance_json"),
+                                         ("klokast.lock.json", "candidate_lock_json"))],
+        }, expected=(201,))
+        if tree.get("sha") != receipt["candidate_tree"]:
+            raise InstanceAuthorityError("GitHub candidate tree differs from approved tree")
+        commit = github_request(token, "POST", prefix + "/git/commits", {
+            "message": f"Promote engine to {receipt['new_engine_commit']}\n\nPromotion receipt: {receipt['receipt_sha256']}",
+            "tree": receipt["candidate_tree"], "parents": [receipt["private_base_commit"]],
+        }, expected=(201,))
+        if (not HEAD_RE.fullmatch(commit.get("sha", ""))
+                or commit.get("tree", {}).get("sha") != receipt["candidate_tree"]
+                or [item.get("sha") for item in commit.get("parents", [])] != [receipt["private_base_commit"]]):
+            raise InstanceAuthorityError("GitHub commit does not match approved tree and parent")
+        publication = {"commit": commit["sha"]}
+        write_no_replace(commit_path, canonical_json(publication).encode())
+    descriptor = os.open(operation, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    require_development_mode()
+    require_public_checkout(args.repo_root, args.new_engine_commit, exact_target=True)
+    # A concurrent sibling commit makes this non-fast-forward and GitHub refuses it.
+    github_request(token, "PATCH", prefix + "/git/refs/heads/main",
+                   {"sha": publication["commit"], "force": False})
+    audit(args, "instance.engine-development.published", private_commit=publication["commit"],
+          promotion_receipt_sha256=receipt["receipt_sha256"])
+    return publication["commit"]
+
+
+def cmd_development_check(args):
+    require_development_mode()
+    _paths, _source, state = load_registered_source_identity(args)
+    token = development_token(state)
+    github_request(token, "DELETE", "/installation/token", expected=(204,))
+    print(canonical_json({"configured": True, "repository_sha256": state["repository_sha256"]}), end="")
+
+
+def cmd_development_promote(args):
+    require_development_mode()
+    if args.check and args.resume_operation:
+        raise InstanceAuthorityError("--check cannot resume a publication")
+    if not HEAD_RE.fullmatch(args.new_engine_commit) or not OPERATION_RE.fullmatch(args.build_operation):
+        raise InstanceAuthorityError("development promotion requires a full engine commit and build operation")
+    require_public_checkout(args.repo_root, args.new_engine_commit, exact_target=True)
+    root = Path(args.state_root) / "development-promotions"
+    ensure_private_dir(root)
+    with (root / "lock").open("a") as guard:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise InstanceAuthorityError("another development promotion is running") from error
+        _paths, _source, state = load_registered_source_identity(args)
+        token = development_token(state)
+        try:
+            if args.resume_operation:
+                if not OPERATION_RE.fullmatch(args.resume_operation):
+                    raise InstanceAuthorityError("resume operation must be one recorded operation ID")
+                operation = root / args.resume_operation
+                envelope = decode_closed_json(read_bounded_regular(operation / "candidate.json", MAX_PROMOTION_ENVELOPE_BYTES, "candidate"), "candidate")
+                approval = decode_closed_json(read_bounded_regular(operation / "approval.json", 65536, "approval"), "approval")
+            else:
+                synchronize_registered_source(args)
+                envelope = development_candidate(args)
+                intent = capture_action(lambda value: cmd_promotion_preflight(value, envelope), args)
+                if args.check:
+                    print(canonical_json({"checked": True, "candidate_tree": intent["candidate_tree"],
+                                          "new_engine_commit": args.new_engine_commit}), end="")
+                    return
+                operation = root / secrets.token_hex(6)
+                operation.mkdir(mode=0o700)
+                print(f"Development promotion operation: {operation.name}", file=sys.stderr, flush=True)
+                write_no_replace(operation / "candidate.json", canonical_json(envelope).encode())
+                account = pwd.getpwnam(args.infra_user)
+                with tempfile.TemporaryDirectory(prefix="development-sign.", dir=Path(args.checkout).parent) as temporary:
+                    signing = Path(temporary)
+                    os.chown(signing, account.pw_uid, account.pw_gid)
+                    intent_path = signing / "intent.json"
+                    write_no_replace(intent_path, canonical_json(intent).encode())
+                    os.chown(intent_path, account.pw_uid, account.pw_gid)
+                    run(["doas", "-u", args.infra_user, Path(args.repo_root) / "ansible/bin/development-sign-intent",
+                         "--purpose", "private-instance", "--intent", intent_path,
+                         "--signature", signing / "intent.json.sig"], capture=True)
+                    write_no_replace(operation / "intent.json", canonical_json(intent).encode())
+                    write_no_replace(operation / "intent.json.sig",
+                                     read_bounded_regular(signing / "intent.json.sig", 65536, "signature"))
+                args.approval_intent = str(operation / "intent.json")
+                args.approval_signature = str(operation / "intent.json.sig")
+                args.signer_id = EXPECTED_SIGNER_ID
+                approval = capture_action(cmd_promotion_approve, args)
+                write_no_replace(operation / "approval.json", canonical_json(approval).encode())
+            receipt = load_group_receipt(approval["receipt_path"], args.promotion_root, PROMOTION_KIND,
+                                         "new_engine_commit", args.new_engine_commit)
+            if (receipt["new_build_operation"] != args.build_operation
+                    or receipt["private_repository_id"] != state["repository_id"]
+                    or receipt["private_repository_sha256"] != state["repository_sha256"]):
+                raise InstanceAuthorityError("recorded development promotion identity changed")
+            build = verify_sealed_build(args.new_engine_commit, args.build_operation)
+            if build["binary_sha256"] != receipt["new_binary_sha256"] or build["receipt_sha256"] != receipt["new_builder_receipt_sha256"]:
+                raise InstanceAuthorityError("recorded development build changed")
+            args.private_commit = development_publish(args, token, state, envelope, receipt, operation)
+            args.engine_commit = args.new_engine_commit
+            args.promotion_receipt = approval["receipt_path"]
+            require_development_mode()
+            activation = capture_action(cmd_promotion_activate, args)
+            if not (operation / "activation.json").exists():
+                write_no_replace(operation / "activation.json", canonical_json(activation).encode())
+            print(canonical_json({**activation, "operation": operation.name}), end="")
+        finally:
+            github_request(token, "DELETE", "/installation/token", expected=(204,))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=os.environ.get("KLOKAST_REPO_ROOT", DEFAULT_REPO_ROOT))
@@ -2526,6 +2757,13 @@ def build_parser():
     activate.add_argument("--engine-commit", required=True)
     activate.add_argument("--private-commit", required=True)
     activate.add_argument("--promotion-receipt", required=True)
+    engine_actions.add_parser("development-check")
+    development = engine_actions.add_parser("development-promote")
+    development.add_argument("--new-engine-commit", required=True)
+    development.add_argument("--build-operation", required=True)
+    development.add_argument("--schema-transition", choices=sorted(SCHEMA_TRANSITIONS), default=SCHEMA_TRANSITION_METADATA_ONLY)
+    development.add_argument("--check", action="store_true")
+    development.add_argument("--resume-operation")
     engine_status = engine_actions.add_parser("status")
     engine_status.add_argument("--candidate-engine")
     engine_status.add_argument("--candidate-tree")
@@ -2553,6 +2791,10 @@ def main(argv=None):
             cmd_promotion_approve(args)
         elif args.command == "engine" and args.engine_action == "promotion-activate":
             cmd_promotion_activate(args)
+        elif args.command == "engine" and args.engine_action == "development-check":
+            cmd_development_check(args)
+        elif args.command == "engine" and args.engine_action == "development-promote":
+            cmd_development_promote(args)
         elif args.command == "engine" and args.engine_action == "status":
             cmd_engine_status(args)
         elif args.command == "instance" and args.instance_action == "register-repository":

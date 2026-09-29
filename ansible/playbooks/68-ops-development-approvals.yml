@@ -66,6 +66,12 @@
       loop: "{{ development_signers }}"
       when: development_approval_mode == 'signed'
 
+    - name: Remove development publication credentials in signed mode
+      ansible.builtin.file:
+        path: /etc/klokast/secret-authority/instance-development
+        state: absent
+      when: development_approval_mode == 'signed'
+
     - name: Remove development signing keys
       ansible.builtin.file:
         path: "{{ development_key_dir }}"
@@ -130,3 +136,47 @@
         group: root
         mode: "0644"
       when: development_approval_mode == 'development'
+
+    - name: Install the separate development publication App when supplied
+      when:
+        - development_approval_mode == 'development'
+        - development_github_app_id is defined
+      no_log: true
+      block:
+        - name: Check publication App enrollment input
+          ansible.builtin.assert:
+            that:
+              - development_github_app_id | string is match('^[0-9]+$')
+              - development_github_installation_id | string is match('^[0-9]+$')
+              - "'PRIVATE KEY' in development_github_app_pem"
+
+        - name: Create root-only development App storage
+          ansible.builtin.file:
+            path: /etc/klokast/secret-authority/instance-development
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Install development App identifiers
+          ansible.builtin.copy:
+            dest: /etc/klokast/secret-authority/instance-development/github-app.env
+            content: |
+              GITHUB_APP_ID={{ development_github_app_id }}
+              GITHUB_APP_INSTALLATION_ID={{ development_github_installation_id }}
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Install development App private key
+          ansible.builtin.copy:
+            dest: /etc/klokast/secret-authority/instance-development/github-app.pem
+            content: "{{ development_github_app_pem }}"
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Verify repository and permission scope and revoke the test token
+          ansible.builtin.command:
+            argv: [/usr/local/sbin/ksa-instance, engine, development-check]
+          changed_when: false

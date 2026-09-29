@@ -33,7 +33,9 @@ From a Macbook:
 
 During pre-production, the active in-Platform controller can use the temporary
 [development approval mode](doc/secret-authority.md#pre-production-human-approval-mode)
-for all human approval purposes. The production mode uses the trusted Mac signer.
+for all human approval purposes. A separate, repository-scoped GitHub App enables
+[autonomous development engine promotion](doc/secret-authority.md#autonomous-development-promotion).
+The production mode uses the trusted Mac signer and private publication path.
 
 Optional cloud bootstrap host or cloud-based `airunner`:
 - `klokast-ops/bin/provision-vultr-ops` creates the `vultr-ops` cloud host.

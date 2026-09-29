@@ -92,14 +92,82 @@ Select `private-instance` or `static-site` for the other approval purposes.
 Keep the prepared intent and signature in an owner-only controller directory.
 Do not copy the private development keys to the MacBook or infra-agent.
 The trusted MacBook approval wrappers detect this mode through `--controller`
-and request the scoped controller signature. They still show the exact intent
-and preserve the private Instance commit and push path on the MacBook.
+and request the scoped controller signature. They still show the exact intent.
+The controller can publish an engine transition through the separate bounded
+[development publication path](#autonomous-development-promotion) below.
 
 Before production, run the same playbook with
 `-e development_approval_mode=signed`. It disables development signing first,
-then removes the development public signer entries and private keys. Verify
+then removes the development public signer entries, private keys, and publication
+App credential. Uninstall the development App from GitHub as well. Verify
 that a stored development signature is refused after this change. The trusted
 MacBook signers remain in their separate allowed signer files.
+
+### Autonomous development promotion
+
+This exception permits engine and schema metadata changes from the active
+controller during development. It does not permit general Instance edits.
+The root executor checks the exact reversible schema transition, both sealed
+engines, the current private base, the scoped development signature, and the
+single-use nonce. It writes the existing immutable promotion and activation
+receipts. The registered source checkout and deploy key remain read-only.
+
+Enroll a **separate** GitHub App once from the trusted Mac:
+
+1. Create a private GitHub App with Repository Contents **read and write** and
+   Metadata **read**. Grant no other permissions. Disable webhooks.
+2. Install it on **only** the registered private `klokast-instance` repository.
+   Do not select the public engine or application repositories. Keep normal
+   branch protection; this workflow cannot bypass it.
+3. Generate its PEM private key. Record the App ID and installation ID.
+4. Pull public `main` on the Mac. With development mode already enabled, run:
+
+```sh
+klokast-dev/bin/install-development-instance-app --controller BOX-ops --pem /path/to/downloaded.pem --app-id APP_ID --installation-id INSTALLATION_ID
+```
+
+The installer sends the credential directly to the active controller. Ansible
+stores it root-only in
+`/etc/klokast/secret-authority/instance-development/`, verifies its scope, and
+removes temporary enrollment files. Do not send the PEM or a token to an
+infra-agent. The bootstrap App and app-publishing credentials are separate.
+The HA workflow excludes and removes this credential on standby controllers.
+After controller loss, fence the old controller and enroll a new credential
+from the trusted workstation. No daemon is added.
+
+After a clean public push and sealed build, run as `smith` on the controller:
+
+```sh
+ansible/bin/platform-instance development-check
+ansible/bin/platform-instance development-promote --new-engine-commit FULL_COMMIT --build-operation BUILD_ID --check
+ansible/bin/platform-instance development-promote --new-engine-commit FULL_COMMIT --build-operation BUILD_ID
+```
+
+The default transition is `metadata-only`. A supported schema transition needs
+its exact `--schema-transition` name. The check validates the credential and
+candidate without a signature or publication. The full action signs, approves,
+publishes the two exact JSON documents as one child of current private `main`,
+then synchronizes and activates through the registered read-only source.
+GitHub's [installation-token API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)
+restricts the token to the registered repository ID and Contents write.
+The executor also checks the returned repository and permission scope. It
+revokes the short-lived token at exit. GitHub's
+[reference update API](https://docs.github.com/en/rest/git/refs#update-a-reference)
+uses `force: false`; a concurrent private commit causes refusal.
+
+Each run prints an operation ID. Root-only evidence stays under
+`/var/lib/klokast/secret-authority/instance/development-promotions/`.
+If the publication or activation response is lost, keep that directory and run
+the same command with `--resume-operation OPERATION_ID`. Resume uses the
+recorded receipt and commit; it never signs or consumes the nonce again.
+An expired approval cannot publish a new commit. A commit already published
+can finish activation after expiry. If no `approval.json` exists, the action
+stopped before its publication checkpoint; inspect the promotion receipts
+before preparing a new operation. Do not replay its signed intent.
+
+Before production, restore `signed` mode as specified above and uninstall the
+App. Confirm that `development-check` and a retained development signature
+are refused. The production private publication path stays on the trusted Mac.
 
 Generate an approval intent from the controller checkout:
 

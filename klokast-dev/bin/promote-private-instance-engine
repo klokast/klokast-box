@@ -745,8 +745,17 @@ for field, wanted in expected.items():
 issued = dt.datetime.fromisoformat(value["issued_at"].replace("Z", "+00:00"))
 expires = dt.datetime.fromisoformat(value["expires_at"].replace("Z", "+00:00"))
 now = dt.datetime.now(dt.timezone.utc)
-if not issued <= now < expires <= issued + dt.timedelta(hours=1):
-    raise SystemExit("promotion intent is stale or exceeds one hour")
+timestamps = f"issued_at={issued.isoformat()}, expires_at={expires.isoformat()}, workstation_now={now.isoformat()}"
+if issued.tzinfo is None or expires.tzinfo is None:
+    raise SystemExit(f"promotion intent timestamps require a timezone: {timestamps}")
+if expires <= issued or expires > issued + dt.timedelta(hours=1):
+    raise SystemExit(f"promotion intent lifetime must be positive and at most one hour: {timestamps}")
+if now >= expires:
+    raise SystemExit(f"promotion intent has expired; prepare a new intent: {timestamps}")
+# Allow at most 60 seconds of issuance skew on the workstation only.
+# The controller still enforces its own strict issuance and expiry checks.
+if issued > now + dt.timedelta(seconds=60):
+    raise SystemExit(f"promotion intent issue time is more than 60 seconds in the future; check both clocks: {timestamps}")
 nonce = value.get("nonce", "")
 if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", nonce):
     raise SystemExit("promotion intent nonce is invalid")

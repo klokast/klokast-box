@@ -402,7 +402,7 @@ class EnginePromotionTest(unittest.TestCase):
                           "candidate_tree", "controller_public_commit", "schema_transition"), arguments))
         value.update(engine_repository="https://github.com/klokast/klokast-box", engine_ref="main",
                      signer_id="human-private-instance", nonce="promotion-test-nonce")
-        for age, lifetime, accepted in ((0, 3600, True), (1800, 3600, True), (0, 3601, False), (3601, 3600, False)):
+        for age, lifetime, accepted in ((0, 3600, True), (1800, 3600, True), (0, 3601, False), (3601, 3600, False), (-30, 3600, True), (-90, 3600, False), (0, 0, False)):
             with self.subTest(age=age, lifetime=lifetime):
                 issued = now - dt.timedelta(seconds=age)
                 value.update(issued_at=self.mod.format_utc(issued),

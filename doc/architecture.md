@@ -750,7 +750,10 @@ deleted as documentation cleanup.
 
 The active controller is the only Platform mutation locus and secret custodian.
 The human authors and pushes private instance changes from a trusted
-workstation. This human-only rule applies to the private instance repository,
+workstation. A bounded [development engine promotion](secret-authority.md#autonomous-development-promotion)
+can publish only an exact validated engine/schema transition from the active
+controller while development mode is enabled. Outside this exception, the
+human-only rule applies to the private instance repository,
 not to the public implementation repository. The controller has a clean
 deployment checkout with a root-held read-only deploy key and a disabled push
 URL. Airunners may author and push reviewed public implementation changes, but
