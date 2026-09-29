@@ -35,8 +35,9 @@ Options:
   --ttl-seconds N     Intent TTL in seconds. Default: ${DEFAULT_TTL_SECONDS}
 
 Stdout contains only the final redacted JSON result. Prompts and progress go to
-stderr. The exact intent is signed with the static-site Secure Enclave identity
-after Touch ID approval. Never paste the Cloudflare token into chat.
+stderr. The intent uses the controller development signer during pre-production
+or the static-site Secure Enclave identity in signed mode. Never paste the
+Cloudflare token into chat.
 EOF
 }
 
@@ -141,10 +142,8 @@ print("This approval does not mint GitHub tokens, change GitHub repos, install t
 print("static-site app, change Cloudflare routes, or expose the token in output.", file=sys.stderr)
 print("", file=sys.stderr)
 print("Security boundary:", file=sys.stderr)
-print("  The Mac Secure Enclave signs this intent JSON after Touch ID. It does not", file=sys.stderr)
-print("  verify what the MacBook displays. This protects against confusion and", file=sys.stderr)
-print("  accidental approval, but not against a compromised MacBook lying about the", file=sys.stderr)
-print("  intent it asks you to sign.", file=sys.stderr)
+print("  The selected signer signs this exact intent JSON. The root executor", file=sys.stderr)
+print("  verifies its action binding, expiry, and single-use nonce.", file=sys.stderr)
 print("", file=sys.stderr)
 print(intent_sha256)
 PY
@@ -278,14 +277,29 @@ ksa_valid_positive_integer "$ttl_seconds" || ksa_die "--ttl-seconds must be a po
 ksa_need_command tailscale
 ksa_need_command mktemp
 ksa_need_command python3
-ksa_require_native_touchid
-ksa_load_touchid_profile static-site
 ssh_target="smith@${controller}"
+approval_mode="$(tailscale ssh "$ssh_target" sh -s <<'SH'
+set -eu
+if [ -r /etc/klokast/human-approval-mode ]; then
+  cat /etc/klokast/human-approval-mode
+else
+  printf 'signed\n'
+fi
+SH
+)" || ksa_die "cannot read the controller approval mode"
+case "$approval_mode" in
+  development) ;;
+  signed)
+    ksa_require_native_touchid
+    ksa_load_touchid_profile static-site
+    ;;
+  *) ksa_die "controller approval mode is invalid" ;;
+esac
 
 authority_status="$(tailscale ssh "$ssh_target" \
   'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted')"
 printf '%s\n' "$authority_status" | grep -q '"approval_signer":"human-static-site"' || \
-  ksa_die "controller does not enforce the static-site Touch ID signer; complete runbooks/15-touchid-secret-authority.md"
+  ksa_die "controller does not enforce the scoped static-site signer"
 printf '%s\n' "$authority_status" | grep -q '"allowed_signers_configured":true' || \
   ksa_die "controller does not have the static-site public signer"
 
@@ -345,7 +359,10 @@ if [ "$typed_approval" != "$approval_phrase" ]; then
   ksa_die "approval phrase mismatch; refusing to sign"
 fi
 
-if ! ksa_sign_touchid_message "$intent"; then
+if [ "$approval_mode" = development ]; then
+  "$SCRIPT_DIR/sign-secret-authority-intent" --purpose static-site --intent "$intent" --controller "$controller" >&2 || \
+    ksa_die "development static-site intent signing failed"
+elif ! ksa_sign_touchid_message "$intent"; then
   ksa_die "Touch ID did not approve the static-site intent signature"
 fi
 signature="${intent}.sig"

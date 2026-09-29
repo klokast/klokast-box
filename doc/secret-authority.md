@@ -91,6 +91,9 @@ ansible/bin/development-sign-intent --purpose platform-apply \
 Select `private-instance` or `static-site` for the other approval purposes.
 Keep the prepared intent and signature in an owner-only controller directory.
 Do not copy the private development keys to the MacBook or infra-agent.
+The trusted MacBook approval wrappers detect this mode through `--controller`
+and request the scoped controller signature. They still show the exact intent
+and preserve the private Instance commit and push path on the MacBook.
 
 Before production, run the same playbook with
 `-e development_approval_mode=signed`. It disables development signing first,

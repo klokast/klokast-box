@@ -99,6 +99,12 @@ class KlokastDevSecretAuthorityWrapperTest(unittest.TestCase):
               printf '%s/%s\\n' "$FAKE_REMOTE_ROOT" "$(printf '%s' "$1" | sed 's#^/##')"
             }
 
+            if [ "${1:-}" = sh ] && [ "${2:-}" = -s ] && [ "${3:-}" != -- ]; then
+              cat >/dev/null
+              printf 'signed\\n'
+              exit 0
+            fi
+
             if [ "${1:-}" = sh ] && [ "${2:-}" = -s ] && [ "${3:-}" = -- ]; then
               cat >/dev/null
               box=$4

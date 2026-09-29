@@ -774,10 +774,10 @@ case "$answer" in
     ;;
 esac
 
-"$SCRIPT_DIR/sign-secret-authority-intent" --purpose private-instance --intent "$INTENT" || \
-  ksa_die "Touch ID did not approve the engine promotion intent"
+"$SCRIPT_DIR/sign-secret-authority-intent" --purpose private-instance --intent "$INTENT" --controller "$CONTROLLER" || \
+  ksa_die "engine promotion intent signing failed"
 if [ ! -f "$INTENT.sig" ] || [ -L "$INTENT.sig" ]; then
-  ksa_die "Touch ID signature file is missing"
+  ksa_die "engine promotion signature file is missing"
 fi
 
 REMOTE_DIRECTORY=/home/smith/private/klokast/promotion-approvals

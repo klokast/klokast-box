@@ -234,11 +234,11 @@ if [ "$check_only" = true ]; then
   exit 0
 fi
 
-printf '\nReview the exact Apply intent above. Touch ID will authorize only these bytes.\n' >&2
+printf '\nReview the exact Apply intent above. The selected signer will authorize only these bytes.\n' >&2
 printf 'Type "approve platform apply" to continue: ' >&2
 IFS= read -r confirmation
 [ "$confirmation" = "approve platform apply" ] || ksa_die "approval cancelled"
-"$SCRIPT_DIR/sign-secret-authority-intent" --purpose platform-apply --intent "$intent"
+"$SCRIPT_DIR/sign-secret-authority-intent" --purpose platform-apply --intent "$intent" --controller "$controller"
 
 remote_dir="$(tailscale ssh "smith@$controller" 'mktemp -d /tmp/klokast-platform-apply.XXXXXX')"
 case "$remote_dir" in /tmp/klokast-platform-apply.*) ;; *) ksa_die "controller returned an unsafe temporary path" ;; esac
