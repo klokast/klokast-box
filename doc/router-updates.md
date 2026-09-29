@@ -102,8 +102,10 @@ recipe, not a claim that each request adds a package absent from Alpine's base.
 Some tools also serve the disposable build guest. Removal needs a native proof
 that both bootstrap and replacement still work. The current audit does not
 remove them or add a package-count limit. APK continues to own dependencies.
-The current source rule selects Tailscale from the chosen Alpine stable branch;
-it does not establish that this version is the latest upstream Tailscale release.
+The existing implementation selects Tailscale from the chosen Alpine stable
+branch. The required policy is the latest upstream stable Tailscale release.
+The existing resolver does not meet that requirement. Do not qualify its output
+as policy-complete until the upstream source integration below is implemented.
 
 Detailed package differences stay in protected check evidence. The report names
 their scope: build inputs compared with build inputs, or a legacy runtime
@@ -114,6 +116,50 @@ source. Routine reports can show the Alpine transition without listing all
 dependency changes.
 
 ## Qualification and preparation
+
+### Upstream Tailscale source integration
+
+The router must select the latest stable Linux amd64 archive from
+`https://pkgs.tailscale.com/stable/?mode=json`. Tailscale documents these
+[static Linux binaries](https://tailscale.com/docs/install/static).
+Freeze one explicit version and archive identity during input resolution.
+Do not use a mutable latest URL during the build, personalization, or boot.
+
+Verify the archive through Tailscale's own
+[`distsign` verifier](https://github.com/tailscale/tailscale/tree/main/cmd/distsign).
+Its embedded root keys authenticate the current signing-key bundle, which
+authenticates the archive signature. A SHA-256 file from the download server
+alone is not this signature proof. Do not implement another signature protocol
+or accept an unsigned fallback.
+
+The proposed verifier is a versioned build tool on the active controller. Build
+it from a pinned upstream source revision and frozen dependencies in an isolated
+build guest. Bind its binary hash and source to its build receipt. It has no
+Platform credentials, signing keys, guest disks, or enrollment authority. Run
+each download as an unprivileged process with a private temporary directory,
+a fixed deadline, and only the official package origin. Keep the verified
+archive and source evidence in the existing protected update cache.
+
+Install the verified upstream binaries only while building the generic router
+template. Record their versions and hashes separately from APK's package
+database. Remove the Alpine `tailscale` binary package from the new recipe;
+do not overwrite APK-owned files and then claim that the installed APK manifest
+proves the upstream binaries. The template must retain the required service
+account, OpenRC service, state directory, and existing state paths. Select or
+render the service integration explicitly and verify it in the native tests.
+
+The release and generation contracts must bind both the native APK manifest and
+the upstream Tailscale component. Verification must check both binary hashes
+and the running daemon version. Changes to the upstream stable version must
+trigger candidate preparation independently of Alpine branch age. Compatibility
+and reverse-state tests must use those exact binaries. Self-update on a running
+router remains prohibited.
+
+This source integration and verifier deployment are not implemented yet. The
+common bootstrap builder must not claim latest-upstream compliance before their
+native signature, installation, service, and rollback checks pass.
+
+### Generic template qualification
 
 The decision contract compares effective package inputs with an accepted
 release and fresh live verification. An unrelated index change or patch
@@ -145,6 +191,17 @@ root account without an OpenSSH server. Release v2 records that exact runtime
 manifest and its native tests. Live release verification compares against this
 runtime manifest. Earlier v1 receipts lack this evidence and cannot qualify a
 finalized router.
+
+The same offline finalizer can check an enrolled initial-install disk inside
+networkless Xen. Its caller must first prove management access, stop the router,
+remove only its recorded first-contact key, and record the fixed state-set
+checksum in the protected bootstrap operation. Finalization requires that
+checksum and the qualified runtime package manifest. It verifies that key and
+lease bytes, ownership, permissions, and lease times remain unchanged. A retry
+can accept the already finalized package set only with the same recorded state
+checksum. Changed state, missing identity, a remaining key, or a different
+package manifest fails. The helper grants no boot or acceptance authority;
+bootstrap orchestration and native enrolled-disk qualification remain required.
 
 The template must have the exact resolved package closure and no machine or
 service identity. A disposable copy then boots with its own kernel and initramfs

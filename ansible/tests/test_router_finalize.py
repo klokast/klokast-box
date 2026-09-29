@@ -1,6 +1,7 @@
 """Finalization must remove only the qualified bootstrap package closure."""
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_finalize as f
 import router_updates as r
+import router_state
 from platform_updates import UpdateError
 from test_router_updates import inputs, release, PROFILE, ENGINE, reseal
 import test_router_personalize as personalization
@@ -59,7 +61,8 @@ class FinalizationTests(unittest.TestCase):
         p=self.root/'etc/apk/world'
         p.write_text('\n'.join(s for s in p.read_text().splitlines() if not s.startswith('openssh='))+'\n')
         (self.root/'usr/sbin/sshd').unlink()
-        (self.root/'etc/ssh').rmdir()  # Native APK removes its now-empty package directory.
+        if not any((self.root/'etc/ssh').iterdir()):
+            (self.root/'etc/ssh').rmdir()  # APK removes an empty package directory.
         return SimpleNamespace(returncode=0)
 
     def apply(self):
@@ -88,6 +91,61 @@ class FinalizationTests(unittest.TestCase):
         with patch.object(f.router_personalize,'environment'), patch.object(f.subprocess,'run') as command:
             with self.assertRaisesRegex(ValueError,'frozen generic world'):
                 f.finalize(self.root,self.manifest)
+            command.assert_not_called()
+
+    def seed_enrolled(self):
+        for relative in (*router_state.REQUIRED, *router_state.OPTIONAL,
+                         *('etc/ssh/ssh_host_' + kind + '_key' for kind in router_state.KEY_TYPES)):
+            self.put(relative, 'synthetic state\n')
+            (self.root/relative).chmod(0o600)
+        original = os.fstat
+        def ownership(fd):
+            value = original(fd)
+            return SimpleNamespace(**{name:getattr(value, name) for name in (
+                'st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns','st_atime_ns')}, st_uid=0, st_gid=0)
+        owner = patch.object(router_state.os, 'fstat', side_effect=ownership)
+        owner.start()
+        self.addCleanup(owner.stop)
+        return {'enrolled_accounts': {'dnsmasq_uid':65,'dnsmasq_gid':65,'tailscale_gid':103},
+                'runtime_packages': {k:v for k,v in self.request['packages'].items() if k != 'openssh'},
+                'enrolled_state_sha256': f.router_personalize.digest(router_state.evidence(router_state.snapshot(self.root)))}
+
+    def test_enrolled_cleanup_preserves_identity_and_resumes_without_apk(self):
+        arguments = self.seed_enrolled()
+        expected = router_state.evidence(router_state.snapshot(self.root, **arguments['enrolled_accounts']))
+        with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run', side_effect=self.retire) as command:
+            result = f.finalize(self.root, self.manifest, **arguments)
+            self.assertEqual(result['packages'], arguments['runtime_packages'])
+            self.assertTrue(result['enrolled_state_preserved'])
+            self.assertEqual(result, f.finalize(self.root, self.manifest, **arguments))
+            command.assert_called_once()
+        self.assertEqual(router_state.evidence(router_state.snapshot(self.root, **arguments['enrolled_accounts'])), expected)
+        self.assertNotIn('synthetic state', str(result))
+
+    def test_enrolled_cleanup_refuses_remaining_key_or_missing_state_before_apk(self):
+        arguments = self.seed_enrolled()
+        self.put('root/.ssh/authorized_keys', 'synthetic first-contact key\n')
+        with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'first-contact key'):
+                f.finalize(self.root, self.manifest, **arguments)
+            (self.root/'root/.ssh/authorized_keys').unlink()
+            (self.root/'var/lib/dhcpcd/secret').unlink()
+            with self.assertRaises(router_state.StateError):
+                f.finalize(self.root, self.manifest, **arguments)
+            command.assert_not_called()
+
+    def test_enrolled_cleanup_detects_changed_state(self):
+        arguments = self.seed_enrolled()
+        def mutate(argv, **kwargs):
+            result = self.retire(argv, **kwargs)
+            (self.root/'var/lib/dhcpcd/duid').write_text('changed identity\n')
+            return result
+        with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run', side_effect=mutate):
+            with self.assertRaisesRegex(ValueError, 'changed enrolled identity'):
+                f.finalize(self.root, self.manifest, **arguments)
+        with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'recorded bootstrap state'):
+                f.finalize(self.root, self.manifest, **arguments)
             command.assert_not_called()
 
 
