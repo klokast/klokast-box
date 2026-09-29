@@ -111,6 +111,19 @@ def verify(root, request):
     validate(request)
     root = Path(root)
     inputs = manifest(root, request)
+    component = inputs.get('tailscale')
+    if not isinstance(component, dict) or component.get('signature_verified') is not True:
+        raise ValueError('router candidate lacks verified upstream Tailscale inputs')
+    for name, relative in (('tailscale', 'usr/local/bin/tailscale'),
+                           ('tailscaled', 'usr/local/sbin/tailscaled')):
+        path = personalize.regular(root, relative)
+        if (stat.S_IMODE(path.stat().st_mode) != 0o755 or
+                hashlib.sha256(path.read_bytes()).hexdigest() != component[name + '_sha256']):
+            raise ValueError('router candidate upstream Tailscale binary differs: ' + name)
+    service = personalize.regular(root, 'etc/init.d/tailscale')
+    if (stat.S_IMODE(service.stat().st_mode) != 0o755 or
+            hashlib.sha256(service.read_bytes()).hexdigest() != component['openrc_sha256']):
+        raise ValueError('router candidate upstream Tailscale service differs')
     expected = request['runtime_packages'] if request['mode'] == 'replacement' else request['personalization']['packages']
     if personalize.packages(root) != expected:
         raise ValueError('router candidate installed packages differ from its exact lifecycle manifest')
@@ -152,6 +165,8 @@ def verify(root, request):
     return {'kind':'klokast.router-candidate-files.v1', 'box':request['box'], 'role':'router', 'mode':request['mode'],
             'operation_id':request['operation_id'], 'inputs_sha256':request['inputs_sha256'],
             'engine_commit':request['engine_commit'], 'packages':expected, 'accounts':accounts(root),
+            'tailscale':{key:component[key] for key in ('version', 'sha256', 'tailscale_sha256',
+                                                       'tailscaled_sha256', 'openrc_sha256')},
             'configuration_files':hashes, 'identity_absent':True, 'replacement_authorized':False}
 
 

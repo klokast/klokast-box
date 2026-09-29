@@ -35,6 +35,8 @@ def generation(value, box):
     check_seal(value)
     fields = {'kind', 'box', 'role', 'generation_id', 'origin', 'engine_commit', 'alpine_branch', 'disk', 'boot',
               'xen', 'packages', 'kernel_release', 'accounts', 'configuration_files', 'evidence_sha256', 'record_sha256'}
+    if value.get('origin') == 'template':
+        fields.add('tailscale')
     if (set(value) != fields or value['kind'] != 'klokast.router-generation.v1' or value['role'] != 'router' or
             value['box'] != box or not matches('[a-z0-9][a-z0-9-]{0,30}', box) or
             not matches('[0-9a-f]{24}', value['generation_id']) or value['origin'] not in ('legacy', 'template') or
@@ -82,6 +84,14 @@ def generation(value, box):
         raise GenerationError('router generation has an incomplete or unsupported runtime package set')
     if value['origin'] == 'template' and 'linux-virt' not in packages:
         raise GenerationError('template router generation lacks a pinned native kernel package')
+    if value['origin'] == 'template':
+        component = value['tailscale']
+        if (not isinstance(component, dict) or set(component) != {
+                'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256'} or
+                not matches(r'[0-9]+\.[0-9]+\.[0-9]+', component['version']) or
+                any(not matches('[0-9a-f]{64}', component[key]) for key in (
+                    'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256'))):
+            raise GenerationError('template router generation lacks exact upstream Tailscale evidence')
     accounts = value['accounts']
     if (not isinstance(accounts, dict) or set(accounts) != {'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'} or
             any(type(v) is not int or not 1 <= v <= 65535 for v in accounts.values())):

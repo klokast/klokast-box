@@ -22,6 +22,10 @@ class CandidateTests(unittest.TestCase):
                  'dnsmasq:x:65:65:dnsmasq:/var/lib/misc:/sbin/nologin\n')
         self.put('etc/group', (self.root/'etc/group').read_text() + 'tailscale:x:103:\n')
         (self.root/'lib/modules/6.12.1-virt').mkdir(parents=True)
+        self.put('etc/init.d/tailscale', (Path(__file__).resolve().parents[1] /
+                 'roles/router-alpine-rootfs/files/tailscale-openrc').read_text())
+        for relative in ('usr/local/bin/tailscale', 'usr/local/sbin/tailscaled', 'etc/init.d/tailscale'):
+            (self.root / relative).chmod(0o755)
         self.job = {'kind':'klokast.router-candidate-job.v1', 'mode':'replacement',
                     'box':'boxa', 'role':'router', 'operation_id':'b'*24,
                     'engine_commit':self.manifest['engine_commit'],
@@ -107,6 +111,16 @@ class CandidateTests(unittest.TestCase):
         (self.root/'lib/modules/unexpected').mkdir()
         with self.assertRaisesRegex(ValueError, 'modules'):
             candidate.verify(self.root, self.job)
+
+    def test_changed_upstream_binary_or_service_fails_verification(self):
+        self.prepare()
+        for relative in ('usr/local/bin/tailscale', 'usr/local/sbin/tailscaled', 'etc/init.d/tailscale'):
+            path = self.root / relative
+            before = path.read_bytes()
+            path.write_bytes(before + b'changed')
+            with self.subTest(path=relative), self.assertRaisesRegex(ValueError, 'upstream Tailscale'):
+                candidate.verify(self.root, self.job)
+            path.write_bytes(before)
 
     def test_no_receipt_after_native_syntax_failure(self):
         self.job['mode'] = 'initial-install'

@@ -22,6 +22,8 @@ class CandidateGenerationTests(unittest.TestCase):
                     'mode':'replacement', 'operation_id':operation, 'engine_commit':ENGINE,
                     'inputs_sha256':selected['inputs']['inputs_sha256'],
                     'packages':dict(selected['runtime_packages']), 'accounts':old['accounts'],
+                    'tailscale':{key:selected['inputs']['tailscale'][key] for key in (
+                        'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')},
                     'configuration_files':dict.fromkeys(router_personalize.FILES, 'e'*64),
                     'identity_absent':True, 'replacement_authorized':False, 'service_syntax':True}
         disk = {'kind':'klokast.router-candidate-disk.v1', 'operation_id':operation,
@@ -50,6 +52,7 @@ class CandidateGenerationTests(unittest.TestCase):
             lambda v:v['prepared'].update(identity_absent=False),
             lambda v:v['prepared'].update(service_syntax=False),
             lambda v:v['prepared']['packages'].update(tailscale='changed'),
+            lambda v:v['prepared']['tailscale'].update(tailscaled_sha256='0'*64),
             lambda v:v['disk_record'].update(stage='allocated'),
             lambda v:v['disk_record'].update(template_sha256='0'*64),
             lambda v:v['boot']['kernel'].update(sha256='0'*64),

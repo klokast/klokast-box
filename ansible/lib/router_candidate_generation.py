@@ -16,7 +16,9 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
     generations.generation(old, box)
     expected_files = {'kind', 'box', 'role', 'mode', 'operation_id', 'inputs_sha256',
                       'engine_commit', 'packages', 'accounts', 'configuration_files',
-                      'identity_absent', 'replacement_authorized', 'service_syntax'}
+                      'tailscale', 'identity_absent', 'replacement_authorized', 'service_syntax'}
+    component = {key:release['inputs']['tailscale'][key] for key in (
+        'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')}
     if (not generations.matches('[0-9a-f]{24}', operation) or
             not isinstance(prepared, dict) or set(prepared) != expected_files or
             prepared['kind'] != 'klokast.router-candidate-files.v1' or
@@ -25,6 +27,7 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
             prepared['engine_commit'] != approved_engine or
             prepared['inputs_sha256'] != release['inputs']['inputs_sha256'] or
             prepared['packages'] != release['runtime_packages'] or
+            prepared['tailscale'] != component or
             prepared['identity_absent'] is not True or
             prepared['replacement_authorized'] is not False or
             prepared['service_syntax'] is not True):
@@ -57,6 +60,7 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
         'xen':{'uuid':xen_uuid, 'memory':old['xen']['memory'], 'vcpus':old['xen']['vcpus'],
                'vif':copy.deepcopy(old['xen']['vif'])},
         'packages':copy.deepcopy(prepared['packages']), 'kernel_release':release['kernel_release'],
+        'tailscale':component,
         'accounts':copy.deepcopy(prepared['accounts']),
         'configuration_files':copy.deepcopy(prepared['configuration_files']),
         'evidence_sha256':generations.digest({'release':release['receipt_sha256'],

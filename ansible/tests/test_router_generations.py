@@ -23,6 +23,8 @@ def generation(origin='template'):
         'packages':dict.fromkeys((('linux-virt','tailscale','dhcpcd','dnsmasq','nftables','openssh-keygen')
                                   if origin == 'legacy' else
                                   ('linux-virt','dhcpcd','dnsmasq','nftables','openssh-keygen')),'1-r0'),
+        **({} if origin == 'legacy' else {'tailscale':{'version':'1.102.4',
+            **dict.fromkeys(('sha256','tailscale_sha256','tailscaled_sha256','openrc_sha256'), 'a'*64)}}),
         'kernel_release':'6.18.53-0-virt','accounts':{'dnsmasq_uid':102,'dnsmasq_gid':103,'tailscale_gid':104},
         'configuration_files':dict.fromkeys((
             'etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf',
