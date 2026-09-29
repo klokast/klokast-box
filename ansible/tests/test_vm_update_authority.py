@@ -63,6 +63,12 @@ class VMUpdateAuthorityTest(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(self.m.ApplyError):
                 self.m.validate_vm_update_policy(dict(self.policy, **{key: value}), self.collected['declared_boxes'])
 
+    def test_router_policy_does_not_grant_shared_replacement(self):
+        router_policy = copy.deepcopy(self.policy)
+        router_policy['targets']['boxa'] = ['router']
+        self.m.validate_vm_update_policy(router_policy, self.collected['declared_boxes'])
+        self.assertFalse(self.m.vm_update_target_allowed(router_policy, 'boxa', 'router'))
+
     def test_schedule_uses_sealed_instance_and_never_implies_activation(self):
         m = self.m
         private = {'boxes': {box: {} for box in self.collected['declared_boxes']},
@@ -97,7 +103,6 @@ class VMUpdateAuthorityTest(unittest.TestCase):
             lambda v: v["policy"].update(**{"canary-hours":24}),
             lambda v: v["policy"].update(**{"replacement-minutes":True}),
             lambda v: v["policy"]["targets"].update(boxa=["ops"]),
-            lambda v: v["policy"]["targets"].update(boxa=["router"]),
             lambda v: v["policy"]["targets"].update(unknown=["bak"]),
             lambda v: v.update(policy_sha256="0"*64),
             lambda v: v.update(declared_boxes=["boxa"]),

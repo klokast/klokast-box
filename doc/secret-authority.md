@@ -442,7 +442,7 @@ path, or private JSON.
 
 ## Standing VM update authority
 
-The [Instance contract](klokast-instance-specification.md#shared-vm-update-intent)
+The [Instance contract](klokast-instance-specification.md#vm-update-intent)
 defines the narrow update policy. Policy schema validation, signed activation,
 and the candidate serial replacement executor are implemented. Discovery
 output alone cannot authorize VM replacement.

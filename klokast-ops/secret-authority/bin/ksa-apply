@@ -5167,9 +5167,9 @@ def validate_vm_update_policy(policy, boxes):
     if not isinstance(targets, dict) or not targets or any(box not in boxes for box in targets):
         raise ApplyError("VM update targets must name declared boxes")
     for roles in targets.values():
-        if (not isinstance(roles, list) or not roles or any(not isinstance(role, str) or role not in {"bak", "dmz", "iot"} for role in roles) or
+        if (not isinstance(roles, list) or not roles or any(not isinstance(role, str) or role not in {"bak", "dmz", "iot", "router"} for role in roles) or
                 roles != sorted(set(roles))):
-            raise ApplyError("VM update targets must contain sorted unique shared roles")
+            raise ApplyError("VM update targets must contain sorted unique supported roles")
     exclusions = policy["exclusions"]
     if not isinstance(exclusions, list):
         raise ApplyError("VM update exclusions must be a list")

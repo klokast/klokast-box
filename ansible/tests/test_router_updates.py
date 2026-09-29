@@ -105,6 +105,19 @@ class RouterCheckTests(unittest.TestCase):
         with self.assertRaises(UpdateError):
             r.unactivated_diagnostic_policy(malformed, 'boxa')
 
+    def test_unactivated_schedule_with_router_target_still_cannot_authorize_replacement(self):
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
+                    'replacement_ready':False, 'policy':{
+                        'enabled':True, 'targets':{'boxa':['router']}, 'exclusions':[],
+                        'branch-policy':'tested-stable', 'branch-delay-days':21,
+                        'report-max-age-hours':30}}
+        policy, checksum = r.unactivated_diagnostic_policy(schedule, 'boxa')
+        self.assertEqual(policy['targets']['boxa'], ['router'])
+        self.assertFalse(policy['enabled'])
+        f = self.fixture()
+        f['policy'], f['policy_sha256'] = policy, checksum
+        self.assertEqual(r.check(**f)['status'], 'deferred')
+
     def test_unchanged_and_unrelated_index_and_patch(self):
         for change in ('none', 'index', 'patch'):
             with self.subTest(change=change):

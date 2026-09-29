@@ -23,6 +23,22 @@ func TestVMUpdatePolicy(t *testing.T) {
 	}
 }
 
+func TestVMUpdatePolicyAdmitsRouterAsSeparateTarget(t *testing.T) {
+	root := prepareInstance(t, "two", func(root string) {
+		mutateInstanceJSON(t, root, func(v map[string]any) {
+			p := updateExample()
+			p["targets"] = map[string]any{"boxa": []string{"router"}}
+			v["vm-updates"] = p
+		})
+	})
+	snapshot, report, err := Load(root, testEngine)
+	if err != nil || !report.Valid || snapshot.Instance.VMUpdates == nil ||
+		len(snapshot.Instance.VMUpdates.Targets["boxa"]) != 1 ||
+		snapshot.Instance.VMUpdates.Targets["boxa"][0] != "router" {
+		t.Fatalf("router policy target lost or rejected: %v %#v", err, report)
+	}
+}
+
 func TestVMUpdateConfigurableTiming(t *testing.T) {
 	root := prepareInstance(t, "two", func(root string) {
 		mutateInstanceJSON(t, root, func(v map[string]any) {
@@ -51,7 +67,6 @@ func TestVMUpdatePolicyRejectsExpandedAuthority(t *testing.T) {
 		{"negative-delay", "schema.invalid", func(p map[string]any) { p["branch-delay-days"] = -1 }},
 		{"short-report-age", "schema.invalid", func(p map[string]any) { p["report-max-age-hours"] = 2 }},
 		{"unknown-box", "reference.box", func(p map[string]any) { p["targets"] = map[string]any{"missing": []string{"bak"}} }},
-		{"router", "schema.invalid", func(p map[string]any) { p["targets"] = map[string]any{"boxa": []string{"router"}} }},
 		{"controller", "schema.invalid", func(p map[string]any) { p["targets"] = map[string]any{"boxa": []string{"ops"}} }},
 		{"duplicate-role", "schema.invalid", func(p map[string]any) { p["targets"] = map[string]any{"boxa": []string{"bak", "bak"}} }},
 		{"obsolete-canary-field", "schema.invalid", func(p map[string]any) { p["canary-hours"] = 24 }},

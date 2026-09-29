@@ -247,7 +247,7 @@ health, container, VM, or service-status fields. The explicit
 `boxes.<box>.substrate.shared-guests.<role>.runtime-state` input records desired
 `running` or `stopped` state for shared guests; it is not a live status field.
 
-## Shared VM update intent
+## VM update intent
 
 The optional `vm-updates` object declares standing update intent. Omission
 disables automatic replacement. This is a closed input contract:
@@ -268,9 +268,11 @@ disables automatic replacement. This is a closed input contract:
 }
 ```
 
-Each target must name a declared box and one or more shared roles. Router,
-controller, dedicated app VM, Debian, and Ubuntu replacement are outside this
-contract. A durable exclusion has `box`, `role`, and a non-empty `reason`.
+Each target must name a declared box and one or more `router`, `bak`, `dmz`, or
+`iot` roles. The router has a separate release profile and executor. The shared
+VM executor still accepts only `bak`, `dmz`, and `iot`. Controller, dedicated app
+VM, Debian, and Ubuntu replacement are outside this contract. A durable
+exclusion has `box`, `role`, and a non-empty `reason`.
 It must refer to a declared target. Each target can have only one exclusion.
 The Instance owns all timing values. All times are UTC. Checks run daily before
 the same-day maintenance window. Times use `HH:MM`. Replacement and recovery

@@ -46,7 +46,7 @@ closed until the signed policy is active, a current exact template is selected,
 and native recovery tests on both boxes bind to that template and the installed
 dom0 recovery code. No production update schedule has been enabled.
 
-The [Instance specification](klokast-instance-specification.md#shared-vm-update-intent)
+The [Instance specification](klokast-instance-specification.md#vm-update-intent)
 owns desired state and assignment rules. [Secret Authority](secret-authority.md#standing-vm-update-authority)
 owns execution authority. Component commands, limits, and historical native
 evidence are kept once in [VM update components](platform-update-components.md).

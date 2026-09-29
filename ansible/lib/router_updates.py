@@ -157,7 +157,7 @@ def unactivated_diagnostic_policy(schedule, box):
         raise UpdateError('Instance schedule has no supported router check timing')
     if any(not match(BOX, key) or not isinstance(roles, list) or
            len(roles) != len(set(roles)) or
-           any(role not in ('bak', 'dmz', 'iot') for role in roles)
+           any(role not in ('bak', 'dmz', 'iot', 'router') for role in roles)
            for key, roles in source['targets'].items()):
         raise UpdateError('Instance schedule has unsupported target declarations')
     targets = {key: list(roles) for key, roles in source['targets'].items()}
