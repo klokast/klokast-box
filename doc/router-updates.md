@@ -297,9 +297,11 @@ ansible/bin/platform-router-update test-compatibility --box boxa \
 
 The command takes the installation lock and requires a fresh, clear legacy
 inspection. An adopted legacy source must also match the protected accepted
-assignment before and after the test. A pending assignment fails inspection.
-Dom0 checks the live
-Xen UUID, configuration, boot hashes, and exact two GiB legacy LV again. It takes
+assignment before and after the test. The native copy host also reads that
+assignment before it snapshots the source and after it tests the copies. It
+refuses a changed assignment or a different installed recovery engine. A pending
+assignment fails inspection. Dom0 checks the live Xen UUID, configuration, boot
+hashes, and exact two GiB legacy LV again. It takes
 a read-only LVM snapshot with a one GiB COW reserve, copies its opaque blocks to
 private storage, verifies the copy, and retires the snapshot by recorded UUID,
 origin UUID, tag, and path. An uncertain snapshot is retained for reconciliation.

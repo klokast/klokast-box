@@ -526,7 +526,8 @@ def test_compatibility(box, source, template_operation):
             'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot,
             'template': {'operation': template_operation, 'sha256': vm_template_inputs.sha256(candidate_path)},
             'guest': guest, 'source': {**{k: dom0[k] for k in ('configuration_sha256', 'xen_runtime', 'boot_artifacts')},
-                'disk': {'path': disks[0]['lv_path'], 'uuid': disks[0]['lv_uuid'], 'bytes': int(disks[0]['lv_size'])}}})
+                'disk': {'path': disks[0]['lv_path'], 'uuid': disks[0]['lv_uuid'], 'bytes': int(disks[0]['lv_size'])},
+                'accepted': accepted}})
         args = result / 'arguments.json'
         transport.write(args, {'router_compatibility_box': box, 'router_compatibility_operation': operation,
             'router_compatibility_input_dir': str(work), 'router_compatibility_result_dir': str(result)})

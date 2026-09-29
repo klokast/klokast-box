@@ -78,11 +78,28 @@ def request(work, box, operation):
 def source_identity(work, value):
     current = runpy.run_path(str(work / 'inspect-router-update.py'))['inspect_dom0'](value['box'])
     wanted = value['source']
-    if (not isinstance(wanted, dict) or set(wanted) != {'configuration_sha256', 'xen_runtime', 'boot_artifacts', 'disk'} or
-            current['accepted_record_present'] or current['pending_record_present'] or
+    if (not isinstance(wanted, dict) or set(wanted) != {'configuration_sha256', 'xen_runtime', 'boot_artifacts', 'disk', 'accepted'} or
+            current['pending_record_present'] or
+            current['accepted_record_present'] is not (wanted['accepted'] is not None) or
             current['xen_runtime_matches'] is not True or
             any(current[key] != wanted[key] for key in ('configuration_sha256', 'xen_runtime', 'boot_artifacts'))):
         raise RuntimeError('legacy source runtime, boot, configuration, or assignment changed')
+    if wanted['accepted'] is not None:
+        accepted = wanted['accepted']
+        if (not isinstance(accepted, dict) or accepted.get('kind') != 'klokast.router-accepted-source.v1' or
+                accepted.get('box') != value['box'] or
+                not isinstance(accepted.get('assignment'), dict) or
+                not isinstance(accepted.get('generation'), dict) or
+                accepted['generation'].get('origin') != 'legacy' or
+                accepted['assignment'].get('current_sha256') != accepted['generation'].get('record_sha256')):
+            raise RuntimeError('accepted legacy source request is invalid')
+        live = json.loads(run(['/usr/local/sbin/router-update-transaction', 'accepted-source',
+                               '--box', value['box']]).stdout)
+        if (live.get('kind') != 'klokast.router-command-result.v1' or
+                live.get('box') != value['box'] or live.get('action') != 'accepted-source' or
+                live.get('engine_commit') != value['engine_commit'] or
+                live.get('result') != accepted):
+            raise RuntimeError('protected accepted legacy source changed during compatibility')
     disk = wanted['disk']
     if (not isinstance(disk, dict) or set(disk) != {'path', 'uuid', 'bytes'} or
             disk['path'] != '/dev/vg0/lv_router' or disk['bytes'] != SLOTS['old'] or

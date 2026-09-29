@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -204,7 +205,8 @@ class HostTests(unittest.TestCase):
 
     def test_changed_live_identity_refuses_before_snapshot_command(self):
         source = {'configuration_sha256': 'c' * 64, 'xen_runtime': {'uuid': 'old'},
-                  'boot_artifacts': {}, 'disk': {'path': '/dev/vg0/lv_router', 'uuid': 'exact', 'bytes': 2147483648}}
+                  'boot_artifacts': {}, 'disk': {'path': '/dev/vg0/lv_router', 'uuid': 'exact', 'bytes': 2147483648},
+                  'accepted': None}
         current = {**source, 'accepted_record_present': False, 'pending_record_present': False,
                    'xen_runtime_matches': True, 'xen': {'disk': ['phy:/dev/vg0/lv_router,xvda,w']},
                    'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router', 'lv_uuid': 'exact',
@@ -216,6 +218,30 @@ class HostTests(unittest.TestCase):
                  patch.object(self.host, 'run') as run, self.assertRaises(RuntimeError):
                 self.host.source_identity(Path('/operation'), {'box': 'boxa', 'source': source})
             run.assert_not_called()
+
+    def test_adopted_source_must_match_native_protected_reader(self):
+        accepted = {'kind': 'klokast.router-accepted-source.v1', 'box': 'boxa',
+                    'assignment': {'current_sha256': 'a' * 64},
+                    'generation': {'origin': 'legacy', 'record_sha256': 'a' * 64}}
+        source = {'configuration_sha256': 'c' * 64, 'xen_runtime': {'uuid': 'old'},
+                  'boot_artifacts': {}, 'disk': {'path': '/dev/vg0/lv_router', 'uuid': 'exact',
+                                                'bytes': 2147483648}, 'accepted': accepted}
+        current = {**source, 'accepted_record_present': True, 'pending_record_present': False,
+                   'xen_runtime_matches': True, 'xen': {'disk': ['phy:/dev/vg0/lv_router,xvda,w']},
+                   'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router',
+                     'lv_uuid': 'exact', 'lv_size': '2147483648', 'origin': ''}]}]}}
+        wrapper = {'kind': 'klokast.router-command-result.v1', 'box': 'boxa',
+                   'action': 'accepted-source', 'engine_commit': 'b' * 40, 'result': accepted}
+        with patch.object(self.host.runpy, 'run_path', return_value={'inspect_dom0': lambda _: current}), \
+                patch.object(self.host, 'run', return_value=SimpleNamespace(stdout=json.dumps(wrapper))) as run:
+            self.assertEqual(self.host.source_identity(Path('/operation'), {'box': 'boxa',
+                             'engine_commit': 'b' * 40, 'source': source}), current)
+        run.assert_called_once_with(['/usr/local/sbin/router-update-transaction', 'accepted-source', '--box', 'boxa'])
+        with patch.object(self.host.runpy, 'run_path', return_value={'inspect_dom0': lambda _: current}), \
+                patch.object(self.host, 'run', return_value=SimpleNamespace(stdout=json.dumps({**wrapper, 'result': {}}))):
+            with self.assertRaisesRegex(RuntimeError, 'protected accepted legacy source changed'):
+                self.host.source_identity(Path('/operation'), {'box': 'boxa',
+                                          'engine_commit': 'b' * 40, 'source': source})
 
     def test_snapshot_reconciliation_needs_the_explicit_uuid_and_origin(self):
         with tempfile.TemporaryDirectory() as temp:
