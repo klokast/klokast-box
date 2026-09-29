@@ -122,7 +122,18 @@ class RouterInitialContactTests(unittest.TestCase):
                 patch.object(contact.router_state, 'snapshot', return_value={}), \
                 patch.object(contact.router_state, 'evidence', return_value=state), \
                 patch.object(contact.router_finalize, 'finalize',
-                    return_value={'kind':'klokast.router-finalization.v1'}) as finalize:
+                    side_effect=[ValueError('simulated offline package interruption'),
+                                 {'kind':'klokast.router-finalization.v1'}]) as finalize:
+            with self.assertRaisesRegex(ValueError, 'simulated offline package interruption'):
+                contact.retire(fixture.root, manifest=fixture.manifest,
+                    personalization=fixture.request,
+                    runtime_packages={k:v for k,v in fixture.request['packages'].items() if k != 'openssh'},
+                    accounts={'dnsmasq_uid':65,'dnsmasq_gid':65,'tailscale_gid':103},
+                    enrolled_state_sha256=state_hash, first_contact=result,
+                    backend_address='192.0.2.2', backend_prefix=24,
+                    backend_source_address='192.0.2.1')
+            self.assertFalse((fixture.root / 'root/.ssh/authorized_keys').exists())
+            self.assertFalse((fixture.root / 'etc/runlevels/default/sshd').exists())
             retired = contact.retire(fixture.root, manifest=fixture.manifest,
                 personalization=fixture.request,
                 runtime_packages={k:v for k,v in fixture.request['packages'].items() if k != 'openssh'},
@@ -131,7 +142,7 @@ class RouterInitialContactTests(unittest.TestCase):
                 backend_address='192.0.2.2', backend_prefix=24,
                 backend_source_address='192.0.2.1')
         self.assertEqual(retired, {'kind':'klokast.router-finalization.v1'})
-        finalize.assert_called_once()
+        self.assertEqual(finalize.call_count, 2)
         self.assertFalse((fixture.root / 'root/.ssh').exists())
         self.assertFalse((fixture.root / 'etc/runlevels/default/sshd').exists())
         self.assertFalse((fixture.root / 'etc/ssh/sshd_config.d/10-klokast-bootstrap.conf').exists())
