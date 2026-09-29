@@ -110,13 +110,18 @@ def create(work, operation, source, expected):
 
 
 def refuse_referenced_disk(box, operation, disk):
-    """A diagnostic disk must never be retired after it becomes a generation."""
+    """A diagnostic disk must never retire a recorded installation or generation."""
     if not generations.matches('[a-z0-9][a-z0-9-]{0,30}', box):
         raise TransactionError('router candidate retirement requires an exact box')
     base = records.BASE
     if not base.exists() and not base.is_symlink():
         return
     storage = records.Records(box)
+    installation = storage.installation()
+    if installation and (installation['operation_id'] == operation or
+            installation['disk']['path'] == disk['path'] or
+            disk['uuid'] is not None and installation['disk']['uuid'] == disk['uuid']):
+        raise TransactionError('router candidate disk belongs to a recorded first installation')
     pending = storage.pending()
     if pending and pending['request']['operation_id'] == operation:
         raise TransactionError('router candidate belongs to a pending production operation')

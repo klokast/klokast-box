@@ -103,6 +103,7 @@ class DiskTests(unittest.TestCase):
         generation={'disk':{'path':self.path,'uuid':'exact-uuid'}}
         storage=Mock()
         storage.lock.return_value=nullcontext()
+        storage.installation.return_value=None
         storage.accepted.return_value={'current_sha256':'b'*64,'previous_sha256':None}
         storage.generation.return_value=generation
         (protected/'accepted.json').write_text('{}')
@@ -115,6 +116,38 @@ class DiskTests(unittest.TestCase):
             (protected/'accepted.json').unlink()
             storage.pending.return_value={'request':{'operation_id':self.operation}}
             with self.assertRaisesRegex(TransactionError,'pending production'):
+                c.retire(self.work,self.operation,box=self.box)
+            command.assert_not_called()
+
+    def test_retirement_preserves_each_recorded_initial_installation_stage(self):
+        self.store()
+        protected=self.work/'protected'
+        protected.mkdir()
+        storage=Mock()
+        storage.lock.return_value=nullcontext()
+        storage.pending.return_value=None
+        with patch.object(c.records,'Records',return_value=storage),patch.object(c,'observed',return_value=self.row), \
+             patch.object(c.native,'command') as command:
+            for stage in ('allocated','prepared','enrolled','verified'):
+                with self.subTest(stage=stage):
+                    storage.installation.return_value={'operation_id':self.operation,
+                        'disk':{'path':self.path,'uuid':'exact-uuid'}}
+                    with self.assertRaisesRegex(TransactionError,'recorded first installation'):
+                        c.retire(self.work,self.operation,box=self.box)
+                    self.assertEqual(c.record(self.work,self.operation)['stage'],'cloned')
+            command.assert_not_called()
+
+    def test_retirement_refuses_reused_installation_disk_uuid(self):
+        self.store()
+        protected=self.work/'protected'
+        protected.mkdir()
+        storage=Mock()
+        storage.lock.return_value=nullcontext()
+        storage.installation.return_value={'operation_id':'b'*24,
+            'disk':{'path':'/dev/vg0/routergen_'+'b'*24,'uuid':'exact-uuid'}}
+        with patch.object(c.records,'Records',return_value=storage),patch.object(c,'observed',return_value=self.row), \
+             patch.object(c.native,'command') as command:
+            with self.assertRaisesRegex(TransactionError,'recorded first installation'):
                 c.retire(self.work,self.operation,box=self.box)
             command.assert_not_called()
 
