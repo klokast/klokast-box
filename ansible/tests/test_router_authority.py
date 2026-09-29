@@ -1,5 +1,6 @@
 """Baseline adoption follows the activated engine, not standing update policy."""
 import json
+import copy
 import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -12,6 +13,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import router_update_controller as controller
+from test_router_updates import PROFILE, ENGINE, branch
 
 
 def router_cli():
@@ -24,6 +26,37 @@ def router_cli():
 
 
 class RouterAuthorityTests(unittest.TestCase):
+    def test_initial_input_selection_does_not_require_replacement_activation(self):
+        cli = router_cli()
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
+                    'replacement_ready':False, 'policy':{'enabled':False, 'targets':{},
+                    'branch-policy':'tested-stable', 'branch-delay-days':21}}
+        resolved = {'inputs_directory':'/private/inputs', 'inputs_sha256':'a' * 64}
+        changed = copy.deepcopy(schedule)
+        changed['policy']['branch-delay-days'] = 30
+        for final in (schedule, changed):
+            with self.subTest(changed=final != schedule), \
+                    patch.object(cli.transport, 'require_controller'), \
+                    patch.object(cli.transport, 'command', return_value=ENGINE), \
+                    patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
+                    patch.object(cli.transport, 'load', return_value=PROFILE), \
+                    patch.object(cli, 'schedule_source', side_effect=[schedule, final]), \
+                    patch.object(cli.upstream, 'fetch_json', return_value=(
+                        {'release_branches':[branch('v3.24')]}, 'b' * 64)), \
+                    patch.object(cli, 'resolve', return_value=resolved) as resolve, \
+                    patch.object(cli.transport, 'write') as write:
+                if final != schedule:
+                    with self.assertRaisesRegex(controller.UpdateError, 'changed during resolution'):
+                        cli.resolve_initial()
+                    write.assert_not_called()
+                else:
+                    result = cli.resolve_initial()
+                    self.assertIn('selection_sha256', result)
+                    resolve.assert_called_once_with('v3.24')
+                    selection = write.call_args.args[1]
+                    self.assertFalse(selection['replacement_authorized'])
+                    self.assertEqual(selection['branch_delay_days'], 21)
+
     def test_accepted_legacy_qualification_checks_protected_source(self):
         cli = router_cli()
         inspected = {'evidence_directory': '/secure/op', 'operation': 'a' * 24,

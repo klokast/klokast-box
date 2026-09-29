@@ -60,6 +60,44 @@ def branch(name, date='2026-01-01'):
 
 
 class RouterCheckTests(unittest.TestCase):
+    def test_common_resolver_fresh_install_and_adjacent_replacement(self):
+        policy = {'branch-policy': 'tested-stable', 'branch-delay-days': 21}
+        releases = {'release_branches': [branch('v3.23'), branch('v3.24'),
+                                         branch('v3.25'), branch('v3.26', '2026-09-20'),
+                                         {'rel_branch': 'edge'}]}
+        self.assertEqual(r.select_branch('initial-install', releases, NOW, policy), 'v3.25')
+        self.assertEqual(r.select_branch('replacement', releases, NOW, policy, current='v3.23'), 'v3.24')
+        releases['release_branches'][2]['repos'][1]['eol_date'] = '2026-09-01'
+        self.assertEqual(r.select_branch('initial-install', releases, NOW, policy), 'v3.24')
+        policy['branch-delay-days'] = 0
+        self.assertEqual(r.select_branch('initial-install', releases, NOW, policy), 'v3.26')
+
+    def test_fresh_selection_needs_no_enabled_replacement_policy(self):
+        policy = {'branch-policy': 'tested-stable', 'branch-delay-days': 21,
+                  'enabled': False, 'targets': {}}
+        releases = {'release_branches': [branch('v3.24', '2026-09-04')]}
+        boundary = dt.datetime(2026, 9, 25, tzinfo=dt.timezone.utc)
+        with self.assertRaises(UpdateError):
+            r.select_branch('initial-install', releases, boundary - dt.timedelta(seconds=1), policy)
+        self.assertEqual(r.select_branch('initial-install', releases, boundary, policy), 'v3.24')
+        releases['release_branches'][0]['releases'].append({'version':'3.24.1', 'date':'2026-09-24'})
+        self.assertEqual(r.select_branch('initial-install', releases, boundary, policy), 'v3.24')
+
+    def test_fresh_selection_refuses_missing_or_ambiguous_policy_and_metadata(self):
+        policy = {'branch-policy': 'tested-stable', 'branch-delay-days': 21}
+        for releases in ({}, {'release_branches': []},
+                         {'release_branches': [branch('v3.24'), branch('v3.24')]},
+                         {'release_branches': [branch('v3.24', '2027-01-01')]}):
+            with self.subTest(releases=releases), self.assertRaises(UpdateError):
+                r.select_branch('initial-install', releases, NOW, policy)
+        for invalid in ({}, {**policy, 'branch-delay-days': True}, {**policy, 'branch-policy': 'edge'}):
+            with self.subTest(policy=invalid), self.assertRaises(UpdateError):
+                r.select_branch('initial-install', {'release_branches':[branch('v3.24')]}, NOW, invalid)
+        with self.assertRaises(UpdateError):
+            r.select_branch('initial-install', {}, NOW, policy, current='v3.23')
+        with self.assertRaises(UpdateError):
+            r.select_branch('replacement', {}, NOW, policy)
+
     def fixture(self):
         accepted = {'box': 'boxa', 'role': 'router', 'generation': 'f' * 64, 'release': release()}
         return dict(box='boxa', role='router', accepted=accepted,
@@ -141,6 +179,9 @@ class RouterCheckTests(unittest.TestCase):
         result = r.check(**f)
         self.assertEqual(result['status'], 'update-required', result)
         self.assertIn('first approved template', result['reason'])
+        self.assertEqual(result['package_difference_scope'], 'legacy-runtime-to-build-inputs')
+        self.assertIsNone(result['explicit_request_difference'])
+        self.assertEqual(result['release_transition'], {'from': 'v3.23', 'to': 'v3.23'})
         self.assertEqual(result['accepted_sha256'], digest(f['accepted']))
         f['live']['alpine_branch'] = 'v3.22'
         self.assertEqual(r.check(**f)['status'], 'failed')
@@ -159,6 +200,8 @@ class RouterCheckTests(unittest.TestCase):
                 result = r.check(**f)
                 self.assertEqual(result['status'], 'update-required', result)
                 self.assertEqual(result['package_difference'][0]['name'], name)
+                self.assertEqual(result['package_difference_scope'], 'build-inputs-to-build-inputs')
+                self.assertEqual(result['explicit_request_difference'], {'added': [], 'removed': []})
 
     def test_dependency_removal(self):
         f = self.fixture()

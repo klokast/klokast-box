@@ -317,6 +317,39 @@ def inspect(box):
             'adoption_findings': findings, 'adoption_authorized': False}
 
 
+def schedule_source():
+    value = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+        'vm-update-policy', 'schedule-source']), object_pairs_hook=transport.unique_object)
+    if (not isinstance(value, dict) or value.get('kind') != 'klokast.vm-update-schedule.v1' or
+            type(value.get('activated')) is not bool or not isinstance(value.get('policy'), dict)):
+        raise UpdateError('router input selection has no verified Instance update schedule')
+    return value
+
+
+def resolve_initial():
+    """Read bootstrap version policy without requiring standing replacement authority."""
+    transport.require_controller()
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router bootstrap input selection requires the activated engine')
+    schedule = schedule_source()
+    profile = transport.load(PROFILE)
+    router_updates.validate_profile(profile)
+    now = dt.datetime.now(dt.timezone.utc)
+    releases, checksum = upstream.fetch_json(profile['release_metadata'])
+    branch = router_updates.select_branch('initial-install', releases, now, schedule['policy'])
+    result = resolve(branch)
+    if schedule_source() != schedule or transport.approved_engine() != engine:
+        raise UpdateError('router bootstrap source or version policy changed during resolution')
+    selection = router_updates.seal({'kind': 'klokast.router-bootstrap-input-selection.v1',
+        'engine_commit': engine, 'observed_at': timestamp(now), 'branch': branch,
+        'branch_delay_days': schedule['policy']['branch-delay-days'],
+        'schedule_sha256': router_updates.digest(schedule), 'metadata_sha256': checksum,
+        'inputs_sha256': result['inputs_sha256'], 'replacement_authorized': False})
+    transport.write(Path(result['inputs_directory']) / 'selection.json', selection)
+    return {**result, 'selection_sha256': selection['receipt_sha256']}
+
+
 def resolve(branch):
     transport.require_controller()
     if not CACHE.is_dir() or CACHE.is_symlink():
@@ -605,6 +638,7 @@ def main():
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('adopt-legacy', help='inspect and adopt one legacy router under activated authority').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
+    sub.add_parser('resolve-initial', help='select and freeze initial-install inputs from verified Instance version policy')
     sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
@@ -634,6 +668,8 @@ def main():
             value = adopt_legacy(args.box)
         elif args.command == 'resolve':
             value = resolve(args.branch)
+        elif args.command == 'resolve-initial':
+            value = resolve_initial()
         elif args.command == 'test-dom0-guards':
             value = test_dom0_guards(args.box)
         elif args.command == 'build-template':

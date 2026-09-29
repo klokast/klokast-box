@@ -56,6 +56,65 @@ package signatures and freezes the complete dependency closure, including
 scripts. A failed resolution cannot publish a complete input manifest. These
 inputs are build evidence; they do not authorize replacement.
 
+`resolve-initial` reads the verified Instance version policy and selects the
+newest supported stable Alpine branch that meets its configured delay. It does
+not require an enabled or activated replacement policy. It requires the active
+controller and activated engine. It freezes packages through the same `resolve`
+path and writes `selection.json` beside `inputs.json`. A changed policy or
+engine during resolution prevents publication of the selection receipt.
+This command selects build inputs only. Bootstrap integration is still required
+before these inputs can create an initial accepted router generation.
+
+Both lifecycle selectors use the same support and first-release age check.
+Replacement permits only the adjacent stable branch and continues package
+checks on the current branch while a later branch is held. Fresh installation
+has no predecessor. Neither path introduces a second branch-delay setting.
+
+## Explicit package requests
+
+The profile declares names without versions. Native APK selects dependencies
+from the selected branch's official `main` and `community` repositories. The
+frozen input record contains exact versions and hashes for one build. These
+records do not select versions for future builds.
+
+The current 16 requests have these uses. This is an audit of the existing
+recipe, not a claim that each request adds a package absent from Alpine's base.
+
+| Request | Use in the current recipe |
+| --- | --- |
+| `alpine-base` | Official base, OpenRC, and APK database and tools. |
+| `ca-certificates` | TLS trust for management connections. |
+| `dhcpcd` | WAN addressing, leases, DUID, and stable IPv6 secret. |
+| `dnsmasq` | DNS forwarding and local DHCP service. |
+| `doas` | Restricted management privilege escalation. |
+| `e2fsprogs` | Native ext4 creation and recovery in the isolated build and copy guests; retained in the current template. |
+| `iproute2` | Routing configuration and native network probes. |
+| `linux-virt` | Matching guest kernel and modules. |
+| `mkinitfs` | Matching initramfs construction inside Xen. |
+| `nftables` | Router firewall and native syntax verification. |
+| `openssh` | Temporary first-contact support; removed before runtime acceptance. |
+| `openssh-keygen` | Effective SSH host-key verification after server removal. |
+| `python3` | Ansible and the checked guest helpers. |
+| `tailscale` | Overlay identity and steady-state SSH management. |
+| `tailscale-openrc` | Tailscale service integration. |
+| `tzdata` | Timezone files; all Platform machines use UTC. |
+
+Some tools also serve the disposable build guest. Removal needs a native proof
+that both bootstrap and replacement still work. The current audit does not
+remove them or add a package-count limit. APK continues to own dependencies.
+The current source rule selects Tailscale from the chosen Alpine stable branch;
+it does not establish that this version is the latest upstream Tailscale release.
+
+Detailed package differences stay in protected check evidence. The report names
+their scope: build inputs compared with build inputs, or a legacy runtime
+compared with new build inputs. Neither is a final runtime comparison. Explicit
+request additions and removals are separate fields. Legacy inspection cannot
+establish an approved request list, so that comparison is unknown for a legacy
+source. Routine reports can show the Alpine transition without listing all
+dependency changes.
+
+## Qualification and preparation
+
 The decision contract compares effective package inputs with an accepted
 release and fresh live verification. An unrelated index change or patch
 announcement does not require a build. Missing metadata defers the decision.

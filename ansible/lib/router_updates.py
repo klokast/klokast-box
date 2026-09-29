@@ -12,7 +12,7 @@ import router_state
 import router_generations
 import router_records
 from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
-from platform_update_metadata import adjacent_stable_branch
+from platform_update_metadata import adjacent_stable_branch, newest_stable_branch
 
 PROFILE = 'router-alpine-v1'
 RELEASE = 'klokast.router-release.v2'
@@ -429,6 +429,21 @@ def lifecycle(mode, *, box, role, existing_disk, installation, accepted, bootstr
     raise UpdateError('router lifecycle mode must be initial-install or replacement')
 
 
+def select_branch(mode, releases, now, policy, *, current=None):
+    """Select inputs, not execution authority, for the common router builder."""
+    if (not isinstance(policy, dict) or policy.get('branch-policy') != 'tested-stable' or
+            type(policy.get('branch-delay-days')) is not int or
+            not 0 <= policy['branch-delay-days'] <= 365):
+        raise UpdateError('router input selection requires the configured stable branch policy and delay')
+    delay = policy['branch-delay-days']
+    if mode == 'initial-install' and current is None:
+        return newest_stable_branch(releases, now, delay)
+    if mode == 'replacement' and current is not None:
+        branch_number(current)
+        return adjacent_stable_branch(current, releases, now, delay) or current
+    raise UpdateError('router branch selection requires an exact lifecycle and predecessor')
+
+
 def available_branches(releases, current, now, delay):
     """Retain availability separately from the adjacent-branch decision."""
     if not isinstance(releases, dict) or not isinstance(releases.get('release_branches'), list):
@@ -460,7 +475,9 @@ def available_branches(releases, current, now, delay):
                             'support': support})
     if current not in {r['branch'] for r in entries}:
         raise UpdateError('accepted router branch is absent from current Alpine metadata')
-    eligible = adjacent_stable_branch(current, releases, now, delay)
+    selected = select_branch('replacement', releases, now,
+        {'branch-policy': 'tested-stable', 'branch-delay-days': delay}, current=current)
+    eligible = selected if selected != current else None
     for entry in entries:
         entry['eligible'] = entry['branch'] in (current, eligible)
     return sorted(entries, key=lambda r: branch_number(r['branch'])), eligible
@@ -511,7 +528,8 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
               'policy_sha256': policy_sha256, 'accepted_sha256': None, 'status': 'failed',
               'reason': '', 'availability': [], 'selected_branch': None,
               'candidate_inputs_sha256': None, 'effective_inputs_sha256': None,
-              'package_difference': [], 'source_sha256': None}
+              'package_difference': [], 'package_difference_scope': None,
+              'explicit_request_difference': None, 'release_transition': None, 'source_sha256': None}
     try:
         if role != 'router' or not match(BOX, box) or not match(HASH, policy_sha256):
             raise UpdateError('router check requires an exact router target and policy receipt')
@@ -565,6 +583,8 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
         report['availability'] = availability
         branch = eligible or branch
         report['selected_branch'] = branch
+        report['release_transition'] = {'from': source['alpine_branch'] if legacy else release['inputs']['branch'],
+                                        'to': branch}
         evidence = candidates.get(branch)
         if not isinstance(evidence, dict) or evidence.get('status') == 'unavailable':
             report.update(status='deferred', reason='fresh authenticated package closure is unavailable')
@@ -582,6 +602,12 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
         report['effective_inputs_sha256'] = effective_inputs(inputs)
         report['package_difference'] = (legacy_package_difference(source['packages'], inputs['packages'], compare)
                                         if legacy else package_difference(release['inputs']['packages'], inputs['packages'], compare))
+        report['package_difference_scope'] = 'legacy-runtime-to-build-inputs' if legacy else 'build-inputs-to-build-inputs'
+        # Legacy inspection does not establish an approved package request list.
+        # Do not mislabel dependency differences as Klokast additions.
+        if not legacy:
+            before, after = set(release['inputs']['world']), set(inputs['world'])
+            report['explicit_request_difference'] = {'added': sorted(after - before), 'removed': sorted(before - after)}
         changed = legacy or effective_inputs(release['inputs']) != effective_inputs(inputs)
         excluded = any(r.get('box') == box and r.get('role') == role for r in policy.get('exclusions', []))
         if policy.get('enabled') is not True or excluded:

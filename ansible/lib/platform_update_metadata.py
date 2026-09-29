@@ -17,6 +17,45 @@ from platform_updates import UpdateError, branch_number, parse_apk_database, tim
 MAX_DOWNLOAD = 32 * 1024 * 1024
 
 
+def aged_stable_branch(selected, releases, now, delay_days):
+    """Apply the same support and first-release delay to either lifecycle."""
+    if type(delay_days) is not int or not 0 <= delay_days <= 365:
+        raise UpdateError('branch delay must be between zero and 365 days')
+    if supported_stable_branch(selected, releases, now) is None:
+        return None
+    entry = next(row for row in releases['release_branches'] if row['rel_branch'] == selected)
+    first = [row for row in entry['releases'] if row.get('version') == selected[1:] + '.0']
+    if len(first) != 1 or not isinstance(first[0].get('date'), str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', first[0]['date']):
+        raise UpdateError('stable branch has no unique first-release date')
+    try:
+        released = dt.datetime.combine(dt.date.fromisoformat(first[0]['date']), dt.time(), dt.timezone.utc)
+    except ValueError as error:
+        raise UpdateError('stable branch first-release date is invalid') from error
+    return selected if now >= released + dt.timedelta(days=delay_days) else None
+
+
+def newest_stable_branch(releases, now, delay_days):
+    """Fresh installs have no predecessor, but still require support and age."""
+    if (not isinstance(releases, dict) or not isinstance(releases.get('release_branches'), list)):
+        raise UpdateError('Alpine release metadata is unavailable')
+    branches = []
+    for row in releases['release_branches']:
+        if not isinstance(row, dict):
+            raise UpdateError('Alpine branch metadata is invalid')
+        name = row.get('rel_branch')
+        if isinstance(name, str) and re.fullmatch(r'v[0-9]+\.[0-9]+', name):
+            branches.append(name)
+    if len(branches) != len(set(branches)):
+        raise UpdateError('Alpine branch metadata is duplicated')
+    # Validate the delay even when the upstream list is empty.
+    if type(delay_days) is not int or not 0 <= delay_days <= 365:
+        raise UpdateError('branch delay must be between zero and 365 days')
+    for selected in sorted(branches, key=branch_number, reverse=True):
+        if aged_stable_branch(selected, releases, now, delay_days):
+            return selected
+    raise UpdateError('no supported stable Alpine branch meets the configured delay')
+
+
 def adjacent_stable_branch(current, releases, now, delay_days=21):
     """Delay only the first stable release; patches never reset this clock.
 
@@ -28,14 +67,7 @@ def adjacent_stable_branch(current, releases, now, delay_days=21):
     if type(delay_days) is not int or not 0 <= delay_days <= 365:
         raise UpdateError('branch delay must be between zero and 365 days')
     try:
-        if supported_stable_branch(selected, releases, now) is None:
-            return None
-        entry = next(row for row in releases['release_branches'] if row['rel_branch'] == selected)
-        first = [row for row in entry['releases'] if row.get('version') == selected[1:] + '.0']
-        if len(first) != 1 or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', first[0]['date']):
-            return None
-        released = dt.datetime.combine(dt.date.fromisoformat(first[0]['date']), dt.time(), dt.timezone.utc)
-        return selected if now >= released + dt.timedelta(days=delay_days) else None
+        return aged_stable_branch(selected, releases, now, delay_days)
     except (UpdateError, KeyError, TypeError, ValueError, StopIteration):
         return None
 
