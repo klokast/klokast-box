@@ -19,12 +19,14 @@
       - ansible-playbook
       - doas
       - git
+      - go
       - jq
       - openssl
       - podman
       - python3
       - skopeo
       - tailscale
+      - tailscale-distsign
 
 - name: Read the ops controller APK world
   ansible.builtin.slurp:
@@ -117,6 +119,45 @@
   register: ops_controller_check_commands
   changed_when: false
   failed_when: false
+
+- name: Read the pinned controller Go version
+  ansible.builtin.command:
+    argv: [go, version]
+  register: ops_controller_check_go_version
+  changed_when: false
+
+- name: Inspect the installed Tailscale verifier binary
+  ansible.builtin.stat:
+    path: /usr/local/bin/tailscale-distsign
+    checksum_algorithm: sha256
+  register: ops_controller_check_distsign_binary
+
+- name: Read the installed Tailscale verifier build record
+  ansible.builtin.slurp:
+    src: /usr/local/share/klokast/toolchains/tailscale-distsign.json
+  register: ops_controller_check_distsign_record
+
+- name: Parse the installed Tailscale verifier build record
+  ansible.builtin.set_fact:
+    ops_controller_check_distsign: "{{ ops_controller_check_distsign_record.content | b64decode | from_json }}"
+
+- name: Check the public source tree for the installed verifier
+  ansible.builtin.command:
+    argv: [git, -c, "safe.directory={{ ops_controller_check_repo_path }}", -C, "{{ ops_controller_check_repo_path }}", rev-parse, HEAD:tools/tailscale-distsign]
+  register: ops_controller_check_distsign_source_tree
+  changed_when: false
+
+- name: Require the pinned compiler and matching verifier build record
+  ansible.builtin.assert:
+    that:
+      - "'go1.26.6 linux/amd64' in ops_controller_check_go_version.stdout"
+      - ops_controller_check_distsign_binary.stat.isreg | default(false)
+      - ops_controller_check_distsign.kind == 'klokast.tailscale-distsign-build.v1'
+      - ops_controller_check_distsign.source_tree == ops_controller_check_distsign_source_tree.stdout
+      - ops_controller_check_distsign.upstream_module == 'tailscale.com@v1.102.4'
+      - ops_controller_check_distsign.go_version == 'go1.26.6'
+      - ops_controller_check_distsign.binary_sha256 == ops_controller_check_distsign_binary.stat.checksum
+    fail_msg: The controller Go or Tailscale signature verifier toolchain differs from its checked build record.
 
 - name: Inspect ops controller repo directory
   ansible.builtin.stat:

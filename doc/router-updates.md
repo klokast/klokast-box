@@ -132,13 +132,23 @@ authenticates the archive signature. A SHA-256 file from the download server
 alone is not this signature proof. Do not implement another signature protocol
 or accept an unsigned fallback.
 
-The proposed verifier is a versioned build tool on the active controller. Build
-it from a pinned upstream source revision and frozen dependencies in an isolated
-build guest. Bind its binary hash and source to its build receipt. It has no
-Platform credentials, signing keys, guest disks, or enrollment authority. Run
-each download as an unprivileged process with a private temporary directory,
-a fixed deadline, and only the official package origin. Keep the verified
-archive and source evidence in the existing protected update cache.
+The verifier source is in `tools/tailscale-distsign`. It imports the upstream
+`distsign` package at `v1.102.4` and pins its dependencies in `go.sum`. The
+controller role downloads the official [Go 1.26.6 toolchain](https://go.dev/dl/)
+with its pinned SHA-256 checksum. It builds only committed source as a dedicated
+`tailscale-build` account. This account fetches modules through the Go module
+proxy and checksum database, then compiles in a networkless user namespace. The build account
+has no Platform credentials, signing keys, guest disks, or enrollment authority.
+The installed binary and exact source tree are bound in a root-owned build record.
+The same ops-controller role runs when a new controller VM is provisioned from
+the shared Alpine template. The generic shared template does not receive this
+controller-only compiler.
+
+Run each archive download as an unprivileged process with a private temporary
+directory, a fixed deadline, and only the official package origin. Keep the
+verified archive and source evidence in the protected update cache. The
+verifier toolchain is present, but router input resolution does not yet invoke
+it; do not treat an Alpine-only router input record as upstream-compliant.
 
 Install the verified upstream binaries only while building the generic router
 template. Record their versions and hashes separately from APK's package
@@ -155,7 +165,7 @@ trigger candidate preparation independently of Alpine branch age. Compatibility
 and reverse-state tests must use those exact binaries. Self-update on a running
 router remains prohibited.
 
-This source integration and verifier deployment are not implemented yet. The
+This source integration is not complete yet. The
 common bootstrap builder must not claim latest-upstream compliance before their
 native signature, installation, service, and rollback checks pass.
 

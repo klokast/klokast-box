@@ -1,0 +1,177 @@
+---
+- name: Create the controller tool download cache
+  ansible.builtin.file:
+    path: /var/cache/klokast
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create the pinned Go toolchain directory
+  ansible.builtin.file:
+    path: /usr/local/share/klokast/toolchains/go1.26.6
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Download the checksum-pinned official Go toolchain
+  ansible.builtin.get_url:
+    url: https://go.dev/dl/go1.26.6.linux-amd64.tar.gz
+    dest: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
+    checksum: sha256:708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Expand the pinned Go toolchain
+  ansible.builtin.unarchive:
+    src: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
+    dest: /usr/local/share/klokast/toolchains/go1.26.6
+    remote_src: true
+    creates: /usr/local/share/klokast/toolchains/go1.26.6/go/bin/go
+
+- name: Publish the Go compiler command
+  ansible.builtin.file:
+    src: /usr/local/share/klokast/toolchains/go1.26.6/go/bin/go
+    dest: /usr/local/bin/go
+    state: link
+    owner: root
+    group: root
+
+- name: Verify the pinned Go compiler version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/go, version]
+  register: ops_controller_go_version
+  changed_when: false
+  failed_when: ops_controller_go_version.rc != 0 or 'go1.26.6 linux/amd64' not in ops_controller_go_version.stdout
+
+- name: Read the checked public verifier source tree
+  ansible.builtin.command:
+    argv: [git, -c, "safe.directory={{ ops_infra_repo_dest }}", -C, "{{ ops_infra_repo_dest }}", rev-parse, HEAD:tools/tailscale-distsign]
+  register: ops_controller_verifier_source_tree
+  changed_when: false
+
+- name: Refuse verifier compilation from a dirty public checkout
+  ansible.builtin.command:
+    argv: [git, -c, "safe.directory={{ ops_infra_repo_dest }}", -C, "{{ ops_infra_repo_dest }}", status, --porcelain]
+  register: ops_controller_verifier_dirty
+  changed_when: false
+  failed_when: ops_controller_verifier_dirty.rc != 0 or ops_controller_verifier_dirty.stdout | length > 0
+
+- name: Create the credential-free verifier build group
+  ansible.builtin.group:
+    name: tailscale-build
+    system: true
+
+- name: Create the credential-free verifier build account
+  ansible.builtin.user:
+    name: tailscale-build
+    group: tailscale-build
+    system: true
+    create_home: false
+    shell: /sbin/nologin
+    password_lock: true
+
+- name: Create the unprivileged verifier build directory
+  ansible.builtin.file:
+    path: /var/cache/klokast/tailscale-distsign-build
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create the build directory for this exact source tree
+  ansible.builtin.file:
+    path: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
+    state: directory
+    owner: tailscale-build
+    group: tailscale-build
+    mode: '0700'
+
+- name: Archive only committed verifier source and dependency checksums
+  ansible.builtin.command:
+    argv:
+      - git
+      - -c
+      - "safe.directory={{ ops_infra_repo_dest }}"
+      - -C
+      - "{{ ops_infra_repo_dest }}"
+      - archive
+      - HEAD
+      - tools/tailscale-distsign
+      - -o
+      - /var/cache/klokast/tailscale-distsign-source.tar
+  changed_when: false
+
+- name: Extract committed verifier source for the isolated build account
+  ansible.builtin.unarchive:
+    src: /var/cache/klokast/tailscale-distsign-source.tar
+    dest: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
+    remote_src: true
+    extra_opts: [--strip-components=2]
+    owner: tailscale-build
+    group: tailscale-build
+    creates: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/main.go"
+
+- name: Fetch and verify exact Go module dependencies without credentials
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - 'exec "$1" "$2" "$3" "$4"'
+      - tailscale-build
+      - sh
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/fetch"
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/output"
+      - /usr/local/bin/go
+  changed_when: false
+
+- name: Build the checksum-frozen verifier in a networkless user namespace
+  ansible.builtin.command:
+    argv:
+      - /bin/su
+      - -s
+      - /bin/sh
+      - -c
+      - 'exec "$1" "$2" "$3" "$4"'
+      - tailscale-build
+      - sh
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/build"
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
+      - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/output"
+      - /usr/local/bin/go
+  register: ops_controller_verifier_build
+  changed_when: false
+
+- name: Install the verified Tailscale distribution signature tool
+  ansible.builtin.copy:
+    src: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/output/tailscale-distsign"
+    dest: /usr/local/bin/tailscale-distsign
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Read the installed verifier checksum
+  ansible.builtin.stat:
+    path: /usr/local/bin/tailscale-distsign
+    checksum_algorithm: sha256
+  register: ops_controller_verifier_installed
+
+- name: Record the verifier source and binary identity
+  ansible.builtin.copy:
+    dest: /usr/local/share/klokast/toolchains/tailscale-distsign.json
+    owner: root
+    group: root
+    mode: '0644'
+    content: >-
+      {{ {'kind': 'klokast.tailscale-distsign-build.v1',
+          'source_tree': ops_controller_verifier_source_tree.stdout,
+          'upstream_module': 'tailscale.com@v1.102.4',
+          'go_version': 'go1.26.6',
+          'go_archive_sha256': '708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89',
+          'binary_sha256': ops_controller_verifier_installed.stat.checksum} | to_nice_json }}

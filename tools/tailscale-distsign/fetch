@@ -1,0 +1,17 @@
+#!/bin/sh
+# Download checksum-verified modules as the isolated, credential-free build user.
+set -eu
+if [ "$#" -ne 3 ]; then
+    echo 'usage: fetch SOURCE_DIRECTORY OUTPUT_DIRECTORY GO_EXECUTABLE' >&2
+    exit 2
+fi
+source_directory=$1
+output_directory=$2
+go_executable=$3
+mkdir -p "$output_directory/cache" "$output_directory/path"
+cd "$source_directory"
+export CGO_ENABLED=0 GOTOOLCHAIN=local GOWORK=off
+export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
+export GOCACHE="$output_directory/cache" GOPATH="$output_directory/path"
+"$go_executable" mod download
+"$go_executable" mod verify

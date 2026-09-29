@@ -1,0 +1,16 @@
+#!/bin/sh
+# Compile the vendored verifier without network access or controller secrets.
+set -eu
+if [ "$#" -ne 3 ]; then
+    echo 'usage: build SOURCE_DIRECTORY OUTPUT_DIRECTORY GO_EXECUTABLE' >&2
+    exit 2
+fi
+source_directory=$1
+output_directory=$2
+go_executable=$3
+mkdir -p "$output_directory/cache" "$output_directory/path"
+cd "$source_directory"
+export CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off
+export GOCACHE="$output_directory/cache" GOPATH="$output_directory/path"
+exec unshare -Urn "$go_executable" build -mod=readonly -trimpath -buildvcs=false \
+    -o "$output_directory/tailscale-distsign" .

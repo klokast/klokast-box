@@ -905,3 +905,7 @@
     that:
       - ops_controller_repo_checkout.stat.exists | default(false)
     fail_msg: "The klokast-box checkout is missing under {{ ops_infra_repo_dest }}."
+
+- name: Install the pinned Go and Tailscale signature verifier toolchain
+  ansible.builtin.import_tasks: tailscale-distsign.yml
+  tags: ops-controller-tailscale-distsign
