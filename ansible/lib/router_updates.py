@@ -11,6 +11,7 @@ import re
 import router_state
 import router_generations
 import router_records
+import router_initial_installation
 from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
 from platform_update_metadata import adjacent_stable_branch, newest_stable_branch
 
@@ -418,12 +419,12 @@ def lifecycle(mode, *, box, role, existing_disk, installation, accepted, bootstr
         if not bootstrap_authorized or replacement_authorized or accepted is not None:
             raise UpdateError('initial installation requires bootstrap authority and no accepted assignment')
         if existing_disk is not None:
-            if (not isinstance(installation, dict) or installation.get('box') != box or
-                    installation.get('role') != role or installation.get('disk') != existing_disk or
-                    installation.get('stage') not in ('allocated', 'built', 'enrolled', 'verified')):
+            try:
+                router_initial_installation.validate(installation, box)
+            except (RuntimeError, TypeError, ValueError) as error:
+                raise UpdateError('existing router disk has no valid interrupted-install record') from error
+            if installation['disk'] != existing_disk:
                 raise UpdateError('existing router disk has no matching interrupted-install record')
-            if installation['stage'] in ('enrolled', 'verified') and not installation.get('machine_id'):
-                raise UpdateError('interrupted installation has lost its enrolled machine identity')
             return 'resume'
         if installation is not None:
             raise UpdateError('recorded installation disk is missing; reconstruction requires review')

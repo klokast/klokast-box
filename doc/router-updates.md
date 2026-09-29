@@ -541,6 +541,16 @@ The verifier checks the exact package world, kernel module directory, generated
 files and modes, default service links, locked accounts, and absent identity.
 Extra firewall includes and DNS configuration fail verification.
 
+The first-install record advances through `allocated`, `prepared`, `enrolled`,
+and `verified` under the dom0 router lock. It binds one operation, engine,
+release, LV UUID, preparation result, enrollment result, and proposed generation.
+A missing or changed record cannot authorize a second disk or identity. The
+first accepted-generation writer requires the matching verified record. The
+record itself grants no installation authority: the issuer must prove the
+controller grant, physical disk, enrollment, runtime state, and service checks
+before it advances a stage. The production issuer and phase 30/31 connection
+remain to be implemented and qualified.
+
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before
 it runs service tests. The initial-install clone uses the preallocated recovery

@@ -12,6 +12,7 @@ import secrets
 import stat
 
 import router_generations as generations
+import router_initial_installation as initial_installation
 import router_transaction as transaction
 
 BASE = Path('/mnt/dom0_data/klokast-router-updates')
@@ -153,6 +154,27 @@ class Records:
                 self.generation(checksum)
         return value
 
+    def installation(self):
+        path = self.base / 'installation.json'
+        if not path.exists() and not path.is_symlink():
+            return None
+        return initial_installation.validate(read(path), self.box)
+
+    def record_installation(self, value):
+        """Store one exact first-install stage while the caller holds the lock."""
+        initial_installation.validate(value, self.box)
+        if self.pending() is not None or (self.base / 'accepted.json').exists() or (
+                self.base / 'accepted.json').is_symlink():
+            raise transaction.TransactionError('first installation cannot replace an accepted or pending router')
+        current = self.installation()
+        if current is None:
+            if value['stage'] != 'allocated':
+                raise transaction.TransactionError('first installation must record its allocation before preparation')
+        else:
+            initial_installation.advance(current, value, self.box)
+        write(self.base / 'installation.json', value)
+        return value
+
     def adopt(self, record):
         """Publish one supervised legacy source after the caller's native checks.
 
@@ -190,6 +212,7 @@ class Records:
         generations.generation(record, self.box)
         if record['origin'] != 'template' or self.pending() is not None:
             raise transaction.TransactionError('initial acceptance requires one template and no pending replacement')
+        initial_installation.matches_generation(self.installation(), record, self.box)
         target = assignment(generations.seal({
             'kind':'klokast.router-assignment.v1', 'box':self.box, 'role':'router',
             'current_sha256':record['record_sha256'], 'previous_sha256':None,

@@ -324,13 +324,17 @@ class LifecycleTests(unittest.TestCase):
     def test_unknown_existing_disk_never_formats(self):
         f = self.fixture()
         self.assertEqual(r.lifecycle('initial-install', **f), 'allocate')
-        f['existing_disk'] = {'path': '/dev/vg0/lv_router', 'uuid': 'example'}
+        f['existing_disk'] = {'path': '/dev/vg0/routergen_' + 'a'*24,
+                              'uuid': 'example', 'bytes': 2147483648}
         with self.assertRaises(UpdateError):
             r.lifecycle('initial-install', **f)
-        f['installation'] = {'box': 'boxa', 'role': 'router', 'disk': f['existing_disk'],
-                             'stage': 'enrolled', 'machine_id': 'n123'}
+        f['installation'] = generation_fixture.g.seal({
+            'kind':'klokast.router-initial-installation.v1', 'box':'boxa', 'role':'router',
+            'operation_id':'a'*24, 'engine_commit':'b'*40, 'release_sha256':'c'*64,
+            'disk':f['existing_disk'], 'stage':'enrolled', 'preparation_sha256':'d'*64,
+            'enrollment_sha256':'e'*64, 'machine_id':'n123', 'generation_sha256':None})
         self.assertEqual(r.lifecycle('initial-install', **f), 'resume')
-        f['installation']['disk'] = {'path': '/dev/vg0/lv_router', 'uuid': 'other'}
+        f['installation']['disk'] = {**f['existing_disk'], 'uuid': 'other'}
         with self.assertRaises(UpdateError):
             r.lifecycle('initial-install', **f)
 

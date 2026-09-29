@@ -48,7 +48,7 @@
     owner: root
     group: root
     mode: '0600'
-  loop: [router_native, router_records, router_transaction, router_generations, router_personalize, router_finalize]
+  loop: [router_native, router_records, router_initial_installation, router_transaction, router_generations, router_personalize, router_finalize]
 
 - name: Stage the fixed read-only source inspector
   ansible.builtin.copy:
