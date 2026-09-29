@@ -279,12 +279,17 @@ def legacy_baseline_findings(guest, dom0, box, *, adopted=False):
         findings.append('router root password is not proved locked')
     expected, observed = guest.get('expected_configuration'), guest.get('configuration_files')
     core_files = {'/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft'}
-    if (not isinstance(expected, dict) or not isinstance(observed, dict) or
-            set(expected) != core_files or set(observed) != core_files or any(
-                not match(HASH, expected[path]) or not isinstance(observed[path], dict) or
-                observed[path].get('sha256') != expected[path] or
-                not _copyable_metadata(observed[path].get('metadata'), (128 * 1024, False), owners={(0, 0)})
-                for path in core_files)):
+    # New adoption uses current intent. An adopted disk instead uses its
+    # protected generation hashes in legacy_live; a newer engine may render
+    # a different candidate without changing that running disk.
+    if (not isinstance(observed, dict) or set(observed) != core_files or any(
+            not isinstance(observed[path], dict) or
+            not match(HASH, observed[path].get('sha256')) or
+            not _copyable_metadata(observed[path].get('metadata'), (128 * 1024, False), owners={(0, 0)})
+            for path in core_files) or not adopted and (
+                not isinstance(expected, dict) or set(expected) != core_files or any(
+                    not match(HASH, expected[path]) or observed[path]['sha256'] != expected[path]
+                    for path in core_files))):
         findings.append('router core configuration differs from the current compiled inventory and templates')
     if (not isinstance(guest.get('packages'), dict) or not guest['packages'] or
             not isinstance(guest.get('kernel_release'), str) or not guest['kernel_release']):

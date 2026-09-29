@@ -117,7 +117,8 @@ still uses the legacy mode until the common personalization and accepted-release
 path is complete. Bootstrap integration, protected baseline adoption, native compatibility qualification,
 the router cutover executor, boot recovery, signed policy dispatch, and the
 unattended schedule must pass their qualification gates before replacement is
-enabled. No router target has been added to the Instance policy contract. The
+enabled. The Instance contract accepts a router target, but no activated signed
+policy names one. The
 template test does not prove old/new service-state compatibility or rollback.
 The legacy rootfs role now refuses `router_alpine_rebuild` and a caller-selected
 LV. It creates the declared LV only if absent; an existing disk is not resized
@@ -439,8 +440,11 @@ as a source that needs its first approved template, even if installed package
 versions match the selected closure. It still refuses live package, kernel,
 boot, branch, or configuration drift before that decision.
 The read-only `legacy_live` adapter accepts fresh router and dom0 reports only
-when they match the sealed accepted assignment and generation. It returns no
-retained state bytes or SSH key material. This adapter is a check input; it
+when they match the sealed accepted assignment and generation. After adoption,
+it checks the running core files against the accepted generation. A newer engine
+can render different candidate files without changing that running disk. A new
+baseline adoption still requires a match with the current compiled templates.
+The adapter returns no retained state bytes or SSH key material. It
 does not grant build or cutover authority.
 After supervised adoption, `platform-router-update check-legacy --box BOX` uses
 that adapter from the active controller. It reads the protected current source

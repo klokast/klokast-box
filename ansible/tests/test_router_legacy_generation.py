@@ -68,6 +68,17 @@ class LegacyGenerationTests(unittest.TestCase):
         self.assertEqual(result['generation'],source['record_sha256'])
         self.assertEqual(result['alpine_branch'],'v3.23')
         self.assertNotIn('ssh_keys',result)
+        guest['expected_configuration']['/etc/nftables.nft']='0'*64
+        # The new engine can render a new candidate without changing the
+        # accepted legacy disk. Its original hash remains the live authority.
+        self.assertEqual(updates.legacy_live(box='boxa',assignment=assignment,source=source,
+                                             guest=guest,dom0=dom0,now=now)['generation'],
+                         source['record_sha256'])
+        guest['configuration_files']['/etc/nftables.nft']['sha256']='0'*64
+        with self.assertRaises(UpdateError):
+            updates.legacy_live(box='boxa',assignment=assignment,source=source,
+                                guest=guest,dom0=dom0,now=now)
+        guest['configuration_files']['/etc/nftables.nft']['sha256']='a'*64
         guest['packages']['tailscale']='2-r0'
         with self.assertRaises(UpdateError):
             updates.legacy_live(box='boxa',assignment=assignment,source=source,
