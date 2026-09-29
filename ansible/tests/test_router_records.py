@@ -130,6 +130,27 @@ class RecordsTests(unittest.TestCase):
             self.records.adopt(self.old)
         self.assertFalse((self.base / 'accepted.json').exists())
 
+    def test_initial_publication_is_exact_idempotent_and_rejects_legacy_or_pending(self):
+        (self.base / 'accepted.json').unlink()
+        with self.records.lock():
+            accepted = self.records.accept_initial(self.new)
+            self.assertEqual(self.records.accept_initial(self.new), accepted)
+        self.assertEqual(accepted['policy_sha256'], r.INITIAL_AUTHORITY_SHA256)
+        self.assertEqual(accepted['current_sha256'], self.new['record_sha256'])
+        self.assertIsNone(accepted['previous_sha256'])
+        with self.records.lock(), self.assertRaisesRegex(TransactionError, 'one template'):
+            self.records.accept_initial(self.old)
+        other = copy.deepcopy(self.new)
+        other['evidence_sha256'] = '0' * 64
+        other.pop('record_sha256')
+        other = g.seal(other)
+        with self.records.lock(), self.assertRaisesRegex(TransactionError, 'different accepted'):
+            self.records.accept_initial(other)
+        (self.base / 'accepted.json').unlink()
+        self.records.persist(self.pending)
+        with self.records.lock(), self.assertRaisesRegex(TransactionError, 'no pending'):
+            self.records.accept_initial(self.new)
+
 
 if __name__ == '__main__':
     unittest.main()

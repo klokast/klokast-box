@@ -65,6 +65,34 @@ class CandidateGenerationTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises((TransactionError, generations.GenerationError)):
                 candidate.assemble(**args)
 
+    def test_initial_generation_uses_same_template_and_enrolled_finalization(self):
+        args = self.fixture()
+        selected = args['release']
+        prepared = args['prepared']
+        prepared['mode'] = 'initial-install'
+        prepared['packages'] = {p['name']:p['version'] for p in selected['inputs']['packages']}
+        finalized = {'kind':'klokast.router-finalization.v1',
+            'packages':copy.deepcopy(selected['runtime_packages']),
+            'removed_packages':sorted(prepared['packages'].keys() - selected['runtime_packages'].keys()),
+            'tests':selected['runtime_tests'], 'enrolled_state_preserved':True}
+        values = dict(box='boxa', operation=args['operation'], release=selected,
+            profile=PROFILE, prepared=prepared, finalized=finalized,
+            disk_record=args['disk_record'], boot=args['boot'], xen=args['old']['xen'],
+            enrollment_sha256='d'*64, approved_engine=ENGINE)
+        record = candidate.assemble_initial(**values)
+        self.assertEqual(generations.generation(record, 'boxa'), record)
+        self.assertEqual(record['packages'], selected['runtime_packages'])
+        self.assertEqual(record['tailscale'], prepared['tailscale'])
+        for change in (lambda v:v['prepared'].update(mode='replacement'),
+                       lambda v:v['finalized'].update(enrolled_state_preserved=False),
+                       lambda v:v['finalized']['packages'].update(openssh='1-r0'),
+                       lambda v:v.update(enrollment_sha256='0'),
+                       lambda v:v['disk_record'].update(stage='allocated')):
+            invalid = copy.deepcopy(values)
+            change(invalid)
+            with self.subTest(change=change), self.assertRaises((TransactionError, generations.GenerationError)):
+                candidate.assemble_initial(**invalid)
+
 
 if __name__ == '__main__':
     unittest.main()

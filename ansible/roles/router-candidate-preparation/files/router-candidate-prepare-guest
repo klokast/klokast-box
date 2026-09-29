@@ -62,8 +62,6 @@ def guard():
             value['inputs_sha256'] != args['klokast_inputs'] or
             router_personalize.digest(value) != args['klokast_job']):
         raise RuntimeError('router candidate boot job differs from its selected input identity')
-    if value['mode'] != 'replacement':
-        raise RuntimeError('router replacement preparation cannot select initial enrollment mode')
     for path, name in ((Path('/dev/xvda'), 'xvda'), (RESULT, 'xvdb')):
         if (path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode) or
                 Path('/sys/class/block', name, 'ro').read_text().strip() != '0'):

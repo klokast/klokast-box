@@ -62,7 +62,22 @@
       ansible.builtin.command:
         cmd: "/bin/mount {{ xen_guest_root_mapper_path }} {{ xen_guest_root_mount_path }}"
 
-    - name: Ensure OpenSSH is present on the guest root for bootstrap recovery
+    - name: Inspect first-contact OpenSSH in the package-complete router template
+      ansible.builtin.stat:
+        path: '{{ xen_guest_root_mount_path }}/usr/sbin/sshd'
+        follow: false
+      register: xen_guest_bootstrap_router_sshd
+      when: xen_guest_name == 'router'
+
+    - name: Require first-contact OpenSSH from the router template
+      ansible.builtin.assert:
+        that:
+          - xen_guest_bootstrap_router_sshd.stat.isreg | default(false)
+          - not (xen_guest_bootstrap_router_sshd.stat.islnk | default(false))
+        fail_msg: Router template lacks first-contact OpenSSH. Rebuild the template; do not install packages on its clone.
+      when: xen_guest_name == 'router'
+
+    - name: Ensure OpenSSH is present on a shared guest root for bootstrap recovery
       ansible.builtin.command:
         cmd: >-
           /sbin/apk --root {{ xen_guest_root_mount_path }}
@@ -70,6 +85,7 @@
           add --no-cache openssh
       args:
         creates: "{{ xen_guest_root_mount_path }}/usr/sbin/sshd"
+      when: xen_guest_name != 'router'
 
     # setup-disk preserves /etc/network/interfaces, but not always the default
     # runlevel symlink we need for the first installed boot to bring links up.

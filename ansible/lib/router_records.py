@@ -17,6 +17,7 @@ import router_transaction as transaction
 BASE = Path('/mnt/dom0_data/klokast-router-updates')
 ROOT_UID = 0
 BASELINE_AUTHORITY_SHA256 = generations.digest({'kind':'klokast.router-supervised-baseline.v1'})
+INITIAL_AUTHORITY_SHA256 = generations.digest({'kind':'klokast.router-approved-bootstrap.v1'})
 
 
 def secure(path, *, directory=False, maximum=1024 * 1024):
@@ -179,6 +180,35 @@ class Records:
             'evidence_sha256':record['evidence_sha256']}), self.box)
         write(accepted_path, accepted)
         return accepted
+
+    def accept_initial(self, record):
+        """Publish a fully verified first template generation under bootstrap authority.
+
+        The caller holds the local lock and proves the installation grant,
+        disk, enrollment, runtime state, and service checks before this write.
+        """
+        generations.generation(record, self.box)
+        if record['origin'] != 'template' or self.pending() is not None:
+            raise transaction.TransactionError('initial acceptance requires one template and no pending replacement')
+        target = assignment(generations.seal({
+            'kind':'klokast.router-assignment.v1', 'box':self.box, 'role':'router',
+            'current_sha256':record['record_sha256'], 'previous_sha256':None,
+            'operation_id':record['generation_id'], 'engine_commit':record['engine_commit'],
+            'policy_sha256':INITIAL_AUTHORITY_SHA256,
+            'evidence_sha256':record['evidence_sha256']}), self.box)
+        accepted_path = self.base / 'accepted.json'
+        if accepted_path.exists() or accepted_path.is_symlink():
+            if self.accepted() == target:
+                return target
+            raise transaction.TransactionError('router already has a different accepted generation')
+        path = self.base / 'records' / (record['record_sha256'] + '.json')
+        if path.exists() or path.is_symlink():
+            if self.generation(record['record_sha256']) != record:
+                raise transaction.TransactionError('initial generation record path contains different evidence')
+        else:
+            write(path, record)
+        write(accepted_path, target)
+        return target
 
     def pending(self):
         path = self.base / 'pending.json'
