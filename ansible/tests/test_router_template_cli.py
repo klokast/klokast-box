@@ -1,5 +1,6 @@
 """A retained inventory can qualify a template without publishing authority."""
 from contextlib import nullcontext
+import datetime as dt
 from importlib.machinery import SourceFileLoader
 import importlib.util
 from pathlib import Path
@@ -22,6 +23,41 @@ def load_cli():
 
 
 class TemplateInventoryTests(unittest.TestCase):
+    def test_initial_template_requires_the_current_exact_selection(self):
+        cli = load_cli()
+        source = Path('/var/cache/klokast/updates/router/' + 'b' * 24)
+        profile = {'release_metadata':'https://alpinelinux.org/releases.json'}
+        manifest = {'branch':'v3.24', 'inputs_sha256':'c' * 64}
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'policy':{
+            'branch-policy':'tested-stable', 'branch-delay-days':21, 'report-max-age-hours':72}}
+        releases = {'release_branches':[{'rel_branch':'v3.24', 'git_branch':'3.24-stable',
+            'branch_date':'2026-01-01',
+            'eol_date':'2028-01-01', 'arches':['x86_64'], 'repos':[
+                {'name':'main','eol_date':'2028-01-01'},
+                {'name':'community','eol_date':'2028-01-01'}],
+            'releases':[{'version':'3.24.0','date':'2026-01-01'}]}]}
+        selection = cli.router_updates.seal({
+            'kind':'klokast.router-bootstrap-input-selection.v1', 'engine_commit':ENGINE,
+            'observed_at':dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'branch':'v3.24', 'branch_delay_days':21,
+            'schedule_sha256':cli.router_updates.digest(schedule),
+            'metadata_sha256':'d' * 64, 'inputs_sha256':'c' * 64,
+            'replacement_authorized':False})
+        with patch.object(cli.router_updates, 'validate_inputs'), \
+                patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
+                patch.object(cli.transport, 'load', side_effect=[manifest, selection]), \
+                patch.object(cli, 'schedule_source', side_effect=[schedule, schedule]), \
+                patch.object(cli.upstream, 'fetch_json', return_value=(releases, 'd' * 64)):
+            self.assertEqual(cli.initial_template_selection(source, profile, ENGINE),
+                             selection['receipt_sha256'])
+        with patch.object(cli.router_updates, 'validate_inputs'), \
+                patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
+                patch.object(cli.transport, 'load', side_effect=[manifest, selection]), \
+                patch.object(cli, 'schedule_source', return_value=schedule), \
+                patch.object(cli.upstream, 'fetch_json', return_value=(releases, 'e' * 64)):
+            with self.assertRaises(cli.UpdateError):
+                cli.initial_template_selection(source, profile, ENGINE)
+
     def test_compatibility_inventory_never_publishes_a_release(self):
         cli = load_cli()
         with tempfile.TemporaryDirectory() as temporary:

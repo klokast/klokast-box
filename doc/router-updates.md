@@ -62,7 +62,11 @@ not require an enabled or activated replacement policy. It requires the active
 controller and activated engine. It freezes packages through the same `resolve`
 path and writes `selection.json` beside `inputs.json`. A changed policy or
 engine during resolution prevents publication of the selection receipt.
-This command selects build inputs only. Bootstrap integration is still required
+For a selected initial build, pass `--initial-selection` to `build-template`.
+This checks the saved input identity against the current verified policy,
+Alpine release metadata, branch delay, and activated engine before it allocates
+build resources. A changed source requires a new `resolve-initial` run.
+These commands select and qualify build inputs only. Bootstrap integration is still required
 before these inputs can create an initial accepted router generation.
 
 Both lifecycle selectors use the same support and first-release age check.
