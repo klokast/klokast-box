@@ -162,6 +162,13 @@ class RecordsTests(unittest.TestCase):
         self.assertIsNone(accepted['previous_sha256'])
         self.assertEqual(self.records.accepted(), accepted)
         verified = self.records.installation()
+        self.assertEqual(accepted['evidence_sha256'], verified['record_sha256'])
+        changed_selection = g.seal({**{key: value for key, value in verified.items()
+            if key != 'record_sha256'}, 'selection_sha256':'f'*64})
+        r.write(self.base / 'installation.json', changed_selection)
+        with self.assertRaisesRegex(TransactionError, 'differs from its verified installation record'):
+            self.records.accepted()
+        r.write(self.base / 'installation.json', verified)
         changed = g.seal({**{key: value for key, value in verified.items()
                              if key != 'record_sha256'}, 'generation_sha256': '0' * 64})
         r.write(self.base / 'installation.json', changed)

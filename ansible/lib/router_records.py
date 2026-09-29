@@ -155,8 +155,11 @@ class Records:
         if value['policy_sha256'] == INITIAL_AUTHORITY_SHA256:
             if value['previous_sha256'] is not None:
                 raise transaction.TransactionError('first accepted router cannot have a previous generation')
+            installation = self.installation()
             initial_installation.matches_generation(
-                self.installation(), self.generation(value['current_sha256']), self.box)
+                installation, self.generation(value['current_sha256']), self.box)
+            if value['evidence_sha256'] != installation['record_sha256']:
+                raise transaction.TransactionError('first accepted router differs from its verified installation record')
         return value
 
     def installation(self):
@@ -217,13 +220,14 @@ class Records:
         generations.generation(record, self.box)
         if record['origin'] != 'template' or self.pending() is not None:
             raise transaction.TransactionError('initial acceptance requires one template and no pending replacement')
-        initial_installation.matches_generation(self.installation(), record, self.box)
+        installation = self.installation()
+        initial_installation.matches_generation(installation, record, self.box)
         target = assignment(generations.seal({
             'kind':'klokast.router-assignment.v1', 'box':self.box, 'role':'router',
             'current_sha256':record['record_sha256'], 'previous_sha256':None,
             'operation_id':record['generation_id'], 'engine_commit':record['engine_commit'],
             'policy_sha256':INITIAL_AUTHORITY_SHA256,
-            'evidence_sha256':record['evidence_sha256']}), self.box)
+            'evidence_sha256':installation['record_sha256']}), self.box)
         accepted_path = self.base / 'accepted.json'
         if accepted_path.exists() or accepted_path.is_symlink():
             if self.accepted() == target:
