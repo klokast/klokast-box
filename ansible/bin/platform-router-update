@@ -20,12 +20,13 @@ import router_records
 import router_personalize
 import vm_template_inputs
 import router_template_inputs
+import router_tailscale
 import platform_update_metadata as upstream
 from platform_updates import UpdateError, canonical, timestamp
 
 import router_update_controller as transport
 
-PROFILE = REPO / 'ansible/update-profiles/router-alpine-v1.json'
+PROFILE = REPO / 'ansible/update-profiles/router-alpine-v2.json'
 STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
 
@@ -362,12 +363,15 @@ def resolve(branch):
     directory = CACHE / secrets.token_hex(12)
     value = vm_template_inputs.freeze(directory, profile, branch, engine,
                                      expected_profile=router_updates.PROFILE,
-                                     apk_network_timeout=3)
+                                     apk_network_timeout=3,
+                                     component_resolver=lambda path: router_tailscale.freeze(path, REPO))
     router_updates.validate_inputs(value, profile, engine)
     return {'kind': 'klokast.router-resolved-inputs.v1', 'observed_at': timestamp(dt.datetime.now(dt.timezone.utc)),
             'inputs_directory': str(directory), 'inputs_sha256': value['inputs_sha256'],
             'effective_inputs_sha256': router_updates.effective_inputs(value),
             'branch': branch, 'packages': {p['name']: p['version'] for p in value['packages']},
+            'tailscale': {'version': value['tailscale']['version'],
+                          'sha256': value['tailscale']['sha256']},
             'replacement_authorized': False}
 
 

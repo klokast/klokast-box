@@ -67,7 +67,7 @@ class PersonalizationTests(unittest.TestCase):
             self.assertEqual((self.root / 'etc/hostname').read_text(), 'klokast-router-template\n')
 
     def test_changed_package_or_provenance_cannot_be_personalized(self):
-        self.request['packages']['tailscale'] = 'different-r0'
+        self.request['packages']['dhcpcd'] = 'different-r0'
         with self.assertRaisesRegex(ValueError, 'generic input'):
             self.apply()
 

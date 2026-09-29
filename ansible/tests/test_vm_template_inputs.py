@@ -78,15 +78,18 @@ class InputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.fixture(root)
-            manifest['profile'] = 'router-alpine-v1'
+            manifest['profile'] = 'router-alpine-v2'
+            manifest['tailscale'] = {'synthetic': True}
             self.seal(root, manifest)
             with self.assertRaises(UpdateError):
                 v.verify_inputs(root, manifest)
-            v.verify_inputs(root, manifest, expected_profile='router-alpine-v1')
+            with patch('router_tailscale.verify'):
+                v.verify_inputs(root, manifest, expected_profile='router-alpine-v2')
             manifest['profile'] = 'shared-alpine-v1'
+            del manifest['tailscale']
             self.seal(root, manifest)
             with self.assertRaises(UpdateError):
-                v.verify_inputs(root, manifest, expected_profile='router-alpine-v1')
+                v.verify_inputs(root, manifest, expected_profile='router-alpine-v2')
 
     def seal(self, root, manifest):
         manifest.pop("inputs_sha256", None)

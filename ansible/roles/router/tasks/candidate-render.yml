@@ -8,7 +8,7 @@
       - inventory_hostname == router_candidate_box ~ '-router'
       - router_candidate_result_dir is match('^/var/lib/klokast/updates/discovery/router/[0-9a-f]{24}$')
       - not (router_enable_ipv6_downstream | bool)
-      - router_candidate_manifest.profile == 'router-alpine-v1'
+      - router_candidate_manifest.profile == 'router-alpine-v2'
       - router_candidate_manifest.inputs_sha256 is match('^[0-9a-f]{64}$')
 
 - name: Require the active controller for private configuration rendering

@@ -56,7 +56,8 @@ def stage(source, work, profile, engine, guest):
     capsule = work / 'capsule.tar'
     with tarfile.open(capsule, 'x', format=tarfile.USTAR_FORMAT) as archive:
         for relative in ['inputs.json', *['keys/' + name for name in sorted(manifest['keys'])],
-                         *[p['file'] for p in manifest['packages']]]:
+                         *[p['file'] for p in manifest['packages']], manifest['tailscale']['file'],
+                         manifest['tailscale']['openrc_file']]:
             archive.add(source / relative, arcname=relative, recursive=False)
         archive.add(guest, arcname='guest.py', recursive=False)
         archive.add(repo / 'ansible/lib/router_personalize.py', arcname='router_personalize.py', recursive=False)

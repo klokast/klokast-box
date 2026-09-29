@@ -67,7 +67,8 @@ def validate(value):
         raise ValueError('router personalization must use the fixed retained lease path')
     packages = value['packages']
     if (not isinstance(packages, dict) or not 1 <= len(packages) <= 512 or
-            not {'linux-virt', 'tailscale', 'dhcpcd', 'dnsmasq', 'nftables'} <= packages.keys() or
+            not {'linux-virt', 'dhcpcd', 'dnsmasq', 'nftables'} <= packages.keys() or
+            'tailscale' in packages or 'tailscale-openrc' in packages or
             any(not isinstance(k, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.-]*', k) or
                 not isinstance(v, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9+_.~-]*', v)
                 for k, v in packages.items())):
@@ -185,7 +186,7 @@ def personalize(root, request):
     root = Path(root)
     validate(request)
     marker = json.loads(regular(root, 'etc/klokast-router-inputs.json').read_text())
-    if (marker.get('profile') != 'router-alpine-v1' or
+    if (marker.get('profile') != 'router-alpine-v2' or
             marker.get('inputs_sha256') != request['inputs_sha256'] or
             digest({k: v for k, v in marker.items() if k != 'inputs_sha256'}) != request['inputs_sha256'] or
             {p['name']: p['version'] for p in marker['packages']} != request['packages'] or

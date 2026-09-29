@@ -108,7 +108,8 @@ def read_package(path):
 
 
 def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys"),
-           expected_profile="shared-alpine-v1", apk_network_timeout=None):
+           expected_profile="shared-alpine-v1", apk_network_timeout=None,
+           component_resolver=None):
     """Use a new empty resolver root and native solver; never reuse stale indexes."""
     branch_number(branch)
     if not re.fullmatch(r"[0-9a-f]{40}", engine_commit or ""):
@@ -117,15 +118,15 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                                             not 1 <= apk_network_timeout <= 30):
         raise UpdateError("template APK network timeout is invalid")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v1"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2"} or
             profile.get("profile") != expected_profile or
             profile.get("architecture") != "x86_64" or profile.get("repository_origin") != ORIGIN or
             profile.get("repositories") != ["main", "community"]):
         raise UpdateError("template profile has unsupported repositories or architecture")
     world = profile.get("packages")
-    required = {"linux-virt", "tailscale", "python3", "e2fsprogs", "mkinitfs"}
+    required = {"linux-virt", "python3", "e2fsprogs", "mkinitfs"}
     required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh"}
-                 if expected_profile == "router-alpine-v1" else {"podman"})
+                 if expected_profile == "router-alpine-v2" else {"podman", "tailscale"})
     if (not isinstance(world, list) or not world or
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
@@ -174,10 +175,18 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     records = [read_package(path) for path in archives]
     if len({record["name"] for record in records}) != len(records) or not set(world) <= {v["name"] for v in records}:
         raise UpdateError("template solver produced an incomplete or ambiguous package closure")
+    if expected_profile == "router-alpine-v2":
+        if not callable(component_resolver):
+            raise UpdateError("router template requires the upstream Tailscale resolver")
+        tailscale = component_resolver(directory)
+    elif component_resolver is not None:
+        raise UpdateError("shared VM template cannot select a router upstream component")
     manifest = {"kind": KIND, "engine_commit": engine_commit, "profile": profile["profile"],
                 "profile_sha256": digest(profile), "branch": branch, "architecture": "x86_64",
                 "world": sorted(world), "repositories": repositories, "keys": key_hashes,
                 "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
+    if expected_profile == "router-alpine-v2":
+        manifest["tailscale"] = tailscale
     manifest["inputs_sha256"] = digest(manifest)
     verify_inputs(directory, manifest, expected_profile=expected_profile)
     (directory / "inputs.json").write_text(canonical(manifest) + "\n")
@@ -194,13 +203,15 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     directory = Path(directory)
     fields = {"kind", "engine_commit", "profile", "profile_sha256", "branch", "architecture", "world",
               "repositories", "keys", "indexes", "packages", "inputs_sha256"}
+    if expected_profile == "router-alpine-v2":
+        fields.add("tailscale")
     if (not isinstance(manifest, dict) or set(manifest) != fields or manifest["kind"] != KIND or
             manifest["inputs_sha256"] != digest({k: v for k, v in manifest.items() if k != "inputs_sha256"})):
         raise UpdateError("template input manifest has an invalid contract or checksum")
     if (not isinstance(manifest["branch"], str) or
             not isinstance(manifest["engine_commit"], str) or
             not re.fullmatch(r"[0-9a-f]{40}", manifest["engine_commit"]) or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v1"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2"} or
             manifest["profile"] != expected_profile or not matches(HASH, manifest["profile_sha256"])):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])
@@ -228,6 +239,9 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
         total += record["bytes"]
     if total > MAX_INPUTS or files != {path.name for path in (directory / "packages").iterdir()}:
         raise UpdateError("frozen package set changed or exceeds its limit")
+    if expected_profile == "router-alpine-v2":
+        import router_tailscale
+        router_tailscale.verify(directory, manifest['tailscale'])
     world = manifest["world"]
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
             world != sorted(set(world)) or not set(world) <= names):

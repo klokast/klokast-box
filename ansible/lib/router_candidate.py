@@ -53,7 +53,7 @@ def manifest(root, request):
     value = json.loads(path.read_text())
     if (not isinstance(value, dict) or value.get('inputs_sha256') != request['inputs_sha256'] or
             personalize.digest({k:v for k,v in value.items() if k != 'inputs_sha256'}) != request['inputs_sha256'] or
-            value.get('engine_commit') != request['engine_commit'] or value.get('profile') != 'router-alpine-v1' or
+            value.get('engine_commit') != request['engine_commit'] or value.get('profile') != 'router-alpine-v2' or
             {p['name']:p['version'] for p in value.get('packages',[])} != request['personalization']['packages']):
         raise ValueError('router candidate clone has another engine or frozen package input identity')
     router_finalize.validate_packages(request['personalization']['packages'], request['runtime_packages'], value['world'])

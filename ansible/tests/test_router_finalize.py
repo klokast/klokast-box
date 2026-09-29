@@ -37,7 +37,7 @@ class PackageTests(unittest.TestCase):
     def test_release_cannot_hide_missing_runtime_tests_or_retain_server(self):
         for mutate in (lambda v:v['runtime_tests'].update(no_openssh_server=False),
                        lambda v:v['runtime_packages'].update(openssh='1-r0'),
-                       lambda v:v['runtime_packages'].pop('tailscale'),
+                       lambda v:v['runtime_packages'].pop('dhcpcd'),
                        lambda v:v.update(kind='klokast.router-release.v1')):
             value=release()
             mutate(value); reseal(value)

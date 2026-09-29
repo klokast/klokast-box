@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+name="Tailscale"
+command="/usr/local/sbin/tailscaled"
+command_args="--state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock"
+command_background=true
+pidfile="/run/tailscale/tailscaled.pid"
+depend() {
+    need net
+    after firewall
+}
+start_pre() {
+    checkpath -d -m 0755 /run/tailscale
+    checkpath -d -m 0700 -o tailscale:tailscale /var/lib/tailscale
+}

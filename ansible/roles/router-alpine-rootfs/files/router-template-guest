@@ -27,8 +27,6 @@ ABSENT = ('etc/machine-id', 'var/lib/dbus/machine-id', 'root/.ssh',
           'etc/klokast/app-resources', 'etc/klokast/overlay-ipv6.nft',
           'etc/sysctl.d/91-klokast-ops-ipv6.conf', 'var/lib/misc/dnsmasq.leases')
 EMPTY = ('var/lib/tailscale', 'var/lib/dhcpcd')
-
-
 def unique(pairs):
     result = {}
     for key, value in pairs:
@@ -110,7 +108,7 @@ def unpack(args, device='/dev/xvda'):
         for member in archive:
             total += member.size
             if (len(members) >= 600 or total > 2049 * MIB or not member.isfile() or
-                    not re.fullmatch(r'(inputs\.json|guest\.py|router_personalize\.py|router_service_probe\.py|router_finalize\.py|personalization\.json|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk)', member.name) or
+                    not re.fullmatch(r'(inputs\.json|guest\.py|router_personalize\.py|router_service_probe\.py|router_finalize\.py|personalization\.json|keys/[A-Za-z0-9@+_.-]+\.pub|packages/[A-Za-z0-9+_.~-]+\.apk|components/tailscale_[0-9]+\.[0-9]+\.[0-9]+_amd64\.tgz|components/tailscale-openrc)', member.name) or
                     member.name in {m.name for m in members}):
                 raise RuntimeError('router capsule contains unsafe or duplicate members')
             members.append(member)
@@ -118,7 +116,7 @@ def unpack(args, device='/dev/xvda'):
     capsule.unlink()
     manifest = json.loads((INPUT / 'inputs.json').read_text(), object_pairs_hook=unique)
     if (manifest.get('kind') != 'klokast.vm-template-inputs.v1' or
-            manifest.get('profile') != 'router-alpine-v1' or manifest.get('architecture') != 'x86_64' or
+            manifest.get('profile') != 'router-alpine-v2' or manifest.get('architecture') != 'x86_64' or
             manifest.get('inputs_sha256') != args['klokast_inputs'] or
             digest({k: v for k, v in manifest.items() if k != 'inputs_sha256'}) != args['klokast_inputs']):
         raise RuntimeError('router inputs differ from the build assignment')
@@ -136,6 +134,20 @@ def unpack(args, device='/dev/xvda'):
         if not re.fullmatch('[A-Za-z0-9@+_.-]+\\.pub', name) or checksum(INPUT / 'keys' / name) != value:
             raise RuntimeError('router signing key changed')
         expected.add('keys/' + name)
+    component = manifest.get('tailscale')
+    if (not isinstance(component, dict) or component.get('file') !=
+            'components/tailscale_' + str(component.get('version')) + '_amd64.tgz'):
+        raise RuntimeError('router upstream Tailscale input is missing')
+    archive_path = INPUT / component['file']
+    if (archive_path.stat().st_size != component.get('bytes') or
+            checksum(archive_path) != component.get('sha256')):
+        raise RuntimeError('router upstream Tailscale archive bytes changed')
+    expected.add(component['file'])
+    if (component.get('openrc_file') != 'components/tailscale-openrc' or
+            not re.fullmatch('[0-9a-f]{64}', str(component.get('openrc_sha256'))) or
+            checksum(INPUT / component['openrc_file']) != component['openrc_sha256']):
+        raise RuntimeError('router upstream Tailscale OpenRC service changed')
+    expected.add(component['openrc_file'])
     if expected != {m.name for m in members}:
         raise RuntimeError('router capsule file set differs from its manifest')
     return manifest
@@ -202,7 +214,69 @@ def baseline(root, manifest):
         path.unlink()
 
 
+def install_tailscale(root, manifest):
+    component = manifest['tailscale']
+    version = component['version']
+    prefix = 'tailscale_' + version + '_amd64/'
+    expected = {prefix.rstrip('/'), prefix + 'tailscale', prefix + 'tailscaled',
+                prefix + 'systemd', prefix + 'systemd/tailscaled.service',
+                prefix + 'systemd/tailscaled.defaults', prefix + 'systemd/tailscale-online.target',
+                prefix + 'systemd/tailscale-wait-online.service'}
+    if {'tailscale', 'tailscale-openrc'} & {p['name'] for p in manifest['packages']}:
+        raise RuntimeError('upstream Tailscale must not overwrite APK-owned binaries')
+    with tarfile.open(INPUT / component['file'], 'r:gz') as archive:
+        members = []
+        for member in archive:
+            members.append(member)
+            if len(members) > len(expected):
+                raise RuntimeError('signed Tailscale archive has an unsupported file set')
+        if {member.name for member in members} != expected:
+            raise RuntimeError('signed Tailscale archive has an unsupported file set')
+        for name, relative in (('tailscale', 'usr/local/bin/tailscale'),
+                               ('tailscaled', 'usr/local/sbin/tailscaled')):
+            member = archive.getmember(prefix + name)
+            if not member.isfile() or not 0 < member.size <= 64 * MIB:
+                raise RuntimeError('signed Tailscale binary has an unsafe archive type or size')
+            stream = archive.extractfile(member)
+            if stream is None or stream.read(4) != b'\x7fELF':
+                raise RuntimeError('signed Tailscale binary is not ELF')
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() or target.is_symlink():
+                raise RuntimeError('upstream Tailscale target already exists')
+            value = hashlib.sha256(b'\x7fELF')
+            with target.open('xb') as output:
+                output.write(b'\x7fELF')
+                for chunk in iter(lambda: stream.read(MIB), b''):
+                    value.update(chunk)
+                    output.write(chunk)
+            if value.hexdigest() != component[name + '_sha256']:
+                raise RuntimeError('signed Tailscale binary hash differs from frozen inputs')
+            target.chmod(0o755)
+    run(['chroot', root, 'addgroup', '-S', 'tailscale'])
+    run(['chroot', root, 'adduser', '-S', '-D', '-H', '-G', 'tailscale',
+         '-h', '/var/lib/tailscale', 'tailscale'])
+    (root / 'var/lib/tailscale').mkdir(mode=0o700, exist_ok=True)
+    run(['chroot', root, 'chown', 'tailscale:tailscale', '/var/lib/tailscale'])
+    put(root, 'etc/init.d/tailscale', (INPUT / component['openrc_file']).read_text(), 0o755)
+    if run(['chroot', root, '/usr/local/bin/tailscale', 'version']).splitlines()[0] != version:
+        raise RuntimeError('signed Tailscale CLI reports another version')
+
+
+def verify_tailscale(root, manifest):
+    component = manifest['tailscale']
+    for name, relative in (('tailscale', 'usr/local/bin/tailscale'),
+                           ('tailscaled', 'usr/local/sbin/tailscaled')):
+        path = root / relative
+        if (path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o022 or
+                checksum(path) != component[name + '_sha256']):
+            raise RuntimeError('router upstream Tailscale binary changed: ' + name)
+    if checksum(root / 'etc/init.d/tailscale') != component['openrc_sha256']:
+        raise RuntimeError('router upstream Tailscale OpenRC service changed')
+
+
 def verify_generic(root, manifest):
+    verify_tailscale(root, manifest)
     sshd = root / 'usr/sbin/sshd'
     if sshd.is_symlink() or not sshd.is_file():
         raise RuntimeError('router package closure lacks first-contact sshd')
@@ -241,7 +315,7 @@ def verify_generic(root, manifest):
             installed[fields['P']] = fields['V']
     if installed != {p['name']: p['version'] for p in manifest['packages']}:
         raise RuntimeError('router installed package closure differs from frozen inputs')
-    return {'identity_absent': True, 'exact_packages': True}
+    return {'identity_absent': True, 'exact_packages': True, 'upstream_tailscale': True}
 
 
 def export(path, device, maximum):
@@ -278,6 +352,7 @@ def build(args):
         run(['apk', '--keys-dir', keys, 'verify', *packages])
         run(['apk', '--root', ROOT, '--no-network', '--keys-dir', keys,
              '--repositories-file', repositories, 'add', '--initdb', *packages], timeout=600)
+        install_tailscale(ROOT, manifest)
         baseline(ROOT, manifest)
         tests = verify_generic(ROOT, manifest)
         modules = list((ROOT / 'lib/modules').iterdir())

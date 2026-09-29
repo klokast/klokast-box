@@ -73,7 +73,10 @@ def generation(value, box):
         raise GenerationError('router generation has an invalid Xen identity or topology')
     packages = value['packages']
     if (not isinstance(packages, dict) or not 1 <= len(packages) <= 512 or
-            not {'tailscale', 'dhcpcd', 'dnsmasq', 'nftables', 'openssh-keygen'} <= packages.keys() or
+            not ({'tailscale', 'dhcpcd', 'dnsmasq', 'nftables', 'openssh-keygen'}
+                 if value['origin'] == 'legacy' else
+                 {'dhcpcd', 'dnsmasq', 'nftables', 'openssh-keygen'}) <= packages.keys() or
+            (value['origin'] == 'template' and {'tailscale', 'tailscale-openrc'} & packages.keys()) or
             any(not matches('[A-Za-z0-9][A-Za-z0-9+_.-]*', k) or not matches('[A-Za-z0-9][A-Za-z0-9+_.~-]*', v)
                 for k, v in packages.items()) or router_finalize.FORBIDDEN_PACKAGES & packages.keys()):
         raise GenerationError('router generation has an incomplete or unsupported runtime package set')

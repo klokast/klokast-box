@@ -46,6 +46,9 @@ class GenericTests(unittest.TestCase):
         (self.root / 'etc/runlevels/default').mkdir(parents=True)
         (self.root / 'etc/runlevels/default/sshd').symlink_to('/etc/init.d/sshd')
         self.guest.baseline(self.root, self.manifest)
+        self.put('usr/local/bin/tailscale', '\x7fELFtailscale')
+        self.put('usr/local/sbin/tailscaled', '\x7fELFtailscaled')
+        self.put('etc/init.d/tailscale', (REPO / 'ansible/roles/router-alpine-rootfs/files/tailscale-openrc').read_text())
 
     def put(self, path, data):
         file = self.root / path
@@ -54,7 +57,7 @@ class GenericTests(unittest.TestCase):
 
     def test_generic_recipe_is_inactive_and_exactly_pinned(self):
         self.assertEqual(self.guest.verify_generic(self.root, self.manifest),
-                         {'identity_absent': True, 'exact_packages': True})
+                         {'identity_absent': True, 'exact_packages': True, 'upstream_tailscale': True})
         self.assertEqual(list((self.root / 'etc/runlevels/default').iterdir()), [])
         self.assertTrue((self.root / 'etc/shadow').read_text().startswith('root:!:'))
         self.assertEqual((self.root / 'etc/apk/world').read_text().splitlines(),
@@ -216,7 +219,7 @@ class TransportTests(unittest.TestCase):
         candidate = {'kind': 'klokast.router-template-candidate.v1', 'box': 'boxa', 'role': 'router',
                      'operation_id': 'a' * 24, 'inputs_sha256': inputs()['inputs_sha256'],
                      'kernel_release': '6.18.1-virt', 'replacement_authorized': False,
-                     'generic_tests': dict.fromkeys(('identity_absent', 'exact_packages', 'kernel_modules', 'openrc'), True),
+                     'generic_tests': dict.fromkeys(('identity_absent', 'exact_packages', 'upstream_tailscale', 'kernel_modules', 'openrc'), True),
                      'personalization_test': {'success': True, 'operation_id': 'a' * 24,
                          'inputs_sha256': inputs()['inputs_sha256'], 'kernel_release': '6.18.1-virt',
                          'tests': dict.fromkeys(('personalization', 'exact_packages', 'identity_absent',

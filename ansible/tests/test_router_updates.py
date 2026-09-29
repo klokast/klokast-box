@@ -15,7 +15,7 @@ from platform_updates import UpdateError, digest, timestamp
 
 NOW = dt.datetime(2026, 9, 25, 12, tzinfo=dt.timezone.utc)
 ENGINE = 'a' * 40
-PROFILE = json.loads((REPO / 'ansible/update-profiles/router-alpine-v1.json').read_text())
+PROFILE = json.loads((REPO / 'ansible/update-profiles/router-alpine-v2.json').read_text())
 
 
 def package(name, version='1-r0'):
@@ -32,7 +32,17 @@ def inputs(branch='v3.23'):
                                     for name in PROFILE['repositories']],
                    'keys': {'alpine.pub': 'b' * 64},
                    'indexes': {'APKINDEX.111.tar.gz': 'c' * 64, 'APKINDEX.222.tar.gz': 'd' * 64},
-                   'packages': sorted([package(name) for name in PROFILE['packages']], key=lambda p: p['name'])},
+                   'packages': sorted([package(name) for name in PROFILE['packages']], key=lambda p: p['name']),
+                   'tailscale': {'kind': 'klokast.router-tailscale-input.v1', 'version': '1.102.4',
+                       'file': 'components/tailscale_1.102.4_amd64.tgz', 'bytes': 100,
+                       'openrc_file': 'components/tailscale-openrc',
+                       'openrc_sha256': hashlib.sha256((Path(__file__).resolve().parents[1] /
+                           'roles/router-alpine-rootfs/files/tailscale-openrc').read_bytes()).hexdigest(),
+                       'sha256': 'e' * 64,
+                       'tailscale_sha256': hashlib.sha256(b'\x7fELFtailscale').hexdigest(),
+                       'tailscaled_sha256': hashlib.sha256(b'\x7fELFtailscaled').hexdigest(),
+                       'metadata_sha256': 'f' * 64, 'verifier_source_tree': 'a' * 40,
+                       'verifier_sha256': 'b' * 64, 'signature_verified': True}},
                   'inputs_sha256')
 
 
@@ -46,7 +56,7 @@ def release():
                    'inputs': inputs(), 'kernel_release': '6.12.1-virt',
                    'artifacts': {name: name[0] * 64 if name[0] in 'abcdef' else 'e' * 64
                                  for name in ('os', 'kernel', 'initramfs')},
-                   'generic_tests': {name: True for name in ('identity_absent', 'exact_packages', 'kernel_modules', 'openrc')},
+                   'generic_tests': {name: True for name in ('identity_absent', 'exact_packages', 'upstream_tailscale', 'kernel_modules', 'openrc')},
                    'runtime_packages': {p['name']: p['version'] for p in inputs()['packages'] if p['name'] != 'openssh'},
                    'runtime_tests': dict.fromkeys(('frozen_packages', 'no_openssh_server', 'locked_root', 'pinned_world'), True)})
 
@@ -190,7 +200,7 @@ class RouterCheckTests(unittest.TestCase):
         self.assertEqual(r.check(**f)['status'], 'deferred')
 
     def test_service_dependency_and_kernel_changes(self):
-        for name in ('tailscale', 'linux-virt', 'new-dependency'):
+        for name in ('linux-virt', 'new-dependency'):
             with self.subTest(name=name):
                 f = self.fixture()
                 selected = f['candidates']['v3.23']['inputs']
@@ -202,6 +212,27 @@ class RouterCheckTests(unittest.TestCase):
                 self.assertEqual(result['package_difference'][0]['name'], name)
                 self.assertEqual(result['package_difference_scope'], 'build-inputs-to-build-inputs')
                 self.assertEqual(result['explicit_request_difference'], {'added': [], 'removed': []})
+
+    def test_new_upstream_tailscale_archive_requires_replacement(self):
+        f = self.fixture()
+        selected = f['candidates']['v3.23']['inputs']
+        selected['tailscale']['version'] = '1.102.5'
+        selected['tailscale']['file'] = 'components/tailscale_1.102.5_amd64.tgz'
+        selected['tailscale']['sha256'] = '1' * 64
+        reseal(selected, 'inputs_sha256')
+        result = r.check(**f)
+        self.assertEqual(result['status'], 'update-required', result)
+
+    def test_upstream_tailscale_downgrade_or_republished_bytes_fail(self):
+        for version, checksum in (('1.102.3', '1' * 64), ('1.102.4', '1' * 64)):
+            with self.subTest(version=version):
+                f = self.fixture()
+                selected = f['candidates']['v3.23']['inputs']
+                selected['tailscale']['version'] = version
+                selected['tailscale']['file'] = 'components/tailscale_' + version + '_amd64.tgz'
+                selected['tailscale']['sha256'] = checksum
+                reseal(selected, 'inputs_sha256')
+                self.assertEqual(r.check(**f)['status'], 'failed')
 
     def test_dependency_removal(self):
         f = self.fixture()
@@ -315,7 +346,7 @@ class LifecycleTests(unittest.TestCase):
                 r.lifecycle('replacement', **{**f, 'role': role})
 
     def test_profiles_have_distinct_dispatch(self):
-        self.assertEqual(r.dispatch('router'), 'router-alpine-v1')
+        self.assertEqual(r.dispatch('router'), 'router-alpine-v2')
         self.assertEqual(r.dispatch('dmz'), 'shared-alpine-v1')
         with self.assertRaises(UpdateError):
             r.dispatch('ops')

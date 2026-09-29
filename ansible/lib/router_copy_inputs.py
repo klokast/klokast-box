@@ -13,7 +13,7 @@ from router_copy_contract import job
 def stage(source, work, repo, request, old, candidate):
     source, work, repo = Path(source), Path(work), Path(repo)
     manifest = load(source / 'inputs.json')
-    profile = load(repo / 'ansible/update-profiles/router-alpine-v1.json')
+    profile = load(repo / 'ansible/update-profiles/router-alpine-v2.json')
     router_updates.validate_inputs(manifest, profile, request['engine_commit'])
     value = job(request, old, candidate, manifest['inputs_sha256'])
     if not work.is_dir() or work.is_symlink() or any(work.iterdir()):

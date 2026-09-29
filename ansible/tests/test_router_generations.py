@@ -20,7 +20,9 @@ def generation(origin='template'):
         'boot': {name:{'path':directory+'/'+name,'sha256':'d'*64,'bytes':1234} for name in ('kernel','initramfs')},
         'xen':{'uuid': ('1' if origin=='legacy' else '2')*8+'-1111-4111-8111-111111111111',
                'memory':512,'vcpus':1,'vif':['bridge=br-wan,mac=00:16:3e:00:00:01']},
-        'packages':dict.fromkeys(('linux-virt','tailscale','dhcpcd','dnsmasq','nftables','openssh-keygen'),'1-r0'),
+        'packages':dict.fromkeys((('linux-virt','tailscale','dhcpcd','dnsmasq','nftables','openssh-keygen')
+                                  if origin == 'legacy' else
+                                  ('linux-virt','dhcpcd','dnsmasq','nftables','openssh-keygen')),'1-r0'),
         'kernel_release':'6.18.53-0-virt','accounts':{'dnsmasq_uid':102,'dnsmasq_gid':103,'tailscale_gid':104},
         'configuration_files':dict.fromkeys((
             'etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf',

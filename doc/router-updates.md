@@ -1,6 +1,6 @@
 # Router release inspection
 
-The router update profile is `router-alpine-v1`. It is separate from the shared
+The router update profile is `router-alpine-v2`. It is separate from the shared
 Podman VM profile. The shared build and replacement entry points continue to
 reject routers.
 
@@ -77,8 +77,9 @@ from the selected branch's official `main` and `community` repositories. The
 frozen input record contains exact versions and hashes for one build. These
 records do not select versions for future builds.
 
-The current 16 requests have these uses. This is an audit of the existing
-recipe, not a claim that each request adds a package absent from Alpine's base.
+The previous 16 requests had these uses. The new profile has 14 APK requests;
+it installs Tailscale from the signed upstream archive. This audit does not
+claim that each request adds a package absent from Alpine's base.
 
 | Request | Use in the current recipe |
 | --- | --- |
@@ -95,17 +96,16 @@ recipe, not a claim that each request adds a package absent from Alpine's base.
 | `openssh` | Temporary first-contact support; removed before runtime acceptance. |
 | `openssh-keygen` | Effective SSH host-key verification after server removal. |
 | `python3` | Ansible and the checked guest helpers. |
-| `tailscale` | Overlay identity and steady-state SSH management. |
-| `tailscale-openrc` | Tailscale service integration. |
+| `tailscale` | Previous APK source for overlay identity and steady-state SSH management; now an upstream binary component. |
+| `tailscale-openrc` | Previous APK source for service integration; now a checked OpenRC file in the frozen component. |
 | `tzdata` | Timezone files; all Platform machines use UTC. |
 
 Some tools also serve the disposable build guest. Removal needs a native proof
 that both bootstrap and replacement still work. The current audit does not
 remove them or add a package-count limit. APK continues to own dependencies.
-The existing implementation selects Tailscale from the chosen Alpine stable
-branch. The required policy is the latest upstream stable Tailscale release.
-The existing resolver does not meet that requirement. Do not qualify its output
-as policy-complete until the upstream source integration below is implemented.
+The resolver selects the latest upstream stable Tailscale release separately
+from the selected Alpine branch. Its archive and OpenRC file have separate
+hashes in the frozen input record.
 
 Detailed package differences stay in protected check evidence. The report names
 their scope: build inputs compared with build inputs, or a legacy runtime
@@ -147,8 +147,8 @@ controller-only compiler.
 Run each archive download as an unprivileged process with a private temporary
 directory, a fixed deadline, and only the official package origin. Keep the
 verified archive and source evidence in the protected update cache. The
-verifier toolchain is present, but router input resolution does not yet invoke
-it; do not treat an Alpine-only router input record as upstream-compliant.
+router input resolver invokes this verifier, checks its build record, and
+freezes the archive, binary hashes, and OpenRC file before template build.
 
 Install the verified upstream binaries only while building the generic router
 template. Record their versions and hashes separately from APK's package
@@ -165,9 +165,8 @@ trigger candidate preparation independently of Alpine branch age. Compatibility
 and reverse-state tests must use those exact binaries. Self-update on a running
 router remains prohibited.
 
-This source integration is not complete yet. The
-common bootstrap builder must not claim latest-upstream compliance before their
-native signature, installation, service, and rollback checks pass.
+The common bootstrap builder must not claim latest-upstream compliance until
+the native installation, service, and rollback checks pass.
 
 ### Generic template qualification
 

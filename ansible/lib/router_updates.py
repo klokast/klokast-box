@@ -14,7 +14,7 @@ import router_records
 from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
 from platform_update_metadata import adjacent_stable_branch, newest_stable_branch
 
-PROFILE = 'router-alpine-v1'
+PROFILE = 'router-alpine-v2'
 RELEASE = 'klokast.router-release.v2'
 DECISION = 'klokast.router-update-check.v1'
 HASH = re.compile(r'[0-9a-f]{64}')
@@ -58,16 +58,18 @@ def validate_profile(profile):
     packages = profile['packages']
     if (not isinstance(packages, list) or not packages or
             any(not match(NAME, p) for p in packages) or len(set(packages)) != len(packages) or
-            not {'alpine-base', 'linux-virt', 'mkinitfs', 'tailscale', 'tailscale-openrc', 'openssh',
+            not {'alpine-base', 'linux-virt', 'mkinitfs', 'openssh',
                  'dhcpcd', 'dnsmasq', 'iproute2', 'nftables', 'python3', 'e2fsprogs'} <= set(packages)):
         raise UpdateError('router profile has an incomplete package request set')
+    if {'tailscale', 'tailscale-openrc'} & set(packages):
+        raise UpdateError('upstream Tailscale must not be requested from Alpine APK')
 
 
 def validate_inputs(inputs, profile, engine):
     """Check receipt structure; native APK must separately verify payload bytes."""
     validate_profile(profile)
     closed(inputs, 'kind engine_commit profile profile_sha256 branch architecture world repositories '
-           'keys indexes packages inputs_sha256', 'router inputs')
+           'keys indexes packages tailscale inputs_sha256', 'router inputs')
     verify_seal(inputs, 'inputs_sha256')
     branch_number(inputs['branch'])
     if (not match(re.compile(r'[0-9a-f]{40}'), engine) or inputs['engine_commit'] != engine or
@@ -99,13 +101,19 @@ def validate_inputs(inputs, profile, engine):
         names.append(p['name'])
     if names != sorted(set(names)) or not set(inputs['world']) <= set(names):
         raise UpdateError('router package closure is incomplete or duplicated')
+    import router_tailscale
+    router_tailscale.validate(inputs['tailscale'])
 
 
 def effective_inputs(inputs):
     # APK index changes, signing-key rotation, and an announcement alone do not
     # change installed bytes. Engine and profile changes do affect the recipe.
-    return digest({k: inputs[k] for k in ('engine_commit', 'profile', 'profile_sha256',
-                                        'branch', 'architecture', 'world', 'packages')})
+    component = inputs['tailscale']
+    return digest({**{k: inputs[k] for k in ('engine_commit', 'profile', 'profile_sha256',
+                                           'branch', 'architecture', 'world', 'packages')},
+                   'tailscale': {k: component[k] for k in ('version', 'sha256',
+                                                           'tailscale_sha256', 'tailscaled_sha256',
+                                                           'openrc_sha256')}})
 
 
 def validate_release(receipt, profile, engine):
@@ -119,7 +127,7 @@ def validate_release(receipt, profile, engine):
     closed(receipt['artifacts'], 'os kernel initramfs', 'router artifacts')
     if any(not match(HASH, value) for value in receipt['artifacts'].values()):
         raise UpdateError('router release artifact hashes are invalid')
-    closed(receipt['generic_tests'], 'identity_absent exact_packages kernel_modules openrc', 'generic tests')
+    closed(receipt['generic_tests'], 'identity_absent exact_packages upstream_tailscale kernel_modules openrc', 'generic tests')
     if any(value is not True for value in receipt['generic_tests'].values()):
         raise UpdateError('router generic template has not passed every native test')
     import router_finalize
@@ -598,6 +606,20 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
         validate_inputs(inputs, profile, engine)
         if inputs['branch'] != branch:
             raise UpdateError('candidate package closure belongs to a different branch')
+        upstream_version = tuple(map(int, inputs['tailscale']['version'].split('.')))
+        if legacy:
+            old_version = source['packages'].get('tailscale', '').split('-r', 1)[0]
+            if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', old_version):
+                if upstream_version < tuple(map(int, old_version.split('.'))):
+                    raise UpdateError('unexplained upstream Tailscale downgrade from legacy router')
+        else:
+            current_tailscale = release['inputs']['tailscale']
+            previous_version = tuple(map(int, current_tailscale['version'].split('.')))
+            if upstream_version < previous_version:
+                raise UpdateError('unexplained upstream Tailscale version downgrade')
+            if (upstream_version == previous_version and
+                    inputs['tailscale']['sha256'] != current_tailscale['sha256']):
+                raise UpdateError('upstream Tailscale archive bytes changed without a version change')
         report['candidate_inputs_sha256'] = inputs['inputs_sha256']
         report['effective_inputs_sha256'] = effective_inputs(inputs)
         report['package_difference'] = (legacy_package_difference(source['packages'], inputs['packages'], compare)
