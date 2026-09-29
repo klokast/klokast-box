@@ -502,6 +502,8 @@ def build_template(box, source, *, compatibility_inventory=False, initial_select
                                REPO / 'ansible/playbooks/74-router-template.yml', '--limit', box + '-dom0',
                                '-e', '@' + str(args)], timeout=14400, log=log)
         candidate = transport.load(result / 'candidate.json')
+        if initial_selection and initial_template_selection(source, profile, engine) != selection_sha256:
+            raise UpdateError('router initial template selection changed during its build')
         approved = transport.approved_engine()
         receipt = None
         if approved == engine and not compatibility_inventory:
