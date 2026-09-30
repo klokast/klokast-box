@@ -3,6 +3,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -119,8 +120,11 @@ def write_state(state):
     if STATE_DIR.is_symlink():
         raise ToolError("temporary tool state directory is a symlink")
     temporary = STATE_DIR / "state.json.tmp"
+    record = {**state, "record_sha256": hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()}
     with temporary.open("x", encoding="utf-8") as handle:
-        json.dump(state, handle, sort_keys=True)
+        json.dump(record, handle, sort_keys=True)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -142,10 +146,24 @@ def read_state(operation):
     if not STATE_FILE.is_file():
         raise ToolError("no recoverable temporary tool transaction exists")
     state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    if state.get("operation") != operation:
+    if not isinstance(state, dict) or state.get("operation") != operation:
         raise ToolError("temporary tool operation does not match the recovery record")
-    if not isinstance(state.get("packages"), dict) or not isinstance(state.get("world"), str):
+    if set(state) != {"operation", "packages", "world", "record_sha256"}:
         raise ToolError("temporary tool recovery record is malformed")
+    checksum = state["record_sha256"]
+    payload = {key: value for key, value in state.items() if key != "record_sha256"}
+    if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum) or checksum != hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest():
+        raise ToolError("temporary tool recovery record checksum differs")
+    packages, world = state["packages"], state["world"]
+    if (not isinstance(packages, dict) or not packages or
+            any(not isinstance(name, str) or not PACKAGE_RE.fullmatch(name) or
+                not isinstance(version, str) or not VERSION_RE.fullmatch(version)
+                for name, version in packages.items()) or
+            VIRTUAL in packages or any(tool in packages for tool in TOOLS) or
+            not isinstance(world, str) or not world_lines(world) <= packages.keys()):
+        raise ToolError("temporary tool recovery baseline is incomplete or malformed")
     return state
 
 
@@ -175,6 +193,8 @@ def begin(operation, expected_world_path):
     world_lines(expected)
     require_world(expected)
     baseline = installed_packages()
+    if not world_lines(expected) <= baseline.keys():
+        raise ToolError("dom0 APK world contains a package absent from the installed baseline")
     if any(tool in baseline for tool in TOOLS):
         raise ToolError("requested temporary tools must all be absent before this transaction")
     pins = [f"{name}={baseline[name]}" for name in sorted(baseline)]

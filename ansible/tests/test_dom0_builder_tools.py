@@ -126,16 +126,28 @@ class Dom0BuilderToolsTest(unittest.TestCase):
                     self.mod.begin("ab1234cd5678", expected)
                 self.assertTrue(unlock.is_file())
 
+    def test_begin_refuses_world_package_missing_from_installed_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            world = root / "world"
+            expected = root / "expected"
+            world.write_text("xen\n", encoding="utf-8")
+            expected.write_text("xen\n", encoding="utf-8")
+            with patch.object(self.mod, "WORLD_FILE", world), patch.object(
+                self.mod, "STATE_DIR", root / "state"
+            ), patch.object(self.mod, "UNLOCK_FILE", root / "unlock"), patch.object(
+                self.mod, "installed_packages", return_value={"alpine-base": "3.23.4-r0"}
+            ), patch.object(self.mod, "command") as apk:
+                with self.assertRaisesRegex(self.mod.ToolError, "absent from the installed baseline"):
+                    self.mod.begin("ab1234cd5678", expected)
+                apk.assert_not_called()
+                self.assertFalse((root / "state").exists())
+
     def test_recovery_keeps_record_when_xen_version_has_drifted(self):
         operation = "ab1234cd5678"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             state_dir = root / "state"
-            state_dir.mkdir()
-            (state_dir / "state.json").write_text(
-                json.dumps({"operation": operation, "packages": {"xen": "4.20.0-r0"}, "world": "xen\n"}),
-                encoding="utf-8",
-            )
             world = root / "world"
             world.write_text("xen\n" + self.mod.VIRTUAL + "\n", encoding="utf-8")
             expected = root / "expected"
@@ -145,10 +157,38 @@ class Dom0BuilderToolsTest(unittest.TestCase):
             ), patch.object(self.mod, "STATE_FILE", state_dir / "state.json"), patch.object(
                 self.mod, "UNLOCK_FILE", root / "unlock"
             ), patch.object(self.mod, "installed_packages", return_value={"xen": "4.20.1-r0"}):
+                self.mod.write_state({"operation": operation, "packages": {"xen": "4.20.0-r0"}, "world": "xen\n"})
                 with self.assertRaisesRegex(self.mod.ToolError, "pre-existing package drift"):
                     self.mod.end(operation, expected)
                 self.assertTrue((state_dir / "state.json").is_file())
                 self.assertEqual(world.read_text(encoding="utf-8"), "xen\n" + self.mod.VIRTUAL + "\n")
+
+    def test_recovery_refuses_damaged_or_incomplete_baseline_before_apk(self):
+        operation = "ab1234cd5678"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_dir = root / "state"
+            world = root / "world"
+            expected = root / "expected"
+            world.write_text("xen\n" + self.mod.VIRTUAL + "\n", encoding="utf-8")
+            expected.write_text("xen\n", encoding="utf-8")
+            with patch.object(self.mod, "WORLD_FILE", world), patch.object(
+                self.mod, "STATE_DIR", state_dir
+            ), patch.object(self.mod, "STATE_FILE", state_dir / "state.json"), patch.object(
+                self.mod, "UNLOCK_FILE", root / "unlock"
+            ), patch.object(self.mod, "command") as apk:
+                self.mod.write_state({"operation": operation, "packages": {"xen": "4.20.0-r0"}, "world": "xen\n"})
+                path = state_dir / "state.json"
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                path.write_text(json.dumps({**saved, "packages": {}}), encoding="utf-8")
+                with self.assertRaisesRegex(self.mod.ToolError, "checksum differs"):
+                    self.mod.end(operation, expected)
+                path.unlink()
+                state_dir.rmdir()
+                self.mod.write_state({"operation": operation, "packages": {"alpine-base": "3.23.4-r0"}, "world": "xen\n"})
+                with self.assertRaisesRegex(self.mod.ToolError, "baseline is incomplete"):
+                    self.mod.end(operation, expected)
+                apk.assert_not_called()
 
 
 if __name__ == "__main__":
