@@ -153,6 +153,8 @@ class Dom0Tests(unittest.TestCase):
         patch.start(); self.addCleanup(patch.stop)
         patch = mock.patch.object(self.adapter,'finalize_candidate',return_value=None)
         patch.start(); self.addCleanup(patch.stop)
+        patch = mock.patch.object(d.finalization,'fence',return_value=None)
+        patch.start(); self.addCleanup(patch.stop)
 
     def accept(self):
         r.write(self.work / 'acceptance.json', {'kind':'klokast.router-controller-acceptance.v1',

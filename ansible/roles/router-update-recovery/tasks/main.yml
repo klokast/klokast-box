@@ -96,6 +96,13 @@
       - router_copy_contract
       - router_copy_native
       - router_replacement_enrollment
+      - router_replacement_finalization
+      - router_candidate
+      - router_candidate_disk
+      - router_candidate_preparation
+      - router_initial_contact
+      - router_state
+      - xen_build_runtime
     router_recovery_hashes: {}
 
 - name: Install the exact router engine modules

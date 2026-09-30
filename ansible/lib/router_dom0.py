@@ -15,6 +15,7 @@ import router_generations as generations
 import router_native as native
 import router_records as records
 import router_replacement_enrollment as enrollment
+import router_replacement_finalization as finalization
 import router_transaction as transaction
 
 
@@ -259,7 +260,7 @@ class Adapter:
         return False
 
     def finalize_candidate(self, *, deadline):
-        raise transaction.TransactionError('router replacement offline finalizer is not staged')
+        finalization.run_candidate(self,deadline=deadline)
 
     def wait_acceptance(self, *, deadline):
         path = self.work / 'acceptance.json'
@@ -291,6 +292,7 @@ class Adapter:
         # Never require a working controller, current policy, or an unexpired
         # grant to recover an operation that was already durably armed.
         self.disable_autostart(deadline=deadline)
+        finalization.fence(self,deadline=deadline)
         self.copy_backend.fence(self, deadline=deadline)
         self.resources(deadline=deadline)
         self.storage.committed(request)
@@ -315,6 +317,7 @@ class Adapter:
         # A failed persistence command must not skip attempts to stop writers.
         errors = []
         for action in (lambda: self.disable_autostart(deadline=min(deadline, self.monotonic() + 5)),
+                       lambda: finalization.fence(self,deadline=min(deadline,self.monotonic() + 8)),
                        lambda: self.copy_backend.fence(self, deadline=min(deadline, self.monotonic() + 5)),
                        lambda: self.host.stop(self.pair, 'candidate', deadline=min(deadline, self.monotonic() + 8), graceful=False),
                        lambda: self.host.stop(self.pair, 'old', deadline=min(deadline, self.monotonic() + 8), graceful=False)):

@@ -208,9 +208,12 @@ later requirement. The cutover model now has separate enrollment, offline
 retirement, restart, and final-check phases. Dom0 verifies the enrollment source
 before it arms the operation and persists one attempt before A stops. It
 rejects a changed result or reuse of A's device ID. The offline replacement
-finalizer, controller signal issuer, exact-device inventory, and native
-recovery proof remain open. Until those paths are connected, cutover fails
-closed at finalization.
+finalizer now stages its boot inputs before cutover. After B stops, it uses a
+read-only private job slot in a networkless Xen guest. Dom0 checks its stopped
+disk, enrolled state, final packages, and detached result before B can restart.
+Recovery fences an interrupted cleanup guest. This path has source tests only.
+The controller signal issuer, exact-device inventory, and native recovery
+proof remain open. Cutover must stay disabled until these gates pass.
 Do not enable replacement or scheduling until these gates pass. Initial-install
 retries continue to retain their existing enrollment.
 

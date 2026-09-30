@@ -54,10 +54,12 @@ def guard():
             not re.fullmatch('[0-9a-f]{64}',args['klokast_inputs']) or
             not re.fullmatch('[0-9a-f]{64}',args['klokast_job'])):
         raise RuntimeError('replacement finalizer boot identity is incomplete')
-    for path,name in ((Path('/dev/xvda'),'xvda'),(RESULT,'xvdb'),(JOB,'xvdc')):
+    for path,name,writable in ((Path('/dev/xvda'),'xvda',True),
+                               (RESULT,'xvdb',True),(JOB,'xvdc',False)):
         if (path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode) or
-                Path('/sys/class/block',name,'ro').read_text().strip() != '0'):
-            raise RuntimeError('replacement finalizer has an invalid writable block device')
+                Path('/sys/class/block',name,'ro').read_text().strip() !=
+                    ('0' if writable else '1')):
+            raise RuntimeError('replacement finalizer has an invalid block device mode')
     if len({path.stat().st_rdev for path in (Path('/dev/xvda'),RESULT,JOB)}) != 3:
         raise RuntimeError('replacement finalizer block devices overlap')
     if {path.name for path in Path('/sys/class/block').glob('xvd*')
