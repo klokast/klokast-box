@@ -1,6 +1,7 @@
 """Stop one enrolled first router and retire first-contact access offline."""
 import os
 import hashlib
+from contextlib import nullcontext
 from pathlib import Path
 import re
 import time
@@ -30,11 +31,12 @@ def job_for(box,operation,source,preparation_job,prepared,release,enrollment):
         'runtime_packages':release['runtime_packages'],'enrolled_guest':enrollment}
 
 
-def context(storage, operation, engine):
+def context(storage, operation, engine, *, allow_verified=False):
     work = storage.operation(operation)
     current = storage.installation()
     installation.validate(current, storage.box)
-    if (current['stage'] != 'enrolled' or current['operation_id'] != operation or
+    stages = ('enrolled','verified') if allow_verified else ('enrolled',)
+    if (current['stage'] not in stages or current['operation_id'] != operation or
             current['engine_commit'] != engine):
         raise TransactionError('offline initial finalization requires the exact enrolled installation')
     prepared_request = records.read(work / 'request.json')
@@ -368,14 +370,15 @@ def start_final(storage,operation,engine):
         return result
 
 
-def verify_final_live(storage,operation,engine):
+def verify_final_live(storage,operation,engine, *, already_locked=False):
     """Read only the exact live Xen assignment after final boot."""
     host = native.Native()
     deadline = time.monotonic()+90
     host.guard(storage.box,deadline=deadline)
-    with storage.lock():
+    with nullcontext() if already_locked else storage.lock():
         (work,current,source,preparation_job,prepared,release,
-         boot_request,boot_intent,enrollment) = context(storage,operation,engine)
+         boot_request,boot_intent,enrollment) = context(storage,operation,engine,
+                                                        allow_verified=already_locked)
         final = work / 'finalization'
         complete = records.read(final / 'complete.json')
         booted = records.read(final / 'final-boot-result.json')

@@ -885,6 +885,7 @@ def verify_initial(box, operation):
     offline = transport.load(result / 'initial-finalization-result.json')
     booted = transport.load(result / 'initial-final-boot-result.json')
     import router_candidate_preparation
+    import router_initial_acceptance as acceptance
     import router_initial_finalization as finalization
     current = router_records.initial_installation.validate(enrolled['installation'],box)
     router_updates.validate_release(release,profile,engine)
@@ -911,29 +912,7 @@ def verify_initial(box, operation):
             booted.get('complete_sha256') != router_generations.digest(cleanup) or
             booted.get('disk') != current['disk']):
         raise UpdateError('initial runtime verification lacks exact final boot evidence')
-    state = offline.get('state')
-    if not isinstance(state,dict):
-        raise UpdateError('initial runtime verification lacks offline identity evidence')
-    identity = {}
-    for name,part in state.items():
-        if (name in ('var/lib/dhcpcd/duid','var/lib/dhcpcd/secret') or
-                re.fullmatch(r'(etc/ssh|var/lib/tailscale/ssh)/ssh_host_(rsa|ecdsa|ed25519)_key',name)):
-            if not isinstance(part,dict) or not router_generations.matches('[0-9a-f]{64}',part.get('sha256')):
-                raise UpdateError('initial runtime verification has invalid offline identity hashes')
-            identity['/' + name] = part['sha256']
-    if (not {'/var/lib/dhcpcd/duid','/var/lib/dhcpcd/secret'} <= identity.keys() or
-            len(identity) != 5):
-        raise UpdateError('initial runtime verification lacks complete stable identity files')
-    config = {'/' + name:checksum for name,checksum in
-              prepared['prepared']['configuration_files'].items()}
-    expected = router_generations.seal({
-        'kind':'klokast.router-initial-runtime-expected.v1','box':box,
-        'operation_id':operation,'engine_commit':engine,
-        'release_sha256':release['receipt_sha256'],
-        'machine_id':current['machine_id'],'kernel_release':release['kernel_release'],
-        'packages':release['runtime_packages'],
-        'tailscale':prepared['prepared']['tailscale'],
-        'configuration_files':config,'identity_files':identity})
+    expected = acceptance.expected_for(box,operation,engine,current,prepared,release,offline)
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     with transport.installation_lock():
         compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show']))
@@ -959,6 +938,107 @@ def verify_initial(box, operation):
         return {'kind':'klokast.router-initial-runtime-verification.v1','box':box,
                 'operation':operation,'status':'verified',
                 'evidence_directory':str(result)}
+
+
+def accept_initial(box, operation):
+    """Publish one fully verified first router and install its Xen autostart."""
+    if not router_updates.match(router_updates.BOX,box) or not re.fullmatch('[0-9a-f]{24}',operation):
+        raise UpdateError('initial acceptance requires an exact box and retained operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('initial acceptance requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('initial acceptance requires the exact activated engine')
+    work,result = CACHE / ('initial-' + operation),STATE / operation
+    source = transport.load(work / 'request.json')
+    preparation_job = transport.load(work / 'candidate-job.json')
+    prepared = transport.load(result / 'preparation-result.json')
+    enrolled = transport.load(result / 'initial-enrollment-result.json')
+    enrollment_guest = transport.load(result / 'initial-enrollment-guest.json')
+    release = transport.load(STATE / source['template_operation'] / 'release.json')
+    profile = transport.load(PROFILE)
+    offline = transport.load(result / 'initial-finalization-result.json')
+    complete = transport.load(result / 'initial-finalization-complete.json')
+    booted = transport.load(result / 'initial-final-boot-result.json')
+    verification = transport.load(result / 'initial-runtime-verification.json')
+    import router_initial_acceptance as acceptance
+    import router_candidate_preparation
+    router_updates.validate_release(release,profile,engine)
+    router_candidate_preparation.validate_result(prepared,source,preparation_job)
+    current = router_records.initial_installation.validate(enrolled['installation'],box)
+    if (current['stage'] != 'enrolled' or current['operation_id'] != operation or
+            current['engine_commit'] != engine or current['machine_id'] != enrollment_guest.get('machine_id') or
+            current['enrollment_sha256'] != router_generations.digest(enrollment_guest) or
+            source.get('box') != box or source.get('engine_commit') != engine or
+            source.get('registry_sha256') is None or
+            complete.get('result_sha256') != router_generations.digest(offline) or
+            complete.get('disk') != current['disk'] or
+            offline.get('success') is not True or offline.get('machine_id') != current['machine_id'] or
+            booted.get('status') != 'running-unverified' or booted.get('disk') != current['disk'] or
+            booted.get('complete_sha256') != router_generations.digest(complete)):
+        raise UpdateError('initial acceptance lacks exact enrolled, cleanup, and final boot evidence')
+    expected = acceptance.expected_for(box,operation,engine,current,prepared,release,offline)
+    acceptance.verification(verification,expected,box,operation)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show']))
+        if compiled.get('registry_sha256') != source['registry_sha256']:
+            raise UpdateError('initial acceptance compiler inputs changed since preparation')
+        attempt = secrets.token_hex(6)
+        stage_args = result / ('initial-accept-stage-' + attempt + '.json')
+        transport.write(stage_args,{'router_initial_box':box,
+            'router_initial_operation':operation,'router_initial_expected':expected,
+            'router_initial_verification':verification})
+        with (result / ('initial-accept-stage-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-accept-stage.yml',
+                '--limit',box + '-dom0','-e','@' + str(stage_args)],timeout=600,log=log)
+        if (transport.approved_engine() != engine or
+                json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled):
+            raise UpdateError('initial acceptance authority changed during staging')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-initial-accept-grant.v1',
+            'box':box,'operation_id':operation,'engine_commit':engine,
+            'verification_sha256':router_generations.digest(verification),
+            'installation_sha256':current['record_sha256'],
+            'granted_at':now,'expires_at':now+300}
+        acceptance.grant(grant,verification,current,engine,box,operation,now)
+        run_args = result / ('initial-accept-run-' + attempt + '.json')
+        transport.write(run_args,{'router_initial_box':box,
+            'router_initial_operation':operation,'router_initial_result_dir':str(result),
+            'router_initial_accept_grant':grant})
+        with (result / ('initial-accept-run-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-accept-run.yml',
+                '--limit',box + '-dom0','-e','@' + str(run_args)],timeout=600,log=log)
+        native_result = transport.load(result / 'initial-acceptance-result.json')
+        generation = router_generations.generation(transport.load(result / 'initial-generation.json'),box)
+        installation = router_records.initial_installation.validate(
+            transport.load(result / 'initial-verified-installation.json'),box)
+        accepted = router_records.assignment(transport.load(result / 'initial-accepted.json'),box)
+        router_records.initial_installation.matches_generation(installation,generation,box)
+        if (native_result != {'kind':'klokast.router-initial-acceptance-result.v1',
+                'box':box,'operation_id':operation,'status':'accepted',
+                'generation_sha256':generation['record_sha256'],
+                'assignment_sha256':accepted['record_sha256']} or
+                accepted['current_sha256'] != generation['record_sha256'] or
+                accepted['previous_sha256'] is not None or
+                accepted['policy_sha256'] != router_records.INITIAL_AUTHORITY_SHA256 or
+                generation['engine_commit'] != engine or
+                generation['evidence_sha256'] != router_generations.digest(verification) or
+                generation['packages'] != release['runtime_packages'] or
+                generation['tailscale'] != prepared['prepared']['tailscale'] or
+                generation['configuration_files'] != prepared['prepared']['configuration_files'] or
+                generation['disk'] != current['disk'] or
+                json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled):
+            raise UpdateError('first accepted router differs from its verified release and identity')
+        return {'kind':'klokast.router-initial-acceptance-result.v1',
+            'box':box,'operation':operation,'status':'accepted',
+            'generation_sha256':generation['record_sha256'],
+            'evidence_directory':str(result)}
 
 
 def adopt_legacy(box):
@@ -1444,6 +1524,9 @@ def main():
     verifier = sub.add_parser('verify-initial', help='verify final first router services, packages, and identity')
     verifier.add_argument('--box', required=True)
     verifier.add_argument('--operation-id', required=True)
+    accepter = sub.add_parser('accept-initial', help='publish the verified first router and managed Xen autostart')
+    accepter.add_argument('--box', required=True)
+    accepter.add_argument('--operation-id', required=True)
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -1484,6 +1567,8 @@ def main():
             value = boot_final_initial(args.box,args.operation_id)
         elif args.command == 'verify-initial':
             value = verify_initial(args.box,args.operation_id)
+        elif args.command == 'accept-initial':
+            value = accept_initial(args.box,args.operation_id)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

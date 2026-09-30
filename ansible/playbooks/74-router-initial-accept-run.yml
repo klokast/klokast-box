@@ -1,0 +1,78 @@
+---
+- name: Publish one verified first router under a fresh grant
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact first router acceptance grant and result path
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-dom0'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_initial_operation
+
+    - name: Require the activated router engine
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind the first acceptance grant to the activated engine
+      ansible.builtin.assert:
+        that: [router_initial_accept_grant.engine_commit == router_recovery_commit.stdout]
+
+    - name: Stage the short first acceptance grant
+      ansible.builtin.copy:
+        content: '{{ router_initial_accept_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/accept-grant.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Publish the first accepted generation and managed autostart
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/router-initial-accept-dom0'
+          - --box
+          - '{{ router_initial_box }}'
+          - --operation-id
+          - '{{ router_initial_operation }}'
+          - --engine
+          - '{{ router_initial_accept_grant.engine_commit }}'
+      register: router_initial_accept_native
+      changed_when: true
+
+    - name: Require the exact first accepted-generation selector
+      ansible.builtin.assert:
+        that:
+          - (router_initial_accept_native.stdout | from_json).kind == 'klokast.router-initial-acceptance-result.v1'
+          - (router_initial_accept_native.stdout | from_json).box == router_initial_box
+          - (router_initial_accept_native.stdout | from_json).operation_id == router_initial_operation
+          - (router_initial_accept_native.stdout | from_json).status == 'accepted'
+          - (router_initial_accept_native.stdout | from_json).generation_sha256 is match('^[0-9a-f]{64}$')
+          - (router_initial_accept_native.stdout | from_json).assignment_sha256 is match('^[0-9a-f]{64}$')
+
+    - name: Fetch first accepted-generation evidence
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/accept-result.json'
+        dest: '{{ router_initial_result_dir }}/initial-acceptance-result.json'
+        flat: true
+
+    - name: Fetch the protected first generation record
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/records/{{ (router_initial_accept_native.stdout | from_json).generation_sha256 }}.json'
+        dest: '{{ router_initial_result_dir }}/initial-generation.json'
+        flat: true
+
+    - name: Fetch the protected accepted router pointer
+      ansible.builtin.fetch:
+        src: /mnt/dom0_data/klokast-router-updates/accepted.json
+        dest: '{{ router_initial_result_dir }}/initial-accepted.json'
+        flat: true
+
+    - name: Fetch the verified initial installation stage
+      ansible.builtin.fetch:
+        src: /mnt/dom0_data/klokast-router-updates/installation.json
+        dest: '{{ router_initial_result_dir }}/initial-verified-installation.json'
+        flat: true

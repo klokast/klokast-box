@@ -692,6 +692,20 @@ and bounded status, not secret contents. This command does not accept the
 router or install autostart. Its Ansible and native path still needs
 exact-engine qualification before use on a live router.
 
+`platform-router-update accept-initial --box BOX --operation-id OPERATION`
+stages the exact runtime expectation and verified result before it issues a
+short acceptance grant. Dom0 checks the enrolled installation, offline
+cleanup, live final Xen guest, frozen release, and grant. It records acceptance
+intent, advances the installation to `verified`, publishes one template
+generation and the first accepted assignment, then installs the matching Xen
+definition and managed autostart link. A retry keeps the same generation and
+identity. If power fails after the accepted pointer but before autostart is
+persisted, the dom0 boot-recovery prerequisite reconstructs only that exact
+accepted initial definition before Xen guest autostart. An unaccepted disk
+cannot use this recovery path. This source flow still needs exact-engine
+native qualification and connection to normal provisioning; do not run it on
+a live router before those gates pass.
+
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before
 it runs service tests. The initial-install clone uses the preallocated recovery

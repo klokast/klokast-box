@@ -207,6 +207,51 @@ class InitialCliTests(unittest.TestCase):
                 'services':True,'packages':True,'identity':True,'management':True,
                 'dom0':True})
             return ''
+        if playbook == '74-router-initial-accept-stage.yml':
+            expected = arguments['router_initial_expected']
+            verified = arguments['router_initial_verification']
+            self.assertEqual(verified['expected_sha256'],expected['record_sha256'])
+            self.assertNotIn('router_initial_accept_grant',arguments)
+            return ''
+        if playbook == '74-router-initial-accept-run.yml':
+            verified = json.loads((self.state / self.operation / 'initial-runtime-verification.json').read_text())
+            prepared = json.loads((self.state / self.operation / 'preparation-result.json').read_text())['prepared']
+            enrolled = json.loads((self.state / self.operation / 'initial-enrollment-result.json').read_text())['installation']
+            xen = json.loads((self.state / self.operation / 'initial-boot-request.json').read_text())['xen']
+            boot = {name:{'path':'/mnt/dom0_data/klokast-router-updates/generations/' +
+                self.operation + '/' + name,'sha256':self.release['artifacts'][name],
+                'bytes':100} for name in ('kernel','initramfs')}
+            generation = generations.seal({'kind':'klokast.router-generation.v1',
+                'box':'boxa','role':'router','generation_id':self.operation,
+                'origin':'template','engine_commit':ENGINE,
+                'alpine_branch':self.release['inputs']['branch'],
+                'disk':enrolled['disk'],'boot':boot,'xen':xen,
+                'packages':self.release['runtime_packages'],
+                'kernel_release':self.release['kernel_release'],
+                'accounts':prepared['accounts'],
+                'configuration_files':prepared['configuration_files'],
+                'tailscale':prepared['tailscale'],
+                'evidence_sha256':generations.digest(verified)})
+            generations.generation(generation,'boxa')
+            installation = generations.seal({
+                **{key:value for key,value in enrolled.items() if key != 'record_sha256'},
+                'stage':'verified','generation_sha256':generation['record_sha256']})
+            accepted = generations.seal({'kind':'klokast.router-assignment.v1',
+                'box':'boxa','role':'router','current_sha256':generation['record_sha256'],
+                'previous_sha256':None,'operation_id':self.operation,
+                'engine_commit':ENGINE,
+                'policy_sha256':self.cli.router_records.INITIAL_AUTHORITY_SHA256,
+                'evidence_sha256':installation['record_sha256']})
+            result = self.state / self.operation
+            self.write(result / 'initial-generation.json',generation)
+            self.write(result / 'initial-verified-installation.json',installation)
+            self.write(result / 'initial-accepted.json',accepted)
+            self.write(result / 'initial-acceptance-result.json',{
+                'kind':'klokast.router-initial-acceptance-result.v1','box':'boxa',
+                'operation_id':self.operation,'status':'accepted',
+                'generation_sha256':generation['record_sha256'],
+                'assignment_sha256':accepted['record_sha256']})
+            return ''
         self.assertEqual(playbook, '74-router-initial-prepare.yml')
         self.assertEqual(self.events[-2], '74-router-initial-preparation-stage.yml')
         request = json.loads((self.cache / ('initial-' + self.operation) / 'request.json').read_text())
@@ -349,6 +394,11 @@ class InitialCliTests(unittest.TestCase):
             verified = self.cli.verify_initial('boxa',self.operation)
             self.assertEqual(verified['status'],'verified')
             self.assertEqual(self.events[-1],'74-router-initial-final-verify.yml')
+            accepted = self.cli.accept_initial('boxa',self.operation)
+            self.assertEqual(accepted['status'],'accepted')
+            self.assertEqual(self.events[-2:],[
+                '74-router-initial-accept-stage.yml',
+                '74-router-initial-accept-run.yml'])
             guest_path = self.state / self.operation / 'initial-enrollment-guest.json'
             guest = json.loads(guest_path.read_text())
             self.write(guest_path,{**guest,'machine_id':'nChangedMachine'})

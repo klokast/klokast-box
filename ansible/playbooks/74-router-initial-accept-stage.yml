@@ -1,0 +1,82 @@
+---
+- name: Stage exact first router acceptance evidence before issuing a grant
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require one exact first router acceptance target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-dom0'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_expected.box == router_initial_box
+          - router_initial_expected.operation_id == router_initial_operation
+          - router_initial_verification.box == router_initial_box
+          - router_initial_verification.operation_id == router_initial_operation
+          - router_initial_verification.expected_sha256 == router_initial_expected.record_sha256
+
+    - name: Require the activated router engine
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind first acceptance to the activated engine
+      ansible.builtin.assert:
+        that: [router_initial_expected.engine_commit == router_recovery_commit.stdout]
+
+    - name: Declare the two immutable first acceptance records
+      ansible.builtin.set_fact:
+        router_initial_accept_documents:
+          - {name: runtime-expected, value: '{{ router_initial_expected }}'}
+          - {name: runtime-verification, value: '{{ router_initial_verification }}'}
+      no_log: true
+
+    - name: Stage frozen runtime expectation and verified service result
+      ansible.builtin.copy:
+        content: '{{ item.value | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/{{ item.name }}.json'
+        force: false
+        owner: root
+        group: root
+        mode: '0600'
+      loop: '{{ router_initial_accept_documents }}'
+      no_log: true
+
+    - name: Read the exact staged runtime evidence
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/{{ item.name }}.json'
+      loop: '{{ router_initial_accept_documents }}'
+      register: router_initial_accept_staged
+      no_log: true
+
+    - name: Refuse changed first router acceptance evidence
+      ansible.builtin.assert:
+        that: [(item.content | b64decode | from_json) == item.item.value]
+        fail_msg: First router acceptance evidence changed. Reconcile the exact installation.
+      loop: '{{ router_initial_accept_staged.results }}'
+      no_log: true
+
+    - name: Stage exact native first router acceptance module
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/router_initial_acceptance.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/router_initial_acceptance.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage exact finalization source for live proof
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/router_initial_finalization.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/router_initial_finalization.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage first router acceptance command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-initial-preparation/files/router-initial-accept-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/router-initial-accept-dom0'
+        owner: root
+        group: root
+        mode: '0700'

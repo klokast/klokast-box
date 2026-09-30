@@ -109,7 +109,8 @@ def recover(storage, engine):
     return Transaction(host.request, host, pending).recover()
 
 
-def boot_assignment(storage, *, require_running=False):
+def boot_assignment(storage, *, require_running=False, recover_initial=False,
+                    xen=Path('/etc/xen')):
     path = storage.base / 'accepted.json'
     if not path.exists() and not path.is_symlink():
         return 'unadopted'
@@ -122,14 +123,34 @@ def boot_assignment(storage, *, require_running=False):
     for item in generation['boot'].values():
         host.artifact(item, deadline=deadline)
     expected = native.literal_configuration(generations.configuration(generation))
-    actual = native.literal_configuration(records.secure(Path('/etc/xen/router.cfg')).read_text())
+    config = xen / 'router.cfg'
+    link = xen / 'auto/router.cfg'
+    records.parents(link)
+    missing_config = not config.exists() and not config.is_symlink()
+    missing_link = not link.exists() and not link.is_symlink()
+    initial = assignment['policy_sha256'] == records.INITIAL_AUTHORITY_SHA256
+    if recover_initial and initial and (missing_config or missing_link):
+        if not missing_config and native.literal_configuration(records.secure(config).read_text()) != expected:
+            raise TransactionError('accepted first router Xen definition changed before recovery')
+        if not missing_link and (not link.is_symlink() or link.lstat().st_uid != records.ROOT_UID or
+                os.readlink(link) != '../router.cfg'):
+            raise TransactionError('accepted first router autostart link changed before recovery')
+        # The verified installation and accepted pointer select one generation.
+        # This path only finishes their interrupted Xen persistence before
+        # xendomains starts; it cannot adopt an unaccepted disk.
+        host.guest({'accepted':generation}, deadline=deadline)
+        if missing_config:
+            records.atomic(config,generations.configuration(generation).encode())
+        if missing_link:
+            link.symlink_to('../router.cfg')
+            records.syncdir(link.parent)
+        native.command(['/usr/sbin/lbu','commit','-d'],deadline,maximum_seconds=120)
+    actual = native.literal_configuration(records.secure(config).read_text())
     if generation['origin'] == 'legacy' and 'uuid' not in actual:
         actual['uuid'] = expected['uuid']
     if actual != expected:
         raise TransactionError('router boot definition differs from its accepted generation')
-    link = Path('/etc/xen/auto/router.cfg')
-    records.parents(link)
-    if (not link.is_symlink() or link.lstat().st_uid != 0 or
+    if (not link.is_symlink() or link.lstat().st_uid != records.ROOT_UID or
             os.readlink(link) not in ('../router.cfg', '/etc/xen/router.cfg')):
         raise TransactionError('accepted router has no exact managed autostart link')
     # Reject an unexpected running router or another VM holding this disk.
@@ -302,7 +323,7 @@ def main(argv, engine):
             elif args.action in ('boot-recover', 'recover'):
                 result = recover(storage, engine)
                 if result == 'no-pending-operation':
-                    result = boot_assignment(storage)
+                    result = boot_assignment(storage,recover_initial=args.action == 'boot-recover')
             else:
                 host = adapter(storage, args.operation_id)
                 if host.request['engine_commit'] != engine:
