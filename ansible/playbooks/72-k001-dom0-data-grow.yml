@@ -1,0 +1,84 @@
+---
+- name: Grow only K001 persistent dom0 data to its declared size
+  hosts: vm_dom0
+  gather_facts: false
+  vars:
+    dom0_tool_profile: dom0-data-resize
+    dom0_tool_box: k001
+    dom0_tool_operation: "{{ dom0_resize_operation_id }}"
+  tasks:
+    - name: Require the active controller and exact K001 target
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: inventory_hostname == 'k001-dom0'
+
+    - name: Require the reviewed data-volume selection
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == ['k001-dom0']
+          - inventory_hostname == 'k001-dom0'
+          - volume_group_name == 'vg0'
+          - dom0_data_lv_name == 'lv_dom0_data'
+          - dom0_data_lv_size == '32G'
+          - dom0_data_mount_path == '/mnt/dom0_data'
+          - dom0_resize_operation_id is match('^[0-9a-f]{12}$')
+
+    - name: Require the expected mounted ext4 LV
+      ansible.builtin.shell: |
+        set -eu
+        test "$(mount | awk '$3 == "/mnt/dom0_data" {print $1 " " $5}')" = '/dev/vg0/lv_dom0_data ext4'
+        test "$(/sbin/blkid -o value -s TYPE /dev/vg0/lv_dom0_data)" = ext4
+      args:
+        executable: /bin/sh
+      changed_when: false
+
+    - name: Read the exact data LV size
+      ansible.builtin.command:
+        argv: [/sbin/lvs, --noheadings, --units, b, --nosuffix, -o, lv_size, /dev/vg0/lv_dom0_data]
+      register: dom0_data_size_before
+      changed_when: false
+
+    - name: Refuse an unexpected data LV size
+      ansible.builtin.assert:
+        that:
+          - (dom0_data_size_before.stdout | trim | int) in [21474836480, 34359738368]
+
+    - name: Grow the data LV and ext4 under an exact RAM tool transaction
+      block:
+        - name: Install only the reviewed resize tool in RAM
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: temporary-tools.yml
+          vars:
+            dom0_tool_action: begin
+
+        - name: Grow only the selected data LV to 32 GiB
+          ansible.builtin.command:
+            argv: [/sbin/lvextend, -L, 32G, /dev/vg0/lv_dom0_data]
+          when: (dom0_data_size_before.stdout | trim | int) == 21474836480
+
+        - name: Grow the mounted ext4 filesystem to the LV boundary
+          ansible.builtin.command:
+            argv: [/usr/sbin/resize2fs, /dev/vg0/lv_dom0_data]
+          register: dom0_data_resize_result
+          changed_when: "'Nothing to do!' not in (dom0_data_resize_result.stdout ~ dom0_data_resize_result.stderr)"
+      always:
+        - name: Restore the exact APK world and installed package versions
+          ansible.builtin.import_role:
+            name: dom0-apk-policy
+            tasks_from: temporary-tools.yml
+          vars:
+            dom0_tool_action: end
+
+    - name: Verify the persistent LV and filesystem size
+      ansible.builtin.shell: |
+        set -eu
+        test "$(/sbin/lvs --noheadings --units b --nosuffix -o lv_size /dev/vg0/lv_dom0_data | tr -d ' ')" = 34359738368
+        test "$(mount | awk '$3 == "/mnt/dom0_data" {print $1 " " $5}')" = '/dev/vg0/lv_dom0_data ext4'
+        test "$(df -B1 /mnt/dom0_data | awk 'NR == 2 {print $2}')" -ge 33000000000
+      args:
+        executable: /bin/sh
+      changed_when: false

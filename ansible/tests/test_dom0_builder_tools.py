@@ -33,6 +33,10 @@ class Dom0BuilderToolsTest(unittest.TestCase):
         self.assertEqual(self.mod.TOOLS, ("curl", "kpartx", "sfdisk", "xorriso"))
         self.assertTrue(self.mod.OPERATION_RE.fullmatch("a" * 12))
         self.assertFalse(self.mod.OPERATION_RE.fullmatch("a" * 24))
+        self.mod.select_profile("dom0-data-resize")
+        self.assertEqual(self.mod.TOOLS, ("e2fsprogs-extra",))
+        self.assertEqual(self.mod.VIRTUAL, ".klokast-dom0-data-resize")
+        self.assertTrue(self.mod.OPERATION_RE.fullmatch("a" * 12))
         with self.assertRaisesRegex(self.mod.ToolError, "closed profile"):
             self.mod.select_profile("router-copy")
         with self.assertRaisesRegex(self.mod.ToolError, "closed profile"):
@@ -52,6 +56,8 @@ class Dom0BuilderToolsTest(unittest.TestCase):
             self.mod.check_simulation("Installing xen without a count\n", baseline, adding=True)
 
     def test_exact_temporary_transaction_restores_world_and_versions(self):
+        self._roundtrip("ab1234cd5678")
+        self.mod.select_profile("dom0-data-resize")
         self._roundtrip("ab1234cd5678")
 
     def _roundtrip(self, operation):

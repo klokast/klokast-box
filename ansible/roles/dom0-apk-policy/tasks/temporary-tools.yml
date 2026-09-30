@@ -2,7 +2,7 @@
 - name: Validate the closed temporary dom0 tool transaction
   ansible.builtin.assert:
     that:
-      - dom0_tool_profile | default('') == 'sealed-builder'
+      - dom0_tool_profile | default('') in ['sealed-builder', 'dom0-data-resize']
       - dom0_tool_action | default('') in ['begin', 'end']
       - dom0_tool_box | default('') is match('^[a-z0-9][a-z0-9-]{0,30}$')
       - inventory_hostname == dom0_tool_box ~ '-dom0'
@@ -11,7 +11,7 @@
       - dom0_world_packages | length > 0
       - "'xen' in dom0_world_packages"
       - "'xen-hypervisor' in dom0_world_packages"
-      - "['curl', 'kpartx', 'sfdisk', 'xorriso'] | difference(dom0_maintenance_package_allowlist) | length == 0"
+      - "({'sealed-builder': ['curl', 'kpartx', 'sfdisk', 'xorriso'], 'dom0-data-resize': ['e2fsprogs-extra']}[dom0_tool_profile] | difference(dom0_maintenance_package_allowlist) | length) == 0"
     fail_msg: Temporary dom0 tools require a valid closed profile and managed package policy.
 
 - name: Stage the exact steady-state dom0 APK world in RAM

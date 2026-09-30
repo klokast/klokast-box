@@ -16,9 +16,11 @@ from pathlib import Path
 APK = "/sbin/apk"
 PROFILES = {
     "sealed-builder": (("curl", "kpartx", "sfdisk", "xorriso"), ".klokast-builder-tools", 12),
+    "dom0-data-resize": (("e2fsprogs-extra",), ".klokast-dom0-data-resize", 12),
 }
 PROFILE_STATES = {
     "sealed-builder": Path("/run/klokast-builder-tools"),
+    "dom0-data-resize": Path("/run/klokast-dom0-data-resize"),
 }
 TOOLS, VIRTUAL, OPERATION_LENGTH = PROFILES["sealed-builder"]
 STATE_DIR = PROFILE_STATES["sealed-builder"]
