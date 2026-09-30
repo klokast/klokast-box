@@ -67,7 +67,6 @@ class InitialBootTests(unittest.TestCase):
         for target, name, value in (
                 (boot.time,'time',Mock(return_value=1001)),
                 (boot.preparation,'validate_result',Mock()),
-                (boot.router_updates,'validate_release',Mock()),
                 (boot.disks,'verify',Mock(return_value=self.disk)),
                 (boot.disks,'record',Mock(return_value={'stage':'cloned'}))):
             context = patch.object(target,name,value)
