@@ -517,7 +517,8 @@ def replacement_context(box, check_operation, engine, profile, evidence, label):
     return {'report':report,'binding':binding,'inputs':inputs,'frozen':frozen,
             'assignment':assignment,'generation':generation,'accepted':accepted,
             'accepted_profile':historical_profile,'policy':policy,
-            'policy_sha256':policy_sha256,'live':live}
+            'policy_sha256':policy_sha256,'live':live,
+            'old_machine_id':guest['machine_id']}
 
 
 def check_legacy(box):
@@ -1165,6 +1166,107 @@ def stage_replacement_generation(box, operation):
             'preflight_sha256':router_generations.digest(preflight),
             'evidence_directory':str(result),'router_started':False,
             'cutover_authorized':False}
+
+
+def stage_replacement_cutover(box, operation, compatibility_operation):
+    """Bind a retired native DHCP diagnostic to one retained A/B pair."""
+    if (not router_updates.match(router_updates.BOX,box) or
+            any(not re.fullmatch('[0-9a-f]{24}',item) for item in
+                (operation,compatibility_operation))):
+        raise UpdateError('replacement cutover staging needs exact operation selectors')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('replacement cutover staging requires a clean activated checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('replacement cutover staging requires the exact activated engine')
+    import router_replacement_qualification as qualification
+    import router_replacement_enrollment as enrollment
+    import router_transaction as transaction
+    work,result = CACHE/('replacement-'+operation),STATE/operation
+    diagnostic,proof = CACHE/('compatibility-'+compatibility_operation),STATE/compatibility_operation
+    for directory in (work,result,diagnostic,proof):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('replacement cutover source directory is unsafe')
+    preparation = transport.load(work/'request.json')
+    release = transport.load(work/'release.json')
+    candidate = transport.load(result/'proposed-generation.json')
+    preflight = transport.load(result/'candidate-preflight.json')
+    prepared = transport.load(result/'preparation-result.json')
+    host = transport.load(diagnostic/'request.json')
+    native_result = transport.load(proof/'result.json')
+    phases = {name:transport.load(proof/(name+'.json')) for name in qualification.PHASES}
+    lifecycle = transport.load(proof/'lifecycle.json')
+    retired = transport.load(proof/'candidate-disk.json')
+    profile = transport.load(PROFILE)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO/'ansible/ansible.cfg')
+    with transport.installation_lock():
+        token = secrets.token_hex(6)
+        context = replacement_context(box,preparation['check_operation'],engine,profile,
+                                      result,'cutover-before-'+token)
+        if (context['assignment']['record_sha256'] != preparation['accepted_assignment_sha256'] or
+                context['generation']['record_sha256'] != preparation['old_sha256']):
+            raise UpdateError('replacement cutover source differs from the running accepted router')
+        inventory = json.loads(transport.command(['ansible-inventory','-i',
+            REPO/'ansible/execution-inventory/hosts','--host',box+'-router'],timeout=120))
+        gateway = inventory.get('router_backend_ipv4_address')
+        if not isinstance(gateway,str):
+            raise UpdateError('replacement cutover lacks the compiled backend gateway')
+        request = {'kind':'klokast.router-transaction-request.v1','role':'router',
+            'box':box,'operation_id':operation,'engine_commit':engine,
+            'policy_sha256':context['policy_sha256'],
+            'accepted_sha256':context['assignment']['record_sha256'],
+            'old_sha256':context['generation']['record_sha256'],
+            'candidate_sha256':candidate['record_sha256'],
+            'cutover_seconds':1800,'recovery_seconds':900}
+        transaction.validate(request)
+        compatibility,copy_qualification,readiness = qualification.records(
+            request,context['generation'],candidate,preparation,host['source']['accepted'],
+            release,preflight,host,native_result,phases,lifecycle,retired,gateway)
+        source = {'kind':'klokast.router-replacement-enrollment-source.v1',
+            'request_sha256':router_generations.digest(request),
+            'old_sha256':request['old_sha256'],
+            'old_machine_id':context['old_machine_id'],
+            'preparation_sha256':router_generations.digest(prepared)}
+        enrollment.attempt(request,candidate,nonce='0'*24,
+            old_machine_id=source['old_machine_id'],
+            host_keys=prepared['first_contact']['host_key_public_sha256'])
+        staged = {'transaction-request':request,'readiness':readiness,
+            'compatibility':compatibility,'copy-qualification':copy_qualification,
+            'enrollment-source':source}
+        arguments = result/('cutover-stage-'+token+'.json')
+        transport.write(arguments,{'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_result_dir':str(result),
+            'router_replacement_records':staged})
+        with (result/('cutover-stage-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-cutover-stage.yml',
+                '--limit',box+'-dom0','-e','@'+str(arguments)],timeout=420,log=log)
+        native = transport.load(result/'cutover-stage-result.json')
+        if (native.get('kind') != 'klokast.router-command-result.v1' or
+                native.get('action') != 'stage-cutover' or
+                native.get('box') != box or native.get('engine_commit') != engine or
+                native.get('result') != {'kind':'klokast.router-cutover-staged.v1',
+                    'box':box,'operation_id':operation,
+                    'candidate_sha256':candidate['record_sha256'],
+                    'readiness_sha256':router_generations.digest(readiness),
+                    'status':'records-qualified-no-cutover'}):
+            raise UpdateError('dom0 staged another router cutover source')
+        final = replacement_context(box,preparation['check_operation'],engine,profile,
+                                    result,'cutover-after-'+token)
+        fixed = ('report','binding','inputs','frozen','assignment','generation',
+                 'accepted','accepted_profile','policy','policy_sha256','old_machine_id')
+        if any(final[name] != context[name] for name in fixed):
+            raise UpdateError('accepted router or signed source changed during cutover staging')
+        return {'kind':'klokast.router-replacement-cutover-stage-result.v1',
+            'box':box,'operation_id':operation,'candidate_sha256':candidate['record_sha256'],
+            'compatibility_operation':compatibility_operation,
+            'readiness_sha256':router_generations.digest(readiness),
+            'status':'staged-no-cutover','evidence_directory':str(result)}
 
 
 def prepare_initial(box, source, template_operation, operation=None):
@@ -2609,6 +2711,11 @@ def main():
         help='stage versioned boot artifacts and a proposed generation; no router boot or cutover')
     proposed.add_argument('--box',required=True)
     proposed.add_argument('--operation-id',required=True)
+    cutover_stage = sub.add_parser('stage-replacement-cutover',
+        help='bind retired native DHCP evidence to retained A/B records without a cutover grant')
+    cutover_stage.add_argument('--box',required=True)
+    cutover_stage.add_argument('--operation-id',required=True)
+    cutover_stage.add_argument('--compatibility-operation',required=True)
     replacement_enrollment = sub.add_parser('signal-replacement-enrollment',
         help='publish the one B enrollment result during a waiting A/B transaction')
     replacement_enrollment.add_argument('--box',required=True)
@@ -2677,6 +2784,9 @@ def main():
             value = prepare_replacement(args.box,args.check_operation,args.template_operation,args.operation_id)
         elif args.command == 'stage-replacement-generation':
             value = stage_replacement_generation(args.box,args.operation_id)
+        elif args.command == 'stage-replacement-cutover':
+            value = stage_replacement_cutover(args.box,args.operation_id,
+                                              args.compatibility_operation)
         elif args.command == 'signal-replacement-enrollment':
             value = signal_replacement_enrollment(args.box,args.operation_id)
         elif args.command == 'signal-replacement-acceptance':

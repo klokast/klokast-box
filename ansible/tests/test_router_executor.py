@@ -52,6 +52,22 @@ class SupervisorTests(unittest.TestCase):
     def setUp(self):
         dom0_tests.Dom0Tests.setUp(self)
 
+    def test_cutover_staging_pins_one_candidate_before_a_grant(self):
+        candidate_path = self.base/'records'/(self.new['record_sha256']+'.json')
+        candidate_path.unlink()
+        records.write(self.work/'proposed-generation.json',self.new)
+        with mock.patch.object(e,'adapter',return_value=self.adapter):
+            staged=e.stage_cutover(self.records,self.request['operation_id'],
+                                   self.request['engine_commit'])
+        self.assertEqual(staged['status'],'records-qualified-no-cutover')
+        self.assertEqual(records.read(candidate_path),self.new)
+        self.assertIsNone(self.records.pending())
+        records.write(self.work/'proposed-generation.json',
+            {**self.new,'generation_id':'0'*24})
+        with self.assertRaises(RuntimeError):
+            e.stage_cutover(self.records,self.request['operation_id'],
+                            self.request['engine_commit'])
+
     def test_worker_death_runs_durable_recovery_without_replaying_cutover(self):
         pending={**self.pending,'phase':'awaiting-acceptance','candidate_started':True}
         self.records.persist(pending)

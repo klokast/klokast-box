@@ -236,6 +236,7 @@ class TemplateCheckTests(unittest.TestCase):
         signed = {'kind':'klokast.vm-update-policy-source.v1'}
         evidence = self.state / ('f'*24)
         evidence.mkdir(mode=0o700)
+        (self.directory/'boxa-router.json').write_text(json.dumps({'machine_id':'nOldRouter'}))
         live = {'overlay_ipv6_enabled':False,'configuration_verified':True}
         with patch.object(self.cli,'STATE',self.state), patch.object(self.cli,'CACHE',cache), \
                 patch.object(self.cli.transport,'approved_engine',return_value=ENGINE), \
@@ -250,6 +251,7 @@ class TemplateCheckTests(unittest.TestCase):
             context = self.cli.replacement_context('boxa',self.operation,ENGINE,PROFILE,
                                                    evidence,'fresh')
             self.assertEqual(context['assignment'],self.assignment)
+            self.assertEqual(context['old_machine_id'],'nOldRouter')
             self.assertEqual(context['binding'],binding)
             self.assertIn('74-router-accepted-verification.yml',self.events)
             live_check.return_value = {'overlay_ipv6_enabled':True,

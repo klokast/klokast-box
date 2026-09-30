@@ -24,6 +24,45 @@ def adapter(storage, operation):
     return Adapter(storage, operation, Copy())
 
 
+def stage_cutover(storage, operation, engine):
+    """Install only one qualified candidate record before a cutover grant."""
+    work = storage.operation(operation)
+    request = records.read(work / 'transaction-request.json')
+    from router_transaction import validate
+    validate(request)
+    if (request['box'] != storage.box or request['operation_id'] != operation or
+            request['engine_commit'] != engine or storage.pending() is not None):
+        raise TransactionError('router cutover staging selects another engine, box, or pending operation')
+    accepted = storage.accepted()
+    if (accepted['record_sha256'] != request['accepted_sha256'] or
+            accepted['current_sha256'] != request['old_sha256']):
+        raise TransactionError('router cutover staging differs from the accepted A generation')
+    old = storage.generation(request['old_sha256'])
+    candidate = generations.generation(records.read(work / 'proposed-generation.json'),storage.box)
+    generations.pair(old,candidate,request)
+    record = storage.base / 'records' / (candidate['record_sha256'] + '.json')
+    if record.exists() or record.is_symlink():
+        if records.read(record) != candidate:
+            raise TransactionError('router candidate generation changed after staging')
+    else:
+        records.write(record,candidate)
+    for side,value in (('old',old),('candidate',candidate)):
+        path = work / (side + '.cfg')
+        content = generations.configuration(value)
+        if path.exists() or path.is_symlink():
+            if records.secure(path).read_text() != content:
+                raise TransactionError('router staged Xen configuration changed for ' + side)
+        else:
+            records.atomic(path,content.encode())
+    host = adapter(storage,operation)
+    host.verify_qualifications()
+    host.enrollment_source()
+    return {'kind':'klokast.router-cutover-staged.v1','box':storage.box,
+            'operation_id':operation,'candidate_sha256':candidate['record_sha256'],
+            'readiness_sha256':generations.digest(host.ready),
+            'status':'records-qualified-no-cutover'}
+
+
 def map_status(storage):
     """Project validated records only; never expose retained-state receipt contents."""
     pending = storage.pending()
@@ -349,7 +388,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -410,6 +449,8 @@ def main(argv, engine):
                 result = recover(storage, engine)
                 if result == 'no-pending-operation':
                     result = boot_assignment(storage,recover_initial=args.action == 'boot-recover')
+            elif args.action == 'stage-cutover':
+                result = stage_cutover(storage,args.operation_id,engine)
             else:
                 host = adapter(storage, args.operation_id)
                 if host.request['engine_commit'] != engine:

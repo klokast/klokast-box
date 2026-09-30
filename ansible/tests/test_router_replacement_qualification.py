@@ -29,12 +29,13 @@ class QualificationTests(unittest.TestCase):
             'box':'boxa','operation_id':'a'*24,'engine_commit':'b'*40,
             'policy_sha256':'1'*64,'old_sha256':'3'*64,
             'accepted_assignment_sha256':'2'*64,'template_operation':'c'*24,
+            'template_sha256':'9'*64,
             'release_sha256':'5'*64,'inputs_sha256':'6'*64}
         self.accepted = {'assignment':{'record_sha256':'2'*64},
                          'generation':self.old}
         self.host = {'kind':'klokast.router-compatibility-host.v2',
             'box':'boxa','operation_id':'d'*24,'engine_commit':'b'*40,
-            'inputs_sha256':'6'*64,'template':{'operation':'c'*24},
+            'inputs_sha256':'6'*64,'template':{'operation':'c'*24,'sha256':'9'*64},
             'source':{'accepted':self.accepted,'disk':copy.deepcopy(self.old['disk'])},
             'guest':{'source_packages':self.old['packages'],
                 'source_kernel_release':'old-kernel',

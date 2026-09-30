@@ -35,6 +35,7 @@ def records(request, old, candidate, preparation, accepted_source, release,
             host.get('engine_commit') != request['engine_commit'] or
             host.get('inputs_sha256') != preparation['inputs_sha256'] or
             host.get('template',{}).get('operation') != candidate['template_operation'] or
+            host['template'].get('sha256') != preparation.get('template_sha256') or
             host.get('source',{}).get('accepted') != accepted_source or
             host['source'].get('disk') != old['disk'] or
             host.get('guest',{}).get('source_packages') != old['packages'] or
