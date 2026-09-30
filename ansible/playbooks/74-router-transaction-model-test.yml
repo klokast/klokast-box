@@ -27,7 +27,6 @@
         - test_router_copy_inputs.py
         - test_router_records.py
         - test_router_native.py
-        - test_router_candidate_runtime.py
         - test_router_dom0.py
         - test_router_copy_native.py
         - test_router_executor.py

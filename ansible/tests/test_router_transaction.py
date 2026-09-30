@@ -136,7 +136,10 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(host.live, {'candidate'})
         self.assertEqual(host.autostart, 'candidate')
         self.assertLess(host.events.index('persist:starting-candidate'), host.events.index('started:candidate'))
+        self.assertLess(host.events.index('stopped:old'), host.events.index('copied:old:candidate'))
         self.assertLess(host.events.index('verified-copy:old:candidate'), host.events.index('started:candidate'))
+        self.assertLess(host.events.index('started:candidate'), host.events.index('checked:candidate'))
+        self.assertLess(host.events.index('checked:candidate'), host.events.index('wait-acceptance'))
 
     def test_no_acceptance_uses_latest_state_and_separate_recovery_budget(self):
         host = Adapter(accept=False)
@@ -145,6 +148,8 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(host.state['old'], 'latest-key-and-lease')
         self.assertEqual(host.acceptance_deadlines, [1180])
         self.assertEqual(host.autostart, 'old')
+        self.assertLess(host.events.index('stopped:candidate'),host.events.index('copied:candidate:old'))
+        self.assertLess(host.events.index('verified-copy:candidate:old'),host.events.index('started:old'))
 
     def test_power_loss_at_every_cutover_record_recovers_without_guessing(self):
         phases = ('armed', 'stopping-old', 'copying-forward', 'candidate-ready', 'starting-candidate',

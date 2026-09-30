@@ -18,10 +18,10 @@ import router_transaction as transaction
 
 def readiness(value, request):
     if (not isinstance(value, dict) or set(value) != {'kind', 'request_sha256', 'release_sha256',
-            'candidate_qualification_sha256', 'compatibility_sha256', 'copy_qualification_sha256', 'gateway'} or
-            value['kind'] != 'klokast.router-readiness.v1' or value['request_sha256'] != generations.digest(request) or
+            'candidate_preflight_sha256', 'compatibility_sha256', 'copy_qualification_sha256', 'gateway'} or
+            value['kind'] != 'klokast.router-readiness.v2' or value['request_sha256'] != generations.digest(request) or
             any(not generations.matches('[0-9a-f]{64}', value[k]) for k in
-                ('release_sha256', 'candidate_qualification_sha256', 'compatibility_sha256', 'copy_qualification_sha256'))):
+                ('release_sha256', 'candidate_preflight_sha256', 'compatibility_sha256', 'copy_qualification_sha256'))):
         raise transaction.TransactionError('router preparation lacks exact release, candidate, compatibility, or copy evidence')
     try:
         gateway = ipaddress.IPv4Address(value['gateway'])
@@ -55,7 +55,11 @@ class Adapter:
         self.ready = readiness(records.read(self.work / 'readiness.json'), self.request)
 
     def verify_qualifications(self):
-        """Require retained-pair records, not hashes from disposable diagnostics."""
+        """Require offline candidate checks and exact-pair rollback compatibility.
+
+        The candidate's first router boot occurs only after the old router
+        stops and state copying completes. Live service proof comes afterward.
+        """
         old, candidate = self.pair['old'], self.pair['candidate']
         if self.ready['release_sha256'] != candidate['release_sha256']:
             raise transaction.TransactionError('router readiness selects a different candidate release')
@@ -63,23 +67,23 @@ class Adapter:
                   'engine_commit':self.request['engine_commit'],
                   'old_sha256':self.request['old_sha256'],
                   'candidate_sha256':self.request['candidate_sha256']}
-        candidate_record = records.read(self.work / 'candidate-qualification.json')
+        candidate_record = records.read(self.work / 'candidate-preflight.json')
         if (not isinstance(candidate_record, dict) or set(candidate_record) != {
                 'kind','box','operation_id','engine_commit','candidate_sha256',
-                'disk','boot','status','network','production_identity','tests'} or
-                candidate_record['kind'] != 'klokast.router-retained-candidate-qualification.v1' or
+                'disk','boot','status','candidate_booted','production_identity','tests'} or
+                candidate_record['kind'] != 'klokast.router-candidate-preflight.v1' or
                 any(candidate_record[key] != common[key] for key in (
                     'box','operation_id','engine_commit','candidate_sha256')) or
                 candidate_record['disk'] != candidate['disk'] or
                 candidate_record['boot'] != candidate['boot'] or
-                candidate_record['status'] != 'stopped-and-detached' or
-                candidate_record['network'] != 'isolated-candidate' or
+                candidate_record['status'] != 'prepared-and-detached' or
+                candidate_record['candidate_booted'] is not False or
                 candidate_record['production_identity'] is not False or
                 candidate_record['tests'] != dict.fromkeys((
-                    'kernel','packages','openrc','sysctls','dnsmasq','nftables',
-                    'rendered_files'), True) or
-                generations.digest(candidate_record) != self.ready['candidate_qualification_sha256']):
-            raise transaction.TransactionError('router retained candidate qualification differs from its exact generation')
+                    'boot_artifacts','packages','openrc','configuration_syntax',
+                    'rendered_files','identity_absent'), True) or
+                generations.digest(candidate_record) != self.ready['candidate_preflight_sha256']):
+            raise transaction.TransactionError('router offline candidate preflight differs from its exact generation')
         compatibility = records.read(self.work / 'compatibility.json')
         if (not isinstance(compatibility, dict) or set(compatibility) != {
                 'kind',*common,'success','production_identity','phases'} or

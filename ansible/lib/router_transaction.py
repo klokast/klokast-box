@@ -77,8 +77,9 @@ class Transaction:
     def cutover(self):
         if self.pending is not None:
             raise TransactionError('an existing router operation must use recovery, never restart cutover')
-        # Includes approval, acceptance identity, complete candidate/copy-guest
-        # qualification and reconstruction inputs. No pending record before this.
+        # Includes approval, accepted identity, offline candidate checks,
+        # rollback compatibility and reconstruction inputs. No candidate router
+        # boot or pending record before this. Full service checks follow cutover.
         self.adapter.verify_prepared(self.request)
         deadline = self.adapter.monotonic() + self.request['cutover_seconds']
         try:

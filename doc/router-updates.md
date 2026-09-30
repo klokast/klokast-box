@@ -129,21 +129,25 @@ ansible/bin/platform-router-update prepare-replacement --box boxa --check-operat
 ansible/bin/platform-router-update stage-replacement-generation --box boxa --operation-id PREPARATION_ID
 ```
 
-The proposed generation is not a cutover request. The dom0 cutover adapter
-requires separate records for the exact retained candidate, old/new service
-compatibility, and forward/reverse copy qualification. It checks each record's
-checksum, generation pair, engine, and completion fields before it can stop
-the old router. Results from `test-candidate-preparation`,
-`test-compatibility`, or `test-state-copy` use disposable disks and cannot
-satisfy these retained-record checks. The controller issuer and native
-producers of the retained records are still required.
+Replacement uses an automated A/B sequence. Prepare B offline while A serves
+traffic. Stop A, copy its retained state, boot B with the production network
+and identity, then verify the complete service. Accept B only after these
+checks pass. On failure or timeout, dom0 stops B, copies its latest valid state
+back if B could have changed it, and boots A. Only one router runs at a time.
+Dom0 owns the fixed recovery deadline, including if the controller disconnects.
 
-The native candidate runtime guard can reconcile and stop an exact
-`router-candidate-OPERATION` guest while the accepted `router` remains online.
-It checks UUID, disk device (including aliases), boot inputs, and VIFs, and
-refuses a conflicting name, disk, UUID, or MAC address. The caller must still
-approve the isolated network and grant the boot. This primitive does not
-produce candidate qualification or grant cutover authority.
+The proposed generation is not a cutover request. Before stopping A, the dom0
+adapter requires an offline preflight for the exact retained B disk, exact
+old/new service compatibility, and forward/reverse copy qualification. The
+`klokast.router-readiness.v2` contract binds these separate records to the
+generation pair and engine. `candidate-preflight.json` checks boot artifacts,
+packages, OpenRC links, configuration syntax, rendered files, identity absence,
+and the detached disk. It must report that B has not booted as a router.
+Networkless preparation and synthetic compatibility guests can run while A
+serves traffic; they do not start B as a second router. Disposable diagnostic
+results alone do not authorize cutover. The controller must validate their
+exact release pair and bind them to the proposed transaction. The controller
+issuer and native preflight/compatibility record producers are still required.
 
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
@@ -650,8 +654,8 @@ It accepts one hashed initial-install or replacement job, a writable disk, and a
 separate result slot. It mounts only the candidate root, runs the common
 preparation helper, then unmounts the root before it writes success. It has no
 old router disk, production VIF, enrollment key, or cutover command. The dom0
-dispatcher and restricted candidate boot must still be connected and tested
-before this guest can prepare a production candidate.
+dispatcher must retain the exact disk and connect its offline evidence to the
+A/B transaction before production use.
 
 `platform-router-update test-candidate-preparation --box BOX
 --inputs-directory INPUTS --template-operation TEMPLATE` stages that guest
@@ -812,8 +816,8 @@ clones, one for each mode. It requires both exact preparation results before
 it runs service tests. The initial-install clone uses the preallocated recovery
 scratch slot only during preparation. It is unmounted before a state-copy guest
 can use that slot for journal recovery. The
-result is diagnostic evidence. Allocation of a production candidate, restricted
-management boot, initial enrollment and resumption, and accepted-assignment
+result is diagnostic evidence. Retained candidate preparation, A/B cutover,
+initial enrollment and resumption, and accepted-assignment
 convergence are still separate integration gates.
 
 The controller-side candidate generation assembler binds a proposed template
