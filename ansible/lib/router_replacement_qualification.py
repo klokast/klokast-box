@@ -40,7 +40,11 @@ def records(request, old, candidate, preparation, accepted_source, release,
             host['source'].get('disk') != old['disk'] or
             host.get('guest',{}).get('source_packages') != old['packages'] or
             host['guest'].get('source_kernel_release') != old['kernel_release'] or
-            host['guest'].get('source_files') != old['configuration_files'] or
+            not isinstance(host['guest'].get('source_files'),dict) or
+            not {'etc/network/interfaces','etc/dhcpcd.conf','etc/dnsmasq.conf',
+                 'etc/nftables.nft'} <= host['guest']['source_files'].keys() or
+            any(old['configuration_files'].get(path) != checksum for path,checksum in
+                host['guest']['source_files'].items()) or
             host['guest'].get('runtime_packages') != candidate['packages'] or
             host['guest'].get('kernel_release') != candidate['kernel_release'] or
             not isinstance(result,dict) or

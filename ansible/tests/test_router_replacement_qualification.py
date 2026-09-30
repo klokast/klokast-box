@@ -19,7 +19,10 @@ class QualificationTests(unittest.TestCase):
             'candidate_sha256':'4'*64,'cutover_seconds':900,'recovery_seconds':900}
         self.old = {'record_sha256':'3'*64,'disk':{'path':'/dev/vg0/lv_router',
             'uuid':'old','bytes':2147483648},'packages':{'dnsmasq':'old'},
-            'kernel_release':'old-kernel','configuration_files':{'etc/dnsmasq.conf':'8'*64}}
+            'kernel_release':'old-kernel','configuration_files':{
+                'etc/network/interfaces':'8'*64,'etc/dhcpcd.conf':'8'*64,
+                'etc/dnsmasq.conf':'8'*64,'etc/nftables.nft':'8'*64,
+                'etc/hostname':'9'*64}}
         self.candidate = {'record_sha256':'4'*64,'template_operation':'c'*24,
             'release_sha256':'5'*64,'packages':{'dnsmasq':'new'},
             'kernel_release':'new-kernel'}
@@ -39,7 +42,8 @@ class QualificationTests(unittest.TestCase):
             'source':{'accepted':self.accepted,'disk':copy.deepcopy(self.old['disk'])},
             'guest':{'source_packages':self.old['packages'],
                 'source_kernel_release':'old-kernel',
-                'source_files':self.old['configuration_files'],
+                'source_files':{key:value for key,value in self.old['configuration_files'].items()
+                    if key != 'etc/hostname'},
                 'runtime_packages':self.candidate['packages'],
                 'kernel_release':'new-kernel'}}
         self.result = {'kind':'klokast.router-compatibility-result.v2',
