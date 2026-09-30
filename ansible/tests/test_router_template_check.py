@@ -89,7 +89,7 @@ class TemplateCheckTests(unittest.TestCase):
                 patch.object(self.cli, 'accepted_source_at', side_effect=sources), \
                 patch.object(self.cli, 'check_policy_at', return_value=(
                     schedule,policy_source,policy,'e'*64)), \
-                patch.object(self.cli, 'check_upstream_candidates', return_value=(None,{})), \
+                patch.object(self.cli, 'check_upstream_candidates', return_value=(None,{},{})), \
                 patch.object(self.cli.router_template_inputs, 'release', return_value=self.release), \
                 patch.object(self.cli.router_updates, 'template_live', return_value=live):
             return self.cli.check_template('boxa')
@@ -110,6 +110,39 @@ class TemplateCheckTests(unittest.TestCase):
         with self.assertRaises(self.cli.UpdateError):
             self.check()
         self.assertFalse(self.events)
+
+    def test_update_decision_records_exact_frozen_source(self):
+        cache = self.state / 'cache'
+        cache.mkdir()
+        source = cache / ('a' * 24)
+        source.mkdir()
+        inputs = self.release['inputs']
+        (source / 'inputs.json').write_text(json.dumps(inputs))
+        report = self.cli.router_updates.seal({
+            'kind':self.cli.router_updates.DECISION, 'role':'router', 'box':'boxa',
+            'status':'update-required', 'policy_sha256':'e'*64,
+            'accepted_sha256':'f'*64, 'selected_branch':inputs['branch'],
+            'candidate_inputs_sha256':inputs['inputs_sha256'],
+            'effective_inputs_sha256':self.cli.router_updates.effective_inputs(inputs),
+            'checked_at':self.cli.router_updates.timestamp(
+                self.cli.dt.datetime.now(self.cli.dt.timezone.utc))}, 'report_sha256')
+        candidates = {inputs['branch']:{'status':'verified', 'inputs':inputs}}
+        sources = {inputs['branch']:str(source)}
+        policy = {'report-max-age-hours':30}
+        with patch.object(self.cli, 'CACHE', cache), patch.object(
+            self.cli.transport, 'load', side_effect=self.load):
+            self.cli.record_check_source(self.directory, report, candidates, sources,
+                                         box='boxa', engine=ENGINE, policy=policy)
+            binding = json.loads((self.directory / 'candidate-source.json').read_text())
+            self.assertEqual(binding['source_operation'], source.name)
+            self.assertEqual(binding['report_sha256'], report['report_sha256'])
+            self.assertEqual(binding['inputs_sha256'], inputs['inputs_sha256'])
+            (self.directory / 'candidate-source.json').unlink()
+            with self.assertRaisesRegex(self.cli.UpdateError, 'source changed'):
+                self.cli.record_check_source(self.directory, report,
+                    {inputs['branch']:{'status':'verified', 'inputs':{'changed':True}}},
+                    sources, box='boxa', engine=ENGINE, policy=policy)
+            self.assertFalse((self.directory / 'candidate-source.json').exists())
 
     def test_live_template_requires_protected_disk_boot_and_configuration(self):
         now = self.cli.dt.datetime.now(self.cli.dt.timezone.utc)

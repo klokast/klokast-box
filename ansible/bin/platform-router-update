@@ -260,6 +260,7 @@ def check_policy_at(box, engine):
 def check_upstream_candidates(profile, generation, policy, observed):
     metadata = None
     candidates = {}
+    sources = {}
     try:
         releases, checksum = upstream.fetch_json(profile['release_metadata'])
     except (UpdateError, OSError, ValueError):
@@ -279,9 +280,34 @@ def check_upstream_candidates(profile, generation, policy, observed):
                 resolved = resolve(branch)
                 candidates[branch] = {'status':'verified', 'observed_at':router_updates.timestamp(observed),
                     'inputs':transport.load(Path(resolved['inputs_directory']) / 'inputs.json')}
+                sources[branch] = resolved['inputs_directory']
             except (UpdateError, OSError, ValueError) as error:
                 candidates[branch] = {'status':'failed', 'reason':str(error)}
-    return metadata, candidates
+    return metadata, candidates, sources
+
+
+def record_check_source(directory, report, candidates, sources, *, box, engine, policy):
+    """Retain the exact frozen inputs selected by an authorized update decision."""
+    if report['status'] != 'update-required':
+        return
+    branch = report['selected_branch']
+    source = Path(sources.get(branch, ''))
+    if (source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name) or
+            branch not in candidates or candidates[branch].get('status') != 'verified'):
+        raise UpdateError('router update decision has no exact frozen input source')
+    inputs = transport.load(source / 'inputs.json')
+    if inputs != candidates[branch]['inputs']:
+        raise UpdateError('router update source changed after the read-only decision')
+    profile = transport.load(PROFILE)
+    router_updates.validate_inputs(inputs, profile, engine)
+    router_updates.require_preparation(report, box=box,
+        policy_sha256=report['policy_sha256'], accepted_sha256=report['accepted_sha256'],
+        inputs=inputs, now=dt.datetime.now(dt.timezone.utc),
+        max_age_hours=policy['report-max-age-hours'])
+    transport.write(directory / 'candidate-source.json', {
+        'kind':'klokast.router-check-source.v1', 'box':box,
+        'report_sha256':report['report_sha256'], 'source_operation':source.name,
+        'inputs_sha256':inputs['inputs_sha256'], 'engine_commit':engine})
 
 
 def check_legacy(box):
@@ -313,7 +339,7 @@ def check_legacy(box):
         live = router_updates.legacy_live(box=box, assignment=assignment, source=generation,
                                           guest=guest, dom0=dom0, now=observed)
         schedule, policy_source, effective_policy, policy_sha256 = check_policy_at(box, engine)
-        metadata, candidates = check_upstream_candidates(profile, generation, effective_policy, observed)
+        metadata, candidates, sources = check_upstream_candidates(profile, generation, effective_policy, observed)
         report = router_updates.check(box=box, role='router',
             accepted={'box':box, 'role':'router', 'generation':generation['record_sha256'], 'legacy':generation},
             live=live, metadata=metadata, candidates=candidates, policy=effective_policy,
@@ -329,6 +355,9 @@ def check_legacy(box):
                 'authority':'unactivated-instance-diagnostic', 'replacement_authorized':False}, 'report_sha256')
             if report['status'] in ('update-required', 'unchanged'):
                 raise UpdateError('unactivated router diagnostic returned an authority-bearing decision')
+        if policy_source is not None:
+            record_check_source(directory, report, candidates, sources,
+                                box=box, engine=engine, policy=effective_policy)
         transport.write(directory / 'check.json', report)
         return {'kind':'klokast.router-check-result.v1', 'box':box, 'status':report['status'],
                 'reason':report['reason'], 'report_sha256':report['report_sha256'],
@@ -383,7 +412,7 @@ def check_template(box):
             source=generation, guest=guest, dom0=dom0, now=observed,
             accepted_manifest_verified=True)
         schedule, policy_source, effective_policy, policy_sha256 = check_policy_at(box, engine)
-        metadata, candidates = check_upstream_candidates(profile, generation, effective_policy, observed)
+        metadata, candidates, sources = check_upstream_candidates(profile, generation, effective_policy, observed)
         report = router_updates.check(box=box, role='router',
             accepted={'box':box, 'role':'router', 'generation':generation['record_sha256'],
                       'release':release}, live=live, metadata=metadata, candidates=candidates,
@@ -405,6 +434,9 @@ def check_template(box):
                 'authority':'unactivated-instance-diagnostic', 'replacement_authorized':False}, 'report_sha256')
             if report['status'] in ('update-required', 'unchanged'):
                 raise UpdateError('unactivated router diagnostic returned an authority-bearing decision')
+        if policy_source is not None:
+            record_check_source(directory, report, candidates, sources,
+                                box=box, engine=engine, policy=effective_policy)
         transport.write(directory / 'check.json', report)
         return {'kind':'klokast.router-check-result.v1', 'box':box, 'status':report['status'],
                 'reason':report['reason'], 'report_sha256':report['report_sha256'],

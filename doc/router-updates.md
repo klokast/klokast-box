@@ -103,7 +103,11 @@ inputs with the current approved profile.
 release against the native template result, and verifies the running router
 through the accepted-router playbook and fresh inspection. It rechecks the
 accepted source, policy, engine, profile, and release before it stores a
-decision. The command needs the exact activated engine and a verified Instance
+decision. For an authorized `update-required` result, it also records the
+exact frozen input source operation and checks that its contents match the
+decision. Later preparation must require both records and recheck their
+policy, accepted generation, input identity, and age before allocation.
+The command needs the exact activated engine and a verified Instance
 inventory. It does not allocate or replace a router. Native qualification of
 this command remains required before it can support unattended replacement.
 
@@ -799,7 +803,8 @@ before and after the check, reads the verified Instance schedule and any
 activated signed policy twice, fetches official release metadata, and freezes
 authenticated package inputs for the selected
 branch. It stores a private decision report and returns a short status. The
-command does not create a candidate or grant replacement authority. It refuses
+`update-required` report also binds the exact frozen input source operation.
+The command does not create a candidate or grant replacement authority. It refuses
 an unapproved engine, an unadopted router, or changed source and authority records.
 If the current Instance schedule is verified but its standing update policy is
 not activated, the command uses that schedule's branch timing for a read-only
