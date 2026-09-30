@@ -26,6 +26,13 @@ Baseline readiness also requires a locked root password, no running OpenSSH
 server, and no OpenSSH server packages, executable, or service links. Removing
 the root key alone is not sufficient. Older inspection records without these
 checks cannot establish readiness.
+An enabled direct overlay IPv6 repair still blocks baseline adoption and
+replacement. The common template renders this feature as disabled. Before an
+enabled router can enter A/B updates, a narrow controller broker must verify
+the current signed Plan, its successful execution receipt, the delegated
+prefix, and the absence of a later rollback. The release must freeze that
+source, render the router and ops IPv6 settings, and test reconstruction on a
+new disk. A snapshot of the old router's files is rollback evidence only.
 Inspection compares the four core router files (interfaces, dhcpcd, dnsmasq,
 and nftables) with the common Ansible templates rendered from execution
 inventory. Missing evidence, unsafe file metadata, or a different checksum
