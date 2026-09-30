@@ -83,6 +83,14 @@ def mounted(device, name, *, writable=False):
         root.rmdir()
 
 
+def preparation_step(label, action, *args, **kwargs):
+    """Name a fixed fixture stage without exposing data from the source disk."""
+    try:
+        return action(*args, **kwargs)
+    except ValueError:
+        raise RuntimeError('router compatibility ' + label + ' rejected fixture values') from None
+
+
 def prepare(request):
     # Both devices are private copies. The production LV is never attached.
     for disk in ('xvda', 'xvdb', 'xvdc'):
@@ -95,7 +103,7 @@ def prepare(request):
     for device, name in (('/dev/xvda3', 'legacy'), ('/dev/xvdc3', 'initial'), ('/dev/xvdb3', 'candidate')):
         with mounted(device, name, writable=True) as root:
             if name == 'legacy':
-                records[name] = router_fixture.sanitize_legacy(root, box=request['box'],
+                records[name] = preparation_step('legacy sanitize', router_fixture.sanitize_legacy, root, box=request['box'],
                     expected_packages=request['source_packages'], expected_files=request['source_files'],
                     fixture=request['fixture'])
             else:
@@ -107,7 +115,7 @@ def prepare(request):
                         run(['mount', '--bind', '/' + directory, root / directory]); binds.append(root / directory)
                     # Package scripts require executable mounts inside this VM.
                     run(['mount', '-o', 'remount,rw,nodev,nosuid,exec', root])
-                    prepared = router_candidate.prepare(root, {
+                    prepared = preparation_step(name + ' candidate preparation', router_candidate.prepare, root, {
                         'kind': 'klokast.router-candidate-job.v1',
                         'mode': 'initial-install' if name == 'initial' else 'replacement',
                         'box': request['fixture']['box'], 'role': 'router',
@@ -129,8 +137,10 @@ def prepare(request):
                 # Opaque, distinct identity fixtures must survive copying. These
                 # bytes are never used to start Tailscale or enroll a device.
                 for relative in router_state.IDENTITY:
-                    router_fixture.put_identity_fixture(root, relative, name + ':' + relative)
-                router_fixture.install_probe(root, request, modules, Path(__file__))
+                    preparation_step(name + ' identity fixture', router_fixture.put_identity_fixture,
+                                     root, relative, name + ':' + relative)
+                preparation_step(name + ' probe installation', router_fixture.install_probe,
+                                 root, request, modules, Path(__file__))
     return {'prepared': True, 'fixtures': records, 'production_identity': False}
 
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -18,6 +19,15 @@ from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_guest_preparation_stage_hides_source_value_errors(self):
+        path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
+        stage = runpy.run_path(str(path))['preparation_step']
+        def invalid_source():
+            raise ValueError('private source bytes')
+        with self.assertRaisesRegex(RuntimeError, 'router compatibility legacy sanitize rejected fixture values') as caught:
+            stage('legacy sanitize', invalid_source)
+        self.assertNotIn('private source bytes', str(caught.exception))
+
     def test_dhcp_copy_accepts_distinct_identity_and_rejects_replacement_or_stale_wan_cache(self):
         from test_router_state import CopyTests
         case = CopyTests()
