@@ -311,6 +311,21 @@ class InitialCliTests(unittest.TestCase):
         with self.assertRaisesRegex(self.cli.UpdateError,'incomplete controller state'):
             self.prepare(self.operation)
 
+    def test_reserved_operation_retries_after_local_boot_staging_interrupts(self):
+        attempts=[]
+        def interrupted(source,work):
+            attempts.append(work)
+            if len(attempts)==1:
+                raise RuntimeError('interrupted local boot assembly')
+            return self.stage_boot(source,work)
+        self.boot.side_effect=interrupted
+        with self.assertRaisesRegex(RuntimeError,'interrupted local boot assembly'):
+            self.prepare(self.operation)
+        self.assertFalse((self.cache / ('initial-' + self.operation)).exists())
+        prepared=self.prepare(self.operation)
+        self.assertEqual(prepared['operation'],self.operation)
+        self.assertEqual(self.boot.call_count,2)
+
     def test_resume_never_overwrites_a_changed_or_unsafe_host_pin(self):
         result = self.prepare()
         pinned = Path(result['known_hosts'])

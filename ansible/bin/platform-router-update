@@ -531,19 +531,25 @@ def prepare_initial(box, source, template_operation, operation=None):
                 raise UpdateError('initial preparation retry differs from its recorded inputs')
             request = saved
             parts = transport.load(work / 'parts.json')
+            result.mkdir(mode=0o700,exist_ok=True)
         else:
-            work.mkdir(mode=0o700,exist_ok=reserved)
+            # A crash while assembling local boot inputs leaves only an unused
+            # staging directory. Publish the complete job atomically before
+            # dom0 sees this operation ID.
             result.mkdir(mode=0o700,exist_ok=reserved)
-            transport.write(work / 'candidate-job.json', job)
-            boot = candidate_boot(source, work)
+            staging = CACHE / ('initial-stage-' + operation + '-' + secrets.token_hex(6))
+            staging.mkdir(mode=0o700)
+            transport.write(staging / 'candidate-job.json', job)
+            boot = candidate_boot(source, staging)
             request['bootstrap'] = boot
-            (work / 'transfer').mkdir(mode=0o700)
+            (staging / 'transfer').mkdir(mode=0o700)
             parts = []
             for name in ('kernel', 'initramfs'):
                 parts.extend({'artifact':name, **part} for part in router_template_inputs.split_payload(
-                    work / 'boot' / name, work / 'transfer' / name, boot[name]))
-            transport.write(work / 'parts.json', parts)
-            transport.write(work / 'request.json', request)
+                    staging / 'boot' / name, staging / 'transfer' / name, boot[name]))
+            transport.write(staging / 'parts.json', parts)
+            transport.write(staging / 'request.json', request)
+            staging.rename(work)
         compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
         if compiled['registry_sha256'] != request['registry_sha256']:
             raise UpdateError('initial preparation compiler inputs changed after rendering')

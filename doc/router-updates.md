@@ -274,18 +274,17 @@ The test login server is a refused localhost port. This test cannot enroll a mac
 production state. It is not proof of complete candidate boot or compatibility
 between old and new service versions. The result records these limits.
 
-The rootfs role has separate `legacy` and `template` modes. Router provisioning
-now selects the common template mode through the controller lifecycle command.
-The legacy mode has no provisioning caller and awaits removal after native
-qualification. Protected baseline adoption, native compatibility qualification,
+The router rootfs role now has only the generic template path. Router
+provisioning selects it through the controller lifecycle command. Protected
+baseline adoption, native compatibility qualification,
 the router cutover executor, boot recovery, signed policy dispatch, and the
 unattended schedule must pass their qualification gates before replacement is
 enabled. The Instance contract accepts a router target, but no activated signed
 policy names one. The
 template test does not prove old/new service-state compatibility or rollback.
-The legacy rootfs role now refuses `router_alpine_rebuild` and a caller-selected
-LV. It creates the declared LV only if absent; an existing disk is not resized
-or formatted by this role.
+The native first-install preparer refuses an existing legacy LV and records
+the selected new LV before it writes to that disk. It does not resize or
+format an unassigned router disk.
 
 The diagnostic candidate preparation command clones a new 2 GiB LV from a
 qualified template, prepares the selected initial-install or replacement

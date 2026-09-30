@@ -31,14 +31,11 @@ class PreparationTests(unittest.TestCase):
         self.assertIn('router-verification-inputs',str(plays[-1]['pre_tasks']))
         self.assertNotIn('apk',str(plays).lower())
 
-    def test_legacy_router_builder_cannot_rebuild_or_resize_an_existing_disk(self):
-        tasks = yaml.safe_load((ROLES / 'router-alpine-rootfs/tasks/legacy.yml').read_text())
-        guard = tasks[0]['ansible.builtin.assert']['that']
-        self.assertIn('router_alpine_rebuild is sameas false', guard)
-        self.assertIn('router_alpine_lv_path == (node_xen_guest_specs.router.required_lvs | first)', guard)
-        self.assertNotIn('state: absent', (ROLES / 'router-alpine-rootfs/tasks/legacy.yml').read_text())
-        create = next(task for task in tasks if task.get('community.general.lvol'))
-        self.assertIn('router_alpine_lv_stat.stat.exists', create['when'])
+    def test_router_rootfs_role_has_only_the_generic_template_path(self):
+        tasks = yaml.safe_load((ROLES / 'router-alpine-rootfs/tasks/main.yml').read_text())
+        self.assertEqual(tasks[0]['ansible.builtin.include_tasks'],'template.yml')
+        self.assertFalse((ROLES / 'router-alpine-rootfs/tasks/legacy.yml').exists())
+        self.assertFalse((ROLES / 'router-alpine-rootfs/defaults/main.yml').exists())
 
     @unittest.skipIf(Environment is None, 'Jinja is supplied by the controller Ansible toolchain')
     def test_render_does_not_queue_handlers_or_change_live_sysctls(self):
@@ -55,7 +52,7 @@ class PreparationTests(unittest.TestCase):
                 self.assertFalse(task['ansible.posix.sysctl'].get('sysctl_set', False))
 
     def test_every_legacy_mutator_checks_router_assignment_first(self):
-        for role in ('router', 'router-alpine-rootfs', 'vm-base', 'tailscale-client', 'vm-tailscale-enrollment', 'xen-guest'):
+        for role in ('router', 'vm-base', 'tailscale-client', 'vm-tailscale-enrollment', 'xen-guest'):
             with self.subTest(role=role):
                 tasks = yaml.safe_load((ROLES / role / 'tasks/main.yml').read_text())
                 self.assertEqual(tasks[0]['ansible.builtin.include_role']['name'], 'router-boot-assignment')

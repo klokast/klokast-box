@@ -34,19 +34,7 @@ vm_tailscale_authkey_wrapper: "{{ router_tailscale_authkey_wrapper }}"
 vm_tailscale_authkey_advertise_tags: "{{ router_tailscale_expected_tag }}"
 vm_tailscale_authkey_expected_tag: "{{ router_tailscale_expected_tag }}"
 
-router_bootstrap_host: "{{ router_backend_ipv4_address }}"
 router_bootstrap_proxyjump: "neo@{{ hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0') }}"
-router_bootstrap_proxycommand: >-
-  ssh -o StrictHostKeyChecking=accept-new
-  -o UserKnownHostsFile={{ router_bootstrap_known_hosts_file }}
-  -W %h:%p {{ router_bootstrap_proxyjump }}
-router_bootstrap_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
-router_bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap"
-router_bootstrap_seed_access: true
-
-alpine_repositories:
-  - http://dl-cdn.alpinelinux.org/alpine/v3.23/main
-  - http://dl-cdn.alpinelinux.org/alpine/v3.23/community
 
 router_wan_interface: "{{ platform_network_realms.wan.router_interface }}"
 router_lan_interface: "{{ platform_network_realms.household.router_interface }}"

@@ -1,18 +1,3 @@
 ---
-- name: Protect router assignments before legacy mutation
-  ansible.builtin.include_role:
-    name: router-boot-assignment
-  when: router_alpine_mode == 'legacy'
-
-- name: Require a closed router build mode
-  ansible.builtin.assert:
-    that:
-      - router_alpine_mode in ['legacy', 'template']
-
 - name: Build isolated router template evidence
   ansible.builtin.include_tasks: template.yml
-  when: router_alpine_mode == 'template'
-
-- name: Build the legacy bootstrap disk
-  ansible.builtin.include_tasks: legacy.yml
-  when: router_alpine_mode == 'legacy'
