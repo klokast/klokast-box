@@ -26,16 +26,16 @@ Baseline readiness also requires a locked root password, no running OpenSSH
 server, and no OpenSSH server packages, executable, or service links. Removing
 the root key alone is not sufficient. Older inspection records without these
 checks cannot establish readiness.
-An enabled direct overlay IPv6 repair still blocks baseline adoption and
-replacement. The common template renders this feature as disabled. Before an
-enabled router can enter A/B updates, a narrow controller broker must verify
-the current signed Plan, its successful execution receipt, the delegated
-prefix, and the absence of a later rollback. The release must freeze that
-source, render the router and ops IPv6 settings, and test reconstruction on a
-new disk. Before B is accepted, the controller must verify that the ops VM
-uses the approved direct IPv6 UDP path to the recorded peer endpoint. A failed
-path check must trigger the bounded A/B rollback. A snapshot of the old
-router's files is rollback evidence only.
+An enabled direct overlay IPv6 repair can enter baseline adoption and
+replacement only when the controller verifies its bounded signed source. The
+source must include the current signed Plan, a successful execution receipt,
+the delegated prefix, and no later rollback. Inspection compares the live
+router and ops IPv6 files with this source. The release freezes the source and
+renders the same settings on a new disk. The common template keeps the feature
+disabled when there is no approved source. Before B is accepted, the
+controller must verify that the ops VM uses the approved direct IPv6 UDP path
+to the recorded peer endpoint. A failed path check triggers bounded A/B
+rollback. A snapshot of the old router's files is rollback evidence only.
 Reuse the signed direct-repair configuration and verification rules for this
 reconstruction. Do not create a second IPv6 policy with different routing or
 firewall behavior.
