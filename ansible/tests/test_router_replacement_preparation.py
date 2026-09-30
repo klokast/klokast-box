@@ -1,6 +1,7 @@
 """Replacement preparation keeps its accepted-router and grant fences."""
 import copy
 import datetime as dt
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -85,6 +86,25 @@ class ReplacementPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError,'assignment changed'):
             replacement.accepted_runtime(storage,self.request,self.accepted,PROFILE)
         storage.generation.assert_not_called()
+
+    def test_capacity_requires_new_lv_and_offline_copy_space(self):
+        storage = Mock(base=Path('/mnt/dom0_data/klokast-router-updates'))
+        lvm = {'report':[{'vg':[{'vg_name':'vg0','vg_free':str(replacement.disks.BYTES)}]}]}
+        scratch = sum(replacement.router_copy_native.SLOTS.values()) + replacement.COPY_SPACE_MARGIN
+        with patch.object(replacement.native,'command',return_value=json.dumps(lvm)), \
+                patch.object(replacement.os,'statvfs',return_value=Mock(
+                    f_bavail=scratch,f_frsize=1)):
+            replacement.capacity(storage)
+            lvm['report'][0]['vg'][0]['vg_free'] = str(replacement.disks.BYTES-1)
+            with patch.object(replacement.native,'command',return_value=json.dumps(lvm)):
+                with self.assertRaisesRegex(TransactionError,'new router LV'):
+                    replacement.capacity(storage)
+        lvm['report'][0]['vg'][0]['vg_free'] = str(replacement.disks.BYTES)
+        with patch.object(replacement.native,'command',return_value=json.dumps(lvm)), \
+                patch.object(replacement.os,'statvfs',return_value=Mock(
+                    f_bavail=scratch-1,f_frsize=1)):
+            with self.assertRaisesRegex(TransactionError,'offline copy'):
+                replacement.capacity(storage)
 
 
 if __name__ == '__main__':

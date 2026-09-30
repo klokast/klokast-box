@@ -261,6 +261,10 @@ match protected records before it allocates a candidate. It then uses the
 common networkless preparer and retains the clone. The controller issuer now
 performs fresh live service inspection before the grant. This source path has
 no production cutover authority and still needs exact-engine native proof.
+Before a new LV allocation, dom0 checks free VG space for that LV and free
+persistent filesystem space for the fixed offline copy slots plus a recovery
+margin. An exact retry with a recorded allocated LV does not require a second
+LV reservation.
 
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router

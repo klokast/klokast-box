@@ -111,7 +111,7 @@
         group: root
         mode: '0600'
       loop: [router_replacement_preparation, router_preparation_assets, router_initial_installation, router_candidate,
-             router_candidate_preparation, router_candidate_disk, router_generations,
+             router_candidate_preparation, router_candidate_disk, router_copy_native, router_copy_contract, router_generations,
              router_native, router_records, router_transaction, router_finalize,
              router_personalize, router_initial_contact, router_updates, router_state,
              platform_updates, platform_update_metadata, xen_build_runtime]

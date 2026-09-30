@@ -6,18 +6,44 @@ lock through allocation and networkless preparation. It never cuts over.
 """
 import os
 import datetime as dt
+from decimal import Decimal, InvalidOperation
+import json
 from pathlib import Path
 import time
 
 import router_candidate
 import router_candidate_disk as disks
 import router_candidate_preparation as preparation
+import router_copy_native
 import router_generations as generations
 import router_native as native
 from router_preparation_assets import template, bootstrap
 import router_records as records
 import router_updates
 from router_transaction import TransactionError
+
+COPY_SPACE_MARGIN = 256 * 1024 * 1024
+
+
+def capacity(storage):
+    """Reserve a new LV and the fixed offline copy scratch before allocation."""
+    output = native.command(['/sbin/vgs','--reportformat','json','--units','b',
+        '--nosuffix','-o','vg_name,vg_free','vg0'],time.monotonic()+30)
+    try:
+        rows = json.loads(output,object_pairs_hook=records.unique)['report'][0]['vg']
+        if len(rows) != 1 or set(rows[0]) != {'vg_name','vg_free'} or rows[0]['vg_name'] != 'vg0':
+            raise ValueError('ambiguous volume group')
+        free = Decimal(rows[0]['vg_free'])
+        if not free.is_finite():
+            raise ValueError('invalid free space')
+    except (KeyError,IndexError,TypeError,ValueError,InvalidOperation) as error:
+        raise TransactionError('replacement preparation cannot verify exact free LVM space') from error
+    if free < disks.BYTES:
+        raise TransactionError('replacement preparation lacks space for the new router LV')
+    available = os.statvfs(storage.base)
+    scratch = sum(router_copy_native.SLOTS.values()) + COPY_SPACE_MARGIN
+    if available.f_bavail * available.f_frsize < scratch:
+        raise TransactionError('replacement preparation lacks space for offline copy and recovery scratch')
 
 
 def authority(value, job, release, profile, binding, report, policy, accepted,
@@ -133,6 +159,10 @@ def execute(storage, operation, engine, *, xen=Path('/etc/xen')):
         assignment,old = accepted_runtime(storage,value,accepted,accepted_profile,xen=xen)
         authority(value,job,release,profile,binding,report,policy,accepted,grant,
                   storage.box,operation,engine,time.time())
+        disk_record_path = work / 'candidate-disk.json'
+        if (not disk_record_path.exists() and not disk_record_path.is_symlink() or
+                disks.record(work,operation)['stage'] == 'planned'):
+            capacity(storage)
         disk = disks.replacement_clone(work,operation,source,expected,storage,old['record_sha256'])
         result = preparation.prepare(work,value,job,disk)
         component = {name:release['inputs']['tailscale'][name] for name in (
