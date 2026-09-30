@@ -233,7 +233,7 @@ def supervise(storage, operation, engine):
     Ordinary controller/SSH loss cannot stop this local async command.
     """
     work = storage.operation(operation)
-    request = records.read(work / 'request.json')
+    request = records.read(work / 'transaction-request.json')
     from router_transaction import validate
     validate(request)
     if request['engine_commit'] != engine or request['box'] != storage.box or request['operation_id'] != operation:

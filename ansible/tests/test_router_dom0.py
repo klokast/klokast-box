@@ -90,7 +90,9 @@ class Dom0Tests(unittest.TestCase):
         self.work = self.records.operation(self.request['operation_id'])
         self.xen = self.base / 'xen'
         self.xen.mkdir(mode=0o700); (self.xen / 'auto').mkdir(mode=0o700)
-        r.write(self.work / 'request.json', self.request)
+        r.write(self.work / 'transaction-request.json', self.request)
+        r.write(self.work / 'request.json', {'kind':'klokast.router-replacement-preparation.v1',
+            'operation_id':self.request['operation_id'],'engine_commit':self.request['engine_commit']})
         for side, value in (('old', self.old), ('candidate', self.new)):
             r.atomic(self.work / (side + '.cfg'), g.configuration(value).encode())
         r.atomic(self.xen / 'router.cfg', g.configuration(self.old).encode())
@@ -158,6 +160,7 @@ class Dom0Tests(unittest.TestCase):
             'evidence_sha256':'3'*64})
 
     def test_arm_persists_one_attempt_and_accepts_only_a_distinct_device(self):
+        self.assertEqual(self.adapter.request,self.request)
         self.adapter.arm(deadline=time.monotonic()+60)
         intent = r.read(self.work/'enrollment-attempt.json')
         self.assertEqual(intent['hostname'],'boxa-router-' + self.request['operation_id'])

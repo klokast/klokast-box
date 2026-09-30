@@ -46,7 +46,7 @@ def acceptance(value, request):
 class Adapter:
     def __init__(self, storage, operation, copy_backend, *, host=None, xen=Path('/etc/xen')):
         self.storage, self.work = storage, storage.operation(operation)
-        self.request = records.read(self.work / 'request.json')
+        self.request = records.read(self.work / 'transaction-request.json')
         transaction.validate(self.request)
         if self.request['box'] != storage.box or self.request['operation_id'] != operation:
             raise transaction.TransactionError('router operation directory differs from its recorded target')

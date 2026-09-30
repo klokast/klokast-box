@@ -46,7 +46,7 @@ def engine_for(action, operation):
     if action in ('prepare-copy', 'run', 'worker', 'accept'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('router command requires an exact operation selector')
-        value = read(BASE / 'operations' / operation / 'request.json')
+        value = read(BASE / 'operations' / operation / 'transaction-request.json')
         engine = value.get('engine_commit')
     elif (BASE / 'pending.json').exists() or (BASE / 'pending.json').is_symlink():
         value = read(BASE / 'pending.json')

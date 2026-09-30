@@ -979,6 +979,10 @@ the normal update-required decision can be issued.
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.
+The retained preparation request stays in the operation's `request.json`.
+The later A/B authorization has its own `transaction-request.json` in the
+same operation directory. The transaction reader requires that second record;
+it cannot reinterpret preparation as a cutover request.
 It requires an adapter for protected records, exact Xen resources, native copy,
 local probes, controller acceptance, and boot recovery. The ordering module
 alone is not a production executor. Run its model tests without Platform access:
