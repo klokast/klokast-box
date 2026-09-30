@@ -19,6 +19,14 @@ from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_only_first_old_hold_allows_existing_source_wan_cache(self):
+        path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
+        required = runpy.run_path(str(path))['fresh_wan_required']
+        self.assertFalse(required('hold-old', 'old'))
+        for phase, previous in (('hold-old', 'hold-new'), ('hold-new', 'hold-old'),
+                                ('new', 'seed'), ('old', 'new')):
+            self.assertTrue(required(phase, previous))
+
     def test_guest_initializes_phase_before_hold_decision(self):
         path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
         main = runpy.run_path(str(path))['main']
@@ -88,6 +96,8 @@ class FixtureTests(unittest.TestCase):
                 router_compatibility.validate_copy(expected, 'new')
             case.put(relative, ('candidate:' + relative).encode(), root=case.target)
             case.put('var/lib/dhcpcd/eth0.lease', b'stale', root=case.target)
+            self.assertEqual(router_compatibility.validate_copy(
+                expected, 'new', require_fresh_wan_cache=False)['lan_leases'], current['lan_leases'])
             with self.assertRaisesRegex(RuntimeError, 'WAN lease cache'):
                 router_compatibility.validate_copy(expected, 'new')
 

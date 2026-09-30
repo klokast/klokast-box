@@ -192,6 +192,11 @@ def copy(request):
             'production_identity': False}
 
 
+def fresh_wan_required(phase, previous_phase):
+    # Only A's first hold follows a service boot without an intervening copy.
+    return not (phase == 'hold-old' and previous_phase == 'old')
+
+
 def execute(phase, request):
     if phase == 'prepare':
         return prepare(request)
@@ -199,6 +204,7 @@ def execute(phase, request):
         return copy(request)
     run(['mount', '-o', 'remount,rw', '/'])
     expected = None
+    initial_old_resume = False
     if phase != 'seed':
         if Path('/sys/class/block/xvdf/ro').read_text().strip() != '1':
             raise RuntimeError('router compatibility previous evidence must be read-only')
@@ -210,8 +216,13 @@ def execute(phase, request):
                 previous.get('phase') not in prior):
             raise RuntimeError('router compatibility has no matching previous writer evidence')
         expected = previous['state']
+        # The first A hold starts from the already booted old fixture. Its WAN
+        # cache is normal source state. Every boot after a copy still requires
+        # the destination cache to have been removed by that copy.
+        initial_old_resume = not fresh_wan_required(phase, previous['phase'])
     return router_compatibility.execute('new' if phase == 'hold-new' else 'old' if phase == 'hold-old' else phase,
-                                        request, expected, verify_expiry=phase not in HOLD_PHASES)
+                                        request, expected, verify_expiry=phase not in HOLD_PHASES,
+                                        require_fresh_wan_cache=not initial_old_resume)
 
 
 def main():

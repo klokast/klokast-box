@@ -33,7 +33,7 @@ def state(phase):
             'lan_leases': [row.split() for row in Path('/var/lib/misc/dnsmasq.leases').read_text().splitlines()]}
 
 
-def validate_copy(expected, phase):
+def validate_copy(expected, phase, *, require_fresh_wan_cache=True):
     current = state(phase)
     if (current['lan_leases'] != expected['lan_leases'] or
             current['files'].keys() != expected['files'].keys()):
@@ -44,14 +44,15 @@ def validate_copy(expected, phase):
         for field in ('sha256', 'bytes', 'mode', 'mtime_ns'):
             if metadata[field] != expected['files'][name][field]:
                 raise RuntimeError('synthetic state bytes, mode or timestamp changed during copying')
-    for relative in router_state.WAN_CACHE:
-        path = Path('/') / relative
-        if path.exists() or path.is_symlink():
-            raise RuntimeError('compatibility destination retains a WAN lease cache')
+    if require_fresh_wan_cache:
+        for relative in router_state.WAN_CACHE:
+            path = Path('/') / relative
+            if path.exists() or path.is_symlink():
+                raise RuntimeError('compatibility destination retains a WAN lease cache')
     return current
 
 
-def execute(phase, request, expected=None, *, verify_expiry=True):
+def execute(phase, request, expected=None, *, verify_expiry=True, require_fresh_wan_cache=True):
     router_personalize.environment()
     if (phase not in ('seed', 'new', 'old') or request.get('kind') != 'klokast.router-compatibility-request.v2' or
             not re.fullmatch('[0-9a-f]{24}', request.get('operation_id', '')) or
@@ -68,7 +69,7 @@ def execute(phase, request, expected=None, *, verify_expiry=True):
     else:
         if not isinstance(expected, dict):
             raise RuntimeError('router compatibility lost its previous phase evidence')
-        before = validate_copy(expected, phase)
+        before = validate_copy(expected, phase, require_fresh_wan_cache=require_fresh_wan_cache)
     probe.WORK.mkdir(mode=0o700)
     try:
         probe.network()

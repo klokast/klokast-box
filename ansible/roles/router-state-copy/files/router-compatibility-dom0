@@ -410,17 +410,21 @@ class IsolatedRollback:
         self.attaching = None
         until = min(deadline, self.monotonic() + 180)
         while self.monotonic() < until:
-            current = domain(name)
-            if current is None:
-                raise RuntimeError('isolated A/B guest stopped before service evidence')
-            require_identity(current, self.identities[phase])
             if completion_ready(self.work, self.value, kind='klokast.router-compatibility-phase.v2'):
                 record = read_slot(self.work / 'result.slot')
                 if record.get('phase') == phase and record.get('operation_id') == self.value['operation_id']:
                     write(self.work / (phase + '.json'), record)
                     validate_phase(record, self.value, phase)
+                    current = domain(name)
+                    if current is None:
+                        raise RuntimeError('isolated A/B guest stopped after service evidence')
+                    require_identity(current, self.identities[phase])
                     self.phases[phase] = record
                     return
+            current = domain(name)
+            if current is None:
+                raise RuntimeError('isolated A/B guest stopped before service evidence')
+            require_identity(current, self.identities[phase])
             time.sleep(1)
         raise RuntimeError('isolated A/B guest did not report services before its fixed deadline')
 
