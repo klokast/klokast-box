@@ -315,6 +315,21 @@ def cleanup(work, operation, box):
     return reclaimed + sum(SLOTS[path.stem] for path in present)
 
 
+def clone_candidate_then_allocate_result(work, operation, template, candidate, box, lifecycle):
+    """Keep the result slot absent until the clone guard has checked the new LV."""
+    result = work / 'result.slot'
+    if result.exists() or result.is_symlink() or 'result' in lifecycle['slots']:
+        raise RuntimeError('compatibility result slot exists before candidate cloning')
+    disk = router_candidate_disk.create(work, operation, template / 'os.slot',
+                                        candidate['artifacts']['os'], box=box)
+    with result.open('xb') as stream:
+        os.posix_fallocate(stream.fileno(), 0, SLOTS['result'])
+        os.fsync(stream.fileno())
+    lifecycle['slots']['result'] = file_identity(result)
+    write(work / 'lifecycle.json', lifecycle)
+    return disk
+
+
 def execute(work, value):
     operation = value['operation_id']
     if (work / 'lifecycle.json').exists() or (work / 'snapshot.json').exists():
@@ -344,15 +359,15 @@ def execute(work, value):
     lifecycle = {'operation_id': operation, 'uuids': identities, 'stage': 'allocating', 'slots': {}}
     write(work / 'lifecycle.json', lifecycle)
     for name, size in SLOTS.items():
-        if name == 'new':
+        if name in ('new', 'result'):
             continue
         with (work / (name + '.slot')).open('xb') as stream:
             os.posix_fallocate(stream.fileno(), 0, size); os.fsync(stream.fileno())
         lifecycle['slots'][name] = file_identity(work / (name + '.slot'))
     lifecycle['stage'] = 'allocated'
     write(work / 'lifecycle.json', lifecycle)
-    candidate_disk = router_candidate_disk.create(work, operation, template / 'os.slot',
-                                                   candidate['artifacts']['os'], box=value['box'])
+    candidate_disk = clone_candidate_then_allocate_result(
+        work, operation, template, candidate, value['box'], lifecycle)
     private_copy(work, value)
     for label, original in (('old-kernel', value['source']['boot_artifacts']['kernel']['path']),
                             ('old-initramfs', value['source']['boot_artifacts']['ramdisk']['path']),

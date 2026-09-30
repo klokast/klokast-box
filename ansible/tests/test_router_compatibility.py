@@ -126,6 +126,34 @@ class HostTests(unittest.TestCase):
         self.host = module('router-compatibility-dom0')
         self.operation = 'a' * 24
 
+    def test_result_slot_is_allocated_only_after_candidate_clone(self):
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root)
+            template = work / 'template'
+            template.mkdir()
+            lifecycle = {'slots': {}}
+            candidate = {'artifacts': {'os': {'sha256': 'b' * 64}}}
+            disk = {'path': '/dev/vg0/routergen_' + self.operation}
+
+            def clone(*args, **kwargs):
+                self.assertFalse((work / 'result.slot').exists())
+                self.assertEqual(kwargs['box'], 'k001')
+                return disk
+
+            with patch.object(self.host.router_candidate_disk, 'create', side_effect=clone) as create:
+                self.assertEqual(
+                    self.host.clone_candidate_then_allocate_result(
+                        work, self.operation, template, candidate, 'k001', lifecycle),
+                    disk,
+                )
+                self.assertEqual(create.call_count, 1)
+                self.assertEqual((work / 'result.slot').stat().st_size, self.host.SLOTS['result'])
+                self.assertIn('result', lifecycle['slots'])
+                with self.assertRaisesRegex(RuntimeError, 'exists before candidate cloning'):
+                    self.host.clone_candidate_then_allocate_result(
+                        work, self.operation, template, candidate, 'k001', lifecycle)
+                self.assertEqual(create.call_count, 1)
+
     def test_success_flag_without_native_evidence_cannot_pass(self):
         value = {'operation_id': self.operation, 'inputs_sha256': 'b' * 64,
                  'guest': {'source_packages': {'tailscale': 'old'}, 'runtime_packages': {'tailscale': 'new'}}}
