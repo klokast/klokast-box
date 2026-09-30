@@ -636,6 +636,25 @@ boot retry refuses until that attempt is reconciled. This command does not
 mint a Tailnet key, retire first-contact access, verify services, or publish
 an accepted router. It must not run on an existing production router.
 
+`platform-router-update enroll-initial --box BOX --operation-id OPERATION`
+uses the host-key pin from the prepared clone for first-contact OpenSSH. It
+checks the guest before dom0 records one enrollment intent. Only a new intent
+permits one call to the existing scoped `ts-authkey-vm` broker. Ansible sends
+that single-use key to the guest through standard input. The guest writes it
+to a mode `0600` file under `/run`, calls `tailscale up` with
+`--auth-key=file:PATH`, and removes the file when the command ends. Tailscale
+documents the `file:` form in its [CLI reference](https://tailscale.com/docs/reference/tailscale-cli/up).
+The key is never a command argument and is not written to the controller
+operation receipt. The command does not use `--force-reauth`.
+
+A retry checks the same running guest and its recorded attempt. If that guest
+has no verified Tailnet identity, it refuses another key mint until the
+uncertain attempt is reconciled. If the original guest is running with the
+expected identity, the same machine ID can advance the installation to
+`enrolled`. This does not accept the router: first-contact access still needs
+offline retirement and the final runtime needs verification. No accepted
+assignment or router autostart is written by enrollment.
+
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before
 it runs service tests. The initial-install clone uses the preallocated recovery

@@ -1,0 +1,134 @@
+---
+- name: Enroll one pinned first router with one brokered key
+  hosts: router
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    ansible_user: root
+    ansible_host: '{{ router_initial_backend_address }}'
+    ansible_remote_tmp: /tmp/ansible-remote-root
+    ansible_ssh_private_key_file: '{{ router_initial_private_key }}'
+    ansible_ssh_common_args: >-
+      -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile={{ router_initial_known_hosts }}
+      -o HostKeyAlias={{ router_initial_host_key_alias }}
+      -o ProxyCommand="ssh -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile={{ router_initial_proxy_known_hosts }}
+      -W %h:%p {{ router_bootstrap_proxyjump }}"
+  tasks:
+    - name: Require the recorded first enrollment attempt
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-router'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_attempt is match('^[0-9a-f]{24}$')
+          - router_initial_host_key_alias == 'router-initial-' ~ router_initial_operation
+          - router_initial_known_hosts == router_initial_result_dir ~ '/initial-known-hosts'
+          - router_initial_mint_permitted is boolean
+
+    - name: Read the pinned guest Tailnet state
+      ansible.builtin.command: tailscale status --json
+      register: router_initial_tailscale_before
+      failed_when: false
+      changed_when: false
+
+    - name: Classify a complete current enrollment
+      ansible.builtin.set_fact:
+        router_initial_already_running: >-
+          {{ router_initial_tailscale_before.rc == 0 and
+             (router_initial_tailscale_before.stdout | from_json).BackendState == 'Running' }}
+
+    - name: Refuse to mint another key for an uncertain attempt
+      ansible.builtin.assert:
+        that:
+          - router_initial_already_running | bool or router_initial_mint_permitted | bool
+          - not (router_initial_already_running | bool) or not (router_initial_mint_permitted | bool)
+          - >-
+            not (router_initial_already_running | bool) or
+            (router_initial_tailscale_before.stdout | from_json).Self.HostName == router_initial_box ~ '-router'
+        fail_msg: First enrollment is uncertain or the running Tailnet identity differs. Reconcile the exact guest.
+
+    - name: Mint one single-use VM key through the scoped controller broker
+      ansible.builtin.set_fact:
+        router_initial_one_time_key: >-
+          {{ lookup('ansible.builtin.pipe',
+              'sudo -n /usr/local/sbin/ts-authkey-vm --hostname ' ~
+              ((router_initial_box ~ '-router') | quote) ~ ' --tags tag:vm') | trim }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: not (router_initial_already_running | bool)
+
+    - name: Require one bounded broker result
+      ansible.builtin.assert:
+        that: [router_initial_one_time_key is match('^tskey-auth-[A-Za-z0-9_-]{1,512}$')]
+        fail_msg: The scoped VM broker returned no valid one-time auth key.
+      no_log: true
+      when: not (router_initial_already_running | bool)
+
+    - name: Enroll without putting the auth key in a command argument
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        auth_file="$(mktemp /run/klokast-router-authkey.XXXXXXXX)"
+        trap 'rm -f "$auth_file"' EXIT HUP INT TERM
+        cat >"$auth_file"
+        key_bytes="$(wc -c <"$auth_file")"
+        if [ "$key_bytes" -lt 12 ] || [ "$key_bytes" -gt 640 ]; then
+          exit 2
+        fi
+        tailscale up --auth-key="file:$auth_file" \
+          --hostname={{ router_initial_box }}-router \
+          --advertise-tags=tag:vm --ssh --accept-risk=lose-ssh --timeout=60s
+      args:
+        executable: /bin/sh
+        stdin: '{{ router_initial_one_time_key }}'
+        stdin_add_newline: false
+      no_log: true
+      when: not (router_initial_already_running | bool)
+
+    - name: Read the enrolled guest Tailnet identity
+      ansible.builtin.command: tailscale status --json
+      register: router_initial_tailscale_after
+      changed_when: false
+
+    - name: Read the enrolled guest SSH preference
+      ansible.builtin.command: tailscale debug prefs
+      register: router_initial_tailscale_prefs
+      changed_when: false
+
+    - name: Inspect the enrolled guest's local state checksum
+      ansible.builtin.stat:
+        path: /var/lib/tailscale/tailscaled.state
+        checksum_algorithm: sha256
+      register: router_initial_state_file
+
+    - name: Require the new identity, tag, SSH, and durable state
+      ansible.builtin.assert:
+        that:
+          - (router_initial_tailscale_after.stdout | from_json).BackendState == 'Running'
+          - (router_initial_tailscale_after.stdout | from_json).Self.HostName == router_initial_box ~ '-router'
+          - (router_initial_tailscale_after.stdout | from_json).Self.Tags == ['tag:vm']
+          - (router_initial_tailscale_after.stdout | from_json).Self.ID is match('^[A-Za-z0-9_-]{1,128}$')
+          - (router_initial_tailscale_prefs.stdout | from_json).RunSSH | bool
+          - router_initial_state_file.stat.isreg | default(false)
+          - router_initial_state_file.stat.uid | default(-1) == 0
+          - router_initial_state_file.stat.checksum is match('^[0-9a-f]{64}$')
+        fail_msg: The first router enrollment lacks its exact running identity, SSH, or state file.
+
+    - name: Record the checked guest enrollment without its private key or state
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.router-initial-enrollment-guest.v1',
+              'box': router_initial_box, 'operation_id': router_initial_operation,
+              'attempt': router_initial_attempt,
+              'machine_id': (router_initial_tailscale_after.stdout | from_json).Self.ID,
+              'hostname': (router_initial_tailscale_after.stdout | from_json).Self.HostName,
+              'tags': (router_initial_tailscale_after.stdout | from_json).Self.Tags,
+              'ssh': (router_initial_tailscale_prefs.stdout | from_json).RunSSH,
+              'state_sha256': router_initial_state_file.stat.checksum} | to_json }}
+        dest: '{{ router_initial_result_dir }}/initial-enrollment-guest.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false

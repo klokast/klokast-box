@@ -517,6 +517,135 @@ def start_initial(box, operation):
                 **pins}
 
 
+def enroll_initial(box, operation):
+    """Enroll a pinned first router once, or reconcile the same attempt."""
+    if not router_updates.match(router_updates.BOX, box) or not re.fullmatch('[0-9a-f]{24}',operation):
+        raise UpdateError('initial enrollment requires an exact box and retained operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('initial enrollment requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('initial enrollment requires the exact activated engine')
+    work, result = CACHE / ('initial-' + operation), STATE / operation
+    source = transport.load(work / 'request.json')
+    job = transport.load(work / 'candidate-job.json')
+    prepared = transport.load(result / 'preparation-result.json')
+    booted = transport.load(result / 'initial-boot-result.json')
+    release = transport.load(STATE / source['template_operation'] / 'release.json')
+    import router_candidate_preparation
+    router_candidate_preparation.validate_result(prepared,source,job)
+    if (source.get('box') != box or source.get('operation_id') != operation or
+            source.get('engine_commit') != engine or
+            release.get('receipt_sha256') != source.get('release_sha256') or
+            booted.get('kind') != 'klokast.router-initial-boot-result.v1' or
+            booted.get('box') != box or booted.get('operation_id') != operation or
+            booted.get('status') != 'running-first-contact' or
+            booted.get('request_sha256') is None or
+            not router_generations.matches('[0-9a-f]{64}',booted.get('intent_sha256'))):
+        raise UpdateError('initial enrollment lacks its exact completed boot evidence')
+    pins = transport.pin_initial_host_keys(result,prepared['first_contact'],operation)
+    key_path = Path.home() / '.ssh/github-klokast-codex'
+    proxy_hosts = Path.home() / '.ssh/known_hosts'
+    for path, maximum in ((key_path,16384),(proxy_hosts,1024*1024)):
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_nlink != 1 or info.st_size < 1 or info.st_size > maximum or
+                info.st_mode & 0o022 or path == key_path and info.st_mode & 0o077):
+            raise UpdateError('initial enrollment controller SSH key or dom0 trust file is unsafe')
+    guest_args = {'router_initial_box':box,'router_initial_operation':operation,
+        'router_initial_backend_address':job['first_contact']['backend_address'],
+        'router_initial_result_dir':str(result),
+        'router_initial_known_hosts':pins['known_hosts'],
+        'router_initial_host_key_alias':pins['host_key_alias'],
+        'router_initial_private_key':str(key_path),
+        'router_initial_proxy_known_hosts':str(proxy_hosts)}
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show']))
+        if compiled.get('registry_sha256') != source['registry_sha256']:
+            raise UpdateError('initial enrollment compiler inputs changed since preparation')
+        attempt = secrets.token_hex(6)
+        probe_args = result / ('initial-enrollment-probe-' + attempt + '.json')
+        transport.write(probe_args, guest_args)
+        with (result / ('initial-enrollment-probe-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-enrollment-probe.yml',
+                '--limit',box + '-router','-e','@' + str(probe_args)],timeout=180,log=log)
+        if json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled:
+            raise UpdateError('initial enrollment compiler inputs changed during guest probe')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-initial-enrollment-grant.v1','box':box,
+                 'operation_id':operation,'engine_commit':engine,
+                 'boot_request_sha256':booted['request_sha256'],
+                 'boot_intent_sha256':booted['intent_sha256'],
+                 'granted_at':now,'expires_at':now + 300}
+        begin_args = result / ('initial-enrollment-begin-' + attempt + '.json')
+        transport.write(begin_args, {'router_initial_box':box,'router_initial_operation':operation,
+            'router_initial_result_dir':str(result),'router_initial_enrollment_grant':grant})
+        with (result / ('initial-enrollment-begin-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-enrollment-begin.yml',
+                '--limit',box + '-dom0','-e','@' + str(begin_args)],timeout=300,log=log)
+        begun = transport.load(result / 'initial-enrollment-begin.json')
+        if (begun.get('kind') != 'klokast.router-initial-enrollment-begin.v1' or
+                begun.get('box') != box or begun.get('operation_id') != operation or
+                begun.get('xen_uuid') != booted.get('xen_uuid') or
+                begun.get('disk') != booted.get('disk') or
+                not router_generations.matches('[0-9a-f]{24}',begun.get('attempt')) or
+                type(begun.get('mint_permitted')) is not bool):
+            raise UpdateError('first enrollment lacks its exact durable attempt record')
+        guest_attempt = {**guest_args,'router_initial_attempt':begun['attempt'],
+                         'router_initial_mint_permitted':begun['mint_permitted']}
+        guest_path = result / ('initial-enrollment-guest-' + attempt + '.json')
+        transport.write(guest_path,guest_attempt)
+        with (result / ('initial-enrollment-guest-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-enroll.yml',
+                '--limit',box + '-router','-e','@' + str(guest_path)],timeout=300,log=log)
+        guest = transport.load(result / 'initial-enrollment-guest.json')
+        if (guest.get('kind') != 'klokast.router-initial-enrollment-guest.v1' or
+                guest.get('box') != box or guest.get('operation_id') != operation or
+                guest.get('attempt') != begun['attempt'] or
+                guest.get('hostname') != box + '-router' or guest.get('tags') != ['tag:vm'] or
+                guest.get('ssh') is not True or
+                not router_generations.matches('[A-Za-z0-9_-]{1,128}',guest.get('machine_id')) or
+                not router_generations.matches('[0-9a-f]{64}',guest.get('state_sha256'))):
+            raise UpdateError('first enrollment guest returned a different Tailnet identity')
+        if json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled:
+            raise UpdateError('initial enrollment compiler inputs changed before recording the identity')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        finish = {'kind':'klokast.router-initial-enrollment-finish-grant.v1','box':box,
+            'operation_id':operation,'engine_commit':engine,'intent_sha256':begun['intent_sha256'],
+            'guest_sha256':router_generations.digest(guest),'granted_at':now,'expires_at':now + 300}
+        finish_args = result / ('initial-enrollment-finish-' + attempt + '.json')
+        transport.write(finish_args, {'router_initial_box':box,'router_initial_operation':operation,
+            'router_initial_result_dir':str(result),'router_initial_finish_grant':finish,
+            'router_initial_guest_receipt':guest})
+        with (result / ('initial-enrollment-finish-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-enrollment-finish.yml',
+                '--limit',box + '-dom0','-e','@' + str(finish_args)],timeout=300,log=log)
+        enrolled = transport.load(result / 'initial-enrollment-result.json')
+        installation = router_records.initial_installation.validate(enrolled.get('installation'),box)
+        if (enrolled.get('kind') != 'klokast.router-initial-enrollment-result.v1' or
+                enrolled.get('box') != box or enrolled.get('operation_id') != operation or
+                enrolled.get('status') != 'enrolled-first-contact' or
+                enrolled.get('guest_sha256') != finish['guest_sha256'] or
+                enrolled.get('machine_id') != guest['machine_id'] or
+                enrolled.get('state_sha256') != guest['state_sha256'] or
+                installation['stage'] != 'enrolled' or
+                installation['enrollment_sha256'] != finish['guest_sha256']):
+            raise UpdateError('first enrollment lacks its exact retained identity record')
+        return {'kind':'klokast.router-initial-enrollment-result.v1','box':box,
+                'operation':operation,'status':'enrolled-first-contact',
+                'machine_id':guest['machine_id'],'evidence_directory':str(result)}
+
+
 def adopt_legacy(box):
     """Issue one supervised baseline from fresh evidence on the active controller."""
     if not router_updates.match(router_updates.BOX, box):
@@ -988,6 +1117,9 @@ def main():
     first_boot = sub.add_parser('start-initial', help='boot only the exact prepared first router guest')
     first_boot.add_argument('--box', required=True)
     first_boot.add_argument('--operation-id', required=True)
+    enrollment = sub.add_parser('enroll-initial', help='enroll only the pinned first router with one scoped VM key')
+    enrollment.add_argument('--box', required=True)
+    enrollment.add_argument('--operation-id', required=True)
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -1020,6 +1152,8 @@ def main():
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'start-initial':
             value = start_initial(args.box, args.operation_id)
+        elif args.command == 'enroll-initial':
+            value = enroll_initial(args.box, args.operation_id)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

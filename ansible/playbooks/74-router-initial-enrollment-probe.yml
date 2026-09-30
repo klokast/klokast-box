@@ -1,0 +1,36 @@
+---
+- name: Prove pinned first-contact access before recording enrollment intent
+  hosts: router
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    ansible_user: root
+    ansible_host: '{{ router_initial_backend_address }}'
+    ansible_remote_tmp: /tmp/ansible-remote-root
+    ansible_ssh_private_key_file: '{{ router_initial_private_key }}'
+    ansible_ssh_common_args: >-
+      -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile={{ router_initial_known_hosts }}
+      -o HostKeyAlias={{ router_initial_host_key_alias }}
+      -o ProxyCommand="ssh -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile={{ router_initial_proxy_known_hosts }}
+      -W %h:%p {{ router_bootstrap_proxyjump }}"
+  tasks:
+    - name: Require the exact first-contact operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-router'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_host_key_alias == 'router-initial-' ~ router_initial_operation
+          - router_initial_known_hosts == router_initial_result_dir ~ '/initial-known-hosts'
+
+    - name: Prove the pinned guest has the prepared router hostname
+      ansible.builtin.command: cat /etc/hostname
+      register: router_initial_guest_hostname
+      changed_when: false
+
+    - name: Refuse a different guest before creating enrollment intent
+      ansible.builtin.assert:
+        that: [router_initial_guest_hostname.stdout | trim == router_initial_box ~ '-router']
+        fail_msg: Pinned first-contact guest has a different router hostname.

@@ -117,7 +117,39 @@ class InitialCliTests(unittest.TestCase):
                 'kind':'klokast.router-initial-boot-result.v1','box':'boxa',
                 'operation_id':self.operation,'status':'running-first-contact',
                 'request_sha256':grant['request_sha256'],
-                'xen_uuid':value['xen']['uuid'],'disk':first['installation']['disk']})
+                'intent_sha256':'d'*64,'xen_uuid':value['xen']['uuid'],
+                'disk':first['installation']['disk']})
+            return ''
+        if playbook == '74-router-initial-enrollment-probe.yml':
+            self.assertEqual(arguments['router_initial_host_key_alias'],'router-initial-' + self.operation)
+            return ''
+        if playbook == '74-router-initial-enrollment-begin.yml':
+            self.write(self.state / self.operation / 'initial-enrollment-begin.json',{
+                'kind':'klokast.router-initial-enrollment-begin.v1','box':'boxa',
+                'operation_id':self.operation,'attempt':'b'*24,'intent_sha256':'c'*64,
+                'xen_uuid':json.loads((self.state / self.operation / 'initial-xen.json').read_text())['uuid'],
+                'disk':json.loads((self.state / self.operation / 'initial-preparation-result.json').read_text())['installation']['disk'],
+                'mint_permitted':self.events.count('74-router-initial-enrollment-begin.yml') == 1})
+            return ''
+        if playbook == '74-router-initial-enroll.yml':
+            self.write(self.state / self.operation / 'initial-enrollment-guest.json',{
+                'kind':'klokast.router-initial-enrollment-guest.v1','box':'boxa',
+                'operation_id':self.operation,'attempt':arguments['router_initial_attempt'],
+                'machine_id':'nExactMachine','hostname':'boxa-router','tags':['tag:vm'],
+                'ssh':True,'state_sha256':'a'*64})
+            return ''
+        if playbook == '74-router-initial-enrollment-finish.yml':
+            guest = arguments['router_initial_guest_receipt']
+            prepared_installation = json.loads((self.state / self.operation / 'initial-preparation-result.json').read_text())['installation']
+            enrolled_installation = generations.seal({
+                **{key:value for key,value in prepared_installation.items() if key != 'record_sha256'},
+                'stage':'enrolled','enrollment_sha256':generations.digest(guest),
+                'machine_id':guest['machine_id']})
+            self.write(self.state / self.operation / 'initial-enrollment-result.json',{
+                'kind':'klokast.router-initial-enrollment-result.v1','box':'boxa',
+                'operation_id':self.operation,'status':'enrolled-first-contact',
+                'guest_sha256':generations.digest(guest),'machine_id':guest['machine_id'],
+                'state_sha256':guest['state_sha256'],'installation':enrolled_installation})
             return ''
         self.assertEqual(playbook, '74-router-initial-prepare.yml')
         self.assertEqual(self.events[-2], '74-router-initial-preparation-stage.yml')
@@ -211,6 +243,26 @@ class InitialCliTests(unittest.TestCase):
         with self.assertRaisesRegex(self.cli.UpdateError,'compiler inputs changed'):
             self.cli.start_initial('boxa', self.operation)
         self.assertEqual(self.events,[])
+
+    def test_enrollment_records_one_attempt_and_retries_without_mint_authority(self):
+        self.prepare()
+        self.cli.start_initial('boxa',self.operation)
+        key_dir = self.root / '.ssh'
+        key_dir.mkdir(mode=0o700)
+        for name in ('github-klokast-codex','known_hosts'):
+            path = key_dir / name
+            path.write_text('synthetic controller key\n')
+            path.chmod(0o600)
+        with patch.object(Path,'home',return_value=self.root):
+            enrolled = self.cli.enroll_initial('boxa',self.operation)
+            self.assertEqual(enrolled['status'],'enrolled-first-contact')
+            self.assertEqual(enrolled['machine_id'],'nExactMachine')
+            self.assertEqual(self.cli.enroll_initial('boxa',self.operation),enrolled)
+        self.assertEqual(self.events[-4:],[
+            '74-router-initial-enrollment-probe.yml',
+            '74-router-initial-enrollment-begin.yml',
+            '74-router-initial-enroll.yml',
+            '74-router-initial-enrollment-finish.yml'])
 
     def test_changed_selection_after_staging_cannot_issue_an_allocation_grant(self):
         with patch.object(self.cli, 'initial_template_selection',
