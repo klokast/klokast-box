@@ -80,9 +80,36 @@ class Dom0Tests(unittest.TestCase):
         for side, value in (('old', self.old), ('candidate', self.new)):
             r.atomic(self.work / (side + '.cfg'), g.configuration(value).encode())
         r.atomic(self.xen / 'router.cfg', g.configuration(self.old).encode())
+        self.candidate_qualification = {
+            'kind':'klokast.router-retained-candidate-qualification.v1',
+            'box':'boxa','operation_id':self.request['operation_id'],
+            'engine_commit':self.request['engine_commit'],
+            'candidate_sha256':self.new['record_sha256'],
+            'disk':self.new['disk'],'boot':self.new['boot'],
+            'status':'stopped-and-detached','network':'isolated-candidate',
+            'production_identity':False,
+            'tests':dict.fromkeys(('kernel','packages','openrc','sysctls',
+                'dnsmasq','nftables','rendered_files'),True)}
+        common = {'box':'boxa','operation_id':self.request['operation_id'],
+            'engine_commit':self.request['engine_commit'],
+            'old_sha256':self.old['record_sha256'],
+            'candidate_sha256':self.new['record_sha256']}
+        self.compatibility = {'kind':'klokast.router-retained-compatibility.v1',
+            **common,'success':True,'production_identity':False,
+            'phases':dict.fromkeys(('forward','new','reverse','old'),'8'*64)}
+        self.copy_qualification = {'kind':'klokast.router-retained-copy-qualification.v1',
+            **common,'forward_receipt_sha256':'9'*64,
+            'reverse_receipt_sha256':'a'*64,'copy_guest_detached':True}
+        for name,value in (('candidate-qualification',self.candidate_qualification),
+                           ('compatibility',self.compatibility),
+                           ('copy-qualification',self.copy_qualification)):
+            r.write(self.work / (name + '.json'),value)
         self.ready = {'kind':'klokast.router-readiness.v1', 'request_sha256':g.digest(self.request),
-            'release_sha256':'4'*64, 'candidate_qualification_sha256':'5'*64,
-            'compatibility_sha256':'6'*64, 'copy_qualification_sha256':'7'*64, 'gateway':'10.1.1.1'}
+            'release_sha256':self.new['release_sha256'],
+            'candidate_qualification_sha256':g.digest(self.candidate_qualification),
+            'compatibility_sha256':g.digest(self.compatibility),
+            'copy_qualification_sha256':g.digest(self.copy_qualification),
+            'gateway':'10.1.1.1'}
         r.write(self.work / 'readiness.json', self.ready)
         r.write(self.work / 'authorization.json', {'kind':'klokast.router-operation-authorization.v1',
             'request_sha256':g.digest(self.request),'readiness_sha256':g.digest(self.ready),
@@ -158,6 +185,31 @@ class Dom0Tests(unittest.TestCase):
             self.assertIsNone(self.records.pending())
             self.assertEqual(self.host.live,'old')
             self.assertEqual(self.host.events,[])
+
+    def test_disposable_or_changed_qualification_cannot_stop_old(self):
+        path = self.work / 'candidate-qualification.json'
+        for changed in ({'kind':'klokast.router-candidate-preparation-test-result.v1'},
+                        {'disk':{**self.new['disk'],'uuid':'other'}},
+                        {'status':'running'},
+                        {'network':'production'},
+                        {'production_identity':True}):
+            r.write(path,{**self.candidate_qualification,**changed})
+            with self.subTest(changed=changed),self.assertRaises(TransactionError):
+                Transaction(self.request,self.adapter).cutover()
+            self.assertIsNone(self.records.pending())
+            self.assertEqual(self.host.live,'old')
+        r.write(path,self.candidate_qualification)
+        r.write(self.work/'compatibility.json',{
+            **self.compatibility,'candidate_sha256':'f'*64})
+        with self.assertRaises(TransactionError):
+            Transaction(self.request,self.adapter).cutover()
+        r.write(self.work/'compatibility.json',self.compatibility)
+        r.write(self.work/'copy-qualification.json',{
+            **self.copy_qualification,'copy_guest_detached':False})
+        with self.assertRaises(TransactionError):
+            Transaction(self.request,self.adapter).cutover()
+        self.assertIsNone(self.records.pending())
+        self.assertEqual(self.host.live,'old')
 
     def test_boot_recovery_does_not_require_controller_grant(self):
         self.records.persist(self.pending)

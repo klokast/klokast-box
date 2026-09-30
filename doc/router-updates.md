@@ -129,6 +129,15 @@ ansible/bin/platform-router-update prepare-replacement --box boxa --check-operat
 ansible/bin/platform-router-update stage-replacement-generation --box boxa --operation-id PREPARATION_ID
 ```
 
+The proposed generation is not a cutover request. The dom0 cutover adapter
+requires separate records for the exact retained candidate, old/new service
+compatibility, and forward/reverse copy qualification. It checks each record's
+checksum, generation pair, engine, and completion fields before it can stop
+the old router. Results from `test-candidate-preparation`,
+`test-compatibility`, or `test-state-copy` use disposable disks and cannot
+satisfy these retained-record checks. The controller issuer and native
+producers of the retained records are still required.
+
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
 checks on the current branch while a later branch is held. Fresh installation

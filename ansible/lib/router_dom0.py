@@ -54,6 +54,57 @@ class Adapter:
         self.host, self.copy_backend, self.xen = host or native.Native(), copy_backend, Path(xen)
         self.ready = readiness(records.read(self.work / 'readiness.json'), self.request)
 
+    def verify_qualifications(self):
+        """Require retained-pair records, not hashes from disposable diagnostics."""
+        old, candidate = self.pair['old'], self.pair['candidate']
+        if self.ready['release_sha256'] != candidate['release_sha256']:
+            raise transaction.TransactionError('router readiness selects a different candidate release')
+        common = {'box':self.request['box'], 'operation_id':self.request['operation_id'],
+                  'engine_commit':self.request['engine_commit'],
+                  'old_sha256':self.request['old_sha256'],
+                  'candidate_sha256':self.request['candidate_sha256']}
+        candidate_record = records.read(self.work / 'candidate-qualification.json')
+        if (not isinstance(candidate_record, dict) or set(candidate_record) != {
+                'kind','box','operation_id','engine_commit','candidate_sha256',
+                'disk','boot','status','network','production_identity','tests'} or
+                candidate_record['kind'] != 'klokast.router-retained-candidate-qualification.v1' or
+                any(candidate_record[key] != common[key] for key in (
+                    'box','operation_id','engine_commit','candidate_sha256')) or
+                candidate_record['disk'] != candidate['disk'] or
+                candidate_record['boot'] != candidate['boot'] or
+                candidate_record['status'] != 'stopped-and-detached' or
+                candidate_record['network'] != 'isolated-candidate' or
+                candidate_record['production_identity'] is not False or
+                candidate_record['tests'] != dict.fromkeys((
+                    'kernel','packages','openrc','sysctls','dnsmasq','nftables',
+                    'rendered_files'), True) or
+                generations.digest(candidate_record) != self.ready['candidate_qualification_sha256']):
+            raise transaction.TransactionError('router retained candidate qualification differs from its exact generation')
+        compatibility = records.read(self.work / 'compatibility.json')
+        if (not isinstance(compatibility, dict) or set(compatibility) != {
+                'kind',*common,'success','production_identity','phases'} or
+                compatibility['kind'] != 'klokast.router-retained-compatibility.v1' or
+                any(compatibility[key] != value for key,value in common.items()) or
+                compatibility['success'] is not True or
+                compatibility['production_identity'] is not False or
+                not isinstance(compatibility['phases'], dict) or
+                set(compatibility['phases']) != {'forward','new','reverse','old'} or
+                any(not generations.matches('[0-9a-f]{64}', value)
+                    for value in compatibility['phases'].values()) or
+                generations.digest(compatibility) != self.ready['compatibility_sha256']):
+            raise transaction.TransactionError('router state compatibility differs from its retained generation pair')
+        copy = records.read(self.work / 'copy-qualification.json')
+        if (not isinstance(copy, dict) or set(copy) != {
+                'kind',*common,'forward_receipt_sha256','reverse_receipt_sha256',
+                'copy_guest_detached'} or
+                copy['kind'] != 'klokast.router-retained-copy-qualification.v1' or
+                any(copy[key] != value for key,value in common.items()) or
+                any(not generations.matches('[0-9a-f]{64}', copy[key]) for key in (
+                    'forward_receipt_sha256','reverse_receipt_sha256')) or
+                copy['copy_guest_detached'] is not True or
+                generations.digest(copy) != self.ready['copy_qualification_sha256']):
+            raise transaction.TransactionError('router copy qualification differs from its retained generation pair')
+
     def monotonic(self):
         return self.host.monotonic()
 
@@ -76,6 +127,7 @@ class Adapter:
     def verify_prepared(self, request):
         if request != self.request or self.storage.pending() is not None or (self.work / 'complete.json').exists():
             raise transaction.TransactionError('router operation is already pending or completed; refusing replay')
+        self.verify_qualifications()
         grant = records.read(self.work / 'authorization.json')
         now = time.time()
         if (not isinstance(grant, dict) or set(grant) != {'kind', 'request_sha256', 'granted_at', 'expires_at', 'readiness_sha256'} or
