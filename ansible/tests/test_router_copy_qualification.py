@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
@@ -27,6 +28,19 @@ def module(name):
 class QualificationTests(unittest.TestCase):
     def setUp(self):
         self.host = module('router-copy-test-dom0')
+
+    def test_dom0_tool_gate_precedes_allocation_without_package_reconciliation(self):
+        path = REPO / 'ansible/roles/router-state-copy/tasks/qualification.yml'
+        source = path.read_text(encoding='utf-8')
+        tasks = yaml.safe_load(source)
+        names = [task['name'] for task in tasks]
+        self.assertLess(
+            names.index('Refuse qualification without an approved dom0 tool transaction'),
+            names.index('Create private copy qualification storage'),
+        )
+        self.assertNotIn('maintenance-unlock.yml', source)
+        self.assertNotIn('maintenance-lock.yml', source)
+        self.assertNotIn('dom0-apk-policy', source)
 
     def test_each_copy_has_readonly_source_and_no_network(self):
         loops = {name: '/dev/loop' + str(i) for i, name in enumerate(self.host.SLOTS)}

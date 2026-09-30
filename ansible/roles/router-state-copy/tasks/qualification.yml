@@ -22,6 +22,22 @@
       - (router_copy_test_controller.stdout | from_json).active | bool
       - (router_copy_test_controller.stdout | from_json).configured | bool
 
+- name: Check for the installed synthetic-disk partitioning tool
+  ansible.builtin.command:
+    argv: [/bin/sh, -c, 'command -v sfdisk']
+  changed_when: false
+  failed_when: false
+  register: router_copy_test_sfdisk
+
+- name: Refuse qualification without an approved dom0 tool transaction
+  ansible.builtin.assert:
+    that:
+      - router_copy_test_sfdisk.rc == 0
+    fail_msg: >-
+      sfdisk is absent on this dom0. Qualify and authorize a separate
+      no-upgrade RAM tool transaction before the synthetic router copy test.
+      This test will not change dom0 packages or Xen.
+
 - name: Require persistent dom0 storage
   ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data
   changed_when: false
@@ -81,35 +97,21 @@
     group: root
     mode: '0600'
 
-- name: Unlock blank-disk partitioning tools in RAM
-  ansible.builtin.include_role:
-    name: dom0-apk-policy
-    tasks_from: maintenance-unlock.yml
+- name: Run bounded forward and reverse copying on synthetic disks
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/router-copy-test-dom0.py'
+      - --box
+      - '{{ router_copy_test_box }}'
+      - --operation-id
+      - '{{ router_copy_test_operation }}'
+  async: 1700
+  poll: 10
   vars:
-    dom0_maintenance_packages: [sfdisk]
-
-- name: Qualify synthetic copying and restore dom0 package policy
-  block:
-    - name: Run bounded forward and reverse copying on synthetic disks
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/python3
-          - '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/router-copy-test-dom0.py'
-          - --box
-          - '{{ router_copy_test_box }}'
-          - --operation-id
-          - '{{ router_copy_test_operation }}'
-      async: 1700
-      poll: 10
-      vars:
-        ansible_async_dir: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/async'
-      register: router_copy_test_run
-      failed_when: false
-  always:
-    - name: Restore the exact dom0 package allowlist
-      ansible.builtin.include_role:
-        name: dom0-apk-policy
-        tasks_from: maintenance-lock.yml
+    ansible_async_dir: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/async'
+  register: router_copy_test_run
+  failed_when: false
 
 - name: Inspect bounded copy qualification evidence
   ansible.builtin.stat:

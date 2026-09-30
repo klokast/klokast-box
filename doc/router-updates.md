@@ -461,6 +461,13 @@ ansible/bin/platform-router-update test-state-copy --box boxa \
   --inputs-directory /var/cache/klokast/updates/router/INPUT_OPERATION
 ```
 
+The test checks that `sfdisk` is already available on dom0 before it allocates
+test storage. It does not install packages or run the broad dom0 maintenance
+lock, which can reconcile Xen packages. If `sfdisk` is absent, use a separately
+authorized no-upgrade RAM tool transaction, then run the test and restore the
+prior package set. The k001 test-resource approval does not grant package
+changes on k001-dom0.
+
 The test creates synthetic state, interrupts and resumes a forward copy, changes
 the candidate state, stops with an open unlinked file, recovers a scratch clone,
 copies the latest state back, and verifies both disks. It checks file
