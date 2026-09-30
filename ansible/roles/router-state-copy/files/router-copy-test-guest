@@ -65,11 +65,7 @@ def mounted(device, name, writable=False):
 
 def payloads(latest=False):
     result = {path: ('synthetic:' + path + '\n').encode() for path in router_state.REQUIRED}
-    result.update({f'etc/ssh/ssh_host_{kind}_key': ('synthetic-key:' + kind + '\n').encode()
-                   for kind in router_state.KEY_TYPES})
-    result['var/lib/dhcpcd/eth0.lease'] = b'synthetic WAN lease\n'
     if latest:
-        result['var/lib/tailscale/tailscaled.state'] = b'synthetic rotated identity\n'
         result['var/lib/misc/dnsmasq.leases'] = b'synthetic new LAN lease\n'
     return result
 
@@ -86,7 +82,13 @@ def put(root, relative, data):
     os.utime(path, ns=(STAMP, STAMP))
 
 
-def verify(root, latest=False):
+def verify(root, latest=False, *, generation, wan_cache=False):
+    for path in router_state.IDENTITY:
+        if (root/path).read_bytes() != (generation + ':' + path).encode():
+            raise RuntimeError('copy changed a generation-local identity')
+    for path in router_state.WAN_CACHE:
+        if (root/path).exists() != wan_cache:
+            raise RuntimeError('copy retained or removed the wrong WAN lease cache')
     actual = router_state.snapshot(root, **ACCOUNTS)
     expected = payloads(latest)
     if set(actual) != set(expected):
@@ -106,14 +108,18 @@ def seed():
             put(root, 'etc/hostname', b'fixture-router\n')
             for relative in router_state.ALLOWLIST:
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            for relative in router_state.IDENTITY:
+                put(root, relative, (name + ':' + relative).encode())
+            for relative in router_state.WAN_CACHE:
+                put(root, relative, b'synthetic WAN cache')
             if name == 'original':
                 for relative, data in payloads().items():
                     put(root, relative, data)
-                verify(root)
+                verify(root, generation=name, wan_cache=True)
 
 
 def copy(args, reverse=False):
-    value = {'kind': 'klokast.router-copy-request.v1', 'role': 'router', 'box': 'fixture',
+    value = {'kind': 'klokast.router-copy-request.v2', 'role': 'router', 'box': 'fixture',
              'operation': args['klokast_operation'], 'seconds': 120,
              'source_id': 'synthetic-candidate' if reverse else 'synthetic-original',
              'destination_id': 'synthetic-original' if reverse else 'synthetic-candidate',
@@ -134,7 +140,7 @@ def copy(args, reverse=False):
 
             def checkpoint(stage):
                 previous(stage)
-                if stage == 'installed:var/lib/tailscale/tailscaled.state':
+                if stage == 'installed:var/lib/dhcpcd/duid':
                     raise Interruption()
             return original(*positional, **{**keyword, 'checkpoint': checkpoint})
 
@@ -155,12 +161,13 @@ def copy(args, reverse=False):
     with Path('/dev/xvdd').open('rb') as stream:
         receipt = json.loads(stream.read(65536).rstrip(b'\0'))
     checksum = receipt.pop('receipt_sha256')
-    if (receipt.get('complete') is not True or receipt.get('request_sha256') != value['request_sha256'] or
+    if (receipt.get('kind') != 'klokast.router-state-copy.v2' or
+            receipt.get('wan_cache_absent') != list(router_state.WAN_CACHE) or receipt.get('complete') is not True or receipt.get('request_sha256') != value['request_sha256'] or
             receipt.get('recovered_clone') is not reverse or
             checksum != hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode()).hexdigest()):
         raise RuntimeError('copy guest did not publish a matching complete receipt')
     with mounted('/dev/xvdb3', 'copied') as root:
-        verify(root, latest=reverse)
+        verify(root, latest=reverse, generation='original' if reverse else 'candidate')
 
 
 def unclean():
@@ -172,7 +179,7 @@ def unclean():
     root = Path('/run/unclean-source')
     root.mkdir(mode=0o700)
     run(['/bin/mount', '-t', 'ext4', '-o', 'rw,nodev,nosuid,noexec', '/dev/xvdb3', root])
-    verify(root, latest=True)
+    verify(root, latest=True, generation='candidate', wan_cache=True)
     ready = Path('/run/orphan-ready')
     child = os.fork()
     if child == 0:
@@ -205,21 +212,23 @@ def execute(args):
         copy(args, reverse=phase == 'reverse')
     elif phase == 'mutate':
         with mounted('/dev/xvdb3', 'candidate', writable=True) as root:
-            verify(root)
+            verify(root, generation='candidate')
+            for relative in router_state.WAN_CACHE:
+                put(root, relative, b'new WAN cache')
             for relative, data in payloads(True).items():
                 put(root, relative, data)
-            verify(root, latest=True)
+            verify(root, latest=True, generation='candidate', wan_cache=True)
     elif phase == 'unclean':
         unclean()
     else:
         for device, name in (('/dev/xvda3', 'original'), ('/dev/xvdb3', 'candidate')):
             with mounted(device, name) as root:
-                verify(root, latest=True)
+                verify(root, latest=True, generation=name, wan_cache=name == 'candidate')
 
 
 def main():
     args = arguments()
-    result = {'kind': 'klokast.router-copy-test.v1', 'operation_id': args['klokast_operation'],
+    result = {'kind': 'klokast.router-copy-test.v2', 'operation_id': args['klokast_operation'],
               'inputs_sha256': args['klokast_inputs'], 'phase': args['klokast_phase'], 'success': False}
     started = time.monotonic()
     try:

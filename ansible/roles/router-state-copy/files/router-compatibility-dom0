@@ -51,7 +51,7 @@ def request(work, box, operation):
     fields = {'kind', 'role', 'box', 'operation_id', 'inputs_sha256', 'engine_commit',
               'bootstrap', 'template', 'source', 'guest'}
     if (not isinstance(value, dict) or set(value) != fields or
-            value['kind'] != 'klokast.router-compatibility-host.v1' or value['role'] != 'router' or
+            value['kind'] != 'klokast.router-compatibility-host.v2' or value['role'] != 'router' or
             value['box'] != box or value['operation_id'] != operation or
             not re.fullmatch('[0-9a-f]{64}', str(value['inputs_sha256'])) or
             not re.fullmatch('[0-9a-f]{40}', str(value['engine_commit'])) or
@@ -64,7 +64,7 @@ def request(work, box, operation):
     if (not isinstance(guest, dict) or set(guest) != {'kind', 'operation_id', 'inputs_sha256', 'box',
             'source_packages', 'source_files', 'source_kernel_release', 'fixture', 'manifest',
             'runtime_packages', 'kernel_release'} or
-            guest['kind'] != 'klokast.router-compatibility-request.v1' or
+            guest['kind'] != 'klokast.router-compatibility-request.v2' or
             any(guest[key] != value[key] for key in ('operation_id', 'inputs_sha256', 'box')) or
             guest['manifest'].get('inputs_sha256') != value['inputs_sha256'] or
             not all(re.fullmatch('[A-Za-z0-9_.+-]{1,128}', str(guest[k]))
@@ -226,7 +226,7 @@ def file_identity(path):
 
 
 def validate_phase(record, value, phase):
-    if (not isinstance(record, dict) or record.get('kind') != 'klokast.router-compatibility-phase.v1' or
+    if (not isinstance(record, dict) or record.get('kind') != 'klokast.router-compatibility-phase.v2' or
             record.get('success') is not True or record.get('phase') != phase or
             record.get('operation_id') != value['operation_id'] or
             record.get('inputs_sha256') != value['inputs_sha256'] or record.get('production_identity') is not False or
@@ -263,16 +263,16 @@ def validate_phase(record, value, phase):
                 raise RuntimeError('compatibility candidate lacks exact common preparation evidence')
     else:
         common = {'wan_dhcp_identity', 'wan_lease', 'lan_lease', 'lan_dns'}
-        expected = common | ({'expiry_lease_created', 'offline_tailscale_state', 'latest_preferences_after_restart',
-            'native_machine_key_after_restart', 'synthetic_profile'} if phase == 'seed' else {
-            'latest_tailscale_preferences', 'native_state_restart', 'identity_continuity', 'latest_machine_key', 'copied_timestamps'})
+        expected = common | ({'expiry_lease_created'} if phase == 'seed' else {
+            'dhcp_identity_continuity', 'copied_timestamps', 'generation_identity_preserved',
+            'fresh_wan_negotiation'})
         if phase == 'new':
             expected |= {'expired_lease_removed', 'old_client_renewed'}
         if (record.get('tests') != dict.fromkeys(expected, True) or
-                record.get('control_plane_rotation_tested') is not False or
+                record.get('enrollment_tested') is not False or
                 record.get('packages') != value['guest']['runtime_packages' if phase == 'new' else 'source_packages'] or
                 not isinstance(record.get('state'), dict) or set(record['state']) != {
-                    'files', 'ssh_fingerprints', 'machine_key_sha256', 'lan_leases'}):
+                    'files', 'generation_identity', 'lan_leases'}):
             raise RuntimeError('compatibility native phase has incomplete service or state evidence')
 
 
@@ -378,7 +378,7 @@ def execute(work, value):
             config = work / (phase + '.cfg')
             config.write_text(configuration(work, value, phase, identities[phase], loops))
             boot_guest(work, 'router-compat-' + phase + '-' + operation, identities[phase], config, value,
-                       kind='klokast.router-compatibility-phase.v1', timeout=420)
+                       kind='klokast.router-compatibility-phase.v2', timeout=420)
             record = read_slot(work / 'result.slot')
             write(work / (phase + '.json'), record)
             validate_phase(record, value, phase)
@@ -392,12 +392,12 @@ def execute(work, value):
                 raise RuntimeError('compatibility copy changed its read-only source')
             records[phase] = record
         source_identity(work, value)
-        result = {'kind': 'klokast.router-compatibility-result.v1', 'box': value['box'], 'role': 'router',
+        result = {'kind': 'klokast.router-compatibility-result.v2', 'box': value['box'], 'role': 'router',
                   'operation_id': operation, 'inputs_sha256': value['inputs_sha256'], 'engine_commit': value['engine_commit'],
                   'template_operation': value['template']['operation'], 'source': value['source'],
                   'source_packages': value['guest']['source_packages'], 'runtime_packages': value['guest']['runtime_packages'],
                   'phases': list(records), 'phase_seconds': {k: v['seconds'] for k, v in records.items()},
-                  'success': True, 'production_identity': False, 'control_plane_rotation_tested': False,
+                  'success': True, 'production_identity': False, 'enrollment_tested': False,
                   'candidate_modes': ['initial-install', 'replacement'], 'candidate_disk': candidate_disk,
                   'replacement_authorized': False}
         write(work / 'result.json', result)

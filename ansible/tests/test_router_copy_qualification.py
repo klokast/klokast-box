@@ -77,10 +77,10 @@ class QualificationTests(unittest.TestCase):
     def test_foreign_request_fails_before_boot_inputs_are_read(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            value = {'kind': 'klokast.router-copy-test-request.v1', 'box': 'boxa', 'role': 'router',
+            value = {'kind': 'klokast.router-copy-test-request.v2', 'box': 'boxa', 'role': 'router',
                      'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64, 'engine_commit': 'c' * 40,
                      'bootstrap': {name: {'bytes': 1, 'sha256': 'd' * 64} for name in ('kernel', 'initramfs')}}
-            for field, wrong in (('box', 'boxb'), ('role', 'dmz'), ('operation_id', 'f' * 24), ('engine_commit', 'HEAD')):
+            for field, wrong in (('kind', 'klokast.router-copy-test-request.v1'), ('box', 'boxb'), ('role', 'dmz'), ('operation_id', 'f' * 24), ('engine_commit', 'HEAD')):
                 (root / 'request.json').write_text(json.dumps({**value, field: wrong}))
                 with self.subTest(field=field), patch.object(self.host, 'safe_file'), self.assertRaises(RuntimeError):
                     self.host.request(root, 'boxa', 'a' * 24)

@@ -8,7 +8,7 @@ def job(request, old, candidate, inputs_sha256):
     router_generations.pair(old, candidate, request)
     if not router_generations.matches('[0-9a-f]{64}', inputs_sha256):
         raise ValueError('router copy capsule needs its exact authenticated package input identity')
-    common = {'kind': 'klokast.router-copy-request.v1', 'role': 'router', 'box': request['box'],
+    common = {'kind': 'klokast.router-copy-request.v2', 'role': 'router', 'box': request['box'],
               'operation': request['operation_id'],
               'seconds': min(120, request['cutover_seconds'] - 30, request['recovery_seconds'] - 30)}
     jobs = {}
@@ -16,14 +16,14 @@ def job(request, old, candidate, inputs_sha256):
         value = {**common, 'source_id': source['disk']['uuid'], 'destination_id': target['disk']['uuid'],
                  'source_accounts': source['accounts'], 'destination_accounts': target['accounts']}
         jobs[name] = {**value, 'request_sha256': router_generations.digest(value)}
-    return {'kind': 'klokast.router-copy-job.v1', 'operation_id': request['operation_id'],
+    return {'kind': 'klokast.router-copy-job.v2', 'operation_id': request['operation_id'],
             'inputs_sha256': inputs_sha256, **jobs}
 
 
 def capsule(value, request, old, candidate):
     fields = {'kind', 'operation_id', 'inputs_sha256', 'engine_commit', 'transaction_sha256',
               'job_sha256', 'bootstrap', 'domains'}
-    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.router-copy-capsule.v1' or
+    if (not isinstance(value, dict) or set(value) != fields or value['kind'] != 'klokast.router-copy-capsule.v2' or
             value['operation_id'] != request['operation_id'] or value['engine_commit'] != request['engine_commit'] or
             value['transaction_sha256'] != router_generations.digest(request) or
             value['job_sha256'] != router_generations.digest(job(request, old, candidate, value['inputs_sha256']))):

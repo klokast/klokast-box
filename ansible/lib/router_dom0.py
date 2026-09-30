@@ -19,7 +19,7 @@ import router_transaction as transaction
 def readiness(value, request):
     if (not isinstance(value, dict) or set(value) != {'kind', 'request_sha256', 'release_sha256',
             'candidate_preflight_sha256', 'compatibility_sha256', 'copy_qualification_sha256', 'gateway'} or
-            value['kind'] != 'klokast.router-readiness.v2' or value['request_sha256'] != generations.digest(request) or
+            value['kind'] != 'klokast.router-readiness.v3' or value['request_sha256'] != generations.digest(request) or
             any(not generations.matches('[0-9a-f]{64}', value[k]) for k in
                 ('release_sha256', 'candidate_preflight_sha256', 'compatibility_sha256', 'copy_qualification_sha256'))):
         raise transaction.TransactionError('router preparation lacks exact release, candidate, compatibility, or copy evidence')
@@ -87,7 +87,7 @@ class Adapter:
         compatibility = records.read(self.work / 'compatibility.json')
         if (not isinstance(compatibility, dict) or set(compatibility) != {
                 'kind',*common,'success','production_identity','phases'} or
-                compatibility['kind'] != 'klokast.router-retained-compatibility.v1' or
+                compatibility['kind'] != 'klokast.router-retained-compatibility.v2' or
                 any(compatibility[key] != value for key,value in common.items()) or
                 compatibility['success'] is not True or
                 compatibility['production_identity'] is not False or
@@ -101,7 +101,7 @@ class Adapter:
         if (not isinstance(copy, dict) or set(copy) != {
                 'kind',*common,'forward_receipt_sha256','reverse_receipt_sha256',
                 'copy_guest_detached'} or
-                copy['kind'] != 'klokast.router-retained-copy-qualification.v1' or
+                copy['kind'] != 'klokast.router-retained-copy-qualification.v2' or
                 any(copy[key] != value for key,value in common.items()) or
                 any(not generations.matches('[0-9a-f]{64}', copy[key]) for key in (
                     'forward_receipt_sha256','reverse_receipt_sha256')) or

@@ -182,17 +182,17 @@ fencing and a fresh accepted-router check. Never delete the retained rollback
 identity as a stale offline device. Cleanup must also exclude active and pending
 identities and remain safe if interrupted.
 
-This is the required replacement design. The current state-copy v1 helpers,
-compatibility tests, and replacement preparation still implement the earlier
-shared-identity design. Their receipts do not qualify this contract. Version
-the copy and qualification records, connect generation enrollment and inventory,
-and complete native recovery tests before enabling replacement or scheduling.
-Initial-install retries continue to retain their existing enrollment.
+The DHCP-only state-copy v2 path and its qualification scripts implement the
+new transfer boundary in source. Their requests and receipts reject v1 evidence.
+The preparation and cutover lifecycle still needs generation enrollment,
+first-contact retirement, exact-device inventory, and native recovery proof.
+Do not enable replacement or scheduling until these gates pass. Initial-install
+retries continue to retain their existing enrollment.
 
 The proposed generation is not a cutover request. Before stopping A, the dom0
 adapter requires an offline preflight for the exact retained B disk, exact
 old/new service compatibility, and forward/reverse copy qualification. The
-`klokast.router-readiness.v2` contract binds these separate records to the
+`klokast.router-readiness.v3` contract binds these separate records to the
 generation pair and engine. `candidate-preflight.json` checks boot artifacts,
 packages, OpenRC links, configuration syntax, rendered files, identity absence,
 and the detached disk. It must report that B has not booted as a router.
@@ -564,9 +564,18 @@ generic template's frozen Alpine inputs and does not invoke that ISO asset role.
 
 ## Copy guest boundary
 
-This section describes the existing v1 primitive. It copies Tailscale state and
-SSH keys as well as DHCP state. The [A/B identity contract](#identity-contract-for-ab-replacement)
-requires a new DHCP-only contract before production replacement.
+The v2 primitive copies only the three files in the
+[A/B identity contract](#identity-contract-for-ab-replacement). It does not open
+Tailscale or SSH state while copying. It validates both fixed destination WAN
+cache paths before any changes and removes them before publishing a complete
+receipt. Both forward and reverse operations use this contract. Interrupted
+cache removal must resume before the destination boots. Source cache files and
+unrelated destination files stay unchanged.
+
+Bootstrap finalization uses a separate read-only snapshot of the enrolled
+identity, SSH keys, DHCP state, and WAN caches. This preserves the existing
+first-contact retirement guarantee without adding identity files to the copy
+list. Inspection still checks that the running generation's identity is usable.
 
 `router-state-copy-guest` refuses execution outside a networkless Xen guest.
 It uses fixed source, destination, scratch, and result VBDs. It checks the box
@@ -599,8 +608,9 @@ record and detached-disk cleanup rule if a guest or controller command stops.
 The test creates synthetic state, interrupts and resumes a forward copy, changes
 the candidate state, stops with an open unlinked file, recovers a scratch clone,
 copies the latest state back, and verifies both disks. It checks file
-bytes, service ownership, permissions, lease timestamps, absent optional leases,
-and that each read-only source disk stays unchanged. It records each boot's
+bytes, service ownership, permissions, LAN lease timestamps, independent
+identity bytes on both generations, destination WAN cache removal, and that
+each read-only source disk stays unchanged. It records each boot's
 duration. The result binds the frozen
 package inputs and the test engine commit. It is copy evidence only; synthetic
 state does not prove that old and new service versions can read each other's
@@ -616,10 +626,9 @@ the play to that box's dom0.
 
 ## Native old/new/old qualification
 
-The diagnostic below is v1 evidence for the former shared-identity design.
-It cannot qualify the [A/B identity contract](#identity-contract-for-ab-replacement).
-The revised test must cover exact old/new DHCP versions and prove that forward
-and reverse copies leave each generation's own Tailscale and SSH state intact.
+The v2 diagnostic tests exact old/new DHCP versions and checks that forward
+and reverse copies preserve distinct opaque identity fixtures. It rejects v1
+records. It does not enroll Tailnet devices or prove the complete A/B lifecycle.
 
 The diagnostic command below tests a recorded legacy router against an existing
 qualified template. Run it on the active controller from a clean checkout:
@@ -649,14 +658,14 @@ Neither production runlevels nor local startup hooks run on the old copy. The
 old software then creates native synthetic state. The fixed copy helper moves
 that state to the new copy and later moves the new writer's state back. Each
 runtime uses its recorded kernel and exact package set. The test checks DHCP
-renewal and new grants, DNS, lease expiry, SSH fingerprints, DUID and privacy
-secret continuity, copied timestamps, and native Tailscale state reads and
-writes in both directions.
+renewal and new grants, DNS, lease expiry, DUID and privacy secret continuity,
+and copied timestamps. Each runtime verifies its own distinct Tailscale and
+SSH fixture bytes. These opaque bytes never start a Tailscale daemon. Before
+new and old runtime tests, the destination WAN cache must be absent; native
+DHCP then acquires a lease.
 
-The offline Tailscale test uses a logged-out synthetic profile and native
-machine-key storage writes. It does not test control-plane node-key rotation or
-Tailnet enrollment. Its receipt explicitly records that limit and cannot
-authorize replacement. Interrupted state writes and reboot recovery also need
+The receipt states `enrollment_tested: false` and cannot authorize replacement.
+Real per-generation enrollment still needs separate native qualification. Interrupted state writes and reboot recovery also need
 their own transaction qualification.
 
 The replacement test clone uses a new two GiB LV named

@@ -29,9 +29,13 @@ class CopyNativeTests(unittest.TestCase):
         self.capsule={'inputs_sha256':'e'*64,'job_sha256':g.digest(self.job)}
         self.copy=c.Copy()
         patch=mock.patch.object(self.copy,'inputs',return_value=(self.capsule,self.job)); patch.start(); self.addCleanup(patch.stop)
-        self.receipt={'kind':'klokast.router-state-copy.v1','complete':True,'operation':req['operation_id'],
+        self.receipt={'kind':'klokast.router-state-copy.v2','complete':True,'operation':req['operation_id'],
             'request_sha256':self.job['forward']['request_sha256'],'source':old['disk']['uuid'],
-            'destination':new['disk']['uuid'],'files':{},'recovered_clone':False}
+            'destination':new['disk']['uuid'], 'files':{path:{'sha256':'f'*64, 'bytes':1,
+                'mtime_ns':1700000000000000000, 'mode':0o600, 'uid':0, 'gid':0} for path in (
+                'var/lib/dhcpcd/duid', 'var/lib/dhcpcd/secret', 'var/lib/misc/dnsmasq.leases')},
+            'wan_cache_absent':['var/lib/dhcpcd/eth0.lease', 'var/lib/dhcpcd/eth0.lease6'],
+            'recovered_clone':False}
         self.publish(self.receipt)
 
     def publish(self, receipt):
@@ -45,7 +49,9 @@ class CopyNativeTests(unittest.TestCase):
     def test_exact_complete_receipt_is_required_after_both_disks_detach(self):
         self.copy.verify_copy(self.adapter,'old','candidate',deadline=100)
         self.adapter.host.detached.assert_called_once()
-        for change in ({'complete':False},{'source':'other-uuid'}, {'request_sha256':'0'*64}, {'operation':'0'*24}):
+        for change in ({'complete':False},{'source':'other-uuid'}, {'request_sha256':'0'*64}, {'operation':'0'*24},
+                       {'kind':'klokast.router-state-copy.v1'}, {'files':{}}, {'wan_cache_absent':[]},
+                       {'files':{**self.receipt['files'], 'var/lib/tailscale/tailscaled.state':{}}}):
             self.publish({**self.receipt,**change})
             with self.assertRaises(TransactionError):
                 self.copy.verify_copy(self.adapter,'old','candidate',deadline=100)
@@ -56,6 +62,14 @@ class CopyNativeTests(unittest.TestCase):
         path.write_bytes(json.dumps(value).encode()+b'\0')
         with self.assertRaises(TransactionError):
             self.copy.verify_copy(self.adapter,'old','candidate',deadline=100)
+
+    def test_rehashed_invalid_metadata_cannot_qualify_dhcp_state(self):
+        for field, wrong in (('sha256', 'invalid'), ('bytes', 0), ('mode', 0o644), ('uid', 12345)):
+            receipt = copy.deepcopy(self.receipt)
+            receipt['files']['var/lib/dhcpcd/secret'][field] = wrong
+            self.publish(receipt)
+            with self.subTest(field=field), self.assertRaisesRegex(TransactionError, 'DHCP state metadata'):
+                self.copy.verify_copy(self.adapter, 'old', 'candidate', deadline=100)
 
     def test_attached_disk_blocks_receipt_use(self):
         self.adapter.host.detached.side_effect=TransactionError('still attached')

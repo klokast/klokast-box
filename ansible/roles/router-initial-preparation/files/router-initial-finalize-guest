@@ -104,7 +104,7 @@ def finalize(value):
             command(['/bin/mount','--bind','/' + name,ROOT / name],deadline)
             mounted.append(ROOT / name)
         accounts = value['prepared']['accounts']
-        state = router_state.evidence(router_state.snapshot(ROOT,**accounts))
+        state = router_state.evidence(router_state.enrolled_snapshot(ROOT,**accounts))
         state_digest = router_personalize.digest(state)
         if (not isinstance(state.get('var/lib/tailscale/tailscaled.state'),dict) or
                 not re.fullmatch('[0-9a-f]{64}',state['var/lib/tailscale/tailscaled.state']['sha256']) or

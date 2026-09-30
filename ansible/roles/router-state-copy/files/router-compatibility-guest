@@ -59,7 +59,7 @@ def guard():
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= MIB:
         raise RuntimeError('router compatibility request is absent or unsafe')
     request = json.loads(path.read_text(), object_pairs_hook=unique)
-    if (request.get('kind') != 'klokast.router-compatibility-request.v1' or
+    if (request.get('kind') != 'klokast.router-compatibility-request.v2' or
             request.get('operation_id') != parameters['klokast_operation'] or
             request.get('inputs_sha256') != parameters.get('klokast_inputs') or
             router_personalize.digest(request) != parameters['klokast_job']):
@@ -126,6 +126,10 @@ def prepare(request):
                 records[name] = {'packages': prepared['packages'], 'accounts': router_fixture.accounts(root),
                                  'production_state_removed': True, 'candidate_preparation': prepared}
             if name != 'initial':
+                # Opaque, distinct identity fixtures must survive copying. These
+                # bytes are never used to start Tailscale or enroll a device.
+                for relative in router_state.IDENTITY:
+                    router_personalize.put(root, relative, name + ':' + relative, 0o600)
                 router_fixture.install_probe(root, request, modules, Path(__file__))
     return {'prepared': True, 'fixtures': records, 'production_identity': False}
 
@@ -140,7 +144,7 @@ def copy(request):
             if marker != request:
                 raise RuntimeError('router copy fixture belongs to a different test')
             service_accounts.append(router_fixture.accounts(root))
-    value = {'kind': 'klokast.router-copy-request.v1', 'role': 'router', 'box': 'boxa',
+    value = {'kind': 'klokast.router-copy-request.v2', 'role': 'router', 'box': 'boxa',
              'operation': request['operation_id'], 'seconds': 120,
              'source_id': 'synthetic-source', 'destination_id': 'synthetic-destination',
              'source_accounts': service_accounts[0], 'destination_accounts': service_accounts[1]}
@@ -183,7 +187,7 @@ def main():
         if not os.path.ismount('/run'):
             run(['mount', '-t', 'tmpfs', 'tmpfs', '/run'])
     phase, request = guard()
-    result = {'kind': 'klokast.router-compatibility-phase.v1', 'phase': phase,
+    result = {'kind': 'klokast.router-compatibility-phase.v2', 'phase': phase,
               'operation_id': request['operation_id'], 'inputs_sha256': request['inputs_sha256'], 'success': False}
     started = time.monotonic()
     try:

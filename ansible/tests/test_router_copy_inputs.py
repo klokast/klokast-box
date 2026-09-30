@@ -59,7 +59,7 @@ class CopyInputsTests(unittest.TestCase):
                 self.guest.select(changed,self.command(changed,'reverse'))
 
     def test_capsule_cannot_share_production_uuid_or_change_boot_inputs(self):
-        value = {'kind':'klokast.router-copy-capsule.v1','operation_id':self.request['operation_id'],
+        value = {'kind':'klokast.router-copy-capsule.v2','operation_id':self.request['operation_id'],
             'engine_commit':self.request['engine_commit'],'transaction_sha256':router_generations.digest(self.request),
             'inputs_sha256':'f'*64,'job_sha256':router_generations.digest(self.job),
             'bootstrap':{name:{'bytes':1024,'sha256':'e'*64} for name in ('kernel','initramfs')},

@@ -406,7 +406,7 @@ def retire(root, *, manifest, personalization, runtime_packages, accounts,
 
     if (not re.fullmatch('[0-9a-f]{64}', enrolled_state_sha256 or '') or
             not isinstance(accounts, dict) or
-            personalize.digest(router_state.evidence(router_state.snapshot(root, **accounts))) != enrolled_state_sha256):
+            personalize.digest(router_state.evidence(router_state.enrolled_snapshot(root, **accounts))) != enrolled_state_sha256):
         raise ValueError('router first-contact enrolled identity differs from its recorded state')
 
     if key_present:

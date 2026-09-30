@@ -1,6 +1,5 @@
 """Legacy copies must be fenced, sanitized, and bound to exact source evidence."""
 import ast
-import base64
 import copy
 import hashlib
 import json
@@ -19,6 +18,32 @@ from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_dhcp_copy_accepts_distinct_identity_and_rejects_replacement_or_stale_wan_cache(self):
+        from test_router_state import CopyTests
+        case = CopyTests()
+        self.addCleanup(case.doCleanups)
+        case.setUp()
+        for root, generation in ((case.source, 'legacy'), (case.target, 'candidate')):
+            for relative in router_compatibility.router_state.IDENTITY:
+                case.put(relative, (generation + ':' + relative).encode(), root=root)
+        accounts = dict(dnsmasq_uid=0, dnsmasq_gid=0, tailscale_gid=0)
+        with patch.object(fixture, 'accounts', return_value=accounts), \
+                patch.object(router_compatibility, 'Path', side_effect=lambda name: case.source / name.lstrip('/')):
+            expected = router_compatibility.state('seed')
+        case.copy()
+        with patch.object(fixture, 'accounts', return_value=accounts), \
+                patch.object(router_compatibility, 'Path', side_effect=lambda name: case.target / name.lstrip('/')):
+            current = router_compatibility.validate_copy(expected, 'new')
+            self.assertNotEqual(current['generation_identity'], expected['generation_identity'])
+            relative = 'var/lib/tailscale/tailscaled.state'
+            case.put(relative, ('legacy:' + relative).encode(), root=case.target)
+            with self.assertRaisesRegex(RuntimeError, 'generation-local identity'):
+                router_compatibility.validate_copy(expected, 'new')
+            case.put(relative, ('candidate:' + relative).encode(), root=case.target)
+            case.put('var/lib/dhcpcd/eth0.lease', b'stale', root=case.target)
+            with self.assertRaisesRegex(RuntimeError, 'WAN lease cache'):
+                router_compatibility.validate_copy(expected, 'new')
+
     def test_probe_requires_complete_modules_before_writing(self):
         source = Path(__file__)
         modules = {name:source for name in fixture.PROBE_MODULES}
@@ -30,14 +55,6 @@ class FixtureTests(unittest.TestCase):
         fixture.install_probe(self.root, {}, modules, source)
         self.assertEqual({p.name for p in (self.root/'usr/local/lib/klokast/router-probe').iterdir()},
                          set(fixture.PROBE_MODULES))
-
-    def test_native_key_fixture_uses_decoded_api_bytes_and_hides_invalid_data(self):
-        value = 'privkey:' + '0' * 64
-        encoded = base64.b64encode(value.encode()).decode()
-        self.assertEqual(router_compatibility.native_key_bytes(encoded), value)
-        for invalid in ('private-fixture-invalid', value, encoded + 'bad', None, 'x' * 1000):
-            with self.assertRaisesRegex(RuntimeError, '^native rotation fixture has an unsupported machine-key encoding$'):
-                router_compatibility.native_key_bytes(invalid)
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -112,7 +129,7 @@ class HostTests(unittest.TestCase):
     def test_success_flag_without_native_evidence_cannot_pass(self):
         value = {'operation_id': self.operation, 'inputs_sha256': 'b' * 64,
                  'guest': {'source_packages': {'tailscale': 'old'}, 'runtime_packages': {'tailscale': 'new'}}}
-        record = {'kind': 'klokast.router-compatibility-phase.v1', 'operation_id': self.operation,
+        record = {'kind': 'klokast.router-compatibility-phase.v2', 'operation_id': self.operation,
                   'inputs_sha256': 'b' * 64, 'success': True, 'production_identity': False, 'seconds': 1}
         for phase in self.host.PHASES:
             with self.subTest(phase=phase), self.assertRaises(RuntimeError):
@@ -135,7 +152,7 @@ class HostTests(unittest.TestCase):
                     'packages':{'tailscale':'new'}, 'accounts':accounts, 'tailscale':component,
                     'configuration_files':{'etc/hostname':hashlib.sha256(b'boxa-router\n').hexdigest()},
                     'identity_absent':True, 'service_syntax':True, 'replacement_authorized':False}
-        record = {'kind':'klokast.router-compatibility-phase.v1', 'operation_id':self.operation,
+        record = {'kind':'klokast.router-compatibility-phase.v2', 'operation_id':self.operation,
                   'inputs_sha256':'b'*64, 'success':True, 'production_identity':False, 'seconds':1,
                   'phase':'prepare', 'prepared':True, 'fixtures':{
                       'legacy':{'packages':{'tailscale':'old'}, 'production_state_removed':True},
@@ -183,7 +200,7 @@ class HostTests(unittest.TestCase):
                  'guest':{'source_packages':fixtures['legacy']['packages'],
                           'runtime_packages':case.job['runtime_packages'],
                           'manifest':case.manifest, 'fixture':case.request}}
-        record = {'kind':'klokast.router-compatibility-phase.v1', 'operation_id':value['operation_id'],
+        record = {'kind':'klokast.router-compatibility-phase.v2', 'operation_id':value['operation_id'],
                   'inputs_sha256':value['inputs_sha256'], 'success':True, 'production_identity':False,
                   'seconds':1, 'phase':'prepare', 'prepared':True, 'fixtures':fixtures}
         self.host.validate_phase(record, value, 'prepare')

@@ -94,17 +94,17 @@ class Dom0Tests(unittest.TestCase):
             'engine_commit':self.request['engine_commit'],
             'old_sha256':self.old['record_sha256'],
             'candidate_sha256':self.new['record_sha256']}
-        self.compatibility = {'kind':'klokast.router-retained-compatibility.v1',
+        self.compatibility = {'kind':'klokast.router-retained-compatibility.v2',
             **common,'success':True,'production_identity':False,
             'phases':dict.fromkeys(('forward','new','reverse','old'),'8'*64)}
-        self.copy_qualification = {'kind':'klokast.router-retained-copy-qualification.v1',
+        self.copy_qualification = {'kind':'klokast.router-retained-copy-qualification.v2',
             **common,'forward_receipt_sha256':'9'*64,
             'reverse_receipt_sha256':'a'*64,'copy_guest_detached':True}
         for name,value in (('candidate-preflight',self.candidate_preflight),
                            ('compatibility',self.compatibility),
                            ('copy-qualification',self.copy_qualification)):
             r.write(self.work / (name + '.json'),value)
-        self.ready = {'kind':'klokast.router-readiness.v2', 'request_sha256':g.digest(self.request),
+        self.ready = {'kind':'klokast.router-readiness.v3', 'request_sha256':g.digest(self.request),
             'release_sha256':self.new['release_sha256'],
             'candidate_preflight_sha256':g.digest(self.candidate_preflight),
             'compatibility_sha256':g.digest(self.compatibility),

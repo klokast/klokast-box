@@ -44,7 +44,7 @@ class CopyGuestTests(unittest.TestCase):
                 def copy(*args, **kwargs):
                     if fail:
                         raise RuntimeError('synthetic interruption')
-                    return {'kind': 'klokast.router-state-copy.v1', 'complete': True, 'receipt_sha256': 'old'}
+                    return {'kind': 'klokast.router-state-copy.v2', 'complete': True, 'receipt_sha256': 'old'}
                 request = {'box': 'boxa', 'operation': 'a' * 24, 'source_id': 'old-uuid',
                            'destination_id': 'new-uuid', 'seconds': 120, 'request_sha256': 'b' * 64,
                            'source_accounts': {'dnsmasq_uid': 103, 'dnsmasq_gid': 104, 'tailscale_gid': 103},

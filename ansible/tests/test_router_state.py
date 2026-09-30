@@ -18,7 +18,7 @@ class CopyTests(unittest.TestCase):
         self.target = Path(self.temporary.name) / 'target'
         self.source.mkdir()
         self.target.mkdir()
-        for relative in r.ALLOWLIST:
+        for relative in {**r.PATHS, **r.IDENTITY}:
             for root in (self.source, self.target):
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
         self.uid = os.geteuid()
@@ -61,11 +61,15 @@ class CopyTests(unittest.TestCase):
             self.assertEqual((self.source / relative).read_bytes(), (self.target / relative).read_bytes())
             self.assertEqual((self.source / relative).stat().st_mtime_ns, (self.target / relative).stat().st_mtime_ns)
             self.assertEqual((self.target / relative).stat().st_mode & 0o777, 0o600)
-        self.assertNotIn('var/lib/dhcpcd/eth0.lease6', record['files'])
+        self.assertEqual(set(record['files']), set(r.REQUIRED))
+        self.assertEqual(record['kind'], 'klokast.router-state-copy.v2')
+        self.assertEqual(record['wan_cache_absent'], list(r.WAN_CACHE))
+        self.assertFalse((self.target / lease).exists())
+        self.assertEqual((self.source / lease).read_bytes(), b'synthetic-lease')
         self.assertNotIn('synthetic-state', str(record))
 
     def test_required_identity_missing_and_empty(self):
-        for path in ('var/lib/tailscale/tailscaled.state', 'var/lib/dhcpcd/duid', 'var/lib/dhcpcd/secret'):
+        for path in ('var/lib/dhcpcd/duid', 'var/lib/dhcpcd/secret'):
             original = (self.source / path).read_bytes()
             (self.source / path).unlink()
             with self.assertRaises(r.StateError):
@@ -77,19 +81,10 @@ class CopyTests(unittest.TestCase):
         self.put('var/lib/misc/dnsmasq.leases', b'')
         self.assertTrue(self.copy()['complete'])
 
-    def test_native_duid_mode_and_tailscale_service_group(self):
+    def test_native_duid_and_secret_modes(self):
         (self.source / 'var/lib/dhcpcd/duid').chmod(0o640)
         (self.source / 'var/lib/dhcpcd/secret').chmod(0o400)
-        previous = r.os.fstat.side_effect
-        def service_group(fd):
-            value = previous(fd)
-            if os.readlink('/proc/self/fd/' + str(fd)) == str(self.source / 'var/lib/tailscale/tailscaled.state'):
-                value.st_gid = 103
-            return value
-        r.os.fstat.side_effect = service_group
-        with self.assertRaisesRegex(r.StateError, 'ownership'):
-            self.copy()
-        self.assertTrue(self.copy(tailscale_gid=103)['complete'])
+        self.assertTrue(self.copy()['complete'])
         self.assertEqual((self.target / 'var/lib/dhcpcd/duid').stat().st_mode & 0o777, 0o640)
         self.assertEqual((self.target / 'var/lib/dhcpcd/secret').stat().st_mode & 0o777, 0o400)
 
@@ -126,40 +121,66 @@ class CopyTests(unittest.TestCase):
             self.copy()
         folder.unlink()
         folder.mkdir()
-        self.put('var/lib/dhcpcd/eth0.lease6', b'unknown-state', root=self.target)
-        with self.assertRaisesRegex(r.StateError, 'conflicting'):
+        cache = self.put('var/lib/dhcpcd/eth0.lease6', b'old-WAN-cache', root=self.target)
+        cache.chmod(0o666)
+        with self.assertRaisesRegex(r.StateError, 'unsafe'):
             self.copy()
+        self.assertFalse((self.target / 'var/lib/dhcpcd/duid').exists())
+        self.assertTrue(cache.exists())
 
-    def test_effective_ssh_source_and_candidate_key_conflict(self):
-        system = 'etc/ssh/ssh_host_ed25519_key'
-        fallback = 'var/lib/tailscale/ssh/ssh_host_ed25519_key'
-        (self.source / system).unlink()
-        self.put(fallback, b'fallback-key')
-        self.put(system, b'candidate-key', root=self.target)
-        with self.assertRaisesRegex(r.StateError, 'conflicting'):
+    def test_forward_and_reverse_preserve_separate_generation_identity(self):
+        for root, generation in ((self.source, b'A'), (self.target, b'B')):
+            for path in r.IDENTITY:
+                self.put(path, generation + path.encode(), root=root)
+        before = {str(root): {path: (root/path).read_bytes() for path in r.IDENTITY}
+                  for root in (self.source, self.target)}
+        self.copy()
+        self.put('var/lib/misc/dnsmasq.leases', b'latest-client-lease', root=self.target)
+        r.copy_state(self.target, self.source, source_id='B', destination_id='A')
+        for root in (self.source, self.target):
+            self.assertEqual({path: (root/path).read_bytes() for path in r.IDENTITY}, before[str(root)])
+        self.assertEqual((self.source/'var/lib/misc/dnsmasq.leases').read_bytes(), b'latest-client-lease')
+
+    def test_wan_cache_removal_is_bounded_and_resumable(self):
+        for path in r.WAN_CACHE:
+            self.put(path, b'old-lease', root=self.target)
+        unknown = self.put('var/lib/dhcpcd/other.lease', b'not-owned', root=self.target)
+        class Interrupted(Exception): pass
+        def interrupt(stage):
+            if stage == 'removed:var/lib/dhcpcd/eth0.lease':
+                raise Interrupted()
+        with self.assertRaises(Interrupted):
+            self.copy(checkpoint=interrupt)
+        self.assertTrue(self.copy()['complete'])
+        self.assertTrue(all(not (self.target/path).exists() for path in r.WAN_CACHE))
+        self.assertEqual(unknown.read_bytes(), b'not-owned')
+
+    def test_linked_wan_cache_cannot_delete_another_file(self):
+        cache = self.target/'var/lib/dhcpcd/eth0.lease'
+        secret = self.put('var/lib/dhcpcd/secret', b'keep', root=self.target)
+        cache.symlink_to(secret)
+        with self.assertRaises(OSError):
             self.copy()
-        (self.target / system).unlink()
-        result = self.copy()
-        self.assertIn(fallback, result['files'])
-        self.assertNotIn(system, result['files'])
+        self.assertEqual(secret.read_bytes(), b'keep')
+        self.assertFalse((self.target/'var/lib/dhcpcd/duid').exists())
 
     def test_interrupted_copy_restarts_complete_set_and_reverse_uses_latest(self):
         class Interrupted(Exception): pass
         def interruption(stage):
-            if stage == 'installed:var/lib/tailscale/tailscaled.state':
+            if stage == 'installed:var/lib/dhcpcd/duid':
                 raise Interrupted()
         with self.assertRaises(Interrupted):
             self.copy(checkpoint=interruption)
         self.assertTrue(self.copy()['complete'])
-        path = 'var/lib/tailscale/tailscaled.state'
-        self.put(path, b'new-key-state', root=self.target)
+        path = 'var/lib/dhcpcd/duid'
+        self.put(path, b'latest-DUID', root=self.target)
         reverse = r.copy_state(self.target, self.source, source_id='target-uuid', destination_id='source-uuid')
         self.assertTrue(reverse['complete'])
-        self.assertEqual((self.source / path).read_bytes(), b'new-key-state')
+        self.assertEqual((self.source / path).read_bytes(), b'latest-DUID')
         self.put(path, b'', root=self.target)
         with self.assertRaises(r.StateError):
             r.copy_state(self.target, self.source, source_id='target-uuid', destination_id='source-uuid')
-        self.assertEqual((self.source / path).read_bytes(), b'new-key-state')
+        self.assertEqual((self.source / path).read_bytes(), b'latest-DUID')
 
     def test_generic_template_refuses_identity_and_links(self):
         (self.target / 'etc/hostname').write_text('klokast-router-template\n')

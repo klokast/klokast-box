@@ -198,7 +198,7 @@ class RouterInitialContactTests(unittest.TestCase):
         state = {'fixture':'enrolled'}
         state_hash = contact.personalize.digest(state)
         with patch.object(contact.personalize, 'environment'), \
-                patch.object(contact.router_state, 'snapshot', return_value={}), \
+                patch.object(contact.router_state, 'enrolled_snapshot', return_value={}), \
                 patch.object(contact.router_state, 'evidence', return_value=state), \
                 patch.object(contact.router_finalize, 'finalize',
                     side_effect=[ValueError('simulated offline package interruption'),

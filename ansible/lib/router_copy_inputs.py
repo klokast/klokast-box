@@ -27,7 +27,7 @@ def stage(source, work, repo, request, old, candidate):
         job_files={'router-copy-job.json': entry,
                    'usr/local/lib/klokast/router_state.py': repo / 'ansible/lib/router_state.py',
                    'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})
-    return {'kind': 'klokast.router-copy-capsule.v1', 'operation_id': request['operation_id'],
+    return {'kind': 'klokast.router-copy-capsule.v2', 'operation_id': request['operation_id'],
             'inputs_sha256': manifest['inputs_sha256'], 'engine_commit': request['engine_commit'],
             'transaction_sha256': router_generations.digest(request), 'job_sha256': router_generations.digest(value),
             'bootstrap': boot, 'domains': {phase: str(uuid.uuid4()) for phase in ('forward', 'reverse')}}

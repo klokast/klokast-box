@@ -56,7 +56,7 @@ def guard():
     request = json.loads(REQUEST.read_text(), object_pairs_hook=unique)
     fields = {'kind', 'operation', 'source_id', 'destination_id', 'source_accounts',
               'destination_accounts', 'seconds', 'request_sha256', 'box', 'role'}
-    if (set(request) != fields or request['kind'] != 'klokast.router-copy-request.v1' or
+    if (set(request) != fields or request['kind'] != 'klokast.router-copy-request.v2' or
             request['role'] != 'router' or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', request['box']) or
             not re.fullmatch(r'[0-9a-f]{24}', request['operation']) or
             type(request['seconds']) is not int or not 30 <= request['seconds'] <= 900 or

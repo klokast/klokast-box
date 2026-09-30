@@ -57,7 +57,7 @@ def finalize(root, manifest, *, enrolled_accounts=None, runtime_packages=None, e
             path = root / relative
             if path.exists() or path.is_symlink():
                 raise ValueError('router finalization refuses unsupported enrolled state')
-        retained = router_state.evidence(router_state.snapshot(root, **enrolled_accounts))
+        retained = router_state.evidence(router_state.enrolled_snapshot(root, **enrolled_accounts))
         if router_personalize.digest(retained) != enrolled_state_sha256:
             raise ValueError('router finalization enrolled state differs from the recorded bootstrap state')
     elif runtime_packages is not None or enrolled_state_sha256 is not None:
@@ -114,7 +114,7 @@ def finalize(root, manifest, *, enrolled_accounts=None, runtime_packages=None, e
              if row.startswith('root:')]
     if len(roots) != 1 or not roots[0][1].startswith(('!', '*')):
         raise ValueError('finalized router root password is not locked')
-    if retained is not None and router_state.evidence(router_state.snapshot(root, **enrolled_accounts)) != retained:
+    if retained is not None and router_state.evidence(router_state.enrolled_snapshot(root, **enrolled_accounts)) != retained:
         raise ValueError('router finalization changed enrolled identity or lease state; keep the router stopped')
     result = {'kind': 'klokast.router-finalization.v1', 'packages': after,
             'removed_packages': sorted(before.keys() - after.keys()),

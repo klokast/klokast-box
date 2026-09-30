@@ -2087,7 +2087,7 @@ def test_state_copy(box, source):
             expected_profile=router_updates.PROFILE,
             job_files={'usr/local/lib/klokast/router_state.py': REPO / 'ansible/lib/router_state.py',
                        'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})
-        transport.write(work / 'request.json', {'kind': 'klokast.router-copy-test-request.v1',
+        transport.write(work / 'request.json', {'kind': 'klokast.router-copy-test-request.v2',
             'box': box, 'role': 'router', 'operation_id': operation, 'engine_commit': engine,
             'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot})
         args = result / 'arguments.json'
@@ -2098,7 +2098,7 @@ def test_state_copy(box, source):
                                REPO / 'ansible/playbooks/74-router-state-copy-test.yml', '--limit', box + '-dom0',
                                '-e', '@' + str(args)], timeout=2200, log=log)
         evidence = transport.load(result / 'result.json')
-        if (evidence.get('kind') != 'klokast.router-copy-qualification.v1' or evidence.get('box') != box or
+        if (evidence.get('kind') != 'klokast.router-copy-qualification.v2' or evidence.get('box') != box or
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('synthetic_only') is not True or
@@ -2185,7 +2185,7 @@ def test_compatibility(box, source, template_operation):
         operation = secrets.token_hex(12)
         work, result = CACHE / ('compatibility-' + operation), STATE / operation
         work.mkdir(mode=0o700); result.mkdir(mode=0o700)
-        guest = {'kind': 'klokast.router-compatibility-request.v1', 'operation_id': operation,
+        guest = {'kind': 'klokast.router-compatibility-request.v2', 'operation_id': operation,
                  'inputs_sha256': manifest['inputs_sha256'], 'box': box,
                  'source_packages': router['packages'], 'source_kernel_release': router['kernel_release'],
                  'source_files': {k.lstrip('/'): v['sha256'] for k, v in {
@@ -2201,7 +2201,7 @@ def test_compatibility(box, source, template_operation):
                           'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})
         boot = vm_template_inputs.bootstrap(source, work / 'boot', files / 'router-compatibility-guest',
             expected_profile=router_updates.PROFILE, job_files=job_files)
-        transport.write(work / 'request.json', {'kind': 'klokast.router-compatibility-host.v1',
+        transport.write(work / 'request.json', {'kind': 'klokast.router-compatibility-host.v2',
             'box': box, 'role': 'router', 'operation_id': operation, 'engine_commit': engine,
             'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot,
             'template': {'operation': template_operation, 'sha256': vm_template_inputs.sha256(candidate_path)},
@@ -2216,7 +2216,7 @@ def test_compatibility(box, source, template_operation):
                 REPO / 'ansible/playbooks/74-router-compatibility.yml', '--limit', box + '-dom0',
                 '-e', '@' + str(args)], timeout=3400, log=log)
         evidence = transport.load(result / 'result.json')
-        if (evidence.get('kind') != 'klokast.router-compatibility-result.v1' or evidence.get('box') != box or
+        if (evidence.get('kind') != 'klokast.router-compatibility-result.v2' or evidence.get('box') != box or
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('production_identity') is not False or
@@ -2224,7 +2224,7 @@ def test_compatibility(box, source, template_operation):
                 evidence.get('candidate_modes') != ['initial-install', 'replacement'] or
                 evidence.get('source_packages') != router['packages'] or
                 evidence.get('runtime_packages') != release['runtime_packages'] or
-                evidence.get('control_plane_rotation_tested') is not False or evidence.get('replacement_authorized') is not False):
+                evidence.get('enrollment_tested') is not False or evidence.get('replacement_authorized') is not False):
             raise UpdateError('router compatibility returned incomplete or different evidence')
         allocation = transport.load(result / 'candidate-disk.json')
         if (allocation.get('kind') != 'klokast.router-candidate-disk.v1' or

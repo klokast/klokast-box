@@ -94,7 +94,7 @@ class FinalizationTests(unittest.TestCase):
             command.assert_not_called()
 
     def seed_enrolled(self):
-        for relative in (*router_state.REQUIRED, *router_state.OPTIONAL,
+        for relative in (*router_state.REQUIRED, *router_state.WAN_CACHE, 'var/lib/tailscale/tailscaled.state',
                          *('etc/ssh/ssh_host_' + kind + '_key' for kind in router_state.KEY_TYPES)):
             self.put(relative, 'synthetic state\n')
             (self.root/relative).chmod(0o600)
@@ -108,18 +108,18 @@ class FinalizationTests(unittest.TestCase):
         self.addCleanup(owner.stop)
         return {'enrolled_accounts': {'dnsmasq_uid':65,'dnsmasq_gid':65,'tailscale_gid':103},
                 'runtime_packages': {k:v for k,v in self.request['packages'].items() if k != 'openssh'},
-                'enrolled_state_sha256': f.router_personalize.digest(router_state.evidence(router_state.snapshot(self.root)))}
+                'enrolled_state_sha256': f.router_personalize.digest(router_state.evidence(router_state.enrolled_snapshot(self.root)))}
 
     def test_enrolled_cleanup_preserves_identity_and_resumes_without_apk(self):
         arguments = self.seed_enrolled()
-        expected = router_state.evidence(router_state.snapshot(self.root, **arguments['enrolled_accounts']))
+        expected = router_state.evidence(router_state.enrolled_snapshot(self.root, **arguments['enrolled_accounts']))
         with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run', side_effect=self.retire) as command:
             result = f.finalize(self.root, self.manifest, **arguments)
             self.assertEqual(result['packages'], arguments['runtime_packages'])
             self.assertTrue(result['enrolled_state_preserved'])
             self.assertEqual(result, f.finalize(self.root, self.manifest, **arguments))
             command.assert_called_once()
-        self.assertEqual(router_state.evidence(router_state.snapshot(self.root, **arguments['enrolled_accounts'])), expected)
+        self.assertEqual(router_state.evidence(router_state.enrolled_snapshot(self.root, **arguments['enrolled_accounts'])), expected)
         self.assertNotIn('synthetic state', str(result))
 
     def test_enrolled_cleanup_refuses_remaining_key_or_missing_state_before_apk(self):
@@ -147,6 +147,27 @@ class FinalizationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'recorded bootstrap state'):
                 f.finalize(self.root, self.manifest, **arguments)
             command.assert_not_called()
+
+    def test_enrolled_cleanup_still_requires_its_own_tailscale_and_ssh_keys(self):
+        arguments = self.seed_enrolled()
+        for relative in ('var/lib/tailscale/tailscaled.state', 'etc/ssh/ssh_host_ed25519_key'):
+            path = self.root/relative
+            saved = path.read_bytes()
+            path.unlink()
+            with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run') as command:
+                with self.assertRaises(router_state.StateError):
+                    f.finalize(self.root, self.manifest, **arguments)
+                command.assert_not_called()
+            self.put(relative, 'different identity\n')
+            path.chmod(0o600)
+            with patch.object(f.router_personalize, 'environment'), patch.object(f.subprocess, 'run') as command:
+                with self.assertRaisesRegex(ValueError, 'recorded bootstrap state'):
+                    f.finalize(self.root, self.manifest, **arguments)
+                command.assert_not_called()
+            # Re-seed the full evidence after restoring this fixture.
+            path.write_bytes(saved)
+            arguments['enrolled_state_sha256'] = f.router_personalize.digest(
+                router_state.evidence(router_state.enrolled_snapshot(self.root)))
 
 
 if __name__ == '__main__':

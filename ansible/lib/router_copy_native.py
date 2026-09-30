@@ -222,10 +222,29 @@ class Copy:
         _, job = self.inputs(adapter)
         receipt = self.read_slot(adapter.work / 'copy' / (phase + '.private.slot'))
         expected = job[phase]
-        if (not isinstance(receipt, dict) or receipt.get('kind') != 'klokast.router-state-copy.v1' or
+        if (not isinstance(receipt, dict) or receipt.get('kind') != 'klokast.router-state-copy.v2' or
+                not isinstance(receipt.get('files'), dict) or set(receipt['files']) != {
+                    'var/lib/dhcpcd/duid', 'var/lib/dhcpcd/secret', 'var/lib/misc/dnsmasq.leases'} or
+                receipt.get('wan_cache_absent') != ['var/lib/dhcpcd/eth0.lease', 'var/lib/dhcpcd/eth0.lease6'] or
                 receipt.get('complete') is not True or receipt.get('operation') != adapter.request['operation_id'] or
                 receipt.get('request_sha256') != expected['request_sha256'] or
                 receipt.get('source') != expected['source_id'] or receipt.get('destination') != expected['destination_id'] or
                 receipt.get('receipt_sha256') != value.get('copy_receipt_sha256') or
                 receipt.get('receipt_sha256') != generations.digest({k:v for k,v in receipt.items() if k != 'receipt_sha256'})):
             raise TransactionError('router state copy lacks its exact complete private receipt')
+        accounts = expected['destination_accounts']
+        for path, metadata in receipt['files'].items():
+            lease = path == 'var/lib/misc/dnsmasq.leases'
+            owners = {(0, 0)}
+            if lease:
+                owners.add((accounts['dnsmasq_uid'], accounts['dnsmasq_gid']))
+            if (not isinstance(metadata, dict) or set(metadata) != {
+                    'sha256', 'bytes', 'mtime_ns', 'mode', 'uid', 'gid'} or
+                    not generations.matches('[0-9a-f]{64}', metadata['sha256']) or
+                    any(type(metadata[key]) is not int for key in ('bytes', 'mtime_ns', 'mode', 'uid', 'gid')) or
+                    not (0 if lease else 1) <= metadata['bytes'] <= (4 * MIB if lease else 4096) or
+                    metadata['mtime_ns'] < 0 or not 0 <= metadata['mode'] <= 0o7777 or
+                    metadata['mode'] & 0o7022 or
+                    path == 'var/lib/dhcpcd/secret' and metadata['mode'] & 0o077 or
+                    (metadata['uid'], metadata['gid']) not in owners):
+                raise TransactionError('router copy receipt has invalid DHCP state metadata')

@@ -28,6 +28,10 @@
         - test_router_generations.py
         - test_router_transaction.py
         - test_router_copy_inputs.py
+        - test_router_state.py
+        - test_router_copy_guest.py
+        - test_router_copy_qualification.py
+        - test_router_compatibility.py
         - test_router_records.py
         - test_router_native.py
         - test_router_dom0.py

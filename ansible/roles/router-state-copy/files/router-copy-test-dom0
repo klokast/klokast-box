@@ -57,7 +57,7 @@ def request(work, box, operation):
     safe_file(work / 'request.json', MIB)
     value = json.loads((work / 'request.json').read_text(), object_pairs_hook=duplicate_fields)
     if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'bootstrap', 'engine_commit'} or
-            value['kind'] != 'klokast.router-copy-test-request.v1' or value['box'] != box or
+            value['kind'] != 'klokast.router-copy-test-request.v2' or value['box'] != box or
             value['role'] != 'router' or value['operation_id'] != operation or
             not isinstance(value['engine_commit'], str) or not re.fullmatch('[0-9a-f]{40}', value['engine_commit']) or
             not isinstance(value['inputs_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256']) or
@@ -152,10 +152,10 @@ def execute(work, value):
             config = work / (phase + '.cfg')
             config.write_text(configuration(work, value, phase, identities[phase], loops))
             boot_guest(work, 'router-copytest-' + phase + '-' + operation, identities[phase], config,
-                       value, kind='klokast.router-copy-test.v1', timeout=240)
+                       value, kind='klokast.router-copy-test.v2', timeout=240)
             record = read_slot(work / 'result.slot')
             write(work / (phase + '.json'), record)
-            if (record.get('kind') != 'klokast.router-copy-test.v1' or record.get('success') is not True or
+            if (record.get('kind') != 'klokast.router-copy-test.v2' or record.get('success') is not True or
                     record.get('operation_id') != operation or record.get('inputs_sha256') != value['inputs_sha256'] or
                     record.get('phase') != phase):
                 raise RuntimeError('router copy test failed during ' + phase + '; inspect its phase record')
@@ -166,7 +166,7 @@ def execute(work, value):
                 raise RuntimeError('copy guest changed its read-only source disk')
             records.append(phase)
             durations[phase] = round(time.monotonic() - phase_started, 3)
-        result = {'kind': 'klokast.router-copy-qualification.v1', 'box': value['box'], 'role': 'router',
+        result = {'kind': 'klokast.router-copy-qualification.v2', 'box': value['box'], 'role': 'router',
                   'operation_id': operation, 'inputs_sha256': value['inputs_sha256'],
                   'engine_commit': value['engine_commit'],
                   'phases': records, 'success': True, 'synthetic_only': True,

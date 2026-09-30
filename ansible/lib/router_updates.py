@@ -92,7 +92,7 @@ def validate_profile(profile):
     if (profile['kind'] != 'klokast.vm-template-profile.v1' or profile['profile'] != PROFILE or
             profile['architecture'] != 'x86_64' or profile['roles'] != ['router'] or
             profile['branch_policy'] != 'tested-stable' or
-            profile['state_contract'] != 'klokast.router-state.v1' or
+            profile['state_contract'] != 'klokast.router-state.v2' or
             profile['repositories'] != ['main', 'community'] or
             profile['repository_origin'] != 'https://dl-cdn.alpinelinux.org/alpine' or
             profile['release_metadata'] != 'https://alpinelinux.org/releases.json'):
@@ -311,8 +311,9 @@ def legacy_baseline_findings(guest, dom0, box, *, adopted=False,
                 result.add((0, accounts['tailscale_gid']))
         return result
 
-    required = {'/' + path: limit for path, limit in router_state.REQUIRED.items()}
-    optional = {'/' + path: limit for path, limit in router_state.OPTIONAL.items()}
+    required = {'/' + path: limit for path, limit in {**router_state.REQUIRED,
+                'var/lib/tailscale/tailscaled.state': router_state.IDENTITY['var/lib/tailscale/tailscaled.state']}.items()}
+    optional = {'/' + path: limit for path, limit in router_state.WAN_CACHE.items()}
     if (not isinstance(paths, dict) or set(paths) != set(required) | set(optional) or
             any(not _copyable_metadata(paths.get(path), limit, private=path in (
                 '/var/lib/tailscale/tailscaled.state', '/var/lib/dhcpcd/secret'),

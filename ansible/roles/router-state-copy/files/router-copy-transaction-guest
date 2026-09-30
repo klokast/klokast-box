@@ -31,7 +31,7 @@ def select(job, cmdline):
                 raise RuntimeError('router copy job has duplicate boot parameters')
             parameters[name] = value
     if (not isinstance(job, dict) or set(job) != {'kind', 'operation_id', 'inputs_sha256', 'forward', 'reverse'} or
-            job['kind'] != 'klokast.router-copy-job.v1' or
+            job['kind'] != 'klokast.router-copy-job.v2' or
             not re.fullmatch('[0-9a-f]{24}', str(job['operation_id'])) or
             not re.fullmatch('[0-9a-f]{64}', str(job['inputs_sha256'])) or
             parameters.get('klokast_phase') not in ('forward', 'reverse') or
@@ -74,7 +74,7 @@ def main():
         helper['execute'](helper['guard']())
         with Path('/dev/xvdd').open('rb') as stream:
             receipt = json.loads(stream.read(65536).split(b'\0', 1)[0], object_pairs_hook=unique)
-        if (receipt.get('kind') != 'klokast.router-state-copy.v1' or receipt.get('complete') is not True or
+        if (receipt.get('kind') != 'klokast.router-state-copy.v2' or receipt.get('complete') is not True or
                 receipt.get('operation') != job['operation_id'] or receipt.get('request_sha256') != request['request_sha256'] or
                 receipt.get('source') != request['source_id'] or receipt.get('destination') != request['destination_id'] or
                 digest({k: v for k, v in receipt.items() if k != 'receipt_sha256'}) != receipt.get('receipt_sha256')):

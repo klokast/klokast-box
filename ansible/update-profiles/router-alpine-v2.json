@@ -4,7 +4,7 @@
   "architecture": "x86_64",
   "roles": ["router"],
   "branch_policy": "tested-stable",
-  "state_contract": "klokast.router-state.v1",
+  "state_contract": "klokast.router-state.v2",
   "packages": [
     "alpine-base", "ca-certificates", "dhcpcd", "dnsmasq", "doas",
     "e2fsprogs", "iproute2", "linux-virt", "mkinitfs", "nftables",
