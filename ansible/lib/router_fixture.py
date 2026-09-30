@@ -32,9 +32,9 @@ def put_identity_fixture(root, relative, content):
         parent = parent / 'ssh'
         if not parent.exists() and not parent.is_symlink():
             parent.mkdir(mode=0o700)
-            os.chown(parent, owner.st_uid, owner.st_gid)
         info = parent.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (owner.st_uid, owner.st_gid) or
+        permitted = {(owner.st_uid, owner.st_gid), (os.geteuid(), os.getegid())}
+        if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) not in permitted or
                 info.st_mode & 0o077 or info.st_dev != owner.st_dev):
             raise ValueError('router fixture Tailscale SSH directory is unsafe')
     target = parent / Path(relative).name

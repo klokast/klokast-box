@@ -91,6 +91,12 @@ class FixtureTests(unittest.TestCase):
             key = 'var/lib/tailscale/ssh/ssh_host_ed25519_key'
             fixture.put_identity_fixture(self.root, key, 'opaque test key')
             self.assertEqual((service / 'ssh/ssh_host_ed25519_key').read_text(), 'opaque test key')
+            self.assertEqual((service / 'ssh').stat().st_uid, os.geteuid())
+            self.assertEqual((service / 'ssh').stat().st_gid, os.getegid())
+            (service / 'ssh').chmod(0o755)
+            with self.assertRaisesRegex(ValueError, 'directory is unsafe'):
+                fixture.put_identity_fixture(self.root, 'var/lib/tailscale/ssh/ssh_host_rsa_key', 'x')
+            (service / 'ssh').chmod(0o700)
             with self.assertRaisesRegex(ValueError, 'already exists'):
                 fixture.put_identity_fixture(self.root, key, 'replacement')
             (service / 'ssh/ssh_host_ed25519_key').unlink()
