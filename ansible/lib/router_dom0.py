@@ -8,11 +8,13 @@ import ipaddress
 import logging
 import os
 from pathlib import Path
+import secrets
 import time
 
 import router_generations as generations
 import router_native as native
 import router_records as records
+import router_replacement_enrollment as enrollment
 import router_transaction as transaction
 
 
@@ -133,6 +135,7 @@ class Adapter:
         if request != self.request or self.storage.pending() is not None or (self.work / 'complete.json').exists():
             raise transaction.TransactionError('router operation is already pending or completed; refusing replay')
         self.verify_qualifications()
+        self.enrollment_source()
         grant = records.read(self.work / 'authorization.json')
         now = time.time()
         if (not isinstance(grant, dict) or set(grant) != {'kind', 'request_sha256', 'granted_at', 'expires_at', 'readiness_sha256'} or
@@ -180,8 +183,38 @@ class Adapter:
         # Persist before stopping a router. Pending also survives on dom0_data.
         native.command(['/usr/sbin/lbu', 'commit', '-d'], deadline, maximum_seconds=120)
 
+    def enrollment_source(self):
+        source = records.read(self.work / 'enrollment-source.json')
+        prepared = records.read(self.work / 'preparation-result.json')
+        if (not isinstance(source,dict) or set(source) != {'kind','request_sha256',
+                'old_sha256','old_machine_id','preparation_sha256'} or
+                source['kind'] != 'klokast.router-replacement-enrollment-source.v1' or
+                source['request_sha256'] != generations.digest(self.request) or
+                source['old_sha256'] != self.request['old_sha256'] or
+                source['preparation_sha256'] != generations.digest(prepared) or
+                prepared.get('kind') != 'klokast.router-candidate-preparation-result.v1' or
+                prepared.get('operation_id') != self.request['operation_id'] or
+                prepared.get('success') is not True or
+                not isinstance(prepared.get('first_contact'),dict)):
+            raise transaction.TransactionError('router enrollment source differs from the prepared candidate')
+        keys = prepared['first_contact'].get('host_key_public_sha256')
+        enrollment.attempt(self.request,self.pair['candidate'],nonce='0'*24,
+            old_machine_id=source['old_machine_id'],host_keys=keys)
+        return source,keys
+
     def arm(self, *, deadline):
+        source,keys = self.enrollment_source()
         self.disable_autostart(deadline=deadline)
+        path = self.work / 'enrollment-attempt.json'
+        if path.exists() or path.is_symlink():
+            intent = enrollment.validate_attempt(records.read(path),self.request)
+            if (intent['old_machine_id'] != source['old_machine_id'] or
+                    intent['host_key_public_sha256'] != keys):
+                raise transaction.TransactionError('router enrollment attempt changed after preparation')
+        else:
+            intent = enrollment.attempt(self.request,self.pair['candidate'],
+                nonce=secrets.token_hex(12),old_machine_id=source['old_machine_id'],host_keys=keys)
+            records.write(path,intent)
 
     def stop(self, side, *, deadline):
         self.host.stop(self.pair, side, deadline=deadline)
@@ -210,6 +243,23 @@ class Adapter:
             except transaction.TransactionError:
                 time.sleep(min(1, max(0, deadline - self.monotonic())))
         raise transaction.TransactionError('router backend gateway or WAN DNS did not recover within its fixed budget')
+
+    def wait_enrollment(self, *, deadline):
+        intent = enrollment.validate_attempt(records.read(self.work / 'enrollment-attempt.json'),
+                                             self.request)
+        path = self.work / 'enrollment-result.json'
+        while self.monotonic() < deadline:
+            if path.exists() or path.is_symlink():
+                enrollment.result(records.read(path),self.request,intent)
+                return True
+            current = self.host.guest(self.pair,deadline=deadline)
+            if current is None or current[0] != 'candidate':
+                raise transaction.TransactionError('candidate stopped before its exact enrollment result')
+            time.sleep(min(1,max(0,deadline-self.monotonic())))
+        return False
+
+    def finalize_candidate(self, *, deadline):
+        raise transaction.TransactionError('router replacement offline finalizer is not staged')
 
     def wait_acceptance(self, *, deadline):
         path = self.work / 'acceptance.json'

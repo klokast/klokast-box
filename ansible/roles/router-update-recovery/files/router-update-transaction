@@ -15,7 +15,8 @@ BASE = Path('/mnt/dom0_data/klokast-router-updates')
 ENGINES = Path('/usr/local/lib/klokast/router-updates')
 MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 'router_native', 'router_records',
     'router_initial_installation', 'router_transaction', 'router_generations', 'router_personalize',
-    'router_finalize', 'router_copy_contract', 'router_copy_native'))
+    'router_finalize', 'router_copy_contract', 'router_copy_native',
+    'router_replacement_enrollment'))
 
 
 def secure(path, directory=False):

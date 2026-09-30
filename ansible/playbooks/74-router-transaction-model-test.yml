@@ -24,6 +24,7 @@
         - test_router_candidate_disk.py
         - test_router_candidate_generation.py
         - test_router_replacement_generation.py
+        - test_router_replacement_enrollment.py
         - test_router_replacement_cli.py
         - test_router_generations.py
         - test_router_transaction.py

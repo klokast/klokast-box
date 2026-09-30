@@ -13,7 +13,9 @@ class TransactionError(RuntimeError):
 
 
 PHASES = frozenset(('armed', 'stopping-old', 'copying-forward', 'candidate-ready',
-    'starting-candidate', 'checking-candidate', 'awaiting-acceptance', 'committing',
+    'starting-candidate', 'checking-candidate', 'awaiting-enrollment',
+    'stopping-candidate-for-finalization', 'finalizing-candidate',
+    'restarting-candidate', 'checking-final-candidate', 'awaiting-acceptance', 'committing',
     'accepted', 'fencing-candidate', 'fencing-old', 'copying-reverse', 'old-ready',
     'starting-old', 'checking-old', 'rolled-back', 'recovery-failed'))
 
@@ -41,7 +43,10 @@ def validate_pending(record, request):
             type(record['old_started']) is not bool or
             record['reason'] not in ('cutover', 'deadline-or-check', 'boot-recovery', 'recovery-action-failed', 'fencing-unconfirmed') or
             record['phase'] in ('armed', 'stopping-old', 'copying-forward', 'candidate-ready') and record['candidate_started'] or
-            record['phase'] in ('starting-candidate', 'checking-candidate', 'awaiting-acceptance', 'committing', 'accepted',
+            record['phase'] in ('starting-candidate', 'checking-candidate', 'awaiting-enrollment',
+                                'stopping-candidate-for-finalization', 'finalizing-candidate',
+                                'restarting-candidate', 'checking-final-candidate',
+                                'awaiting-acceptance', 'committing', 'accepted',
                                 'copying-reverse') and not record['candidate_started'] or
             record['old_started'] and record['phase'] not in ('fencing-candidate', 'old-ready', 'starting-old',
                 'checking-old', 'rolled-back', 'recovery-failed')):
@@ -96,6 +101,17 @@ class Transaction:
             self.checkpoint('starting-candidate', started=True)
             self.action('start', deadline, 'candidate')
             self.checkpoint('checking-candidate')
+            self.action('check_local', deadline, 'candidate')
+            self.checkpoint('awaiting-enrollment')
+            if self.action('wait_enrollment', deadline) is not True:
+                raise TransactionError('controller did not enroll the exact candidate before its deadline')
+            self.checkpoint('stopping-candidate-for-finalization')
+            self.action('stop', deadline, 'candidate')
+            self.checkpoint('finalizing-candidate')
+            self.action('finalize_candidate', deadline)
+            self.checkpoint('restarting-candidate')
+            self.action('start', deadline, 'candidate')
+            self.checkpoint('checking-final-candidate')
             self.action('check_local', deadline, 'candidate')
             self.checkpoint('awaiting-acceptance')
             if self.action('wait_acceptance', deadline) is not True:

@@ -1,4 +1,5 @@
 """Exercise the real adapter and durable records across failures with fake Xen."""
+import copy
 from pathlib import Path
 import sys
 import time
@@ -73,6 +74,19 @@ class Copy:
 class Dom0Tests(unittest.TestCase):
     def setUp(self):
         records_tests.RecordsTests.setUp(self)
+        self.request['operation_id'] = 'f'*24
+        (self.base/'operations'/self.request['operation_id']).mkdir(mode=0o700)
+        candidate = copy.deepcopy(self.new)
+        candidate.pop('record_sha256')
+        candidate['generation_id'] = self.request['operation_id']
+        candidate['disk']['path'] = '/dev/vg0/routergen_' + self.request['operation_id']
+        for name in ('kernel','initramfs'):
+            candidate['boot'][name]['path'] = (
+                '/mnt/dom0_data/klokast-router-updates/generations/' +
+                self.request['operation_id'] + '/' + name)
+        self.new = g.seal(candidate)
+        r.write(self.base/'records'/(self.new['record_sha256']+'.json'),self.new)
+        self.request['candidate_sha256'] = self.new['record_sha256']
         self.work = self.records.operation(self.request['operation_id'])
         self.xen = self.base / 'xen'
         self.xen.mkdir(mode=0o700); (self.xen / 'auto').mkdir(mode=0o700)
@@ -115,6 +129,14 @@ class Dom0Tests(unittest.TestCase):
         r.write(self.work / 'authorization.json', {'kind':'klokast.router-operation-authorization.v1',
             'request_sha256':g.digest(self.request),'readiness_sha256':g.digest(self.ready),
             'granted_at':int(time.time()),'expires_at':int(time.time())+600})
+        prepared = {'kind':'klokast.router-candidate-preparation-result.v1',
+            'operation_id':self.request['operation_id'],'success':True,
+            'first_contact':{'host_key_public_sha256':{'ed25519':'a'*64}}}
+        r.write(self.work/'preparation-result.json',prepared)
+        r.write(self.work/'enrollment-source.json',{
+            'kind':'klokast.router-replacement-enrollment-source.v1',
+            'request_sha256':g.digest(self.request),'old_sha256':self.request['old_sha256'],
+            'old_machine_id':'nOldRouter','preparation_sha256':g.digest(prepared)})
         self.host, self.copy = Host(), Copy()
         self.adapter = d.Adapter(self.records, self.request['operation_id'], self.copy, host=self.host, xen=self.xen)
         self.link = self.xen / 'auto/router.cfg'
@@ -125,11 +147,45 @@ class Dom0Tests(unittest.TestCase):
         patch.start(); self.addCleanup(patch.stop)
         patch = mock.patch.object(n, 'command', return_value='')
         patch.start(); self.addCleanup(patch.stop)
+        patch = mock.patch.object(self.adapter,'wait_enrollment',return_value=True)
+        patch.start(); self.addCleanup(patch.stop)
+        patch = mock.patch.object(self.adapter,'finalize_candidate',return_value=None)
+        patch.start(); self.addCleanup(patch.stop)
 
     def accept(self):
         r.write(self.work / 'acceptance.json', {'kind':'klokast.router-controller-acceptance.v1',
             'request_sha256':g.digest(self.request), 'candidate_sha256':self.request['candidate_sha256'],
             'evidence_sha256':'3'*64})
+
+    def test_arm_persists_one_attempt_and_accepts_only_a_distinct_device(self):
+        self.adapter.arm(deadline=time.monotonic()+60)
+        intent = r.read(self.work/'enrollment-attempt.json')
+        self.assertEqual(intent['hostname'],'boxa-router-' + self.request['operation_id'])
+        self.assertEqual(intent['old_machine_id'],'nOldRouter')
+        self.host.live = 'candidate'
+        result = {'kind':'klokast.router-replacement-enrollment-result.v1',
+            'box':'boxa','operation_id':self.request['operation_id'],
+            'request_sha256':g.digest(self.request),
+            'attempt_sha256':intent['record_sha256'],
+            'candidate_sha256':self.request['candidate_sha256'],
+            'nonce':intent['nonce'],'machine_id':'nNewRouter',
+            'hostname':intent['hostname'],'tags':['tag:vm'],'ssh':True,
+            'state_sha256':'b'*64,'addresses':['100.64.0.8'],
+            'host_key_public_sha256':intent['host_key_public_sha256']}
+        r.write(self.work/'enrollment-result.json',result)
+        self.assertTrue(d.Adapter.wait_enrollment(self.adapter,deadline=time.monotonic()+30))
+        r.write(self.work/'enrollment-result.json',{**result,'machine_id':'nOldRouter'})
+        with self.assertRaises(TransactionError):
+            d.Adapter.wait_enrollment(self.adapter,deadline=time.monotonic()+30)
+
+    def test_changed_enrollment_source_refuses_before_stopping_a(self):
+        source = r.read(self.work/'enrollment-source.json')
+        r.write(self.work/'enrollment-source.json',{**source,'old_machine_id':'bad device id'})
+        with self.assertRaises(TransactionError):
+            Transaction(self.request,self.adapter).cutover()
+        self.assertIsNone(self.records.pending())
+        self.assertEqual(self.host.live,'old')
+        self.assertTrue(self.link.is_symlink())
 
     def test_full_acceptance_changes_durable_pointer_and_autostart_config(self):
         self.accept()

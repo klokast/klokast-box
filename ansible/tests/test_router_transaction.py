@@ -20,16 +20,19 @@ def request():
 
 
 class Adapter:
-    def __init__(self, *, accept=True, crash_phase=None, crash_action=None, copy_failure=False):
+    def __init__(self, *, accept=True, enroll=True, crash_phase=None,
+                 crash_action=None, copy_failure=False):
         self.time = 1000
         self.accept = accept
+        self.enroll = enroll
         self.crash_phase, self.crash_action = crash_phase, crash_action
         self.copy_failure = copy_failure
         self.pending = None
         self.accepted = False
         self.live = {'old'}
         self.autostart = 'old'
-        self.identity = {'old':'old-tailnet-and-ssh', 'candidate':'new-tailnet-and-ssh'}
+        self.identity = {'old':'old-tailnet-and-ssh', 'candidate':None}
+        self.finalized = False
         self.state = {'old': 'original-dhcp-state', 'candidate': None}
         self.receipts = set()
         self.events = []
@@ -95,6 +98,21 @@ class Adapter:
         assert self.live == {generation}
         self.event('checked:' + generation)
 
+    def wait_enrollment(self, *, deadline):
+        assert self.live == {'candidate'}
+        self.event('wait-enrollment')
+        if self.enroll:
+            self.identity['candidate'] = 'new-tailnet-and-ssh'
+        else:
+            self.time = deadline
+        return self.enroll
+
+    def finalize_candidate(self, *, deadline):
+        assert not self.live
+        assert self.identity['candidate'] == 'new-tailnet-and-ssh'
+        self.finalized = True
+        self.event('finalized:candidate')
+
     def wait_acceptance(self, *, deadline):
         self.acceptance_deadlines.append(deadline)
         self.event('wait-acceptance')
@@ -140,10 +158,13 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(host.autostart, 'candidate')
         self.assertEqual(host.identity, {'old':'old-tailnet-and-ssh',
                                           'candidate':'new-tailnet-and-ssh'})
+        self.assertTrue(host.finalized)
         self.assertLess(host.events.index('persist:starting-candidate'), host.events.index('started:candidate'))
         self.assertLess(host.events.index('stopped:old'), host.events.index('copied:old:candidate'))
         self.assertLess(host.events.index('verified-copy:old:candidate'), host.events.index('started:candidate'))
         self.assertLess(host.events.index('started:candidate'), host.events.index('checked:candidate'))
+        self.assertLess(host.events.index('wait-enrollment'),host.events.index('finalized:candidate'))
+        self.assertLess(host.events.index('finalized:candidate'),host.events.index('wait-acceptance'))
         self.assertLess(host.events.index('checked:candidate'), host.events.index('wait-acceptance'))
 
     def test_no_acceptance_uses_latest_state_and_separate_recovery_budget(self):
@@ -158,9 +179,20 @@ class TransactionTests(unittest.TestCase):
         self.assertLess(host.events.index('stopped:candidate'),host.events.index('copied:candidate:old'))
         self.assertLess(host.events.index('verified-copy:candidate:old'),host.events.index('started:old'))
 
+    def test_enrollment_timeout_restores_a_without_reenrollment(self):
+        host = Adapter(enroll=False)
+        self.assertEqual(Transaction(request(),host).cutover(),'rolled-back')
+        self.assertEqual(host.identity,{'old':'old-tailnet-and-ssh','candidate':None})
+        self.assertFalse(host.finalized)
+        self.assertEqual(host.live,{'old'})
+        self.assertNotIn('wait-acceptance',host.events)
+
     def test_power_loss_at_every_cutover_record_recovers_without_guessing(self):
         phases = ('armed', 'stopping-old', 'copying-forward', 'candidate-ready', 'starting-candidate',
-                  'checking-candidate', 'awaiting-acceptance', 'committing', 'accepted')
+                  'checking-candidate', 'awaiting-enrollment',
+                  'stopping-candidate-for-finalization', 'finalizing-candidate',
+                  'restarting-candidate', 'checking-final-candidate',
+                  'awaiting-acceptance', 'committing', 'accepted')
         for phase in phases:
             with self.subTest(phase=phase):
                 host = Adapter(crash_phase=phase)
@@ -172,7 +204,10 @@ class TransactionTests(unittest.TestCase):
                 self.assertEqual(host.live, {selected})
                 self.assertEqual(outcome, 'accepted' if host.accepted else 'rolled-back')
                 self.assertNotEqual(host.state[selected], 'partial')
-                if phase in ('checking-candidate', 'awaiting-acceptance', 'committing'):
+                if phase in ('checking-candidate', 'awaiting-enrollment',
+                             'stopping-candidate-for-finalization','finalizing-candidate',
+                             'restarting-candidate','checking-final-candidate',
+                             'awaiting-acceptance', 'committing'):
                     self.assertEqual(host.state['old'], 'latest-dhcp-state')
 
     def test_power_loss_during_forward_copy_keeps_original_state(self):

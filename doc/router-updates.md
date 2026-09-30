@@ -204,8 +204,13 @@ new transfer boundary in source. Their requests and receipts reject v1 evidence.
 Replacement preparation now retains the frozen first-contact package set and
 seeds pinned backend-only SSH access on B's detached LV. The proposed generation
 binds this access evidence and records the qualified final package set as a
-later requirement. The cutover lifecycle still needs generation enrollment,
-first-contact retirement, exact-device inventory, and native recovery proof.
+later requirement. The cutover model now has separate enrollment, offline
+retirement, restart, and final-check phases. Dom0 verifies the enrollment source
+before it arms the operation and persists one attempt before A stops. It
+rejects a changed result or reuse of A's device ID. The offline replacement
+finalizer, controller signal issuer, exact-device inventory, and native
+recovery proof remain open. Until those paths are connected, cutover fails
+closed at finalization.
 Do not enable replacement or scheduling until these gates pass. Initial-install
 retries continue to retain their existing enrollment.
 

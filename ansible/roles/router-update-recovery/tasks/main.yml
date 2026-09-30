@@ -95,6 +95,7 @@
       - router_finalize
       - router_copy_contract
       - router_copy_native
+      - router_replacement_enrollment
     router_recovery_hashes: {}
 
 - name: Install the exact router engine modules
