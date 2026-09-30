@@ -29,7 +29,8 @@ class Adapter:
         self.accepted = False
         self.live = {'old'}
         self.autostart = 'old'
-        self.state = {'old': 'original-key-and-lease', 'candidate': None}
+        self.identity = {'old':'old-tailnet-and-ssh', 'candidate':'new-tailnet-and-ssh'}
+        self.state = {'old': 'original-dhcp-state', 'candidate': None}
         self.receipts = set()
         self.events = []
         self.finished = None
@@ -65,12 +66,14 @@ class Adapter:
 
     def copy(self, source, target, *, deadline):
         assert not self.live, 'a router is live during copying'
+        identities = dict(self.identity)
         self.state[target] = 'partial'
         self.event('partial:' + source + ':' + target)
         if self.copy_failure and source == 'candidate':
             raise TransactionError('synthetic latest-state corruption')
         assert self.state[source] not in (None, 'partial')
         self.state[target] = self.state[source]
+        assert self.identity == identities, 'DHCP copy changed router identity'
         self.receipts.add((source, target))
         self.event('copied:' + source + ':' + target)
 
@@ -84,7 +87,7 @@ class Adapter:
         assert not self.live - {generation}
         if generation == 'candidate':
             assert self.pending['candidate_started']
-            self.state[generation] = 'latest-key-and-lease'
+            self.state[generation] = 'latest-dhcp-state'
         self.live.add(generation)
         self.event('started:' + generation)
 
@@ -135,6 +138,8 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(Transaction(request(), host).cutover(), 'accepted')
         self.assertEqual(host.live, {'candidate'})
         self.assertEqual(host.autostart, 'candidate')
+        self.assertEqual(host.identity, {'old':'old-tailnet-and-ssh',
+                                          'candidate':'new-tailnet-and-ssh'})
         self.assertLess(host.events.index('persist:starting-candidate'), host.events.index('started:candidate'))
         self.assertLess(host.events.index('stopped:old'), host.events.index('copied:old:candidate'))
         self.assertLess(host.events.index('verified-copy:old:candidate'), host.events.index('started:candidate'))
@@ -145,7 +150,9 @@ class TransactionTests(unittest.TestCase):
         host = Adapter(accept=False)
         self.assertEqual(Transaction(request(), host).cutover(), 'rolled-back')
         self.assertEqual(host.live, {'old'})
-        self.assertEqual(host.state['old'], 'latest-key-and-lease')
+        self.assertEqual(host.state['old'], 'latest-dhcp-state')
+        self.assertEqual(host.identity, {'old':'old-tailnet-and-ssh',
+                                          'candidate':'new-tailnet-and-ssh'})
         self.assertEqual(host.acceptance_deadlines, [1180])
         self.assertEqual(host.autostart, 'old')
         self.assertLess(host.events.index('stopped:candidate'),host.events.index('copied:candidate:old'))
@@ -166,7 +173,7 @@ class TransactionTests(unittest.TestCase):
                 self.assertEqual(outcome, 'accepted' if host.accepted else 'rolled-back')
                 self.assertNotEqual(host.state[selected], 'partial')
                 if phase in ('checking-candidate', 'awaiting-acceptance', 'committing'):
-                    self.assertEqual(host.state['old'], 'latest-key-and-lease')
+                    self.assertEqual(host.state['old'], 'latest-dhcp-state')
 
     def test_power_loss_during_forward_copy_keeps_original_state(self):
         host = Adapter(crash_action='partial:old:candidate')
@@ -174,7 +181,7 @@ class TransactionTests(unittest.TestCase):
             Transaction(request(), host).cutover()
         host.power_cycle()
         self.assertEqual(Transaction(request(), host, host.pending).recover(), 'rolled-back')
-        self.assertEqual(host.state['old'], 'original-key-and-lease')
+        self.assertEqual(host.state['old'], 'original-dhcp-state')
         self.assertNotIn('started:candidate', host.events)
 
     def test_power_loss_during_reverse_copy_repeats_from_latest_candidate(self):
@@ -184,7 +191,7 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(host.state['old'], 'partial')
         host.power_cycle()
         self.assertEqual(Transaction(request(), host, host.pending).recover(), 'rolled-back')
-        self.assertEqual(host.state['old'], 'latest-key-and-lease')
+        self.assertEqual(host.state['old'], 'latest-dhcp-state')
         self.assertEqual(host.live, {'old'})
 
     def test_commit_crash_selects_candidate_despite_pending_committing_record(self):

@@ -86,7 +86,8 @@ def offline_preflight(proposed, prepared, first_contact, disk_record, release):
     """Bind verified offline preparation to its proposed A/B generation.
 
     The caller must verify native boot artifacts and the detached LV before
-    publishing this record. It contains no running-kernel or service evidence.
+    publishing this record. It binds pinned temporary access but contains no
+    running-kernel, enrollment, final-runtime, or service evidence.
     """
     generations.generation(proposed, proposed['box'])
     before = {item['name']:item['version'] for item in release['inputs']['packages']}

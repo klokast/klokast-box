@@ -169,6 +169,15 @@ runtime before acceptance. Enrollment failure, loss of controller access, or
 control-plane failure must trigger local rollback without requiring enrollment
 or a Tailscale API call to restart A. The deadline must cover enrollment,
 first-contact cleanup, any required B reboot, and full service verification.
+Dom0 holds the router transaction lock for this sequence. It records a single
+enrollment attempt before the controller mints a key. The controller sends a
+bounded, operation-specific enrollment result through a validated sideband
+record; it cannot change the accepted assignment. Dom0 verifies that result,
+stops B, removes temporary access in a networkless finalizer, verifies the
+runtime package and identity records, and restarts B. The controller then
+checks the complete service and sends separate acceptance evidence. Dom0
+commits B only after that evidence matches the final runtime. A missing or
+uncertain signal, a cleanup failure, or a deadline causes local rollback.
 
 Copy only the fixed DHCP state set between generations: dhcpcd DUID, IPv6
 secret, and dnsmasq leases. Preserve LAN lease expiry and test old/new/old DHCP
