@@ -45,7 +45,7 @@ def read(path):
 
 
 def engine_for(action, operation):
-    if action in ('prepare-copy', 'run', 'worker', 'signal-enrollment', 'accept'):
+    if action in ('prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('router command requires an exact operation selector')
         value = read(BASE / 'operations' / operation / 'transaction-request.json')
@@ -102,7 +102,7 @@ def fence_autostart():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'provisioning-status', 'verify-boot-assignment', 'prepare-copy', 'run', 'worker', 'signal-enrollment',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'provisioning-status', 'verify-boot-assignment', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
         'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')

@@ -8,6 +8,9 @@ import ipaddress
 import router_generations as generations
 import router_transaction as transaction
 
+TAILNET_IPV4 = ipaddress.IPv4Network('100.64.0.0/10')
+TAILNET_IPV6 = ipaddress.IPv6Network('fd7a:115c:a1e0::/48')
+
 
 def attempt(request, candidate, *, nonce, old_machine_id, host_keys):
     transaction.validate(request)
@@ -82,7 +85,8 @@ def result(value, request, intent):
         parsed = [ipaddress.ip_address(item) for item in addresses]
     except (ValueError,TypeError) as error:
         raise transaction.TransactionError('replacement enrollment has invalid Tailnet addresses') from error
-    if (any(str(item) != original or item.is_unspecified or item.is_loopback or item.is_multicast
+    if (any(str(item) != original or item.is_unspecified or item.is_loopback or item.is_multicast or
+            item not in (TAILNET_IPV4 if item.version == 4 else TAILNET_IPV6)
             for item,original in zip(parsed,addresses)) or
             not any(item.version == 4 for item in parsed)):
         raise transaction.TransactionError('replacement enrollment has no usable Tailnet IPv4 address')

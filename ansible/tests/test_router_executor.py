@@ -155,6 +155,35 @@ class SupervisorTests(unittest.TestCase):
                 e.signal_enrollment(self.records,self.request['operation_id'],
                     self.request['engine_commit'])
 
+    def test_final_candidate_status_requires_exact_running_generation(self):
+        self.adapter.arm(deadline=time.monotonic()+60)
+        intent=records.read(self.adapter.work/'enrollment-attempt.json')
+        enrolled={'kind':'klokast.router-replacement-enrollment-result.v1',
+            'box':'boxa','operation_id':self.request['operation_id'],
+            'request_sha256':generations.digest(self.request),
+            'attempt_sha256':intent['record_sha256'],
+            'candidate_sha256':self.request['candidate_sha256'],
+            'nonce':intent['nonce'],'machine_id':'nNewRouter',
+            'hostname':intent['hostname'],'tags':['tag:vm'],'ssh':True,
+            'state_sha256':'b'*64,'addresses':['100.64.0.8'],
+            'host_key_public_sha256':intent['host_key_public_sha256']}
+        records.write(self.adapter.work/'enrollment-result.json',enrolled)
+        final=self.adapter.work/'finalization'
+        final.mkdir(mode=0o700)
+        records.write(final/'result.json',{'kind':'klokast.router-replacement-finalization-result.v1',
+            'success':True,'machine_id':'nNewRouter'})
+        self.records.persist({**self.pending,'phase':'awaiting-acceptance','candidate_started':True})
+        self.host.live='candidate'
+        with mock.patch.object(e.native,'Native',return_value=self.host):
+            value=e.candidate_status(self.records,self.request['operation_id'],
+                self.request['engine_commit'])
+            self.assertEqual(value['status'],'running-final')
+            self.assertEqual(value['machine_id'],'nNewRouter')
+            self.host.live='old'
+            with self.assertRaisesRegex(TransactionError,'not the exact running'):
+                e.candidate_status(self.records,self.request['operation_id'],
+                    self.request['engine_commit'])
+
     def test_map_refuses_changed_pointers_instead_of_joining_two_operations(self):
         with mock.patch.object(self.records,'pending',side_effect=[None,self.pending]):
             with self.assertRaisesRegex(TransactionError,'pointers changed'):

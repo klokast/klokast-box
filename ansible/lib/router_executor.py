@@ -124,6 +124,45 @@ def signal_enrollment(storage, operation, engine):
     return 'exact-enrollment-published'
 
 
+def candidate_status(storage, operation, engine):
+    """Report B's exact post-cleanup Xen assignment while the worker waits."""
+    pending=storage.pending()
+    if (pending is None or pending['phase'] not in
+            ('checking-final-candidate','awaiting-acceptance') or
+            pending['request']['operation_id'] != operation or
+            pending['request']['engine_commit'] != engine or
+            pending['candidate_started'] is not True):
+        raise TransactionError('router is not awaiting final B service verification')
+    request=pending['request']
+    work=storage.operation(operation)
+    enrolled=enrollment.result(records.read(work/'enrollment-result.json'),request,
+        records.read(work/'enrollment-attempt.json'))
+    finalized=records.read(work/'finalization/result.json')
+    if (finalized.get('kind') != 'klokast.router-replacement-finalization-result.v1' or
+            finalized.get('success') is not True or
+            finalized.get('machine_id') != enrolled['machine_id']):
+        raise TransactionError('router final B has no matching offline cleanup result')
+    pair={side:storage.generation(request[key]) for side,key in
+          (('old','old_sha256'),('candidate','candidate_sha256'))}
+    host=native.Native()
+    deadline=time.monotonic()+30
+    host.guard(storage.box,deadline=deadline)
+    current=host.guest(pair,deadline=deadline)
+    if current is None or current[0] != 'candidate':
+        raise TransactionError('router final B is not the exact running Xen guest')
+    host.disk(pair['candidate']['disk'],deadline=deadline)
+    for item in pair['candidate']['boot'].values():
+        host.artifact(item,deadline=deadline)
+    return {'kind':'klokast.router-replacement-candidate-status.v1',
+        'box':storage.box,'operation_id':operation,
+        'request_sha256':generations.digest(request),
+        'candidate_sha256':request['candidate_sha256'],
+        'enrollment_sha256':generations.digest(enrolled),
+        'finalization_sha256':generations.digest(finalized),
+        'machine_id':enrolled['machine_id'],'xen_uuid':pair['candidate']['xen']['uuid'],
+        'disk':pair['candidate']['disk'],'status':'running-final'}
+
+
 def provisioning_status(storage):
     """Read protected router pointers before any provisioning allocation."""
     pending = storage.pending()
@@ -310,7 +349,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'recover', 'boot-recover', 'accept'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -341,6 +380,8 @@ def main(argv, engine):
         result = supervise(storage, args.operation_id, engine)
     elif args.action == 'signal-enrollment':
         result = signal_enrollment(storage,args.operation_id,engine)
+    elif args.action == 'candidate-status':
+        result = candidate_status(storage,args.operation_id,engine)
     elif args.action == 'accept':
         # This command deliberately does not take the worker's lock. The
         # controller stages an exact proof only after full service verification.

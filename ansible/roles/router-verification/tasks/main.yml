@@ -186,7 +186,7 @@
         or (verify_router_ip_rule.stdout is search('from ' ~ platform_network_realms['ap-uplink'].cidr ~ ' lookup ' ~ router_local_presence_vpn_table))
       - "'169.254.' not in verify_router_ip_route.stdout"
       - verify_router_tailscale_parsed.BackendState | default('') == 'Running'
-      - verify_router_tailscale_parsed.Self.HostName | default('') == node_hostname
+      - verify_router_tailscale_parsed.Self.HostName | default('') == (router_expected_tailnet_hostname | default(node_hostname))
       - >-
         (router_tailscale_expected_tag | default('') | length == 0)
         or (router_tailscale_expected_tag in (verify_router_tailscale_parsed.Self.Tags | default([])))

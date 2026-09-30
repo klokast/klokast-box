@@ -62,7 +62,8 @@ class ReplacementEnrollmentTests(unittest.TestCase):
 
     def test_malformed_addresses_and_host_keys_are_refused(self):
         for addresses in ([],['100.64.0.8','100.64.0.8'],['not-an-ip'],
-                          [['100.64.0.8']],['::1']):
+                          [['100.64.0.8']],['::1'],['192.0.2.8'],
+                          ['100.64.0.8','2001:db8::8']):
             with self.subTest(addresses=addresses),self.assertRaises(TransactionError):
                 enrollment.result({**self.result,'addresses':addresses},self.request,self.intent)
         with self.assertRaises(TransactionError):

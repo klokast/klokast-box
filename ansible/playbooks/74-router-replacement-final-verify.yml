@@ -1,0 +1,280 @@
+---
+- name: Verify B's full service after offline first-contact retirement
+  hosts: router
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    ansible_host: '{{ router_replacement_address }}'
+    router_expected_tailnet_hostname: '{{ router_replacement_expected.hostname }}'
+  pre_tasks:
+    - name: Require the exact final B service target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-router'
+          - node_name == router_replacement_box
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_expected.kind == 'klokast.router-replacement-service-expected.v1'
+          - router_replacement_expected.box == router_replacement_box
+          - router_replacement_expected.operation_id == router_replacement_operation
+          - router_replacement_expected.hostname == router_replacement_box ~ '-router-' ~ router_replacement_operation
+          - router_replacement_address in router_replacement_expected.addresses
+          - router_replacement_expected.machine_id is match('^[A-Za-z0-9_-]{1,128}$')
+          - router_replacement_expected.packages is mapping
+          - router_replacement_expected.configuration_files is mapping
+          - router_replacement_expected.identity_files is mapping
+
+    - name: Load current compiled router verification inputs
+      ansible.builtin.import_role:
+        name: router-verification-inputs
+
+  tasks:
+    - name: Check B's exact live Xen assignment and offline cleanup
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - candidate-status
+          - --box
+          - '{{ router_replacement_box }}'
+          - --operation-id
+          - '{{ router_replacement_operation }}'
+      delegate_to: '{{ router_replacement_box }}-dom0'
+      become: true
+      become_method: doas
+      register: router_replacement_dom0_status
+      changed_when: false
+
+    - name: Require the exact post-cleanup B generation on dom0
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_dom0_status.stdout | from_json).action == 'candidate-status'
+          - (router_replacement_dom0_status.stdout | from_json).result.status == 'running-final'
+          - (router_replacement_dom0_status.stdout | from_json).result.box == router_replacement_box
+          - (router_replacement_dom0_status.stdout | from_json).result.operation_id == router_replacement_operation
+          - (router_replacement_dom0_status.stdout | from_json).result.request_sha256 == router_replacement_expected.request_sha256
+          - (router_replacement_dom0_status.stdout | from_json).result.candidate_sha256 == router_replacement_expected.candidate_sha256
+          - (router_replacement_dom0_status.stdout | from_json).result.enrollment_sha256 == router_replacement_expected.enrollment_sha256
+          - (router_replacement_dom0_status.stdout | from_json).result.finalization_sha256 == router_replacement_expected.finalization_sha256
+          - (router_replacement_dom0_status.stdout | from_json).result.machine_id == router_replacement_expected.machine_id
+
+    - name: Verify configured router services, routes, DHCP, DNS, and firewall
+      ansible.builtin.import_role:
+        name: router-verification
+
+    - name: Prove dom0 backend reachability
+      ansible.builtin.command:
+        argv: [/bin/ping, -n, -c, '1', -W, '2', '{{ router_backend_ipv4_address }}']
+      delegate_to: '{{ router_replacement_box }}-dom0'
+      changed_when: false
+
+    - name: Prove backend DNS through the WAN path
+      ansible.builtin.command:
+        argv: [/usr/bin/nslookup, example.com, '{{ router_backend_ipv4_address }}']
+      delegate_to: '{{ router_replacement_box }}-dom0'
+      changed_when: false
+
+    - name: Prove controller reachability over B's Tailnet identity
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ping, --c, '1', --until-direct=false, '{{ router_replacement_expected.hostname }}']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Prove B's final Tailscale SSH path
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ router_replacement_expected.hostname }}', sh, -s]
+        stdin: "hostname\n"
+        stdin_add_newline: false
+      delegate_to: localhost
+      become: false
+      register: router_replacement_management_ssh
+      changed_when: false
+
+    - name: Read B's complete installed package database
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            from pathlib import Path
+            packages = {}
+            for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
+                rows = [line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:'))]
+                if not rows:
+                    continue
+                fields = dict(rows)
+                if len(rows) != 2 or set(fields) != {'P', 'V'} or fields['P'] in packages:
+                    raise SystemExit('Router package database is incomplete or ambiguous')
+                packages[fields['P']] = fields['V']
+            print(json.dumps(packages, sort_keys=True))
+      register: router_replacement_runtime_packages
+      changed_when: false
+
+    - name: Read B's kernel and enrolled Tailscale identity
+      ansible.builtin.command:
+        argv: [uname, -r]
+      register: router_replacement_runtime_kernel
+      changed_when: false
+
+    - name: Read B's Tailnet status
+      ansible.builtin.command:
+        argv: [tailscale, status, --json]
+      register: router_replacement_runtime_tailnet
+      changed_when: false
+
+    - name: Read B's SSH preference
+      ansible.builtin.command:
+        argv: [tailscale, debug, prefs]
+      register: router_replacement_runtime_prefs
+      changed_when: false
+
+    - name: Read B's running Tailscale daemon version and executable
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            import os
+            from pathlib import Path
+            import subprocess
+            lines = subprocess.check_output(['/usr/local/bin/tailscale',
+                '--socket=/run/tailscale/tailscaled.sock', 'version', '--daemon'],
+                text=True, timeout=10).splitlines()
+            versions = [line.removeprefix('Daemon: ') for line in lines if line.startswith('Daemon: ')]
+            pid = int(Path('/run/tailscale/tailscaled.pid').read_text().strip())
+            if len(versions) != 1:
+                raise SystemExit('Running router Tailscale daemon version is ambiguous')
+            print(json.dumps({'version': versions[0],
+                'executable': os.readlink('/proc/' + str(pid) + '/exe')}))
+      register: router_replacement_runtime_daemon
+      changed_when: false
+      become: true
+      become_method: doas
+
+    - name: Inspect B's frozen configuration files
+      ansible.builtin.stat:
+        path: '/{{ item.key }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop: '{{ router_replacement_expected.configuration_files | dict2items }}'
+      register: router_replacement_configuration_files
+      become: true
+      become_method: doas
+
+    - name: Inspect B's upstream Tailscale executables and OpenRC script
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop: [/usr/local/bin/tailscale, /usr/local/sbin/tailscaled, /etc/init.d/tailscale]
+      register: router_replacement_upstream_files
+      become: true
+      become_method: doas
+
+    - name: Inspect B's stable DHCP and SSH identities
+      ansible.builtin.stat:
+        path: '/{{ item.key }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop: '{{ router_replacement_expected.identity_files | dict2items }}'
+      register: router_replacement_identity_files
+      become: true
+      become_method: doas
+      no_log: true
+
+    - name: Inspect retired first-contact access
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+      loop: [/root/.ssh/authorized_keys, /usr/sbin/sshd, /etc/init.d/sshd,
+             /etc/runlevels/default/sshd]
+      register: router_replacement_retired_access
+      become: true
+      become_method: doas
+
+    - name: Require the exact release and independent B machine identity
+      ansible.builtin.assert:
+        that:
+          - router_replacement_management_ssh.stdout | trim == inventory_hostname
+          - (router_replacement_runtime_packages.stdout | from_json) == router_replacement_expected.packages
+          - router_replacement_runtime_kernel.stdout == router_replacement_expected.kernel_release
+          - (router_replacement_runtime_tailnet.stdout | from_json).BackendState == 'Running'
+          - (router_replacement_runtime_tailnet.stdout | from_json).Self.ID == router_replacement_expected.machine_id
+          - (router_replacement_runtime_tailnet.stdout | from_json).Self.HostName == router_replacement_expected.hostname
+          - (router_replacement_runtime_tailnet.stdout | from_json).Self.Tags == ['tag:vm']
+          - (router_replacement_runtime_prefs.stdout | from_json).RunSSH | bool
+          - (router_replacement_runtime_daemon.stdout | from_json).executable == '/usr/local/sbin/tailscaled'
+          - >-
+            (router_replacement_runtime_daemon.stdout | from_json).version == router_replacement_expected.tailscale.version
+            or (router_replacement_runtime_daemon.stdout | from_json).version is match(
+              '^' ~ (router_replacement_expected.tailscale.version | regex_escape) ~ '-.+$')
+          - router_replacement_retired_access.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 0
+        fail_msg: Final B differs from its release or retains temporary access.
+
+    - name: Require every frozen B configuration file
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.uid | default(-1) == 0
+          - item.stat.nlink | default(0) == 1
+          - item.stat.checksum == router_replacement_expected.configuration_files[item.item.key]
+        fail_msg: 'Final B configuration changed: {{ item.item.key }}'
+      loop: '{{ router_replacement_configuration_files.results }}'
+
+    - name: Require every frozen upstream Tailscale file
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.uid | default(-1) == 0
+          - item.stat.nlink | default(0) == 1
+          - item.stat.mode == '0755'
+          - >-
+            item.stat.checksum == router_replacement_expected.tailscale[
+              'openrc_sha256' if item.item == '/etc/init.d/tailscale'
+              else (item.item | basename) ~ '_sha256']
+      loop: '{{ router_replacement_upstream_files.results }}'
+
+    - name: Require B's stable DHCP and SSH identity bytes
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.nlink | default(0) == 1
+          - item.stat.checksum == router_replacement_expected.identity_files[item.item.key]
+      loop: '{{ router_replacement_identity_files.results }}'
+      no_log: true
+
+    - name: Record the complete B service proof
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.router-replacement-service-proof.v1',
+              'box': router_replacement_box,
+              'operation_id': router_replacement_operation,
+              'expected_sha256': router_replacement_expected.record_sha256,
+              'candidate_sha256': router_replacement_expected.candidate_sha256,
+              'machine_id': router_replacement_expected.machine_id,
+              'hostname': router_replacement_expected.hostname,
+              'tests': {'services': True, 'management': True, 'dom0': True,
+                        'packages': True, 'configuration': True, 'identity': True}} | to_json }}
+        dest: '{{ router_replacement_result_dir }}/replacement-service-proof.json'
+        force: false
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Read the exact retained B service proof
+      ansible.builtin.slurp:
+        src: '{{ router_replacement_result_dir }}/replacement-service-proof.json'
+      delegate_to: localhost
+      become: false
+      register: router_replacement_retained_service_proof
+
+    - name: Refuse a changed B service proof
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_retained_service_proof.content | b64decode | from_json).expected_sha256 == router_replacement_expected.record_sha256
+          - (router_replacement_retained_service_proof.content | b64decode | from_json).machine_id == router_replacement_expected.machine_id
