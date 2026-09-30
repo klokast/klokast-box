@@ -19,6 +19,29 @@ from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_guest_initializes_phase_before_hold_decision(self):
+        path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
+        main = runpy.run_path(str(path))['main']
+        called = []
+        with tempfile.TemporaryDirectory() as root:
+            slot = Path(root) / 'result.slot'
+            slot.write_bytes(b'\0' * 4096)
+            def action(argv, *args, **kwargs):
+                if argv == ['poweroff', '-f']:
+                    raise SystemExit(0)
+            def identify():
+                called.append('guard')
+                return 'seed', {'operation_id':'a'*24, 'inputs_sha256':'b'*64}
+            with patch.dict(main.__globals__, {'run':action, 'guard':identify,
+                    'execute':lambda phase, request: {'production_identity':False},
+                    'Path':lambda name: slot}), \
+                    patch.object(os, 'getpid', return_value=1), \
+                    patch.object(os.path, 'ismount', return_value=True), \
+                    patch.object(os, 'sync'):
+                with self.assertRaises(SystemExit):
+                    main()
+        self.assertEqual(called, ['guard'])
+
     def test_compatibility_initial_candidate_has_only_synthetic_first_contact(self):
         path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
         job = runpy.run_path(str(path))['candidate_job']

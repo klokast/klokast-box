@@ -216,9 +216,6 @@ def execute(phase, request):
 
 def main():
     os.umask(0o022)
-    if os.getpid() == 1 and phase in HOLD_PHASES and result['success']:
-        while True:
-            time.sleep(1)
     if os.getpid() == 1:
         for fs, path in (('proc', '/proc'), ('sysfs', '/sys'), ('devtmpfs', '/dev')):
             if not os.path.ismount(path):
@@ -244,6 +241,9 @@ def main():
     with Path('/dev/xvde').open('r+b', buffering=0) as stream:
         stream.write(json.dumps(result, sort_keys=True).encode() + b'\0')
         os.fsync(stream.fileno())
+    if os.getpid() == 1 and phase in HOLD_PHASES and result['success']:
+        while True:
+            time.sleep(1)
     if os.getpid() == 1:
         run(['poweroff', '-f'])
         while True:
