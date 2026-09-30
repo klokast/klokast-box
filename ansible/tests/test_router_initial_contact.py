@@ -55,6 +55,11 @@ class RouterInitialContactTests(unittest.TestCase):
             fingerprint = subprocess.run(['ssh-keygen', '-lf', str(pinned)], check=True,
                                          capture_output=True, text=True, timeout=30)
             self.assertIn('ED25519', fingerprint.stdout)
+            replacement_alias, replacement_content = contact.known_hosts(
+                receipt,'a'*24,purpose='replacement')
+            self.assertEqual(replacement_alias,'router-replacement-'+'a'*24)
+            self.assertIn(replacement_alias,replacement_content)
+            self.assertNotEqual(replacement_alias,alias)
             changed = copy.deepcopy(receipt)
             changed['host_key_public_sha256']['ed25519'] = '0'*64
             with self.assertRaisesRegex(ValueError, 'recorded checksum'):

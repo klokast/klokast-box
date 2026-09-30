@@ -70,16 +70,18 @@ def write(path, value):
         temporary.unlink(missing_ok=True)
 
 
-def pin_initial_host_keys(directory, first_contact, operation):
+def pin_host_keys(directory, first_contact, operation, *, purpose):
     """Persist prepared public keys without trusting a first network connection."""
     import router_initial_contact
-    alias, content = router_initial_contact.known_hosts(first_contact, operation)
+    if purpose not in ('initial','replacement'):
+        raise UpdateError('router host-key pin has an unsupported purpose')
+    alias, content = router_initial_contact.known_hosts(first_contact, operation,purpose=purpose)
     directory = Path(directory)
     info = directory.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
             stat.S_IMODE(info.st_mode) != 0o700):
         raise UpdateError('router first-contact evidence directory is unsafe')
-    path = directory / 'initial-known-hosts'
+    path = directory / (purpose + '-known-hosts')
     with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.router-host-', delete=False) as stream:
         temporary = Path(stream.name)
         stream.write(content)
@@ -108,6 +110,14 @@ def pin_initial_host_keys(directory, first_contact, operation):
     finally:
         os.close(descriptor)
     return {'known_hosts':str(path), 'host_key_alias':alias}
+
+
+def pin_initial_host_keys(directory, first_contact, operation):
+    return pin_host_keys(directory,first_contact,operation,purpose='initial')
+
+
+def pin_replacement_host_keys(directory, first_contact, operation):
+    return pin_host_keys(directory,first_contact,operation,purpose='replacement')
 
 
 def command(argv, *, timeout=120, log=None):

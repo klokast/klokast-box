@@ -1397,6 +1397,104 @@ def start_initial(box, operation):
                 **pins}
 
 
+def signal_replacement_enrollment(box, operation):
+    """Use one durable mint attempt to enroll B while dom0 owns the cutover."""
+    if (not router_updates.match(router_updates.BOX,box) or
+            not re.fullmatch('[0-9a-f]{24}',operation)):
+        raise UpdateError('replacement enrollment requires an exact box and operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('replacement enrollment requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('replacement enrollment requires the exact activated engine')
+    import router_replacement_controller as controller
+    import router_replacement_enrollment as enrollment
+    work,result = CACHE / ('replacement-' + operation),STATE / operation
+    for directory in (work,result):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('replacement enrollment source directory is unsafe')
+    request = transport.load(result / 'transaction-request.json')
+    source = transport.load(result / 'enrollment-source.json')
+    preparation_request = transport.load(work / 'request.json')
+    preparation_job = transport.load(work / 'candidate-job.json')
+    prepared = transport.load(result / 'preparation-result.json')
+    if (request.get('box') != box or request.get('operation_id') != operation or
+            request.get('engine_commit') != engine):
+        raise UpdateError('replacement enrollment selects another transaction')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        token = secrets.token_hex(6)
+        read_args = result / ('replacement-attempt-read-' + token + '.json')
+        transport.write(read_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,'router_replacement_result_dir':str(result)})
+        with (result / ('replacement-attempt-read-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-replacement-attempt-read.yml',
+                '--limit',box+'-dom0','-e','@'+str(read_args)],timeout=180,log=log)
+        pending = transport.load(result / 'dom0-enrollment-pending.json')
+        attempt = transport.load(result / 'dom0-enrollment-attempt.json')
+        controller.signal_source(request,pending,source,attempt,prepared,
+                                 preparation_request,preparation_job)
+        pins = transport.pin_replacement_host_keys(result,prepared['first_contact'],operation)
+        key_path = Path.home() / '.ssh/github-klokast-codex'
+        proxy_hosts = Path.home() / '.ssh/known_hosts'
+        for path,maximum in ((key_path,16384),(proxy_hosts,1024*1024)):
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                    info.st_nlink != 1 or info.st_size < 1 or info.st_size > maximum or
+                    info.st_mode & 0o022 or path == key_path and info.st_mode & 0o077):
+                raise UpdateError('replacement controller SSH key or dom0 trust file is unsafe')
+        marker = controller.mint_marker(request,attempt)
+        marker_path = result / 'replacement-mint-attempt.json'
+        if marker_path.exists() or marker_path.is_symlink():
+            if transport.load(marker_path) != marker:
+                raise UpdateError('replacement mint attempt changed; reconcile B before retry')
+            mint_permitted = False
+        else:
+            # Persist before the broker call. A failed or uncertain call cannot
+            # silently mint another key for this operation.
+            transport.write(marker_path,marker)
+            mint_permitted = True
+        guest_args = {'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_attempt':attempt,
+            'router_replacement_backend_address':preparation_job['first_contact']['backend_address'],
+            'router_replacement_result_dir':str(result),
+            'router_replacement_known_hosts':pins['known_hosts'],
+            'router_replacement_host_key_alias':pins['host_key_alias'],
+            'router_replacement_private_key':str(key_path),
+            'router_replacement_proxy_known_hosts':str(proxy_hosts),
+            'router_replacement_mint_permitted':mint_permitted}
+        guest_args_path = result / ('replacement-enroll-' + token + '.json')
+        transport.write(guest_args_path,guest_args)
+        with (result / ('replacement-enroll-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-replacement-enroll.yml',
+                '--limit',box+'-router','-e','@'+str(guest_args_path)],timeout=300,log=log)
+        value = enrollment.result(transport.load(result / 'replacement-enrollment-result.json'),
+                                  request,attempt)
+        signal_args = result / ('replacement-enrollment-signal-' + token + '.json')
+        transport.write(signal_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_result_dir':str(result),
+            'router_replacement_enrollment':value})
+        with (result / ('replacement-enrollment-signal-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-replacement-enrollment-signal.yml',
+                '--limit',box+'-dom0','-e','@'+str(signal_args)],timeout=180,log=log)
+        if transport.load(result / 'dom0-enrollment-result.json') != value:
+            raise UpdateError('dom0 published a different replacement enrollment result')
+        return {'kind':'klokast.router-replacement-enrollment-signal.v1',
+            'box':box,'operation_id':operation,'machine_id':value['machine_id'],
+            'attempt_sha256':attempt['record_sha256'],'status':'published'}
+
+
 def enroll_initial(box, operation):
     """Enroll a pinned first router once, or reconcile the same attempt."""
     if not router_updates.match(router_updates.BOX, box) or not re.fullmatch('[0-9a-f]{24}',operation):
@@ -2412,6 +2510,10 @@ def main():
         help='stage versioned boot artifacts and a proposed generation; no router boot or cutover')
     proposed.add_argument('--box',required=True)
     proposed.add_argument('--operation-id',required=True)
+    replacement_enrollment = sub.add_parser('signal-replacement-enrollment',
+        help='publish the one B enrollment result during a waiting A/B transaction')
+    replacement_enrollment.add_argument('--box',required=True)
+    replacement_enrollment.add_argument('--operation-id',required=True)
     first_boot = sub.add_parser('start-initial', help='boot only the exact prepared first router guest')
     first_boot.add_argument('--box', required=True)
     first_boot.add_argument('--operation-id', required=True)
@@ -2472,6 +2574,8 @@ def main():
             value = prepare_replacement(args.box,args.check_operation,args.template_operation,args.operation_id)
         elif args.command == 'stage-replacement-generation':
             value = stage_replacement_generation(args.box,args.operation_id)
+        elif args.command == 'signal-replacement-enrollment':
+            value = signal_replacement_enrollment(args.box,args.operation_id)
         elif args.command == 'start-initial':
             value = start_initial(args.box, args.operation_id)
         elif args.command == 'enroll-initial':

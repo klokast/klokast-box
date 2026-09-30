@@ -60,11 +60,12 @@ def host_public_keys(first):
     return keys
 
 
-def known_hosts(first, operation):
+def known_hosts(first, operation, *, purpose='initial'):
     """Pin the helper-generated identity; OpenSSH performs key verification."""
-    if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
+    if (not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation) or
+            purpose not in ('initial','replacement')):
         raise ValueError('router first-contact host alias needs an exact operation')
-    alias = 'router-initial-' + operation
+    alias = 'router-' + purpose + '-' + operation
     keys = host_public_keys(first)
     lines = [alias + ' ' + ' '.join(keys[kind].split()[:2]) + '\n' for kind in sorted(keys)]
     return alias, ''.join(lines)
