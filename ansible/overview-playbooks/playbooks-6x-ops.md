@@ -36,9 +36,11 @@ Run through:
 ansible/bin/provision-ops-vm --box boxa
 ```
 
-The wrapper runs `31-vm-router.yml` first so the existing router VM receives
-the `ops` control-network VIF, interface config, and egress policy before
-`65-vm-ops.yml` enrolls the controller.
+The wrapper runs `31-vm-router.yml` first to verify that the accepted router
+already has the approved `ops` control-network VIF, interface config, and
+egress policy. If the accepted release lacks them, verification stops before
+`65-vm-ops.yml`. Apply the topology through a qualified router release before
+provisioning the ops VM.
 
 Prerequisites:
 

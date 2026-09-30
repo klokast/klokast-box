@@ -68,13 +68,7 @@ class RouterRoleTest(unittest.TestCase):
         self.assertIn("local_tmp = ~/.ansible/tmp", ANSIBLE_CONFIG)
         self.assertNotIn("fact_caching_connection = /tmp/", ANSIBLE_CONFIG)
         self.assertNotIn("local_tmp = /tmp/", ANSIBLE_CONFIG)
-        self.assertIn("router_controller_ansible_remote_tmp", ROUTER_PLAYBOOK)
-        self.assertEqual(
-            ROUTER_PLAYBOOK.count(
-                'ansible_remote_tmp: "{{ router_controller_ansible_remote_tmp }}"'
-            ),
-            4,
-        )
+        self.assertNotIn('ansible_remote_tmp: /tmp/', ROUTER_PLAYBOOK)
 
 
 if __name__ == "__main__":

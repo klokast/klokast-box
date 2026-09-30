@@ -244,6 +244,14 @@ FROM_INDEX="$(phase_index "$FROM_PHASE")" || die "unknown --from phase: $FROM_PH
 TO_INDEX="$(phase_index "$TO_PHASE")" || die "unknown --to phase: $TO_PHASE"
 [ "$FROM_INDEX" -le "$TO_INDEX" ] || die "--from must be less than or equal to --to"
 
+if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+  for ((i = FROM_INDEX; i <= TO_INDEX; i++)); do
+    case "${PHASES[$i]}" in
+      30|31) die "router phases 30 and 31 do not accept extra Ansible arguments; run them without --" ;;
+    esac
+  done
+fi
+
 BOOTSTRAP_HOST="${BOX}-bootstrap"
 DOM0_HOST="${BOX}-dom0"
 RUN_DIR="$REPO_DIR/.run/provision-box-${BOX}"
@@ -464,6 +472,7 @@ run_phase() {
   local inv_file
   local -a inventory_args
   local -a cmd
+  local -a router_cmd
 
   limit="$(phase_limit "$phase")"
   extra_vars="$(phase_extra_vars "$phase")"
@@ -501,9 +510,28 @@ run_phase() {
   quote_command "${cmd[@]}"
   info "Log: $log_file"
   write_state "last_started" "$phase"
+  : >"$log_file"
+
+  if [ "$phase" = "30" ]; then
+    router_cmd=("$SCRIPT_DIR/platform-router-update" provision-initial-phase --box "$BOX" --phase prepare)
+  elif [ "$phase" = "31" ]; then
+    router_cmd=("$SCRIPT_DIR/platform-router-update" provision-initial-phase --box "$BOX" --phase accept)
+  fi
+
+  if [ "$phase" = "31" ]; then
+    info "Router command:"
+    quote_command "${router_cmd[@]}"
+    set +e
+    "${router_cmd[@]}" 2>&1 | tee -a "$log_file"
+    status="${PIPESTATUS[0]}"
+    set -e
+    if [ "$status" -ne 0 ]; then
+      die "phase 31 router installation failed; inspect $log_file and resume --from 31"
+    fi
+  fi
 
   set +e
-  "${cmd[@]}" 2>&1 | tee "$log_file"
+  "${cmd[@]}" 2>&1 | tee -a "$log_file"
   status="${PIPESTATUS[0]}"
   set -e
 
@@ -514,6 +542,18 @@ run_phase() {
     info "Resume after fixing the issue:"
     info "  ansible/bin/provision-box --box ${BOX} --from ${phase}"
     exit "$status"
+  fi
+
+  if [ "$phase" = "30" ]; then
+    info "Router command:"
+    quote_command "${router_cmd[@]}"
+    set +e
+    "${router_cmd[@]}" 2>&1 | tee -a "$log_file"
+    status="${PIPESTATUS[0]}"
+    set -e
+    if [ "$status" -ne 0 ]; then
+      die "phase 30 router preparation failed; inspect $log_file and resume --from 30"
+    fi
   fi
 
   write_state "last_completed" "$phase"
@@ -546,6 +586,10 @@ print_plan() {
       fi
     elif [ "$phase" = "21" ]; then
       printf '      gate: check no stale %s Tailscale identity exists\n' "$DOM0_HOST"
+    elif [ "$phase" = "30" ]; then
+      printf '      router: verify dom0 bridge; select, build, and retain one common-template disk\n'
+    elif [ "$phase" = "31" ]; then
+      printf '      router: resume the recorded installation; accept and verify its release\n'
     elif [ "$phase" = "68" ]; then
       printf '      gate: deletes only exact offline %s-* VM identities with tag:vm\n' "$BOX"
     fi

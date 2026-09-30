@@ -76,6 +76,123 @@ def provisioning_status(box):
         return {**status,'evidence_directory':str(result)}
 
 
+def initial_provision_pointer(box, engine):
+    path = STATE / ('initial-provision-' + box + '.json')
+    if not path.exists() and not path.is_symlink():
+        return path, None
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise UpdateError('first router provisioning pointer has unsafe file metadata')
+    value = transport.load(path)
+    if (not isinstance(value,dict) or set(value) != {'kind','box','engine_commit',
+            'operation_id','source_operation','template_operation','selection_sha256',
+            'release_sha256','record_sha256'} or
+            value['kind'] != 'klokast.router-initial-provision-pointer.v1' or
+            value['box'] != box or value['engine_commit'] != engine or
+            any(not router_updates.match(re.compile('[0-9a-f]{24}'),value.get(name)) for name in (
+                'operation_id','source_operation','template_operation')) or
+            any(not router_updates.match(router_updates.HASH,value.get(name)) for name in (
+                'selection_sha256','release_sha256'))):
+        raise UpdateError('first router provisioning pointer is invalid or selects another engine')
+    router_updates.verify_seal(value,field='record_sha256')
+    return path, value
+
+
+def provision_initial_phase(box, phase):
+    """Connect one retained first-install operation to provisioning phases 30/31."""
+    if (not router_updates.match(router_updates.BOX,box) or phase not in ('prepare','accept')):
+        raise UpdateError('initial router provisioning requires an exact box and phase')
+    if os.environ.get('KLOKAST_INSTALLATION_LOCK_FD') != '9':
+        raise UpdateError('initial router provisioning requires the parent installation lock')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('initial router provisioning requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('initial router provisioning requires the exact activated engine')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        # A new dom0 has no transaction reader. Install its boot recovery
+        # prerequisite before the first protected status read or router boot.
+        setup = STATE / secrets.token_hex(12)
+        setup.mkdir(mode=0o700)
+        with (setup / 'recovery-install.log').open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-recovery-setup.yml',
+                '--limit',box + '-dom0'],timeout=600,log=log)
+        status = provisioning_status(box)
+        if status['assignment'] is not None:
+            return {'kind':'klokast.router-initial-provision-phase.v1','box':box,
+                    'phase':phase,'status':'accepted-router-preserved',
+                    'evidence_directory':status['evidence_directory']}
+        path, pointer = initial_provision_pointer(box,engine)
+        initial = status['installation']
+        if initial is not None and (pointer is None or
+                initial['operation_id'] != pointer['operation_id'] or
+                initial['engine_commit'] != engine or
+                initial['selection_sha256'] != pointer['selection_sha256'] or
+                initial['release_sha256'] != pointer['release_sha256']):
+            raise UpdateError('recorded first router installation lacks its exact controller pointer')
+        if phase == 'prepare':
+            if initial is not None and initial['stage'] in ('enrolled','verified'):
+                return {'kind':'klokast.router-initial-provision-phase.v1','box':box,
+                        'phase':phase,'status':'initial-progress-preserved',
+                        'operation_id':pointer['operation_id'],
+                        'evidence_directory':status['evidence_directory']}
+            if pointer is None:
+                selected = resolve_initial()
+                template = build_template(box,selected['inputs_directory'],initial_selection=True)
+                if (template['engine_approved'] is not True or
+                        template['release_sha256'] is None or
+                        template['selection_sha256'] != selected['selection_sha256']):
+                    raise UpdateError('first router template lacks the selected approved release')
+                pointer = router_updates.seal({
+                    'kind':'klokast.router-initial-provision-pointer.v1','box':box,
+                    'engine_commit':engine,'operation_id':secrets.token_hex(12),
+                    'source_operation':Path(selected['inputs_directory']).name,
+                    'template_operation':template['operation'],
+                    'selection_sha256':selected['selection_sha256'],
+                    'release_sha256':template['release_sha256']},field='record_sha256')
+                if path.exists() or path.is_symlink():
+                    raise UpdateError('first router provisioning pointer appeared during build')
+                transport.write(path,pointer)
+            prepared = prepare_initial(box,CACHE / pointer['source_operation'],
+                                       pointer['template_operation'],pointer['operation_id'])
+            status = provisioning_status(box)
+            initial = status['installation']
+            if (initial is None or initial['operation_id'] != pointer['operation_id'] or
+                    initial['stage'] != 'prepared' or status['assignment'] is not None):
+                raise UpdateError('router phase 30 lacks its exact retained prepared installation')
+            return {'kind':'klokast.router-initial-provision-phase.v1','box':box,
+                    'phase':phase,'status':'initial-prepared',
+                    'operation_id':pointer['operation_id'],
+                    'evidence_directory':prepared['evidence_directory']}
+        if pointer is None or initial is None:
+            raise UpdateError('router phase 31 requires recorded phase 30 preparation')
+        operation = pointer['operation_id']
+        if initial['stage'] in ('planned','allocated'):
+            raise UpdateError('router phase 31 requires completed phase 30 preparation')
+        if initial['stage'] == 'prepared':
+            start_initial(box,operation)
+            enroll_initial(box,operation)
+        if initial['stage'] != 'verified':
+            finalize_initial(box,operation)
+            boot_final_initial(box,operation)
+            verify_initial(box,operation)
+        accepted = accept_initial(box,operation)
+        final = provisioning_status(box)
+        if (final['assignment'] is None or final['installation'] is None or
+                final['installation']['stage'] != 'verified' or
+                final['installation']['operation_id'] != operation or
+                final['assignment']['current_sha256'] != accepted['generation_sha256']):
+            raise UpdateError('router phase 31 lacks its exact accepted generation')
+        return {'kind':'klokast.router-initial-provision-phase.v1','box':box,
+                'phase':phase,'status':'initial-accepted','operation_id':operation,
+                'evidence_directory':accepted['evidence_directory']}
+
+
 def accepted_source_at(box, directory, operation, engine, name):
     """Read one exact protected assignment through the checked dom0 reader."""
     args = directory / (name + '-arguments.json')
@@ -375,9 +492,21 @@ def prepare_initial(box, source, template_operation, operation=None):
         raise UpdateError('initial preparation release differs from the approved template')
     rendered = render_candidate(box, source)
     personalization = transport.load(Path(rendered['evidence_directory']) / 'personalization.json')
-    resume = operation is not None
+    reserved = operation is not None
     operation = operation or secrets.token_hex(12)
     work, result = CACHE / ('initial-' + operation), STATE / operation
+    for directory in (work,result):
+        if directory.is_symlink() or directory.exists() and not directory.is_dir():
+            raise UpdateError('initial preparation operation directory is unsafe')
+        if directory.exists():
+            info = directory.lstat()
+            if (info.st_uid != os.geteuid() or
+                    stat.S_IMODE(info.st_mode) != 0o700):
+                raise UpdateError('initial preparation operation directory has unsafe metadata')
+    resume = reserved and (work / 'request.json').exists()
+    if reserved and not resume and any(directory.exists() and any(directory.iterdir())
+                                       for directory in (work,result)):
+        raise UpdateError('reserved initial preparation has incomplete controller state')
     job = {'kind':'klokast.router-candidate-job.v1', 'mode':'initial-install', 'box':box,
         'role':'router', 'operation_id':operation, 'engine_commit':engine,
         'inputs_sha256':manifest['inputs_sha256'], 'kernel_release':release['kernel_release'],
@@ -403,7 +532,8 @@ def prepare_initial(box, source, template_operation, operation=None):
             request = saved
             parts = transport.load(work / 'parts.json')
         else:
-            work.mkdir(mode=0o700); result.mkdir(mode=0o700)
+            work.mkdir(mode=0o700,exist_ok=reserved)
+            result.mkdir(mode=0o700,exist_ok=reserved)
             transport.write(work / 'candidate-job.json', job)
             boot = candidate_boot(source, work)
             request['bootstrap'] = boot
@@ -1527,6 +1657,9 @@ def main():
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
     sub.add_parser('resolve-initial', help='select and freeze initial-install inputs from verified Instance version policy')
     sub.add_parser('provisioning-status', help='read protected router state before provisioning').add_argument('--box', required=True)
+    provision = sub.add_parser('provision-initial-phase', help='run retained router provisioning phase under the parent installation lock')
+    provision.add_argument('--box', required=True)
+    provision.add_argument('--phase', choices=('prepare','accept'), required=True)
     sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
@@ -1588,6 +1721,8 @@ def main():
             value = resolve_initial()
         elif args.command == 'provisioning-status':
             value = provisioning_status(args.box)
+        elif args.command == 'provision-initial-phase':
+            value = provision_initial_phase(args.box,args.phase)
         elif args.command == 'test-dom0-guards':
             value = test_dom0_guards(args.box)
         elif args.command == 'build-template':

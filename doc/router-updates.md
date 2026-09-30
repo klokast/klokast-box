@@ -66,8 +66,8 @@ For a selected initial build, pass `--initial-selection` to `build-template`.
 This checks the saved input identity against the current verified policy,
 Alpine release metadata, branch delay, and activated engine before it allocates
 build resources. A changed source requires a new `resolve-initial` run.
-These commands select and qualify build inputs only. Bootstrap integration is still required
-before these inputs can create an initial accepted router generation.
+These commands select and qualify build inputs only. The provisioning wrapper
+uses their frozen selection for the first router installation.
 
 `provisioning-status --box BOX` reads the protected dom0 accepted, pending,
 and first-install records through the installed router recovery reader. It
@@ -78,6 +78,17 @@ approved playbook before this read; a missing reader or unreachable dom0 is
 an error, not an empty router target. The status alone does not prove that an
 unrecorded legacy disk is safe to reuse. The phase 30/31 connection must also
 check the declared legacy LV before any first allocation.
+
+`provision-box` phase 30 checks the live WAN bridge, installs the approved
+recovery reader, reads the protected status, and runs the
+`provision-initial-phase --phase prepare` command. It saves one controller
+pointer before retained preparation.
+Phase 31 resumes the same operation through enrollment, offline cleanup,
+verification, and first acceptance, then runs the read-only accepted-router
+playbook. A provisioning rerun verifies an existing accepted generation and
+does not run the former builder, package installers, or Xen guest renderer.
+The native path remains unqualified until the exact engine is activated and
+tested. Do not run these phases on a live box before that qualification.
 
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
@@ -263,9 +274,10 @@ The test login server is a refused localhost port. This test cannot enroll a mac
 production state. It is not proof of complete candidate boot or compatibility
 between old and new service versions. The result records these limits.
 
-The rootfs role now has separate `legacy` and `template` modes. Provisioning
-still uses the legacy mode until the common personalization and accepted-release
-path is complete. Bootstrap integration, protected baseline adoption, native compatibility qualification,
+The rootfs role has separate `legacy` and `template` modes. Router provisioning
+now selects the common template mode through the controller lifecycle command.
+The legacy mode has no provisioning caller and awaits removal after native
+qualification. Protected baseline adoption, native compatibility qualification,
 the router cutover executor, boot recovery, signed policy dispatch, and the
 unattended schedule must pass their qualification gates before replacement is
 enabled. The Instance contract accepts a router target, but no activated signed
@@ -351,19 +363,23 @@ filesystem isolation rule, see [guest construction](architecture.md#guest-constr
 
 ## Provisioning protections
 
-Router provisioning checks the protected `accepted.json` and `pending.json`
-paths under `/mnt/dom0_data/klokast-router-updates` before its first mutation.
-A pending record blocks provisioning. If an accepted record exists, playbooks
-30 and 31 run the installed, versioned `verify-boot-assignment` command on
-dom0. The command checks the protected record, boot files, Xen definition,
-and running generation. Playbook 31 also runs the read-only router service
-verifier. The playbooks then skip legacy work. A failed check stops the
-playbook before mutation. Direct calls to the rootfs builder, Xen
-renderer, VM base, Tailscale client, and enrollment still refuse an accepted
-assignment. A missing record does not constitute a baseline adoption receipt.
-If a first installation is recorded but has no accepted generation, these
-legacy paths stop before mutation. The native installer must resume the exact
-recorded operation; a provisioning rerun cannot create a second router disk.
+Router phase 30 first checks the live dom0 WAN bridge. The controller then
+installs the activated recovery reader and reads the protected `accepted.json`,
+`pending.json`, and `installation.json` records under
+`/mnt/dom0_data/klokast-router-updates`. A pending record blocks provisioning.
+Before retained preparation, the controller saves the exact initial operation,
+source, and template IDs. If the first installation is interrupted, a rerun
+must use those IDs and the dom0 record; a missing pointer blocks automatic
+recovery. The native preparer refuses an existing legacy or unassigned router
+disk. It cannot treat an absent accepted record as a blank target.
+
+Phase 31 completes the recorded installation, then checks the accepted boot
+assignment and router service and release state. The installed, versioned
+`verify-boot-assignment` command checks the protected record, boot files, Xen
+definition, and running generation. A later provisioning run performs those
+checks without changing the router. Direct calls to the former rootfs builder,
+Xen renderer, VM base, Tailscale client, and enrollment still refuse an
+accepted assignment.
 For a first accepted template generation, the protected assignment reader also
 checks that the verified installation record names that same generation.
 
@@ -389,28 +405,16 @@ interface changes, service starts, or restart notifications. The explicit
 normal dnsmasq lease path is `/var/lib/misc/dnsmasq.leases`. These phases do not
 supply candidate authority or bypass assignment checks.
 
-Legacy playbook 31 removes the first-contact root authorized key after it
-verifies router service, controller reachability, and Tailscale SSH as `neo`.
-It requires the key to match the approved controller public key and OpenSSH to
-be absent. An unexpected key or remaining OpenSSH path stops the playbook for
-review. A legacy router whose root key differs from the current approved
-bootstrap key needs a separate supervised reconciliation. This cleanup does not
-adopt a router release.
-The steady-state play first collects Tailscale status and proves independent
-Tailscale SSH. Only then can the VM base role remove OpenSSH. This order prevents
-a missing status fact from leaving the first-contact server installed.
-Before it removes OpenSSH, the play keeps the installed `openssh-keygen` version
-as an explicit package request. Router inspection needs this utility to verify
-the retained SSH host keys.
-DERP is a valid management path for normal provisioning. The separate signed
-IPv6 repair requires direct transport, as defined in [Secret Authority](secret-authority.md).
+The initial-install lifecycle proves Tailscale SSH after enrollment, then
+retires temporary OpenSSH access offline before first acceptance. The accepted
+runtime keeps `openssh-keygen` to verify retained SSH host keys. Legacy routers
+with remaining first-contact access require supervised reconciliation before
+baseline adoption. DERP is a valid management path for normal provisioning.
+The separate signed IPv6 repair requires direct transport, as defined in
+[Secret Authority](secret-authority.md).
 
-The Alpine asset role accepts separate output paths and an approved ISO digest.
-Its defaults preserve the existing shared VM paths. Its extraction receipt
-binds the ISO, output paths, kernel, initramfs, modloop, and APK index. Missing or
-changed cache evidence causes extraction from the selected ISO. Supplying a
-digest does not establish its authority: the router build must obtain that
-digest from authenticated and approved input evidence.
+The Alpine asset role still serves other VM profiles. Router bootstrap uses the
+generic template's frozen Alpine inputs and does not invoke that ISO asset role.
 
 ## Copy guest boundary
 
@@ -604,8 +608,8 @@ record itself grants no installation authority: the issuer must prove the
 controller grant, physical disk, enrollment, runtime state, and service checks
 before it advances a stage. Preparation stops at `prepared`; enrollment
 advances only to `enrolled`. Offline retirement, final boot, acceptance, and
-the phase 30/31 connection still require exact-engine qualification and
-completion.
+the phase 30/31 connection exist as source but still require exact-engine
+native qualification.
 
 `platform-router-update prepare-initial --box BOX --inputs-directory INPUTS
 --template-operation TEMPLATE` prepares and retains one first-install disk.
@@ -862,7 +866,7 @@ Platform Map checks after adoption.
 For an accepted router, `74-router-accepted-verification.yml` compares the
 running service checks, installed APK database, running kernel, and managed
 configuration file hashes with the protected current generation. Playbook 31
-runs the same checks when it skips legacy provisioning for an accepted router.
+runs the same checks for every accepted router.
 The root engine refuses to project this manifest during a pending operation.
 
 

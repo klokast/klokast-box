@@ -155,7 +155,6 @@ class Dom0ApkPolicyTest(unittest.TestCase):
 
     def test_persisting_build_playbooks_lock_before_lbu_commit(self):
         for relative in (
-            "30-vm-router-alpine-build.yml",
             "40-vm-golden-image.yml",
             "41-vm-backend.yml",
             "42-vm-dmz.yml",

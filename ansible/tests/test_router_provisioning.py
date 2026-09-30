@@ -21,18 +21,15 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(play['pre_tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification-inputs')
         self.assertEqual(play['tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification')
 
-    def test_router_removes_openssh_only_after_fresh_management_proof(self):
+    def test_router_provisioning_uses_verification_without_live_package_installers(self):
         plays = yaml.safe_load((REPO / 'ansible/playbooks/31-vm-router.yml').read_text())
-        tasks = next(play['tasks'] for play in plays if play['name'] == 'Converge router guest configuration')
-        roles = {task['ansible.builtin.import_role']['name']: index
-                 for index, task in enumerate(tasks) if 'ansible.builtin.import_role' in task}
-        probe = next(index for index, task in enumerate(tasks)
-                     if task.get('register') == 'router_pre_retirement_ssh_probe')
-        proof = next(index for index, task in enumerate(tasks)
-                     if 'router_pre_retirement_ssh_probe.stdout' in str(task.get('ansible.builtin.assert')))
-        self.assertLess(roles['tailscale-client'], probe)
-        self.assertLess(probe, proof)
-        self.assertLess(proof, roles['vm-base'])
+        roles = {task['ansible.builtin.import_role']['name']
+                 for play in plays for task in play.get('tasks',[])
+                 if 'ansible.builtin.import_role' in task}
+        self.assertEqual(roles, {'router-boot-assignment','router-verification',
+                                 'router-accepted-manifest-verification'})
+        self.assertIn('router-verification-inputs',str(plays[-1]['pre_tasks']))
+        self.assertNotIn('apk',str(plays).lower())
 
     def test_legacy_router_builder_cannot_rebuild_or_resize_an_existing_disk(self):
         tasks = yaml.safe_load((ROLES / 'router-alpine-rootfs/tasks/legacy.yml').read_text())
@@ -62,29 +59,20 @@ class PreparationTests(unittest.TestCase):
             with self.subTest(role=role):
                 tasks = yaml.safe_load((ROLES / role / 'tasks/main.yml').read_text())
                 self.assertEqual(tasks[0]['ansible.builtin.include_role']['name'], 'router-boot-assignment')
-        for name in ('30-vm-router-alpine-build.yml', '31-vm-router.yml'):
-            play = yaml.safe_load((REPO / 'ansible/playbooks' / name).read_text())[0]
-            self.assertTrue(play['any_errors_fatal'])
-            self.assertEqual(play['pre_tasks'][0]['ansible.builtin.import_role']['name'], 'router-boot-assignment')
+        first = yaml.safe_load((REPO / 'ansible/playbooks/30-vm-router-alpine-build.yml').read_text())[0]
+        self.assertTrue(first['any_errors_fatal'])
+        self.assertFalse(any('ansible.builtin.import_role' in task for task in first['tasks']))
 
     def test_provisioning_rerun_verifies_assignment_then_skips_legacy_work(self):
-        for name in ('30-vm-router-alpine-build.yml', '31-vm-router.yml'):
-            plays = yaml.safe_load((REPO / 'ansible/playbooks' / name).read_text())
-            first = plays[0]
-            self.assertTrue(first['pre_tasks'][0]['vars']['router_boot_assignment_allow_verify'])
-            self.assertEqual(first['pre_tasks'][1]['ansible.builtin.meta'], 'end_host')
-            self.assertIn('router_boot_assignment_present', first['pre_tasks'][1]['when'])
-            for play in plays[1:-1] if name == '31-vm-router.yml' else plays[1:]:
-                self.assertFalse(play['gather_facts'])
-                self.assertEqual(play['pre_tasks'][0]['ansible.builtin.meta'], 'end_host')
-                self.assertIn('router_boot_assignment_present', play['pre_tasks'][0]['when'])
-            if name == '31-vm-router.yml':
-                accepted = plays[-1]
-                self.assertFalse(accepted['gather_facts'])
-                self.assertEqual(accepted['pre_tasks'][0]['ansible.builtin.meta'], 'end_host')
-                self.assertIn('not (', accepted['pre_tasks'][0]['when'])
-                self.assertEqual(accepted['pre_tasks'][1]['ansible.builtin.import_role']['name'], 'router-verification-inputs')
-                self.assertEqual(accepted['tasks'][0]['ansible.builtin.import_role']['name'], 'router-verification')
+        plays = yaml.safe_load((REPO / 'ansible/playbooks/31-vm-router.yml').read_text())
+        first = plays[0]
+        self.assertTrue(first['tasks'][0]['vars']['router_boot_assignment_allow_verify'])
+        self.assertIn('router_boot_assignment_present',str(first['tasks'][1]))
+        self.assertEqual(plays[-1]['tasks'][0]['ansible.builtin.import_role']['name'],
+                         'router-verification')
+        wrapper = (REPO / 'ansible/bin/provision-box').read_text()
+        self.assertIn('provision-initial-phase --box "$BOX" --phase prepare',wrapper)
+        self.assertIn('provision-initial-phase --box "$BOX" --phase accept',wrapper)
         guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
         inspected = next(task for task in guard if task.get('register') == 'router_boot_assignment_records')
         self.assertEqual(inspected['loop'], ['accepted', 'pending', 'installation'])

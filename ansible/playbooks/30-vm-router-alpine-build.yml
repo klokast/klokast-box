@@ -1,76 +1,36 @@
 ---
-- name: Build the Alpine VIRT router guest disk for the selected node
+- name: Verify dom0 network prerequisites before preparing the common router template
   hosts: vm_dom0
   gather_facts: false
   any_errors_fatal: true
-  pre_tasks:
-    - name: Protect the accepted router before changing dom0 prerequisites
-      ansible.builtin.import_role:
-        name: router-boot-assignment
-      vars:
-        router_boot_assignment_allow_verify: true
-    - name: Keep the accepted router generation during a provisioning rerun
-      ansible.builtin.meta: end_host
-      when: router_boot_assignment_present | bool
   tasks:
-    - name: Unlock reviewed router image maintenance packages in RAM
-      ansible.builtin.import_role:
-        name: dom0-apk-policy
-        tasks_from: maintenance-unlock.yml
-      vars:
-        dom0_maintenance_packages:
-          - curl
-          - kpartx
-          - sfdisk
-          - xorriso
-
-    - name: Build the router image with transient dom0 tooling
-      block:
-        - name: Prepare shared Alpine VIRT assets on dom0
-          ansible.builtin.import_role:
-            name: alpine-virt-assets
-
-        - name: Build the installed Alpine router root disk
-          ansible.builtin.import_role:
-            name: router-alpine-rootfs
-
-        - name: Copy the installed router kernel and initramfs into dom0 shared storage
-          ansible.builtin.import_role:
-            name: xen-guest-artifacts
-          vars:
-            xen_guest_name: "{{ node_xen_guest_specs.router.guest_name }}"
-            xen_guest_lv_path: "{{ node_xen_guest_specs.router.required_lvs | first }}"
-            xen_guest_kernel_source_name: vmlinuz-virt
-            xen_guest_initramfs_source_name: initramfs-virt
-            xen_guest_kernel_dest_path: "{{ dom0_xen_images_path }}/router-kernel"
-            xen_guest_initramfs_dest_path: "{{ dom0_xen_images_path }}/router-initramfs"
-
-        - name: Render the installed-stage router Xen guest configuration
-          ansible.builtin.import_role:
-            name: xen-guest
-          vars:
-            xen_guest_spec: "{{ node_xen_guest_specs.router }}"
-      always:
-        - name: Remove router image maintenance packages and lock APK
-          ansible.builtin.import_role:
-            name: dom0-apk-policy
-            tasks_from: maintenance-lock.yml
-
-    - name: Persist router build state on the diskless dom0 host
-      ansible.builtin.shell: |
-        set -eu
-        apk cache sync >/dev/null
-        backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
-        if [ -n "$backupdir" ]; then
-          mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
-          if [ -n "$mount_info" ]; then
-            set -- $mount_info
-            case ",$2," in
-              *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
-            esac
-          fi
-        fi
-        lbu commit -d
-      args:
-        executable: /bin/sh
+    - name: Require the active controller for router provisioning
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
       changed_when: false
+
+    - name: Require the exact router dom0 target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == node_name ~ '-dom0'
+          - dom0_wan_bridge_name is match('^[a-zA-Z0-9_-]+$')
+          - dom0_wan_uplink_interface_resolved is match('^[a-zA-Z0-9_.-]+$')
+
+    - name: Read the live WAN uplink bridge
+      ansible.builtin.command:
+        argv:
+          - /bin/readlink
+          - -f
+          - '/sys/class/net/{{ dom0_wan_uplink_interface_resolved }}/master'
+      register: router_wan_master
+      changed_when: false
+
+    - name: Require the WAN uplink on the approved bridge
+      ansible.builtin.assert:
+        that:
+          - router_wan_master.stdout | basename == dom0_wan_bridge_name
+        fail_msg: >-
+          The live WAN uplink is not on the approved bridge. Complete the
+          dom0 bridge phase before preparing or starting a router.

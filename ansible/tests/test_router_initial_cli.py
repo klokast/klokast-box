@@ -302,6 +302,15 @@ class InitialCliTests(unittest.TestCase):
         self.assertEqual(self.events, ['74-router-initial-preparation-stage.yml',
             '74-router-initial-prepare.yml'] * 2)
 
+    def test_reserved_operation_can_start_once_and_reject_incomplete_state(self):
+        result = self.prepare(self.operation)
+        self.assertEqual(result['operation'], self.operation)
+        self.assertEqual(self.boot.call_count, 1)
+        self.assertEqual(self.prepare(self.operation), result)
+        (self.cache / ('initial-' + self.operation) / 'request.json').unlink()
+        with self.assertRaisesRegex(self.cli.UpdateError,'incomplete controller state'):
+            self.prepare(self.operation)
+
     def test_resume_never_overwrites_a_changed_or_unsafe_host_pin(self):
         result = self.prepare()
         pinned = Path(result['known_hosts'])
