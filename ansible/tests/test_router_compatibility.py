@@ -19,6 +19,20 @@ from test_router_copy_qualification import module
 
 
 class FixtureTests(unittest.TestCase):
+    def test_compatibility_initial_candidate_has_only_synthetic_first_contact(self):
+        path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
+        job = runpy.run_path(str(path))['candidate_job']
+        request = {'fixture': {'box': 'boxa'}, 'operation_id': 'a' * 24,
+                   'manifest': {'engine_commit': 'b' * 40}, 'inputs_sha256': 'c' * 64,
+                   'kernel_release': '6.18.54-virt', 'runtime_packages': {}}
+        initial = job(request, 'initial')
+        replacement = job(request, 'candidate')
+        self.assertEqual(initial['mode'], 'initial-install')
+        self.assertEqual(replacement['mode'], 'replacement')
+        self.assertEqual(set(initial['first_contact']), {'key', 'backend_address', 'backend_prefix',
+                                                         'backend_source_address'})
+        self.assertNotIn('first_contact', replacement)
+
     def test_guest_preparation_stage_hides_source_value_errors(self):
         path = Path(__file__).resolve().parents[1] / 'roles/router-state-copy/files/router-compatibility-guest'
         stage = runpy.run_path(str(path))['preparation_step']

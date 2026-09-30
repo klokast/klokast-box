@@ -91,6 +91,26 @@ def preparation_step(label, action, *args, **kwargs):
         raise RuntimeError('router compatibility ' + label + ' rejected fixture values') from None
 
 
+def candidate_job(request, name):
+    job = {'kind': 'klokast.router-candidate-job.v1',
+           'mode': 'initial-install' if name == 'initial' else 'replacement',
+           'box': request['fixture']['box'], 'role': 'router',
+           'operation_id': request['operation_id'],
+           'engine_commit': request['manifest']['engine_commit'],
+           'inputs_sha256': request['inputs_sha256'],
+           'kernel_release': request['kernel_release'],
+           'personalization': request['fixture'],
+           'runtime_packages': request['runtime_packages']}
+    if name == 'initial':
+        # This descriptor is only a parser fixture. No first-contact key is
+        # installed or enrolled in this networkless compatibility guest.
+        job['first_contact'] = {'key': 'ssh-ed25519 YQ==',
+                                'backend_address': '192.0.2.2',
+                                'backend_prefix': 24,
+                                'backend_source_address': '192.0.2.1'}
+    return job
+
+
 def prepare(request):
     # Both devices are private copies. The production LV is never attached.
     for disk in ('xvda', 'xvdb', 'xvdc'):
@@ -115,16 +135,8 @@ def prepare(request):
                         run(['mount', '--bind', '/' + directory, root / directory]); binds.append(root / directory)
                     # Package scripts require executable mounts inside this VM.
                     run(['mount', '-o', 'remount,rw,nodev,nosuid,exec', root])
-                    prepared = preparation_step(name + ' candidate preparation', router_candidate.prepare, root, {
-                        'kind': 'klokast.router-candidate-job.v1',
-                        'mode': 'initial-install' if name == 'initial' else 'replacement',
-                        'box': request['fixture']['box'], 'role': 'router',
-                        'operation_id': request['operation_id'],
-                        'engine_commit': request['manifest']['engine_commit'],
-                        'inputs_sha256': request['inputs_sha256'],
-                        'kernel_release': request['kernel_release'],
-                        'personalization': request['fixture'],
-                        'runtime_packages': request['runtime_packages']})
+                    prepared = preparation_step(name + ' candidate preparation', router_candidate.prepare,
+                                                root, candidate_job(request, name))
                 finally:
                     for directory in reversed(binds):
                         run(['umount', directory])
