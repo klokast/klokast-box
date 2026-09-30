@@ -1,0 +1,143 @@
+---
+- name: Stage one retained initial router preparation without starting it
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact initial-install selectors and bounded source paths
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-dom0'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_request.box == router_initial_box
+          - router_initial_request.operation_id == router_initial_operation
+          - router_initial_request.mode == 'initial-install'
+          - router_initial_input_dir == '/var/cache/klokast/updates/router/initial-' ~ router_initial_operation
+          - router_initial_transfer_parts is sequence
+          - router_initial_transfer_parts | length >= 2
+          - router_initial_transfer_parts | length <= 528
+
+    - name: Install the activated router record reader and boot protection
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Require the current activated engine for this preparation
+      ansible.builtin.assert:
+        that:
+          - router_initial_request.engine_commit == router_recovery_commit.stdout
+
+    - name: Create the private initial preparation directory
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', parts, parts/kernel, parts/initramfs]
+
+    - name: Declare the immutable initial preparation inputs
+      ansible.builtin.set_fact:
+        router_initial_documents:
+          - {name: request, value: '{{ router_initial_request }}'}
+          - {name: candidate-job, value: '{{ router_initial_job }}'}
+          - {name: release, value: '{{ router_initial_release }}'}
+          - {name: selection, value: '{{ router_initial_selection }}'}
+          - {name: parts, value: '{{ router_initial_transfer_parts }}'}
+          - name: profile
+            value: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../update-profiles/router-alpine-v2.json') | from_json }}"
+      no_log: true
+
+    - name: Stage initial preparation inputs without replacing an existing request
+      ansible.builtin.copy:
+        content: '{{ item.value | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/{{ item.name }}.json'
+        force: false
+        owner: root
+        group: root
+        mode: '0600'
+      loop: '{{ router_initial_documents }}'
+      no_log: true
+
+    - name: Read the staged initial preparation inputs
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/{{ item.name }}.json'
+      loop: '{{ router_initial_documents }}'
+      register: router_initial_staged_documents
+      no_log: true
+
+    - name: Refuse changes to any existing initial preparation request
+      ansible.builtin.assert:
+        that: [(item.content | b64decode | from_json) == item.item.value]
+        fail_msg: Initial router preparation inputs changed. Resume the exact recorded operation.
+      loop: '{{ router_initial_staged_documents.results }}'
+      no_log: true
+
+    - name: Require closed part names before copying to dom0
+      ansible.builtin.assert:
+        that:
+          - item.artifact in ['kernel', 'initramfs']
+          - item.name is match('^part-[0-9]{4}$')
+          - item.sha256 is match('^[0-9a-f]{64}$')
+          - item.bytes | int > 0
+          - item.bytes | int <= 2097152
+      loop: '{{ router_initial_transfer_parts }}'
+
+    - name: Transfer the exact bounded initial preparation boot parts
+      ansible.builtin.copy:
+        src: '{{ router_initial_input_dir }}/transfer/{{ item.artifact }}/{{ item.name }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/parts/{{ item.artifact }}/{{ item.name }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: '{{ router_initial_transfer_parts }}'
+      loop_control:
+        label: '{{ item.artifact }}/{{ item.name }}'
+      register: router_initial_part_copy
+      retries: 3
+      delay: 3
+      until: router_initial_part_copy is succeeded
+
+    - name: Stage the closed initial preparation module set
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/{{ item }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [router_initial_preparation, router_initial_installation, router_candidate,
+             router_candidate_preparation, router_candidate_disk, router_generations,
+             router_native, router_records, router_transaction, router_finalize,
+             router_personalize, router_initial_contact, router_updates, router_state,
+             platform_updates, platform_update_metadata, xen_build_runtime]
+
+    - name: Stage the shared bounded input assembler
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-alpine-rootfs/files/router-template-assemble-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router-input-assembler.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage the fixed retained preparation command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-initial-preparation/files/router-initial-prepare-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router-initial-prepare-dom0'
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Assemble and verify the two exact networkless boot inputs
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router-initial-prepare-dom0'
+          - --box
+          - '{{ router_initial_box }}'
+          - --operation-id
+          - '{{ router_initial_operation }}'
+          - --engine
+          - '{{ router_initial_request.engine_commit }}'
+          - --assemble-only
+      register: router_initial_assembled
+      changed_when: (router_initial_assembled.stdout | from_json).assembled | bool

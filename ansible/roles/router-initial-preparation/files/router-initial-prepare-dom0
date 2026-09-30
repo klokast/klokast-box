@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Prepare a retained first-router disk; never start or enroll a router."""
+import argparse
+import json
+import os
+from pathlib import Path
+import runpy
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import router_initial_preparation as initial
+import router_records as records
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--engine', required=True)
+    parser.add_argument('--assemble-only', action='store_true')
+    args = parser.parse_args()
+    initial.router_native.Native().guard(args.box, deadline=initial.time.monotonic() + 30)
+    storage = records.Records(args.box)
+    work = storage.operation(args.operation_id)
+    if Path(__file__).resolve().parent != work:
+        raise RuntimeError('initial preparation helper is outside its exact operation directory')
+    if args.assemble_only:
+        # This action copies only staged opaque input bytes. Allocation requires
+        # a separate fresh grant after the potentially slow Ansible transfer.
+        value = records.read(work / 'request.json')
+        if value.get('box') != args.box or value.get('operation_id') != args.operation_id:
+            raise RuntimeError('initial preparation input assembly targets another operation')
+        assembler = records.secure(work / 'router-input-assembler.py')
+        changed = runpy.run_path(str(assembler))['assemble_boot'](work, value)
+        print(json.dumps({'kind':'klokast.router-initial-input-assembly.v1', 'assembled':changed}))
+        return
+    result = initial.execute(storage, args.operation_id, args.engine)
+    records.write(work / 'initial-preparation-result.json', result)
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print('Router initial preparation refused: ' + str(error), file=sys.stderr)
+        raise SystemExit(1)

@@ -46,8 +46,6 @@ def identity(work, box, operation, *, owner=0):
     safe(work.parent, directory=True, owner=owner)
     safe(work, directory=True, owner=owner)
     safe(work / 'parts', directory=True, owner=owner)
-    for artifact in ARTIFACTS:
-        safe(work / 'parts' / artifact, directory=True, owner=owner)
     request = load(work / 'request.json', owner=owner)
     if (not isinstance(request, dict) or set(request) != {'kind', 'box', 'role', 'operation_id',
             'inputs_sha256', 'capsule', 'bootstrap'} or
@@ -57,20 +55,29 @@ def identity(work, box, operation, *, owner=0):
     if not isinstance(request['bootstrap'], dict) or set(request['bootstrap']) != {'kernel', 'initramfs'}:
         raise RuntimeError('router bootstrap input request is incomplete')
     expected = {'capsule': request['capsule'], **request['bootstrap']}
-    for artifact, (_, maximum) in ARTIFACTS.items():
+    return part_manifest(work, expected, owner=owner)
+
+
+def part_manifest(work, expected, *, owner=0):
+    if set(expected) not in ({'capsule', 'kernel', 'initramfs'}, {'kernel', 'initramfs'}):
+        raise RuntimeError('router input record selects an unsupported artifact set')
+    artifacts = {name:ARTIFACTS[name] for name in ARTIFACTS if name in expected}
+    for artifact in artifacts:
+        safe(work / 'parts' / artifact, directory=True, owner=owner)
+    for artifact, (_, maximum) in artifacts.items():
         item = expected[artifact]
         if (not isinstance(item, dict) or set(item) != {'sha256', 'bytes'} or
                 not isinstance(item['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', item['sha256']) or
                 type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum):
             raise RuntimeError('router build input request has an invalid byte identity')
     parts = load(work / 'parts.json', owner=owner)
-    if not isinstance(parts, list) or not 3 <= len(parts) <= 1553:
+    if not isinstance(parts, list) or not len(artifacts) <= len(parts) <= 1553:
         raise RuntimeError('router input part record is incomplete')
-    if {path.name for path in (work / 'parts').iterdir()} != set(ARTIFACTS):
+    if {path.name for path in (work / 'parts').iterdir()} != set(artifacts):
         raise RuntimeError('router input part directory differs from its exact manifest')
     grouped = {}
     cursor = 0
-    for artifact in ARTIFACTS:
+    for artifact in artifacts:
         group = [item for item in parts if isinstance(item, dict) and item.get('artifact') == artifact]
         if (not 1 <= len(group) <= (expected[artifact]['bytes'] + CHUNK - 1) // CHUNK or
                 parts[cursor:cursor + len(group)] != group):
@@ -156,6 +163,21 @@ def assemble(work, box, operation, *, owner=0):
     return {'kind': 'klokast.router-build-input-assembly.v1', 'operation_id': operation,
             'assembled': changed,
             'artifacts': {artifact: expected[artifact] for artifact in ARTIFACTS}}
+
+
+def assemble_boot(work, request, *, owner=0):
+    """Use the same bounded assembler for a previously validated candidate job."""
+    safe(work.parent, directory=True, owner=owner)
+    safe(work, directory=True, owner=owner)
+    safe(work / 'parts', directory=True, owner=owner)
+    expected = request.get('bootstrap')
+    if not isinstance(expected, dict) or set(expected) != {'kernel', 'initramfs'}:
+        raise RuntimeError('router preparation requires the two exact bootstrap artifacts')
+    expected, grouped = part_manifest(work, expected, owner=owner)
+    changed = False
+    for artifact in ('kernel', 'initramfs'):
+        changed = assemble_one(work, artifact, expected[artifact], grouped[artifact], owner=owner) or changed
+    return changed
 
 
 def main():

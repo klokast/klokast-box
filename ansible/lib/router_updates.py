@@ -468,6 +468,12 @@ def lifecycle(mode, *, box, role, existing_disk, installation, accepted, bootstr
                 raise UpdateError('existing router disk has no matching interrupted-install record')
             return 'resume'
         if installation is not None:
+            try:
+                router_initial_installation.validate(installation, box)
+            except (RuntimeError, TypeError, ValueError) as error:
+                raise UpdateError('router installation record is invalid') from error
+            if installation['stage'] == 'planned':
+                return 'resume'
             raise UpdateError('recorded installation disk is missing; reconstruction requires review')
         return 'allocate'
     if mode == 'replacement':

@@ -92,7 +92,7 @@
         mode: '0600'
       loop: [router_candidate, router_candidate_preparation, router_candidate_disk, router_generations, router_native,
              router_records, router_initial_installation, router_transaction, router_finalize,
-             router_personalize, router_initial_contact, xen_build_runtime]
+             router_personalize, router_initial_contact, router_state, xen_build_runtime]
 
     - name: Stage the fixed diagnostic candidate host command
       ansible.builtin.copy:

@@ -4,6 +4,9 @@ import datetime as dt
 from importlib.machinery import SourceFileLoader
 import importlib.util
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -23,6 +26,24 @@ def load_cli():
 
 
 class TemplateInventoryTests(unittest.TestCase):
+    def test_candidate_boot_stages_all_nonstandard_imports_in_isolation(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            (work / 'candidate-job.json').write_text('{}')
+            with patch.object(cli.vm_template_inputs, 'bootstrap') as bootstrap:
+                cli.candidate_boot(work, work)
+            staged = work / 'staged'
+            staged.mkdir()
+            for target, source in bootstrap.call_args.kwargs['job_files'].items():
+                if target.startswith('usr/local/lib/klokast/'):
+                    shutil.copyfile(source, staged / Path(target).name)
+            completed = subprocess.run([sys.executable, '-I', '-c',
+                'import sys; sys.path.insert(0, sys.argv[1]); '
+                'import router_candidate, router_initial_contact', str(staged)],
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_rejected_initial_selection_allocates_no_build_operation(self):
         cli = load_cli()
         with tempfile.TemporaryDirectory() as temporary:

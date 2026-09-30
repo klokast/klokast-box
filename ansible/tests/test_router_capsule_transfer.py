@@ -96,6 +96,19 @@ class CapsuleTransferTests(unittest.TestCase):
             router_template_inputs.split_payload(self.sources['capsule'], self.controller / 'other-parts',
                 {**self.expected['capsule'], 'sha256': '0' * 64})
 
+    def test_initial_preparation_reuses_only_the_two_bounded_boot_artifacts(self):
+        shutil.rmtree(self.work / 'parts/capsule')
+        self.write('parts.json', [part for part in self.parts if part['artifact'] != 'capsule'])
+        request = {'bootstrap':{name:self.expected[name] for name in ('kernel', 'initramfs')}}
+        self.assertTrue(self.module.assemble_boot(self.work, request, owner=os.geteuid()))
+        self.assertFalse(self.module.assemble_boot(self.work, request, owner=os.geteuid()))
+        self.assertEqual((self.work / 'bootstrap-kernel').read_bytes(), self.payloads['kernel'])
+        self.assertEqual((self.work / 'bootstrap-initramfs').read_bytes(), self.payloads['initramfs'])
+        self.assertFalse((self.work / 'capsule.tar').exists())
+        (self.work / 'parts/capsule').mkdir(mode=0o700)
+        with self.assertRaisesRegex(RuntimeError, 'exact manifest'):
+            self.module.assemble_boot(self.work, request, owner=os.geteuid())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -235,6 +235,28 @@ class RecordsTests(unittest.TestCase):
             self.records.accept_initial(self.new)
         self.assertFalse((self.base / 'accepted.json').exists())
 
+    def test_planned_installation_fences_adoption_and_binds_the_first_native_uuid(self):
+        (self.base / 'accepted.json').unlink()
+        planned = g.seal({'kind':'klokast.router-initial-installation.v1',
+            'box':'boxa', 'role':'router', 'operation_id':self.new['generation_id'],
+            'engine_commit':self.new['engine_commit'], 'selection_sha256':'0'*64,
+            'release_sha256':'1'*64, 'disk':{**self.new['disk'], 'uuid':None},
+            'stage':'planned', 'preparation_sha256':None, 'enrollment_sha256':None,
+            'machine_id':None, 'generation_sha256':None})
+        with self.records.lock():
+            self.records.record_installation(planned)
+            with self.assertRaisesRegex(TransactionError, 'recorded first installation'):
+                self.records.adopt(self.old)
+            allocated = g.seal({**{k:v for k,v in planned.items() if k != 'record_sha256'},
+                               'stage':'allocated', 'disk':self.new['disk']})
+            self.records.record_installation(allocated)
+            changed = g.seal({**{k:v for k,v in allocated.items() if k != 'record_sha256'},
+                             'disk':{**self.new['disk'], 'uuid':'other-uuid'}})
+            with self.assertRaisesRegex(TransactionError, 'cannot skip'):
+                self.records.record_installation(changed)
+            with self.assertRaisesRegex(TransactionError, 'cannot skip'):
+                self.records.record_installation(planned)
+
 
 if __name__ == '__main__':
     unittest.main()

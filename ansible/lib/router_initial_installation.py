@@ -2,7 +2,7 @@
 import router_generations as generations
 from router_transaction import TransactionError
 
-STAGES = ('allocated', 'prepared', 'enrolled', 'verified')
+STAGES = ('planned', 'allocated', 'prepared', 'enrolled', 'verified')
 FIELDS = frozenset({'kind', 'box', 'role', 'operation_id', 'engine_commit',
                     'selection_sha256', 'release_sha256', 'disk', 'stage', 'preparation_sha256',
                     'enrollment_sha256', 'machine_id', 'generation_sha256', 'record_sha256'})
@@ -24,11 +24,12 @@ def validate(value, box):
     disk = value['disk']
     if (not isinstance(disk, dict) or set(disk) != {'path', 'uuid', 'bytes'} or
             disk['path'] != '/dev/vg0/routergen_' + value['operation_id'] or
-            not generations.matches('[A-Za-z0-9-]{1,64}', disk['uuid']) or
+            (disk['uuid'] is not None if value['stage'] == 'planned' else
+             not generations.matches('[A-Za-z0-9-]{1,64}', disk['uuid'])) or
             disk['bytes'] != 2147483648):
         raise TransactionError('router initial installation disk identity is invalid')
     hashes = [value[name] for name in ('preparation_sha256', 'enrollment_sha256', 'generation_sha256')]
-    count = STAGES.index(value['stage'])
+    count = max(0, STAGES.index(value['stage']) - 1)
     if any(not generations.matches('[0-9a-f]{64}', item) for item in hashes[:count]) or any(
             item is not None for item in hashes[count:]):
         raise TransactionError('router initial installation stage lacks exact evidence')
@@ -45,12 +46,17 @@ def advance(current, next_value, box):
     if current == next_value:
         return next_value
     before, after = STAGES.index(current['stage']), STAGES.index(next_value['stage'])
+    disk_matches = current['disk'] == next_value['disk']
+    if current['stage'] == 'planned' and next_value['stage'] == 'allocated':
+        disk_matches = all(current['disk'][key] == next_value['disk'][key]
+                           for key in ('path', 'bytes'))
+    completed = max(0, before - 1)
     if after != before + 1 or any(current[name] != next_value[name] for name in (
             'box', 'role', 'operation_id', 'engine_commit', 'selection_sha256',
-            'release_sha256', 'disk')) or any(
+            'release_sha256')) or not disk_matches or any(
             current[name] != next_value[name] for name in
-            ('preparation_sha256', 'enrollment_sha256', 'generation_sha256')[:before]) or (
-            before >= 2 and current['machine_id'] != next_value['machine_id']):
+            ('preparation_sha256', 'enrollment_sha256', 'generation_sha256')[:completed]) or (
+            completed >= 2 and current['machine_id'] != next_value['machine_id']):
         raise TransactionError('router initial installation cannot skip, rewind, or change recorded identity')
     return next_value
 

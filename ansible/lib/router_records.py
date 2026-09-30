@@ -176,7 +176,7 @@ class Records:
             raise transaction.TransactionError('first installation cannot replace an accepted or pending router')
         current = self.installation()
         if current is None:
-            if value['stage'] != 'allocated':
+            if value['stage'] not in ('planned', 'allocated'):
                 raise transaction.TransactionError('first installation must record its allocation before preparation')
         else:
             initial_installation.advance(current, value, self.box)
@@ -193,6 +193,8 @@ class Records:
         generations.generation(record, self.box)
         if record['origin'] != 'legacy' or self.pending() is not None:
             raise transaction.TransactionError('baseline adoption requires one legacy router and no pending operation')
+        if self.installation() is not None:
+            raise transaction.TransactionError('baseline adoption cannot replace a recorded first installation')
         accepted_path = self.base / 'accepted.json'
         if accepted_path.exists() or accepted_path.is_symlink():
             raise transaction.TransactionError('router already has an accepted generation')

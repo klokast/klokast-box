@@ -215,5 +215,90 @@ class DiskTests(unittest.TestCase):
         self.assertEqual([v[0] for v in commands],['/sbin/lvcreate','/bin/dd'])
         self.assertEqual(c.record(self.work,self.operation)['stage'],'cloned')
 
+    def initial_storage(self):
+        base = self.work / 'protected'
+        base.mkdir(mode=0o700)
+        for name in ('records', 'generations', 'operations'):
+            (base / name).mkdir(mode=0o700)
+        storage = c.records.Records(self.box, base)
+        storage.record_installation(c.generations.seal({
+            'kind':'klokast.router-initial-installation.v1', 'box':self.box, 'role':'router',
+            'operation_id':self.operation, 'engine_commit':'a'*40, 'selection_sha256':'c'*64,
+            'release_sha256':'d'*64, 'stage':'planned',
+            'disk':{'path':self.path, 'uuid':None, 'bytes':c.BYTES},
+            'preparation_sha256':None, 'enrollment_sha256':None,
+            'machine_id':None, 'generation_sha256':None}))
+        return storage
+
+    def test_initial_clone_records_uuid_before_copy_and_resumes_only_that_allocation(self):
+        storage = self.initial_storage()
+        source = self.work / 'template'
+        with source.open('wb') as stream: stream.truncate(c.BYTES)
+        expected = {'bytes':c.BYTES, 'sha256':'b'*64}
+        def interrupted(argv, *args, **kwargs):
+            if argv[0] == '/sbin/lvcreate':
+                self.assertEqual(storage.installation()['stage'], 'planned')
+            else:
+                self.assertEqual(storage.installation()['stage'], 'allocated')
+                self.assertEqual(storage.installation()['disk']['uuid'], 'exact-uuid')
+                raise RuntimeError('opaque copy interrupted')
+        with patch.object(c, 'safe_file'), patch.object(c, 'checksum', return_value='b'*64), \
+                patch.object(c, 'observed', side_effect=[None, self.row, self.row]), \
+                patch.object(c.native, 'command', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'opaque copy interrupted'):
+                c.initial_clone(self.work, self.operation, source, expected, storage)
+        self.assertEqual(c.record(self.work, self.operation)['stage'], 'allocated')
+        with patch.object(c, 'safe_file'), patch.object(c, 'checksum', return_value='b'*64), \
+                patch.object(c, 'observed', return_value=self.row), patch.object(c.native, 'command') as command:
+            disk = c.initial_clone(self.work, self.operation, source, expected, storage)
+            self.assertEqual(disk['uuid'], 'exact-uuid')
+            self.assertEqual([call.args[0][0] for call in command.call_args_list], ['/bin/dd'])
+            command.reset_mock()
+            (self.work / 'preparation.json').write_text('preparation has started')
+            self.assertEqual(c.initial_clone(self.work, self.operation, source, expected, storage), disk)
+            command.assert_not_called()
+
+    def test_initial_clone_never_adopts_an_unrecorded_native_uuid(self):
+        storage = self.initial_storage()
+        source = self.work / 'template'
+        with source.open('wb') as stream: stream.truncate(c.BYTES)
+        with patch.object(c, 'safe_file'), patch.object(c, 'checksum', return_value='b'*64), \
+                patch.object(c, 'observed', return_value=self.row), patch.object(c.native, 'command') as command:
+            with self.assertRaisesRegex(TransactionError, 'unrecorded disk'):
+                c.initial_clone(self.work, self.operation, source,
+                    {'bytes':c.BYTES, 'sha256':'b'*64}, storage)
+            self.store(stage='planned', uuid=None)
+            with self.assertRaisesRegex(TransactionError, 'incomplete or different allocation'):
+                c.initial_clone(self.work, self.operation, source,
+                    {'bytes':c.BYTES, 'sha256':'b'*64}, storage)
+            command.assert_not_called()
+        self.assertIsNone(storage.installation()['disk']['uuid'])
+
+    def test_initial_clone_cannot_copy_over_a_preparation_that_has_started(self):
+        storage = self.initial_storage()
+        self.store(stage='allocated')
+        (self.work / 'result.slot').write_bytes(b'partial preparation')
+        source = self.work / 'template'
+        with source.open('wb') as stream: stream.truncate(c.BYTES)
+        with patch.object(c, 'safe_file'), patch.object(c, 'checksum', return_value='b'*64), \
+                patch.object(c, 'observed', return_value=self.row), patch.object(c.native, 'command') as command:
+            with self.assertRaisesRegex(TransactionError, 'preparation has started'):
+                c.initial_clone(self.work, self.operation, source,
+                    {'bytes':c.BYTES, 'sha256':'b'*64}, storage)
+            command.assert_not_called()
+
+    def test_interrupted_initial_plan_with_proven_absence_can_allocate_once(self):
+        storage = self.initial_storage()
+        self.store(stage='planned', uuid=None)
+        source = self.work / 'template'
+        with source.open('wb') as stream: stream.truncate(c.BYTES)
+        with patch.object(c, 'safe_file'), patch.object(c, 'checksum', return_value='b'*64), \
+                patch.object(c, 'observed', side_effect=[None, self.row, self.row, self.row]), \
+                patch.object(c.native, 'command') as command:
+            disk = c.initial_clone(self.work, self.operation, source,
+                {'bytes':c.BYTES, 'sha256':'b'*64}, storage)
+            self.assertEqual(disk, storage.installation()['disk'])
+            self.assertEqual([call.args[0][0] for call in command.call_args_list], ['/sbin/lvcreate', '/bin/dd'])
+
 
 if __name__=='__main__': unittest.main()

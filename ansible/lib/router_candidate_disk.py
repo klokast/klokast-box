@@ -75,14 +75,8 @@ def verify(work, operation, *, detached=True):
     return disk
 
 
-def create(work, operation, source, expected, *, box):
-    """Clone only authenticated opaque bytes into a newly created, recorded LV."""
-    work, source = Path(work), Path(source)
-    path, tag = selection(operation)
-    records.parents(work / 'candidate-disk.json')
-    if (work / 'candidate-disk.json').exists() or (work / 'candidate-disk.json').is_symlink() or observed(operation):
-        raise TransactionError('router candidate allocation already exists; reconcile its exact record')
-    refuse_referenced_disk(box, operation, {'path':path, 'uuid':None})
+def template_source(source, expected):
+    source = Path(source)
     if (not isinstance(expected, dict) or set(expected) != {'bytes','sha256'} or expected['bytes'] != BYTES or
             not generations.matches('[0-9a-f]{64}', expected['sha256'])):
         raise TransactionError('router candidate requires the exact qualified template size and hash')
@@ -90,6 +84,12 @@ def create(work, operation, source, expected, *, box):
     safe_file(source, BYTES)
     if source.stat().st_size != BYTES or checksum(source) != expected['sha256']:
         raise TransactionError('router candidate template bytes differ before allocation')
+    return source
+
+
+def allocate(work, operation, expected):
+    """Internal allocation; the authorized caller has checked all references."""
+    path, tag = selection(operation)
     value = {'kind':'klokast.router-candidate-disk.v1', 'operation_id':operation, 'path':path,
              'tag':tag, 'uuid':None, 'stage':'planned', 'template_sha256':expected['sha256']}
     records.write(work / 'candidate-disk.json', value)
@@ -98,16 +98,77 @@ def create(work, operation, source, expected, *, box):
                    time.monotonic() + 120, maximum_seconds=120, lvm_diagnostic=True)
     row = observed(operation)
     disk = validate_row(row, operation, row.get('lv_uuid') if isinstance(row, dict) else None)
-    value.update(uuid=disk['uuid'], stage='allocated')
-    records.write(work / 'candidate-disk.json', value)
-    verify(work, operation)
-    native.command(['/bin/dd', 'if='+str(source), 'of='+path, 'bs=4M', 'count=512', 'conv=notrunc,fsync'],
+    records.write(work / 'candidate-disk.json', {**value, 'uuid':disk['uuid'], 'stage':'allocated'})
+    return disk
+
+
+def clone(work, operation, source, expected):
+    """Internal copy into a recorded, detached, never-prepared allocation."""
+    value = record(work, operation)
+    if value['stage'] != 'allocated' or value['template_sha256'] != expected['sha256']:
+        raise TransactionError('router clone requires its exact unfinished allocation')
+    if any((work / name).exists() or (work / name).is_symlink() for name in (
+            'preparation.json', 'preparation-result.json', 'result.slot', 'prepare.cfg')):
+        raise TransactionError('router clone cannot overwrite a disk whose preparation has started')
+    disk = verify(work, operation)
+    native.command(['/bin/dd', 'if='+str(source), 'of='+disk['path'], 'bs=4M', 'count=512', 'conv=notrunc,fsync'],
                    time.monotonic() + 180, maximum_seconds=180)
     verify(work, operation)
-    if checksum(Path(path), BYTES) != expected['sha256']:
+    if checksum(Path(disk['path']), BYTES) != expected['sha256']:
         raise TransactionError('router candidate cloned bytes differ; retain the recorded disk')
     records.write(work / 'candidate-disk.json', {**value,'stage':'cloned'})
     return disk
+
+
+def create(work, operation, source, expected, *, box):
+    """Clone only authenticated opaque bytes into a newly created, recorded LV."""
+    work = Path(work)
+    path, _ = selection(operation)
+    records.parents(work / 'candidate-disk.json')
+    if (work / 'candidate-disk.json').exists() or (work / 'candidate-disk.json').is_symlink() or observed(operation):
+        raise TransactionError('router candidate allocation already exists; reconcile its exact record')
+    refuse_referenced_disk(box, operation, {'path':path, 'uuid':None})
+    source = template_source(source, expected)
+    allocate(work, operation, expected)
+    return clone(work, operation, source, expected)
+
+
+def initial_clone(work, operation, source, expected, storage):
+    """Resume only the exact planned first installation, under its local lock.
+
+    Persist the installation fence before calling this function. Record the
+    allocated UUID before copying. An unrecorded LV is never adopted or reset.
+    """
+    work = Path(work)
+    installation = storage.installation()
+    records.initial_installation.validate(installation, storage.box)
+    if installation['operation_id'] != operation or installation['stage'] not in ('planned', 'allocated'):
+        raise TransactionError('initial clone requires its exact pre-preparation installation record')
+    source = template_source(source, expected)
+    path = work / 'candidate-disk.json'
+    if not path.exists() and not path.is_symlink():
+        if installation['stage'] != 'planned' or observed(operation) is not None:
+            raise TransactionError('initial clone has an unrecorded disk; reconcile its allocation')
+        disk = allocate(work, operation, expected)
+    else:
+        value = record(work, operation)
+        if value['template_sha256'] != expected['sha256']:
+            raise TransactionError('initial clone has an incomplete or different allocation identity')
+        if value['stage'] == 'planned' and installation['stage'] == 'planned' and observed(operation) is None:
+            disk = allocate(work, operation, expected)
+        elif value['stage'] in ('allocated', 'cloned'):
+            disk = verify(work, operation)
+        else:
+            raise TransactionError('initial clone has an incomplete or different allocation identity')
+    if installation['stage'] == 'planned':
+        installation = storage.record_installation(generations.seal({
+            **{key:value for key,value in installation.items() if key != 'record_sha256'},
+            'disk':disk, 'stage':'allocated'}))
+    if installation['disk'] != disk:
+        raise TransactionError('initial clone disk differs from its recorded installation')
+    if record(work, operation)['stage'] == 'cloned':
+        return disk  # Never reset a completed clone, including a prepared one.
+    return clone(work, operation, source, expected)
 
 
 def refuse_referenced_disk(box, operation, disk):

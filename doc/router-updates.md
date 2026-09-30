@@ -580,8 +580,10 @@ The verifier checks the exact package world, kernel module directory, generated
 files and modes, default service links, locked accounts, and absent identity.
 Extra firewall includes and DNS configuration fail verification.
 
-The first-install record advances through `allocated`, `prepared`, `enrolled`,
-and `verified` under the dom0 router lock. It binds one operation, engine,
+The first-install record advances through `planned`, `allocated`, `prepared`,
+`enrolled`, and `verified` under the dom0 router lock. The planned record fences
+legacy provisioning before LV creation. Allocation records the native UUID
+before any template copy. It binds one operation, engine,
 policy selection receipt, release, LV UUID, preparation result, enrollment
 result, and proposed generation.
 A first accepted assignment binds the checksum of that complete verified
@@ -590,8 +592,28 @@ A missing or changed record cannot authorize a second disk or identity. The
 first accepted-generation writer requires the matching verified record. The
 record itself grants no installation authority: the issuer must prove the
 controller grant, physical disk, enrollment, runtime state, and service checks
-before it advances a stage. The production issuer and phase 30/31 connection
-remain to be implemented and qualified.
+before it advances a stage. The preparation issuer below stops at `prepared`.
+The enrollment and acceptance issuer and phase 30/31 connection remain to be
+implemented and qualified.
+
+`platform-router-update prepare-initial --box BOX --inputs-directory INPUTS
+--template-operation TEMPLATE` prepares and retains one first-install disk.
+It requires an activated engine, current bootstrap policy selection, and an
+approved release from the common builder. It uses the same renderer and preparation guest as diagnostic testing and the
+same bounded boot-input assembler as the template builder. It stages all
+inputs first, then rechecks the engine, policy, and compiler inputs before it
+issues a 15-minute preparation grant. No standing replacement policy is needed.
+
+The dom0 command refuses an accepted, pending, configured, or running router,
+an existing legacy router LV, or an unassigned router generation. It records
+the installation before allocation and retains the new disk on success or
+failure. It never starts the production router or enrolls a Tailnet identity.
+Use `--operation-id OPERATION` to resume the exact saved preparation. A partial
+copy can resume only with its recorded UUID and before preparation has started.
+An unrecorded native UUID needs explicit reconciliation. A completed preparation
+uses its recorded result; an enrolled installation cannot return to preparation.
+This command is an integration step, not the completed bootstrap workflow. It
+still needs native qualification before connection to normal provisioning.
 
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before
