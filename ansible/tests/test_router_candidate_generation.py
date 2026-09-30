@@ -1,5 +1,6 @@
 """A candidate record must bind one qualified release, clone and topology."""
 import copy
+import hashlib
 from pathlib import Path
 import sys
 import unittest
@@ -21,7 +22,8 @@ class CandidateGenerationTests(unittest.TestCase):
         prepared = {'kind':'klokast.router-candidate-files.v1', 'box':'boxa', 'role':'router',
                     'mode':'replacement', 'operation_id':operation, 'engine_commit':ENGINE,
                     'inputs_sha256':selected['inputs']['inputs_sha256'],
-                    'packages':dict(selected['runtime_packages']), 'accounts':old['accounts'],
+                    'packages':{p['name']:p['version'] for p in selected['inputs']['packages']},
+                    'accounts':old['accounts'],
                     'tailscale':{key:selected['inputs']['tailscale'][key] for key in (
                         'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')},
                     'configuration_files':dict.fromkeys(router_personalize.FILES, 'e'*64),
@@ -33,9 +35,14 @@ class CandidateGenerationTests(unittest.TestCase):
         directory = '/mnt/dom0_data/klokast-router-updates/generations/' + operation
         boot = {name:{'path':directory+'/'+name, 'sha256':selected['artifacts'][name], 'bytes':1234}
                 for name in ('kernel','initramfs')}
+        public_key = 'ssh-ed25519 YQ==\n'
+        first_contact = {'kind':'klokast.router-first-contact.v2',
+            'host_key_public':{'ed25519':public_key},
+            'host_key_public_sha256':{'ed25519':hashlib.sha256(public_key.encode()).hexdigest()}}
         return dict(box='boxa', operation=operation, template_operation='e'*24,
                     old=old, release=selected,
-                    profile=PROFILE, prepared=prepared, disk_record=disk, boot=boot,
+                    profile=PROFILE, prepared=prepared, first_contact=first_contact,
+                    disk_record=disk, boot=boot,
                     xen_uuid='33333333-1111-4111-8111-111111111111', approved_engine=ENGINE)
 
     def test_proposed_generation_uses_old_topology_and_new_exact_assets(self):
@@ -56,6 +63,7 @@ class CandidateGenerationTests(unittest.TestCase):
             lambda v:v['prepared'].update(service_syntax=False),
             lambda v:v['prepared']['packages'].update(tailscale='changed'),
             lambda v:v['prepared']['tailscale'].update(tailscaled_sha256='0'*64),
+            lambda v:v['first_contact']['host_key_public'].update(ed25519='changed'),
             lambda v:v['disk_record'].update(stage='allocated'),
             lambda v:v['disk_record'].update(template_sha256='0'*64),
             lambda v:v['boot']['kernel'].update(sha256='0'*64),
@@ -105,21 +113,26 @@ class CandidateGenerationTests(unittest.TestCase):
     def test_offline_preflight_binds_preparation_without_claiming_a_router_boot(self):
         args = self.fixture()
         proposed = candidate.assemble(**args)
-        result = candidate.offline_preflight(proposed,args['prepared'],args['disk_record'])
+        result = candidate.offline_preflight(proposed,args['prepared'],args['first_contact'],
+                                             args['disk_record'],args['release'])
         self.assertEqual(result['candidate_sha256'],proposed['record_sha256'])
         self.assertEqual(result['disk'],proposed['disk'])
         self.assertFalse(result['candidate_booted'])
         self.assertFalse(result['production_identity'])
+        self.assertTrue(result['temporary_access'])
+        self.assertEqual(result['kind'],'klokast.router-candidate-preflight.v2')
         self.assertNotIn('kernel',result['tests'])
         for change in (lambda a:a['prepared'].update(identity_absent=False),
                        lambda a:a['prepared'].update(service_syntax=False),
                        lambda a:a['prepared'].update(mode='initial-install'),
                        lambda a:a['prepared']['packages'].update(dnsmasq='other'),
+                       lambda a:a['first_contact']['host_key_public'].update(ed25519='changed'),
                        lambda a:a['disk_record'].update(uuid='other'),
                        lambda a:a['disk_record'].update(stage='allocated')):
             changed = copy.deepcopy(args); change(changed)
             with self.subTest(change=change),self.assertRaises(TransactionError):
-                candidate.offline_preflight(proposed,changed['prepared'],changed['disk_record'])
+                candidate.offline_preflight(proposed,changed['prepared'],changed['first_contact'],
+                                            changed['disk_record'],changed['release'])
 
 
 if __name__ == '__main__':

@@ -49,11 +49,12 @@ def configuration(work, value, disk, result_loop, identity):
 
 def validate_result(result, value, job):
     expected_result_fields = {'kind','operation_id','inputs_sha256','job_sha256','success','prepared'}
-    if value['mode'] == 'initial-install':
+    temporary_access = 'first_contact' in job
+    if temporary_access:
         expected_result_fields.add('first_contact')
     first = result.get('first_contact') if isinstance(result, dict) else None
-    first_contact_valid = value['mode'] != 'initial-install'
-    if value['mode'] == 'initial-install' and isinstance(first, dict):
+    first_contact_valid = not temporary_access
+    if temporary_access and isinstance(first, dict):
         router_initial_contact.host_public_keys(first)
         host_keys = first.get('host_key_public_sha256')
         first_contact_valid = (
@@ -89,7 +90,7 @@ def validate_result(result, value, job):
             result['prepared'].get('identity_absent') is not True or
             result['prepared'].get('service_syntax') is not True or
             result['prepared'].get('packages') != (
-                job['personalization']['packages'] if value['mode'] == 'initial-install'
+                job['personalization']['packages'] if temporary_access
                 else job['runtime_packages'])):
         raise RuntimeError('candidate preparation guest returned incomplete or different evidence')
     prepared = result['prepared']

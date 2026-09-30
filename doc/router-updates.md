@@ -189,7 +189,10 @@ identities and remain safe if interrupted.
 
 The DHCP-only state-copy v2 path and its qualification scripts implement the
 new transfer boundary in source. Their requests and receipts reject v1 evidence.
-The preparation and cutover lifecycle still needs generation enrollment,
+Replacement preparation now retains the frozen first-contact package set and
+seeds pinned backend-only SSH access on B's detached LV. The proposed generation
+binds this access evidence and records the qualified final package set as a
+later requirement. The cutover lifecycle still needs generation enrollment,
 first-contact retirement, exact-device inventory, and native recovery proof.
 Do not enable replacement or scheduling until these gates pass. Initial-install
 retries continue to retain their existing enrollment.
@@ -197,10 +200,13 @@ retries continue to retain their existing enrollment.
 The proposed generation is not a cutover request. Before stopping A, the dom0
 adapter requires an offline preflight for the exact retained B disk, exact
 old/new service compatibility, and forward/reverse copy qualification. The
-`klokast.router-readiness.v3` contract binds these separate records to the
+`klokast.router-readiness.v4` contract binds these separate records to the
 generation pair and engine. `candidate-preflight.json` checks boot artifacts,
-packages, OpenRC links, configuration syntax, rendered files, identity absence,
-and the detached disk. It must report that B has not booted as a router.
+the frozen temporary package set, OpenRC links, configuration syntax, rendered
+files, service identity absence, pinned first-contact access, and the detached
+disk. It must report that B has not booted as a router. The proposed generation
+records the qualified final runtime package set as a required post-enrollment
+result; it does not claim that temporary access was already removed.
 Networkless preparation and synthetic compatibility guests can run while A
 serves traffic; they do not start B as a second router. Disposable diagnostic
 results alone do not authorize cutover. The controller must validate their

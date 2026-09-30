@@ -852,7 +852,8 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
             'role':'router','operation_id':operation,'engine_commit':engine,
             'inputs_sha256':context['inputs']['inputs_sha256'],
             'kernel_release':release['kernel_release'],'personalization':personalization,
-            'runtime_packages':release['runtime_packages']}
+            'runtime_packages':release['runtime_packages'],
+            'first_contact':first_contact_details(personalization)}
         router_candidate.validate(job)
         request = {'kind':'klokast.router-replacement-preparation.v1','box':box,
             'mode':'replacement','operation_id':operation,'engine_commit':engine,

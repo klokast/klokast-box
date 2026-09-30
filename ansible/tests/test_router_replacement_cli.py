@@ -21,6 +21,19 @@ class ReplacementCliTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         self.job = copy.deepcopy(fixture.job)
         self.prepared = fixture.prepare()
+        self.prepared['packages'] = dict(self.job['personalization']['packages'])
+        self.first_contact = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
+                              'backend_prefix':24, 'backend_source_address':'192.0.2.1'}
+        contact = self.cli.router_initial_contact
+        sha = lambda value:hashlib.sha256(value.encode()).hexdigest()
+        public_key = 'ssh-ed25519 YQ==\n'
+        self.first_contact_evidence = {'kind':'klokast.router-first-contact.v2',
+            'authorized_key_sha256':sha(self.first_contact['key'] + '\n'),
+            'interfaces_sha256':sha(contact.first_contact_interfaces('192.0.2.2',24)),
+            'firewall_sha256':sha('first-contact-firewall'),
+            'sshd_config_sha256':sha(contact.first_contact_sshd_config('192.0.2.2')),
+            'host_key_public_sha256':{'ed25519':sha(public_key)},
+            'host_key_public':{'ed25519':public_key}}
         self.release = release()
         self.operation = self.job['operation_id']
         self.check = 'd'*24
@@ -61,7 +74,7 @@ class ReplacementCliTests(unittest.TestCase):
         self.boot = Mock(side_effect=self.stage_boot)
         self.context_check = Mock(return_value=self.context)
         self.proposed = {'record_sha256':'c'*64,'boot':{}}
-        self.preflight = {'kind':'klokast.router-candidate-preflight.v1',
+        self.preflight = {'kind':'klokast.router-candidate-preflight.v2',
                           'candidate_sha256':'c'*64,'candidate_booted':False}
         self.next_token = 0
         for target,name,value in (
@@ -72,6 +85,8 @@ class ReplacementCliTests(unittest.TestCase):
                 (self.cli.transport,'command',self.command),
                 (self.cli.router_template_inputs,'release',Mock(return_value=self.release)),
                 (self.cli,'render_candidate',Mock(return_value=self.rendered)),
+                (self.cli,'first_contact_details',Mock(return_value=self.first_contact)),
+                (contact,'first_contact_firewall',Mock(return_value='first-contact-firewall')),
                 (self.cli,'candidate_boot',self.boot),
                 (self.cli,'replacement_context',self.context_check),
                 (self.cli.secrets,'token_hex',self.token)):
@@ -135,7 +150,8 @@ class ReplacementCliTests(unittest.TestCase):
         disk = {'path':'/dev/vg0/routergen_'+self.operation,'uuid':'exact-uuid','bytes':2147483648}
         native = {'kind':'klokast.router-candidate-preparation-result.v1',
             'operation_id':self.operation,'inputs_sha256':request['inputs_sha256'],
-            'job_sha256':request['job_sha256'],'success':True,'prepared':self.prepared}
+            'job_sha256':request['job_sha256'],'success':True,'prepared':self.prepared,
+            'first_contact':self.first_contact_evidence}
         result = self.state/self.operation
         for name,value in (
                 ('preparation-result',native),

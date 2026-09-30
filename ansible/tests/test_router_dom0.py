@@ -81,15 +81,16 @@ class Dom0Tests(unittest.TestCase):
             r.atomic(self.work / (side + '.cfg'), g.configuration(value).encode())
         r.atomic(self.xen / 'router.cfg', g.configuration(self.old).encode())
         self.candidate_preflight = {
-            'kind':'klokast.router-candidate-preflight.v1',
+            'kind':'klokast.router-candidate-preflight.v2',
             'box':'boxa','operation_id':self.request['operation_id'],
             'engine_commit':self.request['engine_commit'],
             'candidate_sha256':self.new['record_sha256'],
             'disk':self.new['disk'],'boot':self.new['boot'],
-            'status':'prepared-and-detached','candidate_booted':False,
-            'production_identity':False,
+            'status':'first-contact-ready-and-detached','candidate_booted':False,
+            'production_identity':False,'temporary_access':True,
             'tests':dict.fromkeys(('boot_artifacts','packages','openrc',
-                'configuration_syntax','rendered_files','identity_absent'),True)}
+                'configuration_syntax','rendered_files','identity_absent',
+                'first_contact_pinned'),True)}
         common = {'box':'boxa','operation_id':self.request['operation_id'],
             'engine_commit':self.request['engine_commit'],
             'old_sha256':self.old['record_sha256'],
@@ -104,7 +105,7 @@ class Dom0Tests(unittest.TestCase):
                            ('compatibility',self.compatibility),
                            ('copy-qualification',self.copy_qualification)):
             r.write(self.work / (name + '.json'),value)
-        self.ready = {'kind':'klokast.router-readiness.v3', 'request_sha256':g.digest(self.request),
+        self.ready = {'kind':'klokast.router-readiness.v4', 'request_sha256':g.digest(self.request),
             'release_sha256':self.new['release_sha256'],
             'candidate_preflight_sha256':g.digest(self.candidate_preflight),
             'compatibility_sha256':g.digest(self.compatibility),
@@ -190,10 +191,14 @@ class Dom0Tests(unittest.TestCase):
         path = self.work / 'candidate-preflight.json'
         for changed in ({'kind':'klokast.router-candidate-preparation-test-result.v1'},
                         {'kind':'klokast.router-retained-candidate-qualification.v1'},
+                        {'kind':'klokast.router-candidate-preflight.v1'},
                         {'disk':{**self.new['disk'],'uuid':'other'}},
                         {'status':'running'},
                         {'candidate_booted':True},
-                        {'production_identity':True}):
+                        {'production_identity':True},
+                        {'temporary_access':False},
+                        {'tests':{**self.candidate_preflight['tests'],
+                                  'first_contact_pinned':False}}):
             value = {**self.candidate_preflight,**changed}
             r.write(path,value)
             # Rebind the checksums to prove refusal of the record's meaning,
@@ -225,6 +230,8 @@ class Dom0Tests(unittest.TestCase):
         self.assertEqual(self.host.live,'old')
 
     def test_previous_live_candidate_readiness_contract_is_rejected(self):
+        with self.assertRaises(TransactionError):
+            d.readiness({**self.ready,'kind':'klokast.router-readiness.v3'},self.request)
         previous = {**self.ready,'kind':'klokast.router-readiness.v1'}
         previous['candidate_qualification_sha256'] = previous.pop('candidate_preflight_sha256')
         with self.assertRaises(TransactionError):

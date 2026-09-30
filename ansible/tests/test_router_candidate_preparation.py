@@ -201,13 +201,19 @@ class PreparationTests(unittest.TestCase):
                 preparation.validate_result(result, self.value, self.job)
 
     def test_initial_mode_recovery_keeps_the_same_first_contact_identity(self):
-        self.job['mode'] = self.value['mode'] = 'initial-install'
+        self.check_first_contact_mode('initial-install')
+
+    def test_replacement_mode_recovery_keeps_the_same_first_contact_identity(self):
+        self.check_first_contact_mode('replacement')
+
+    def check_first_contact_mode(self, mode):
+        self.job['mode'] = self.value['mode'] = mode
         self.job['first_contact'] = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
                                      'backend_source_address':'192.0.2.1', 'backend_prefix':24}
         self.job['personalization']['files']['etc/nftables.nft'] = (
             'table inet filter {\n    chain input {\n'
             '        type filter hook input priority 0; policy drop;\n    }\n}\n')
-        self.result['prepared']['mode'] = 'initial-install'
+        self.result['prepared']['mode'] = mode
         self.result['prepared']['packages'] = self.job['personalization']['packages']
         self.result['prepared']['configuration_files'] = {
             name:hashlib.sha256(content.encode()).hexdigest()

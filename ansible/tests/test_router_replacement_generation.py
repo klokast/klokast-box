@@ -48,7 +48,8 @@ class ReplacementGenerationTests(unittest.TestCase):
             'template_operation':args['template_operation'],
             'accepted_assignment_sha256':'a'*64,'old_sha256':args['old']['record_sha256']}
         self.prepared = {'kind':'klokast.router-candidate-preparation-result.v1',
-            'operation_id':self.operation,'success':True,'prepared':args['prepared']}
+            'operation_id':self.operation,'success':True,'prepared':args['prepared'],
+            'first_contact':args['first_contact']}
         self.disk = args['disk_record']
         self.selection = {'kind':'klokast.router-replacement-generation-selection.v1',
             'box':'boxa','operation_id':self.operation,'engine_commit':args['approved_engine'],

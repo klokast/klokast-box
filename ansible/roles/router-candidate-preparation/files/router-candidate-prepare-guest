@@ -86,7 +86,7 @@ def prepare(value):
             mounted.append(ROOT / name)
         result = router_candidate.prepare(ROOT, value)
         first_contact = None
-        if value['mode'] == 'initial-install':
+        if 'first_contact' in value:
             details = value['first_contact']
             first_contact = router_initial_contact.seed(ROOT, job=value, key=details['key'],
                 personalization=value['personalization'], backend_address=details['backend_address'],

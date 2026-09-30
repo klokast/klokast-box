@@ -71,6 +71,7 @@ def selection(value, job, release, profile, binding, report, policy, accepted,
     router_updates.validate_release(release,profile,engine)
     if (any(job[name] != value[name] for name in
             ('box','mode','operation_id','engine_commit','inputs_sha256')) or
+            'first_contact' not in job or
             value['job_sha256'] != generations.digest(job) or
             value['release_sha256'] != release['receipt_sha256'] or
             value['inputs_sha256'] != release['inputs']['inputs_sha256'] or

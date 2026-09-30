@@ -65,6 +65,14 @@ class CandidateTests(unittest.TestCase):
         self.assertFalse((self.root/'etc/runlevels/default/sshd').exists())
         self.assertFalse(value['replacement_authorized'])
 
+    def test_replacement_with_first_contact_keeps_frozen_packages_until_enrollment(self):
+        self.job['first_contact'] = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
+                                     'backend_prefix':24,'backend_source_address':'192.0.2.1'}
+        value = self.prepare()
+        self.assertEqual(value['packages'], self.request['packages'])
+        self.assertTrue((self.root/'usr/sbin/sshd').is_file())
+        self.assertTrue(value['identity_absent'])
+
     def test_initial_install_requires_one_bounded_first_contact_descriptor(self):
         self.job['mode'] = 'initial-install'
         with self.assertRaisesRegex(ValueError, 'first-contact key and backend address'):

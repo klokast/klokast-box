@@ -20,6 +20,9 @@ class ReplacementPreparationTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         self.job = copy.deepcopy(fixture.job)
+        self.job['first_contact'] = {'key':'ssh-ed25519 YQ==',
+            'backend_address':'192.0.2.2', 'backend_prefix':24,
+            'backend_source_address':'192.0.2.1'}
         self.release = release()
         self.accepted = {'box':'boxa','role':'router','generation':'b'*64,
                          'legacy':{'record_sha256':'b'*64}}

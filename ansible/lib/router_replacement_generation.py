@@ -84,7 +84,8 @@ def execute(storage, operation, engine):
         boot = boot_files(storage,source,release,operation)
         candidate = candidate_generation.assemble(box=storage.box,operation=operation,
             template_operation=source['template_operation'],old=old,release=release,
-            profile=profile,prepared=prepared['prepared'],disk_record=disk_record,
+            profile=profile,prepared=prepared['prepared'],
+            first_contact=prepared['first_contact'],disk_record=disk_record,
             boot=boot,xen_uuid=value['xen_uuid'],approved_engine=engine)
         if disks.verify(work,operation) != disk:
             raise TransactionError('replacement candidate disk changed while staging boot artifacts')
@@ -96,7 +97,8 @@ def execute(storage, operation, engine):
             raise TransactionError('accepted router changed while staging a proposed generation')
         authority(value,grant,source,prepared,disk_record,release,
                   storage.box,operation,engine,time.time())
-        preflight = candidate_generation.offline_preflight(candidate,prepared['prepared'],disk_record)
+        preflight = candidate_generation.offline_preflight(candidate,prepared['prepared'],
+            prepared['first_contact'],disk_record,release)
         for name,record in (('proposed-generation',candidate),('candidate-preflight',preflight)):
             path = work / (name+'.json')
             if path.exists() or path.is_symlink():

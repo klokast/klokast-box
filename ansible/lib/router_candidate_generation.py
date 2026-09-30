@@ -5,12 +5,14 @@ the protected source, disk, and accepted assignment before recording a proposal.
 Native candidate and state compatibility proof is still required before cutover.
 """
 import router_generations as generations
+import router_initial_contact
 import router_updates
 import copy
 from router_transaction import TransactionError
 
 
-def assemble(*, box, operation, template_operation, old, release, profile, prepared, disk_record, boot,
+def assemble(*, box, operation, template_operation, old, release, profile, prepared, first_contact,
+             disk_record, boot,
              xen_uuid, approved_engine):
     router_updates.validate_release(release, profile, approved_engine)
     generations.generation(old, box)
@@ -19,6 +21,13 @@ def assemble(*, box, operation, template_operation, old, release, profile, prepa
                       'tailscale', 'identity_absent', 'replacement_authorized', 'service_syntax'}
     component = {key:release['inputs']['tailscale'][key] for key in (
         'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')}
+    before = {item['name']:item['version'] for item in release['inputs']['packages']}
+    try:
+        if first_contact.get('kind') != 'klokast.router-first-contact.v2':
+            raise ValueError('missing first-contact evidence')
+        router_initial_contact.host_public_keys(first_contact)
+    except (AttributeError, ValueError) as error:
+        raise TransactionError('replacement generation lacks pinned first-contact evidence') from error
     if (not generations.matches('[0-9a-f]{24}', operation) or
             not generations.matches('[0-9a-f]{24}', template_operation) or
             not isinstance(prepared, dict) or set(prepared) != expected_files or
@@ -27,7 +36,7 @@ def assemble(*, box, operation, template_operation, old, release, profile, prepa
             (box, 'router', 'replacement', operation) or
             prepared['engine_commit'] != approved_engine or
             prepared['inputs_sha256'] != release['inputs']['inputs_sha256'] or
-            prepared['packages'] != release['runtime_packages'] or
+            prepared['packages'] != before or
             prepared['tailscale'] != component or
             prepared['identity_absent'] is not True or
             prepared['replacement_authorized'] is not False or
@@ -61,26 +70,30 @@ def assemble(*, box, operation, template_operation, old, release, profile, prepa
         'boot':boot,
         'xen':{'uuid':xen_uuid, 'memory':old['xen']['memory'], 'vcpus':old['xen']['vcpus'],
                'vif':copy.deepcopy(old['xen']['vif'])},
-        'packages':copy.deepcopy(prepared['packages']), 'kernel_release':release['kernel_release'],
+        'packages':copy.deepcopy(release['runtime_packages']), 'kernel_release':release['kernel_release'],
         'tailscale':component,
         'accounts':copy.deepcopy(prepared['accounts']),
         'configuration_files':copy.deepcopy(prepared['configuration_files']),
         'evidence_sha256':generations.digest({'release':release['receipt_sha256'],
-            'prepared':prepared, 'disk':disk_record})})
+            'prepared':prepared, 'first_contact':first_contact, 'disk':disk_record})})
     generations.generation(proposed, box)
     generations.pair(old, proposed, {'box':box, 'engine_commit':approved_engine,
         'old_sha256':old['record_sha256'], 'candidate_sha256':proposed['record_sha256']})
     return proposed
 
 
-def offline_preflight(proposed, prepared, disk_record):
+def offline_preflight(proposed, prepared, first_contact, disk_record, release):
     """Bind verified offline preparation to its proposed A/B generation.
 
     The caller must verify native boot artifacts and the detached LV before
     publishing this record. It contains no running-kernel or service evidence.
     """
     generations.generation(proposed, proposed['box'])
+    before = {item['name']:item['version'] for item in release['inputs']['packages']}
     if (proposed['origin'] != 'template' or not isinstance(prepared, dict) or
+            release.get('receipt_sha256') != proposed['release_sha256'] or
+            release.get('runtime_packages') != proposed['packages'] or
+            prepared.get('packages') != before or
             prepared.get('kind') != 'klokast.router-candidate-files.v1' or
             prepared.get('mode') != 'replacement' or prepared.get('role') != 'router' or
             prepared.get('operation_id') != proposed['generation_id'] or
@@ -88,23 +101,25 @@ def offline_preflight(proposed, prepared, disk_record):
             prepared.get('service_syntax') is not True or
             prepared.get('replacement_authorized') is not False or
             any(prepared.get(key) != proposed[key] for key in (
-                'box','engine_commit','packages','accounts','tailscale','configuration_files')) or
+                'box','engine_commit','accounts','tailscale','configuration_files')) or
             not isinstance(disk_record, dict) or
             disk_record.get('kind') != 'klokast.router-candidate-disk.v1' or
             disk_record.get('stage') != 'cloned' or
             disk_record.get('operation_id') != proposed['generation_id'] or
             any(disk_record.get(key) != proposed['disk'][key] for key in ('path','uuid')) or
             proposed['evidence_sha256'] != generations.digest({
-                'release':proposed['release_sha256'],'prepared':prepared,'disk':disk_record})):
+                'release':proposed['release_sha256'],'prepared':prepared,
+                'first_contact':first_contact,'disk':disk_record})):
         raise TransactionError('offline preflight differs from the exact retained replacement preparation')
-    return {'kind':'klokast.router-candidate-preflight.v1',
+    return {'kind':'klokast.router-candidate-preflight.v2',
         'box':proposed['box'],'operation_id':proposed['generation_id'],
         'engine_commit':proposed['engine_commit'],
         'candidate_sha256':proposed['record_sha256'],
         'disk':copy.deepcopy(proposed['disk']),'boot':copy.deepcopy(proposed['boot']),
-        'status':'prepared-and-detached','candidate_booted':False,'production_identity':False,
+        'status':'first-contact-ready-and-detached','candidate_booted':False,
+        'production_identity':False,'temporary_access':True,
         'tests':dict.fromkeys(('boot_artifacts','packages','openrc','configuration_syntax',
-                              'rendered_files','identity_absent'),True)}
+                              'rendered_files','identity_absent','first_contact_pinned'),True)}
 
 
 def assemble_initial(*, box, operation, template_operation, release, profile, prepared, finalized,

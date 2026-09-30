@@ -218,7 +218,7 @@ def seed(root, *, job, key, personalization, backend_address, backend_prefix):
     """Seed one temporary, backend-only SSH path; install no packages."""
     personalize.environment()
     root = Path(root)
-    if (not isinstance(job, dict) or job.get('mode') != 'initial-install' or
+    if (not isinstance(job, dict) or job.get('mode') not in ('initial-install', 'replacement') or
             job.get('role') != 'router'):
         raise ValueError('router first-contact job or approved key is invalid')
     personalize.validate(personalization)

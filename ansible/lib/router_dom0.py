@@ -19,7 +19,7 @@ import router_transaction as transaction
 def readiness(value, request):
     if (not isinstance(value, dict) or set(value) != {'kind', 'request_sha256', 'release_sha256',
             'candidate_preflight_sha256', 'compatibility_sha256', 'copy_qualification_sha256', 'gateway'} or
-            value['kind'] != 'klokast.router-readiness.v3' or value['request_sha256'] != generations.digest(request) or
+            value['kind'] != 'klokast.router-readiness.v4' or value['request_sha256'] != generations.digest(request) or
             any(not generations.matches('[0-9a-f]{64}', value[k]) for k in
                 ('release_sha256', 'candidate_preflight_sha256', 'compatibility_sha256', 'copy_qualification_sha256'))):
         raise transaction.TransactionError('router preparation lacks exact release, candidate, compatibility, or copy evidence')
@@ -70,18 +70,19 @@ class Adapter:
         candidate_record = records.read(self.work / 'candidate-preflight.json')
         if (not isinstance(candidate_record, dict) or set(candidate_record) != {
                 'kind','box','operation_id','engine_commit','candidate_sha256',
-                'disk','boot','status','candidate_booted','production_identity','tests'} or
-                candidate_record['kind'] != 'klokast.router-candidate-preflight.v1' or
+                'disk','boot','status','candidate_booted','production_identity','temporary_access','tests'} or
+                candidate_record['kind'] != 'klokast.router-candidate-preflight.v2' or
                 any(candidate_record[key] != common[key] for key in (
                     'box','operation_id','engine_commit','candidate_sha256')) or
                 candidate_record['disk'] != candidate['disk'] or
                 candidate_record['boot'] != candidate['boot'] or
-                candidate_record['status'] != 'prepared-and-detached' or
+                candidate_record['status'] != 'first-contact-ready-and-detached' or
                 candidate_record['candidate_booted'] is not False or
                 candidate_record['production_identity'] is not False or
+                candidate_record['temporary_access'] is not True or
                 candidate_record['tests'] != dict.fromkeys((
                     'boot_artifacts','packages','openrc','configuration_syntax',
-                    'rendered_files','identity_absent'), True) or
+                    'rendered_files','identity_absent','first_contact_pinned'), True) or
                 generations.digest(candidate_record) != self.ready['candidate_preflight_sha256']):
             raise transaction.TransactionError('router offline candidate preflight differs from its exact generation')
         compatibility = records.read(self.work / 'compatibility.json')

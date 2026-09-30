@@ -2,8 +2,8 @@
 
 Preparation runs inside networkless Xen on a newly cloned template. It never
 selects a disk, enrolls a machine, starts network services, or grants cutover
-authority. Initial install retains the frozen first-contact packages until
-enrollment is verified; replacement retires them before receiving any identity.
+authority. A job with first-contact access retains its frozen packages until
+enrollment is verified and that access is retired offline.
 """
 import hashlib
 import ipaddress
@@ -50,6 +50,7 @@ def validate(request):
     if request['mode'] == 'initial-install':
         if 'first_contact' not in request:
             raise ValueError('initial router candidate requires one bounded first-contact key and backend address')
+    if 'first_contact' in request:
         fields.add('first_contact')
     if (set(request) != fields or
             request['role'] != 'router' or not matches('[a-z0-9][a-z0-9-]{0,30}', request['box']) or
@@ -58,7 +59,7 @@ def validate(request):
             not matches('[0-9a-f]{64}', request['inputs_sha256']) or
             not matches('[A-Za-z0-9_.+-]{1,128}', request['kernel_release'])):
         raise ValueError('router candidate requires an exact box, lifecycle mode, engine, and input identity')
-    if request['mode'] == 'initial-install':
+    if 'first_contact' in request:
         first = request['first_contact']
         try:
             address = str(ipaddress.IPv4Address(first.get('backend_address'))) if isinstance(first, dict) else ''
@@ -164,10 +165,11 @@ def verify(root, request):
     if (stat.S_IMODE(service.stat().st_mode) != 0o755 or
             checksum(service) != component['openrc_sha256']):
         raise ValueError('router candidate upstream Tailscale service differs')
-    expected = request['runtime_packages'] if request['mode'] == 'replacement' else request['personalization']['packages']
+    temporary_access = 'first_contact' in request
+    expected = request['personalization']['packages'] if temporary_access else request['runtime_packages']
     if personalize.packages(root) != expected:
         raise ValueError('router candidate installed packages differ from its exact lifecycle manifest')
-    world = [name for name in inputs['world'] if request['mode'] != 'replacement' or name != 'openssh']
+    world = [name for name in inputs['world'] if temporary_access or name != 'openssh']
     if personalize.regular(root, 'etc/apk/world').read_text() != ''.join(name + '=' + expected[name] + '\n' for name in world):
         raise ValueError('router candidate package world differs from its frozen lifecycle manifest')
     modules = personalize.directory(root, 'lib/modules')
@@ -197,7 +199,7 @@ def verify(root, request):
     for name in personalize.SERVICES:
         personalize.regular(root, 'etc/init.d/' + name)
     identity_absent(root)
-    if request['mode'] == 'replacement':
+    if not temporary_access:
         for name in router_finalize.SERVER_PATHS:
             path = root / name
             if path.exists() or path.is_symlink():
@@ -216,7 +218,7 @@ def prepare(root, request):
     root = Path(root)
     inputs = manifest(root, request)
     personalize.personalize(root, request['personalization'])
-    if request['mode'] == 'replacement':
+    if 'first_contact' not in request:
         result = router_finalize.finalize(root, inputs)
         if result['packages'] != request['runtime_packages']:
             raise ValueError('router candidate native retirement differs from the qualified release')
