@@ -186,6 +186,9 @@
         ('-' ~ (dom0_data_mount_path | regex_replace('^/', '')))
         in verify_dom0_base_lbu_paths.stdout_lines
       - >-
+        ('-home/' ~ dom0_admin_user_name ~ '/.ash_history')
+        in verify_dom0_base_lbu_paths.stdout_lines
+      - >-
         (((tailscale_persist_paths + dom0_home_lbu_include_paths)
         | map('regex_replace', '^/', '')
         | list)

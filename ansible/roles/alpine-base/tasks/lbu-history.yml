@@ -1,0 +1,8 @@
+---
+- name: Exclude dom0 admin shell history from lbu payloads
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "-home/{{ dom0_admin_user_name }}/.ash_history"
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes

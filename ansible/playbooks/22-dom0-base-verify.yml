@@ -39,6 +39,12 @@
       ansible.builtin.import_role:
         name: dom0-tailscale
 
+    - name: Keep dom0 admin shell history outside lbu payloads
+      ansible.builtin.import_role:
+        name: alpine-base
+        tasks_from: lbu-history
+      tags: dom0_lbu_history
+
     - name: Flush dom0-base handlers before verification
       ansible.builtin.meta: flush_handlers
 

@@ -105,6 +105,9 @@
     mode: "0644"
   notify: Commit lbu changes
 
+- name: Keep dom0 admin shell history outside lbu payloads
+  ansible.builtin.import_tasks: lbu-history.yml
+
 - name: Remove any legacy EFI-root boot repository marker
   ansible.builtin.file:
     path: "{{ legacy_apk_root_boot_repository_marker }}"

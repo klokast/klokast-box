@@ -8,9 +8,14 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOM0_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "dom0.yml"
 ALPINE_BASE_TASKS = REPO_ROOT / "ansible" / "roles" / "alpine-base" / "tasks" / "main.yml"
+ALPINE_HISTORY_TASKS = REPO_ROOT / "ansible" / "roles" / "alpine-base" / "tasks" / "lbu-history.yml"
+DOM0_BASE_VERIFY_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "22-dom0-base-verify.yml"
 DOM0_STORAGE_TASKS = REPO_ROOT / "ansible" / "roles" / "dom0-storage" / "tasks" / "main.yml"
 DOM0_HEALTH_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "dom0-health-verification" / "tasks" / "main.yml"
+)
+DOM0_BASE_VERIFICATION_TASKS = (
+    REPO_ROOT / "ansible" / "roles" / "dom0-base-verification" / "tasks" / "main.yml"
 )
 ARCHITECTURE_DOC = REPO_ROOT / "doc" / "architecture.md"
 DOM0_PLAYBOOK_OVERVIEW = (
@@ -40,6 +45,32 @@ class Dom0LbuPolicyTest(unittest.TestCase):
 
         self.assertIn("Ensure the dom0 data mountpoint stays excluded from lbu payloads", text)
         self.assertIn('line: "-{{ dom0_data_mount_path | regex_replace', text)
+
+    def test_dom0_admin_history_is_excluded_and_verified(self):
+        tasks = yaml.safe_load(ALPINE_HISTORY_TASKS.read_text(encoding="utf-8"))
+        history_tasks = [task for task in tasks if task.get("name") == "Exclude dom0 admin shell history from lbu payloads"]
+        self.assertEqual(len(history_tasks), 1)
+        self.assertEqual(
+            history_tasks[0]["ansible.builtin.lineinfile"]["line"],
+            "-home/{{ dom0_admin_user_name }}/.ash_history",
+        )
+        self.assertIn("Commit lbu changes", history_tasks[0]["notify"])
+        self.assertIn(
+            "ansible.builtin.import_tasks: lbu-history.yml",
+            ALPINE_BASE_TASKS.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "tasks_from: lbu-history",
+            DOM0_BASE_VERIFY_PLAYBOOK.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "('-home/' ~ dom0_admin_user_name ~ '/.ash_history')",
+            DOM0_BASE_VERIFICATION_TASKS.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            'f"-home/{dom0_admin_user_name}/.ash_history" in lbu_paths',
+            DOM0_HEALTH_TASKS.read_text(encoding="utf-8"),
+        )
 
     def test_dom0_health_rejects_dom0_data_lbu_include(self):
         text = DOM0_HEALTH_TASKS.read_text(encoding="utf-8")

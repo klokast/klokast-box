@@ -97,6 +97,7 @@ For the normative rules, see [Klokast Instance Specification v1](klokast-instanc
   - LVM holds the guest logical volumes
 - Diskless persistence boundary:
   - `.apkovl` is for small dom0 runtime state only: `/etc`, selected admin home paths, and Tailscale state.
+  - The admin home can persist, but `/etc/apk/protected_paths.d/lbu.list` must exclude `/home/neo/.ash_history` as `-home/neo/.ash_history`.
   - Mounted persistent storage must stay outside `lbu`. In particular, `/mnt/dom0_data` is the LVM-backed dom0 data volume for Xen images and related artifacts, so `/etc/apk/protected_paths.d/lbu.list` must exclude it as `-mnt/dom0_data` and must never include `+mnt/dom0_data`.
 - Networking:
   - Xen bridge host
